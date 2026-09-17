@@ -427,6 +427,17 @@ pub struct Workspace {
     /// is in flight. The existing `live_workers.is_empty()` gate
     /// covers the post-dispatch case.
     respawn_in_flight: Mutex<std::collections::HashSet<ProjectKey>>,
+    /// The cron ids the LAST `fire_due_crons` pass found unwakeable, so
+    /// the first warning about one is a `WARN` and the repeats are not.
+    ///
+    /// Not a cache: nothing but that warning's level reads it, and it
+    /// holds only what the most recent pass saw, replaced wholesale at the
+    /// end of each pass. That is what stops an entry outliving its
+    /// condition - a cron that fires, advances or is deleted is simply
+    /// absent from the next pass's set, so one that goes unwakeable again
+    /// is new again and warns at `WARN` again. A set that never cleared
+    /// would silence a cron that is firing.
+    unwakeable_crons: Mutex<std::collections::HashSet<forge_primitives::CronId>>,
     /// Test-only intercept buffer for app-level Commands. When
     /// `Some`, `dispatch` captures the command into the buffer
     /// instead of routing it to the spawn::* handler - used by
@@ -1091,6 +1102,7 @@ impl Workspace {
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
+            unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -2731,6 +2743,7 @@ impl Workspace {
             kick: existing.as_ref().and_then(|row| row.kick.clone()),
             resume_kick: existing.as_ref().and_then(|row| row.resume_kick.clone()),
             interactive: existing.as_ref().and_then(|row| row.interactive),
+            is_git_repo: existing.as_ref().and_then(|row| row.is_git_repo),
         };
         if let Err(error) = crate::store::sessions::put(db, &row) {
             tracing::warn!(
@@ -3397,6 +3410,35 @@ impl Workspace {
                     continue;
                 }
             };
+            // A resume starts the subprocess in the worker's worktree,
+            // and a subprocess cannot enter a directory that is not
+            // there: the spawn fails on every boot and the row never
+            // clears. A FRESH re-spawn runs in the project root and
+            // takes `--worktree`, so only a resume is stranded.
+            if let Some(root) = project.as_ref().map(|p| p.path.as_path())
+                && !crate::mcp::workers::types::worker_row_can_start(
+                    root,
+                    &worker.label,
+                    worker.is_git_repo,
+                    resume_existing.is_some(),
+                )
+            {
+                let wanted = crate::mcp::workers::types::worker_tag_dir(
+                    root,
+                    &worker.label,
+                    matches!(worker.is_git_repo, Some(true)),
+                );
+                tracing::warn!(
+                    target: "forge_workspace::workers",
+                    event_name = "boot_respawn_skipped_missing_worktree",
+                    project = %project_key.as_str(),
+                    label = %worker.label,
+                    directory = %wanted.display(),
+                    "the worker's directory is gone, so this boot re-spawn has nowhere to \
+                     start; the row is kept and stays unoffered until it is back",
+                );
+                continue;
+            }
             let kick = if resume_existing.is_some() {
                 worker.resume_kick.clone().or_else(|| Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned()))
             } else {
@@ -3492,6 +3534,25 @@ impl Workspace {
     /// wave was already in flight.
     fn try_claim_respawn(&self, project_key: &crate::target::ProjectKey) -> bool {
         self.respawn_in_flight.lock().insert(project_key.clone())
+    }
+
+    /// Whether this fire pass is the FIRST to find `id` unwakeable,
+    /// recording it as seen if so. True is the pass that warns; false is
+    /// every later pass while the condition holds.
+    pub(crate) fn cron_unwakeable_is_new(&self, id: &forge_primitives::CronId) -> bool {
+        self.unwakeable_crons.lock().insert(id.clone())
+    }
+
+    /// Close a fire pass: `ids` is what it found unwakeable, and it
+    /// replaces the previous pass's set wholesale. That replacement is
+    /// the only clearing this state needs - an entry cannot survive a
+    /// pass that did not find its cron unwakeable, whether the cron fired,
+    /// advanced, was deleted, or simply was not due.
+    pub(crate) fn cron_unwakeable_commit(
+        &self,
+        ids: std::collections::HashSet<forge_primitives::CronId>,
+    ) {
+        *self.unwakeable_crons.lock() = ids;
     }
 
     /// The session id the store holds for the label, if any. `None` when
@@ -3802,8 +3863,9 @@ impl Workspace {
 
     /// Write `label`'s worker row: the id it runs under plus the
     /// re-spawn arguments its spawn stated. The row is the only thing a
-    /// boot re-spawns from, so the charter, the kick and the interactive
-    /// flag land here rather than staying in memory.
+    /// boot re-spawns from, so the charter, the kick, the interactive
+    /// flag and the gitness its worktree derives from land here rather
+    /// than staying in memory.
     ///
     /// `Err` when the store is closed, the project is no longer
     /// configured, or the write failed, so the caller can warn the lead
@@ -3817,6 +3879,7 @@ impl Workspace {
         kick: Option<&str>,
         resume_kick: Option<&str>,
         interactive: bool,
+        is_git_repo: bool,
     ) -> anyhow::Result<()> {
         let Some((org, project)) = self.project_identity_for_key(project_key) else {
             anyhow::bail!("no configured project for {}", project_key.as_str());
@@ -3843,8 +3906,35 @@ impl Workspace {
                     .map(str::to_owned)
                     .or_else(|| existing.and_then(|row| row.resume_kick)),
                 interactive: Some(interactive),
+                is_git_repo: Some(is_git_repo),
             },
         )
+    }
+
+    /// The git flag the worker's row records, or `Ok(None)` when there is
+    /// no row to read or its row predates the field. The spawn reads it in
+    /// preference to probing the project path, so the cwd it builds is the
+    /// one the launchpad already checked.
+    ///
+    /// A read failure is an `Err`, not an absent row: an absent row means
+    /// the caller may probe, while an unreadable one means the answer is
+    /// unknown and the caller should say so rather than quietly compose a
+    /// different directory. Distinct from [`Self::stored_worker_row`],
+    /// which reports both the same way because its callers act on the row
+    /// itself rather than on a field of it.
+    pub(crate) fn recorded_worker_is_git_repo(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> anyhow::Result<Option<bool>> {
+        let Some((org, project)) = self.project_identity_for_key(project_key) else {
+            return Ok(None);
+        };
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            anyhow::bail!("the session store is unavailable this session");
+        };
+        Ok(crate::store::sessions::get(db, &org, &project, label)?.and_then(|row| row.is_git_repo))
     }
 
     /// Delete a worker's persisted row so it never re-spawns. The row is
@@ -3903,16 +3993,18 @@ impl Workspace {
             .collect()
     }
 
-    /// Every persisted worker label, keyed by the project key the
-    /// launchpad holds.
+    /// Every persisted worker label the launchpad still offers, keyed by
+    /// the project key it holds. A row the boot wave would not start is
+    /// not among them.
     ///
     /// The launchpad's worker rows read this once per frame, which is
     /// what the shape is for: one read transaction answers every project
-    /// row. Unlike [`Self::list_live_workers`] it answers before the
-    /// project has launched, which is when the launchpad renders.
+    /// row, over a projection that skips each row's charter. Unlike
+    /// [`Self::list_live_workers`] it answers before the project has
+    /// launched, which is when the launchpad renders.
     ///
     /// Empty on a read failure rather than surfacing it, deliberately
-    /// unlike the sibling `worker_row_exists`: the caller is a render
+    /// unlike the sibling `stored_worker_row`: the caller is a render
     /// path, where a warn plus a bare row beats failing the frame.
     pub fn worker_labels_by_project(&self) -> HashMap<ProjectKey, Vec<String>> {
         let rows = {
@@ -3920,7 +4012,7 @@ impl Workspace {
             let Some(db) = guard.as_ref() else {
                 return HashMap::new();
             };
-            crate::store::sessions::keys(db).unwrap_or_else(|error| {
+            crate::store::sessions::worker_row_index(db).unwrap_or_else(|error| {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
                     %error,
@@ -3931,27 +4023,37 @@ impl Workspace {
         };
         let views = self.list_projects();
         let mut out: HashMap<ProjectKey, Vec<String>> = HashMap::new();
-        for (org, project, label) in rows {
-            if label == forge_primitives::LEAD_LABEL {
+        for row in rows {
+            if row.label == forge_primitives::LEAD_LABEL {
                 continue;
             }
-            if let Some(view) = views.iter().find(|v| v.org == org && v.name == project) {
-                out.entry(view.key.clone()).or_default().push(label);
+            // A row the wave would not start is not a worker the
+            // launchpad can offer either - the same question, so the
+            // pane and the wave answer it with one call.
+            if let Some(view) = views.iter().find(|v| v.org == row.org && v.name == row.project)
+                && crate::mcp::workers::types::worker_row_can_start(
+                    &view.path,
+                    &row.label,
+                    row.is_git_repo,
+                    row.session_id.is_some(),
+                )
+            {
+                out.entry(view.key.clone()).or_default().push(row.label);
             }
         }
         out
     }
 
-    /// Whether `label` has a persisted worker row in `project_key`.
-    /// Distinct from [`Self::worker_rows_for_project`], which swallows a
-    /// read failure as empty: this surfaces the error (and treats a missing
-    /// store as one) so a caller can tell "conclusively absent" from "could
-    /// not read" - the cron fire router must not delete a cron on a hiccup.
-    pub(crate) fn worker_row_exists(
+    /// The row `label` holds in `project_key`. Distinct from
+    /// [`Self::worker_rows_for_project`], which swallows a read failure as
+    /// empty: this surfaces the error (and treats a missing store as one)
+    /// so the cron fire router can tell "conclusively absent" from "could
+    /// not read" and leave the cron on a hiccup.
+    pub(crate) fn stored_worker_row(
         &self,
         project_key: &ProjectKey,
         label: &str,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<crate::store::sessions::SessionRecord>> {
         let Some((org, project)) = self.project_identity_for_key(project_key) else {
             anyhow::bail!("no configured project for {}", project_key.as_str());
         };
@@ -3959,7 +4061,7 @@ impl Workspace {
         let Some(db) = guard.as_ref() else {
             anyhow::bail!("the session store is unavailable this session");
         };
-        Ok(crate::store::sessions::get(db, &org, &project, label)?.is_some())
+        crate::store::sessions::get(db, &org, &project, label)
     }
 
     /// Merge the supplied fields onto the worker row for `(project_key,
@@ -3994,6 +4096,9 @@ impl Workspace {
                 kick,
                 resume_kick,
                 interactive: None,
+                // `update` leaves an absent field alone; the gitness is
+                // fixed at spawn and never re-decided here.
+                is_git_repo: None,
             },
         )
     }
@@ -4620,6 +4725,7 @@ impl Workspace {
         self: &Arc<Self>,
         session_key: &SessionSlot,
         message: &str,
+        kind: forge_agent::client::SpawnFailureKind,
     ) -> bool {
         // Look up the worker entry WITHOUT removing it yet - the
         // worktree-failure path still removes (rollback semantics
@@ -4649,6 +4755,7 @@ impl Workspace {
         let classified = crate::mcp::workers::facade::classify_worker_spawn_failure(
             message,
             entry.is_git_repo_at_spawn,
+            kind,
         );
         if let crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { reason } =
             &classified
@@ -5701,7 +5808,7 @@ fn forge_toml_path(config_dir: &std::path::Path) -> PathBuf {
 fn seed_worker_row(ws: &Workspace, project_key: &ProjectKey, label: &str) {
     ws.seed_test_worker_row(project_key, label);
     assert!(
-        ws.worker_row_exists(project_key, label).expect("read the seeded row"),
+        ws.stored_worker_row(project_key, label).expect("read the seeded row").is_some(),
         "the worker row for {label} did not land; does {project_key:?} resolve to a project?",
     );
 }
@@ -6456,6 +6563,107 @@ mod tests {
         }
     }
 
+    /// A stuck one-shot is re-evaluated on every 60s tick, so its warning
+    /// has to be given once rather than once a minute for as long as the
+    /// directory is missing. The repeat is still recorded, at debug, under
+    /// the same `event_name`, so one filter still finds the whole story.
+    ///
+    /// The clearing is the half that matters. The state holds only the
+    /// last pass's answer, so a cron that goes unwakeable AGAIN warns
+    /// again; a set that never cleared would leave a durable cron that IS
+    /// firing silent, which is the failure this family of changes exists
+    /// to remove.
+    ///
+    /// Runs real fire passes under a log capture, which is why it sits
+    /// beside `LogCapture` rather than with the other cron tests.
+    #[test]
+    fn a_stuck_cron_warns_once_then_warns_again_after_it_clears() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let (ws, _rx) = Workspace::testing_stub();
+        let db_dir = tempdir().expect("db dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_dir = tempdir().expect("project dir");
+        ws.seed_test_project("proj", &project_dir.path().to_string_lossy());
+        let key = ws.project_key_for_name("proj").expect("seeded project");
+        // A git worker whose worktree is not there, so the wave would skip
+        // it and no fire can land.
+        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true)
+            .expect("seed the stranded row");
+
+        // A whole minute, so the recurring's next `*/5` slot is at least a
+        // minute later and the middle pass below cannot catch it.
+        let t0 = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(600_000_000);
+        for (id, kind) in
+            [("once", CronKind::Once(t0)), ("again", CronKind::Recurring("*/5 * * * *".to_owned()))]
+        {
+            ws.push_cron(CronEntry {
+                id: CronId::from(id),
+                project_name: "proj".to_owned(),
+                kind,
+                prompt: "p".to_owned(),
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+                description: None,
+                last_fire: None,
+                next_fire: t0,
+                team_role: Some("steward".to_owned()),
+            });
+        }
+
+        let log_of = |capture: &LogCapture| String::from_utf8_lossy(&capture.0.lock()).into_owned();
+        let warns = |capture: &LogCapture| -> usize {
+            log_of(capture)
+                .lines()
+                .filter(|line| line.contains("cron_owner_cannot_be_woken") && line.contains("WARN"))
+                .count()
+        };
+        let pass = |capture: &LogCapture, now: std::time::SystemTime| {
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
+                .with_writer(capture.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || ws.fire_due_crons(now));
+        };
+
+        let first = LogCapture::default();
+        pass(&first, t0);
+        assert_eq!(
+            warns(&first),
+            2,
+            "both crons are newly unwakeable, so both warn: {}",
+            log_of(&first)
+        );
+
+        // Half a minute on: the one-shot is still stuck and still due, and
+        // the recurring has advanced past this pass entirely.
+        let second = LogCapture::default();
+        pass(&second, t0 + std::time::Duration::from_secs(30));
+        assert_eq!(
+            warns(&second),
+            0,
+            "a cron that was already unwakeable last pass does not warn again: {}",
+            log_of(&second),
+        );
+        assert!(
+            log_of(&second).contains("cron_owner_cannot_be_woken"),
+            "and it is still recorded, at debug, under the same event_name: {}",
+            log_of(&second),
+        );
+
+        // A day on, the recurring is due again with its owner still
+        // stranded: this time that is new again.
+        let third = LogCapture::default();
+        pass(&third, t0 + std::time::Duration::from_secs(86_400));
+        assert_eq!(
+            warns(&third),
+            1,
+            "a cron unwakeable again after a pass that did not see it must warn again - a \
+             set that never cleared would leave a firing cron silent: {}",
+            log_of(&third),
+        );
+    }
+
     /// The applied record names the keys a project contributed and must
     /// never carry their values - it is always-on, so a widened field
     /// writes tokens to disk on every spawn. Asserted on a DIRECT call:
@@ -6633,6 +6841,7 @@ provider = "anthropic"
             "original charter",
             Some("original kick"),
             Some("original resume"),
+            false,
             false,
         )
         .expect("seed the row this test then updates");
@@ -6851,7 +7060,7 @@ provider = "anthropic"
         let project = ws.project_key_for_name("forge").expect("seeded project");
         // No install_db_for_test: the store is closed for this session.
         let error = ws
-            .record_worker_row(&project, "reviewer", "id", "charter", None, None, false)
+            .record_worker_row(&project, "reviewer", "id", "charter", None, None, false, false)
             .expect_err("a closed store must surface a durability failure, not a silent no-op");
         assert!(
             error.to_string().contains("store is unavailable"),
@@ -7634,6 +7843,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: None,
+                is_git_repo: None,
             },
         )
         .expect("seed the lead row a spawn writes");
@@ -7648,6 +7858,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: None,
+                is_git_repo: None,
             },
         )
         .expect("seed the steward's own row, as the released build leaves it");
@@ -7865,6 +8076,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: None,
+                is_git_repo: None,
             },
         )
         .expect("seed the row");
@@ -10653,7 +10865,176 @@ mod worker_respawn_tests {
             kick: kick.map(str::to_owned),
             resume_kick: None,
             interactive: Some(false),
+            is_git_repo: None,
         }
+    }
+
+    /// `proj-x` is a real git repo and `proj-y` is not, so the four
+    /// seeded rows below cut across the two axes the skip must not
+    /// confuse: whether the ROW says its worker runs in a worktree, and
+    /// whether the project path looks like a repo on disk. The two
+    /// disagreeing rows are the point - a predicate inferring gitness
+    /// from the filesystem gets both of them wrong.
+    fn seed_worktree_fixture(
+        workspace: &Arc<Workspace>,
+    ) -> (ProjectKey, ProjectKey, tempfile::TempDir, tempfile::TempDir) {
+        let repo = tempfile::tempdir().expect("git project dir");
+        run_git_in(repo.path(), &["init", "-q"]);
+        let plain = tempfile::tempdir().expect("non-git project dir");
+        workspace.seed_test_project("proj-x", repo.path().to_str().expect("utf8 repo path"));
+        workspace.seed_test_project("proj-y", plain.path().to_str().expect("utf8 plain path"));
+        // Only `present`'s worktree stands; the other three are gone.
+        std::fs::create_dir_all(repo.path().join(".claude").join("worktrees").join("present"))
+            .expect("create the surviving worktree");
+
+        let proj_x = workspace.project_key_for_name("proj-x").expect("seeded project");
+        let proj_y = workspace.project_key_for_name("proj-y").expect("seeded project");
+        let seeded: [(&ProjectKey, &str, bool); 4] = [
+            // A git worker whose worktree is gone: the defect.
+            (&proj_x, "stranded", true),
+            // Its sibling whose worktree stands.
+            (&proj_x, "present", true),
+            // Runs in the project root, so it has no worktree to lose -
+            // even though the project path IS a repo with a `.git`.
+            (&proj_x, "rooted", false),
+            // Says it runs in a worktree, in a project with no `.git`
+            // anywhere. The row decides, not the disk.
+            (&proj_y, "ghostworktree", true),
+        ];
+        for (key, label, is_git) in seeded {
+            workspace
+                .record_worker_row(
+                    key,
+                    label,
+                    &format!("{label}-uuid"),
+                    "c",
+                    None,
+                    None,
+                    false,
+                    is_git,
+                )
+                .expect("seed the row this wave re-spawns");
+        }
+        // A row whose spawn never got an id. The wave re-spawns it FRESH,
+        // which runs in the project root and passes `--worktree`, so
+        // claude creates the worktree itself and there is nothing missing
+        // for it to fail on.
+        let guard = workspace.db.lock();
+        crate::store::sessions::put(
+            guard.as_ref().expect("db installed"),
+            &crate::store::sessions::SessionRecord {
+                org: "TestOrg".to_owned(),
+                project: "proj-x".to_owned(),
+                label: "unstarted".to_owned(),
+                session_id: None,
+                charter: Some("c".to_owned()),
+                kick: None,
+                resume_kick: None,
+                interactive: Some(false),
+                is_git_repo: Some(true),
+            },
+        )
+        .expect("seed the id-less row");
+        drop(guard);
+        (proj_x, proj_y, repo, plain)
+    }
+
+    /// A worker whose worktree is gone is re-spawned on every boot and
+    /// fails every time, forever. The wave skips it, and only it.
+    #[test]
+    fn boot_respawn_skips_a_row_whose_worktree_is_gone() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let (proj_x, proj_y, _repo, _plain) = seed_worktree_fixture(&workspace);
+
+        for key in [&proj_x, &proj_y] {
+            // The wave reads the rows the store holds, not a hand-made
+            // shape, so this also pins that the row carries the flag.
+            let rows = workspace.worker_rows_for_project(key);
+            workspace.dispatch_worker_respawns(&lead_slot(), key, &rows, false);
+        }
+
+        let spawned: Vec<String> = workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .map(|cmd| match cmd {
+                Command::SpawnWorker { label, .. } => label,
+                other => panic!("expected SpawnWorker, got {other:?}"),
+            })
+            .collect();
+        assert!(
+            !spawned.contains(&"stranded".to_owned()),
+            "a worker whose worktree is gone must not be re-spawned - the spawn cannot \
+             enter its cwd and would fail on every boot forever; spawned {spawned:?}",
+        );
+        assert!(
+            !spawned.contains(&"ghostworktree".to_owned()),
+            "the skip must follow the row's recorded gitness, not a `.git` on disk: \
+             this row says worktree and the project path has no repo; spawned {spawned:?}",
+        );
+        assert!(
+            spawned.contains(&"present".to_owned()),
+            "a worker whose worktree stands must still re-spawn; spawned {spawned:?}",
+        );
+        assert!(
+            spawned.contains(&"rooted".to_owned()),
+            "a worker whose row says it runs in the project root must still re-spawn, \
+             even though that project holds a `.git`; spawned {spawned:?}",
+        );
+        assert!(
+            spawned.contains(&"unstarted".to_owned()),
+            "a row with no stored id re-spawns FRESH and creates its own worktree, so \
+             the missing one must not strand it; spawned {spawned:?}",
+        );
+
+        // Skipping is not deleting. The row is the only handle on the
+        // worker, so a restored worktree is what brings it back.
+        let kept = |key: &ProjectKey| -> Vec<String> {
+            workspace.worker_rows_for_project(key).into_iter().map(|r| r.label).collect()
+        };
+        assert!(
+            kept(&proj_x).contains(&"stranded".to_owned())
+                && kept(&proj_y).contains(&"ghostworktree".to_owned()),
+            "a skipped row must stay in the store, or the restore path this promises is \
+             gone; kept {:?} / {:?}",
+            kept(&proj_x),
+            kept(&proj_y),
+        );
+    }
+
+    /// The launchpad renders every persisted worker row, so a row the
+    /// wave skips would still be offered as a worker - which is the
+    /// visible half of the same defect. It must not reach the pane.
+    ///
+    /// Only the skips are asserted here. Both sites call
+    /// `worker_row_can_start`, so an over-skip regression fails the boot
+    /// wave's test above; what this one pins is that this site calls the
+    /// predicate at all.
+    #[test]
+    fn launchpad_does_not_offer_a_row_whose_worktree_is_gone() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let (proj_x, _proj_y, _repo, _plain) = seed_worktree_fixture(&workspace);
+
+        let offered = workspace.worker_labels_by_project();
+        let labels = offered.get(&proj_x).cloned().unwrap_or_default();
+        assert!(
+            !labels.contains(&"stranded".to_owned()),
+            "a worker whose worktree is gone must not be offered by the launchpad; \
+             offered {labels:?}",
+        );
+        assert!(
+            !labels.contains(&"ghostworktree".to_owned()),
+            "the launchpad must read the row's gitness, not the project's filesystem; \
+             offered {labels:?}",
+        );
     }
 
     /// The interactive flag rides the subprocess CLI args, so a
@@ -10823,7 +11204,9 @@ mod worker_respawn_tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        workspace.seed_test_project("data-modules", "/tmp/catalog-scan-respawn");
+        let project_path = dir.path().join("catalog-scan-respawn");
+        std::fs::create_dir_all(&project_path).expect("create the project dir");
+        workspace.seed_test_project("data-modules", &project_path.to_string_lossy());
         let project_key = workspace.project_key_for_name("data-modules").expect("seeded project");
         workspace
             .record_worker_row(
@@ -10833,6 +11216,7 @@ mod worker_respawn_tests {
                 "resume the scratch task",
                 Some("go"),
                 None,
+                false,
                 false,
             )
             .expect("seed the persisted worker this test re-spawns");
@@ -10870,7 +11254,16 @@ mod worker_respawn_tests {
         // nothing to delete and the negative assertion would hold for the
         // wrong reason.
         workspace
-            .record_worker_row(&project_key, "scratch", "scratch-test-id", "c", None, None, false)
+            .record_worker_row(
+                &project_key,
+                "scratch",
+                "scratch-test-id",
+                "c",
+                None,
+                None,
+                false,
+                false,
+            )
             .expect("write the row this test then deletes");
         workspace.delete_worker_row(&project_key, "scratch");
         workspace.enable_test_dispatch_intercept();
@@ -10934,6 +11327,9 @@ provider = "anthropic"
             "mind the queues",
             None,
             None,
+            false,
+            // `demo` is not a git repo, so the worker runs in the project
+            // root and has no worktree the wave must find.
             false,
         )
         .expect("the row the re-spawn wave resumes onto");
@@ -11462,6 +11858,51 @@ provider = "anthropic"
         assert_eq!(resume_existing.as_deref(), Some(session_id.as_str()));
     }
 
+    /// The mirror of the recreation case: the row says the worker runs in
+    /// the project root, and the project is a repo. The ensure has to read
+    /// the ROW, as the spawn does, or it mints a worktree the resumed
+    /// session will not run in and nothing will clean up.
+    #[tokio::test]
+    async fn mcp_resume_does_not_ensure_a_worktree_the_row_does_not_use() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, worktree) = git_worker_fixture(&project, &cfg, "steward");
+        let session_id = "550e8400-e29b-41d4-a716-446655440099";
+        let dir = tempfile::tempdir().expect("tempdir");
+        ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("db"));
+        ws.record_worker_row(&key, "steward", session_id, "charter", None, None, false, false)
+            .expect("seed the row that disagrees with the disk");
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &lead_slot(),
+                    "steward".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                )
+                .await
+        });
+        poll_spawn_worker_field(&ws, |cmd| match cmd {
+            Command::SpawnWorker { label, .. } if label == "steward" => Some(()),
+            _ => None,
+        })
+        .await
+        .expect("the resume spawn dispatched");
+        let _ = spawner.await.expect("facade task joins");
+
+        assert!(
+            !worktree.exists(),
+            "the ensure must follow the row's recorded gitness, not probe the project: \
+             this row runs in the project root, so no worktree belongs here",
+        );
+    }
+
     fn run_git_in(dir: &std::path::Path, args: &[&str]) {
         let status = std::process::Command::new("git")
             .args(args)
@@ -11534,6 +11975,7 @@ provider = "anthropic"
 mod async_worker_spawn_failure_tests {
     use super::*;
     use crate::mcp::workers::types::WorkerEntry;
+    use forge_agent::client::SpawnFailureKind;
 
     fn fake_worker(label: &str, worker_key: &str, lead_id: &str, is_git: bool) -> WorkerEntry {
         WorkerEntry {
@@ -11617,6 +12059,7 @@ mod async_worker_spawn_failure_tests {
         let handled = workspace.handle_async_worker_spawn_failure(
             &SessionSlot::from_str_for_test(worker_key),
             "fatal: 'reviewer' is already used by worktree at /a/b/c",
+            SpawnFailureKind::Unclassified,
         );
         assert!(handled, "async worker failure path must consume the failure");
 
@@ -11658,6 +12101,7 @@ mod async_worker_spawn_failure_tests {
         let handled = workspace.handle_async_worker_spawn_failure(
             &SessionSlot::from_str_for_test(worker_key),
             "agent spawn failed: subprocess exited with code 2",
+            SpawnFailureKind::Unclassified,
         );
         assert!(handled);
 
@@ -11687,7 +12131,11 @@ mod async_worker_spawn_failure_tests {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         let unknown = SessionSlot::from_str_for_test("not-a-worker");
-        let handled = workspace.handle_async_worker_spawn_failure(&unknown, "some unrelated error");
+        let handled = workspace.handle_async_worker_spawn_failure(
+            &unknown,
+            "some unrelated error",
+            SpawnFailureKind::Unclassified,
+        );
         assert!(!handled);
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
@@ -11726,18 +12174,30 @@ mod async_worker_spawn_failure_tests {
         // to-Failed isn't a no-op on re-fire).
         assert!(
             matches!(
-                crate::mcp::workers::facade::classify_worker_spawn_failure(worktree_msg, true),
+                crate::mcp::workers::facade::classify_worker_spawn_failure(
+                    worktree_msg,
+                    true,
+                    SpawnFailureKind::Unclassified,
+                ),
                 crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { .. },
             ),
             "test fixture must classify as worktree failure to exercise the removal path",
         );
 
-        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            worktree_msg,
+            SpawnFailureKind::Unclassified
+        ));
         let _ = workspace.drain_test_dispatch_buffer();
 
         // Second call: WorkerEntry already gone, returns false, no
         // new dispatch.
-        assert!(!workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(!workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            worktree_msg,
+            SpawnFailureKind::Unclassified
+        ));
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
 
@@ -11802,7 +12262,11 @@ mod async_worker_spawn_failure_tests {
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
 
         let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
-        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            worktree_msg,
+            SpawnFailureKind::Unclassified
+        ));
 
         assert!(
             persisted_labels(&workspace, &project_key).is_empty(),
@@ -11838,12 +12302,20 @@ mod async_worker_spawn_failure_tests {
         // Failed and emits no Removed event at all.
         assert!(
             matches!(
-                crate::mcp::workers::facade::classify_worker_spawn_failure(worktree_msg, true),
+                crate::mcp::workers::facade::classify_worker_spawn_failure(
+                    worktree_msg,
+                    true,
+                    SpawnFailureKind::Unclassified,
+                ),
                 crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { .. },
             ),
             "the fixture must drive a real worktree-creation failure",
         );
-        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            worktree_msg,
+            SpawnFailureKind::Unclassified
+        ));
 
         let mut dispositions = Vec::new();
         while let Ok(update) = update_rx.try_recv() {
@@ -11880,10 +12352,11 @@ mod async_worker_spawn_failure_tests {
         );
 
         let session_key = SessionSlot::from_str_for_test(worker_key);
-        assert!(
-            workspace
-                .handle_async_worker_spawn_failure(&session_key, "subprocess exited with code 2")
-        );
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            "subprocess exited with code 2",
+            SpawnFailureKind::Unclassified,
+        ));
 
         assert_eq!(
             persisted_labels(&workspace, &project_key),
@@ -11983,7 +12456,11 @@ mod async_worker_spawn_failure_tests {
             },
         );
 
-        workspace.handle_async_worker_spawn_failure(&session_key, "resume failed: boom");
+        workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            "resume failed: boom",
+            SpawnFailureKind::Unclassified,
+        );
         assert!(
             !workspace.inflight_asks.lock().contains_key(&id),
             "buffered worker ask expired on spawn failure"
@@ -12052,6 +12529,7 @@ mod async_worker_spawn_failure_tests {
         let handled = workspace.handle_async_worker_spawn_failure(
             &SessionSlot::from_str_for_test(worker_key),
             "fatal: 'reviewer' is already used by worktree at /a",
+            SpawnFailureKind::Unclassified,
         );
         assert!(handled, "still consumes the failure even when lead is gone");
 

@@ -418,7 +418,7 @@ async fn await_connected(
         };
         match event {
             AgentEvent::Connected { session_id, .. } => return session_id,
-            AgentEvent::ConnectionFailed { message } => {
+            AgentEvent::ConnectionFailed { message, .. } => {
                 panic!("connection failed during smoke test: {message}");
             }
             other => {

@@ -363,7 +363,7 @@ impl SessionTask {
                     method_description,
                 });
             }
-            AgentEvent::ConnectionFailed { message } => {
+            AgentEvent::ConnectionFailed { message, kind } => {
                 let key = self.key.clone();
                 // A `/new` or `/resume` that fails to respawn ends the
                 // live turn without a Result, so flush the same way the
@@ -400,7 +400,7 @@ impl SessionTask {
                     // handle_spawn_worker). Lead-session and
                     // non-worker callers see no behavioural change
                     // - this branch is a no-op for them.
-                    workspace.handle_async_worker_spawn_failure(&key, &message);
+                    workspace.handle_async_worker_spawn_failure(&key, &message, kind);
                 }
                 self.emit(SessionUpdate::ConnectionFailed {
                     key: key.clone(),
@@ -1384,6 +1384,7 @@ fn spawn_question_response_forwarder(
 mod tests {
     use super::*;
     use forge_agent::Agent;
+    use forge_agent::client::SpawnFailureKind;
 
     fn empty_domain() -> DomainSession {
         let (handle, _rx) = Agent::testing_stub();
@@ -2031,8 +2032,10 @@ mod tests {
             workspace: Arc::downgrade(&workspace),
         };
 
-        let continues = task
-            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+        let continues = task.translate_event(AgentEvent::ConnectionFailed {
+            message: "spawn failed".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
 
         assert!(!continues, "ConnectionFailed must terminate the task");
         assert!(
@@ -2082,8 +2085,10 @@ mod tests {
             workspace: Arc::downgrade(&workspace),
         };
 
-        let continues = task
-            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+        let continues = task.translate_event(AgentEvent::ConnectionFailed {
+            message: "spawn failed".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
 
         assert!(!continues);
         assert!(
@@ -2133,8 +2138,10 @@ mod tests {
             workspace: Arc::downgrade(&workspace),
         };
 
-        let continues = task
-            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+        let continues = task.translate_event(AgentEvent::ConnectionFailed {
+            message: "spawn failed".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
 
         assert!(!continues);
         assert!(
@@ -2392,6 +2399,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: None,
+                    is_git_repo: None,
                 },
             )
             .expect("seed the row");
@@ -2475,7 +2483,10 @@ provider = "anthropic"
 
         apply_event_to_domain(
             &mut domain,
-            &AgentEvent::ConnectionFailed { message: "reader died".to_owned() },
+            &AgentEvent::ConnectionFailed {
+                message: "reader died".to_owned(),
+                kind: SpawnFailureKind::Unclassified,
+            },
         );
 
         assert_eq!(domain.runtime_state, None, "runtime_state cleared on ConnectionFailed");
@@ -3093,7 +3104,10 @@ provider = "anthropic"
         };
 
         // The re-spawned agent fails to connect.
-        task.translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "spawn failed".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
 
         let mut saw_nonfatal = false;
         while let Ok(update) = update_rx.try_recv() {
@@ -3110,6 +3124,87 @@ provider = "anthropic"
         assert!(
             !workspace.pool.lock().contains_key(&key),
             "a failed re-spawn leaves no lingering pooled agent",
+        );
+    }
+
+    /// The named failure kind has to survive the join. `translate_event`
+    /// is the only production site that hands it to the worker-failure
+    /// handler, and the default there would put the message heuristic back
+    /// in charge: a `CwdNotFound` renders the directory it could not
+    /// enter, and for a worker that directory runs through
+    /// `.claude/worktrees/<label>`, so the row would be deleted and the
+    /// lead told the worktree could not be created.
+    #[tokio::test]
+    async fn a_named_spawn_failure_kind_reaches_the_worker_handler() {
+        let (workspace, _update_rx) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let db_dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_dir = tempfile::tempdir().expect("project dir");
+        workspace.seed_test_project("proj-x", &project_dir.path().to_string_lossy());
+        let project_key = workspace.project_key_for_name("proj-x").expect("seeded project");
+        // The row a worktree-creation verdict would delete.
+        workspace
+            .record_worker_row(
+                &project_key,
+                "reviewer",
+                "reviewer-uuid",
+                "c",
+                None,
+                None,
+                false,
+                true,
+            )
+            .expect("seed the worker's row");
+
+        let worker_slot = SessionSlot::from_str_for_test("worker-uuid");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "reviewer".to_owned(),
+                charter: "c".to_owned(),
+                slot: worker_slot.clone(),
+                session_id: Some(forge_primitives::SessionId::new("reviewer-uuid")),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
+                needs_tag: false,
+                is_git_repo_at_spawn: true,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        let (handle, _agent_cmds) = Agent::testing_stub();
+        let arc = Arc::new(handle);
+        let domain = workspace.register_domain_session(worker_slot.clone(), Some(Arc::clone(&arc)));
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: worker_slot.clone(),
+            handle: arc,
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "forge-sdk session resume failed: claude subprocess working directory \
+                      `/x/.claude/worktrees/reviewer` does not exist"
+                .to_owned(),
+            kind: SpawnFailureKind::WorkingDirMissing,
+        });
+
+        let rows = workspace.worker_rows_for_project(&project_key);
+        assert!(
+            rows.iter().any(|row| row.label == "reviewer"),
+            "a named missing-working-directory failure keeps the worker's row rather than \
+             deleting it as a worktree that could not be created; rows left {:?}",
+            rows.iter().map(|row| row.label.clone()).collect::<Vec<_>>(),
         );
     }
 
@@ -3248,6 +3343,10 @@ mod connected_hook_tests {
 
     /// Seed `proj-x` with one persisted worker row and return the
     /// tempdir backing the store, whose lifetime must outlive the test.
+    ///
+    /// The project path is a real directory: a non-git worker runs in the
+    /// project root, so the wave checks that root is there before
+    /// re-spawning it.
     fn seed_project_with_one_worker_row(
         workspace: &Arc<Workspace>,
         label: &str,
@@ -3256,9 +3355,12 @@ mod connected_hook_tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        workspace.seed_test_project("proj-x", "/tmp/proj-x");
+        let project_path = dir.path().join("proj-x");
+        std::fs::create_dir_all(&project_path).expect("create the project dir");
+        let project_path = project_path.to_string_lossy().into_owned();
+        workspace.seed_test_project("proj-x", &project_path);
         let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
         );
         workspace
             .record_worker_row(
@@ -3268,6 +3370,7 @@ mod connected_hook_tests {
                 &format!("charter for {label}"),
                 None,
                 None,
+                false,
                 false,
             )
             .expect("seed the worker row");
@@ -3344,6 +3447,7 @@ mod connected_hook_tests {
                 None,
                 None,
                 false,
+                false,
             )
             .expect("seed the worker row");
         workspace.enable_test_dispatch_intercept();
@@ -3381,9 +3485,7 @@ mod connected_hook_tests {
         // flow does this via `handle_spawn_worker`'s
         // `insert_live_worker`; the test intercept skipped that
         // path so we seed it manually for the idempotency gate).
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
-        );
+        let project_key = workspace.project_key_for_name("proj-x").expect("seeded project");
         workspace.insert_live_worker(
             &project_key,
             crate::mcp::workers::types::WorkerEntry {

@@ -638,6 +638,7 @@ async fn reader_loop(
                 );
                 let _ = event_tx.send(AgentEvent::ConnectionFailed {
                     message: format!("the claude subprocess stream errored: {err}"),
+                    kind: crate::client::SpawnFailureKind::Unclassified,
                 });
                 return;
             }
@@ -660,6 +661,7 @@ async fn reader_loop(
     );
     let _ = event_tx.send(AgentEvent::ConnectionFailed {
         message: "the claude subprocess closed its output stream".to_owned(),
+        kind: crate::client::SpawnFailureKind::Unclassified,
     });
 }
 
@@ -3276,7 +3278,7 @@ mod tests_reader_terminal {
         .expect("reader_loop returns after a stream error");
 
         match observed.try_recv() {
-            Ok(AgentEvent::ConnectionFailed { message }) => {
+            Ok(AgentEvent::ConnectionFailed { message, .. }) => {
                 assert!(
                     message.contains("pipe broke"),
                     "the failure message carries the stream error: {message}"
@@ -3304,7 +3306,7 @@ mod tests_reader_terminal {
         .expect("reader_loop returns after the stream closes");
 
         match observed.try_recv() {
-            Ok(AgentEvent::ConnectionFailed { message }) => {
+            Ok(AgentEvent::ConnectionFailed { message, .. }) => {
                 assert!(!message.trim().is_empty(), "the close arm still carries a message");
             }
             other => panic!("expected ConnectionFailed on stream close, got {other:?}"),
@@ -3350,7 +3352,7 @@ mod tests_reader_terminal {
             while let Some(event) = events.recv().await {
                 match event {
                     AgentEvent::Connected { .. } => break,
-                    AgentEvent::ConnectionFailed { message } => {
+                    AgentEvent::ConnectionFailed { message, .. } => {
                         panic!("a swap must not emit ConnectionFailed: {message}");
                     }
                     _ => {}
@@ -3368,7 +3370,7 @@ mod tests_reader_terminal {
                 match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv())
                     .await
                 {
-                    Ok(Some(AgentEvent::ConnectionFailed { message })) => {
+                    Ok(Some(AgentEvent::ConnectionFailed { message, .. })) => {
                         panic!("a swap must not emit ConnectionFailed: {message}");
                     }
                     Ok(Some(_)) => {}

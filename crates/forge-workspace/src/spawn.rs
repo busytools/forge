@@ -350,6 +350,18 @@ pub(crate) enum CronFireOutcome {
     /// The cron's project is no longer in forge.toml. The caller removes
     /// the entry instead of advancing a dead cron forever.
     TargetGone,
+    /// The owner still has a row, but the boot wave would skip it, so
+    /// nothing can drain a prompt buffered for it and the prompt cannot
+    /// reach anyone. `directory` is where its session would have started,
+    /// for the warning. Distinct from [`Self::TargetGone`] because the
+    /// row is kept: a restored worktree brings the owner back.
+    ///
+    /// The caller's fate for the entry splits on the kind. A recurring
+    /// cron drops this fire and advances - leaving it due would re-fire
+    /// every tick, and parking it would grow a bucket nothing drains. A
+    /// one-shot stays due instead, because advancing removes a one-shot:
+    /// dropping it would throw the prompt away with no later slot.
+    TargetCannotBeWoken { directory: std::path::PathBuf },
     /// The Command channel is closed (workspace shutting down). The caller
     /// leaves the cron due so the next boot catch-up re-fires it.
     DispatchFailed,
@@ -407,6 +419,9 @@ pub(crate) fn deliver_cron_prompt(
     // for the next tick rather than deleting a real owner's cron on a hiccup.
     match cron_slot_exists(workspace, &view, team_role) {
         CronOwnerCheck::Exists => {}
+        CronOwnerCheck::CannotBeWoken { directory } => {
+            return CronFireOutcome::TargetCannotBeWoken { directory };
+        }
         CronOwnerCheck::Absent => return CronFireOutcome::TargetGone,
         CronOwnerCheck::Unknown => return CronFireOutcome::DispatchFailed,
     }
@@ -496,6 +511,11 @@ fn live_cron_slot(
 enum CronOwnerCheck {
     /// The owner exists (the lead, or a worker with a persisted row).
     Exists,
+    /// The owner has a row, but the boot wave would skip it - a resume
+    /// would have no directory to start in - so there is nothing to wake
+    /// and nothing that would drain a parked prompt. Carries that
+    /// directory for the fire's warning.
+    CannotBeWoken { directory: std::path::PathBuf },
     /// Conclusively gone: the read succeeded and the label has no row in
     /// the session store.
     Absent,
@@ -503,11 +523,12 @@ enum CronOwnerCheck {
     Unknown,
 }
 
-/// Whether a cron's slot still has a session to be woken. A lead's does
-/// whenever its project does; a worker's does while its label has a row,
-/// since that row is what re-spawns it. A read failure yields
-/// [`CronOwnerCheck::Unknown`] so the fire router leaves the cron rather
-/// than deleting a live slot's cron on a transient hiccup.
+/// Whether a cron's slot still has a session that can be woken. A lead's
+/// does whenever its project does; a worker's does while its label has a
+/// row AND that row can still start, since the boot wave is what
+/// re-spawns it. A read failure yields [`CronOwnerCheck::Unknown`] so the
+/// fire router leaves the cron rather than deleting a live slot's cron on
+/// a transient hiccup.
 fn cron_slot_exists(
     workspace: &Arc<Workspace>,
     view: &crate::views::ProjectView,
@@ -516,9 +537,44 @@ fn cron_slot_exists(
     let Some(label) = team_role else {
         return CronOwnerCheck::Exists;
     };
-    match workspace.worker_row_exists(&view.key, label) {
-        Ok(true) => CronOwnerCheck::Exists,
-        Ok(false) => CronOwnerCheck::Absent,
+    // A worker spawned this second is live before it is connected, and
+    // `live_cron_slot` cannot address it until it stamps a session id on
+    // connect. Its directory is being created along with it, so it is not
+    // unwakeable: the fire parks and the worker's own Connected drains it.
+    //
+    // `live_worker_with_label`, not a bare label match: a `Failed` entry
+    // is kept by design and is NOT live, so counting one would answer
+    // "wakeable" for a worker the wave will never start - parking the fire
+    // in the bucket this path exists to keep empty, with nothing left to
+    // drain it.
+    if crate::mcp::workers::types::live_worker_with_label(
+        &workspace.list_live_workers(&view.key),
+        label,
+    )
+    .is_some()
+    {
+        return CronOwnerCheck::Exists;
+    }
+    match workspace.stored_worker_row(&view.key, label) {
+        Ok(None) => CronOwnerCheck::Absent,
+        Ok(Some(row)) => {
+            let directory = crate::mcp::workers::types::worker_tag_dir(
+                &view.path,
+                &row.label,
+                matches!(row.is_git_repo, Some(true)),
+            );
+            let can_start = crate::mcp::workers::types::worker_row_can_start(
+                &view.path,
+                &row.label,
+                row.is_git_repo,
+                row.session_id.is_some(),
+            );
+            if can_start {
+                CronOwnerCheck::Exists
+            } else {
+                CronOwnerCheck::CannotBeWoken { directory }
+            }
+        }
         Err(_) => CronOwnerCheck::Unknown,
     }
 }
@@ -1079,17 +1135,35 @@ pub(crate) fn handle_spawn_worker(
     let WorkerSpawnArgs { label, charter, kick, resume_kick, interactive } = args;
     let label = label.as_str();
     let resume_kick = resume_kick.as_deref();
-    // Verify the project exists before minting the worker's id. Probe its
-    // filesystem path for git-repo-ness exactly once here - a blocking FS
-    // call, deliberately BEFORE the live_workers critical section below so
-    // it never widens the dedup window - and feed the result into both the
+    // Verify the project exists before minting the worker's id. A worker
+    // that already has a row takes its git-repo-ness from that row: it is
+    // the flag the launchpad and the boot wave read to decide whether the
+    // directory this spawn would enter is there, so probing again here
+    // could compose a different cwd than the one they cleared. Only a
+    // first spawn probes the project path - a blocking FS call,
+    // deliberately BEFORE the live_workers critical section below so it
+    // never widens the dedup window. Either way the result feeds both the
     // WorkerEntry flag and the `--worktree` extra-arg threading below.
     let projects = workspace.list_projects();
     let Some(view) = projects.iter().find(|v| v.key == project_key) else {
         let _ = return_to.send(Err(format!("project not found: {}", project_key.as_str())));
         return;
     };
-    let is_git = forge_agent::env::worktree::is_git_repo(&view.path);
+    let is_git = workspace
+        .recorded_worker_is_git_repo(&project_key, label)
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                event_name = "worker_row_gitness_unreadable",
+                project = %project_key.as_str(),
+                label = %label,
+                %error,
+                "reading the worker's recorded gitness failed; probing the project path, \
+                 which may compose a different directory than the row names",
+            );
+            None
+        })
+        .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path));
 
     // The pool key a fresh worker spawns under: an id minted here and
     // recorded under the worker's slot before the child starts, so the
@@ -1204,6 +1278,7 @@ pub(crate) fn handle_spawn_worker(
         entry.kick.as_deref(),
         resume_kick,
         interactive,
+        is_git,
     ) {
         Ok(()) => None,
         Err(error) => {
@@ -1888,17 +1963,23 @@ mod tests {
         crate::config::ensure_forge_data_dir(config_dir).expect("forge/ dir").join("forge.toml")
     }
 
-    fn write_forge_toml(dir: &std::path::Path) {
+    /// The project path the shared fixture points at. The maintainer's own
+    /// checkout, which is a git repo, so the gitness probe answers true for
+    /// it; a fixture that needs a different answer writes its own.
+    const FIXTURE_PROJECT_PATH: &str = "~/Projects/forge";
+
+    fn write_forge_toml(dir: &std::path::Path, project_path: &str) {
         fs::write(
             forge_toml_path(dir),
-            r#"
+            format!(
+                r#"
 [[orgs]]
 name = "Default"
 accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
-path = "~/Projects/forge"
+path = "{project_path}"
 auto_start = true
 model = "claude-sonnet-5"
 
@@ -1907,7 +1988,8 @@ display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-"#,
+"#
+            ),
         )
         .expect("write forge.toml");
     }
@@ -1968,7 +2050,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn spawn_project_unknown_project_emits_no_update() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
@@ -1992,7 +2074,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn spawn_project_known_project_announces_the_id_it_will_run_under() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
@@ -2023,7 +2105,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn start_default_failure_is_fatal() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
@@ -2062,7 +2144,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn spawn_session_unknown_session_emits_no_fatal() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
@@ -2106,7 +2188,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn handle_deliver_peer_prompt_unknown_target_is_no_op() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
@@ -2367,7 +2449,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_fresh_worker_is_keyed_by_the_id_it_runs_under() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         ws.seed_test_gateway_ready(true);
@@ -2434,9 +2516,10 @@ provider = "anthropic"
     async fn failed_spawn_leftover_row(
         resume_existing: Option<&str>,
         from_boot_respawn: bool,
+        seeded_is_git: Option<bool>,
     ) -> Option<crate::store::sessions::SessionRecord> {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_project("overlayonly", "/tmp/slack-worker-rollback");
         let key = ws
@@ -2458,6 +2541,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: None,
+                    is_git_repo: seeded_is_git,
                 },
             )
             .expect("seed the row the spawn will write");
@@ -2491,7 +2575,7 @@ provider = "anthropic"
 
     #[tokio::test]
     async fn a_failed_worker_spawn_rolls_the_live_entry_back() {
-        let row = failed_spawn_leftover_row(None, false).await;
+        let row = failed_spawn_leftover_row(None, false, None).await;
         assert!(
             row.is_none(),
             "the durable row goes with the rollback: left behind, the next boot re-spawns a \
@@ -2506,7 +2590,7 @@ provider = "anthropic"
     /// pinned by nothing.
     #[tokio::test]
     async fn a_failed_resume_spawn_keeps_the_row_holding_the_id() {
-        let row = failed_spawn_leftover_row(Some("tester-id"), false).await;
+        let row = failed_spawn_leftover_row(Some("tester-id"), false, None).await;
         assert_eq!(
             row.and_then(|row| row.session_id).as_deref(),
             Some("tester-id"),
@@ -2525,8 +2609,87 @@ provider = "anthropic"
     /// drop it from every later restart.
     #[tokio::test]
     async fn a_failed_boot_respawn_keeps_its_row() {
-        let row = failed_spawn_leftover_row(None, true).await;
+        let row = failed_spawn_leftover_row(None, true, None).await;
         assert!(row.is_some(), "the boot re-spawn keeps the row a later restart re-spawns from");
+    }
+
+    /// The spawn composes the working directory from the gitness the ROW
+    /// records, in preference to probing the project - that is what keeps
+    /// it on the directory the launchpad already cleared. A fixture whose
+    /// row agrees with the disk cannot tell the two apart, so this one
+    /// disagrees: the row says worktree, the project path is not a repo.
+    #[tokio::test]
+    async fn a_spawn_keeps_the_rows_recorded_gitness_over_a_probe() {
+        let row = failed_spawn_leftover_row(Some("tester-id"), false, Some(true)).await;
+        assert_eq!(
+            row.and_then(|row| row.is_git_repo),
+            Some(true),
+            "the spawn writes back the gitness the row recorded, not what a probe of the \
+             project path would answer",
+        );
+    }
+
+    /// The other direction of the row-over-probe preference: with no row to
+    /// read, the probe is still the answer. A first spawn into a git
+    /// project that recorded `false` here would pass no `--worktree`, and
+    /// every later resume, the launchpad and the cron router would read
+    /// that false record as the directory the worker runs in.
+    ///
+    /// The spawn has to succeed for the row to survive: a refused fresh
+    /// spawn rolls its row back, so there would be nothing left to read.
+    #[tokio::test]
+    async fn a_first_spawn_probes_for_gitness_when_there_is_no_row() {
+        let dir = tempdir().expect("tempdir");
+        let repo = tempdir().expect("git project dir");
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "fixture precondition: git init");
+        write_forge_toml(dir.path(), &repo.path().to_string_lossy());
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+        // Deliberately no row: this is the label's first spawn.
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key,
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let admitted = rx.await.expect("reply").is_ok();
+        assert!(admitted, "fixture precondition: the spawn is admitted, so its row survives");
+
+        let db = ws.db.lock();
+        let row =
+            crate::store::sessions::get(db.as_ref().expect("db"), "Default", "forge", "tester")
+                .expect("read")
+                .expect("the spawn recorded its row");
+        drop(db);
+        assert_eq!(
+            row.is_git_repo,
+            Some(true),
+            "with no row to read the probe is the answer; recording false here would send \
+             every later resume, the launchpad and the cron router to the project root",
+        );
     }
 
     /// A spawn refused before it reaches the project leaves the caller's
@@ -2535,7 +2698,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_refused_spawn_leaves_the_parked_payload_to_the_caller() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         ws.park_slack(
@@ -2713,7 +2876,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_refused_duplicate_leaves_the_running_workers_row_alone() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         ws.seed_test_gateway_ready(true);
@@ -3646,7 +3809,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn spawn_rollback_reports_no_worktree_to_preserve() {
         let config = tempdir().expect("config tempdir");
-        write_forge_toml(config.path());
+        write_forge_toml(config.path(), FIXTURE_PROJECT_PATH);
         let workspace =
             Arc::new(Workspace::new_for_test(config.path().to_owned()).expect("workspace new"));
 

@@ -18,6 +18,17 @@ pub enum Error {
         binary: String,
     },
 
+    /// The subprocess's working directory does not exist.
+    ///
+    /// Separate from [`Error::CliNotFound`] because a `spawn` that
+    /// cannot enter its `cwd` fails with the same `ENOENT` as one that
+    /// cannot find the binary.
+    #[error("claude subprocess working directory `{path}` does not exist")]
+    CwdNotFound {
+        /// The working directory that was attempted.
+        path: String,
+    },
+
     /// The subprocess exited with a non-zero status or was terminated by a signal.
     ///
     /// Wraps the CLI's `ProcessError`.
@@ -120,6 +131,20 @@ mod tests {
         assert!(
             rendered.to_lowercase().contains("not found"),
             "expected 'not found' in message, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn cwd_not_found_display_names_the_directory() {
+        let err = Error::CwdNotFound { path: "/repo/.claude/worktrees/reviewer".into() };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("/repo/.claude/worktrees/reviewer"),
+            "expected the directory in the message, got: {rendered}"
+        );
+        assert!(
+            rendered.to_lowercase().contains("does not exist"),
+            "expected the reason in the message, got: {rendered}"
         );
     }
 

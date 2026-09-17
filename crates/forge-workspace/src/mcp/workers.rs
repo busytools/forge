@@ -117,7 +117,11 @@ impl Tool for Spawn {
          re-spawned, resuming where it left off (a restarted worker is \
          told to continue, not start over), until you explicitly despawn \
          it with workers__despawn (or close its row in the Projects \
-         pane). DESPAWNED A WORKER WHOSE CONTEXT YOU STILL WANT? Re-spawn \
+         pane). A worker whose worktree has gone is not re-spawned \
+         automatically - its resume would have nowhere to start - so it \
+         stops being offered until the worktree is back; passing \
+         `resume_session` recreates that worktree and brings it back. \
+         DESPAWNED A WORKER WHOSE CONTEXT YOU STILL WANT? Re-spawn \
          the same label with `resume_session` set: it resumes the label's \
          most recent prior session instead of starting fresh, and refuses \
          when the label has no prior session to resume. \
@@ -444,7 +448,9 @@ impl Tool for List {
          trusting the field. These workers are \
          durable: they persist across forge restarts and re-spawn \
          automatically until despawned, so this set is what will come \
-         back after a restart. Both lead and worker sessions may call \
+         back after a restart - except a worker whose worktree has gone, \
+         whose row is kept but is not re-spawned until the worktree is \
+         restored. Both lead and worker sessions may call \
          this; workers see the same set as the lead. Use the labels \
          from this output as targets for workers__tell / workers__ask. \
          An empty array means no workers are live in your project. \
