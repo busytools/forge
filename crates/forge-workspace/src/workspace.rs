@@ -5948,9 +5948,8 @@ mod tests {
     }
 
     /// `project_accounts_snapshot` returns one row per allow-list entry
-    /// in order, each carrying the shared config_dir, is_current
-    /// marker, unusable reason, 5h/7d utilization, and a reset ETA only
-    /// while the account is at its cap.
+    /// in order, each carrying its unusable reason, budget, fallback
+    /// flag and boot loading state.
     #[test]
     fn project_accounts_snapshot_reports_allowlist_order_and_state() {
         let (ws, _rx) = Workspace::testing_stub();
