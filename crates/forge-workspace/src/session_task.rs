@@ -251,6 +251,10 @@ impl SessionTask {
                 // sibling `apply_lead_tag_or_warn` that does NOT roll
                 // back on failure - just warns).
                 let cwd_for_tag = cwd.clone();
+                // Captured before the branches below set it: a `/new`,
+                // login or logout arrives as a Connected on a task that
+                // has already connected once, and its row predates it.
+                let replacing = self.connected_once;
                 if self.connected_once {
                     // Drop oneshots from the previous identity so parked
                     // forwarder tasks exit instead of waiting on
@@ -355,13 +359,16 @@ impl SessionTask {
                 if let Some(workspace) = self.workspace.upgrade() {
                     // The spawn's row provenance rides the domain, so a
                     // rollback can tell a row this spawn minted from one
-                    // a resume or a `/new` inherited.
-                    let wrote_row = self.domain.lock().spawn_wrote_row;
+                    // a resume inherited. A replacement Connected is a
+                    // `/new` re-tag of an established worker, whose row
+                    // predates this connection and is not this one's to
+                    // take.
+                    let minted_row = !replacing && self.domain.lock().spawn_wrote_row;
                     workspace.apply_worker_tag_or_rollback(
                         &key,
                         &session_id,
                         &cwd_for_tag,
-                        wrote_row,
+                        minted_row,
                     );
                 }
             }
@@ -1404,6 +1411,145 @@ mod tests {
     /// against it, so a test that parks must park under the same triple.
     fn test_slot() -> crate::SessionSlot {
         crate::SessionSlot::lead("TestOrg", "forge")
+    }
+
+    /// Drive a worker's Connected through `translate_event` with a session
+    /// id the tag write cannot use, so the write fails non-NotFound and the
+    /// rollback arm runs, and return the row it left behind.
+    ///
+    /// `connected_once` is the shape under test: false is a spawn's first
+    /// Connected, true is the `/new` re-tag of a worker that is already
+    /// established. The domain carries the spawn's provenance either way,
+    /// since a `/new` reuses it.
+    async fn tag_rollback_leftover_row(connected_once: bool) -> Option<serde_json::Value> {
+        let cfg_dir = tempfile::tempdir().expect("cfg tempdir");
+        std::fs::create_dir_all(cfg_dir.path().join("forge")).expect("forge dir");
+        std::fs::write(
+            cfg_dir.path().join("forge").join("forge.toml"),
+            "[[orgs]]\nname = \"Default\"\naccounts = [\"Acct\"]\n\n\
+             [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp/tag-rollback-row\"\n\n\
+             [[accounts]]\ndisplay_name = \"Acct\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+        )
+        .expect("write forge.toml");
+        let config = crate::config::load_from_dir(cfg_dir.path()).expect("load config");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config(cfg_dir.path().to_owned(), config)
+                .expect("stub over the fixture config");
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_key = workspace.project_key_for_name("forge").expect("the fixture project");
+        let worker_slot = crate::SessionSlot::worker("Default", "forge", "steward");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "steward".to_owned(),
+                charter: "c".to_owned(),
+                slot: worker_slot.clone(),
+                session_id: Some(forge_primitives::SessionId::new("steward-id")),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: crate::SessionSlot::from_str_for_test("lead-uuid"),
+                // Its tag never landed, so the rollback's second fact holds.
+                needs_tag: true,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        workspace
+            .record_worker_row(
+                &project_key,
+                "steward",
+                "steward-id",
+                "charter",
+                Some("kick"),
+                None,
+                false,
+                false,
+            )
+            .expect("seed the row the rollback judges");
+
+        let (handle, _agent_cmds) = Agent::testing_stub();
+        let arc = Arc::new(handle);
+        let domain = workspace.register_domain_session(worker_slot.clone(), Some(Arc::clone(&arc)));
+        // The spawn that wrote the row is the one this task runs.
+        domain.lock().spawn_wrote_row = true;
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: worker_slot.clone(),
+            handle: arc,
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        task.translate_event(AgentEvent::Connected {
+            session_id: "not-a-uuid".to_owned(),
+            cwd: "/tmp/tag-rollback-row".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+            compaction_count: 0,
+        });
+
+        // The rollback runs in a detached task, so wait for the Removed
+        // event that says it ran rather than for a wall clock.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(update) = update_rx.recv().await {
+                if let crate::protocol::SessionUpdate::WorkerStatusChanged { action, .. } = update
+                    && action == crate::protocol::WorkerStatusAction::Removed
+                {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the rollback emits a Removed event");
+
+        let db = workspace.db.lock();
+        crate::store::sessions::get(db.as_ref().expect("db"), "Default", "forge", "steward")
+            .expect("read the row the rollback left")
+            .map(|row| serde_json::json!({ "charter": row.charter, "kick": row.kick }))
+    }
+
+    /// A spawn's first Connected owns the row it minted: the rollback
+    /// discards the spawn, and a row left behind re-spawns a worker the
+    /// caller was told had failed.
+    #[tokio::test]
+    async fn a_first_connected_rolls_back_the_row_its_spawn_minted() {
+        assert!(
+            tag_rollback_leftover_row(false).await.is_none(),
+            "the first Connected of a minting spawn takes the row with the rollback",
+        );
+    }
+
+    /// A `/new` re-tag runs the same arm over a row that predates the
+    /// connection, and the spawn's provenance is still stamped on the
+    /// domain the `/new` reuses. The first-connect count is the only thing
+    /// separating the two, so dropping it deletes a live worker's row.
+    #[tokio::test]
+    async fn a_new_session_retag_keeps_the_workers_row() {
+        assert!(
+            tag_rollback_leftover_row(true).await.is_some(),
+            "a `/new` re-tag must not take the row of a worker that is already established",
+        );
     }
 
     fn workspace_with_account_config_dir(

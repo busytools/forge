@@ -4910,7 +4910,7 @@ impl Workspace {
         session_key: &SessionSlot,
         session_id: &str,
         cwd: &str,
-        wrote_row: bool,
+        minted_row: bool,
     ) {
         let Some((project_key, label, is_git_repo_at_spawn, needs_tag)) =
             self.worker_lookup_for_session(session_key)
@@ -4935,7 +4935,7 @@ impl Workspace {
             cwd,
             is_git_repo_at_spawn,
             needs_tag,
-            wrote_row,
+            minted_row,
             &config_dir,
         );
     }
@@ -4953,7 +4953,7 @@ impl Workspace {
     /// matches where claude's `--worktree <label>` actually wrote
     /// the JSONL.
     ///
-    /// `needs_tag` and `wrote_row` together decide whether a rollback
+    /// `needs_tag` and `minted_row` together decide whether a rollback
     /// takes the worker's durable row with it; see the arm below.
     pub(crate) fn apply_worker_tag_or_rollback_with_config_dir(
         self: &Arc<Self>,
@@ -4964,7 +4964,7 @@ impl Workspace {
         cwd: &str,
         is_git_repo_at_spawn: bool,
         needs_tag: bool,
-        wrote_row: bool,
+        minted_row: bool,
         config_dir: &std::path::Path,
     ) {
         use tracing::Instrument;
@@ -5030,22 +5030,29 @@ impl Workspace {
                     );
                     let removed = workspace.remove_latest_worker(&project_key, &label);
                     if let Some(entry) = removed {
-                        // The row goes with the worker only when this
-                        // spawn minted it and the worker never got as far
-                        // as a tag. Every other shape of this arm - a
-                        // resume, a boot re-spawn, a `/new` re-tag - runs
-                        // over a row that pre-existed and holds the
-                        // worker's charter, kick and the id being resumed,
-                        // and the row is the worker rather than this
-                        // spawn's leftover: deleting it loses a worker
-                        // that only failed to write a JSONL tag.
+                        // The row goes with the worker only when all
+                        // three hold: this connection is the first of a
+                        // spawn that minted the row, and the worker never
+                        // got as far as a tag.
+                        //
+                        // Every other shape of this arm - a resume, a
+                        // boot re-spawn, a `/new` re-tag - runs over a
+                        // row that pre-existed and holds the worker's
+                        // charter, kick and the id being resumed, and the
+                        // row is the worker rather than this spawn's
+                        // leftover: deleting it loses a worker that only
+                        // failed to write a JSONL tag. The `/new` case is
+                        // why `minted_row` carries the first-connect half:
+                        // a `/new` reuses this task and its domain, so the
+                        // spawn's provenance is still stamped there, and
+                        // only the Connected count tells the two apart.
                         //
                         // `needs_tag` is what separates those from the
                         // case this arm exists for. The spawn sets it and
                         // the first successful tag write clears it, so a
                         // row still carrying it belongs to a worker that
                         // never established itself on disk.
-                        if wrote_row && needs_tag {
+                        if minted_row && needs_tag {
                             let _ = workspace.delete_worker_row(&project_key, &label);
                         }
                         let worktree = crate::protocol::WorktreeDisposition::untouched(
@@ -10400,13 +10407,13 @@ mod tag_retry_tests {
     }
 
     /// Drive a non-NotFound tag failure over a seeded row and live worker,
-    /// and return the row that survived it. `needs_tag` and `wrote_row`
+    /// and return the row that survived it. `needs_tag` and `minted_row`
     /// are the two facts the rollback decides the row on; the malformed
     /// session id is the failure, since no amount of waiting puts a JSONL
     /// on disk that makes that write succeed.
     async fn non_notfound_rollback_leftover_row(
         needs_tag: bool,
-        wrote_row: bool,
+        minted_row: bool,
     ) -> Option<crate::store::sessions::SessionRecord> {
         let (workspace, mut rx) = Workspace::testing_stub();
         workspace.seed_test_project("proj-x", "/tmp/proj-x");
@@ -10445,7 +10452,7 @@ mod tag_retry_tests {
             &cwd.path().to_string_lossy(),
             false,
             needs_tag,
-            wrote_row,
+            minted_row,
             cfg.path(),
         );
 
