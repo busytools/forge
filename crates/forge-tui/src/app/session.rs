@@ -752,9 +752,10 @@ impl UiSession {
 /// backgrounded work that draws an Inspector row. Attention /
 /// AuthRequired / Failed keep their own glyph, so the promotion is over
 /// the Idle bullet only. Shared by the Projects pane row glyph
-/// (`glyph_for_lifecycle`), the launchpad's worker glyph
-/// (`glyph_for_worker_row`) and the frame-tick gate
-/// (`App::shows_activity`) so none of them disagree about what animates.
+/// (`glyph_for_lifecycle`), the launchpad's row glyph (`glyph_for_row`,
+/// which draws both a project row and its worker rows) and the
+/// frame-tick gate (`App::shows_activity`) so none of them disagree
+/// about what animates.
 pub fn session_shows_spinner(lifecycle: SessionLifecycleState, has_background_work: bool) -> bool {
     matches!(lifecycle, SessionLifecycleState::Running | SessionLifecycleState::Spawning)
         || (matches!(lifecycle, SessionLifecycleState::Idle) && has_background_work)
