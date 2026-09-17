@@ -724,6 +724,9 @@ impl WorkerFacade for ProdWorkerFacade {
                 label: label.to_owned(),
                 project_key: cp.project_key.as_str().to_owned(),
             }),
+            Ok(crate::protocol::DespawnResult::Failed { reason }) => {
+                Err(WorkerDespawnError::DispatchFailed { message: reason })
+            }
             Err(_) => Err(WorkerDespawnError::DispatchFailed {
                 message: "despawn handler dropped reply channel".into(),
             }),

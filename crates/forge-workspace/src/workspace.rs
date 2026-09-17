@@ -3948,10 +3948,20 @@ impl Workspace {
 
     /// Delete a worker's persisted row so it never re-spawns. The row is
     /// the only thing that brings one back, so a delete that cannot land
-    /// is an error rather than a warn. Returns whether a row was there to
-    /// remove - `spawn::handle_despawn_worker` reports NotFound from it
-    /// when no live worker matched either.
-    pub(crate) fn delete_worker_row(&self, project_key: &ProjectKey, label: &str) -> bool {
+    /// is an error rather than a warn.
+    ///
+    /// `Ok` reports whether a row was there to remove. `Err` means the row
+    /// could not be addressed or the delete failed - which is not the same
+    /// answer as an absent row, so `spawn::handle_despawn_worker` reports
+    /// the failure rather than NotFound when it gets one.
+    pub(crate) fn delete_worker_row(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> anyhow::Result<bool> {
+        // Every failure here is logged where it happens: the callers that
+        // roll a spawn back have nothing to do with an `Err` and would
+        // otherwise drop it silently.
         let Some((org, project)) = self.project_identity_for_key(project_key) else {
             tracing::warn!(
                 target: "forge_workspace::workspace",
@@ -3959,14 +3969,20 @@ impl Workspace {
                 label = %label,
                 "no configured project for this worker's key; its row is left where it is",
             );
-            return false;
+            anyhow::bail!("no configured project for {}", project_key.as_str());
         };
         let guard = self.db.lock();
         let Some(db) = guard.as_ref() else {
-            return false;
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                project = %project_key.as_str(),
+                label = %label,
+                "the session store is unavailable; the worker's row is left where it is",
+            );
+            anyhow::bail!("the session store is unavailable this session");
         };
         match crate::store::sessions::delete(db, &org, &project, label) {
-            Ok(existed) => existed,
+            Ok(existed) => Ok(existed),
             Err(error) => {
                 tracing::error!(
                     target: "forge_workspace::workspace",
@@ -3975,7 +3991,7 @@ impl Workspace {
                     label = %label,
                     "deleting a persisted worker failed; it may re-spawn on restart",
                 );
-                false
+                Err(error)
             }
         }
     }
@@ -4796,7 +4812,7 @@ impl Workspace {
             // deliberately keeps the row: a Failed-but-visible worker
             // wasn't despawned, so it should re-spawn to recover or
             // re-fail visibly.
-            self.delete_worker_row(&project_key, &entry.label);
+            let _ = self.delete_worker_row(&project_key, &entry.label);
             // Notice goes to the lead session that spawned this
             // worker. Use the workspace's update channel + a fresh
             // Command::Prompt so the lead's claude subprocess sees
@@ -5030,7 +5046,7 @@ impl Workspace {
                         // row still carrying it belongs to a worker that
                         // never established itself on disk.
                         if wrote_row && needs_tag {
-                            workspace.delete_worker_row(&project_key, &label);
+                            let _ = workspace.delete_worker_row(&project_key, &label);
                         }
                         let worktree = crate::protocol::WorktreeDisposition::untouched(
                             entry.is_git_repo_at_spawn,
@@ -11427,7 +11443,7 @@ mod worker_respawn_tests {
                 false,
             )
             .expect("write the row this test then deletes");
-        workspace.delete_worker_row(&project_key, "scratch");
+        workspace.delete_worker_row(&project_key, "scratch").expect("delete the row");
         workspace.enable_test_dispatch_intercept();
 
         workspace.respawn_workers_for_lead(

@@ -115,6 +115,10 @@ pub enum DespawnResult {
     Blocked { reason: String },
     /// No live worker matched `label` (already gone or never existed).
     NotFound,
+    /// The despawn could not be carried out: the worker's durable row
+    /// could not be read or removed, so whether one is there is unknown.
+    /// Distinct from [`Self::NotFound`], which claims there is none.
+    Failed { reason: String },
 }
 
 /// Mutation kind for a `SessionUpdate::WorkerStatusChanged` event.

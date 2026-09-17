@@ -1392,7 +1392,7 @@ pub(crate) fn handle_spawn_worker(
             // so deleting it would lose the worker rather than let it
             // retry.
             if !is_resume && !from_boot_respawn {
-                workspace.delete_worker_row(&project_key, label);
+                let _ = workspace.delete_worker_row(&project_key, label);
             }
             // Roll back the live_workers entry we just inserted.
             let removed = workspace.remove_latest_worker(&project_key, label);
@@ -1444,7 +1444,7 @@ fn teardown_worker(
     // the `workers__despawn` MCP tool) delete the persisted worker row so
     // it never re-spawns. Cancel and the lead-close cascade go through
     // other paths and deliberately leave the row intact.
-    workspace.delete_worker_row(project_key, label);
+    let _ = workspace.delete_worker_row(project_key, label);
     // The row is gone, so nothing re-spawns this label: its durable state
     // has no owner left to wake and goes with it.
     workspace.remove_gotify_subscriptions_for_worker(project_key, label);
@@ -1553,9 +1553,26 @@ pub(crate) fn handle_despawn_worker(
         // Nothing live was torn down, so the worktree step below has no
         // entry to read its gitness from and no `Removed` event to emit;
         // the row is the whole of this case.
-        if !workspace.delete_worker_row(project_key, label) {
-            let _ = respond.send(DespawnResult::NotFound);
-            return;
+        match workspace.delete_worker_row(project_key, label) {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = respond.send(DespawnResult::NotFound);
+                return;
+            }
+            // A store that could not be read or written is not an absent
+            // row: reporting NotFound would send the caller looking for a
+            // worker that is right there. `delete_worker_row` has already
+            // logged why, so the caller gets the reason and the log has
+            // the site.
+            Err(error) => {
+                let _ = respond.send(DespawnResult::Failed {
+                    reason: format!(
+                        "could not clear the durable row for '{label}': {error}; whether one \
+                         exists is unknown, so nothing was reported as removed"
+                    ),
+                });
+                return;
+            }
         }
         // A despawn takes the worker's durable records with it, and a
         // stranded row's label can still own subscriptions and crons from
@@ -3899,12 +3916,11 @@ provider = "anthropic"
         assert!(rx.try_recv().is_err(), "nothing live was torn down, so no Removed event");
     }
 
-    /// The store-backed control for the fall-through's negative arm: with
-    /// the project configured and no row at the label, nothing was cleared
-    /// and the answer is NotFound. The stub-based test above cannot tell
-    /// that from a delete that reports success over an absent row.
+    /// Despawning an unknown label reports NotFound and emits nothing. The
+    /// store is real, so the answer comes from the fall-through's own
+    /// "no row there" arm rather than from a stub that cannot reach it.
     #[tokio::test]
-    async fn despawn_reports_not_found_when_the_label_holds_no_row() {
+    async fn despawn_unknown_label_reports_not_found() {
         let StoreBackedStub { workspace, project, mut rx, .. } = store_backed_stub();
         // A sibling row, so "nothing was cleared" cannot pass because the
         // store was empty.
@@ -3913,29 +3929,67 @@ provider = "anthropic"
             .expect("seed a row the despawn must leave alone");
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
-        handle_despawn_worker(&workspace, &project, "ghost", false, tx);
+        handle_despawn_worker(&workspace, &project, "missing", false, tx);
 
-        assert!(
-            matches!(resp_rx.await.expect("result"), crate::protocol::DespawnResult::NotFound),
-            "a label with no row was not cleared, so the answer is NotFound rather than Despawned",
-        );
+        assert!(matches!(resp_rx.await.expect("result"), crate::protocol::DespawnResult::NotFound));
         assert_eq!(
             workspace.worker_rows_for_project(&project).len(),
             1,
             "and the sibling row is untouched",
         );
-        assert!(rx.try_recv().is_err(), "no Removed event for a label that was never live");
+        assert!(rx.try_recv().is_err(), "no events for unknown label");
     }
 
-    /// Despawning an unknown label reports NotFound and emits nothing.
+    /// A despawn whose store cannot be read or written is not a despawn of
+    /// an absent worker: reporting NotFound there sends the caller looking
+    /// for a worker that may be right there, with the row still on disk.
     #[tokio::test]
-    async fn despawn_unknown_label_reports_not_found() {
-        let (workspace, mut rx) = Workspace::testing_stub();
-        let project = ProjectKey::new("forge");
+    async fn despawn_reports_a_store_failure_apart_from_an_absent_label() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        // A configured project with no store: the shape of a forge that
+        // came up without its database.
+        workspace.seed_test_project("proj-x", "/tmp/proj-x");
+        let project = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+        );
+
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
-        handle_despawn_worker(&workspace, &project, "missing", false, tx);
-        assert!(matches!(resp_rx.await.expect("result"), crate::protocol::DespawnResult::NotFound));
-        assert!(rx.try_recv().is_err(), "no events for unknown label");
+        handle_despawn_worker(&workspace, &project, "stranded", false, tx);
+
+        let result = resp_rx.await.expect("result");
+        let crate::protocol::DespawnResult::Failed { reason } = result else {
+            panic!("an unreadable store must not be reported as an absent row; got {result:?}");
+        };
+        assert!(
+            reason.contains("stranded"),
+            "the failure names the label it could not clear: {reason}",
+        );
+    }
+
+    /// The same failure at the surface a caller actually reads: the facade
+    /// must hand it back as a failed despawn, since `workers__despawn`
+    /// renders `UnknownLabel` as "no live worker with label ...", which
+    /// sends the lead looking for a worker that is right there.
+    #[tokio::test]
+    async fn a_despawn_store_failure_is_not_an_unknown_label() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let config = crate::config::load_from_dir(dir.path()).expect("load config");
+        // No db installed: the shape of a forge that came up without its
+        // store, where whether a row exists cannot be answered at all.
+        let (workspace, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config)
+            .expect("stub over the fixture config");
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&workspace);
+
+        let error = facade
+            .despawn_worker(&SessionSlot::lead("Default", "forge"), "stranded", false)
+            .await
+            .expect_err("a store that cannot be read is not a despawn of an absent worker");
+
+        assert!(
+            matches!(error, crate::mcp::workers::facade::WorkerDespawnError::DispatchFailed { .. }),
+            "the caller must hear a failed despawn rather than an unknown label: {error:?}",
+        );
     }
 
     /// Build a workspace whose single project points at a temp git
