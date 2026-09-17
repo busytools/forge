@@ -20,7 +20,7 @@ Every tab renders its rows over the same grammar - state glyph, name, source, st
 
 ## Scrolling
 
-Every tab's list scrolls. The list renders a window of rows starting at the tab's scroll offset, and the offset exists to keep the selection visible: <kbd>Up</kbd>/<kbd>Down</kbd> move the selection one row and the window follows when the selection would leave it, <kbd>PageUp</kbd>/<kbd>PageDown</kbd> move the selection by a page, and <kbd>Home</kbd>/<kbd>End</kbd> jump to the first and last row. The selection can never leave the visible window, whatever moves it. Typing in the filter resets the selection to the top row.
+Every tab's list scrolls. The list renders a window of rows starting at the tab's scroll offset, and the offset exists to keep the selection visible: <kbd>Up</kbd>/<kbd>Down</kbd> move the selection one row and the window follows when the selection would leave it, <kbd>PageUp</kbd>/<kbd>PageDown</kbd> move the selection by a page, and <kbd>Home</kbd>/<kbd>End</kbd> jump to the first and last row. On a tab with a filter, <kbd>Up</kbd> on the first row moves focus into the filter instead of the selection, and <kbd>Down</kbd> from the filter hands focus back without moving; MCPs and Marketplaces carry no filter, so both keys always move the selection there. The selection can never leave the visible window, whatever moves it. Typing in the filter resets the selection to the top row.
 
 ## Tabs
 

@@ -498,10 +498,13 @@ project picker for `forge`, straight into that project's chat for
 Nothing spawns until every account has settled, because the walk that
 picks a session's account reads each one's state.
 
-Preflight completes only on every account reaching a usable state.
-**forge will not start while an account in `forge.toml` cannot
-authenticate** - fix that account's auth, or remove its `[[accounts]]`
-block. The screen names both.
+**A bailed account does not stop forge from starting.** `Ready` and
+`Bailed` both count as settled, so preflight completes: the row names
+the failure and the pollers keep re-probing it. The walk still keeps a
+bailed account as a last resort, and picks one when nothing else in the
+pin declares the project's model - which is why the project row stays
+clickable. Fix that account's auth, or remove its `[[accounts]]` block,
+then restart forge to pick the edit up. The screen names both.
 
 Every project carrying `auto_start = true` still spawns its lead session
 in the background, but none of them is focused: you pick one from the
