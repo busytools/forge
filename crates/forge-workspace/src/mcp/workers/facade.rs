@@ -541,6 +541,18 @@ impl WorkerFacade for ProdWorkerFacade {
         // uses and nothing cleans up, or skip one the resume needs.
         let is_git_repo_at_spawn = ws
             .recorded_worker_is_git_repo(&cp.project_key, &label)
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::mcp::workers",
+                    event_name = "worker_row_gitness_unreadable",
+                    project = %cp.project_key.as_str(),
+                    label = %label,
+                    %error,
+                    "reading the worker's recorded gitness failed; probing the project path, \
+                     which may ensure a different worktree than the row names",
+                );
+                None
+            })
             .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path));
         // The one-live-worker-per-label guard lives in the shared
         // `handle_spawn_worker` core, so a boot re-spawn is deduped

@@ -3911,22 +3911,30 @@ impl Workspace {
         )
     }
 
-    /// The git flag the worker's row records, or `None` when the project
-    /// or its row is absent, or the row predates the field. The spawn
-    /// reads it in preference to probing the project path, so the cwd it
-    /// builds is the one the launchpad already checked.
+    /// The git flag the worker's row records, or `Ok(None)` when there is
+    /// no row to read or its row predates the field. The spawn reads it in
+    /// preference to probing the project path, so the cwd it builds is the
+    /// one the launchpad already checked.
+    ///
+    /// A read failure is an `Err`, not an absent row: an absent row means
+    /// the caller may probe, while an unreadable one means the answer is
+    /// unknown and the caller should say so rather than quietly compose a
+    /// different directory. Distinct from [`Self::stored_worker_row`],
+    /// which reports both the same way because its callers act on the row
+    /// itself rather than on a field of it.
     pub(crate) fn recorded_worker_is_git_repo(
         &self,
         project_key: &ProjectKey,
         label: &str,
-    ) -> Option<bool> {
-        let (org, project) = self.project_identity_for_key(project_key)?;
+    ) -> anyhow::Result<Option<bool>> {
+        let Some((org, project)) = self.project_identity_for_key(project_key) else {
+            return Ok(None);
+        };
         let guard = self.db.lock();
-        let db = guard.as_ref()?;
-        crate::store::sessions::get(db, &org, &project, label)
-            .ok()
-            .flatten()
-            .and_then(|row| row.is_git_repo)
+        let Some(db) = guard.as_ref() else {
+            anyhow::bail!("the session store is unavailable this session");
+        };
+        Ok(crate::store::sessions::get(db, &org, &project, label)?.and_then(|row| row.is_git_repo))
     }
 
     /// Delete a worker's persisted row so it never re-spawns. The row is

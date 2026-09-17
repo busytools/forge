@@ -541,7 +541,18 @@ fn cron_slot_exists(
     // `live_cron_slot` cannot address it until it stamps a session id on
     // connect. Its directory is being created along with it, so it is not
     // unwakeable: the fire parks and the worker's own Connected drains it.
-    if workspace.list_live_workers(&view.key).iter().any(|w| w.label == label) {
+    //
+    // `live_worker_with_label`, not a bare label match: a `Failed` entry
+    // is kept by design and is NOT live, so counting one would answer
+    // "wakeable" for a worker the wave will never start - parking the fire
+    // in the bucket this path exists to keep empty, with nothing left to
+    // drain it.
+    if crate::mcp::workers::types::live_worker_with_label(
+        &workspace.list_live_workers(&view.key),
+        label,
+    )
+    .is_some()
+    {
         return CronOwnerCheck::Exists;
     }
     match workspace.stored_worker_row(&view.key, label) {
@@ -1140,6 +1151,18 @@ pub(crate) fn handle_spawn_worker(
     };
     let is_git = workspace
         .recorded_worker_is_git_repo(&project_key, label)
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                event_name = "worker_row_gitness_unreadable",
+                project = %project_key.as_str(),
+                label = %label,
+                %error,
+                "reading the worker's recorded gitness failed; probing the project path, \
+                 which may compose a different directory than the row names",
+            );
+            None
+        })
         .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path));
 
     // The pool key a fresh worker spawns under: an id minted here and
@@ -2596,6 +2619,92 @@ provider = "anthropic"
             Some(true),
             "the spawn writes back the gitness the row recorded, not what a probe of the \
              project path would answer",
+        );
+    }
+
+    /// The other direction of the row-over-probe preference: with no row to
+    /// read, the probe is still the answer. A first spawn into a git
+    /// project that recorded `false` here would pass no `--worktree`, and
+    /// every later resume, the launchpad and the cron router would read
+    /// that false record as the directory the worker runs in.
+    ///
+    /// The spawn has to succeed for the row to survive: a refused fresh
+    /// spawn rolls its row back, so there would be nothing left to read.
+    #[tokio::test]
+    async fn a_first_spawn_probes_for_gitness_when_there_is_no_row() {
+        let dir = tempdir().expect("tempdir");
+        let repo = tempdir().expect("git project dir");
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "fixture precondition: git init");
+        fs::write(
+            forge_toml_path(dir.path()),
+            format!(
+                r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "{}"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                repo.path().display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+        // Deliberately no row: this is the label's first spawn.
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key,
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let admitted = rx.await.expect("reply").is_ok();
+        assert!(admitted, "fixture precondition: the spawn is admitted, so its row survives");
+
+        let db = ws.db.lock();
+        let row =
+            crate::store::sessions::get(db.as_ref().expect("db"), "Default", "forge", "tester")
+                .expect("read")
+                .expect("the spawn recorded its row");
+        drop(db);
+        assert_eq!(
+            row.is_git_repo,
+            Some(true),
+            "with no row to read the probe is the answer; recording false here would send \
+             every later resume, the launchpad and the cron router to the project root",
         );
     }
 

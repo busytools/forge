@@ -214,8 +214,10 @@ impl Workspace {
                 CronFireOutcome::TargetGone => {
                     tracing::warn!(
                         target: "forge_workspace::crons",
+                        event_name = "cron_owner_gone",
                         project = %cron.project_name,
                         cron_id = %id,
+                        label = cron.team_role.as_deref().unwrap_or("lead"),
                         "cron slot has no session; removing the cron",
                     );
                     self.remove_cron(&cron.project_name, id);
@@ -850,6 +852,46 @@ mod tests {
         );
     }
 
+    /// A `Failed` entry is not a live one. `transition_worker_to_failed`
+    /// keeps it visible on purpose, but the boot wave never starts it, so
+    /// treating it as wakeable parks the fire in a bucket nothing drains -
+    /// the unbounded park this whole arm exists to keep empty.
+    #[test]
+    fn deliver_worker_cron_does_not_park_for_a_failed_entry() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let key = seed_project_with_a_real_root(&ws, &dir);
+        // The row says worktree, and no worktree is there.
+        ws.record_worker_row(&key, "reviewer", "reviewer-uuid", "c", None, None, false, true)
+            .expect("seed the row");
+        let mut failed = live_worker_entry("proj", "reviewer");
+        failed.status = forge_primitives::WorkerLiveness::Failed;
+        ws.insert_live_worker(&key, failed);
+
+        ws.enable_test_dispatch_intercept();
+        let outcome = crate::spawn::deliver_cron_prompt(
+            &ws,
+            "proj",
+            Some("reviewer"),
+            "nightly".to_owned(),
+            false,
+        );
+        assert!(
+            matches!(outcome, crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. }),
+            "a Failed entry is not a worker the wave will start, so its fire must not \
+             park; got {}",
+            outcome_name(&outcome),
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", Some("reviewer")).len(),
+            0,
+            "nothing parks for a worker that will never connect",
+        );
+    }
+
     #[tokio::test]
     async fn deliver_asleep_dynamic_worker_cron_buffers_and_wakes_the_project() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -929,9 +971,14 @@ mod tests {
 
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, "proj", Some("steward"), "x".to_owned(), false);
-        assert!(
-            matches!(outcome, crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. }),
-            "an owner whose worktree is gone cannot be woken, so its fire is not delivered",
+        let crate::spawn::CronFireOutcome::TargetCannotBeWoken { directory } = outcome else {
+            panic!("an owner whose worktree is gone cannot be woken, so its fire is not delivered");
+        };
+        assert_eq!(
+            directory,
+            project_dir.path().join(".claude").join("worktrees").join("steward"),
+            "the outcome has to carry the directory the fire was waiting for: it is the one \
+             thing an operator can restore",
         );
         assert_eq!(
             parked_crons(&ws, "proj", Some("steward")).len(),
