@@ -22,7 +22,7 @@ pub enum Error {
     ///
     /// Separate from [`Error::CliNotFound`] because a `spawn` that
     /// cannot enter its `cwd` fails with the same `ENOENT` as one that
-    /// cannot find the binary, and only the caller knows the cwd.
+    /// cannot find the binary.
     #[error("claude subprocess working directory `{path}` does not exist")]
     CwdNotFound {
         /// The working directory that was attempted.
