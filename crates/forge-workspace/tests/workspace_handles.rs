@@ -13,6 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use forge_workspace::protocol::SpawnRole;
 use forge_workspace::{SessionLaunchSettings, SessionTarget, Workspace};
 use tempfile::tempdir;
 
@@ -67,7 +68,11 @@ provider = "anthropic"
     // important assertion here is that the bridge actually carries
     // a display_name through to the AgentHandle.
     let h1 = workspace
-        .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+        .get_agent_handle(
+            SessionTarget::Default,
+            SessionLaunchSettings::default(),
+            &SpawnRole::Lead,
+        )
         .expect("first spawn");
     assert_eq!(
         h1.display_name().as_deref(),
@@ -77,8 +82,10 @@ provider = "anthropic"
 
     let h2 = workspace
         .get_agent_handle(
+            // A named target is a project's lead.
             SessionTarget::Named("dotfiles".to_owned()),
             SessionLaunchSettings::default(),
+            &SpawnRole::Lead,
         )
         .expect("second spawn");
     assert_eq!(
@@ -137,8 +144,10 @@ ACCOUNT_KEY = "account-value"
 
     let handle = workspace
         .get_agent_handle(
+            // A named target is a project's lead.
             SessionTarget::Named("forge".to_owned()),
             SessionLaunchSettings::default(),
+            &SpawnRole::Lead,
         )
         .expect("spawn forge");
     let env = handle.env();
@@ -160,8 +169,10 @@ ACCOUNT_KEY = "account-value"
 
     let other = workspace
         .get_agent_handle(
+            // A named target is a project's lead.
             SessionTarget::Named("airmail".to_owned()),
             SessionLaunchSettings::default(),
+            &SpawnRole::Lead,
         )
         .expect("spawn airmail");
     let other_env = other.env();

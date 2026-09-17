@@ -85,7 +85,7 @@ impl Drop for ScanInFlightGuard {
 /// [`forge_agent::env::git_diff::scan`].
 ///
 /// Early-returns (and logs at debug level) when:
-/// - `cwd` is empty (synthetic spawn key, no real project).
+/// - `cwd` is empty (no directory to diff).
 /// - The session's `scan_in_flight` guard is already set (a
 ///   previous scan hasn't completed; let it win).
 pub fn request_refresh(
@@ -216,7 +216,7 @@ fn apply_timer_tick(app: &mut App) {
     // uses: passed wakeups drop on the first tick after their fire
     // time, recurring crons drop at +7 days. Runs before the early
     // returns below so the prune fires even when no active session
-    // is git-watchable (no session focused, synthetic spawn buckets).
+    // is git-watchable (no session focused, no directory to scan).
     app.prune_expired_schedules(std::time::SystemTime::now());
 
     // Refresh the active project's durable forge-cron snapshot on the
@@ -417,9 +417,9 @@ mod tests {
         assert!(!app.needs_redraw);
     }
 
-    /// `request_refresh` early-returns when an empty cwd is passed
-    /// (guards against the synthetic `__spawn_<name>__` bucket whose
-    /// `cwd_raw` is empty until Connected fires).
+    /// `request_refresh` early-returns when an empty cwd is passed: a
+    /// bucket whose `cwd_raw` has not been stamped yet has no directory
+    /// to diff.
     #[test]
     fn request_refresh_skips_when_cwd_empty() {
         // No tokio runtime needed: we only exercise the synchronous

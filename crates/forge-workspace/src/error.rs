@@ -182,6 +182,12 @@ pub enum WorkspaceError {
     ProjectNotFound { name: String, path: PathBuf },
 
     #[error(
+        "the session store could not be read for ({org}, {project}, {label}); the spawn is refused \
+         rather than starting a fresh session over an id that may already exist"
+    )]
+    SessionStoreUnreadable { org: String, project: String, label: String },
+
+    #[error(
         "failed to create the forge config directory at {}: {source}. forge cannot persist state, crons, or the single-instance lock without a writable config dir",
         path.display()
     )]

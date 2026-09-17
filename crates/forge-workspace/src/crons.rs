@@ -5,21 +5,20 @@
 //! Everything here stays on `Workspace` as a second `impl` block, so
 //! every caller (the boot path in [`crate::workspace`], the
 //! `mcp::cron` facade, `spawn::deliver_cron_prompt`, forge-tui's boot)
-//! keeps its path. The `crons`, `pending_cron_by_owner`,
-//! `cron_scheduler_started` and `update_tx` fields these methods own
-//! are `pub(crate)` for the same reason `db` is: so this sibling
-//! module can reach them without a wrapper. Schedule math lives in
+//! keeps its path. The `crons`, `cron_scheduler_started` and `update_tx`
+//! fields these methods own are `pub(crate)` for the same reason `db` is:
+//! so this sibling module can reach them without a wrapper. A fired cron
+//! with no live owner parks in [`crate::parked`]. Schedule math lives in
 //! [`crate::mcp::cron::schedule`]; the MCP tool surface in
 //! [`crate::mcp::cron`]; delivery in [`crate::spawn`].
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tracing::Instrument;
 
 use crate::protocol::SessionUpdate;
-use crate::target::{ProjectKey, SessionKey};
+use crate::target::ProjectKey;
 use crate::workspace::Workspace;
 
 /// How often the cron scheduler wakes to fire due crons. Minute
@@ -33,9 +32,6 @@ pub(crate) struct PendingCron {
     pub text: String,
     pub missed: bool,
 }
-
-/// Cron prompts buffered for asleep owners, keyed by `(project, team_role)`.
-pub(crate) type PendingCronMap = HashMap<(String, Option<String>), Vec<PendingCron>>;
 
 impl Workspace {
     /// Lock the durable cron list, apply `f`, and persist to the
@@ -133,36 +129,6 @@ impl Workspace {
         self.crons.lock().clone()
     }
 
-    /// Buffer a cron prompt for an asleep owner, keyed by
-    /// `(project, team_role)`; drained on the owner's first `Connected`.
-    pub(crate) fn buffer_cron_for_owner(
-        &self,
-        project: &str,
-        team_role: Option<&str>,
-        text: String,
-        missed: bool,
-    ) {
-        self.pending_cron_by_owner
-            .lock()
-            .entry((project.to_owned(), team_role.map(str::to_owned)))
-            .or_default()
-            .push(PendingCron { text, missed });
-    }
-
-    /// Take (and clear) the cron prompts buffered for the connecting
-    /// session's owner - `(project of cwd, the session's worker label, or
-    /// None for a lead)`. Empty when nothing was buffered or the cwd is
-    /// under no project.
-    pub(crate) fn take_pending_crons_for_session(
-        &self,
-        session_key: &SessionKey,
-        cwd: &str,
-    ) -> Vec<PendingCron> {
-        let Some(project) = self.project_name_for_path(cwd) else { return Vec::new() };
-        let team_role = self.worker_label_for_session(session_key);
-        self.pending_cron_by_owner.lock().remove(&(project, team_role)).unwrap_or_default()
-    }
-
     /// Advance a fired cron and persist: a recurring cron records
     /// `last_fire` and moves `next_fire` to the next future slot (removed
     /// if it somehow has none); a run-once is removed. A direct state
@@ -258,12 +224,13 @@ impl Workspace {
                         target: "forge_workspace::crons",
                         project = %cron.project_name,
                         cron_id = %id,
-                        "cron fire dispatch failed; leaving it due for the next boot",
+                        "cron fire deferred; leaving it due to retry",
                     );
                     let _ = self.update_tx.send(SessionUpdate::ServiceStatus {
                         severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
                         message: format!(
-                            "Cron in '{}' could not fire (its session is shutting down); it stays due for the next boot",
+                            "Cron in '{}' could not fire yet (its session is shutting down, or a \
+                             spawn would be refused right now); it stays due and retries",
                             cron.project_name
                         ),
                     });
@@ -319,9 +286,22 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use crate::SessionKey;
     use crate::protocol::Command;
     use crate::workspace::PooledAgent;
     use forge_gateway::AccountKey;
+
+    /// The cron prompts parked for `(project, label)`, under whichever org
+    /// the seeded project belongs to.
+    fn parked_crons(ws: &crate::Workspace, project: &str, label: Option<&str>) -> Vec<String> {
+        let org =
+            ws.list_projects().into_iter().find(|v| v.name == project).expect("seeded project").org;
+        ws.parked_by_slot
+            .lock()
+            .get(&crate::parked::Slot::new(&org, project, label.map(str::to_owned)))
+            .map(|parked| parked.cron.iter().map(|p| p.text.clone()).collect())
+            .unwrap_or_default()
+    }
 
     fn dynamic_worker_row(
         project: &str,
@@ -505,12 +485,7 @@ mod tests {
 
         // The due cron's prompt is buffered for its owner (the lead) for
         // delivery once the session reaches Connected.
-        let buffered: Vec<String> = ws
-            .pending_cron_by_owner
-            .lock()
-            .get(&("forge".to_owned(), None))
-            .map(|v| v.iter().map(|p| p.text.clone()).collect())
-            .unwrap_or_default();
+        let buffered = parked_crons(&ws, "forge", None);
         assert_eq!(buffered, vec!["morning".to_owned()], "the due cron's prompt was buffered");
 
         // The due cron advanced past now; the future cron is untouched.
@@ -646,6 +621,7 @@ mod tests {
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
 
@@ -744,12 +720,7 @@ mod tests {
             )),
             "an asleep worker cron wakes the whole project via SpawnProject",
         );
-        let buffered: Vec<String> = ws
-            .pending_cron_by_owner
-            .lock()
-            .get(&("proj".to_owned(), Some("reviewer".to_owned())))
-            .map(|v| v.iter().map(|p| p.text.clone()).collect())
-            .unwrap_or_default();
+        let buffered = parked_crons(&ws, "proj", Some("reviewer"));
         assert_eq!(buffered, vec!["nightly".to_owned()], "buffered for the worker owner");
     }
 
@@ -795,12 +766,7 @@ mod tests {
             )),
             "no bare Prompt to the still-spawning worker (would be dropped)",
         );
-        let buffered: Vec<String> = ws
-            .pending_cron_by_owner
-            .lock()
-            .get(&("proj".to_owned(), Some("reviewer".to_owned())))
-            .map(|v| v.iter().map(|p| p.text.clone()).collect())
-            .unwrap_or_default();
+        let buffered = parked_crons(&ws, "proj", Some("reviewer"));
         assert_eq!(
             buffered,
             vec!["nightly".to_owned()],
@@ -836,12 +802,11 @@ mod tests {
             )),
             "an asleep dynamic worker cron wakes the project too",
         );
-        let count = ws
-            .pending_cron_by_owner
-            .lock()
-            .get(&("proj".to_owned(), Some("scratch".to_owned())))
-            .map_or(0, Vec::len);
-        assert_eq!(count, 1, "buffered for the dynamic worker owner");
+        assert_eq!(
+            parked_crons(&ws, "proj", Some("scratch")).len(),
+            1,
+            "buffered for the dynamic worker owner"
+        );
     }
 
     #[test]
@@ -879,6 +844,177 @@ mod tests {
         );
     }
 
+    /// A spawn needs the account map settled, and one half of that is the
+    /// gateway listener, which the boot catch-up can outrun. That refusal
+    /// is transient, so the fire stays unconsumed for the next tick
+    /// rather than advancing past a prompt that never landed.
+    #[test]
+    fn deliver_cron_with_the_listener_unbound_leaves_the_fire_for_the_next_tick() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("proj", "/tmp/wc-gate");
+        ws.enable_test_dispatch_intercept();
+
+        // Control: with the listener bound this same fire is delivered, so
+        // the refusal below is the map and not the owner check.
+        let bound = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert!(
+            matches!(bound, crate::spawn::CronFireOutcome::Delivered),
+            "the same fire with the listener bound is delivered",
+        );
+        ws.drain_test_dispatch_buffer();
+
+        ws.seed_test_gateway_ready(false);
+        let unbound = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert!(
+            matches!(unbound, crate::spawn::CronFireOutcome::DispatchFailed),
+            "an unbound listener is a transient refusal, not a delivered fire",
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", None).len(),
+            1,
+            "the deferred fire parked nothing, so the retry parks it once rather than twice",
+        );
+    }
+
+    /// The other half of an unsettled map is the accounts themselves: the
+    /// walk skips every account still `Loading`, so a project whose only
+    /// account has not settled is refused there. Also pins the boundary -
+    /// `Bailed` is terminal, so it settles the map and the walk falls back
+    /// to it rather than refusing.
+    #[test]
+    fn deliver_cron_with_an_unsettled_account_map_leaves_the_fire_for_the_next_tick() {
+        let (ws, _dir) = workspace_with_one_unsettled_account();
+        ws.enable_test_dispatch_intercept();
+
+        // Nothing runs the account loader here, so the one account starts
+        // `Loading`: the fire is left rather than parked.
+        let unsettled = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert_eq!(
+            outcome_name(&unsettled),
+            "DispatchFailed",
+            "an account still loading is a transient refusal, not a delivered fire",
+        );
+        assert!(
+            parked_crons(&ws, "proj", None).is_empty(),
+            "and nothing is parked, so the retry parks it once rather than twice",
+        );
+
+        // Controls: the same fire is delivered once the map settles, so
+        // the refusal above is the account map and not the owner check.
+        ws.seed_test_ready_account("acct-a");
+        let ready = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert_eq!(
+            outcome_name(&ready),
+            "Delivered",
+            "the same fire with the account settled is delivered",
+        );
+
+        // `Bailed` is terminal too, so it settles the map as well, and the
+        // walk falls back to it as the last resort rather than refusing.
+        ws.seed_test_account_state("acct-a", forge_gateway::LoadingState::Bailed);
+        let bailed = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert_eq!(
+            outcome_name(&bailed),
+            "Delivered",
+            "a Bailed account settles the map and the walk falls back to it",
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", None).len(),
+            2,
+            "both settled fires parked their prompt",
+        );
+    }
+
+    /// A cooldown empties the project's walk until its reset, which is
+    /// transient the same way an unsettled map is, so the fire stays due
+    /// rather than parking a prompt the refusal would expire.
+    #[test]
+    fn deliver_cron_during_a_cooldown_leaves_the_fire_for_the_next_tick() {
+        let (ws, _dir) = workspace_with_one_unsettled_account();
+        ws.seed_test_ready_account("acct-a");
+        ws.enable_test_dispatch_intercept();
+
+        // Control: with the one account serving and not cooling, the same
+        // fire is delivered.
+        let served = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert_eq!(
+            outcome_name(&served),
+            "Delivered",
+            "the same fire with the account serving is delivered",
+        );
+
+        // The usage probe's own verdict is the public way to cool an
+        // account, and it takes epoch seconds.
+        let reset_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("epoch")
+            .as_secs()
+            + 60;
+        ws.gateway
+            .report_probe_limit(&forge_gateway::AccountKey("acct-a".to_owned()), Some(reset_at));
+        let cooling = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert_eq!(
+            outcome_name(&cooling),
+            "DispatchFailed",
+            "a cooling walk is a transient refusal, not a delivered fire",
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", None).len(),
+            1,
+            "the deferred fire parked nothing, so the retry parks it once rather than twice",
+        );
+    }
+
+    /// The outcome's own name, so a failure says which variant it got
+    /// rather than only that it was not the expected one.
+    fn outcome_name(outcome: &crate::spawn::CronFireOutcome) -> &'static str {
+        match outcome {
+            crate::spawn::CronFireOutcome::Delivered => "Delivered",
+            crate::spawn::CronFireOutcome::TargetGone => "TargetGone",
+            crate::spawn::CronFireOutcome::DispatchFailed => "DispatchFailed",
+        }
+    }
+
+    /// A workspace over a forge.toml declaring one account and one project
+    /// with the model that account serves, so the account walk is the
+    /// thing a spawn would reach. Nothing runs the account loader in a
+    /// test, so the account map starts unsettled. The tempdir must
+    /// outlive the caller.
+    ///
+    /// `new_for_test` rather than a stubbed workspace on purpose: the
+    /// stubs carry an EMPTY account pool, where `all_loaded` is vacuously
+    /// true and `set_loading` is a no-op, so they cannot tell the two
+    /// halves of the predicate apart.
+    fn workspace_with_one_unsettled_account()
+    -> (std::sync::Arc<crate::Workspace>, tempfile::TempDir) {
+        let dir = tempdir().expect("tempdir");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+
+[[orgs.projects]]
+name = "proj"
+path = "/tmp/wc-unsettled"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let ws = std::sync::Arc::new(
+            crate::Workspace::new_for_test(dir.path().to_owned()).expect("boot from the fixture"),
+        );
+        (ws, dir)
+    }
+
     #[test]
     fn deliver_cron_marks_an_overdue_fire_as_missed() {
         let dir = tempdir().expect("tempdir");
@@ -895,6 +1031,7 @@ mod tests {
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
 
@@ -934,6 +1071,7 @@ mod tests {
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");

@@ -1420,6 +1420,12 @@ mod tests {
             .select_for("Default", "claude-sonnet-5")
             .expect("the ready account serves the model");
         assert_eq!(selected, AccountKey("Ready".to_owned()), "the walk skips a cooling account");
+        assert!(
+            pool.provider(&selected).is_some(),
+            "the walk only ever returns an account the pool holds. A spawn's registration comes \
+             from `provider` on this key, so this is what keeps a pooled session's registration \
+             `Some` - and with it the bridge's id slot non-empty",
+        );
         assert_eq!(
             gateway.bindings.binding_for("Default", "project", "session"),
             None,

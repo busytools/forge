@@ -366,13 +366,14 @@ pub struct App {
     /// `active_bucket_scope::with_pivoted`; the turn-complete notify
     /// gate reads it to leave background pings to the dispatcher seam.
     pub active_session_pivoted: bool,
-    /// Synthetic spawn key the user asked to be taken to, set when a
+    /// The project whose wake the user asked to be taken to, set when a
     /// click wakes a cold project and consumed by the `Spawning`
-    /// reducer once that bucket exists. The reducer focuses a wake by
-    /// itself only when nothing is focused, so a click that arrives
-    /// while another session holds the tab records its intent here
-    /// instead.
-    pub pending_spawn_focus: Option<forge_workspace::SessionKey>,
+    /// reducer once that project's bucket exists. The reducer focuses a
+    /// wake by itself only when nothing is focused, so a click that
+    /// arrives while another session holds the tab records its intent
+    /// here instead. A project name rather than a key because the click
+    /// happens before the session id exists.
+    pub pending_spawn_focus: Option<String>,
     /// Snapshot of the durable forge crons (`mcp__forge__cron`) the
     /// active session itself created, refreshed on the ~1s ticker
     /// (`git_diff::apply_timer_tick`) from

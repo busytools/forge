@@ -66,8 +66,7 @@ pub struct UiSession {
     /// `CronEntry.project_name` / `ProjectView.name`), stamped when the
     /// bucket is minted. Scopes the Inspector SCHEDULES + GOTIFY
     /// snapshots by name rather than re-deriving the project from
-    /// `cwd_raw` (fragile for empty / synthetic / tilde / worktree cwd
-    /// forms).
+    /// `cwd_raw` (fragile for empty / tilde / worktree cwd forms).
     pub project: String,
     /// Monotonic session authority epoch - bumped on each session
     /// reset (`/new`, login, logout) so stale async view data can be
@@ -987,10 +986,10 @@ mod tests {
         assert_eq!(session.dictate_overrides, forge_workspace::DictateOverrides::default());
     }
 
-    /// Bucket state (cwd, files_accessed, …) accumulated before the
-    /// claude-issued id lands must survive the boot id-adoption: the
-    /// bucket is rekeyed onto the real uuid earlier (at KeyRenamed), so
-    /// `set_session_id` finds it already there and must not reset it.
+    /// Bucket state (cwd, files_accessed, …) accumulated before the id
+    /// is adopted must survive: the bucket is rekeyed onto the real id
+    /// earlier, so `set_session_id` finds it already there and must not
+    /// reset it.
     #[test]
     fn set_session_id_preserves_the_real_key_bucket_state() {
         let mut app = App::test_default();

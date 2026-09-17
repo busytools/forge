@@ -16,8 +16,6 @@ use forge_agent::AgentHandle;
 use forge_primitives::{RuntimeSessionState, SessionId};
 
 use crate::SessionKey;
-use crate::mcp::gotify::types::GotifyNotification;
-use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::PendingInteractionSlot;
 
 /// Workspace's owned per-session state. One `DomainSession` per
@@ -39,26 +37,9 @@ pub struct DomainSession {
     /// wire `tool_id` / `elicitation_id`. `SessionTask` pops on
     /// `Respond*` commands; bridge inserts on every `*Request` event.
     pub pending_interactions: HashMap<String, PendingInteractionSlot>,
-    /// Peer messages targeted at this session that arrived while the
-    /// session was still spawning (pre-Connected). Workspace's
-    /// `deliver_peer_prompt` pushes here when the target is sleeping
-    /// and a `Command::SpawnProject` is in flight; `SessionTask`
-    /// drains atomically on `AgentEvent::Connected` and re-dispatches
-    /// each as a regular `Command::Prompt`. Empty in steady state.
-    pub pending_peer_prompts: Vec<WrappedPrompt>,
-    /// Gotify notifications targeted at this session that arrived while
-    /// it was still spawning (pre-Connected). `SessionTask` drains on
-    /// `AgentEvent::Connected`, emits a chat echo, and re-dispatches each
-    /// as a plain user turn. Empty in steady state.
-    pub pending_gotify_prompts: Vec<GotifyNotification>,
-    /// Slack messages targeted at this session that arrived while it was
-    /// still spawning (pre-Connected). `SessionTask` drains on
-    /// `AgentEvent::Connected`, emits a chat echo, and re-dispatches each
-    /// as a plain user turn. Empty in steady state.
-    pub pending_slack_prompts: Vec<forge_primitives::slack::SlackMessage>,
     /// `--new` boot-wave flag, stamped at spawn time from
     /// `SessionLaunchSettings.force_new`. For a project lead it makes
-    /// the Connected-time respawn skip the worker resume scan
+    /// the Connected-time respawn skip the store lookup
     /// (`resume_existing = None` for every worker), so they come
     /// up fresh alongside their fresh lead. `false` for every non-boot
     /// spawn.
@@ -94,9 +75,6 @@ impl DomainSession {
             session_id: None,
             conn,
             pending_interactions: HashMap::new(),
-            pending_peer_prompts: Vec::new(),
-            pending_gotify_prompts: Vec::new(),
-            pending_slack_prompts: Vec::new(),
             spawned_force_new: false,
             runtime_state: None,
             turn_pending: false,
@@ -129,9 +107,6 @@ impl std::fmt::Debug for DomainSession {
             .field("key", &self.key)
             .field("session_id", &self.session_id)
             .field("pending_interactions_count", &self.pending_interactions.len())
-            .field("pending_peer_prompts_count", &self.pending_peer_prompts.len())
-            .field("pending_gotify_prompts_count", &self.pending_gotify_prompts.len())
-            .field("pending_slack_prompts_count", &self.pending_slack_prompts.len())
             .finish_non_exhaustive()
     }
 }

@@ -243,18 +243,24 @@ pub enum Command {
         enabled: bool,
     },
     /// User clicked an inactive project to wake it. No `key` - the
-    /// session doesn't exist yet; workspace synthesizes a key and
-    /// emits `SessionUpdate::Spawning` then `::Connected` with the
-    /// real key. This is an App-level Command, not per-session.
+    /// session doesn't exist yet; workspace resolves the id it will run
+    /// under and emits `SessionUpdate::Spawning` then `::Connected` on
+    /// it. This is an App-level Command, not per-session.
     SpawnProject {
         project_name: String,
         launch_settings: SessionLaunchSettings,
     },
     /// User clicked a non-lead session row. Workspace spawns an
-    /// agent for the specific session_id, synthesizing a key, and
-    /// emits `Spawning` then `Connected` with the real key.
+    /// agent for the specific session_id and emits `Spawning` then
+    /// `Connected` on it.
+    ///
+    /// `role` is what the dispatcher knows the row to be. The row is a
+    /// catalog entry, so the spawn cannot tell a worker's session from a
+    /// lead's by anything it holds, and a worker handed a lead's tool
+    /// surface fails silently - so the caller states it.
     SpawnSession {
         session_id: String,
+        role: SpawnRole,
         launch_settings: SessionLaunchSettings,
     },
     /// App start. Workspace spawns the default project (or the
@@ -275,8 +281,8 @@ pub enum Command {
     /// `spawn::handle_deliver_peer_prompt` which: (a) resolves
     /// `target_project` to a `SessionKey`; (b) if target is running,
     /// dispatches a plain `Command::Prompt` carrying the wrapper
-    /// prose; (c) if sleeping, buffers `wrapped` in target's
-    /// `pending_peer_prompts` and dispatches `Command::SpawnProject`;
+    /// prose; (c) if sleeping, parks `wrapped` for target's owner and
+    /// dispatches `Command::SpawnProject`;
     /// (d) on `target_project` not in forge.toml, fires the dual-path
     /// `PeerAskFailed` notification back to caller.
     ///
@@ -485,9 +491,9 @@ impl Command {
     /// The `SessionKey` this command routes to, or `None` for
     /// App-level commands (`SpawnProject`, `SpawnSession`,
     /// `StartDefault`). `Workspace::dispatch` routes `None` commands
-    /// to its app-level handler (which synthesizes the new session
-    /// key and spawns the agent); `Some(key)` commands route to the
-    /// matching SessionTask.
+    /// to its app-level handler (which resolves the id the new session
+    /// will run under and spawns the agent); `Some(key)` commands route
+    /// to the matching SessionTask.
     pub fn key(&self) -> Option<&SessionKey> {
         match self {
             Self::Prompt { key, .. }
@@ -713,6 +719,20 @@ pub enum DictateOutcome {
     Cancelled,
 }
 
+/// The role a caller states for a spawn: a project's lead, or a worker
+/// named by its label.
+///
+/// Both the session's tool surface and its slot's label come from this
+/// one value, so they cannot disagree - a caller that says `Worker`
+/// gives a worker's tool surface AND a worker's slot. Every spawn
+/// states one; forge has no keyless form, because a role it cannot
+/// state is one it would have to guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpawnRole {
+    Lead,
+    Worker(String),
+}
+
 /// Update envelope: forge-workspace -> forge-tui.
 ///
 /// Permission/Question variants do NOT carry response oneshots -
@@ -720,48 +740,16 @@ pub enum DictateOutcome {
 /// the oneshot in `DomainSession.pending_interactions` when emitting
 /// these variants.
 pub enum SessionUpdate {
-    /// Workspace has synthesized a spawning state for a project /
-    /// session wake (in response to `Command::SpawnProject` /
-    /// `Command::SpawnSession` / `Command::StartDefault`). TUI
-    /// creates a placeholder UiSession under `key` and shows the
-    /// "Waking {display_name}…" message. The real `Connected` /
-    /// `KeyRenamed` updates land soon after.
-    ///
-    /// `key` is a synthetic key the workspace generates (e.g.,
-    /// `__spawn_<project>__` or `__resume_<session_id>__`). When the
-    /// agent emits its first `system/init` with the real session
-    /// UUID, workspace migrates internally and emits
-    /// `KeyRenamed { from: synth, to: real }`.
+    /// Workspace is spawning a session (in response to
+    /// `Command::SpawnProject` / `Command::SpawnSession` /
+    /// `Command::StartDefault`). TUI creates a placeholder UiSession
+    /// under `key` and shows the "Waking {display_name}…" message. The
+    /// matching `Connected` lands soon after, under the same key.
     Spawning {
         key: SessionKey,
         project_name: String,
         cwd: String,
         display_name: String,
-    },
-    /// Workspace migrated `from` (synthetic spawn key) to `to` (the
-    /// real claude session UUID). TUI re-keys its UiSession map:
-    /// `ui_sessions.remove(&from)` → `ui_sessions.insert(to, bucket)`.
-    /// If `active_session_key == Some(from)`, TUI updates it to
-    /// `Some(to)` so render keeps following.
-    KeyRenamed {
-        from: SessionKey,
-        to: SessionKey,
-    },
-    /// A wake resolved to a session already in the pool, so the
-    /// `Spawning` bucket at `key` is redundant and no `SessionTask`
-    /// exists to migrate it - the one that connected consumed its own
-    /// `spawn_key`. TUI drops the bucket, moving focus to
-    /// `superseded_by` if it was there, and leaves `superseded_by`
-    /// otherwise untouched.
-    ///
-    /// Distinct from `KeyRenamed`, which migrates the bucket onto `to`
-    /// and marks it `Idle`. That is wrong here: before the live
-    /// session's first `Connected` the synthetic is still the only
-    /// bucket it has, so this retires nothing until one stands at
-    /// `superseded_by`.
-    SpawnBucketRetired {
-        key: SessionKey,
-        superseded_by: SessionKey,
     },
     Connected {
         key: SessionKey,
@@ -1135,7 +1123,7 @@ pub enum SessionUpdate {
 impl SessionUpdate {
     /// The [`SessionKey`] this update routes to, or `None` for
     /// updates that target App-level state (`SessionsListed`,
-    /// `ServiceStatus`, usage, plugin, key-rename, fatal-error).
+    /// `ServiceStatus`, usage, plugin, fatal-error).
     /// Variants carrying a raw `session_id` synthesize a key from it.
     pub fn session_key(&self) -> Option<SessionKey> {
         match self {
@@ -1181,9 +1169,7 @@ impl SessionUpdate {
             | Self::SlackMessageAppended { session_id, .. } => {
                 Some(SessionKey::from_session_id(session_id.clone()))
             }
-            Self::KeyRenamed { .. }
-            | Self::SpawnBucketRetired { .. }
-            | Self::ServiceStatus { .. }
+            Self::ServiceStatus { .. }
             | Self::CatalogLoaded
             | Self::PluginsInventoryUpdated { .. }
             | Self::PluginsInventoryRefreshFailed { .. }
@@ -1211,14 +1197,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("project_name", project_name)
                 .finish_non_exhaustive(),
-            Self::SpawnBucketRetired { key, superseded_by } => f
-                .debug_struct("SpawnBucketRetired")
-                .field("key", key)
-                .field("superseded_by", superseded_by)
-                .finish(),
-            Self::KeyRenamed { from, to } => {
-                f.debug_struct("KeyRenamed").field("from", from).field("to", to).finish()
-            }
             Self::Connected { key, .. } => {
                 f.debug_struct("Connected").field("key", key).finish_non_exhaustive()
             }

@@ -256,8 +256,13 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
             format!("worktree creation failed: {reason}")
         }
         WorkerSpawnError::NoPriorSession { label } => format!(
-            "no prior session tagged 'forge:worker:{label}' exists in this project, so there \
-             is nothing to resume; spawn without resume_session to start fresh"
+            "the store holds no session id for '{label}' in this project, so there is nothing \
+             to resume; spawn without resume_session to start fresh"
+        ),
+        WorkerSpawnError::SessionStoreUnreadable { label, message } => format!(
+            "could not read the session store for '{label}', so there is nothing to resume \
+             onto: {message}. Nothing was spawned; retry, and if it persists the session may \
+             still exist under the id the store holds"
         ),
     }
 }

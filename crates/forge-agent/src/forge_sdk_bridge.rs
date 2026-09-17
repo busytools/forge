@@ -572,15 +572,38 @@ impl ForgeSdkBridge {
     /// Verify the requested `session_id` matches the bridge's current
     /// session before dispatching a user-action method. In a session-swap
     /// race a `cancel`/`set_mode`/`set_model` for session A could
-    /// otherwise hit session B's `Client`. Emits a debug breadcrumb
-    /// here on mismatch and returns false; the caller is expected to
-    /// drop the dispatch with a no-op `Ok(())`.
+    /// otherwise hit session B's `Client`. Logs the mismatch and returns
+    /// false; the caller is expected to drop the dispatch with a no-op
+    /// `Ok(())`. A request carrying no id at all is refused the same way
+    /// and logged at `error`, since there is nothing to match it to.
     ///
     /// Other user-action methods (`prompt_with_images`) intentionally
     /// opt out - see the inline rationale at each call site.
     fn check_session_id(&self, session_id: &str, label: &'static str) -> bool {
+        // The slot is written once, where a spawn supplies the id the
+        // child will run under, and every production spawn supplies one:
+        // `new_session(None)` needs `fresh_session_id_for` to miss, which
+        // needs a pooled entry with no `registration`, and the account
+        // walk only returns keys from the org pin the pool holds. So a
+        // live bridge's slot is never empty here, and a request that does
+        // not match is stale rather than unaddressable.
+        // An id-less request names no session at all, so there is nothing
+        // to match it against, and accepting it would run the dispatch on
+        // whichever session the bridge happens to hold. Checked before
+        // the equality, since two empty ids would otherwise match.
+        if session_id.is_empty() {
+            let current = self.inner.session_id_slot.lock().clone();
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "dispatch_without_session_id",
+                label,
+                current_session_id = %current,
+                "dropping a dispatch that carries no session id"
+            );
+            return false;
+        }
         let current = self.inner.session_id_slot.lock().clone();
-        if current.is_empty() || current == session_id {
+        if current == session_id {
             return true;
         }
         tracing::warn!(
@@ -601,7 +624,17 @@ impl ForgeSdkBridge {
     /// normal operation.
     fn trace_session_id_bypass(&self, session_id: &str, label: &'static str) {
         let current = self.inner.session_id_slot.lock().clone();
-        if current.is_empty() || current == session_id {
+        if current == session_id {
+            return;
+        }
+        if session_id.is_empty() {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "bypass_without_session_id",
+                label,
+                current_session_id = %current,
+                "passing through a dispatch that carries no session id (intentional bypass)",
+            );
             return;
         }
         tracing::trace!(
@@ -1161,6 +1194,51 @@ impl ForgeSdkBridge {
 mod tests {
     use super::*;
 
+    /// Bind the bridge's id slot. Every production bridge has one from
+    /// the start: the slot is written once, where the spawn supplies the
+    /// id the child will run under, and nothing writes it per frame. An
+    /// unbound slot is therefore a fixture state, and `check_session_id`
+    /// refuses a dispatch it cannot match rather than accepting any id.
+    fn bind_session_slot(bridge: &ForgeSdkBridge, session_id: &str) {
+        bridge.session_id_slot_arc().lock().clone_from(&session_id.to_owned());
+    }
+
+    /// The match is by id and only by id: a stale id is refused so a
+    /// `cancel`/`set_mode`/`set_model` meant for one session cannot land
+    /// on another, and an id-less request is refused rather than being
+    /// run against whichever session the bridge happens to hold.
+    #[test]
+    fn check_session_id_matches_by_id_only() {
+        let bridge = test_bridge();
+        bind_session_slot(&bridge, "session-1");
+
+        assert!(bridge.check_session_id("session-1", "cancel"), "the session's own id passes");
+        assert!(!bridge.check_session_id("session-2", "cancel"), "another session's id is refused");
+        assert!(
+            !bridge.check_session_id("", "cancel"),
+            "a request carrying no id is refused, not matched to anything",
+        );
+    }
+
+    /// An unbound slot refuses rather than matching everything, which is
+    /// what the old `current.is_empty()` wildcard did. That arm is safe
+    /// to refuse because nothing writes the slot per frame and every
+    /// production spawn supplies an id, so a live bridge is never
+    /// unbound; see the invariant on `check_session_id`.
+    #[test]
+    fn an_unbound_slot_refuses_rather_than_matching_anything() {
+        let bridge = test_bridge();
+
+        assert!(
+            !bridge.check_session_id("session-1", "cancel"),
+            "an unbound slot does not accept a request it cannot check",
+        );
+        assert!(
+            !bridge.check_session_id("", "cancel"),
+            "nor an id-less request, which two empty ids would otherwise match",
+        );
+    }
+
     fn test_bridge() -> ForgeSdkBridge {
         ForgeSdkBridge::new(
             PathBuf::from(TESTING_STUB_CONFIG_DIR),
@@ -1206,6 +1284,7 @@ mod tests {
     #[test]
     fn dispatch_without_client_returns_error() {
         let bridge = test_bridge();
+        bind_session_slot(&bridge, "session-1");
         let err = bridge.cancel("session-1".to_owned()).unwrap_err();
         assert!(err.to_string().contains("before active session"));
     }
@@ -1246,12 +1325,14 @@ mod tests {
     }
 
     /// The client-None window passes `check_session_id` for both
-    /// sibling methods (the slot holds the old session id, or is
-    /// empty), so the typed failure is the only thing that unflips the
-    /// optimistic mode chip - a silent Err return leaves it stuck.
+    /// sibling methods (the slot holds the session id the caller
+    /// dispatches with), so the typed failure is the only thing that
+    /// unflips the optimistic mode chip - a silent Err return leaves it
+    /// stuck.
     #[tokio::test]
     async fn set_mode_without_client_emits_set_mode_failed() {
         let bridge = test_bridge();
+        bind_session_slot(&bridge, "session-1");
         let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
 
         bridge
@@ -1274,6 +1355,7 @@ mod tests {
     #[tokio::test]
     async fn set_model_without_client_emits_set_model_failed() {
         let bridge = test_bridge();
+        bind_session_slot(&bridge, "session-1");
         let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
 
         bridge
@@ -1441,6 +1523,7 @@ mod tests {
         )
         .await;
         tokio::time::pause();
+        bind_session_slot(&bridge, "mock-session-001");
 
         bridge
             .set_model("mock-session-001".to_owned(), "claude-attempted".to_owned())

@@ -9,11 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime::SessionLifecycleState;
 
-/// Tag value written to the JSONL of every project-default (lead)
-/// session. Consumed by the resolver: `latest(forge:lead) →
-/// latest(untagged) → fresh`.
-pub const FORGE_LEAD_TAG: &str = "forge:lead";
-
 /// Prefix shared by every worker session's tag. The full tag is
 /// formatted as `forge:worker:<label>` via [`worker_tag`].
 pub const FORGE_WORKER_TAG_PREFIX: &str = "forge:worker:";
@@ -115,11 +110,6 @@ mod tests {
         // Empty-label validation happens at the spawn tool gate, not
         // at the format helper. The helper produces what it produces.
         assert_eq!(worker_tag(""), "forge:worker:");
-    }
-
-    #[test]
-    fn lead_tag_constant_value() {
-        assert_eq!(FORGE_LEAD_TAG, "forge:lead");
     }
 
     #[test]

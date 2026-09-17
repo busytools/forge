@@ -1312,99 +1312,73 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
         && y < rect.y.saturating_add(rect.height)
 }
 
-/// Switch to the lead session of `project_name`. If the project's
-/// lead is already an in-process session in `app.sessions`, swap to
-/// it; otherwise dispatch `Command::SpawnProject` and record the
-/// synthetic spawn key in [`App::pending_spawn_focus`], so the
-/// `Spawning` reducer lands the user in the session this click woke.
-fn switch_to_project_lead(app: &mut App, project_name: &str) {
-    // Resolve display name + project path up-front; both are used
-    // in multiple branches below.
-    let project_info = app.workspace.as_ref().and_then(|w| {
-        w.list_projects()
-            .into_iter()
-            .find(|p| p.key.as_str() == project_name)
-            .map(|p| (p.name.clone(), p.path.clone(), p.sessions))
-    });
-    let (resolved_name, project_path, catalog_sessions) = match project_info {
-        Some((name, path, sessions)) => (name, Some(path), sessions),
-        None => (project_name.to_owned(), None, Vec::new()),
+/// Switch to the lead session of the project whose registry key is
+/// `project_key`. If the project's lead is already an in-process session
+/// in `app.sessions`, swap to it; otherwise dispatch
+/// `Command::SpawnProject` and record the project in
+/// [`App::pending_spawn_focus`], so the `Spawning` reducer lands the user
+/// in the session this click woke.
+///
+/// The bucket is resolved by the same rule the Projects pane uses
+/// ([`projects_pane::live_lead_key`]), which prefers the active
+/// session's bucket when two sit on one cwd - a state a session left
+/// failed can produce, and the reason the pane's rule carries that
+/// tie-break.
+fn switch_to_project_lead(app: &mut App, project_key: &str) {
+    // Resolve the project view up-front; it carries the name, the path
+    // and the catalog rows every branch below reads.
+    let view = app
+        .workspace
+        .as_ref()
+        .and_then(|w| w.list_projects().into_iter().find(|p| p.key.as_str() == project_key));
+    let (resolved_name, catalog_sessions) = match view.as_ref() {
+        Some(view) => (view.name.clone(), view.sessions.clone()),
+        None => (project_key.to_owned(), Vec::new()),
     };
-    let spawn_synthetic =
-        forge_workspace::SessionKey::from_session_id(format!("__spawn_{resolved_name}__"));
+    let running_key = view.as_ref().and_then(|view| {
+        let path = view.path.to_string_lossy();
+        let workers = crate::ui::projects_pane::live_worker_keys(app);
+        crate::ui::projects_pane::live_lead_key(app, view, path.as_ref(), &workers)
+    });
 
-    // Idempotency: if the active session is already the synthetic
-    // spawn bucket for this project, the user is mid-wake - a second
-    // click would queue a duplicate background connection task that
-    // races `CONN_SLOT` and scrambles bucket state. Return early.
-    if app.active_session_key.as_ref() == Some(&spawn_synthetic)
-        && app.sessions.contains_key(&spawn_synthetic)
+    // Idempotency: if the active session is already this project's
+    // bucket, the user is mid-wake - a second click would queue a
+    // duplicate background connection task that races `CONN_SLOT` and
+    // scrambles bucket state. Return early.
+    if let Some(key) = running_key.as_ref()
+        && app.active_session_key.as_ref() == Some(key)
     {
         tracing::info!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "pane_click_refused",
             outcome = "refused",
             reason = "already_active",
-            project = %project_name,
+            project = %project_key,
         );
         return;
     }
 
-    // Mid-spawn block: if the resolved project's bucket is in the
-    // `Spawning` lifecycle state, clicking it would land the user on
-    // the connecting stub (no session_id yet, input renders
-    // "Connecting to Claude Code…"). Refuse the click so the user
-    // waits for the spawn to land instead. Same UX gate the
-    // launchpad applies via `click_intent`. Covers both the
-    // `__spawn_<name>__` synthetic and the real-UUID bucket that
-    // KeyRenamed has migrated to but hasn't yet received `Connected`.
-    let spawning_bucket = app
-        .sessions
-        .get(&spawn_synthetic)
-        .or_else(|| {
-            project_path.as_ref().and_then(|p| {
-                let path_str = p.to_string_lossy();
-                app.find_running_bucket_for_path(path_str.as_ref())
-                    .and_then(|k| app.sessions.get(&k))
-            })
-        })
-        .map(|s| s.lifecycle_state);
-    if spawning_bucket == Some(forge_primitives::SessionLifecycleState::Spawning) {
-        tracing::info!(
-            target: crate::logging::targets::APP_INPUT,
-            event_name = "pane_click_refused",
-            outcome = "refused",
-            reason = "mid_spawn",
-            project = %project_name,
-        );
-        return;
-    }
-
-    // Mid-spawn switch (non-Spawning lifecycle): the spawn-synthetic
-    // bucket still exists but has already reached a ready state
-    // (e.g. `Idle` after Connected but before KeyRenamed migrates).
-    // Switch into it; KeyRenamed will migrate the active key when
-    // it lands.
-    if app.sessions.contains_key(&spawn_synthetic) {
-        app.switch_active_session(spawn_synthetic);
-        return;
-    }
-
-    // Running-bucket match by cwd: an auto_start project's running
-    // bucket lives in app.sessions keyed by the real session UUID
-    // (post-KeyRenamed migration). If the on-disk catalog hasn't
-    // yet picked up that UUID, `list_projects` won't include it in
-    // catalog_sessions and the disk-catalog lookup below would miss
-    // - so we walk app.sessions looking for one whose `cwd_raw`
-    // matches the project's path. Cheap (typically <10 buckets) and
-    // robust to the disk-catalog refresh delay that caused
-    // "first-click spawns a duplicate" before this guard landed.
-    if let Some(path) = project_path.as_ref() {
-        let path_str = path.to_string_lossy();
-        if let Some(key) = app.find_running_bucket_for_path(path_str.as_ref()) {
-            app.switch_active_session(key);
+    // Mid-spawn block: a bucket in the `Spawning` lifecycle state would
+    // land the user on the connecting stub (no session_id yet, input
+    // renders "Connecting to Claude Code…"). Refuse the click so the
+    // user waits for the spawn to land instead. Same UX gate the
+    // launchpad applies via `click_intent`.
+    if let Some(key) = running_key.as_ref() {
+        let spawning = app.sessions.get(key).is_some_and(|s| {
+            s.lifecycle_state == forge_primitives::SessionLifecycleState::Spawning
+        });
+        if spawning {
+            tracing::info!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "pane_click_refused",
+                outcome = "refused",
+                reason = "mid_spawn",
+                project = %project_key,
+            );
             return;
         }
+        app.switch_active_session(key.clone());
+        return;
     }
 
     // Fallback to the disk catalog's most recent session for this
@@ -1419,12 +1393,12 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
             if let Some(workspace) = app.workspace.as_ref() {
                 let launch_settings = crate::app::connect::session_launch_settings_for_startup(app);
                 if let Err(err) = workspace.dispatch(forge_workspace::Command::SpawnProject {
-                    project_name: resolved_name,
+                    project_name: resolved_name.clone(),
                     launch_settings,
                 }) {
                     tracing::warn!(
                         target: crate::logging::targets::APP_SESSION,
-                        project = %project_name,
+                        project = %project_key,
                         error = %err,
                         "switch_to_project_lead: dispatch failed",
                     );
@@ -1435,7 +1409,7 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
                 // the click was headed; the reducer takes it from
                 // here. Without this the click has no visible effect
                 // at all and reads as a dead row.
-                app.pending_spawn_focus = Some(spawn_synthetic);
+                app.pending_spawn_focus = Some(resolved_name.clone());
             }
         }
     }
@@ -1747,49 +1721,56 @@ mod tests {
     #[test]
     fn switch_to_project_lead_blocks_on_spawning_bucket() {
         let mut app = App::test_default();
-        // The test workspace stub doesn't carry projects, but the
-        // gate fires on the lifecycle of the bucket keyed by
-        // `__spawn_<name>__`, which we can seed directly. The
-        // project-name lookup falls into the
-        // "list_projects didn't find it → resolved_name =
-        // project_name" branch; the spawn-synthetic check then
-        // matches our seeded bucket.
-        let project_name = "forge";
-        let spawn_synth =
-            forge_workspace::SessionKey::from_session_id(format!("__spawn_{project_name}__"));
-        let mut bucket = UiSession::new(spawn_synth.clone(), project_name);
+        let (project_key, path) = seed_forge_project(&mut app);
+        let key = forge_workspace::SessionKey::from_session_id("waking-uuid");
+        let mut bucket = UiSession::new(key.clone(), "forge");
+        bucket.cwd_raw = path;
         bucket.lifecycle_state = SessionLifecycleState::Spawning;
-        app.sessions.insert(spawn_synth.clone(), bucket);
+        app.sessions.insert(key, bucket);
 
         let initial_active = app.active_session_key.clone();
-        switch_to_project_lead(&mut app, project_name);
+        switch_to_project_lead(&mut app, project_key.as_str());
         assert_eq!(
             app.active_session_key, initial_active,
             "spawning-bucket click must not change the active session",
         );
     }
 
-    /// Sanity: a non-Spawning spawn-synthetic bucket (already
-    /// reached `Idle` post-Connected but pre-KeyRenamed) IS
-    /// switchable - the gate is lifecycle-specific, not a blanket
-    /// "synthetic key is untouchable" rule. Without this, the
-    /// mid-Connected-mid-KeyRenamed window would leave the user
+    /// Seed the stub workspace with `forge` at `/tmp/forge` and return the
+    /// project's registry key plus its path: the pane's hit target carries
+    /// the KEY, while the bucket's `cwd_raw` carries the path.
+    fn seed_forge_project(app: &mut App) -> (forge_workspace::ProjectKey, String) {
+        let path = "/tmp/forge".to_owned();
+        let workspace = app.workspace.as_ref().expect("stub workspace");
+        workspace.seed_test_project("forge", &path);
+        let project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|p| p.name == "forge")
+            .expect("seeded project");
+        (project.key, path)
+    }
+
+    /// Sanity: a bucket that has settled IS switchable - the gate is
+    /// lifecycle-specific, not a blanket "a project mid-wake is
+    /// untouchable" rule. Without this, the window between a spawn
+    /// landing and the catalog scan refreshing would leave the user
     /// unable to click into their session.
     #[test]
-    fn switch_to_project_lead_allows_idle_spawn_synthetic() {
+    fn switch_to_project_lead_switches_a_settled_bucket() {
         let mut app = App::test_default();
-        let project_name = "forge";
-        let spawn_synth =
-            forge_workspace::SessionKey::from_session_id(format!("__spawn_{project_name}__"));
-        let mut bucket = UiSession::new(spawn_synth.clone(), project_name);
+        let (project_key, path) = seed_forge_project(&mut app);
+        let key = forge_workspace::SessionKey::from_session_id("settled-uuid");
+        let mut bucket = UiSession::new(key.clone(), "forge");
+        bucket.cwd_raw = path;
         bucket.lifecycle_state = SessionLifecycleState::Idle;
-        app.sessions.insert(spawn_synth.clone(), bucket);
+        app.sessions.insert(key.clone(), bucket);
 
-        switch_to_project_lead(&mut app, project_name);
+        switch_to_project_lead(&mut app, project_key.as_str());
         assert_eq!(
             app.active_session_key.as_ref(),
-            Some(&spawn_synth),
-            "non-spawning synthetic bucket should still be switchable",
+            Some(&key),
+            "a settled bucket should still be switchable",
         );
     }
 
@@ -2115,14 +2096,13 @@ mod tests {
     fn cold_project_click_records_where_it_was_headed() {
         let mut app = App::test_default();
         let _outbox = app.install_testing_stub();
-        assert!(app.sessions.keys().all(|k| k.as_str() != "__spawn_forge__"));
 
         switch_to_project_lead(&mut app, "forge");
 
         assert_eq!(
-            app.pending_spawn_focus.as_ref().map(forge_workspace::SessionKey::as_str),
-            Some("__spawn_forge__"),
-            "a cold-row click must record the spawn key it is waiting for",
+            app.pending_spawn_focus.as_deref(),
+            Some("forge"),
+            "a cold-row click must record the project whose wake it awaits",
         );
     }
 

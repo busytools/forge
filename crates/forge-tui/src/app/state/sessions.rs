@@ -11,10 +11,9 @@ impl super::App {
     /// The key and project `App::test_default()` files its seeded bucket
     /// under. A test builds an `App` with no spawn to wait for, so it
     /// starts with one session already focused; production starts with
-    /// no session at all until the first spawn lands. The key keeps the
-    /// synthetic `__…__` shape a spawn key has, because the seeded
-    /// bucket stands in for the not-yet-renamed one production holds
-    /// between a spawn and its `Connected`.
+    /// no session at all until the first spawn lands. The key is a
+    /// fixed sentinel rather than a uuid: nothing parses it, and a test
+    /// needs a value it can name without minting one.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) const TEST_SESSION_KEY: &'static str = "__test_session__";
     #[cfg(any(test, feature = "testing"))]
@@ -52,30 +51,8 @@ impl super::App {
         self.sessions.get_mut(key)
     }
 
-    /// Find the LEAD session bucket whose `cwd_raw` matches `path`.
-    /// Used by the launchpad-click and projects-pane-click handlers to
-    /// land the user on the resumed bucket for a project.
-    ///
-    /// Workers spawned via mcp__forge__workers__spawn share the
-    /// project's `cwd_raw`, so a naive iter().find() can return a
-    /// worker bucket non-deterministically (HashMap order). Cross-
-    /// reference workspace.live_workers and exclude any session key
-    /// that appears there so the projects-pane click always returns
-    /// the lead.
-    pub fn find_running_bucket_for_path(&self, path: &str) -> Option<forge_workspace::SessionKey> {
-        let worker_keys: std::collections::HashSet<forge_workspace::SessionKey> = self
-            .workspace
-            .as_ref()
-            .map(|ws| ws.all_live_worker_session_keys().into_iter().collect())
-            .unwrap_or_default();
-        self.sessions
-            .iter()
-            .find(|(k, s)| s.cwd_raw.as_str() == path && !worker_keys.contains(k))
-            .map(|(k, _)| k.clone())
-    }
-
     /// Map a bucket lifecycle to the App-level status. Every focus
-    /// move re-runs this (switch-in, KeyRenamed's active move, the
+    /// move re-runs this (switch-in, the session-replace carry, the
     /// boot id-adoption), so the mirror tracks the bucket the user
     /// lands on rather than the one they left.
     fn status_for_lifecycle(lifecycle: crate::app::session::SessionLifecycleState) -> AppStatus {
@@ -356,12 +333,12 @@ impl super::App {
     /// The active tab's forge.toml project name, backing the Inspector
     /// SCHEDULES + GOTIFY snapshots:
     ///   1. `resolve_active_project_view` on the active KEY - the exact
-    ///      resolver the projects pane + top bar use (catalog for a real
-    ///      UUID, name for a `__spawn_<name>__` sentinel). Independent of
-    ///      the stamp, so it resolves whenever the pane highlights the
-    ///      project.
+    ///      resolver the projects pane + top bar use, reading the catalog.
+    ///      Independent of the stamp, so it resolves whenever the pane
+    ///      highlights the project.
     ///   2. The per-bucket stamp (`UiSession.project`), which every
-    ///      bucket carries from the moment it is minted.
+    ///      bucket carries from the moment it is minted - the only source
+    ///      while a spawn's session is not in the catalog yet.
     pub fn active_project_name(&self) -> Option<String> {
         let active_key = self.active_session_key.as_ref()?;
         if let Some(ws) = self.workspace.as_ref() {
@@ -1094,86 +1071,6 @@ mod tests {
         );
     }
 
-    /// `find_running_bucket_for_path` returns the unique bucket
-    /// matching `path` when one exists. The seeded bucket
-    /// never participates because its `cwd_raw` is sourced from
-    /// `forge.toml`-or-empty, not from `current_dir()` - so it
-    /// cannot accidentally match a real project's `path`.
-    #[test]
-    fn find_running_bucket_for_path_returns_matching_real_bucket() {
-        let mut app = App::test_default();
-        let project_path = "/Users/developer/Projects/forge";
-        let real_key =
-            forge_workspace::SessionKey::from_str_for_test("11111111-2222-3333-4444-555555555555");
-        let mut real_bucket = crate::app::session::UiSession::new(real_key.clone(), "forge");
-        real_bucket.cwd_raw = project_path.to_owned();
-        app.sessions.insert(real_key.clone(), real_bucket);
-
-        let picked = app.find_running_bucket_for_path(project_path).expect("a bucket should match");
-        assert_eq!(picked, real_key);
-    }
-
-    /// No bucket matches → `None`. Used by the click handler to
-    /// fall through to the catalog / cold-spawn paths.
-    #[test]
-    fn find_running_bucket_for_path_returns_none_when_no_match() {
-        let app = App::test_default();
-        assert!(app.find_running_bucket_for_path("/Users/developer/Projects/forge").is_none());
-    }
-
-    /// Regression for commit 23f46b8: when a worker session shares
-    /// the project's cwd_raw with the lead, `find_running_bucket_
-    /// for_path` must return the lead's session_key, never the
-    /// worker's. Before the fix, HashMap iteration order could
-    /// surface either bucket non-deterministically and the projects-
-    /// pane click landed on a worker instead of going back to the
-    /// lead.
-    #[test]
-    fn find_running_bucket_for_path_excludes_worker_session_keys() {
-        use forge_workspace::WorkerEntry;
-        use forge_workspace::{ProjectKey, SessionKey};
-
-        let mut app = App::test_default();
-        let project_path = "/Users/developer/Projects/forge";
-
-        let lead_key = SessionKey::from_str_for_test("aaaaaaaa-1111-2222-3333-444444444444");
-        let worker_key = SessionKey::from_str_for_test("bbbbbbbb-1111-2222-3333-444444444444");
-
-        let mut lead_bucket = crate::app::session::UiSession::new(lead_key.clone(), "forge");
-        lead_bucket.cwd_raw = project_path.to_owned();
-        app.sessions.insert(lead_key.clone(), lead_bucket);
-
-        let mut worker_bucket = crate::app::session::UiSession::new(worker_key.clone(), "forge");
-        worker_bucket.cwd_raw = project_path.to_owned();
-        app.sessions.insert(worker_key.clone(), worker_bucket);
-
-        // Inject the worker into the workspace's live_workers map so
-        // the filter inside find_running_bucket_for_path sees it.
-        let workspace = app.workspace.as_ref().expect("test_default wires a workspace");
-        let project_key = ProjectKey::new_for_test("-Users-developer-Projects-forge");
-        workspace.insert_live_worker(
-            &project_key,
-            WorkerEntry {
-                label: "test-worker".to_owned(),
-                charter: "noop".to_owned(),
-                session_key: worker_key.clone(),
-                status: forge_primitives::WorkerLiveness::Running,
-                spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: lead_key.as_str().to_owned(),
-                needs_tag: false,
-                is_git_repo_at_spawn: false,
-                diagnostic: None,
-                kick: None,
-            },
-        );
-
-        let picked = app
-            .find_running_bucket_for_path(project_path)
-            .expect("lead bucket should match even with a worker at the same cwd");
-        assert_eq!(picked, lead_key, "lead must be returned; worker must be excluded");
-        assert_ne!(picked, worker_key);
-    }
-
     #[test]
     fn clear_session_runtime_identity_resets_session_usage() {
         let mut app = App::test_default();
@@ -1233,8 +1130,8 @@ mod tests {
     /// `set_session_id`'s carry of the focused bucket onto its real
     /// key logs `active_session_switched` - it used to strand focus on
     /// an unrelated session with nothing in forge.log to say so. The
-    /// covered moves are switch_active_session, this carry, and
-    /// KeyRenamed's rename carry; `apply_connected_presentation`'s
+    /// covered moves are switch_active_session, this carry, and the
+    /// session-replace carry; `apply_connected_presentation`'s
     /// active-path write stays unlogged (was_active already true, the
     /// pointer does not change).
     #[test]

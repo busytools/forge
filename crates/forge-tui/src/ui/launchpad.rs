@@ -14,7 +14,7 @@
 use std::time::SystemTime;
 
 use forge_primitives::SessionLifecycleState;
-use forge_workspace::{ProjectView, SessionChipInfo, SessionChipState, SessionKey};
+use forge_workspace::{ProjectView, SessionChipInfo, SessionChipState};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -186,23 +186,16 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
     rows
 }
 
-/// Find the live `UiSession` bucket for `project`, if any. Three-step
-/// resolution mirrors the projects-pane lookup:
-///
-/// 1. `__spawn_<name>__` synthetic - the placeholder a spawn mints
-///    before its `Connected`.
-/// 2. Catalog session UUIDs - the lead recorded on disk, if pooled.
-/// 3. `cwd_raw` match - covers the post-KeyRenamed window when the
-///    synthetic has migrated to the real session UUID but the
-///    catalog scan hasn't refreshed yet.
+/// Find the live `UiSession` bucket for `project`, if any. Two-step
+/// resolution: the catalog's session ids first, then any bucket on the
+/// project's cwd - the second arm is what covers the window between a
+/// spawn landing and the catalog scan refreshing. It does not exclude
+/// worker buckets, unlike the projects pane's `live_lead_key`, because a
+/// launchpad row is the project itself rather than a session row.
 fn find_live_bucket<'app>(
     app: &'app App,
     project: &ProjectView,
 ) -> Option<&'app crate::app::session::UiSession> {
-    let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{}__", project.name));
-    if let Some(session) = app.sessions.get(&spawn_synthetic) {
-        return Some(session);
-    }
     for sess in &project.sessions {
         if let Some(bucket) = app.sessions.get(&sess.session) {
             return Some(bucket);
@@ -1078,18 +1071,18 @@ pub fn retry_selected_project(app: &mut App) {
 
 /// Switch the active session to `project_name` and transition to
 /// `ActiveView::Chat`. If no live bucket exists, dispatch a fresh
-/// `SpawnProject` first. Mirror of the mouse-click flow in
-/// `events/mouse.rs::switch_to_project_lead`; duplicated here rather
-/// than refactored because the mouse path threads through hit-target
-/// math that the keyboard path doesn't need.
+/// `SpawnProject` first.
+///
+/// The bucket is resolved by the same rule the Projects pane and the
+/// mouse click use, which prefers the active session's bucket when two
+/// sit on one cwd. This path used to scan by cwd alone, so a launchpad
+/// Enter could land on the wrong one.
 fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
-    let project_info = app.workspace.as_ref().and_then(|w| {
-        w.list_projects()
-            .into_iter()
-            .find(|p| p.name == project_name)
-            .map(|p| (p.name.clone(), p.path.clone(), p.sessions))
-    });
-    let Some((resolved_name, project_path, catalog_sessions)) = project_info else {
+    let view = app
+        .workspace
+        .as_ref()
+        .and_then(|w| w.list_projects().into_iter().find(|p| p.name == project_name));
+    let Some(view) = view else {
         // The picker shouldn't be able to surface an unknown
         // project name, so log + bail rather than ignoring silently.
         tracing::warn!(
@@ -1099,46 +1092,26 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
         );
         return;
     };
-    let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{resolved_name}__"));
-
-    // Already-spawning bucket: switch to it; KeyRenamed migrates on
-    // Connected.
-    if app.sessions.contains_key(&spawn_synthetic) {
-        app.switch_active_session(spawn_synthetic);
-        set_active_view(app, ActiveView::Chat);
-        return;
-    }
-
-    // Running bucket match by cwd - matches an auto_start project
-    // whose session UUID has already arrived via KeyRenamed.
-    let path_str = project_path.to_string_lossy();
-    if let Some(key) = app.find_running_bucket_for_path(path_str.as_ref()) {
+    let running = {
+        let path_str = view.path.to_string_lossy();
+        let workers = super::projects_pane::live_worker_keys(app);
+        super::projects_pane::live_lead_key(app, &view, path_str.as_ref(), &workers)
+    };
+    if let Some(key) = running {
         app.switch_active_session(key);
         set_active_view(app, ActiveView::Chat);
         return;
     }
 
-    // Catalog lead - switch if pooled, else dispatch SpawnProject.
-    let lead_key = catalog_sessions.into_iter().next().map(|s| s.session);
-    if let Some(key) = lead_key
-        && app.sessions.contains_key(&key)
-    {
-        app.switch_active_session(key);
-        set_active_view(app, ActiveView::Chat);
-        return;
-    }
-
-    // Cold spawn - dispatch and transition. The synthetic bucket
-    // will appear in `app.sessions` on the next event tick (via the
-    // workspace's SessionTask emitting SessionUpdate::Connected /
-    // KeyRenamed) and the chat view will pick it up automatically.
-    // Until then the chat renders with no session focused, matching
-    // the existing mouse-click → spawn flow in
-    // `events/mouse.rs::switch_to_project_lead`.
+    // Cold spawn - dispatch and transition. The bucket appears in
+    // `app.sessions` on the next event tick, once the workspace's
+    // SessionTask emits `SessionUpdate::Spawning` under the id it minted.
+    // Until then the chat renders with no session focused, the same as
+    // the mouse-click flow in `events/mouse.rs::switch_to_project_lead`.
     if let Some(workspace) = app.workspace.as_ref() {
         let launch_settings = crate::app::connect::session_launch_settings_for_startup(app);
         if let Err(err) = workspace.dispatch(forge_workspace::Command::SpawnProject {
-            project_name: resolved_name,
+            project_name: view.name.clone(),
             launch_settings,
         }) {
             tracing::warn!(
@@ -1153,39 +1126,35 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
     set_active_view(app, ActiveView::Chat);
 }
 
-/// Drop the failed bucket, clear its `last_connection_error`, and
-/// dispatch a fresh `SpawnProject`. Stays on the launchpad so the
-/// user sees the row flip from `✗` to the spinning glyph.
+/// Drop the project's failed bucket and dispatch a fresh
+/// `SpawnProject`. Stays on the launchpad so the user sees the row flip
+/// from the failed glyph to the spinning one.
+///
+/// The bucket is found by its own project stamp rather than through the
+/// catalog: a session that failed before `Connected` is by construction
+/// not in the catalog, and that is exactly the row a retry is asked to
+/// clear. Resolving through the catalog would leave the stub in place
+/// and the row reading failed.
 fn retry_project(app: &mut App, project_name: &str) {
-    let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
-    if let Some(workspace) = app.workspace.as_ref() {
-        // Synthetic key cleanup. Cascade-detection inside
-        // `release_session_with_cascade` no-ops for a synth_key (it
-        // never reached Connected, so it isn't in any project's
-        // catalog) - effectively a plain primitive release here.
-        workspace.release_session_with_cascade(&spawn_synthetic);
-    }
-    app.sessions.remove(&spawn_synthetic);
-
-    // Drop any non-synthetic failed bucket for the same project.
-    let Some(workspace) = app.workspace.as_ref() else {
-        return;
-    };
-    let projects = workspace.list_projects();
-    if let Some(project) = projects.into_iter().find(|p| p.name == project_name) {
-        for sess in project.sessions {
-            if let Some(bucket) = app.sessions.get(&sess.session)
+    let failed: Vec<forge_workspace::SessionKey> = app
+        .sessions
+        .iter()
+        .filter(|(_, bucket)| {
+            bucket.project == project_name
                 && bucket.lifecycle_state == SessionLifecycleState::Failed
-            {
-                // Cascade-aware: a failed lead bucket may have workers
-                // attached; closing the lead must drain them.
-                workspace.release_session_with_cascade(&sess.session);
-                app.sessions.remove(&sess.session);
-            }
+        })
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in failed {
+        // Cascade-aware: a failed lead bucket may have workers attached;
+        // closing the lead must drain them.
+        if let Some(workspace) = app.workspace.as_ref() {
+            workspace.release_session_with_cascade(&key);
         }
+        app.sessions.remove(&key);
     }
 
-    // Dispatch a fresh spawn. Workspace will create a new synthetic
+    // Dispatch a fresh spawn, which mints the session id and opens a new
     // bucket on the next event tick.
     let launch_settings = crate::app::connect::session_launch_settings_for_startup(app);
     if let Some(workspace) = app.workspace.as_ref()
@@ -1207,7 +1176,46 @@ fn retry_project(app: &mut App, project_name: &str) {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::app::session::UiSession;
+    use forge_workspace::SessionKey;
     use std::time::Duration;
+
+    /// Retrying a failed project clears its bucket. Found by the bucket's
+    /// own stamp: a session that failed before `Connected` is never in
+    /// the catalog, so a catalog-based lookup leaves the stub in place
+    /// and the row reading failed - which is the state the retry exists
+    /// to clear.
+    #[test]
+    fn retry_clears_a_failed_bucket_the_catalog_never_saw() {
+        let mut app = App::test_default();
+        let stub = SessionKey::from_session_id("failed-stub");
+        let mut bucket = UiSession::new(stub.clone(), "forge");
+        bucket.lifecycle_state = SessionLifecycleState::Failed;
+        app.sessions.insert(stub.clone(), bucket);
+
+        retry_project(&mut app, "forge");
+
+        assert!(
+            !app.sessions.contains_key(&stub),
+            "the failed stub is cleared, not left reading failed",
+        );
+    }
+
+    /// The negative control: a project's settled bucket is not the one a
+    /// retry clears, so the assertion above is about the lifecycle and
+    /// not about the function emptying `sessions`.
+    #[test]
+    fn retry_leaves_a_settled_bucket_alone() {
+        let mut app = App::test_default();
+        let settled = SessionKey::from_session_id("settled-uuid");
+        let mut bucket = UiSession::new(settled.clone(), "forge");
+        bucket.lifecycle_state = SessionLifecycleState::Idle;
+        app.sessions.insert(settled.clone(), bucket);
+
+        retry_project(&mut app, "forge");
+
+        assert!(app.sessions.contains_key(&settled), "a settled bucket survives a retry");
+    }
 
     #[test]
     fn truncate_keeps_short_strings() {

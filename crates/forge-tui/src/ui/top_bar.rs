@@ -95,50 +95,43 @@ fn build_active_context(app: &App, max_chars: usize) -> String {
     projects_pane::truncate_with_ellipsis(&raw, max_chars)
 }
 
-/// Active project's user-facing `name` (from `forge.toml`). Handles
-/// the synthetic-key sentinels (`__spawn_<name>__`, `__resume_<id>__`)
-/// so the top bar reflects the project the user just clicked even
-/// during the Spawning window - before `Connected` arrives and the
-/// bucket migrates to its real session id.
+/// Active project's user-facing `name` (from `forge.toml`), preferring
+/// the catalog's answer and falling back to the bucket's own stamp - the
+/// only source while a spawn's session is not catalogued yet, which is
+/// the whole wake window.
 fn active_project_label(app: &App) -> Option<String> {
-    let workspace = app.workspace.as_ref()?;
     let active_key = app.active_session_key.as_ref()?;
-    let projects = workspace.list_projects();
-    let refs: Vec<&ProjectView> = projects.iter().collect();
-    projects_pane::resolve_active_project_view(active_key, &refs).map(|p| p.name.clone())
+    if let Some(workspace) = app.workspace.as_ref() {
+        let projects = workspace.list_projects();
+        let refs: Vec<&ProjectView> = projects.iter().collect();
+        if let Some(view) = projects_pane::resolve_active_project_view(active_key, &refs) {
+            return Some(view.name.clone());
+        }
+    }
+    app.active_session().map(|s| s.project.clone()).filter(|project| !project.is_empty())
 }
 
 /// Compact representation of the active session for the top-bar
-/// strip. Prefers the on-disk `SessionView::label` when one exists;
-/// falls back to a short-form session UUID; finally `None` when no
-/// session is focused or its bucket has no id yet.
+/// strip. Prefers the on-disk `SessionView::label` when one exists, says
+/// `waking` while the bucket has not connected, and falls back to a
+/// short-form session UUID.
 fn active_session_label(app: &App) -> Option<String> {
-    if let Some(active_key) = app.active_session_key.as_ref() {
-        let s = active_key.as_str();
-        // Synthetic keys: surface a short status word rather than the
-        // raw sentinel string. Lets the user see *what's happening*
-        // (waking / resuming) instead of `__spawn_dotfiles__`.
-        if s.starts_with("__spawn_") && s.ends_with("__") {
-            return Some("waking".to_owned());
-        }
-        if let Some(id) = s.strip_prefix("__resume_").and_then(|r| r.strip_suffix("__"))
-            && let Some(workspace) = app.workspace.as_ref()
-        {
-            for project in workspace.list_projects() {
-                if let Some(view) = project.sessions.iter().find(|sv| sv.session.as_str() == id)
-                    && !view.label.is_empty()
-                {
-                    return Some(view.label.clone());
-                }
-            }
-        }
-        if let Some(workspace) = app.workspace.as_ref() {
-            for project in workspace.list_projects() {
-                if let Some(view) = project.sessions.iter().find(|sv| &sv.session == active_key)
-                    && !view.label.is_empty()
-                {
-                    return Some(view.label.clone());
-                }
+    // A bucket mid-wake has no id and no catalog row yet; say what is
+    // happening rather than leaving the strip blank until `Connected`.
+    if let Some(active_key) = app.active_session_key.as_ref()
+        && let Some(bucket) = app.sessions.get(active_key)
+        && bucket.lifecycle_state == forge_primitives::SessionLifecycleState::Spawning
+    {
+        return Some("waking".to_owned());
+    }
+    if let Some(active_key) = app.active_session_key.as_ref()
+        && let Some(workspace) = app.workspace.as_ref()
+    {
+        for project in workspace.list_projects() {
+            if let Some(view) = project.sessions.iter().find(|sv| &sv.session == active_key)
+                && !view.label.is_empty()
+            {
+                return Some(view.label.clone());
             }
         }
     }
@@ -152,4 +145,27 @@ fn active_session_label(app: &App) -> Option<String> {
             s
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::session::{SessionLifecycleState, UiSession};
+    use forge_workspace::SessionKey;
+
+    /// The wake window is the one moment the strip has an id but no
+    /// session behind it: the bucket exists under the id the spawn
+    /// minted, and the CLI has not connected yet. It says what is
+    /// happening rather than falling through to the em-dash placeholder.
+    #[test]
+    fn the_strip_says_waking_while_the_focused_bucket_has_not_connected() {
+        let mut app = App::test_default();
+        let key = SessionKey::from_session_id("9f1c2b3a-4d5e-4f60-8a7b-0c1d2e3f4a5b");
+        let mut bucket = UiSession::new(key.clone(), "forge");
+        bucket.lifecycle_state = SessionLifecycleState::Spawning;
+        app.sessions.insert(key.clone(), bucket);
+        app.active_session_key = Some(key);
+
+        assert_eq!(active_session_label(&app).as_deref(), Some("waking"));
+    }
 }

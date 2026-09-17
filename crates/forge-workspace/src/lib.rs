@@ -67,6 +67,7 @@ mod domain_session;
 mod error;
 mod gotify;
 pub(crate) mod mcp;
+mod parked;
 pub mod protocol;
 mod provider_probe;
 mod review;

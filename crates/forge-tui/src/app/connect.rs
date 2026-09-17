@@ -505,9 +505,9 @@ mod tests {
     async fn create_app_launchpad_mode_leaves_cwd_raw_empty() {
         // No argv → launchpad mode → no project picked → nothing is
         // focused, so `cwd_raw()` is `None`. This is the invariant the
-        // `find_running_bucket_for_path` lookup depends on: a boot
-        // with no session can never collide with a real project's
-        // `path` because there's nothing to compare against.
+        // project-row lookup depends on: a boot with no session can
+        // never collide with a real project's `path` because there is
+        // nothing to compare against.
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());

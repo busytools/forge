@@ -109,7 +109,7 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 | `·` | Sleeping / Failed / LoggedOut | dim |
 | `○` + age | No live session: age instead of a glyph and close button | dim |
 
-Selection highlights the selected session's own row when the pane draws one for it, and nothing else - selecting a worker leaves its lead row plain, and a selection with no drawn row (the `__resume_...__` waking window, a resumed worker JSONL) highlights nothing. A row's glyph shape reads only that session's own state, so the same state shows the same glyph whether the row is selected or not. Selection is colour only: the selected row's glyph renders rust orange in place of its state colour, and its label rust orange bold.
+Selection highlights the selected session's own row when the pane draws one for it, and nothing else - selecting a worker leaves its lead row plain, and a selection with no drawn row (a session still in its waking window, a resumed worker JSONL) highlights nothing. A row's glyph shape reads only that session's own state, so the same state shows the same glyph whether the row is selected or not. Selection is colour only: the selected row's glyph renders rust orange in place of its state colour, and its label rust orange bold.
 
 <details>
 <summary>Chrome colors, the versions row, spend fine print, panel layout</summary>
