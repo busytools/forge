@@ -174,10 +174,7 @@ pub enum WorkspaceError {
     /// sessions. Both are caller statements, so a disagreement is a
     /// caller bug rather than something to resolve.
     #[error("spawn role {role:?} and target slot '{slot}' name different sessions")]
-    SpawnRoleSlotDisagree {
-        role: crate::protocol::SpawnRole,
-        slot: String,
-    },
+    SpawnRoleSlotDisagree { role: crate::protocol::SpawnRole, slot: String },
 
     #[error(
         "org '{org}' in forge.toml at {} references unknown account '{account}'; valid accounts: {valid}",

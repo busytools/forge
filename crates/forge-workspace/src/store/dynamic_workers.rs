@@ -1,14 +1,11 @@
-//! Worker persistence on the redb `dynamic_workers` table.
+//! The retired `dynamic_workers` table, kept only to drain it.
 //!
-//! A worker persists its spawn args here at `workers__spawn` so a forge
-//! restart can re-spawn it; the row is the only thing that brings one
-//! back. Keyed by `(project_key, label)` - at most one row per label per
-//! project. The whole record is stored as serde-json; the session_id is
-//! deliberately NOT stored, since the `sessions` table holds it.
+//! Worker persistence moved onto the `sessions` table, which is keyed by
+//! `(org, project, label)` and carries the same re-spawn arguments. This
+//! module survives for one thing: [`list_all`], which the boot's
+//! one-time sweep reads, and [`drop_table`], which then removes it. Do
+//! not add a write path back.
 
-use std::collections::HashMap;
-
-use anyhow::Context;
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -17,11 +14,9 @@ use super::Db;
 const DYNAMIC_WORKERS: TableDefinition<(&str, &str), &[u8]> =
     TableDefinition::new("dynamic_workers");
 
-/// A persisted worker's re-spawn args, as supplied to the originating
-/// `workers__spawn`, so re-spawn is self-contained. The spawning lead's
-/// session_id is deliberately
-/// absent: a re-spawn re-parents to whatever lead is current on
-/// reconnect, so the original is never read back.
+/// A persisted worker's re-spawn args, as the retired table stored them.
+/// The spawning lead's session_id was deliberately absent: a re-spawn
+/// re-parents to whatever lead is current on reconnect.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DynamicWorker {
     pub project_key: String,
@@ -32,76 +27,15 @@ pub struct DynamicWorker {
     /// note when this worker resumes; `None` keeps the generic note.
     pub resume_kick: Option<String>,
     /// Whether this worker was spawned to be talked to directly, and so
-    /// keeps the built-in `AskUserQuestion` tool. Stored because the
-    /// flag rides the subprocess CLI args and must be re-applied on
-    /// every re-spawn. `default` because a bare `bool` would otherwise
-    /// fail to decode every row written before the field existed, and
-    /// an undecodable row is skipped rather than reported.
+    /// keeps the built-in `AskUserQuestion` tool. `default` because a
+    /// bare `bool` would otherwise fail to decode every row written
+    /// before the field existed, and an undecodable row is skipped
+    /// rather than reported.
     #[serde(default)]
     pub interactive: bool,
 }
 
-/// Persist a dynamic worker, replacing any prior record with the same
-/// `(project_key, label)`.
-pub fn insert(db: &Db, worker: &DynamicWorker) -> anyhow::Result<()> {
-    let value = serde_json::to_vec(worker).context("serialize dynamic worker")?;
-    let txn = db.database().begin_write()?;
-    {
-        let mut table = txn.open_table(DYNAMIC_WORKERS)?;
-        table.insert((worker.project_key.as_str(), worker.label.as_str()), value.as_slice())?;
-    }
-    txn.commit()?;
-    Ok(())
-}
-
-/// Delete the dynamic worker keyed by `(project_key, label)`. Returns
-/// whether a record existed.
-pub fn delete(db: &Db, project_key: &str, label: &str) -> anyhow::Result<bool> {
-    let txn = db.database().begin_write()?;
-    let existed = {
-        let mut table = txn.open_table(DYNAMIC_WORKERS)?;
-        table.remove((project_key, label))?.is_some()
-    };
-    txn.commit()?;
-    Ok(existed)
-}
-
-/// Every persisted dynamic worker for `project_key`.
-pub fn list_for_project(db: &Db, project_key: &str) -> anyhow::Result<Vec<DynamicWorker>> {
-    let txn = db.database().begin_read()?;
-    let table = match txn.open_table(DYNAMIC_WORKERS) {
-        Ok(t) => t,
-        // A fresh database has no table until the first write; an absent
-        // table is an empty list, not an error.
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-        Err(e) => return Err(e.into()),
-    };
-    let mut out = Vec::new();
-    for entry in table.iter()? {
-        let (key, value) = entry?;
-        match serde_json::from_slice::<DynamicWorker>(value.value()) {
-            Ok(worker) if worker.project_key == project_key => out.push(worker),
-            Ok(_) => {}
-            // One undecodable record (schema drift, a corrupt blob) must not
-            // wipe the rest of the durable set - skip it and warn. The key
-            // stays readable even when the value doesn't, so name which
-            // worker lost durability.
-            Err(err) => {
-                let (row_project, row_label) = key.value();
-                tracing::warn!(
-                    target: "forge_workspace::store::dynamic_workers",
-                    project = %row_project,
-                    label = %row_label,
-                    error = %err,
-                    "skipping dynamic worker record that failed to decode",
-                );
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Every persisted worker, in key order. The migration into the
+/// Every persisted worker, in key order. The one-time sweep into the
 /// `sessions` table reads the whole set, not one project's slice.
 pub fn list_all(db: &Db) -> anyhow::Result<Vec<DynamicWorker>> {
     let txn = db.database().begin_read()?;
@@ -134,24 +68,30 @@ pub fn list_all(db: &Db) -> anyhow::Result<Vec<DynamicWorker>> {
     Ok(out)
 }
 
-/// Every persisted label, grouped by project key, each group in key
-/// order. Reads the composite key alone and never deserializes the
-/// record, so a caller on a render path pays neither to parse each
-/// worker's charter nor to re-scan the table once per project.
-pub fn labels_by_project(db: &Db) -> anyhow::Result<HashMap<String, Vec<String>>> {
-    let txn = db.database().begin_read()?;
-    let table = match txn.open_table(DYNAMIC_WORKERS) {
-        Ok(t) => t,
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(HashMap::new()),
-        Err(e) => return Err(e.into()),
-    };
-    let mut out: HashMap<String, Vec<String>> = HashMap::new();
-    for entry in table.iter()? {
-        let (key, _) = entry?;
-        let (project_key, label) = key.value();
-        out.entry(project_key.to_owned()).or_default().push(label.to_owned());
+/// Remove the table, once the sweep has drained it. Returns whether a
+/// table was there to drop. Callers compact afterwards, because dropping
+/// a table reclaims nothing on its own.
+pub fn drop_table(db: &Db) -> anyhow::Result<bool> {
+    let txn = db.database().begin_write()?;
+    // `false` for a store that never had the table, which is not an
+    // error: the boot drains cleanly either way.
+    let dropped = txn.delete_table(DYNAMIC_WORKERS)?;
+    txn.commit()?;
+    Ok(dropped)
+}
+
+/// Plant a row, so a test can exercise the sweep against a store that
+/// still has the old table. Production has no write path here.
+#[cfg(test)]
+pub(crate) fn insert_for_test(db: &Db, worker: &DynamicWorker) -> anyhow::Result<()> {
+    let value = serde_json::to_vec(worker)?;
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(DYNAMIC_WORKERS)?;
+        table.insert((worker.project_key.as_str(), worker.label.as_str()), value.as_slice())?;
     }
-    Ok(out)
+    txn.commit()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -173,8 +113,8 @@ mod tests {
     /// A row persisted before `interactive` existed decodes as
     /// not-interactive. `interactive` is a bare `bool`, so without
     /// `#[serde(default)]` every already-persisted row fails to decode
-    /// and `list_for_project` skips it - the worker silently stops
-    /// being re-spawned at all.
+    /// and the sweep skips it - the worker silently stops being
+    /// re-spawned at all.
     #[test]
     fn row_written_before_interactive_existed_loads_as_not_interactive() {
         let dir = tempdir().expect("tempdir");
@@ -195,7 +135,7 @@ mod tests {
         }
         txn.commit().expect("commit");
 
-        let loaded = list_for_project(&db, "proj-a").expect("list");
+        let loaded = list_all(&db).expect("list");
         assert_eq!(loaded.len(), 1, "a row written before `interactive` existed still decodes");
         assert_eq!(
             loaded[0],
@@ -211,113 +151,12 @@ mod tests {
         );
     }
 
-    /// A row persisted before `resume_kick` existed still decodes, with
-    /// every prior field intact and `resume_kick: None`. The store has no
-    /// migration mechanism and a decode failure surfaces only as a skipped
-    /// row, so losing this would silently stop re-spawning that worker.
     #[test]
-    fn row_written_before_resume_kick_existed_still_loads() {
+    fn list_all_round_trips_and_skips_a_corrupt_row() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
-
-        let old_shape = serde_json::json!({
-            "project_key": "proj-a",
-            "label": "steward",
-            "charter": "mind the queues",
-            "kick": "begin",
-        });
-        let txn = db.database().begin_write().expect("begin");
-        {
-            let mut table = txn.open_table(DYNAMIC_WORKERS).expect("open table");
-            let value = serde_json::to_vec(&old_shape).expect("serialize old row");
-            table.insert(("proj-a", "steward"), value.as_slice()).expect("insert old row");
-        }
-        txn.commit().expect("commit");
-
-        let loaded = list_for_project(&db, "proj-a").expect("list");
-        assert_eq!(loaded.len(), 1, "a row written before the field existed still decodes");
-        assert_eq!(
-            loaded[0],
-            DynamicWorker {
-                project_key: "proj-a".to_owned(),
-                label: "steward".to_owned(),
-                charter: "mind the queues".to_owned(),
-                kick: Some("begin".to_owned()),
-                resume_kick: None,
-                interactive: false,
-            },
-            "every prior field survives and the absent one defaults to None",
-        );
-    }
-
-    #[test]
-    fn dynamic_worker_store_round_trip() {
-        let dir = tempdir().expect("tempdir");
-        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
-
-        let w1 = worker("proj-a", "reviewer");
-        let mut w2 = worker("proj-a", "tester");
-        w2.interactive = true;
-        let w3 = worker("proj-b", "reviewer");
-        insert(&db, &w1).expect("insert w1");
-        insert(&db, &w2).expect("insert w2");
-        insert(&db, &w3).expect("insert w3");
-
-        let a = list_for_project(&db, "proj-a").expect("list a");
-        assert_eq!(a.len(), 2, "proj-a has two dynamic workers");
-        assert!(a.iter().any(|w| w.label == "reviewer") && a.iter().any(|w| w.label == "tester"));
-        assert!(
-            a.iter().find(|w| w.label == "tester").expect("tester present").interactive,
-            "interactive survives the redb round-trip",
-        );
-        let b = list_for_project(&db, "proj-b").expect("list b");
-        assert_eq!(b.len(), 1, "proj-b is scoped separately from proj-a");
-        assert_eq!(b[0].label, "reviewer");
-        assert_eq!(
-            b[0].resume_kick.as_deref(),
-            Some("resume kick for reviewer"),
-            "resume_kick survives the redb round-trip",
-        );
-
-        // Re-insert of the same (project, label) replaces, never duplicates.
-        let mut w1b = worker("proj-a", "reviewer");
-        w1b.charter = "updated charter".to_owned();
-        insert(&db, &w1b).expect("re-insert reviewer");
-        let a = list_for_project(&db, "proj-a").expect("list a again");
-        assert_eq!(a.len(), 2, "re-insert of the same key replaces, no duplicate row");
-        assert_eq!(
-            a.iter().find(|w| w.label == "reviewer").expect("reviewer present").charter,
-            "updated charter",
-        );
-
-        // Delete is scoped by (project, label).
-        assert!(
-            delete(&db, "proj-a", "reviewer").expect("delete"),
-            "an existing row deletes to true"
-        );
-        assert!(
-            !delete(&db, "proj-a", "reviewer").expect("delete again"),
-            "an absent row deletes to false",
-        );
-        assert_eq!(list_for_project(&db, "proj-a").expect("list").len(), 1);
-        assert_eq!(
-            list_for_project(&db, "proj-b").expect("list").len(),
-            1,
-            "deleting from proj-a leaves proj-b untouched",
-        );
-    }
-
-    /// The launchpad reads labels every frame, so this path must not
-    /// parse the records. Scoping still holds, and a row whose value is
-    /// undecodable still yields its label - the proof that the key alone
-    /// was read, since `list_for_project` drops that same row.
-    #[test]
-    fn labels_read_the_key_without_decoding_the_record() {
-        let dir = tempdir().expect("tempdir");
-        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
-
-        insert(&db, &worker("proj-a", "reviewer")).expect("insert reviewer");
-        insert(&db, &worker("proj-b", "tester")).expect("insert tester");
+        insert_for_test(&db, &worker("proj-a", "reviewer")).expect("insert reviewer");
+        insert_for_test(&db, &worker("proj-b", "tester")).expect("insert tester");
         let txn = db.database().begin_write().expect("begin");
         {
             let mut table = txn.open_table(DYNAMIC_WORKERS).expect("open table");
@@ -325,37 +164,29 @@ mod tests {
         }
         txn.commit().expect("commit");
 
-        let grouped = labels_by_project(&db).expect("list labels");
+        let all = list_all(&db).expect("list tolerates the corrupt blob");
+        assert_eq!(all.len(), 2, "the good records survive a corrupt sibling");
         assert_eq!(
-            grouped.get("proj-a"),
-            Some(&vec!["corrupt".to_owned(), "reviewer".to_owned()]),
-            "labels come from the composite key, so an undecodable record still reports its label",
-        );
-        assert_eq!(
-            grouped.get("proj-b"),
-            Some(&vec!["tester".to_owned()]),
-            "one scan groups every project separately rather than merging them",
+            all[1].resume_kick.as_deref(),
+            Some("resume kick for tester"),
+            "the record round-trips through redb",
         );
     }
 
+    /// Dropping the table reports whether it was there, and a second
+    /// drop is not an error - a store that never had the table opens and
+    /// drains cleanly either way.
     #[test]
-    fn corrupt_record_is_skipped_not_fatal() {
+    fn drop_table_reports_whether_the_table_was_there() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        assert!(
+            !drop_table(&db).expect("drop an absent table"),
+            "a store that never had the table drops nothing",
+        );
 
-        let good = worker("proj-a", "reviewer");
-        insert(&db, &good).expect("insert good");
-
-        // A blob that isn't a valid dynamic worker must not poison the load.
-        let txn = db.database().begin_write().expect("begin");
-        {
-            let mut table = txn.open_table(DYNAMIC_WORKERS).expect("open table");
-            table.insert(("proj-a", "corrupt"), "not a worker".as_bytes()).expect("insert corrupt");
-        }
-        txn.commit().expect("commit");
-
-        let a = list_for_project(&db, "proj-a").expect("list tolerates the corrupt blob");
-        assert_eq!(a.len(), 1, "the good record survives a corrupt sibling");
-        assert_eq!(a[0].label, "reviewer");
+        insert_for_test(&db, &worker("proj-a", "reviewer")).expect("insert reviewer");
+        assert!(drop_table(&db).expect("drop the table"), "a planted table drops to true");
+        assert!(list_all(&db).expect("list a dropped table").is_empty(), "and its rows are gone");
     }
 }

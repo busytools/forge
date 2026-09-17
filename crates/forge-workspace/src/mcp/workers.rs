@@ -9,7 +9,8 @@ use forge_sdk::mcp::server::McpServer;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
-use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta};
+use crate::SessionSlot;
+use crate::mcp::peers::facade::PeerStatsDelta;
 use crate::mcp::peers::types::{
     AskChannel, CorrelationId, InflightAsk, ReplyRouting, WrappedKind, WrappedPrompt,
 };
@@ -38,8 +39,8 @@ pub(crate) fn worker_target_project_key(project_key: &str, label: &str) -> Strin
 /// into one server (the CLI rejects duplicate-name MCP servers, so
 /// both modules must register their tools through a single builder).
 #[cfg(any(test, feature = "testing"))]
-pub fn build_server(facade: Arc<dyn WorkerFacade>, caller_key: CallerKeyResolver) -> McpServer {
-    add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, caller_key).build()
+pub fn build_server(facade: Arc<dyn WorkerFacade>, slot: SessionSlot) -> McpServer {
+    add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, slot).build()
 }
 
 /// Attach the four workers-coordination tools to an existing
@@ -48,15 +49,15 @@ pub fn build_server(facade: Arc<dyn WorkerFacade>, caller_key: CallerKeyResolver
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn WorkerFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 ) -> McpServerBuilder {
-    let spawn = Spawn { facade: facade.clone(), caller_key: caller_key.clone() };
-    let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
-    let capacity = Capacity { facade: facade.clone(), caller_key: caller_key.clone() };
-    let tell = Tell { facade: facade.clone(), caller_key: caller_key.clone() };
-    let ask = Ask { facade: facade.clone(), caller_key: caller_key.clone() };
-    let despawn = Despawn { facade: facade.clone(), caller_key: caller_key.clone() };
-    let update = Update { facade, caller_key };
+    let spawn = Spawn { facade: facade.clone(), slot: slot.clone() };
+    let list = List { facade: facade.clone(), slot: slot.clone() };
+    let capacity = Capacity { facade: facade.clone(), slot: slot.clone() };
+    let tell = Tell { facade: facade.clone(), slot: slot.clone() };
+    let ask = Ask { facade: facade.clone(), slot: slot.clone() };
+    let despawn = Despawn { facade: facade.clone(), slot: slot.clone() };
+    let update = Update { facade, slot };
     builder.tool(spawn).tool(list).tool(capacity).tool(tell).tool(ask).tool(despawn).tool(update)
 }
 
@@ -76,7 +77,7 @@ pub(crate) fn add_tools(
 /// Returns a JSON object: `{ "session_id": "...", "tag": "forge:worker:..." }`.
 pub(crate) struct Spawn {
     pub(crate) facade: Arc<dyn WorkerFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -183,10 +184,6 @@ impl Tool for Spawn {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
         // An empty one is `Some`, so it would beat the restart-note
         // fallback and dispatch a blank first turn on every resume - the
         // same contract `workers__update` holds this arg to.
@@ -196,7 +193,7 @@ impl Tool for Spawn {
         match self
             .facade
             .spawn_worker(
-                &caller_key,
+                &self.slot,
                 args.label,
                 args.charter,
                 args.kick,
@@ -282,7 +279,7 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
 /// `{ "status": "blocked", "reason": ... }`.
 pub(crate) struct Despawn {
     pub(crate) facade: Arc<dyn WorkerFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -353,15 +350,7 @@ impl Tool for Despawn {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-
-        match self
-            .facade
-            .despawn_worker(&caller_key, &args.label, args.force.unwrap_or(false))
-            .await
+        match self.facade.despawn_worker(&self.slot, &args.label, args.force.unwrap_or(false)).await
         {
             Ok(DespawnOutcome::Despawned { worktree_cleanup_warning, branch_cleanup_warning }) => {
                 let mut body = serde_json::json!({ "status": "despawned" });
@@ -425,7 +414,7 @@ fn format_despawn_error(err: &WorkerDespawnError) -> String {
 /// known project, which should never happen in practice).
 pub(crate) struct List {
     pub(crate) facade: Arc<dyn WorkerFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[async_trait::async_trait]
@@ -471,11 +460,7 @@ impl Tool for List {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let caller_key = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-        let workers = self.facade.list_workers(&caller_key);
+        let workers = self.facade.list_workers(&self.slot);
         match serde_json::to_string_pretty(&workers) {
             Ok(json) => ToolOutput::text(json),
             Err(err) => tool_error(format!("worker-list serialization failed: {err}")),
@@ -488,7 +473,7 @@ impl Tool for List {
 /// per-worker snapshots `workers__list` returns.
 pub(crate) struct Capacity {
     pub(crate) facade: Arc<dyn WorkerFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[async_trait::async_trait]
@@ -515,11 +500,7 @@ impl Tool for Capacity {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let caller_key = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-        let Some(capacity) = self.facade.capacity(&caller_key) else {
+        let Some(capacity) = self.facade.capacity(&self.slot) else {
             return tool_error(
                 "could not resolve caller to a known project (forge bug)".to_owned(),
             );
@@ -553,7 +534,7 @@ impl Tool for Capacity {
 /// status string for symmetry with peer-MCP's tell.
 pub(crate) struct Tell {
     pub(crate) facade: Arc<dyn WorkerFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -620,11 +601,6 @@ impl Tool for Tell {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-
         // Validate `in_reply_to` shape at the tool boundary. A
         // malformed id would silently miss the inflight-map lookup
         // and degrade to Message, hiding the actual problem - reject
@@ -642,7 +618,7 @@ impl Tool for Tell {
             },
         };
 
-        let identity = self.facade.caller_identity(&caller_key);
+        let identity = self.facade.caller_identity(&self.slot);
         let correlation_id = CorrelationId::new_tell();
 
         match classify_workers_tell(&*self.facade, in_reply_to_id.as_ref()) {
@@ -669,7 +645,7 @@ impl Tool for Tell {
                 // Reply resolved cleanly: close the ask + decrement the
                 // replier's incoming and the original asker's outgoing.
                 self.facade.complete_inflight_ask(&correlation);
-                self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::IncomingMinus1);
+                self.facade.bump_inflight_stats(&self.slot, PeerStatsDelta::IncomingMinus1);
                 self.facade.bump_inflight_stats(&caller, PeerStatsDelta::OutgoingMinus1);
                 deliver_ok_response(&correlation_id, None)
             }
@@ -698,11 +674,11 @@ impl Tool for Tell {
                 // have no lead. See `LEAD_LABEL` in `mcp::workers::facade`.
                 let delivery = if args.label == LEAD_LABEL {
                     self.facade
-                        .deliver_prompt_to_lead(&caller_key, wrapped)
+                        .deliver_prompt_to_lead(&self.slot, wrapped)
                         .map_err(|err| format_lead_deliver_error(&err))
                 } else {
                     self.facade
-                        .deliver_worker_prompt(&caller_key, &args.label, wrapped)
+                        .deliver_worker_prompt(&self.slot, &args.label, wrapped)
                         .map_err(|err| format_deliver_error(&args.label, &err))
                 };
                 match delivery {
@@ -807,7 +783,7 @@ fn format_deliver_error(label: &str, err: &WorkerDeliverError) -> String {
 /// and a `delivered` status string.
 pub(crate) struct Ask {
     pub(crate) facade: Arc<dyn WorkerFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -865,13 +841,9 @@ impl Tool for Ask {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
         let correlation_id = CorrelationId::new_ask();
 
-        let identity = self.facade.caller_identity(&caller_key);
+        let identity = self.facade.caller_identity(&self.slot);
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
@@ -892,7 +864,7 @@ impl Tool for Ask {
         // matches on this composite when a worker closes.
         let caller_project_key = self
             .facade
-            .caller_project(&caller_key)
+            .caller_project(&self.slot)
             .map(|cp| cp.project_key.as_str().to_owned())
             .unwrap_or_default();
         let target_project_composite = worker_target_project_key(&caller_project_key, &args.label);
@@ -907,7 +879,7 @@ impl Tool for Ask {
         self.facade.register_inflight_ask(InflightAsk {
             correlation_id: correlation_id.clone(),
             channel: AskChannel::Workers,
-            caller: caller_key.clone(),
+            caller: self.slot.clone(),
             target_project: target_project_composite,
             target_session: None,
         });
@@ -916,34 +888,34 @@ impl Tool for Ask {
         // regardless of whether the asks went peer-ward or
         // worker-ward. Decrement fires when the recipient's
         // `workers__tell` with `in_reply_to` closes the ask.
-        self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingPlus1);
+        self.facade.bump_inflight_stats(&self.slot, PeerStatsDelta::OutgoingPlus1);
 
         // Reserved keyword: `label="lead"` routes back to the caller's
         // lead session (the worker's spawner). Workers ask their lead
         // for project-level direction; leads can't use this addressing
         // (no lead above them).
         if args.label == LEAD_LABEL {
-            return match self.facade.deliver_prompt_to_lead(&caller_key, wrapped) {
+            return match self.facade.deliver_prompt_to_lead(&self.slot, wrapped) {
                 Ok(_) => deliver_ok_response(&correlation_id, None),
                 Err(err) => {
                     // Rollback: delivery never landed. Counter +
                     // inflight both rewind so the map / badge stay
                     // consistent with reality.
                     self.facade.complete_inflight_ask(&correlation_id);
-                    self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingMinus1);
+                    self.facade.bump_inflight_stats(&self.slot, PeerStatsDelta::OutgoingMinus1);
                     tool_error(format_lead_deliver_error(&err))
                 }
             };
         }
 
-        match self.facade.deliver_worker_prompt(&caller_key, &args.label, wrapped) {
+        match self.facade.deliver_worker_prompt(&self.slot, &args.label, wrapped) {
             Ok(_) => deliver_ok_response(&correlation_id, None),
             Err(err) => {
                 // Rollback: the dispatch never reached the worker so
                 // the inflight_asks entry + outgoing bump would
                 // otherwise leak.
                 self.facade.complete_inflight_ask(&correlation_id);
-                self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingMinus1);
+                self.facade.bump_inflight_stats(&self.slot, PeerStatsDelta::OutgoingMinus1);
                 tool_error(format_deliver_error(&args.label, &err))
             }
         }
@@ -968,7 +940,7 @@ impl Tool for Ask {
 /// Returns `{ "label", "updated": [...] }` naming the fields that changed.
 pub(crate) struct Update {
     pub(crate) facade: Arc<dyn WorkerFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -1034,12 +1006,7 @@ impl Tool for Update {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-
-        let Some(caller_project) = self.facade.caller_project(&caller_key) else {
+        let Some(caller_project) = self.facade.caller_project(&self.slot) else {
             return tool_error("workers__update: caller resolves to no known project".to_owned());
         };
         if !caller_project.is_lead {
@@ -1080,7 +1047,7 @@ impl Tool for Update {
         }
 
         match self.facade.update_worker(
-            &caller_key,
+            &self.slot,
             label,
             args.charter,
             args.kick,
@@ -1114,7 +1081,6 @@ fn format_update_error(err: &WorkerUpdateError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionSlot;
     use crate::mcp::workers::facade::{
         CallerProject, MockWorkerFacade, WorkerCapSource, WorkerCapacity,
     };
@@ -1143,8 +1109,7 @@ mod tests {
             durability_warning: None,
         }));
         let facade = mock.into_arc();
-        let tool =
-            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Spawn { facade, slot: fake_key("lead-key") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1165,8 +1130,7 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("worker-key"), worker_caller("forge"));
         let facade = mock.into_arc();
-        let tool =
-            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("worker-key")) };
+        let tool = Spawn { facade, slot: fake_key("worker-key") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1188,8 +1152,7 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool =
-            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Spawn { facade, slot: fake_key("lead-key") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1207,8 +1170,7 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool =
-            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Spawn { facade, slot: fake_key("lead-key") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1226,8 +1188,7 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool =
-            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Spawn { facade, slot: fake_key("lead-key") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1244,7 +1205,7 @@ mod tests {
     fn spawn_metadata_shape() {
         let mock = MockWorkerFacade::new();
         let facade = mock.into_arc();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        let tool = Spawn { facade, slot: fake_key("k") };
         assert_eq!(tool.name(), "workers__spawn");
         assert!(tool.description().to_lowercase().contains("worker"));
         assert!(
@@ -1273,8 +1234,7 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool =
-            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Spawn { facade, slot: fake_key("lead-key") };
         let output =
             tool.call(ToolInput { value: serde_json::json!({ "label": "reviewer" }) }).await;
         assert!(output.is_error, "an omitted charter must be refused");
@@ -1297,7 +1257,7 @@ mod tests {
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Spawn { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1330,7 +1290,7 @@ mod tests {
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Spawn { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1366,7 +1326,7 @@ mod tests {
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Spawn { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1397,7 +1357,7 @@ mod tests {
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Spawn { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
@@ -1435,7 +1395,7 @@ mod tests {
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Spawn { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1464,7 +1424,7 @@ mod tests {
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Spawn { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1499,7 +1459,7 @@ mod tests {
             ),
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Spawn { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
@@ -1526,7 +1486,7 @@ mod tests {
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Spawn { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
@@ -1553,7 +1513,7 @@ mod tests {
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Spawn { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
@@ -1578,7 +1538,7 @@ mod tests {
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Spawn { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
@@ -1594,7 +1554,7 @@ mod tests {
     fn spawn_schema_has_optional_kick() {
         let mock = MockWorkerFacade::new();
         let facade = mock.into_arc();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        let tool = Spawn { facade, slot: fake_key("k") };
         let schema = tool.input_schema();
         assert!(
             schema["properties"].as_object().expect("properties").contains_key("kick"),
@@ -1611,7 +1571,7 @@ mod tests {
         mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
         mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "c")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Despawn { facade, slot: caller };
         let output =
             tool.call(ToolInput { value: serde_json::json!({ "label": "reviewer" }) }).await;
         assert!(!output.is_error, "despawn happy path should not error: {:?}", output.blocks);
@@ -1626,8 +1586,7 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("worker-key"), worker_caller("forge"));
         let facade = mock.into_arc();
-        let tool =
-            Despawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("worker-key")) };
+        let tool = Despawn { facade, slot: fake_key("worker-key") };
         let output = tool.call(ToolInput { value: serde_json::json!({ "label": "x" }) }).await;
         assert!(output.is_error, "non-lead caller must surface as is_error");
         assert!(output.blocks[0].text.to_lowercase().contains("lead-only"));
@@ -1638,8 +1597,7 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool =
-            Despawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Despawn { facade, slot: fake_key("lead-key") };
         let output = tool.call(ToolInput { value: serde_json::json!({ "label": "   " }) }).await;
         assert!(output.is_error);
         assert!(output.blocks[0].text.to_lowercase().contains("label"));
@@ -1651,8 +1609,7 @@ mod tests {
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         // No workers preloaded -> the label resolves to nothing.
         let facade = mock.into_arc();
-        let tool =
-            Despawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Despawn { facade, slot: fake_key("lead-key") };
         let output = tool.call(ToolInput { value: serde_json::json!({ "label": "ghost" }) }).await;
         assert!(output.is_error);
         assert!(output.blocks[0].text.contains("ghost"));
@@ -1667,7 +1624,7 @@ mod tests {
         *mock.despawn_outcome.lock() =
             Some(DespawnOutcome::Blocked { reason: "2 unpushed commits".into() });
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Despawn { facade, slot: caller };
         let output =
             tool.call(ToolInput { value: serde_json::json!({ "label": "reviewer" }) }).await;
         assert!(!output.is_error, "blocked is a normal outcome, not an error: {:?}", output.blocks);
@@ -1690,7 +1647,7 @@ mod tests {
             branch_cleanup_warning: Some("branch 'worktree-reviewer' kept: 2 commits".into()),
         });
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Despawn { facade, slot: caller };
         let output =
             tool.call(ToolInput { value: serde_json::json!({ "label": "reviewer" }) }).await;
         assert!(!output.is_error, "a kept branch is not an error: {:?}", output.blocks);
@@ -1713,7 +1670,7 @@ mod tests {
         mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
         mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "c")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Despawn { facade, slot: caller };
         let output = tool
             .call(ToolInput { value: serde_json::json!({ "label": "reviewer", "force": true }) })
             .await;
@@ -1725,7 +1682,7 @@ mod tests {
     fn despawn_metadata_shape() {
         let mock = MockWorkerFacade::new();
         let facade = mock.into_arc();
-        let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        let tool = Despawn { facade, slot: fake_key("k") };
         assert_eq!(tool.name(), "workers__despawn");
         assert!(tool.description().to_lowercase().contains("despawn"));
         assert!(
@@ -1772,7 +1729,7 @@ mod tests {
             ],
         );
         let facade = mock.into_arc();
-        let tool = List { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = List { facade, slot: caller };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error, "list happy path should not error: {:?}", output.blocks);
         let parsed: serde_json::Value =
@@ -1791,7 +1748,7 @@ mod tests {
         mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
         // No workers pre-loaded for "forge".
         let facade = mock.into_arc();
-        let tool = List { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = List { facade, slot: caller };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error);
         let parsed: serde_json::Value =
@@ -1805,8 +1762,7 @@ mod tests {
         // No caller mapping pre-loaded - resolves to None, facade
         // returns an empty Vec.
         let facade = mock.into_arc();
-        let tool =
-            List { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("ghost-key")) };
+        let tool = List { facade, slot: fake_key("ghost-key") };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error);
         let parsed: serde_json::Value =
@@ -1824,7 +1780,7 @@ mod tests {
         mock.callers.lock().insert(caller.clone(), worker_caller("forge"));
         mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "charter")]);
         let facade = mock.into_arc();
-        let tool = List { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = List { facade, slot: caller };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error);
         let parsed: serde_json::Value =
@@ -1836,7 +1792,7 @@ mod tests {
     fn list_metadata_shape() {
         let mock = MockWorkerFacade::new();
         let facade = mock.into_arc();
-        let tool = List { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        let tool = List { facade, slot: fake_key("k") };
         assert_eq!(tool.name(), "workers__list");
         assert!(tool.description().to_lowercase().contains("list"));
         let schema = tool.input_schema();
@@ -1851,7 +1807,7 @@ mod tests {
         mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
         mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "charter")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Tell { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1878,7 +1834,7 @@ mod tests {
         mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
         mock.workers.lock().insert("forge".into(), vec![]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Tell { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1905,7 +1861,7 @@ mod tests {
         mock.callers.lock().insert(caller.clone(), worker_caller("forge"));
         mock.workers.lock().insert("forge".into(), vec![fake_worker("peer-worker", "charter")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Tell { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1923,7 +1879,7 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Tell { facade, slot: fake_key("lead-key") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1940,7 +1896,7 @@ mod tests {
     fn tell_metadata_shape() {
         let mock = MockWorkerFacade::new();
         let facade = mock.into_arc();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        let tool = Tell { facade, slot: fake_key("k") };
         assert_eq!(tool.name(), "workers__tell");
         // Tool description must surface the two shapes (unsolicited
         // vs reply) so the LLM knows about `in_reply_to`.
@@ -1962,7 +1918,7 @@ mod tests {
         mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
         mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "charter")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Ask { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1993,7 +1949,7 @@ mod tests {
         // No 'missing' worker pre-loaded.
         mock.workers.lock().insert("forge".into(), vec![]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Ask { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2021,7 +1977,7 @@ mod tests {
         mock.callers.lock().insert(caller.clone(), worker_caller("forge"));
         mock.workers.lock().insert("forge".into(), vec![fake_worker("peer-worker", "charter")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let tool = Ask { facade, slot: caller };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2040,7 +1996,7 @@ mod tests {
         let mock = Arc::new(MockWorkerFacade::new());
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Ask { facade, slot: fake_key("lead-key") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2058,7 +2014,7 @@ mod tests {
     fn ask_metadata_shape() {
         let mock = MockWorkerFacade::new();
         let facade = mock.into_arc();
-        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        let tool = Ask { facade, slot: fake_key("k") };
         assert_eq!(tool.name(), "workers__ask");
         assert!(tool.description().to_lowercase().contains("asynchronous"));
         let schema = tool.input_schema();
@@ -2071,7 +2027,7 @@ mod tests {
     fn capacity_metadata_shape() {
         let mock = MockWorkerFacade::new();
         let facade = mock.into_arc();
-        let tool = Capacity { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        let tool = Capacity { facade, slot: fake_key("k") };
         assert_eq!(tool.name(), "workers__capacity");
         assert!(tool.description().to_lowercase().contains("capacity"));
         let schema = tool.input_schema();
@@ -2090,8 +2046,7 @@ mod tests {
             cap_source: WorkerCapSource::ProjectMaxWorkers,
         });
         let facade = mock.into_arc();
-        let tool =
-            Capacity { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Capacity { facade, slot: fake_key("lead-key") };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error, "capacity happy path should not error: {:?}", output.blocks);
         let parsed: serde_json::Value =
@@ -2114,8 +2069,7 @@ mod tests {
             cap_source: WorkerCapSource::Default,
         });
         let facade = mock.into_arc();
-        let tool =
-            Capacity { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Capacity { facade, slot: fake_key("lead-key") };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         let parsed: serde_json::Value =
             serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
@@ -2127,7 +2081,7 @@ mod tests {
     fn build_server_registers_all_workers_tools() {
         let mock = MockWorkerFacade::new();
         let facade = mock.into_arc();
-        let server = build_server(facade, CallerKeyResolver::from_fixed(fake_key("test")));
+        let server = build_server(facade, fake_key("test"));
         let debug = format!("{server:?}");
         for expected in [
             "workers__spawn",
@@ -2182,8 +2136,7 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool =
-            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Spawn { facade, slot: fake_key("lead-key") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2207,8 +2160,7 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool =
-            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool = Spawn { facade, slot: fake_key("lead-key") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2234,7 +2186,7 @@ mod tests {
             .lock()
             .insert("forge".into(), vec![worker_with_lead("probe-a", "worker-uuid", "lead-uuid")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let tool = Tell { facade, slot: worker_key };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2256,7 +2208,7 @@ mod tests {
         let lead_key = fake_key("lead-key");
         mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key) };
+        let tool = Tell { facade, slot: lead_key };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2287,7 +2239,7 @@ mod tests {
             .lock()
             .insert("forge".into(), vec![worker_with_lead("probe-a", "worker-uuid", "lead-uuid")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let tool = Ask { facade, slot: worker_key };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2313,7 +2265,7 @@ mod tests {
         let lead_key = fake_key("lead-key");
         mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(lead_key) };
+        let tool = Ask { facade, slot: lead_key };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2338,7 +2290,7 @@ mod tests {
         mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
         // workers map empty - no entry for this session_id
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let tool = Tell { facade, slot: worker_key };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2363,7 +2315,7 @@ mod tests {
             .lock()
             .insert("forge".into(), vec![worker_with_lead("probe", "worker-uuid", "")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let tool = Tell { facade, slot: worker_key };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({ "label": "lead", "message": "any news?" }),
@@ -2415,7 +2367,7 @@ mod tests {
             .lock()
             .insert("forge".into(), vec![worker_with_lead("probe-a", "worker-uuid", "lead-uuid")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(caller.clone()) };
+        let tool = Ask { facade, slot: caller.clone() };
         let _ = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2452,7 +2404,7 @@ mod tests {
         let ask_id = register_ask(&mock, "q-deadbeef", worker_key.clone(), "forge::lead");
 
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key.clone()) };
+        let tool = Tell { facade, slot: lead_key.clone() };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2493,7 +2445,7 @@ mod tests {
             .lock()
             .insert("forge".into(), vec![worker_with_lead("worker-A", "worker-uuid", "lead-uuid")]);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key.clone()) };
+        let tool = Tell { facade, slot: lead_key.clone() };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2530,7 +2482,7 @@ mod tests {
         let lead_key = fake_key("lead-uuid");
         mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key) };
+        let tool = Tell { facade, slot: lead_key };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2557,7 +2509,7 @@ mod tests {
         mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
         let ask_id = register_ask(&mock, "q-33334444", lead_key.clone(), "forge::worker-A");
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key.clone()) };
+        let tool = Tell { facade, slot: worker_key.clone() };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2609,7 +2561,7 @@ mod tests {
             },
         );
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key) };
+        let tool = Tell { facade, slot: lead_key };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2644,7 +2596,7 @@ mod tests {
         *mock.force_reply_error.lock() =
             Some(crate::mcp::peers::facade::ReplyDeliverError::CallerSessionGone);
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let tool = Tell { facade, slot: worker_key };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -2673,7 +2625,7 @@ mod tests {
         let lead_key = fake_key("lead-uuid");
         mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
         let facade: Arc<dyn WorkerFacade> = mock;
-        Update { facade, caller_key: CallerKeyResolver::from_fixed(lead_key) }
+        Update { facade, slot: lead_key }
     }
 
     /// Only the supplied fields travel to the store. An omitted one
@@ -2764,7 +2716,7 @@ mod tests {
         let worker_key = fake_key("worker-uuid");
         mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Update { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let tool = Update { facade, slot: worker_key };
         let output = tool
             .call(ToolInput { value: serde_json::json!({ "label": "steward", "charter": "c" }) })
             .await;

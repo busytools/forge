@@ -263,11 +263,12 @@ pub(crate) fn handle_deliver_peer_prompt(
     // the workspace pool - that's "running." MUST skip worker
     // sessions: once a worker connects it lands in `view.sessions`
     // too, and a worker can sit at position 0 / be the first
-    // is_open session. Returning a worker key here dispatches the
-    // peer envelope to the worker's chat instead of the lead's,
-    // which is wrong (peers address project leads, not workers).
-    // `live_workers` is the authoritative worker registry; subtract
-    // its session keys from the candidate set.
+    // is_open session. Returning a worker here dispatches the peer
+    // envelope to the worker's chat instead of the lead's, which is
+    // wrong (peers address project leads, not workers). Asking for the
+    // lead slot by name cannot reach a worker: the label is part of the
+    // slot, so the two are distinct keys rather than candidates to
+    // subtract.
     let target_running_key =
         workspace.list_projects().into_iter().find(|v| v.name == target_project).and_then(|v| {
             let slot = SessionSlot::lead(&v.org, &v.name);
@@ -381,7 +382,7 @@ pub(crate) fn deliver_cron_prompt(
         return CronFireOutcome::TargetGone;
     };
 
-    if let Some(target_key) = live_cron_owner(workspace, &view, team_role) {
+    if let Some(target_key) = live_cron_slot(workspace, &view, team_role) {
         // Echo the cron block BEFORE the LLM-side dispatch so it renders in
         // order regardless of which event the TUI reducer drains first.
         let text = missed_cron_text(&prompt, missed);
@@ -404,7 +405,7 @@ pub(crate) fn deliver_cron_prompt(
     // Asleep: only wake an owner we can confirm still exists. A conclusive
     // absence removes the cron; an owner check that could not read leaves it
     // for the next tick rather than deleting a real owner's cron on a hiccup.
-    match cron_owner_exists(workspace, &view, team_role) {
+    match cron_slot_exists(workspace, &view, team_role) {
         CronOwnerCheck::Exists => {}
         CronOwnerCheck::Absent => return CronFireOutcome::TargetGone,
         CronOwnerCheck::Unknown => return CronFireOutcome::DispatchFailed,
@@ -448,7 +449,7 @@ pub(crate) fn deliver_cron_prompt(
     // Buffer by owner, then wake via resume: SpawnProject resumes the lead,
     // whose reconnect re-spawns the persisted workers; each drains its own
     // bucket on connect.
-    let slot = crate::SessionSlot::for_label(&view.org, &view.name, team_role.as_deref());
+    let slot = crate::SessionSlot::for_label(&view.org, &view.name, team_role);
     workspace.park_cron(&slot, prompt, missed);
     match workspace.dispatch(Command::SpawnProject {
         project_name: project_name.to_owned(),
@@ -467,11 +468,11 @@ pub(crate) fn deliver_cron_prompt(
     }
 }
 
-/// The live session that owns a cron in `view`: for a lead cron the
-/// running lead (the first open session that is not a live worker); for a
-/// worker cron the live worker with that label. `None` when the owner is
-/// asleep.
-fn live_cron_owner(
+/// The live session that fills the cron's slot in `view`: for a lead
+/// cron the running lead (the first open session that is not a live
+/// worker); for a worker cron the live worker with that label. `None`
+/// when no session holds the slot.
+fn live_cron_slot(
     workspace: &Arc<Workspace>,
     view: &crate::views::ProjectView,
     team_role: Option<&str>,
@@ -496,18 +497,18 @@ enum CronOwnerCheck {
     /// The owner exists (the lead, or a worker with a persisted row).
     Exists,
     /// Conclusively gone: the read succeeded and the label has no row in
-    /// the `dynamic_workers` table.
+    /// the session store.
     Absent,
     /// The durable-worker lookup could not read, so absence is unconfirmed.
     Unknown,
 }
 
-/// Whether a cron's owner still exists to be woken. The lead exists
-/// whenever its project does; a worker exists while its label has a row in
-/// the `dynamic_workers` table, since that row is what re-spawns it. A read
-/// failure yields [`CronOwnerCheck::Unknown`] so the fire router leaves the
-/// cron rather than deleting a real owner's cron on a transient hiccup.
-fn cron_owner_exists(
+/// Whether a cron's slot still has a session to be woken. A lead's does
+/// whenever its project does; a worker's does while its label has a row,
+/// since that row is what re-spawns it. A read failure yields
+/// [`CronOwnerCheck::Unknown`] so the fire router leaves the cron rather
+/// than deleting a live slot's cron on a transient hiccup.
+fn cron_slot_exists(
     workspace: &Arc<Workspace>,
     view: &crate::views::ProjectView,
     team_role: Option<&str>,
@@ -515,7 +516,7 @@ fn cron_owner_exists(
     let Some(label) = team_role else {
         return CronOwnerCheck::Exists;
     };
-    match workspace.dynamic_worker_exists(&view.key, label) {
+    match workspace.worker_row_exists(&view.key, label) {
         Ok(true) => CronOwnerCheck::Exists,
         Ok(false) => CronOwnerCheck::Absent,
         Err(_) => CronOwnerCheck::Unknown,
@@ -779,11 +780,7 @@ pub(crate) fn deliver_slack_message(
 /// caller checks connectedness to decide dispatch-vs-buffer.
 fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Option<SessionSlot> {
     let view = workspace.list_projects().into_iter().find(|v| v.name == project)?;
-    workspace
-        .list_live_workers(&view.key)
-        .into_iter()
-        .find(|w| w.label == label)
-        .map(|w| w.slot)
+    workspace.list_live_workers(&view.key).into_iter().find(|w| w.label == label).map(|w| w.slot)
 }
 
 /// Emit a typed `PeerEnvelopeAppended` so the target session's TUI
@@ -833,10 +830,9 @@ pub(crate) fn push_cron_prompt_into_chat(
     target_key: &SessionSlot,
     text: &str,
 ) {
-    let _ = workspace.update_sender().send(SessionUpdate::CronPromptAppended {
-        key: target_key.clone(),
-        text: text.to_owned(),
-    });
+    let _ = workspace
+        .update_sender()
+        .send(SessionUpdate::CronPromptAppended { key: target_key.clone(), text: text.to_owned() });
 }
 
 /// Emit a typed `SlackMessageAppended` so the target session's TUI chat buffer
@@ -1048,6 +1044,17 @@ pub(crate) fn worker_limit_reached_message(project: &str, live: usize, cap: usiz
     )
 }
 
+/// The per-worker half of a spawn request, bundled so a caller cannot
+/// transpose `kick` with `resume_kick` - both are `Option<String>` and
+/// the mistake is silent.
+pub(crate) struct WorkerSpawnArgs {
+    pub label: String,
+    pub charter: String,
+    pub kick: Option<String>,
+    pub resume_kick: Option<String>,
+    pub interactive: bool,
+}
+
 /// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
 /// in `live_workers[project_key]`, dispatch a spawn for the id the
 /// worker will run under (or the id being resumed) with the charter
@@ -1063,15 +1070,15 @@ pub(crate) fn worker_limit_reached_message(project: &str, live: usize, cap: usiz
 pub(crate) fn handle_spawn_worker(
     workspace: &Arc<Workspace>,
     project_key: ProjectKey,
-    label: &str,
-    charter: String,
+    args: WorkerSpawnArgs,
     spawned_by: SessionSlot,
     resume_existing: Option<&str>,
-    kick: Option<String>,
-    interactive: bool,
     from_boot_respawn: bool,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
+    let WorkerSpawnArgs { label, charter, kick, resume_kick, interactive } = args;
+    let label = label.as_str();
+    let resume_kick = resume_kick.as_deref();
     // Verify the project exists before minting the worker's id. Probe its
     // filesystem path for git-repo-ness exactly once here - a blocking FS
     // call, deliberately BEFORE the live_workers critical section below so
@@ -1095,14 +1102,34 @@ pub(crate) fn handle_spawn_worker(
     let is_resume = resume_existing.is_some();
     let slot = SessionSlot::worker(&view.org, &view.name, label);
     let session_id = match resume_existing {
-        Some(resuming) => {
-            workspace.record_session_id(&view.org, &view.name, label, resuming);
-            forge_primitives::SessionId::new(resuming)
-        }
-        None => {
-            let id = uuid::Uuid::new_v4().to_string();
-            workspace.record_session_id(&view.org, &view.name, label, &id);
-            forge_primitives::SessionId::new(id)
+        Some(resuming) => forge_primitives::SessionId::new(resuming),
+        None => forge_primitives::SessionId::new(uuid::Uuid::new_v4().to_string()),
+    };
+    // The row is the whole registry entry a boot re-spawns from, so it
+    // carries the spawn args alongside the id rather than leaving them in
+    // memory. A re-spawn dispatched from boot writes the same fields back
+    // over its own row, which is what keeps this one path for both.
+    let durability_warning = match workspace.record_worker_row(
+        &project_key,
+        label,
+        session_id.as_str(),
+        &charter,
+        kick.as_deref(),
+        resume_kick,
+        interactive,
+    ) {
+        Ok(()) => None,
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = %project_key.as_str(),
+                label = %label,
+                %error,
+                "recording the worker's row failed; it will not survive a restart",
+            );
+            Some(format!(
+                "recording this worker for durability failed ({error}); it will not survive a forge restart"
+            ))
         }
     };
     let tag = forge_primitives::worker_tag(label);
@@ -1246,9 +1273,10 @@ pub(crate) fn handle_spawn_worker(
                 session_id: session_id.as_str().to_owned(),
                 tag,
                 rate_limited_account,
-                // The MCP facade fills this after its post-reply persist;
-                // the re-spawn paths never persist, so it stays None.
-                durability_warning: None,
+                // Set when the row could not be written above; the boot
+                // re-spawn paths drop the reply, so they read the warn
+                // instead.
+                durability_warning,
             }));
         }
         Err(err) => {
@@ -1309,7 +1337,7 @@ fn teardown_worker(
     // the `workers__despawn` MCP tool) delete the persisted worker row so
     // it never re-spawns. Cancel and the lead-close cascade go through
     // other paths and deliberately leave the row intact.
-    workspace.delete_dynamic_worker(project_key, label);
+    workspace.delete_worker_row(project_key, label);
     // The row is gone, so nothing re-spawns this label: its durable state
     // has no owner left to wake and goes with it.
     workspace.remove_gotify_subscriptions_for_worker(project_key, label);
@@ -1319,14 +1347,11 @@ fn teardown_worker(
     workspace.remove_slack_subscriptions_for_worker(project_key, label);
     workspace.stop_slack_subsystem_if_idle();
     workspace.delete_crons_for_worker(project_key, label);
-    // MUST call the non-cascading `release_session` primitive (NOT
-    // `release_session_with_cascade`). By the time we get here the
-    // worker is already gone from `live_workers` (via
-    // `remove_latest_worker` above), so the cascading variant would
-    // treat the orphaned session_key as a project-lead under its
-    // cascade-detection rule (`in_catalog && !is_worker`) and drain
-    // every OTHER worker in the project too. Per-row close MUST only
-    // affect the single worker being closed.
+    // Closes exactly one worker, so the non-cascading primitive. The
+    // cascading variant would reach the same result: it cascades only
+    // from a lead slot, and this one carries the worker's own label.
+    // Per-row close must only affect the worker being closed, so the
+    // narrower call is the one to read here.
     workspace.release_session(&entry.slot);
     workspace.expire_inflight_for_closed_worker(project_key, label);
     // A payload parked for this label while it was still spawning has no
@@ -2010,10 +2035,10 @@ provider = "anthropic"
     /// spawn failure must NOT kill the app. Distinguished from
     /// `handle_start_default`'s fatal contract by route.
     ///
-    /// Drives the failure by passing a session id that doesn't
-    /// appear in any project catalog. `find_project_for_session`
-    /// returns None and the handler exits without an emit - this
-    /// regression test confirms it does NOT emit a fatal envelope.
+    /// Drives the failure by naming a slot no project declares:
+    /// `project_for_slot` returns None, the handler warns and returns
+    /// after a `ServiceStatus` note. This regression test confirms it
+    /// does NOT emit a fatal envelope.
     #[tokio::test]
     async fn spawn_session_unknown_session_emits_no_fatal() {
         let dir = tempdir().expect("tempdir");
@@ -2028,9 +2053,9 @@ provider = "anthropic"
             SessionLaunchSettings::default(),
         );
 
-        // The handler should not emit a Fatal envelope. (For the
-        // unknown-session path it doesn't emit anything; the
-        // important assertion is no FatalError.)
+        // An unknown slot warns and returns, so the only envelope this
+        // path may send is the non-fatal ServiceStatus. The important
+        // assertion is that nothing here is a FatalError.
         while let Ok(update) = rx.try_recv() {
             assert!(
                 !matches!(update, SessionUpdate::FatalError(_)),
@@ -2213,7 +2238,7 @@ provider = "anthropic"
             charter: "c".into(),
             slot: SessionSlot::from_str_for_test(key),
             session_id: None,
-            status:forge_primitives::WorkerLiveness::Running,
+            status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
@@ -2243,15 +2268,17 @@ provider = "anthropic"
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/slack-forge");
         let key = ws.list_projects().into_iter().find(|v| v.name == "forge").expect("seeded").key;
-        ws.insert_live_worker(&key, fake_worker_entry("tester", "worker-uuid"));
+        // Delivery routes by the live entry's slot, so the fixture carries
+        // the one production derives for this worker.
+        let worker_key = crate::SessionSlot::worker("TestOrg", "forge", "tester");
+        let mut entry = fake_worker_entry("tester", "worker-uuid");
+        entry.slot = worker_key.clone();
+        ws.insert_live_worker(&key, entry);
 
         deliver_slack_message(&ws, "forge", Some("tester"), slack_msg("hello"));
 
-        let parked = ws
-            .parked_by_slot
-            .lock()
-            .get(&crate::SessionSlot::worker("TestOrg", "forge", "tester"))
-            .map_or(0, |parked| parked.slack.len());
+        let parked =
+            ws.parked_by_slot.lock().get(&worker_key).map_or(0, |parked| parked.slack.len());
         assert_eq!(parked, 1, "the message is parked for the worker that subscribed");
         assert_eq!(
             ws.parked_by_slot
@@ -2335,12 +2362,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &ws,
             key,
-            "tester",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -2392,12 +2422,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &ws,
             key.clone(),
-            "tester",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -2557,12 +2590,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             project.clone(),
-            "reviewer",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "reviewer".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -2649,12 +2685,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             project.clone(),
-            "w3",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "w3".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -2675,12 +2714,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             project.clone(),
-            "w1",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "w1".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -2714,12 +2756,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             notes_project.clone(),
-            "w2",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "w2".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -2739,12 +2784,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             notes_project.clone(),
-            "w4",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "w4".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -2761,12 +2809,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             forge_project.clone(),
-            "w5",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "w5".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -2793,12 +2844,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             project.clone(),
-            "w3",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "w3".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -2837,12 +2891,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             project.clone(),
-            "w1",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "w1".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -2921,12 +2978,15 @@ provider = "anthropic"
                 handle_spawn_worker(
                     &workspace,
                     project,
-                    &format!("w{n}"),
-                    "charter".to_owned(),
+                    WorkerSpawnArgs {
+                        label: format!("w{n}"),
+                        charter: "charter".to_owned(),
+                        kick: None,
+                        resume_kick: None,
+                        interactive: false,
+                    },
                     SessionSlot::from_str_for_test("lead"),
                     None,
-                    None,
-                    false,
                     false,
                     tx,
                 );
@@ -2978,12 +3038,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             project.clone(),
-            "w3",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "w3".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             true,
             tx,
         );
@@ -3012,12 +3075,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             project.clone(),
-            "w2",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "w2".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -3036,12 +3102,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             project.clone(),
-            "w2",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "w2".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -3067,12 +3136,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             project,
-            "fresh",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "fresh".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -3436,12 +3508,15 @@ provider = "anthropic"
         handle_spawn_worker(
             &workspace,
             project.clone(),
-            "reviewer",
-            "charter".to_owned(),
+            WorkerSpawnArgs {
+                label: "reviewer".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
             SessionSlot::from_str_for_test("lead-uuid"),
             None,
-            None,
-            false,
             false,
             tx,
         );
@@ -3581,7 +3656,13 @@ provider = "anthropic"
         run_git(&wt, &["commit", "-q", "-m", "real work"]);
         workspace.save_review_threads("forge", "feature-x", &[review_thread("a")]);
         workspace
-            .submit_review("forge", "feature-x", None, &[], SessionSlot::from_str_for_test("reviewer"))
+            .submit_review(
+                "forge",
+                "feature-x",
+                None,
+                &[],
+                SessionSlot::from_str_for_test("reviewer"),
+            )
             .expect("seal a review on the feature branch");
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -3762,7 +3843,8 @@ provider = "anthropic"
             .find(|v| v.name == "forge")
             .expect("seeded project")
             .key;
-        let worker_key = SessionSlot::from_str_for_test("builder-uuid");
+        // The slot production derives for the seeded project's worker.
+        let worker_key = SessionSlot::worker("TestOrg", "forge", "builder");
         workspace.insert_live_worker(
             &project,
             crate::mcp::workers::types::WorkerEntry {
@@ -3770,9 +3852,9 @@ provider = "anthropic"
                 charter: "c".into(),
                 slot: worker_key.clone(),
                 session_id: None,
-                status:forge_primitives::WorkerLiveness::Spawning,
+                status: forge_primitives::WorkerLiveness::Spawning,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by: SessionSlot::from_str_for_test("lead"),
+                spawned_by: SessionSlot::lead("TestOrg", "forge"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -3787,7 +3869,7 @@ provider = "anthropic"
 
         handle_deliver_worker_prompt(
             &workspace,
-            SessionSlot::from_str_for_test("lead"),
+            SessionSlot::lead("TestOrg", "forge"),
             &project,
             "builder",
             fixture_wrapped(),
@@ -3862,7 +3944,8 @@ provider = "anthropic"
         // the shared /tmp/forge-testing-stub. Must be a valid UUID
         // since `tag_session` rejects non-UUID with `MessageParse`.
         let session_id = uuid::Uuid::new_v4().hyphenated().to_string();
-        let session_key = SessionSlot::from_str_for_test(&session_id);
+        // The slot production derives for the worker under this project.
+        let session_key = SessionSlot::worker(&project_view.org, &project_view.name, "idle");
 
         // Install the testing stub so config_dir_for resolves (to
         // /tmp/forge-testing-stub via the bridge's default config_dir).
@@ -3884,10 +3967,12 @@ provider = "anthropic"
                 label: "idle".into(),
                 charter: "c".into(),
                 slot: session_key.clone(),
-                session_id: None,
-                status:forge_primitives::WorkerLiveness::Running,
+                // The entry carries the id the worker runs under: the
+                // opportunistic tag retry reads it from here.
+                session_id: Some(forge_primitives::SessionId::new(&session_id)),
+                status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by: SessionSlot::from_str_for_test("lead"),
+                spawned_by: SessionSlot::lead(&project_view.org, &project_view.name),
                 needs_tag: true,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -4106,22 +4191,19 @@ provider = "anthropic"
             .find(|v| v.name == "forge")
             .expect("seeded project")
             .key;
-        workspace.insert_live_worker(&project, fake_worker_entry("reviewer", "worker-1"));
-        let worker_key = SessionSlot::from_str_for_test("worker-1");
-        workspace.register_domain_session(worker_key, None);
-        workspace.park_slack(
-            &crate::SessionSlot::worker("TestOrg", "forge", "reviewer"),
-            slack_msg("buffered while spawning"),
-        );
+        // Teardown expires the parked bucket by the entry's slot, so the
+        // fixture carries the one production derives for this worker.
+        let worker_key = SessionSlot::worker("TestOrg", "forge", "reviewer");
+        let mut entry = fake_worker_entry("reviewer", "worker-1");
+        entry.slot = worker_key.clone();
+        workspace.insert_live_worker(&project, entry);
+        workspace.register_domain_session(worker_key.clone(), None);
+        workspace.park_slack(&worker_key, slack_msg("buffered while spawning"));
 
         handle_close_worker(&workspace, &project, "reviewer");
 
         assert_eq!(
-            workspace
-                .parked_by_slot
-                .lock()
-                .get(&crate::SessionSlot::worker("TestOrg", "forge", "reviewer"))
-                .map_or(0, |parked| parked.slack.len()),
+            workspace.parked_by_slot.lock().get(&worker_key).map_or(0, |parked| parked.slack.len()),
             0,
             "the closed worker's parked delivery is recorded, not left for a later session",
         );

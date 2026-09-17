@@ -1,5 +1,5 @@
 //! The cron cluster on [`Workspace`]: the durable-cron store accessor
-//! and its mutation helpers, the asleep-owner prompt buffers, the fire
+//! and its mutation helpers, the asleep-slot prompt buffers, the fire
 //! router, the scheduler task, and the cross-crate seed helper.
 //!
 //! Everything here stays on `Workspace` as a second `impl` block, so
@@ -8,7 +8,7 @@
 //! keeps its path. The `crons`, `cron_scheduler_started` and `update_tx`
 //! fields these methods own are `pub(crate)` for the same reason `db` is:
 //! so this sibling module can reach them without a wrapper. A fired cron
-//! with no live owner parks in [`crate::parked`]. Schedule math lives in
+//! with no live session parks in [`crate::parked`]. Schedule math lives in
 //! [`crate::mcp::cron::schedule`]; the MCP tool surface in
 //! [`crate::mcp::cron`]; delivery in [`crate::spawn`].
 
@@ -25,7 +25,7 @@ use crate::workspace::Workspace;
 /// granularity matches the cron-expression resolution.
 const CRON_TICK_INTERVAL: Duration = Duration::from_secs(60);
 
-/// A cron prompt buffered for an asleep owner: the raw prompt plus whether
+/// A cron prompt buffered for a sleeping slot: the raw prompt plus whether
 /// this fire is overdue (delivered with a missed marker on drain).
 #[derive(Debug)]
 pub(crate) struct PendingCron {
@@ -61,10 +61,10 @@ impl Workspace {
         self.with_crons_mut(|crons| crons.push(entry));
     }
 
-    /// Remove the cron `id` in `project_name` regardless of owner, persist,
-    /// and report whether an entry was removed. Backs the fire-router's
-    /// owner-gone removal; the owner-scoped `cron__delete` uses
-    /// [`Self::remove_cron_owned_by`].
+    /// Remove the cron `id` in `project_name` regardless of who owns it,
+    /// persist, and report whether an entry was removed. Backs the
+    /// fire-router's dead-slot removal; the owner-scoped `cron__delete`
+    /// uses [`Self::remove_cron_owned_by`].
     pub(crate) fn remove_cron(&self, project_name: &str, id: &forge_primitives::CronId) -> bool {
         self.with_crons_mut(|crons| {
             let before = crons.len();
@@ -73,20 +73,20 @@ impl Workspace {
         })
     }
 
-    /// Remove the cron `id` in `project_name` only when its owner matches
-    /// `owner` (`None` = a lead cron, `Some(label)` = that worker's),
-    /// persist, and report whether an entry was removed. Backs the
-    /// owner-scoped `cron__delete` so a caller deletes only its own crons.
+    /// Remove the cron `id` in `project_name` only when the slot that
+    /// owns it matches `label` (`None` = a lead cron, `Some(label)` =
+    /// that worker's), persist, and report whether an entry was removed.
+    /// Backs `cron__delete` so a caller deletes only its own crons.
     pub(crate) fn remove_cron_owned_by(
         &self,
         project_name: &str,
         id: &forge_primitives::CronId,
-        owner: Option<&str>,
+        label: Option<&str>,
     ) -> bool {
         self.with_crons_mut(|crons| {
             let before = crons.len();
             crons.retain(|c| {
-                !(c.id == *id && c.project_name == project_name && c.team_role.as_deref() == owner)
+                !(c.id == *id && c.project_name == project_name && c.team_role.as_deref() == label)
             });
             crons.len() != before
         })
@@ -189,7 +189,7 @@ impl Workspace {
         let due = crate::mcp::cron::schedule::due_crons(&snapshot, now);
         for id in &due {
             let Some(cron) = snapshot.iter().find(|c| &c.id == id) else { continue };
-            // Overdue by more than two ticks: forge or the owner was down
+            // Overdue by more than two ticks: forge or the session was down
             // through the scheduled minute. Two ticks (not one) absorbs the
             // scheduler's Skip-behaviour jitter so a same-window fire under
             // load is never mislabelled missed.
@@ -204,15 +204,16 @@ impl Workspace {
                 // Delivered (or spawn kicked off): advance a recurring to
                 // its next slot, remove a fired run-once.
                 CronFireOutcome::Delivered => self.advance_or_remove_cron(id, now),
-                // Owner gone (project removed from forge.toml, or a worker
-                // label that is no longer static or a durable dynamic row):
-                // remove the cron rather than advance a dead entry forever.
+                // The slot has no session (project removed from
+                // forge.toml, or a worker label with no durable row):
+                // remove the cron rather than advance a dead entry
+                // forever.
                 CronFireOutcome::TargetGone => {
                     tracing::warn!(
                         target: "forge_workspace::crons",
                         project = %cron.project_name,
                         cron_id = %id,
-                        "cron owner gone; removing the cron",
+                        "cron slot has no session; removing the cron",
                     );
                     self.remove_cron(&cron.project_name, id);
                 }
@@ -303,29 +304,27 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn dynamic_worker_row(
-        project: &str,
-        label: &str,
-    ) -> crate::store::dynamic_workers::DynamicWorker {
-        crate::store::dynamic_workers::DynamicWorker {
-            project_key: project.to_owned(),
-            label: label.to_owned(),
-            charter: format!("charter for {label}"),
-            kick: Some(format!("kick for {label}")),
-            resume_kick: None,
-            interactive: false,
-        }
+    /// Persist a worker row for `label` in `project_key`, failing loudly
+    /// when it did not land. The key must resolve to a configured
+    /// project, since the row lands in the `(org, project name, label)`
+    /// keyed `sessions` table.
+    fn seed_worker_row(ws: &crate::Workspace, project_key: &ProjectKey, label: &str) {
+        ws.seed_test_worker_row(project_key, label);
+        assert!(
+            ws.worker_row_exists(project_key, label).expect("read the seeded row"),
+            "the worker row for {label} did not land; does {project_key:?} resolve to a project?",
+        );
     }
 
-    fn live_worker_entry(label: &str, key: &str) -> crate::mcp::workers::types::WorkerEntry {
+    fn live_worker_entry(project: &str, label: &str) -> crate::mcp::workers::types::WorkerEntry {
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "c".to_owned(),
-            slot: SessionSlot::from_str_for_test(key),
+            slot: SessionSlot::worker("TestOrg", project, label),
             session_id: None,
-            status:forge_primitives::WorkerLiveness::Running,
+            status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
+            spawned_by: SessionSlot::lead("TestOrg", project),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -484,7 +483,7 @@ mod tests {
             .count();
         assert_eq!(spawns, 1, "one spawn for the single due cron");
 
-        // The due cron's prompt is buffered for its owner (the lead) for
+        // The due cron's prompt is buffered for its slot (the lead) for
         // delivery once the session reaches Connected.
         let buffered = parked_crons(&ws, "forge", None);
         assert_eq!(buffered, vec!["morning".to_owned()], "the due cron's prompt was buffered");
@@ -613,7 +612,7 @@ mod tests {
         // list_projects derives `is_open` from pool membership.
         let cwd = project_expanded_path(&ws, "cronlead");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionSlot::from_str_for_test("lead-uuid");
+        let lead_key = SessionSlot::lead("TestOrg", "cronlead");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -657,8 +656,8 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("proj", "/tmp/wc-live");
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
-        ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-uuid"));
-        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
+        ws.insert_live_worker(&key, live_worker_entry("proj", "reviewer"));
+        let worker_key = SessionSlot::worker("TestOrg", "proj", "reviewer");
         ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
 
         ws.enable_test_dispatch_intercept();
@@ -688,7 +687,7 @@ mod tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         ws.seed_test_project("proj", "/tmp/wc-static");
-        // The row is what makes the owner exist while asleep; without it
+        // The row is what gives the slot a session while it is asleep; without it
         // the fire router collects the cron instead.
         let key = ws
             .list_projects()
@@ -696,14 +695,7 @@ mod tests {
             .find(|v| v.name == "proj")
             .map(|v| v.key)
             .expect("seeded project");
-        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
-            project_key: key.as_str().to_owned(),
-            label: "reviewer".to_owned(),
-            charter: "review".to_owned(),
-            kick: None,
-            resume_kick: None,
-            interactive: false,
-        });
+        seed_worker_row(&ws, &key, "reviewer");
 
         ws.enable_test_dispatch_intercept();
         let outcome = crate::spawn::deliver_cron_prompt(
@@ -727,8 +719,8 @@ mod tests {
 
     /// A cron for a worker that's a live entry but still Spawning
     /// (session_id None) must NOT dispatch a bare Command::Prompt
-    /// (dropped) - the session_id gate in live_cron_owner routes it to
-    /// the owner-keyed buffer, drained on the worker's own Connected.
+    /// (dropped) - the gate in `live_cron_slot` routes it to the
+    /// owner-keyed buffer, drained on the worker's own Connected.
     #[test]
     fn deliver_cron_to_spawning_worker_buffers_via_owner() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -738,16 +730,9 @@ mod tests {
         );
         ws.seed_test_project("proj", "/tmp/wc-spawning");
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
-        let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
-            project_key: key.as_str().to_owned(),
-            label: "reviewer".to_owned(),
-            charter: "review".to_owned(),
-            kick: None,
-            resume_kick: None,
-            interactive: false,
-        });
-        let worker_key = SessionSlot::from_str_for_test("worker-spawning-cron");
-        ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-spawning-cron"));
+        seed_worker_row(&ws, &key, "reviewer");
+        let worker_key = SessionSlot::worker("TestOrg", "proj", "reviewer");
+        ws.insert_live_worker(&key, live_worker_entry("proj", "reviewer"));
         // Registered but not connected: session_id stays None.
         ws.register_domain_session(worker_key.clone(), None);
 
@@ -784,8 +769,8 @@ mod tests {
         );
         ws.seed_test_project("proj", "/tmp/wc-dyn");
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
-        // "scratch" exists only via its dynamic_workers row.
-        let _ = ws.persist_dynamic_worker(&dynamic_worker_row(key.as_str(), "scratch"));
+        // "scratch" exists only via its persisted worker row.
+        seed_worker_row(&ws, &key, "scratch");
 
         ws.enable_test_dispatch_intercept();
         let outcome = crate::spawn::deliver_cron_prompt(
@@ -1023,7 +1008,7 @@ provider = "anthropic"
         ws.seed_test_project("proj", "/tmp/wc-missed");
         let cwd = project_expanded_path(&ws, "proj");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionSlot::from_str_for_test("lead-uuid");
+        let lead_key = SessionSlot::lead("TestOrg", "proj");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -1063,7 +1048,7 @@ provider = "anthropic"
         ws.seed_test_project("proj", "/tmp/wc-thresh");
         let cwd = project_expanded_path(&ws, "proj");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionSlot::from_str_for_test("lead-uuid");
+        let lead_key = SessionSlot::lead("TestOrg", "proj");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),

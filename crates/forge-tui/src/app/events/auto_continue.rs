@@ -166,7 +166,8 @@ mod tests {
     /// testing stub, so a dispatched `Command::Prompt` reaches the wire
     /// and shows up on the returned receiver.
     fn app_with_session()
-    -> (App, SessionSlot, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
+    -> (App, SessionSlot, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>)
+    {
         let mut app = App::test_default();
         let rx = app.install_testing_stub();
         app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));

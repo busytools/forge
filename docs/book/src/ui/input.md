@@ -106,7 +106,7 @@ The row renders the moment the phase flips, however brief the transcription - wa
 
 </div>
 
-Notices: a quiet room carries its own measured peak and offers a retry (DIM); every sample exactly zero is structural and sticky, so no retry is offered (red); a take that normalised to nothing says so (DIM); a truncated take lands its words plus a keep-going note (yellow); recognition failures are one grouped notice (DIM); a busy microphone names the holder, and a device that would not open is refused before recording starts (both red). Landed text inserts at the caret through the editor's own insertion path - never the paste dispatcher, so long takes are never collapsed to a placeholder - and a copy lands on the system clipboard alongside. The take is bound to the session that started it: results route by session key, so switching tabs mid-transcription never moves the words to another composer.
+Notices: a quiet room carries its own measured peak and offers a retry (DIM); every sample exactly zero is structural and sticky, so no retry is offered (red); a take that normalised to nothing says so (DIM); a truncated take lands its words plus a keep-going note (yellow); recognition failures are one grouped notice (DIM); a busy microphone names the holder, and a device that would not open is refused before recording starts (both red). Landed text inserts at the caret through the editor's own insertion path - never the paste dispatcher, so long takes are never collapsed to a placeholder - and a copy lands on the system clipboard alongside. The take is bound to the session that started it: results route by session slot, so switching tabs mid-transcription never moves the words to another composer.
 
 </details>
 

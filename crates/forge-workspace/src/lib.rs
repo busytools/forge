@@ -193,11 +193,9 @@ pub use forge_agent::AgentEvent;
 
 // MCP test-harness re-exports. `forge-test-harness` integration tests
 // drive the workers MCP server directly against a mock facade; that
-// requires the server-builder, the resolver, and the facade trait /
-// mock to be visible cross-crate. Gating on `testing` keeps them out
-// of production builds.
-#[cfg(feature = "testing")]
-pub use mcp::peers::facade::CallerKeyResolver;
+// requires the server-builder and the facade trait / mock to be
+// visible cross-crate. Gating on `testing` keeps them out of
+// production builds.
 #[cfg(feature = "testing")]
 pub use mcp::workers::build_server as build_workers_server;
 #[cfg(feature = "testing")]

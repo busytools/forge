@@ -761,8 +761,7 @@ fn append_worker_tree_children(
         // Same red `✕` the lead row uses for a dead turn - distinct from
         // the yellow `△`, and ahead of it because a prompt whose turn
         // died can no longer be answered.
-        let failed_turn =
-            app.sessions.get(&worker.slot).is_some_and(|b| b.failed_turn.is_some());
+        let failed_turn = app.sessions.get(&worker.slot).is_some_and(|b| b.failed_turn.is_some());
         // A worker running its own backgrounded task (e.g. a `gh run watch`)
         // spins its row like a lead does - same Idle-only promotion.
         let (has_background_work, has_unseen_completion) = app
@@ -942,10 +941,7 @@ pub(crate) fn resolve_active_project_view<'p>(
     active_key: &forge_workspace::SessionSlot,
     projects: &'p [&ProjectView],
 ) -> Option<&'p ProjectView> {
-    projects
-        .iter()
-        .copied()
-        .find(|p| p.org == active_key.org() && p.name == active_key.project())
+    projects.iter().copied().find(|p| p.org == active_key.org() && p.name == active_key.project())
 }
 
 /// Glyph + state colour for a session row - both read the session's
@@ -2759,7 +2755,7 @@ mod tests {
                 label: "doc-writer".into(),
                 charter: "tone".into(),
                 slot: SessionSlot::from_str_for_test("worker-2"),
-            session_id: None,
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Spawning,
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by: SessionSlot::from_str_for_test("lead"),
@@ -3803,7 +3799,7 @@ mod tests {
                 label: "runner".into(),
                 charter: "bucketless".into(),
                 slot: SessionSlot::from_str_for_test("worker-nobucket"),
-            session_id: None,
+                session_id: None,
                 status,
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by: SessionSlot::from_str_for_test("lead"),
@@ -3877,7 +3873,7 @@ mod tests {
                                 label: label.into(),
                                 charter: "org-trunk-test".into(),
                                 slot: SessionSlot::from_str_for_test(format!("worker-{idx}")),
-            session_id: None,
+                                session_id: None,
                                 status: forge_primitives::WorkerLiveness::Running,
                                 spawned_at: SystemTime::UNIX_EPOCH,
                                 spawned_by: SessionSlot::from_str_for_test("lead"),

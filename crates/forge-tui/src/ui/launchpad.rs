@@ -494,7 +494,7 @@ fn build_picker_content(
     // One store scan and one registry snapshot for the whole picker;
     // the per-project lookups below are map indexes.
     let worker_labels =
-        app.workspace.as_ref().map(|ws| ws.dynamic_worker_labels_by_project()).unwrap_or_default();
+        app.workspace.as_ref().map(|ws| ws.worker_labels_by_project()).unwrap_or_default();
     let live_workers =
         app.workspace.as_ref().map(|ws| ws.live_worker_states_by_project()).unwrap_or_default();
 
@@ -527,7 +527,7 @@ fn build_picker_content(
             .map(|ws| ws.list_projects())
             .and_then(|list| list.into_iter().find(|p| p.name == row.project_name));
         if let Some(project) = project_view.as_ref()
-            && let Some(labels) = worker_labels.get(project.key.as_str())
+            && let Some(labels) = worker_labels.get(&project.key)
         {
             let live = live_workers.get(&project.key).map_or(&[][..], Vec::as_slice);
             push_worker_rows(&mut lines, project, app, labels, live);
@@ -1251,7 +1251,7 @@ mod tests {
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
             .expect("workspace");
         let project = workspace.list_projects().into_iter().next().expect("one project");
-        workspace.seed_test_dynamic_worker(&project.key, "reviewer");
+        workspace.seed_test_worker_row(&project.key, "reviewer");
         workspace.seed_test_ready_account("Stargate");
         workspace.seed_test_gateway_ready(false);
         workspace.seed_test_gateway_bind_error(Some("Address already in use".to_owned()));
@@ -1355,8 +1355,8 @@ mod tests {
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
             .expect("workspace");
         let project = workspace.list_projects().into_iter().next().expect("one project");
-        workspace.seed_test_dynamic_worker(&project.key, "reviewer");
-        workspace.seed_test_dynamic_worker(&project.key, "scratch");
+        workspace.seed_test_worker_row(&project.key, "reviewer");
+        workspace.seed_test_worker_row(&project.key, "scratch");
         workspace.seed_test_ready_account("Stargate");
 
         let mut app = App::test_default();

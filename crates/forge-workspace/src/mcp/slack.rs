@@ -21,7 +21,7 @@ use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 use uuid::Uuid;
 
-use crate::mcp::peers::facade::CallerKeyResolver;
+use crate::SessionSlot;
 use crate::mcp::slack::facade::{
     SlackAttachmentError, SlackChannelWatch, SlackEditError, SlackEditRequest, SlackFacade,
     SlackFetchRequest, SlackListError, SlackPostError, SlackPostRequest, SlackReactError,
@@ -32,19 +32,19 @@ use crate::mcp::slack::facade::{
 /// Attach the Slack tools to an existing [`McpServerBuilder`]. Called for
 /// BOTH lead and worker sessions (any-caller), so `build_forge_server`
 /// invokes this unconditionally. `subscribe` / `unsubscribe` are scoped
-/// to the caller's own records, so they need the caller key.
+/// to the caller's own records, so they need the caller slot.
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn SlackFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 ) -> McpServerBuilder {
-    let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
-    let subscribe = Subscribe { facade: facade.clone(), caller_key: caller_key.clone() };
-    let unsubscribe = Unsubscribe { facade: facade.clone(), caller_key: caller_key.clone() };
-    let post = Post { facade: facade.clone(), caller_key: caller_key.clone() };
-    let edit = Edit { facade: facade.clone(), caller_key: caller_key.clone() };
-    let react = React { facade: facade.clone(), caller_key: caller_key.clone() };
-    let attachment = Attachment { facade: facade.clone(), caller_key };
+    let list = List { facade: facade.clone(), slot: slot.clone() };
+    let subscribe = Subscribe { facade: facade.clone(), slot: slot.clone() };
+    let unsubscribe = Unsubscribe { facade: facade.clone(), slot: slot.clone() };
+    let post = Post { facade: facade.clone(), slot: slot.clone() };
+    let edit = Edit { facade: facade.clone(), slot: slot.clone() };
+    let react = React { facade: facade.clone(), slot: slot.clone() };
+    let attachment = Attachment { facade: facade.clone(), slot };
     let search = Search { facade: facade.clone() };
     let user = User { facade: facade.clone() };
     let pins = Pins { facade: facade.clone() };
@@ -178,7 +178,7 @@ fn format_list_error(err: &SlackListError) -> String {
 
 struct List {
     facade: Arc<dyn SlackFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -245,13 +245,9 @@ impl Tool for List {
         {
             return tool_error(format!("unknown kind '{kind}'; the kinds are {LIST_KINDS}"));
         }
-        let caller = match self.caller_key.current() {
-            Ok(key) => key,
-            Err(err) => return tool_error(err.to_string()),
-        };
         match self.facade.conversations(args.workspace.as_deref()).await {
             Ok(conversations) => {
-                let own = self.facade.subscribed_targets(&caller, args.workspace.as_deref());
+                let own = self.facade.subscribed_targets(&self.slot, args.workspace.as_deref());
                 let subscribed: Vec<SlackSubscriptionTarget> =
                     own.iter().map(|sub| sub.target.clone()).collect();
                 let kept: Vec<SlackConversation> = conversations
@@ -318,7 +314,7 @@ fn format_subscribe_error(err: &SlackSubscribeError, requested: Option<&str>) ->
 
 struct Subscribe {
     facade: Arc<dyn SlackFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -422,13 +418,9 @@ impl Tool for Subscribe {
                     .to_owned(),
             );
         }
-        let caller = match self.caller_key.current() {
-            Ok(key) => key,
-            Err(err) => return tool_error(err.to_string()),
-        };
         let mut ids: Vec<Uuid> = Vec::new();
         for request in requests {
-            match self.facade.subscribe(&caller, args.workspace.as_deref(), request) {
+            match self.facade.subscribe(&self.slot, args.workspace.as_deref(), request) {
                 Ok(mut created) => ids.append(&mut created),
                 Err(err) => {
                     return tool_error(format_subscribe_error(&err, args.workspace.as_deref()));
@@ -441,7 +433,7 @@ impl Tool for Subscribe {
 
 struct Unsubscribe {
     facade: Arc<dyn SlackFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -480,11 +472,7 @@ impl Tool for Unsubscribe {
         let Ok(id) = Uuid::parse_str(&args.id) else {
             return tool_error(format!("not a valid subscription id: {}", args.id));
         };
-        let caller = match self.caller_key.current() {
-            Ok(key) => key,
-            Err(err) => return tool_error(err.to_string()),
-        };
-        if self.facade.unsubscribe(&caller, id) {
+        if self.facade.unsubscribe(&self.slot, id) {
             ToolOutput::text(format!("unsubscribed {id}"))
         } else {
             tool_error(format!("no subscription with id {id} in your project"))
@@ -549,7 +537,7 @@ fn format_react_error(err: &SlackReactError) -> String {
 
 struct Post {
     facade: Arc<dyn SlackFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -607,17 +595,13 @@ impl Tool for Post {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let caller = match self.caller_key.current() {
-            Ok(key) => key,
-            Err(err) => return tool_error(err.to_string()),
-        };
         let request = SlackPostRequest {
             workspace: args.workspace,
             conversation: args.conversation,
             thread_ts: args.thread_ts,
             text: args.text,
         };
-        match self.facade.post(&caller, request).await {
+        match self.facade.post(&self.slot, request).await {
             Ok(outcome) => {
                 ToolOutput::text(format!("posted to Slack ({} message(s))", outcome.posted))
             }
@@ -628,7 +612,7 @@ impl Tool for Post {
 
 struct Edit {
     facade: Arc<dyn SlackFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -694,17 +678,13 @@ impl Tool for Edit {
         if !delete && args.text.is_none() {
             return tool_error("pass `text` to update the message, or `delete: true`".to_owned());
         }
-        let caller = match self.caller_key.current() {
-            Ok(key) => key,
-            Err(err) => return tool_error(err.to_string()),
-        };
         let request = SlackEditRequest {
             workspace: args.workspace,
             conversation: args.conversation,
             ts: args.ts,
             text: if delete { None } else { args.text },
         };
-        match self.facade.edit(&caller, request).await {
+        match self.facade.edit(&self.slot, request).await {
             Ok(()) => {
                 ToolOutput::text(if delete { "deleted".to_owned() } else { "updated".to_owned() })
             }
@@ -715,7 +695,7 @@ impl Tool for Edit {
 
 struct React {
     facade: Arc<dyn SlackFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -773,10 +753,6 @@ impl Tool for React {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let caller = match self.caller_key.current() {
-            Ok(key) => key,
-            Err(err) => return tool_error(err.to_string()),
-        };
         let request = SlackReactRequest {
             workspace: args.workspace,
             conversation: args.conversation,
@@ -784,7 +760,7 @@ impl Tool for React {
             name: args.name,
             add: !args.remove.unwrap_or(false),
         };
-        match self.facade.react(&caller, request).await {
+        match self.facade.react(&self.slot, request).await {
             Ok(()) => ToolOutput::text("reaction applied".to_owned()),
             Err(err) => tool_error(format_react_error(&err)),
         }
@@ -814,7 +790,7 @@ fn format_attachment_error(err: &SlackAttachmentError) -> String {
 
 struct Attachment {
     facade: Arc<dyn SlackFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -911,10 +887,6 @@ impl Tool for Attachment {
                         "pass `conversation`, the conversation to upload into".to_owned(),
                     );
                 };
-                let caller = match self.caller_key.current() {
-                    Ok(key) => key,
-                    Err(err) => return tool_error(err.to_string()),
-                };
                 let request = SlackUploadRequest {
                     workspace: args.workspace,
                     conversation,
@@ -922,7 +894,7 @@ impl Tool for Attachment {
                     path: std::path::PathBuf::from(path),
                     title: None,
                 };
-                match self.facade.post_attachment(&caller, request).await {
+                match self.facade.post_attachment(&self.slot, request).await {
                     Ok(()) => ToolOutput::text("uploaded".to_owned()),
                     Err(err) => tool_error(format_attachment_error(&err)),
                 }
@@ -1412,7 +1384,7 @@ mod tests {
     async fn slack_list_returns_rows_and_passes_the_workspace_through() {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.conversations_result.lock() = Some(Ok(vec![channel("C1", "general")]));
-        let tool = List { facade: mock.clone(), caller_key: resolver() };
+        let tool = List { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
         assert!(!out.is_error, "a configured workspace succeeds: {}", out.blocks[0].text);
@@ -1428,8 +1400,8 @@ mod tests {
         );
     }
 
-    fn resolver() -> CallerKeyResolver {
-        CallerKeyResolver::from_fixed(crate::SessionSlot::from_str_for_test("caller"))
+    fn caller_slot() -> SessionSlot {
+        SessionSlot::from_str_for_test("caller")
     }
 
     #[tokio::test]
@@ -1437,7 +1409,7 @@ mod tests {
         let id = Uuid::from_u128(0x42);
         let mock = Arc::new(MockSlackFacade::new());
         *mock.subscribe_result.lock() = Some(Ok(vec![id]));
-        let tool = Subscribe { facade: mock.clone(), caller_key: resolver() };
+        let tool = Subscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({
@@ -1467,7 +1439,7 @@ mod tests {
     #[tokio::test]
     async fn slack_subscribe_without_a_target_is_refused() {
         let mock = Arc::new(MockSlackFacade::new());
-        let tool = Subscribe { facade: mock.clone(), caller_key: resolver() };
+        let tool = Subscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
         assert!(out.is_error, "a call naming nothing to watch must not create records");
@@ -1483,7 +1455,7 @@ mod tests {
     async fn slack_subscribe_names_the_workspace_that_was_refused() {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.subscribe_result.lock() = Some(Err(SlackSubscribeError::UnknownWorkspace));
-        let tool = Subscribe { facade: mock, caller_key: resolver() };
+        let tool = Subscribe { facade: mock, slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({ "workspace": "nope", "direct_messages": true })))
@@ -1500,7 +1472,7 @@ mod tests {
     async fn slack_unsubscribe_refuses_an_id_the_caller_does_not_own() {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.unsubscribe_result.lock() = Some(false);
-        let tool = Unsubscribe { facade: mock.clone(), caller_key: resolver() };
+        let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out =
             tool.call(input(serde_json::json!({ "id": Uuid::from_u128(0x9).to_string() }))).await;
@@ -1510,7 +1482,7 @@ mod tests {
     #[tokio::test]
     async fn slack_unsubscribe_rejects_a_bad_uuid_without_touching_the_facade() {
         let mock = Arc::new(MockSlackFacade::new());
-        let tool = Unsubscribe { facade: mock.clone(), caller_key: resolver() };
+        let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "id": "not-a-uuid" }))).await;
         assert!(out.is_error);
@@ -1523,7 +1495,7 @@ mod tests {
         *mock.conversations_result.lock() =
             Some(Ok(vec![channel("C1", "general"), channel("C2", "random")]));
         *mock.subscribed_targets.lock() = vec![owned_sub(Uuid::from_u128(0x21), watching("C1"))];
-        let tool = List { facade: mock.clone(), caller_key: resolver() };
+        let tool = List { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
         assert!(!out.is_error, "list succeeds: {}", out.blocks[0].text);
@@ -1555,7 +1527,7 @@ mod tests {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.conversations_result.lock() =
             Some(Ok(vec![channel("C1", "general"), dm("D1", "U9")]));
-        let tool = List { facade: mock.clone(), caller_key: resolver() };
+        let tool = List { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "kind": "im" }))).await;
         assert!(!out.is_error, "a known kind succeeds: {}", out.blocks[0].text);
@@ -1578,7 +1550,7 @@ mod tests {
     #[tokio::test]
     async fn slack_list_refuses_an_unknown_kind() {
         let mock = Arc::new(MockSlackFacade::new());
-        let tool = List { facade: mock.clone(), caller_key: resolver() };
+        let tool = List { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "kind": "chanels" }))).await;
         assert!(out.is_error, "a typo must not read as an empty workspace");
@@ -1727,7 +1699,7 @@ mod tests {
     #[tokio::test]
     async fn slack_attachment_without_a_file_or_a_path_is_refused() {
         let mock = Arc::new(MockSlackFacade::new());
-        let tool = Attachment { facade: mock.clone(), caller_key: resolver() };
+        let tool = Attachment { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
         assert!(out.is_error, "a call naming neither a file nor a path must not reach Slack");
@@ -1746,7 +1718,7 @@ mod tests {
         let offender = std::env::temp_dir().join("slack-attachment-not-a-dir");
         *mock.fetch_result.lock() =
             Some(Err(SlackAttachmentError::NotADirectory(offender.clone())));
-        let tool = Attachment { facade: mock.clone(), caller_key: resolver() };
+        let tool = Attachment { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({
@@ -1766,7 +1738,7 @@ mod tests {
     async fn slack_list_surfaces_a_facade_error() {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.conversations_result.lock() = Some(Err(SlackListError::Fetch("boom".to_owned())));
-        let tool = List { facade: mock, caller_key: resolver() };
+        let tool = List { facade: mock, slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error, "a failed fetch is an error, not an empty list");

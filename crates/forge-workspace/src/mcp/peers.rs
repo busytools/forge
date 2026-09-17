@@ -14,10 +14,10 @@
 //! - `peers__whoami` - caller's own identity (project name, org,
 //!   path, model, permission mode).
 //!
-//! All four tools take a closure-bound [`SessionSlot`] identifying the
-//! caller plus an [`Arc<dyn WorkspaceFacade>`] for the workspace
-//! state surface. [`build_server`] bakes both into each tool's
-//! struct fields when the per-session MCP server is constructed.
+//! All four tools take the caller's [`SessionSlot`] plus an
+//! [`Arc<dyn WorkspaceFacade>`] for the workspace state surface.
+//! [`build_server`] bakes both into each tool's struct fields when
+//! the per-session MCP server is constructed.
 
 use std::sync::Arc;
 
@@ -26,7 +26,8 @@ use forge_sdk::mcp::server::McpServer;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
-use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta, WorkspaceFacade};
+use crate::SessionSlot;
+use crate::mcp::peers::facade::{PeerStatsDelta, WorkspaceFacade};
 use crate::mcp::peers::types::{
     AskChannel, CorrelationId, InflightAsk, ReplyRouting, WrappedKind, WrappedPrompt,
 };
@@ -42,8 +43,8 @@ pub mod types;
 /// both modules must register their tools through a single
 /// builder).
 #[cfg(test)]
-pub fn build_server(facade: Arc<dyn WorkspaceFacade>, caller_key: CallerKeyResolver) -> McpServer {
-    add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, caller_key).build()
+pub fn build_server(facade: Arc<dyn WorkspaceFacade>, slot: SessionSlot) -> McpServer {
+    add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, slot).build()
 }
 
 /// Attach the four peer-coordination tools to an existing
@@ -52,12 +53,12 @@ pub fn build_server(facade: Arc<dyn WorkspaceFacade>, caller_key: CallerKeyResol
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn WorkspaceFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 ) -> McpServerBuilder {
-    let whoami = Whoami { facade: facade.clone(), caller_key: caller_key.clone() };
+    let whoami = Whoami { facade: facade.clone(), slot: slot.clone() };
     let list_agents = ListAgents { facade: facade.clone() };
-    let tell_agent = TellAgent { facade: facade.clone(), caller_key: caller_key.clone() };
-    let ask_agent = AskAgent { facade, caller_key };
+    let tell_agent = TellAgent { facade: facade.clone(), slot: slot.clone() };
+    let ask_agent = AskAgent { facade, slot };
     builder.tool(whoami).tool(list_agents).tool(tell_agent).tool(ask_agent)
 }
 
@@ -71,9 +72,11 @@ pub(crate) fn add_tools(
 pub(crate) struct Whoami {
     /// Workspace-state surface, captured at server-build time.
     pub(crate) facade: Arc<dyn WorkspaceFacade>,
-    /// The session this server was built for. Closure-bound here so
-    /// the tool doesn't need the LLM to pass identity as an arg.
-    pub(crate) caller_key: CallerKeyResolver,
+    /// The session this server was built for, so the tool doesn't need
+    /// the LLM to pass identity as an arg. A tool can hold a slot
+    /// because a slot is stable across `/new` and `/resume` - those
+    /// swap the occupant and leave the slot alone.
+    pub(crate) slot: SessionSlot,
 }
 
 #[async_trait::async_trait]
@@ -103,11 +106,7 @@ impl Tool for Whoami {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let caller_key = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-        match self.facade.whoami(&caller_key) {
+        match self.facade.whoami(&self.slot) {
             Some(identity) => match serde_json::to_string_pretty(&identity) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => ToolOutput {
@@ -121,8 +120,8 @@ impl Tool for Whoami {
                 blocks: vec![forge_sdk::mcp::tool::ToolOutputBlock {
                     text: format!(
                         "no identity resolved for caller {} (this is a forge bug; the \
-                         caller key should always resolve to a forge.toml project)",
-                        caller_key.display(),
+                         caller slot should always resolve to a forge.toml project)",
+                        self.slot.display(),
                     ),
                 }],
                 is_error: true,
@@ -231,7 +230,7 @@ impl Tool for ListAgents {
 ///   the correlation id)
 pub(crate) struct TellAgent {
     pub(crate) facade: Arc<dyn WorkspaceFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -302,14 +301,10 @@ impl Tool for TellAgent {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-        let Some(identity) = self.facade.whoami(&caller_key) else {
+        let Some(identity) = self.facade.whoami(&self.slot) else {
             return tool_error(format!(
                 "no identity resolved for caller {} (forge bug)",
-                caller_key.display(),
+                self.slot.display(),
             ));
         };
 
@@ -357,7 +352,7 @@ impl Tool for TellAgent {
                 // timeout timer) and decrement the replier's incoming +
                 // the original asker's outgoing counters.
                 self.facade.complete_inflight_ask(&correlation);
-                self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::IncomingMinus1);
+                self.facade.bump_inflight_stats(&self.slot, PeerStatsDelta::IncomingMinus1);
                 self.facade.bump_inflight_stats(&caller, PeerStatsDelta::OutgoingMinus1);
                 tell_ok_response(&correlation_id, "delivered", None)
             }
@@ -381,7 +376,7 @@ impl Tool for TellAgent {
                     body: args.message,
                 };
                 let status =
-                    match self.facade.deliver_peer_prompt(&caller_key, &args.target, wrapped) {
+                    match self.facade.deliver_peer_prompt(&self.slot, &args.target, wrapped) {
                         Ok(crate::mcp::peers::facade::TargetStatus::Delivered) => "delivered",
                         Ok(crate::mcp::peers::facade::TargetStatus::QueuedForSpawn) => {
                             "queued_for_spawn"
@@ -492,7 +487,7 @@ fn chrono_rfc3339_now() -> String {
 /// their distinct correlation_ids.
 pub(crate) struct AskAgent {
     pub(crate) facade: Arc<dyn WorkspaceFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -566,14 +561,10 @@ impl Tool for AskAgent {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-        let Some(identity) = self.facade.whoami(&caller_key) else {
+        let Some(identity) = self.facade.whoami(&self.slot) else {
             return tool_error(format!(
                 "no identity resolved for caller {} (forge bug)",
-                caller_key.display(),
+                self.slot.display(),
             ));
         };
 
@@ -600,23 +591,23 @@ impl Tool for AskAgent {
         self.facade.register_inflight_ask(InflightAsk {
             correlation_id: correlation_id.clone(),
             channel: AskChannel::Peers,
-            caller: caller_key.clone(),
+            caller: self.slot.clone(),
             target_project: args.target.clone(),
             target_session: None,
         });
-        self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingPlus1);
-        let target_status =
-            match self.facade.deliver_peer_prompt(&caller_key, &args.target, wrapped) {
-                Ok(s) => s,
-                Err(err) => {
-                    // Rollback: the dispatch never reached the
-                    // recipient so the caller's outstanding-counter
-                    // and inflight_asks entry would otherwise leak.
-                    self.facade.complete_inflight_ask(&correlation_id);
-                    self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingMinus1);
-                    return tool_error(format_deliver_error(&err));
-                }
-            };
+        self.facade.bump_inflight_stats(&self.slot, PeerStatsDelta::OutgoingPlus1);
+        let target_status = match self.facade.deliver_peer_prompt(&self.slot, &args.target, wrapped)
+        {
+            Ok(s) => s,
+            Err(err) => {
+                // Rollback: the dispatch never reached the
+                // recipient so the caller's outstanding-counter
+                // and inflight_asks entry would otherwise leak.
+                self.facade.complete_inflight_ask(&correlation_id);
+                self.facade.bump_inflight_stats(&self.slot, PeerStatsDelta::OutgoingMinus1);
+                return tool_error(format_deliver_error(&err));
+            }
+        };
 
         let body = serde_json::json!({
             "correlation_id": correlation_id.as_str(),
@@ -636,7 +627,6 @@ impl Tool for AskAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionSlot;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::peers::types::{InflightAsk, PeerLiveness, PeerStatus};
 
@@ -661,7 +651,7 @@ mod tests {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("forge"));
         let facade = mock.into_arc();
-        let tool = Whoami { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = Whoami { facade, slot: fake_key("forge") };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error, "whoami should not error on resolved identity");
         let block = &output.blocks[0];
@@ -678,7 +668,7 @@ mod tests {
         // No peers pre-loaded - whoami can't find one matching the
         // caller's name.
         let facade = mock.into_arc();
-        let tool = Whoami { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("ghost")) };
+        let tool = Whoami { facade, slot: fake_key("ghost") };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(output.is_error, "unresolved caller must surface as is_error");
         assert!(
@@ -692,7 +682,7 @@ mod tests {
     fn whoami_metadata_shape() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let tool = Whoami { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("test")) };
+        let tool = Whoami { facade, slot: fake_key("test") };
         assert_eq!(tool.name(), "peers__whoami");
         assert!(tool.description().to_lowercase().contains("identity"));
         let schema = tool.input_schema();
@@ -706,7 +696,7 @@ mod tests {
     fn build_server_registers_all_phase2_tools() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let server = build_server(facade, CallerKeyResolver::from_fixed(fake_key("test")));
+        let server = build_server(facade, fake_key("test"));
         let debug = format!("{server:?}");
         for expected in ["peers__whoami", "peers__list_agents"] {
             assert!(
@@ -779,15 +769,11 @@ mod tests {
         assert!(schema["properties"].as_object().unwrap().is_empty());
     }
 
-    fn fake_inflight(
-        correlation_id: &str,
-        caller_key_str: &str,
-        target_project: &str,
-    ) -> InflightAsk {
+    fn fake_inflight(correlation_id: &str, caller_str: &str, target_project: &str) -> InflightAsk {
         InflightAsk {
             correlation_id: CorrelationId(correlation_id.to_owned()),
             channel: AskChannel::Peers,
-            caller: fake_key(caller_key_str),
+            caller: fake_key(caller_str),
             target_project: target_project.to_owned(),
             target_session: None,
         }
@@ -799,8 +785,7 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge")); // caller
         mock.peers.lock().push(fake_peer("gateway-backend")); // target
         let facade = mock.into_arc();
-        let tool =
-            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = TellAgent { facade, slot: fake_key("forge") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -823,8 +808,7 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge"));
         // No 'missing' peer pre-loaded.
         let facade = mock.into_arc();
-        let tool =
-            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = TellAgent { facade, slot: fake_key("forge") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -846,8 +830,7 @@ mod tests {
     async fn tell_agent_invalid_args_is_error() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let tool =
-            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = TellAgent { facade, slot: fake_key("forge") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -877,8 +860,7 @@ mod tests {
             ),
         );
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
-        let tool =
-            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = TellAgent { facade, slot: fake_key("forge") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -914,8 +896,7 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(fake_peer("gateway-backend"));
         let facade = mock.into_arc();
-        let tool =
-            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = TellAgent { facade, slot: fake_key("forge") };
         // Valid-shape but never-registered id - exercises the
         // "lookup miss → degrade to Message" path. Malformed-id
         // input (wrong case, wrong length) takes the
@@ -953,8 +934,7 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(fake_peer("gateway-backend"));
         let facade = mock.into_arc();
-        let tool =
-            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = TellAgent { facade, slot: fake_key("forge") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -983,7 +963,7 @@ mod tests {
             .lock()
             .insert(CorrelationId("q-11112222".to_owned()), fake_inflight("q-11112222", "A", "B"));
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
-        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("B")) };
+        let tool = TellAgent { facade, slot: fake_key("B") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1035,7 +1015,7 @@ mod tests {
             },
         );
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
-        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("B")) };
+        let tool = TellAgent { facade, slot: fake_key("B") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1067,7 +1047,7 @@ mod tests {
         *mock.force_reply_error.lock() =
             Some(crate::mcp::peers::facade::ReplyDeliverError::CallerSessionGone);
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
-        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("B")) };
+        let tool = TellAgent { facade, slot: fake_key("B") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1096,8 +1076,7 @@ mod tests {
     fn tell_agent_metadata_shape() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let tool =
-            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = TellAgent { facade, slot: fake_key("forge") };
         assert_eq!(tool.name(), "peers__tell_agent");
         assert!(
             tool.description().to_lowercase().contains("one-way"),
@@ -1117,8 +1096,7 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(fake_peer("gateway-backend"));
         let facade = mock.into_arc();
-        let tool =
-            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = AskAgent { facade, slot: fake_key("forge") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1143,8 +1121,7 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(fake_peer("gateway-backend"));
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
-        let tool =
-            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = AskAgent { facade, slot: fake_key("forge") };
         let _ = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1169,8 +1146,7 @@ mod tests {
         let mock = Arc::new(MockWorkspaceFacade::new());
         mock.peers.lock().push(fake_peer("forge"));
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
-        let tool =
-            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = AskAgent { facade, slot: fake_key("forge") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1203,8 +1179,7 @@ mod tests {
     async fn ask_agent_invalid_args_is_error() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let tool =
-            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = AskAgent { facade, slot: fake_key("forge") };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1220,8 +1195,7 @@ mod tests {
     fn ask_agent_metadata_shape() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let tool =
-            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = AskAgent { facade, slot: fake_key("forge") };
         assert_eq!(tool.name(), "peers__ask_agent");
         let schema = tool.input_schema();
         let required = schema["required"].as_array().expect("required field present");
@@ -1234,7 +1208,7 @@ mod tests {
     fn build_server_registers_all_four_tools() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let server = build_server(facade, CallerKeyResolver::from_fixed(fake_key("test")));
+        let server = build_server(facade, fake_key("test"));
         let debug = format!("{server:?}");
         for expected in
             ["peers__whoami", "peers__list_agents", "peers__tell_agent", "peers__ask_agent"]

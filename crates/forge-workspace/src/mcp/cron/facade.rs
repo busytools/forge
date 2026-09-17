@@ -200,15 +200,15 @@ mod prod_facade_tests {
     use crate::WorkerEntry;
     use forge_primitives::WorkerLiveness;
 
-    fn worker_entry(label: &str, session_id: &str) -> WorkerEntry {
+    fn worker_entry(project: &str, label: &str) -> WorkerEntry {
         WorkerEntry {
             label: label.to_owned(),
             charter: "review".to_owned(),
-            slot: SessionSlot::from_str_for_test(session_id),
+            slot: SessionSlot::worker("TestOrg", project, label),
             session_id: None,
-            status:WorkerLiveness::Running,
+            status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
+            spawned_by: SessionSlot::lead("TestOrg", project),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -222,13 +222,13 @@ mod prod_facade_tests {
         let key =
             ws.list_projects().into_iter().find(|v| v.name == "myproj").expect("seeded view").key;
         ws.record_connected_session("/tmp/b2-myproj", "lead-uuid", None);
-        ws.insert_live_worker(&key, worker_entry("reviewer", "worker-uuid"));
+        ws.insert_live_worker(&key, worker_entry("myproj", "reviewer"));
         let facade = ProdCronFacade::from_arc(&ws);
         (
             ws,
             facade,
-            SessionSlot::from_str_for_test("lead-uuid"),
-            SessionSlot::from_str_for_test("worker-uuid"),
+            SessionSlot::lead("TestOrg", "myproj"),
+            SessionSlot::worker("TestOrg", "myproj", "reviewer"),
         )
     }
 

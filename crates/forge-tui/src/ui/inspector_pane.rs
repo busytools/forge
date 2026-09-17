@@ -5749,8 +5749,10 @@ mod tests {
             app.sessions.insert(key, session);
         }
         assert_eq!(app.needs_attention_sessions().len(), 2, "two background waiters");
-        let expected: std::collections::HashMap<forge_workspace::SessionSlot, &str> =
-            names.iter().map(|n| (forge_workspace::SessionSlot::from_str_for_test(*n), *n)).collect();
+        let expected: std::collections::HashMap<forge_workspace::SessionSlot, &str> = names
+            .iter()
+            .map(|n| (forge_workspace::SessionSlot::from_str_for_test(*n), *n))
+            .collect();
 
         let width = 60u16;
         let area = Rect { x: 0, y: 0, width, height: 24 };

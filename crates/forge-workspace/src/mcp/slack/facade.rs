@@ -963,7 +963,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn caller() -> SessionSlot {
-        SessionSlot::from_str_for_test("caller-uuid")
+        SessionSlot::lead("TestOrg", "forge")
     }
 
     /// Records every outbound call, so a test can assert what did and did
@@ -1955,7 +1955,7 @@ mod tests {
             )
             .expect("the lead subscribes to C1");
 
-        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
+        let worker_key = SessionSlot::worker("TestOrg", "forge", "tester");
         let project_key = ws
             .list_projects()
             .into_iter()
@@ -1969,9 +1969,9 @@ mod tests {
                 charter: "c".into(),
                 slot: worker_key.clone(),
                 session_id: None,
-                status:forge_primitives::WorkerLiveness::Running,
+                status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by: SessionSlot::from_str_for_test("caller-uuid"),
+                spawned_by: SessionSlot::lead("TestOrg", "forge"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,

@@ -153,7 +153,7 @@ mod is_git_repo_at_spawn_tests {
             charter: "review the diff".into(),
             slot: SessionSlot::from_str_for_test("uuid-1"),
             session_id: None,
-            status:WorkerLiveness::Running,
+            status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,

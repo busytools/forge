@@ -17,7 +17,7 @@ workspace = true
 # `SessionView`, and `ProjectKey` so integration tests in sibling
 # crates' `tests/` directories (e.g. `forge-tui`) can build view
 # fixtures without spinning up a real on-disk catalog. Forwards to
-# the same feature on `forge-primitives` for `SessionKey::from_str_for_test`.
+# the same feature on `forge-primitives` for `SessionSlot::from_str_for_test`.
 test-helpers = ["forge-primitives/test-helpers"]
 # Test fixture helpers (`Workspace::testing_stub`,
 # `Workspace::test_default`). Replaces forge-tui's prior
@@ -65,10 +65,10 @@ tracing-subscriber = { workspace = true }
 # --all-features) resolves `new_for_test` and the other gated helpers.
 forge-workspace = { path = ".", features = ["testing", "test-helpers"] }
 forge-agent = { workspace = true, features = ["testing"] }
-# `test-helpers` exposes `SessionKey::from_str_for_test` cross-crate;
+# `test-helpers` exposes `SessionSlot::from_str_for_test` cross-crate;
 # without this dev-dep override the workspace's own lib tests fail to
 # compile because they reach the feature-gated constructor from
-# `forge_primitives::SessionKey`. Mirroring the same hop the testing
+# `forge_primitives::SessionSlot`. Mirroring the same hop the testing
 # feature does for forge-agent.
 forge-primitives = { workspace = true, features = ["test-helpers"] }
 # The dictate lifecycle tests build engines that must never open a real

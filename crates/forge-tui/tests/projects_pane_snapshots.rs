@@ -68,12 +68,7 @@ fn project_view(name: &str, sessions: Vec<SessionView>) -> ProjectView {
 }
 
 fn session_view(id: &str, label: &str) -> SessionView {
-    SessionView::new_for_test(
-        forge_primitives::SessionId::new(id),
-        label,
-        false,
-        None,
-    )
+    SessionView::new_for_test(forge_primitives::SessionId::new(id), label, false, None)
 }
 
 #[test]
@@ -84,7 +79,7 @@ fn renders_banner_and_project_row_under_org_header() {
 
     // Insert a Session bucket for the lead so the pane treats `forge`
     // as a live project (gets the close-affordance + active glyph).
-    let lead_key = SessionSlot::from_str_for_test("session-a");
+    let lead_key = SessionSlot::lead("Test", "forge");
     let lead_session = UiSession::new(lead_key.clone(), "forge");
     app.sessions.insert(lead_key.clone(), lead_session);
     app.active_session_key = Some(lead_key.clone());
@@ -132,7 +127,7 @@ fn live_and_idle_projects_render_under_same_org_with_distinct_glyphs() {
         project_view("bravo", vec![bravo_session.clone()]),
     ];
 
-    let alpha_key = SessionSlot::from_str_for_test("alpha-1");
+    let alpha_key = SessionSlot::lead("Test", "alpha");
     app.sessions.insert(alpha_key.clone(), UiSession::new(alpha_key.clone(), "alpha"));
     app.active_session_key = Some(alpha_key.clone());
 
@@ -247,7 +242,7 @@ fn render_top_bar_to_lines(app: &mut App, width: u16) -> Vec<String> {
 #[test]
 fn narrow_top_bar_renders_icon_and_stamps_target() {
     let mut app = App::test_default();
-    let key_a = SessionSlot::from_str_for_test("session-a");
+    let key_a = SessionSlot::lead("Test", "forge");
     app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone(), "test-project"));
     app.active_session_key = Some(key_a);
 
@@ -272,7 +267,7 @@ fn narrow_top_bar_renders_icon_and_stamps_target() {
 fn narrow_overlay_banner_includes_close_glyph_and_target() {
     let mut app = App::test_default();
     let projects = vec![project_view("forge", vec![session_view("session-a", "main")])];
-    let lead_key = SessionSlot::from_str_for_test("session-a");
+    let lead_key = SessionSlot::lead("Test", "forge");
     app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone(), "forge"));
     app.active_session_key = Some(lead_key);
 
@@ -373,8 +368,8 @@ fn spinner_shape_identical_accent_on_selected_row() {
         project_view("stargate", vec![session_view("session-s", "lead-b")]),
     ];
 
-    let key_a = SessionSlot::from_str_for_test("session-r");
-    let key_b = SessionSlot::from_str_for_test("session-s");
+    let key_a = SessionSlot::lead("Test", "forge");
+    let key_b = SessionSlot::lead("Test", "stargate");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Running);
     register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Running);
@@ -417,8 +412,8 @@ fn idle_shape_identical_accent_on_selected_row() {
         project_view("stargate", vec![session_view("session-j", "lead-b")]),
     ];
 
-    let key_a = SessionSlot::from_str_for_test("session-i");
-    let key_b = SessionSlot::from_str_for_test("session-j");
+    let key_a = SessionSlot::lead("Test", "forge");
+    let key_b = SessionSlot::lead("Test", "stargate");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
     register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Idle);
@@ -462,8 +457,8 @@ fn attention_glyph_shape_stable_accent_on_selected_row() {
         project_view("stargate", vec![session_view("session-b", "lead-b")]),
     ];
 
-    let key_a = SessionSlot::from_str_for_test("session-a");
-    let key_b = SessionSlot::from_str_for_test("session-b");
+    let key_a = SessionSlot::lead("Test", "forge");
+    let key_b = SessionSlot::lead("Test", "stargate");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Attention);
     register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Attention);
@@ -533,8 +528,8 @@ fn wide_tier_background_session_with_pending_prompt_renders_yellow_glyph() {
         project_view("stargate", vec![session_view("session-b", "lead-b")]),
     ];
 
-    let key_a = SessionSlot::from_str_for_test("session-a");
-    let key_b = SessionSlot::from_str_for_test("session-b");
+    let key_a = SessionSlot::lead("Test", "forge");
+    let key_b = SessionSlot::lead("Test", "stargate");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
     register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Idle);
@@ -575,8 +570,8 @@ fn wide_tier_background_session_with_failed_turn_renders_red_cross() {
         project_view("stargate", vec![session_view("session-b", "lead-b")]),
     ];
 
-    let key_a = SessionSlot::from_str_for_test("session-a");
-    let key_b = SessionSlot::from_str_for_test("session-b");
+    let key_a = SessionSlot::lead("Test", "forge");
+    let key_b = SessionSlot::lead("Test", "stargate");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
     register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Idle);
@@ -643,7 +638,7 @@ fn focused_session_pending_prompt_keeps_triangle_takes_accent() {
     // △; selection recolours the glyph to the accent, never swaps it.
     let projects = vec![project_view("forge", vec![session_view("session-a", "lead-a")])];
 
-    let key_a = SessionSlot::from_str_for_test("session-a");
+    let key_a = SessionSlot::lead("Test", "forge");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Running);
 

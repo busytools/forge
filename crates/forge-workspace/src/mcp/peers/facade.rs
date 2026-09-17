@@ -32,98 +32,8 @@ use crate::mcp::peers::types::{
 use tracing::warn;
 
 use crate::SessionSlot;
-use crate::domain_session::DomainSession;
 use crate::protocol::{Command, SessionUpdate};
 use crate::workspace::Workspace;
-
-/// Snapshot the caller's current [`SessionSlot`] on demand.
-///
-/// Each session's peer-MCP tools hold a `CallerKeyResolver` instead of
-/// a bare `SessionSlot` because the session's key isn't stable - `/new`
-/// and `/clear` move the pooled key when the CLI adopts a different id,
-/// through [`Workspace::migrate_session_task`]. Tools that baked the
-/// key in at server-build time would see stale lookups after the
-/// rekey.
-///
-/// Production resolver reads from `DomainSession.key` via the
-/// session's shared `Arc<Mutex<DomainSession>>`. The migrate path
-/// updates `DomainSession.key` in place, so the resolver always
-/// returns the current key.
-///
-/// Test resolvers can be any closure (typically returning a fixed
-/// fake key).
-#[derive(Clone)]
-pub struct CallerKeyResolver(Arc<dyn Fn() -> Result<SessionSlot, ResolverDetached> + Send + Sync>);
-
-/// Returned by [`CallerKeyResolver::current`] when the underlying
-/// `DomainSession` has been dropped (typically: workspace shutdown
-/// happening concurrently with a peer/worker tool invocation). The
-/// Tool impl should surface this as an `is_error` tool response -
-/// the recipient session is dying, the LLM call won't have anywhere
-/// to land anyway. Replaces the prior `__detached__` SessionSlot
-/// sentinel which forced every consumer to compare against a magic
-/// string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResolverDetached;
-
-impl std::fmt::Display for ResolverDetached {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("caller session is detached (DomainSession dropped)")
-    }
-}
-
-impl std::error::Error for ResolverDetached {}
-
-impl std::fmt::Debug for CallerKeyResolver {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CallerKeyResolver").finish_non_exhaustive()
-    }
-}
-
-impl CallerKeyResolver {
-    /// Build a resolver that reads `DomainSession.key` through a
-    /// `Weak<Mutex<DomainSession>>`. Use this in production (the
-    /// spawn path).
-    ///
-    /// **Weak intentionally**: the DomainSession's `conn` field
-    /// holds an `Arc<AgentHandle>`, and the AgentHandle owns the
-    /// `ForgeSdkBridge` which owns the McpServer (extra_mcp_servers)
-    /// whose Tool impls hold *this* resolver. Holding the
-    /// DomainSession strongly here would close a cycle:
-    /// AgentHandle → bridge → tools → resolver → DomainSession.conn
-    /// → AgentHandle. Drop never fires. With Weak, the cycle is
-    /// broken at the resolver edge: when the workspace drops its
-    /// strong reference (via `domain_handles.drain()` in
-    /// `Workspace::shutdown` and per-session in `release_session`),
-    /// the inner Arc count hits 1 (the cloned strong handle held by
-    /// the bridge's domain reference is the only remaining one) and
-    /// then 0 when the bridge drops, breaking the cycle cleanly.
-    ///
-    /// If the DomainSession gets dropped before a tool fires (e.g.
-    /// the workspace is shutting down concurrently with a peer tool
-    /// invocation), `current()` returns `Err(ResolverDetached)`.
-    /// Tools handle this by returning a tool-level error so the LLM
-    /// sees the failure cleanly rather than silently routing against
-    /// a synthetic sentinel SessionSlot.
-    pub fn from_domain(domain: &Arc<parking_lot::Mutex<DomainSession>>) -> Self {
-        let weak = Arc::downgrade(domain);
-        Self(Arc::new(move || weak.upgrade().map(|d| d.lock().key.clone()).ok_or(ResolverDetached)))
-    }
-
-    /// Build a resolver that returns a fixed `SessionSlot`. Use this
-    /// in tests where the session never rekeys.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn from_fixed(key: SessionSlot) -> Self {
-        Self(Arc::new(move || Ok(key.clone())))
-    }
-
-    /// Resolve the caller's current `SessionSlot`. Returns
-    /// `Err(ResolverDetached)` when the underlying `DomainSession`
-    /// has been dropped (workspace shutdown race).
-    pub fn current(&self) -> Result<SessionSlot, ResolverDetached> {
-        (self.0)()
-    }
-}
 
 /// What `deliver_peer_prompt` returns on success - whether the target
 /// session was already running (prompt sent immediately) or asleep
@@ -301,8 +211,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
             .into_iter()
             .map(|view| {
                 let (lead, running) = lead_for(&ws, &view);
-                let liveness =
-                    if running { PeerLiveness::Running } else { PeerLiveness::Sleeping };
+                let liveness = if running { PeerLiveness::Running } else { PeerLiveness::Sleeping };
                 let counts = stat_counters.get(&lead).cloned().unwrap_or_default();
                 let spawned_at = ws.session_last_activity(&lead);
                 PeerStatus {
@@ -331,8 +240,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         // peer?".
         let stat_counters = ws.peer_stats.lock();
         let counts = stat_counters.get(&cx.lead).cloned().unwrap_or_default();
-        let status =
-            if cx.lead_running { PeerLiveness::Running } else { PeerLiveness::Sleeping };
+        let status = if cx.lead_running { PeerLiveness::Running } else { PeerLiveness::Sleeping };
         let spawned_at = ws.session_last_activity(&cx.lead);
         drop(stat_counters);
         Some(PeerStatus {
@@ -608,26 +516,6 @@ mod tests {
     }
 
     #[test]
-    fn caller_key_from_fixed_returns_ok() {
-        let resolver = CallerKeyResolver::from_fixed(fake_key("alpha"));
-        let key = resolver.current().expect("from_fixed always resolves");
-        assert_eq!(key.label(), "alpha");
-    }
-
-    #[test]
-    fn caller_key_from_domain_returns_err_after_drop() {
-        // Build a DomainSession-shaped Mutex, downgrade to Weak via
-        // from_domain, drop the Arc, then probe current(). The
-        // upgrade must fail and we must see ResolverDetached.
-        let domain =
-            Arc::new(parking_lot::Mutex::new(crate::DomainSession::new(fake_key("alpha"), None)));
-        let resolver = CallerKeyResolver::from_domain(&domain);
-        assert_eq!(resolver.current().map(|k| k.label().to_owned()), Ok("alpha".to_owned()));
-        drop(domain);
-        assert_eq!(resolver.current(), Err(ResolverDetached));
-    }
-
-    #[test]
     fn mock_list_peers_returns_preloaded() {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("alpha", PeerLiveness::Running));
@@ -830,7 +718,11 @@ mod lead_resolution_tests {
             worker_entry(SessionSlot::from_str_for_test(worker.session.as_str())),
         );
         let (resolved, running) = lead_for(&ws, &view);
-        assert_eq!(resolved, SessionSlot::lead("Test", "forge"), "an all-worker project still names its lead");
+        assert_eq!(
+            resolved,
+            SessionSlot::lead("Test", "forge"),
+            "an all-worker project still names its lead"
+        );
         assert!(!running, "and the lead is not running");
     }
 
@@ -877,19 +769,19 @@ mod lead_resolution_tests {
         let pk = crate::ProjectKey::new(
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/myproj")),
         );
-        ws.insert_live_worker(&pk, worker_entry(SessionSlot::from_str_for_test("worker-uuid")));
+        let worker = SessionSlot::worker("TestOrg", "myproj", "worker-uuid");
+        ws.insert_live_worker(&pk, worker_entry(worker.clone()));
 
         let facade = ProdWorkspaceFacade::from_arc(&ws);
-        let status = facade
-            .whoami(&SessionSlot::from_str_for_test("worker-uuid"))
-            .expect("worker caller resolves to its project's peer identity");
+        let status =
+            facade.whoami(&worker).expect("worker caller resolves to its project's peer identity");
         assert_eq!(status.name, "myproj");
         assert_eq!(status.org, "TestOrg");
 
         // Regression lock: the pre-existing lead-only path still
         // resolves to the same project identity.
         let lead_status = facade
-            .whoami(&SessionSlot::from_str_for_test("lead-uuid"))
+            .whoami(&SessionSlot::lead("TestOrg", "myproj"))
             .expect("lead caller still resolves");
         assert_eq!(lead_status.name, "myproj");
     }

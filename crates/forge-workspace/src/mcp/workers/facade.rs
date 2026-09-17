@@ -38,7 +38,7 @@ pub enum WorkerDeliverError {
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerLeadDeliverError {
     /// Caller resolves to no known session (defensive - should not
-    /// happen with a valid CallerKeyResolver).
+    /// happen with a valid caller slot).
     UnknownCaller,
     /// Caller is a project lead - leads have no lead to talk back
     /// to. The `"lead"` keyword is worker-only.
@@ -573,23 +573,13 @@ impl WorkerFacade for ProdWorkerFacade {
             None
         };
 
-        // Row to persist on success. Captured before the values move
-        // into the Command so a forge restart can re-spawn this dynamic
-        // worker (resolved charter/kick, no session_id - the sessions
-        // table holds that). This is the ONLY MCP-spawn site;
-        // boot/reconnect re-spawns dispatch SpawnWorker directly and
-        // must not persist.
-        let persisted = crate::store::dynamic_workers::DynamicWorker {
-            project_key: cp.project_key.as_str().to_owned(),
-            label: label.clone(),
-            charter: charter.clone(),
-            kick: kick.clone(),
-            resume_kick,
-            interactive,
-        };
+        // The worker's row is written by the spawn handler itself, from
+        // the same arguments, so there is nothing to persist here - and
+        // one write path covers the boot re-spawn too.
+        let spawn_label = label.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let cmd = Command::SpawnWorker {
-            project_key: cp.project_key,
+            project_key: cp.project_key.clone(),
             label,
             charter,
             spawned_by: caller.clone(),
@@ -597,38 +587,33 @@ impl WorkerFacade for ProdWorkerFacade {
             // resolution above fills in the real session id.
             resume_existing,
             kick,
+            resume_kick,
             interactive,
             from_boot_respawn: false,
             return_to: tx,
         };
         if let Err(err) = ws.dispatch(cmd) {
-            discard_refused_worktree(&view.path, &persisted.label, ensured.take());
+            discard_refused_worktree(&view.path, &spawn_label, ensured.take());
             return Err(WorkerSpawnError::DispatchFailed {
                 message: format!("dispatch failed: {err:?}"),
             });
         }
         match rx.await {
             Ok(Ok(mut reply)) => {
-                // Persist is best-effort: the worker already spawned. A
-                // failure means it won't survive a restart, so surface it
-                // to the lead instead of silently breaking the durability
-                // promise the tool advertises.
-                if let Err(err) = ws.persist_dynamic_worker(&persisted) {
+                if let Some(warning) = reply.durability_warning.take() {
                     tracing::error!(
                         target: "forge_workspace::mcp::workers",
-                        %err,
-                        project = %persisted.project_key,
-                        label = %persisted.label,
-                        "persisting the dynamic worker failed; it will not survive a forge restart",
+                        project = %cp.project_key.as_str(),
+                        label = %spawn_label,
+                        warning = %warning,
+                        "the worker's row could not be recorded; it will not survive a forge restart",
                     );
-                    reply.durability_warning = Some(format!(
-                        "spawned, but persisting this worker for durability failed ({err}); it will not survive a forge restart"
-                    ));
+                    reply.durability_warning = Some(warning);
                 }
                 Ok(reply)
             }
             Ok(Err(message)) => {
-                discard_refused_worktree(&view.path, &persisted.label, ensured.take());
+                discard_refused_worktree(&view.path, &spawn_label, ensured.take());
                 Err(classify_worker_spawn_failure(&message, is_git_repo_at_spawn))
             }
             // No rollback here: a dropped reply means the command may
@@ -651,7 +636,7 @@ impl WorkerFacade for ProdWorkerFacade {
         let ws = self.workspace.upgrade().ok_or_else(|| WorkerUpdateError::StoreFailed {
             message: "workspace dropped".into(),
         })?;
-        match ws.update_dynamic_worker(&cp.project_key, label, charter, kick, resume_kick) {
+        match ws.update_worker_row(&cp.project_key, label, charter, kick, resume_kick) {
             Ok(true) => Ok(()),
             Ok(false) => Err(WorkerUpdateError::NoSuchWorker {
                 label: label.to_owned(),
@@ -947,9 +932,10 @@ impl WorkerFacade for MockWorkerFacade {
         let label = if cp.is_lead {
             None
         } else {
-            self.workers.lock().get(cp.project_key.as_str()).and_then(|ws| {
-                ws.iter().find(|w| w.slot == *caller).map(|w| w.label.clone())
-            })
+            self.workers
+                .lock()
+                .get(cp.project_key.as_str())
+                .and_then(|ws| ws.iter().find(|w| w.slot == *caller).map(|w| w.label.clone()))
         };
         classify_worker_identity(cp.is_lead, &cp.project_key, label, caller)
     }
@@ -1406,7 +1392,8 @@ mod mock_tests {
                 },
             ],
         );
-        let capacity = mock.capacity(&SessionSlot::from_str_for_test("k1")).expect("caller resolves");
+        let capacity =
+            mock.capacity(&SessionSlot::from_str_for_test("k1")).expect("caller resolves");
         assert_eq!(capacity.project, "forge");
         assert_eq!(capacity.cap, crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT);
         assert_eq!(capacity.cap_source, WorkerCapSource::Default);
@@ -1436,7 +1423,7 @@ mod prod_list_workers_tests {
 
         // The caller IS the worker, which is enough for
         // `caller_context` to resolve it into the project.
-        let caller = SessionSlot::from_str_for_test("worker-uuid");
+        let caller = SessionSlot::worker("TestOrg", "forge", "implementer");
         ws.insert_live_worker(
             &project,
             crate::mcp::workers::types::WorkerEntry {
@@ -1444,9 +1431,9 @@ mod prod_list_workers_tests {
                 charter: "test charter".into(),
                 slot: caller.clone(),
                 session_id: None,
-                status:WorkerLiveness::Running,
+                status: WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
+                spawned_by: SessionSlot::lead("TestOrg", "forge"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -1478,15 +1465,20 @@ mod capacity_tests {
     use super::*;
     use forge_primitives::WorkerLiveness;
 
-    fn entry(label: &str, session_id: &str) -> crate::mcp::workers::types::WorkerEntry {
+    /// The slot the `forge` project's spawn names for `label`.
+    fn worker_slot(label: &str) -> SessionSlot {
+        SessionSlot::worker("TestOrg", "forge", label)
+    }
+
+    fn entry(label: &str) -> crate::mcp::workers::types::WorkerEntry {
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "test charter".into(),
-            slot: SessionSlot::from_str_for_test(session_id),
+            slot: worker_slot(label),
             session_id: None,
-            status:WorkerLiveness::Running,
+            status: WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
+            spawned_by: SessionSlot::lead("TestOrg", "forge"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -1503,8 +1495,8 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project_with_max_workers("forge", "/tmp/forge", 1);
         let project = project_key_of(&ws, "forge");
-        let caller = SessionSlot::from_str_for_test("worker-uuid");
-        ws.insert_live_worker(&project, entry("implementer", "worker-uuid"));
+        let caller = worker_slot("implementer");
+        ws.insert_live_worker(&project, entry("implementer"));
 
         let facade = ProdWorkerFacade::from_arc(&ws);
         let capacity = facade.capacity(&caller).expect("live worker resolves to its project");
@@ -1519,8 +1511,8 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/forge");
         let project = project_key_of(&ws, "forge");
-        let caller = SessionSlot::from_str_for_test("worker-uuid");
-        ws.insert_live_worker(&project, entry("implementer", "worker-uuid"));
+        let caller = worker_slot("implementer");
+        ws.insert_live_worker(&project, entry("implementer"));
 
         let facade = ProdWorkerFacade::from_arc(&ws);
         let capacity = facade.capacity(&caller).expect("live worker resolves to its project");
@@ -1534,9 +1526,9 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/forge");
         let project = project_key_of(&ws, "forge");
-        let caller = SessionSlot::from_str_for_test("worker-a");
-        ws.insert_live_worker(&project, entry("a", "worker-a"));
-        ws.insert_live_worker(&project, entry("b", "worker-b"));
+        let caller = worker_slot("a");
+        ws.insert_live_worker(&project, entry("a"));
+        ws.insert_live_worker(&project, entry("b"));
 
         let facade = ProdWorkerFacade::from_arc(&ws);
         let capacity = facade.capacity(&caller).expect("live worker resolves to its project");
@@ -1555,9 +1547,9 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project_with_max_workers("forge", "/tmp/forge", 2);
         let project = project_key_of(&ws, "forge");
-        let caller = SessionSlot::from_str_for_test("worker-running");
-        ws.insert_live_worker(&project, entry("running", "worker-running"));
-        let mut failed = entry("failed", "worker-failed");
+        let caller = worker_slot("running");
+        ws.insert_live_worker(&project, entry("running"));
+        let mut failed = entry("failed");
         failed.status = WorkerLiveness::Failed;
         ws.insert_live_worker(&project, failed);
 
@@ -1574,8 +1566,8 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/forge");
         let project = project_key_of(&ws, "forge");
-        let caller = SessionSlot::from_str_for_test("worker-only");
-        let mut failed = entry("only", "worker-only");
+        let caller = worker_slot("only");
+        let mut failed = entry("only");
         failed.status = WorkerLiveness::Failed;
         ws.insert_live_worker(&project, failed);
 

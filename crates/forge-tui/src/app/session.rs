@@ -40,8 +40,10 @@ use forge_primitives::{AccountInfo, PeerInflightStats, SessionId};
 /// fields. TUI reducers in `app::events::*` update them from
 /// `SessionUpdate` payloads as events arrive.
 pub struct UiSession {
-    /// The claude-issued session UUID, also used as the map key.
-    /// Stored here for symmetry; the map lookup uses the same value.
+    /// The slot this bucket fills, mirrored from the key it is held
+    /// under in `App.sessions`. Stored for symmetry; the map lookup
+    /// uses the same value. `None` once a hard teardown has cleared
+    /// the session-identity mirrors.
     pub key: Option<SessionSlot>,
     /// This session's `/dictate` normalizer-axis overrides, mirrored
     /// from the workspace's `DomainSession` via
@@ -987,9 +989,8 @@ mod tests {
     }
 
     /// Bucket state (cwd, files_accessed, …) accumulated before the id
-    /// is adopted must survive: the bucket is rekeyed onto the real id
-    /// earlier, so `set_session_id` finds it already there and must not
-    /// reset it.
+    /// is adopted must survive: the id is a field on the bucket now, so
+    /// adopting one must not reset anything.
     #[test]
     fn set_session_id_preserves_the_real_key_bucket_state() {
         let mut app = App::test_default();

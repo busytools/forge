@@ -401,7 +401,11 @@ mod tests {
 
         // Active tab is the real web-api session, but the stamp is empty
         // AND cwd_raw is blank - only the catalog resolver can succeed.
-        let key = forge_workspace::SessionSlot::from_str_for_test(uuid);
+        // The slot carries the project's `(org, name)`, which is what
+        // the pane/top-bar resolver matches on.
+        let project =
+            ws.list_projects().into_iter().find(|p| p.name == "web-api").expect("seeded project");
+        let key = forge_workspace::SessionSlot::lead(project.org.clone(), project.name.clone());
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "");
         bucket.cwd_raw = String::new();
         app.sessions.insert(key.clone(), bucket);

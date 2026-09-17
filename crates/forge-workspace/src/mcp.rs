@@ -38,9 +38,10 @@ use std::sync::Arc;
 
 use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 
+use crate::SessionSlot;
 use crate::mcp::cron::facade::CronFacade;
 use crate::mcp::gotify::facade::GotifyFacade;
-use crate::mcp::peers::facade::{CallerKeyResolver, WorkspaceFacade};
+use crate::mcp::peers::facade::WorkspaceFacade;
 use crate::mcp::review::facade::ReviewFacade;
 use crate::mcp::slack::facade::SlackFacade;
 use crate::mcp::workers::facade::WorkerFacade;
@@ -88,6 +89,10 @@ pub enum SessionKind {
 /// the duplicate name and the CLI would reject one - so the right
 /// shape is to combine the (selected) tool sets into a single
 /// builder here.
+///
+/// `slot` is the calling session's slot. Each tool holds its own clone
+/// of it, which is safe because a slot is stable across `/new` and
+/// `/resume` - those swap the occupant and leave the slot alone.
 pub fn build_forge_server(
     workspace_facade: Arc<dyn WorkspaceFacade>,
     worker_facade: Arc<dyn WorkerFacade>,
@@ -95,25 +100,24 @@ pub fn build_forge_server(
     cron_facade: Arc<dyn CronFacade>,
     gotify_facade: Arc<dyn GotifyFacade>,
     slack_facade: Arc<dyn SlackFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
     kind: SessionKind,
 ) -> McpServer {
     let mut builder = McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"));
     if matches!(kind, SessionKind::Lead) {
-        builder = peers::add_tools(builder, workspace_facade, caller_key.clone());
+        builder = peers::add_tools(builder, workspace_facade, slot.clone());
     }
-    builder = workers::add_tools(builder, worker_facade, caller_key.clone());
-    builder = review::add_tools(builder, review_facade, caller_key.clone());
-    builder = cron::add_tools(builder, cron_facade, caller_key.clone());
-    builder = gotify::add_tools(builder, gotify_facade, caller_key.clone());
-    builder = slack::add_tools(builder, slack_facade, caller_key);
+    builder = workers::add_tools(builder, worker_facade, slot.clone());
+    builder = review::add_tools(builder, review_facade, slot.clone());
+    builder = cron::add_tools(builder, cron_facade, slot.clone());
+    builder = gotify::add_tools(builder, gotify_facade, slot.clone());
+    builder = slack::add_tools(builder, slack_facade, slot);
     builder.build()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionSlot;
     use crate::mcp::cron::facade::MockCronFacade;
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
@@ -133,7 +137,6 @@ mod tests {
         let cron_facade = MockCronFacade::new().into_arc();
         let gotify_facade = MockGotifyFacade::new().into_arc();
         let slack_facade = MockSlackFacade::new().into_arc();
-        let resolver = CallerKeyResolver::from_fixed(fake_key("test"));
         let server = build_forge_server(
             workspace_facade,
             worker_facade,
@@ -141,7 +144,7 @@ mod tests {
             cron_facade,
             gotify_facade,
             slack_facade,
-            resolver,
+            fake_key("test"),
             SessionKind::Lead,
         );
         let debug = format!("{server:?}");
@@ -197,7 +200,6 @@ mod tests {
         let cron_facade = MockCronFacade::new().into_arc();
         let gotify_facade = MockGotifyFacade::new().into_arc();
         let slack_facade = MockSlackFacade::new().into_arc();
-        let resolver = CallerKeyResolver::from_fixed(fake_key("test"));
         let server = build_forge_server(
             workspace_facade,
             worker_facade,
@@ -205,7 +207,7 @@ mod tests {
             cron_facade,
             gotify_facade,
             slack_facade,
-            resolver,
+            fake_key("test"),
             SessionKind::Worker,
         );
         let debug = format!("{server:?}");
@@ -250,8 +252,7 @@ mod tests {
         // Workers MUST NOT see peers__* - cross-project coordination
         // is a lead-only role; advertising those tools to a worker
         // dumps a non-functional surface on the worker LLM that errors
-        // out at call time (the CallerKeyResolver can't map a worker
-        // session to a peer identity).
+        // out at call time (a worker's slot names no peer identity).
         for forbidden in
             ["peers__whoami", "peers__list_agents", "peers__tell_agent", "peers__ask_agent"]
         {

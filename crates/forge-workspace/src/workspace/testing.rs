@@ -375,15 +375,38 @@ impl Workspace {
     /// Cross-crate test access to the otherwise `pub(crate)` store write
     /// so forge-tui can render launchpad worker rows against a seeded row.
     #[cfg(any(test, feature = "testing"))]
-    pub fn seed_test_dynamic_worker(&self, project_key: &ProjectKey, label: &str) {
-        let _ = self.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
-            project_key: project_key.as_str().to_owned(),
-            label: label.to_owned(),
-            charter: format!("charter for {label}"),
-            kick: None,
-            resume_kick: None,
-            interactive: false,
-        });
+    pub fn seed_test_worker_row(&self, project_key: &ProjectKey, label: &str) {
+        let _ = self.record_worker_row(
+            project_key,
+            label,
+            &format!("{label}-test-id"),
+            &format!("charter for {label}"),
+            None,
+            None,
+            false,
+        );
+    }
+
+    /// Write a session row for `slot` carrying `charter`, bypassing a
+    /// spawn. A test that drives `/new` needs the store to already hold
+    /// the worker's mission, which is what the re-delivery reads.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_session_charter(&self, slot: &SessionSlot, charter: &str) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        let _ = crate::store::sessions::put(
+            db,
+            &crate::store::sessions::SessionRecord {
+                org: slot.org().to_owned(),
+                project: slot.project().to_owned(),
+                label: slot.label().to_owned(),
+                session_id: None,
+                charter: Some(charter.to_owned()),
+                kick: None,
+                resume_kick: None,
+                interactive: None,
+            },
+        );
     }
 }
 

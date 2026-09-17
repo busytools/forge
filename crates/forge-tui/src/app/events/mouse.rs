@@ -2836,7 +2836,7 @@ mod tests {
             close_session(&mut app, &closing_key);
 
             assert_eq!(
-                app.active_session_key.as_ref().map(forge_workspace::SessionSlot::display),
+                app.active_session_key.as_ref().map(|k| k.label().to_owned()),
                 Some(expected.to_owned()),
                 "closing {closing} must land on the row drawn next to it",
             );

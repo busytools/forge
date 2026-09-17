@@ -313,29 +313,27 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn dynamic_worker_row(
-        project: &str,
-        label: &str,
-    ) -> crate::store::dynamic_workers::DynamicWorker {
-        crate::store::dynamic_workers::DynamicWorker {
-            project_key: project.to_owned(),
-            label: label.to_owned(),
-            charter: format!("charter for {label}"),
-            kick: Some(format!("kick for {label}")),
-            resume_kick: None,
-            interactive: false,
-        }
+    /// Persist a worker row for `label` in `project_key`, the registry
+    /// entry the durability checks read, failing loudly when it did not
+    /// land. The key must resolve to a configured project: the row lands
+    /// in the `(org, project name, label)` keyed `sessions` table.
+    fn seed_worker_row(ws: &crate::Workspace, project_key: &ProjectKey, label: &str) {
+        ws.seed_test_worker_row(project_key, label);
+        assert!(
+            ws.worker_row_exists(project_key, label).expect("read the seeded row"),
+            "the worker row for {label} did not land; does {project_key:?} resolve to a project?",
+        );
     }
 
-    fn live_worker_entry(label: &str, key: &str) -> crate::mcp::workers::types::WorkerEntry {
+    fn live_worker_entry(project: &str, label: &str) -> crate::mcp::workers::types::WorkerEntry {
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "c".to_owned(),
-            slot: SessionSlot::from_str_for_test(key),
+            slot: SessionSlot::worker("TestOrg", project, label),
             session_id: None,
-            status:forge_primitives::WorkerLiveness::Running,
+            status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
+            spawned_by: SessionSlot::lead("TestOrg", project),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -506,7 +504,7 @@ mod tests {
             .find(|v| v.name == "forge")
             .map(|v| v.key)
             .expect("seeded project view");
-        ws.insert_live_worker(&view_key, live_worker_entry("scratch", "worker-1"));
+        ws.insert_live_worker(&view_key, live_worker_entry("forge", "scratch"));
 
         let mut scratch_sub = gotify_sub("forge", &[], None);
         scratch_sub.team_role = Some("scratch".to_owned());
@@ -554,10 +552,10 @@ mod tests {
             .expect("seeded project view");
 
         // "scratch" is not the lead: durability
-        // must come solely from its dynamic_workers row.
-        let _ = ws.persist_dynamic_worker(&dynamic_worker_row(view_key.as_str(), "scratch"));
-        let caller = SessionSlot::from_str_for_test("scratch-session");
-        ws.insert_live_worker(&view_key, live_worker_entry("scratch", "scratch-session"));
+        // must come solely from its persisted worker row.
+        seed_worker_row(&ws, &view_key, "scratch");
+        let caller = SessionSlot::worker("TestOrg", "forge", "scratch");
+        ws.insert_live_worker(&view_key, live_worker_entry("forge", "scratch"));
 
         let (name, team_role, durable) = crate::mcp::gotify::facade::resolve_identity(&ws, &caller)
             .expect("the worker caller resolves to its project");
@@ -621,7 +619,7 @@ mod tests {
 
     /// With no store installed the removal still scrubs the in-memory set;
     /// the redb delete is simply skipped (mirrors
-    /// `persist_dynamic_worker_errors_when_store_unavailable`).
+    /// `record_worker_row_errors_when_store_unavailable`).
     #[test]
     fn remove_gotify_subscriptions_for_worker_scrubs_memory_without_a_db() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -751,7 +749,7 @@ mod tests {
             .find(|v| v.name == "forge")
             .map(|v| v.key)
             .expect("seeded project view");
-        let worker_key = SessionSlot::from_str_for_test("worker-reviewer");
+        let worker_key = SessionSlot::worker("TestOrg", "forge", "reviewer");
         ws.insert_live_worker(
             &view_key,
             crate::mcp::workers::types::WorkerEntry {
@@ -759,9 +757,9 @@ mod tests {
                 charter: "review".to_owned(),
                 slot: worker_key.clone(),
                 session_id: None,
-                status:forge_primitives::WorkerLiveness::Running,
+                status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by: SessionSlot::from_str_for_test("lead"),
+                spawned_by: SessionSlot::lead("TestOrg", "forge"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -788,11 +786,13 @@ mod tests {
 
         // The delivery ALSO echoes the notification block into the worker's
         // chat so the user sees what arrived (mirrors the peer echo).
-        let echoed = drain_updates(&mut rx).into_iter().any(|u| matches!(
-            u,
-            crate::protocol::SessionUpdate::GotifyNotificationAppended { key, notification }
-                if key == worker_key && notification == notif
-        ));
+        let echoed = drain_updates(&mut rx).into_iter().any(|u| {
+            matches!(
+                u,
+                crate::protocol::SessionUpdate::GotifyNotificationAppended { key, notification }
+                    if key == worker_key && notification == notif
+            )
+        });
         assert!(echoed, "a running-target delivery emits a GotifyNotificationAppended echo");
     }
 
@@ -841,8 +841,8 @@ mod tests {
             .find(|v| v.name == "forge")
             .map(|v| v.key)
             .expect("seeded project view");
-        let worker_key = SessionSlot::from_str_for_test("worker-spawning");
-        ws.insert_live_worker(&view_key, live_worker_entry("reviewer", "worker-spawning"));
+        let worker_key = SessionSlot::worker("TestOrg", "forge", "reviewer");
+        ws.insert_live_worker(&view_key, live_worker_entry("forge", "reviewer"));
         // Register the domain WITHOUT stamping session_id: still Spawning.
         ws.register_domain_session(worker_key.clone(), None);
 

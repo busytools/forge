@@ -443,14 +443,31 @@ mod resolve_scope_tests {
         path
     }
 
-    /// A workspace holding one project rooted at `cwd`, with the returned
-    /// caller registered as a catalog session whose cwd is that root.
+    /// A workspace holding one project rooted at `cwd`, which the
+    /// returned lead caller resolves through. The project is declared in
+    /// the config rather than seeded into the test overlay: a lead's cwd
+    /// comes from `project_for_slot`, which reads `config.projects`.
     fn ws_with_session_cwd(cwd: &str) -> (Arc<Workspace>, SessionSlot) {
-        let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project("myproj", cwd);
-        let caller = SessionSlot::from_str_for_test("caller-uuid");
-        ws.record_connected_session(cwd, &caller.display(), None);
-        (ws, caller)
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.projects.push(crate::config::LoadedProject {
+            name: "myproj".to_owned(),
+            path: PathBuf::from(cwd),
+            display_path: cwd.to_owned(),
+            org: "TestOrg".to_owned(),
+            accounts: Vec::new(),
+            fallback_accounts: Vec::new(),
+            auto_start: false,
+            model: None,
+            env: std::collections::HashMap::new(),
+            max_workers: None,
+            permission_mode: forge_primitives::permission::PermissionMode::Auto,
+        });
+        let (ws, _rx) = Workspace::testing_stub_with_config(
+            PathBuf::from("/tmp/forge-review-testing-stub"),
+            config,
+        )
+        .expect("the stub config's [[slack]] entries are well-formed");
+        (ws, SessionSlot::lead("TestOrg", "myproj"))
     }
 
     /// Register `label` as a live worker of the project rooted at
@@ -471,7 +488,7 @@ mod resolve_scope_tests {
             .find(|v| v.name == "myproj")
             .map(|v| v.key)
             .expect("seeded project");
-        let caller = SessionSlot::from_str_for_test("worker-uuid");
+        let caller = SessionSlot::worker("TestOrg", "myproj", label);
         ws.insert_live_worker(
             &key,
             crate::WorkerEntry {
@@ -479,9 +496,9 @@ mod resolve_scope_tests {
                 charter: "build".to_owned(),
                 slot: caller.clone(),
                 session_id: None,
-                status:forge_primitives::WorkerLiveness::Running,
+                status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by: SessionSlot::from_str_for_test("lead"),
+                spawned_by: SessionSlot::lead("TestOrg", "myproj"),
                 needs_tag: false,
                 is_git_repo_at_spawn,
                 diagnostic: None,

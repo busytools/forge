@@ -116,7 +116,10 @@ impl super::App {
             target: crate::logging::targets::APP_SESSION,
             event_name = "active_session_switched",
             outcome = "success",
-            from = %self.active_session_key.as_ref().map_or_else(|| "<none>".to_owned(), |k| k.display()),
+            from = %self
+                .active_session_key
+                .as_ref()
+                .map_or_else(|| "<none>".to_owned(), forge_primitives::SessionSlot::display),
             to = %key.display(),
         );
 
@@ -220,15 +223,13 @@ impl super::App {
         let Some(key) = self.active_session_key.clone() else {
             return;
         };
-        let primitive_id = id
-            .as_ref()
-            .map(|id| forge_primitives::SessionId::new(id.to_string()));
+        let primitive_id = id.map(|id| forge_primitives::SessionId::new(id.to_string()));
         // The id is a field on the bucket, not its key: adoption
         // records the occupant the CLI named and moves nothing. The
         // bucket keeps its slot, its cwd, its project, its chat and its
         // handle, which is what `/new` and a reconnect both need.
         if let Some(bucket) = self.sessions.get_mut(&key) {
-            bucket.session_id = primitive_id.clone();
+            bucket.session_id.clone_from(&primitive_id);
         }
         // Mirror `session_id` onto the workspace's DomainSession so
         // `AgentHandle` dispatch finds it. Auto-create a handle-less
@@ -317,10 +318,8 @@ impl super::App {
         if let Some(ws) = self.workspace.as_ref() {
             for project in &projects {
                 for worker in ws.list_live_workers(&project.key) {
-                    worker_index.insert(
-                        worker.slot.clone(),
-                        (project.name.clone(), worker.label.clone()),
-                    );
+                    worker_index
+                        .insert(worker.slot.clone(), (project.name.clone(), worker.label.clone()));
                 }
             }
         }
@@ -487,7 +486,7 @@ mod tests {
         app.active_session_key = Some(active);
 
         let entries = app.needs_attention_sessions();
-        let keys: Vec<String> = entries.iter().map(|e| e.session_key.display()).collect();
+        let keys: Vec<&str> = entries.iter().map(|e| e.session_key.label()).collect();
         assert_eq!(keys, vec!["bg"], "the active session is excluded even with a pending prompt");
         assert!(matches!(entries[0].kind, crate::app::AttentionKind::Permission { .. }));
     }
@@ -501,7 +500,7 @@ mod tests {
         seed_attention_session(&mut app, "oldest", 100);
         seed_attention_session(&mut app, "middle", 200);
         let entries = app.needs_attention_sessions();
-        let order: Vec<String> = entries.iter().map(|e| e.session_key.display()).collect();
+        let order: Vec<&str> = entries.iter().map(|e| e.session_key.label()).collect();
         assert_eq!(order, vec!["oldest", "middle", "newest"], "stalest (oldest enqueue) on top");
     }
 
@@ -534,7 +533,7 @@ mod tests {
         seed_attention_session(&mut app, "zeta", 500);
         seed_attention_session(&mut app, "alpha", 500);
         let entries = app.needs_attention_sessions();
-        let order: Vec<String> = entries.iter().map(|e| e.session_key.display()).collect();
+        let order: Vec<&str> = entries.iter().map(|e| e.session_key.label()).collect();
         assert_eq!(order, vec!["alpha", "zeta"], "equal enqueue -> deterministic id tiebreak");
     }
 
@@ -771,30 +770,46 @@ mod tests {
         );
     }
 
-    /// The boot id-adoption moves the active key onto the real bucket
-    /// without a switch, so the status mirror must re-derive there
-    /// instead of keeping the boot Connecting.
+    /// The id is a field on the bucket, not its key: recording the
+    /// occupant moves nothing, mints nothing, and re-derives the
+    /// status mirror from the focused bucket so a stale Connecting
+    /// does not stick after adoption.
     #[test]
-    fn set_session_id_adopts_status_from_the_destination_bucket() {
+    fn set_session_id_records_the_occupant_on_the_focused_slot() {
         let mut app = App::test_default();
+        let seeded = forge_workspace::SessionSlot::from_str_for_test(App::TEST_SESSION_KEY);
         app.status = AppStatus::Connecting;
         let uuid = "11111111-2222-3333-4444-555555555555";
         let real = forge_workspace::SessionSlot::from_str_for_test(uuid);
         let mut bucket = crate::app::session::UiSession::new(real.clone(), "test-project");
         bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         app.sessions.insert(real.clone(), bucket);
+        // Give the focused bucket a lifecycle the mirror can only reach
+        // by re-deriving (Idle -> Ready), not by keeping the boot
+        // Connecting.
+        app.sessions.get_mut(&seeded).expect("seeded bucket").lifecycle_state =
+            crate::app::session::SessionLifecycleState::Idle;
 
         app.set_session_id(Some(crate::agent::model::SessionId::new(uuid)));
 
         assert_eq!(
             app.active_session_key.as_ref(),
-            Some(&real),
-            "adoption lands on the real bucket"
+            Some(&seeded),
+            "recording the occupant must not move focus off the slot the app holds",
+        );
+        assert_eq!(
+            app.sessions.get(&seeded).expect("seeded bucket").session_id,
+            Some(forge_primitives::SessionId::new(uuid)),
+            "the occupant lands on the focused bucket",
+        );
+        assert!(
+            app.sessions.get(&real).expect("real bucket").session_id.is_none(),
+            "no bucket is adopted from the id: the focused slot is the only target",
         );
         assert_eq!(
             app.status,
             AppStatus::Ready,
-            "status re-derives from the adopted bucket instead of sticking at Connecting"
+            "status re-derives from the focused bucket instead of sticking at Connecting"
         );
     }
 
@@ -936,8 +951,7 @@ mod tests {
         // refresh fns clear their session_id gate after the switch.
         let dest_key = forge_workspace::SessionSlot::from_str_for_test("destination-session");
         let mut dest_bucket = crate::app::session::UiSession::new(dest_key.clone(), "test-project");
-        dest_bucket.session_id =
-            Some(forge_primitives::SessionId::new(dest_key.display()));
+        dest_bucket.session_id = Some(forge_primitives::SessionId::new(dest_key.display()));
         app.sessions.insert(dest_key.clone(), dest_bucket);
         // Hold the destination's command receiver alive at test scope -
         // dropping it before `switch_active_session` runs makes the
@@ -948,8 +962,7 @@ mod tests {
             let (handle, outbox) = forge_workspace::Workspace::testing_stub_handle();
             let domain = workspace
                 .register_domain_session(dest_key.clone(), Some(std::sync::Arc::new(handle)));
-            domain.lock().session_id =
-                Some(forge_primitives::SessionId::new(dest_key.display()));
+            domain.lock().session_id = Some(forge_primitives::SessionId::new(dest_key.display()));
             Some(outbox)
         } else {
             None
@@ -1060,15 +1073,12 @@ mod tests {
         assert!(app.observed_assistant_model().is_none());
     }
 
-    /// `set_session_id`'s carry of the focused bucket onto its real
-    /// key logs `active_session_switched` - it used to strand focus on
-    /// an unrelated session with nothing in forge.log to say so. The
-    /// covered moves are switch_active_session, this carry, and the
-    /// session-replace carry; `apply_connected_presentation`'s
-    /// active-path write stays unlogged (was_active already true, the
-    /// pointer does not change).
+    /// `set_session_id` records the occupant and leaves the pointer
+    /// alone, so it must not log a focus move that did not happen.
+    /// Only `switch_active_session` and the session-replace carry move
+    /// focus now, and they log it.
     #[test]
-    fn set_session_id_logs_the_focus_move_it_makes() {
+    fn set_session_id_does_not_log_a_focus_move() {
         let mut app = App::test_default();
         let seeded = forge_workspace::SessionSlot::from_str_for_test(App::TEST_SESSION_KEY);
         assert_eq!(app.active_session_key.as_ref(), Some(&seeded));
@@ -1077,14 +1087,14 @@ mod tests {
             app.set_session_id(Some(crate::agent::model::SessionId::new("real-uuid")));
         });
 
-        assert!(
-            log.contains("active_session_switched"),
-            "the pointer move must log like every other focus move; got: {log}"
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&seeded),
+            "the pointer stays on the slot the app holds",
         );
         assert!(
-            log.contains("to=real-uuid")
-                && log.contains(&format!("from={}", App::TEST_SESSION_KEY)),
-            "the log names both ends of the move; got: {log}"
+            !log.contains("active_session_switched"),
+            "no focus move happened, so none may be logged; got: {log}"
         );
     }
 

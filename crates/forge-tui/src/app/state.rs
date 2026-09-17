@@ -353,9 +353,11 @@ pub struct App {
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_slack_posts: std::cell::RefCell<Vec<(uuid::Uuid, bool)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_question_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::QuestionOutcome)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_notifications: std::cell::RefCell<Vec<(super::notify::NotifyEvent, super::notify::NotifyContext)>>,
-    /// Per-session state buckets, keyed by claude session UUID.
-    /// [`super::session::UiSession`] value type one bucket at a time.
-    pub sessions: std::collections::HashMap<forge_workspace::SessionSlot, super::session::UiSession>,
+    /// Per-session state buckets, keyed by the session's slot - the
+    /// `(org, project, label)` triple - with [`super::session::UiSession`]
+    /// the value type, one bucket per slot.
+    pub sessions:
+        std::collections::HashMap<forge_workspace::SessionSlot, super::session::UiSession>,
     /// Which entry of [`Self::sessions`] the renderer reads from.
     /// `None` while no session is focused - production boots that way
     /// until the first spawn lands.
@@ -371,8 +373,8 @@ pub struct App {
     /// reducer once that project's bucket exists. The reducer focuses a
     /// wake by itself only when nothing is focused, so a click that
     /// arrives while another session holds the tab records its intent
-    /// here instead. A project name rather than a key because the click
-    /// happens before the session id exists.
+    /// here instead. A project name rather than a slot because the click
+    /// happens before the spawn states the label the slot will carry.
     pub pending_spawn_focus: Option<String>,
     /// Snapshot of the durable forge crons (`mcp__forge__cron`) the
     /// active session itself created, refreshed on the ~1s ticker

@@ -46,7 +46,11 @@ impl crate::Workspace {
     }
 
     /// Park a Slack message for `slot`.
-    pub(crate) fn park_slack(&self, slot: &SessionSlot, message: forge_primitives::slack::SlackMessage) {
+    pub(crate) fn park_slack(
+        &self,
+        slot: &SessionSlot,
+        message: forge_primitives::slack::SlackMessage,
+    ) {
         self.parked_by_slot.lock().entry(slot.clone()).or_default().slack.push(message);
     }
 
@@ -63,7 +67,11 @@ impl crate::Workspace {
     /// caller gets the delivery-failure notice rather than waiting out the
     /// timeout. A peer ask is the only parked payload with a caller, so the
     /// Gotify and Slack drops have no recipient and are logged.
-    pub(crate) fn expire_parked_for_slot(self: &Arc<Self>, slot: &SessionSlot, reason: PeerFailureReason) {
+    pub(crate) fn expire_parked_for_slot(
+        self: &Arc<Self>,
+        slot: &SessionSlot,
+        reason: PeerFailureReason,
+    ) {
         let Some(parked) = self.parked_by_slot.lock().remove(slot) else { return };
         for wrapped in parked.peer {
             self.expire_inflight_ask_failed(&wrapped.correlation_id, reason);
@@ -91,7 +99,6 @@ impl crate::Workspace {
             );
         }
     }
-
 }
 
 #[cfg(test)]
@@ -176,7 +183,10 @@ mod tests {
     fn a_parked_payload_is_not_drained_across_orgs() {
         let (ws, _rx) = crate::Workspace::testing_stub();
         let id = CorrelationId::new_ask();
-        ws.park_peer_prompt(&SessionSlot::lead("OtherOrg", "parked-proj"), wrapped(&id, "elsewhere"));
+        ws.park_peer_prompt(
+            &SessionSlot::lead("OtherOrg", "parked-proj"),
+            wrapped(&id, "elsewhere"),
+        );
 
         assert!(
             ws.take_parked_for_slot(&slot(None)).peer.is_empty(),

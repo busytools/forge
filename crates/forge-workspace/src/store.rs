@@ -50,4 +50,12 @@ impl Db {
     pub(crate) fn database(&self) -> &redb::Database {
         &self.inner
     }
+
+    /// Compact the file in place, reclaiming what a dropped table left
+    /// behind. Returns whether it did anything. redb takes `&mut self`,
+    /// so the caller needs the handle owned - the boot compacts before it
+    /// is wrapped for the rest of the process.
+    pub fn compact(&mut self) -> anyhow::Result<bool> {
+        self.inner.compact().context("compact redb database")
+    }
 }

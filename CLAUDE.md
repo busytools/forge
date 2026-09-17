@@ -158,6 +158,19 @@ rather than Command variants. `DomainSession` keeps only
 workspace-internal routing metadata; all operational state the TUI
 renders lives on `UiSession`.
 
+**Both enums address a session by its slot.** A slot is the
+`(org, project, label)` triple `forge-primitives`' `SessionSlot`
+carries: it names the seat, and the claude session id names the
+occupant. `/new` and `/resume` swap the occupant and leave the slot
+alone, so every `Command` carries a slot and every `SessionUpdate`
+routes on one. A session id survives only where the `claude` CLI or the
+child's own address needs it: the `--session-id` / `--resume`
+arguments, the gateway binding's URL segment, the stream-json
+`session_id` field, and the transcript filenames (with the caches that
+mirror them). `SessionUpdate::Connected` and `SessionReplaced` also
+carry one, since they announce a new occupant: the id is their payload,
+the slot is still their address.
+
 **Two nuances that surprise people:**
 
 - The `SessionUpdate` channel doubles as an event bus for TUI-internal

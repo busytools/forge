@@ -553,9 +553,9 @@ mod tests {
     /// seeded key is what the multiplexer expects when no real
     /// Connect/SessionReplaced has flowed through yet.
     fn active_session_key(app: &App) -> forge_workspace::SessionSlot {
-        app.active_session_key
-            .clone()
-            .unwrap_or_else(|| forge_workspace::SessionSlot::from_str_for_test(App::TEST_SESSION_KEY))
+        app.active_session_key.clone().unwrap_or_else(|| {
+            forge_workspace::SessionSlot::from_str_for_test(App::TEST_SESSION_KEY)
+        })
     }
 
     // Helper: build a minimal ToolCallInfo with given id + status
@@ -1978,7 +1978,7 @@ mod tests {
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: to.clone(),
-                        session_id: forge_primitives::SessionId::new("replacement-uuid"),
+                session_id: forge_primitives::SessionId::new("replacement-uuid"),
                 cwd: "/nowhere/orphan".into(),
                 current_model: test_current_model_primitives("claude"),
                 available_models: Vec::new(),
@@ -2243,12 +2243,12 @@ mod tests {
             sampling_required: None,
         });
 
-        let _previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionSlot::from_str_for_test("replacement".to_owned()),
-                        session_id: forge_primitives::SessionId::new("replacement"),
+                key,
+                session_id: forge_primitives::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
@@ -2294,12 +2294,12 @@ mod tests {
             sampling_required: None,
         });
 
-        let _previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionSlot::from_str_for_test("replacement".to_owned()),
-                        session_id: forge_primitives::SessionId::new("replacement"),
+                key,
+                session_id: forge_primitives::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
@@ -2413,11 +2413,12 @@ mod tests {
             "session-1",
         ));
         app.set_session_id(Some(model::SessionId::new("session-1")));
+        let key = active_session_key(&app);
 
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::StatusSnapshot {
-                key: forge_workspace::SessionSlot::from_str_for_test("session-1"),
+                key,
                 account: forge_primitives::AccountInfo {
                     email: None,
                     organization: None,
@@ -2449,11 +2450,12 @@ mod tests {
             "session-1",
         ));
         app.set_session_id(Some(model::SessionId::new("session-1")));
+        let key = active_session_key(&app);
 
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::StatusSnapshot {
-                key: forge_workspace::SessionSlot::from_str_for_test("session-1"),
+                key,
                 account: forge_primitives::AccountInfo {
                     email: None,
                     organization: None,
@@ -3023,12 +3025,12 @@ mod tests {
         let mut app = make_test_app();
         *app.resuming_session_id_mut().expect("active session") = Some("requested-123".into());
 
-        let _previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionSlot::from_str_for_test("active-456".to_owned()),
-                        session_id: forge_primitives::SessionId::new("active-456"),
+                key,
+                session_id: forge_primitives::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
@@ -3050,12 +3052,12 @@ mod tests {
         let history_updates =
             vec![user_text_message("first user line"), assistant_text_message("assistant reply")];
 
-        let _previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionSlot::from_str_for_test("active-456".to_owned()),
-                        session_id: forge_primitives::SessionId::new("active-456"),
+                key,
+                session_id: forge_primitives::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
@@ -3090,12 +3092,12 @@ mod tests {
             assistant_text_message("the switch re-spawns under the new account"),
         ];
 
-        let _previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionSlot::from_str_for_test("switch-visible".to_owned()),
-                        session_id: forge_primitives::SessionId::new("switch-visible"),
+                key,
+                session_id: forge_primitives::SessionId::new("switch-visible"),
                 cwd: "/proj".into(),
                 current_model: test_current_model_primitives("model"),
                 available_models: Vec::new(),
@@ -3131,12 +3133,12 @@ mod tests {
             assistant_text_message("second assistant"),
         ];
 
-        let _previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionSlot::from_str_for_test("active-457".to_owned()),
-                        session_id: forge_primitives::SessionId::new("active-457"),
+                key,
+                session_id: forge_primitives::SessionId::new("active-457"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
@@ -3181,12 +3183,12 @@ mod tests {
             serde_json::json!({"command": "Execute command"}),
         );
 
-        let _previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionSlot::from_str_for_test("active-789".to_owned()),
-                        session_id: forge_primitives::SessionId::new("active-789"),
+                key,
+                session_id: forge_primitives::SessionId::new("active-789"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
@@ -3211,12 +3213,12 @@ mod tests {
     fn resume_history_clears_active_turn_owner_after_replay() {
         let mut app = make_test_app();
 
-        let _previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionSlot::from_str_for_test("active-790".to_owned()),
-                        session_id: forge_primitives::SessionId::new("active-790"),
+                key,
+                session_id: forge_primitives::SessionId::new("active-790"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
@@ -3226,6 +3228,9 @@ mod tests {
             },
         );
 
+        // Non-vacuity: the replay landed, so a `None` pointer is the
+        // replay's own verdict rather than a dropped frame.
+        assert_eq!(app.messages().expect("active session").len(), 2);
         assert_eq!(app.active_turn_assistant_idx(), None);
     }
 
@@ -3240,12 +3245,12 @@ mod tests {
             serde_json::json!({"description": "Run subagent"}),
         );
 
-        let _previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionSlot::from_str_for_test("active-791".to_owned()),
-                        session_id: forge_primitives::SessionId::new("active-791"),
+                key,
+                session_id: forge_primitives::SessionId::new("active-791"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
@@ -3255,6 +3260,10 @@ mod tests {
             },
         );
 
+        // Non-vacuity: the replayed tool call is in the chat, so an
+        // empty scope is the replay's own verdict rather than a dropped
+        // frame.
+        assert!(app.lookup_tool_call("resume-task").is_some(), "the replayed call rendered");
         assert!(app.active_task_ids().expect("active session").is_empty());
         assert_eq!(app.tool_call_scope("resume-task"), None);
     }
@@ -3984,12 +3993,12 @@ mod tests {
     #[test]
     fn session_replaced_seeds_the_count_on_the_foreground_arm() {
         let mut app = make_test_app();
-        let _previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionSlot::from_str_for_test("replaced-fg".to_owned()),
-                        session_id: forge_primitives::SessionId::new("replaced-fg"),
+                key,
+                session_id: forge_primitives::SessionId::new("replaced-fg"),
                 cwd: "/test".into(),
                 current_model: test_current_model_primitives("model"),
                 available_models: Vec::new(),
@@ -4004,7 +4013,8 @@ mod tests {
     /// The background arm reaches the bucket through the `SessionReplaced`
     /// carry rather than `reset_for_new_session`, so it seeds by a
     /// different route and a `session_mut` miss here would no-op in
-    /// silence.
+    /// silence. The replaced slot keeps its bucket, so the arm is the
+    /// off-screen slot's own.
     #[test]
     fn session_replaced_seeds_the_count_on_the_background_arm() {
         let mut app = make_test_app();
@@ -4014,12 +4024,11 @@ mod tests {
             background_key.clone(),
             crate::app::session::UiSession::new(background_key.clone(), "test-project"),
         );
-        let replacement = forge_workspace::SessionSlot::from_str_for_test("background-new".to_owned());
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: replacement.clone(),
-                        session_id: forge_primitives::SessionId::new("background-new"),
+                key: background_key.clone(),
+                session_id: forge_primitives::SessionId::new("background-new"),
                 cwd: "/test".into(),
                 current_model: test_current_model_primitives("model"),
                 available_models: Vec::new(),
@@ -4030,8 +4039,8 @@ mod tests {
         );
         assert_eq!(
             app.sessions
-                .get(&replacement)
-                .expect("replacement bucket")
+                .get(&background_key)
+                .expect("the replaced slot keeps its bucket")
                 .session_usage
                 .compaction_count,
             9,
@@ -4339,12 +4348,11 @@ mod tests {
         // notice-clearing assertion targets SessionReplaced on the
         // active key.
         let active_key = active_session_key(&app);
-        let _previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: active_key,
-                        session_id: forge_primitives::SessionId::new("new-session"),
+                session_id: forge_primitives::SessionId::new("new-session"),
                 cwd: "/test".into(),
                 current_model: test_current_model_primitives("claude"),
                 available_models: Vec::new(),

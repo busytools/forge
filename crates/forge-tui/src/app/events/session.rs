@@ -450,7 +450,11 @@ fn is_rate_limited_failure(msg: &str) -> bool {
         || lower.contains("all accounts")
 }
 
-pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &SessionSlot, msg: &str) {
+pub(super) fn handle_slash_command_error_event(
+    app: &mut App,
+    session_key: &SessionSlot,
+    msg: &str,
+) {
     if app.active_session_key.as_ref() != Some(session_key) {
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
@@ -1236,30 +1240,29 @@ mod teardown_clears_background_registry_tests {
     }
 
     /// A replacement that lands on a session the user is not looking at
-    /// re-seeds the bucket with a fresh welcome and drops the old chat, so
-    /// the roster that described it must go too. Left set, the row spins
-    /// for work no Inspector section can show - the sections read the
+    /// re-seeds the bucket in place with a fresh welcome and drops the old
+    /// chat, so the roster that described it must go too. Left set, the row
+    /// spins for work no Inspector section can show - the sections read the
     /// messages just cleared.
     #[test]
     fn background_session_replacement_clears_background_registry() {
         use super::apply_session_update_session_replaced;
 
         let mut app = App::test_default();
-        let previous = SessionSlot::from_str_for_test("replaced-uuid");
-        let mut bucket = UiSession::new(previous.clone(), "test-project");
+        let replaced = SessionSlot::from_str_for_test("replaced-uuid");
+        let mut bucket = UiSession::new(replaced.clone(), "test-project");
         seed_task(&mut bucket);
-        app.sessions.insert(previous.clone(), bucket);
+        app.sessions.insert(replaced.clone(), bucket);
         assert_ne!(
             app.active_session_key.as_ref(),
-            Some(&previous),
+            Some(&replaced),
             "precondition: the replaced session is not the one on screen",
         );
         let current_model = app.current_model().cloned().expect("test_default seeds a model");
 
-        let replacement = SessionSlot::from_str_for_test("replacement-uuid");
         apply_session_update_session_replaced(
             &mut app,
-            &replacement,
+            &replaced,
             forge_primitives::SessionId::new("replacement-uuid"),
             "/tmp/replaced".to_owned(),
             current_model,
@@ -1269,7 +1272,7 @@ mod teardown_clears_background_registry_tests {
             0,
         );
 
-        let bucket = app.sessions.get(&replacement).expect("bucket migrated to the new key");
+        let bucket = app.sessions.get(&replaced).expect("bucket stays in its own slot");
         assert!(bucket.background_tasks.is_empty(), "replacement clears background_tasks");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }

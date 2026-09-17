@@ -91,11 +91,11 @@ fn bucket_session_id(app: &App, key: &SessionSlot) -> String {
 
 /// Per-session event multiplexer. Each [`SessionUpdate`] is routed
 /// to the [`crate::app::session::UiSession`] bucket it targets via the
-/// envelope's [`SessionUpdate::session_key`] accessor.
+/// envelope's [`SessionUpdate::slot`] accessor.
 ///
 /// `needs_redraw` is flipped only when the routed event targets the
 /// active session - background-session events update their bucket
-/// silently. App-global events (no `session_key`) flip the redraw
+/// silently. App-global events (no slot) flip the redraw
 /// flag unconditionally because they affect the rendered view.
 pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
     // INVARIANT: `is_active_or_global` is captured BEFORE the match
@@ -1290,7 +1290,11 @@ pub(super) fn apply_session_update_chat_appended(
     apply_sdk_message_presentation(app, key, msg);
 }
 
-fn apply_sdk_message_presentation(app: &mut App, key: &SessionSlot, msg: forge_primitives::Message) {
+fn apply_sdk_message_presentation(
+    app: &mut App,
+    key: &SessionSlot,
+    msg: forge_primitives::Message,
+) {
     // Every frame arrives addressed to the slot its producer stated, so
     // attribution never depends on the wire `session_id`: no bucket is
     // inferred from an id, and a frame for a session this process does
@@ -1307,11 +1311,10 @@ fn apply_sdk_message_presentation(app: &mut App, key: &SessionSlot, msg: forge_p
     let active_session_id_str = active_session_id_string.as_deref().unwrap_or("");
     let is_active = app.active_session_key.as_ref() == Some(key);
     if !app.sessions.contains_key(key) {
-        // The wire `session_id` doesn't match any known UiSession
-        // bucket - typically a key-drift race (in-flight wire frame
-        // whose session_id was dropped between the SessionTask emit
-        // and this reducer). If the dropped msg is `Result`, TurnComplete
-        // never fires and the turn info row spins and counts up forever.
+        // No bucket holds this slot: a frame for a session this process
+        // does not have, not a key-drift race. If the dropped msg is
+        // `Result`, TurnComplete never fires and the turn info row spins
+        // and counts up forever.
         let bucket_keys: Vec<String> =
             app.sessions.keys().map(forge_workspace::SessionSlot::display).collect();
         tracing::error!(
@@ -1788,10 +1791,10 @@ mod tests {
         }
     }
 
-    /// A `SessionReplaced` naming background session B must land on B.
-    /// Before the envelope carried `previous_key` the reducer read
-    /// `active_session_key` instead, so B's event rewrote A - the tab
-    /// the user is looking at - and then dropped A's bucket outright.
+    /// A `SessionReplaced` naming background session B must reset B's
+    /// own bucket and touch nothing else. The slot keeps its bucket, so
+    /// there is no key to migrate onto: B's contents reset in place and
+    /// A - the tab the user is looking at - is left alone.
     #[test]
     fn session_replaced_for_background_session_leaves_the_active_tab_alone() {
         let mut app = App::test_default();
@@ -1803,7 +1806,6 @@ mod tests {
 
         apply_session_update(&mut app, session_replaced_for(&key_b, "b-replacement", "/proj-b"));
 
-        let replacement = SessionSlot::from_str_for_test("b-replacement".to_owned());
         assert_eq!(app.active_session_key.as_ref(), Some(&key_a), "focus stays on A");
         assert!(app.sessions.contains_key(&key_a), "A's bucket survives B's replacement");
         assert_eq!(
@@ -1812,8 +1814,7 @@ mod tests {
             "A keeps its own session id",
         );
         assert_eq!(app.cwd_raw().as_deref(), Some("/proj-a"), "A keeps its own cwd");
-        assert!(!app.sessions.contains_key(&key_b), "B's outgoing bucket is gone");
-        let bucket_b = app.sessions.get(&replacement).expect("B migrated onto the replacement key");
+        let bucket_b = app.sessions.get(&key_b).expect("B keeps its own slot");
         assert_eq!(bucket_b.cwd_raw, "/proj-b");
         assert_eq!(
             bucket_b.session_id.as_ref().map(ToString::to_string).as_deref(),
@@ -1838,27 +1839,31 @@ mod tests {
 
         apply_session_update(&mut app, session_replaced_for(&key_b, "b-replacement", "/proj-b"));
 
-        let replacement = SessionSlot::from_str_for_test("b-replacement".to_owned());
-        let bucket = app.sessions.get(&replacement).expect("B migrated");
+        let bucket = app.sessions.get(&key_b).expect("B keeps its own slot");
         assert!(!bucket.pending_cancel, "a replaced session has no cancel in flight");
         assert!(!bucket.is_compacting);
         assert!(!bucket.pending_compact_clear);
     }
 
-    /// Foreground twin: replacing the session the user is watching still
-    /// moves focus onto the replacement and drops the outgoing bucket.
+    /// Foreground twin: replacing the session the user is watching
+    /// swaps its occupant inside the same slot, so focus stays put and
+    /// only the contents reset.
     #[test]
-    fn session_replaced_for_the_active_session_moves_focus_onto_the_replacement() {
+    fn session_replaced_for_the_active_session_keeps_focus_on_the_slot() {
         let mut app = App::test_default();
         let (key_a, key_b) = seed_two_sessions(&mut app);
 
         apply_session_update(&mut app, session_replaced_for(&key_a, "a-replacement", "/proj-a"));
 
-        let replacement = SessionSlot::from_str_for_test("a-replacement".to_owned());
-        assert_eq!(app.active_session_key.as_ref(), Some(&replacement), "focus follows A");
-        assert!(!app.sessions.contains_key(&key_a), "A's outgoing bucket is dropped");
+        assert_eq!(app.active_session_key.as_ref(), Some(&key_a), "focus stays on the slot");
+        assert!(app.sessions.contains_key(&key_a), "A's bucket stays in its place");
         assert!(app.sessions.contains_key(&key_b), "background B is untouched");
         assert_eq!(app.cwd_raw().as_deref(), Some("/proj-a"));
+        assert_eq!(
+            app.session_id().map(|id| id.to_string()).as_deref(),
+            Some("a-replacement"),
+            "the slot's contents carry the new occupant",
+        );
     }
 
     #[test]
@@ -1962,10 +1967,7 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            SessionUpdate::SlackMessageAppended {
-                key: key_a.clone(),
-                prose: prose.to_owned(),
-            },
+            SessionUpdate::SlackMessageAppended { key: key_a.clone(), prose: prose.to_owned() },
         );
 
         let slack_msg = app
@@ -3315,12 +3317,14 @@ mod tests {
         );
     }
 
-    /// `SessionUpdate::SessionReplaced` shares the
-    /// `handle_session_replaced_event` path which restarts the
+    /// `SessionUpdate::SessionReplaced` for the session on screen shares
+    /// the `handle_session_replaced_event` path which restarts the
     /// `file_index` against the replaced cwd. Same assertion shape as
     /// the `Connected` test - production code path runs through
     /// `apply_session_update_session_replaced` →
-    /// `handle_session_replaced_event` → `file_index::restart`.
+    /// `handle_session_replaced_event` → `file_index::restart`. The
+    /// background arm reaches the file index through its own bucket, so
+    /// only the on-screen arm has app-level candidates to assert on.
     #[test]
     fn session_replaced_refreshes_file_index_candidates_for_replaced_cwd() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3340,7 +3344,7 @@ mod tests {
         );
         app.file_index_mut().expect("active session").scan_finished = true;
 
-        let pending_key = SessionSlot::from_str_for_test("session-2");
+        let pending_key = app.active_session_key.clone().expect("pending active key");
         let replaced_cwd = canonical.to_string_lossy().into_owned();
 
         apply_session_update(
@@ -3415,10 +3419,12 @@ mod tests {
         );
     }
 
-    /// The `false` at the background arm's stamp matters, and only shows
-    /// here: the bucket already carries a name the session's cwd does not
-    /// name, and `false` leaves it. A `true` would overwrite it with the
-    /// cwd's project.
+    /// The background arm leaves the project of a bucket it found alone:
+    /// the slot keeps its bucket, so its stamped name is the tab's
+    /// identity and the replacement's cwd does not re-file it. The
+    /// session_id + cwd assertions carry the non-vacuity - this arm does
+    /// reach the bucket, so an untouched project is a decision, not a
+    /// dropped frame.
     #[test]
     fn background_session_replaced_keeps_a_previously_stamped_project() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3429,17 +3435,16 @@ mod tests {
 
         app.active_session_key = Some(SessionSlot::from_str_for_test("on-screen"));
 
-        let previous = SessionSlot::from_str_for_test("old-uuid".to_owned());
-        let mut bucket = UiSession::new(previous.clone(), "test-project");
-        bucket.project = "preset".to_owned();
-        app.sessions.insert(previous.clone(), bucket);
-
         let replacement = SessionSlot::from_str_for_test("new-uuid".to_owned());
+        let mut bucket = UiSession::new(replacement.clone(), "test-project");
+        bucket.project = "preset".to_owned();
+        app.sessions.insert(replacement.clone(), bucket);
+
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::SessionReplaced {
                 key: replacement.clone(),
-                        session_id: forge_primitives::SessionId::new("new-uuid"),
+                session_id: forge_primitives::SessionId::new("new-uuid"),
                 cwd: canonical.to_string_lossy().into_owned(),
                 current_model: test_current_model(),
                 available_models: Vec::new(),
@@ -3449,10 +3454,17 @@ mod tests {
             },
         );
 
+        let bucket = app.sessions.get(&replacement).expect("the replaced slot keeps its bucket");
+        assert_eq!(bucket.project, "preset", "a project already stamped survives the replacement");
         assert_eq!(
-            app.sessions.get(&replacement).map(|b| b.project.as_str()),
-            Some("preset"),
-            "a project already stamped survives the replacement",
+            bucket.cwd_raw,
+            canonical.to_string_lossy(),
+            "the replacement reached the bucket, so the untouched project is a decision",
+        );
+        assert_eq!(
+            bucket.session_id.as_ref().map(ToString::to_string).as_deref(),
+            Some("new-uuid"),
+            "and the slot carries the new occupant",
         );
     }
 
@@ -3950,13 +3962,14 @@ mod tests {
         }
     }
 
-    /// A Removed event for the worker whose session key is `label`,
-    /// spawned by a lead that names no live bucket - so the lead
-    /// preference cannot fire and the fallback is what is on test.
+    /// A Removed event for the worker whose slot is `label`, spawned by
+    /// a lead that names no live bucket - so the lead preference cannot
+    /// fire and the fallback is what is on test.
     fn worker_removed_orphaned(label: &str) -> SessionUpdate {
         let mut event = worker_removed_event(label, WorktreeDisposition::Absent);
         if let SessionUpdate::WorkerStatusChanged { status, .. } = &mut event {
             status.session_id = label.to_owned();
+            status.slot = SessionSlot::from_str_for_test(label);
         }
         event
     }
@@ -3981,7 +3994,7 @@ mod tests {
             apply_session_update(&mut app, worker_removed_orphaned(closing));
 
             assert_eq!(
-                app.active_session_key.as_ref().map(SessionSlot::display),
+                app.active_session_key.as_ref().map(|k| k.label().to_owned()),
                 Some(expected.to_owned()),
                 "removing {closing} must land on the row drawn under it",
             );
@@ -4006,7 +4019,7 @@ mod tests {
         apply_session_update(&mut app, worker_removed_orphaned("w-one"));
 
         assert_eq!(
-            app.active_session_key.as_ref().map(SessionSlot::display),
+            app.active_session_key.as_ref().map(|k| k.label().to_owned()),
             Some("w-three".to_owned()),
             "the spawning worker's row has no bucket to focus, so the pick moves past it",
         );
@@ -4112,11 +4125,10 @@ mod tests {
 /// The spawn-stub focus seam. An id-less focused bucket - a
 /// `Spawning` stub - must not inherit a background session's
 /// identity, or `set_session_id` drags focus there and the spawn's
-/// own Connected finds the stub unfocused. Enforced for
-/// frames whose session already owns a bucket; a frame whose session
-/// owns none (fresh spawn before its first real-id frame, a
-/// just-closed session's in-flight tail) still adopts - logged as
-/// `sdk_frame_id_adopted`, not mechanism-gated.
+/// own Connected finds the stub unfocused. A frame is addressed to
+/// the slot its producer stated, so a background frame routes to its
+/// own bucket and a frame for a slot this process does not hold is
+/// dropped; neither can reach the stub.
 #[cfg(test)]
 mod focus_seam_tests {
     use super::*;
@@ -4264,7 +4276,7 @@ mod focus_seam_tests {
     /// a background auto_start wake: `App::test_default` seeds the
     /// one focused session, and every auto_start session connects
     /// behind it. None of them may take the tab - not at the stub,
-    /// not at connect, and not via a stray frame adopting onto the
+    /// not at connect, and not via a stray frame landing on the
     /// id-less stub.
     #[test]
     fn background_boot_connects_never_take_focus() {

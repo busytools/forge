@@ -423,15 +423,14 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
 
 // --- SdkMessageReceived session_id handling ---
 
-/// Regression: an `SdkMessageReceived` envelope arriving while
-/// `app.session_id` holds the empty placeholder (the value the bridge
-/// captures from `Client::session_id()` at spawn time, before
-/// `system/init` lands) used to be dropped silently - leaving the
-/// chat unrendered and the spinner stuck on Thinking forever. The
-/// handler now adopts the wire id onto `app.session_id` and processes
-/// the message.
+/// A frame addressed to a slot the app does not hold is dropped, even
+/// when `app.session_id` is still the empty placeholder the bridge
+/// captures from `Client::session_id()` at spawn time. Attribution is
+/// the envelope's slot alone: the wire `session_id` never mints or
+/// adopts a bucket, so an unmatched frame renders nothing and moves
+/// nothing.
 #[tokio::test]
-async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
+async fn sdk_message_for_unknown_slot_is_dropped_even_with_empty_app_session_id() {
     let mut app = test_app();
     app.set_session_id(Some(model::SessionId::new("")));
     app.status = AppStatus::Thinking;
@@ -441,6 +440,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
         .expect("active session")
         .push(forge_tui::app::ChatMessage::new(MessageRole::Assistant, Vec::new()));
     app.bind_active_turn_assistant_to_tail();
+    let seeded_key = active_session_key(&app);
 
     let wire_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
         "type": "assistant",
@@ -459,20 +459,25 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     send_client_event(
         &mut app,
         SessionUpdate::ChatAppended {
-                key: forge_workspace::SessionSlot::from_str_for_test("real-session-abc"),
-                msg: wire_msg,
-            },
+            key: forge_workspace::SessionSlot::from_str_for_test("real-session-abc"),
+            msg: wire_msg,
+        },
     );
 
     assert_eq!(
         app.session_id().map(|s| s.to_string()).as_deref(),
-        Some("real-session-abc"),
-        "App should have adopted the wire session id",
+        Some(""),
+        "the wire session id must not be adopted from a frame for an unknown slot",
     );
     assert_eq!(
-        active_session_key(&app).display(),
-        "real-session-abc",
-        "adoption carries focus to the adopted session's bucket, not just the id",
+        active_session_key(&app),
+        seeded_key,
+        "focus must not move to a slot the app never held",
+    );
+    assert!(
+        !app.sessions
+            .contains_key(&forge_workspace::SessionSlot::from_str_for_test("real-session-abc")),
+        "no bucket is minted from a wire session id",
     );
     let assistant = app
         .messages()
@@ -480,13 +485,54 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
         .iter()
         .rfind(|m| matches!(m.role, MessageRole::Assistant))
         .expect("assistant message present");
-    let Some(MessageBlock::Text(block)) = assistant.blocks.first() else {
-        panic!("expected the assistant chunk to render as a text block");
-    };
     assert!(
-        block.text.contains("Hello from the assistant."),
-        "assistant chunk should have rendered, got {:?}",
-        block.text,
+        assistant.blocks.is_empty(),
+        "the dropped frame must not render into the focused bucket, got {} block(s)",
+        assistant.blocks.len(),
+    );
+}
+
+/// The envelope carries the slot, so a frame lands on the bucket its
+/// producer named even when the wire `session_id` inside it belongs to
+/// another session.
+///
+/// Before this change the reducer synthesized the routing key from that
+/// wire id, so the frame was filed under a key no bucket held and was
+/// dropped silently - the conversation it belonged to never saw it, and
+/// against an id-less focused bucket it could adopt the foreign id onto
+/// the wrong session.
+#[tokio::test]
+async fn a_frame_lands_on_its_slot_even_when_the_wire_id_names_another_session() {
+    let mut app = test_app();
+    app.set_session_id(Some(model::SessionId::new("mine")));
+    let key = active_session_key(&app);
+    let before = app.messages().expect("active session").len();
+
+    let wire_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+        "type": "assistant",
+        "session_id": "someone-elses-session",
+        "message": {
+            "id": "msg_test_1",
+            "role": "assistant",
+            "model": "test-model",
+            "content": [{ "type": "text", "text": "Hello." }],
+            "stop_reason": null,
+            "stop_sequence": null
+        }
+    }))
+    .expect("assistant Message decodes");
+
+    send_client_event(&mut app, SessionUpdate::ChatAppended { key: key.clone(), msg: wire_msg });
+
+    assert_eq!(active_session_key(&app), key, "the frame stays on the slot that addressed it",);
+    assert_eq!(
+        app.session_id().map(|s| s.to_string()).as_deref(),
+        Some("mine"),
+        "and it does not adopt the wire id",
+    );
+    assert!(
+        app.messages().expect("active session").len() > before,
+        "the frame rendered into its own bucket",
     );
 }
 
@@ -516,9 +562,9 @@ async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
     send_client_event(
         &mut app,
         SessionUpdate::ChatAppended {
-                key: forge_workspace::SessionSlot::from_str_for_test("stale-session-xyz"),
-                msg: wire_msg,
-            },
+            key: forge_workspace::SessionSlot::from_str_for_test("stale-session-xyz"),
+            msg: wire_msg,
+        },
     );
 
     assert_eq!(

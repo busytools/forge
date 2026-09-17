@@ -152,21 +152,4 @@ mod tests {
         assert_eq!(back.status, WorkerLiveness::Failed);
         assert_eq!(back.activity, Some(SessionLifecycleState::Attention));
     }
-
-    #[test]
-    fn worker_status_diagnostic_defaults_to_none_when_absent_in_payload() {
-        // Pre-#245 payloads have no `diagnostic` field; serde default
-        // must yield None so old wire shapes still decode cleanly.
-        let json = r#"{
-            "label": "reviewer",
-            "charter": "be sharp",
-            "status": "Running",
-            "session_id": "uuid-1",
-            "spawned_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
-            "spawned_by_session_id": "lead-uuid"
-        }"#;
-        let status: WorkerStatus = serde_json::from_str(json).expect("decode legacy shape");
-        assert_eq!(status.diagnostic, None);
-        assert_eq!(status.activity, None);
-    }
 }

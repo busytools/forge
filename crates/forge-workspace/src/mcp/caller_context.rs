@@ -132,8 +132,8 @@ mod tests {
     #[test]
     fn caller_context_resolves_lead_as_lead() {
         let (ws, view, lead, _) = fixture();
-        let cx = caller_context_in_view(&ws, &view, &lead)
-            .expect("lead caller resolves to its project");
+        let cx =
+            caller_context_in_view(&ws, &view, &lead).expect("lead caller resolves to its project");
         assert!(cx.is_lead, "lead caller flagged as lead");
         assert_eq!(cx.worker_label, None, "a lead has no worker label");
         assert_eq!(cx.lead, lead);

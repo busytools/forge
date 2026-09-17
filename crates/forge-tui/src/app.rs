@@ -1032,9 +1032,9 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
-        // Re-key first: `set_session_id` moves the seeded fixture
-        // bucket onto the new id, so the stub has to be installed after
-        // it or the conn lands on the bucket the re-key abandoned.
+        // Stamp the id the frames carry onto the seeded fixture bucket.
+        // Adoption writes an id field and moves nothing, so the stub
+        // lands on the same bucket either way.
         app.set_session_id(Some(model::SessionId::new("session-1")));
         let rx = app.install_testing_stub();
         (app, rx)

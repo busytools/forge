@@ -70,8 +70,8 @@ pub mod public_types;
 pub mod question;
 pub mod review;
 pub mod runtime;
-pub mod session_slot;
 pub mod session_meta;
+pub mod session_slot;
 pub mod session_update;
 pub mod slack;
 pub mod subagents;
@@ -133,8 +133,8 @@ pub use runtime::{
     RuntimeSessionState, SessionLifecycleState, SessionStatus, SessionTurnState,
     SettingsParseErrorUpdate, TerminalReason,
 };
-pub use session_slot::SessionSlot;
 pub use session_meta::{PromptChunk, SessionListEntry};
+pub use session_slot::SessionSlot;
 pub use session_update::{
     BashOutputMetadata, ChunkContent, TaskMetadata, ToolCall, ToolCallContent, ToolCallLocation,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, ToolOutputMetadata,

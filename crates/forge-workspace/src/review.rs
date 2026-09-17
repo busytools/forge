@@ -1107,7 +1107,7 @@ mod tests {
                 charter: "review".to_owned(),
                 slot: SessionSlot::from_str_for_test("worker-uuid"),
                 session_id: None,
-                status:forge_primitives::WorkerLiveness::Spawning,
+                status: forge_primitives::WorkerLiveness::Spawning,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
                 spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
@@ -1349,6 +1349,66 @@ mod tests {
         }
         // The buffer is drained - a second flush is empty.
         assert!(ws.drain_review_activity(&worker).is_empty(), "the turn buffer drained");
+    }
+
+    /// A review's notice target is the SLOT the review was submitted
+    /// from, not the id that session happened to hold.
+    ///
+    /// Before this change `review_origin` held the submitter's session
+    /// id, and nothing corrected it when that id changed: a reviewer
+    /// that ran `/new` between submitting and the worker's reply carried
+    /// an id no bucket held, so the batched notice was routed onto
+    /// nothing and dropped silently.
+    #[test]
+    fn a_review_notice_routes_by_slot_not_by_the_id_the_reviewer_started_under() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let thread = ReviewThread {
+            id: "a".to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: "look at a".to_owned(),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+                review_id: None,
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+        };
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.save_review_threads("forge", "feat", &[thread]);
+        let reviewer = SessionSlot::worker("TestOrg", "test-project", "reviewer");
+        let worker = SessionSlot::worker("TestOrg", "test-project", "worker");
+        ws.submit_review("forge", "feat", None, &["a".to_owned()], reviewer.clone())
+            .expect("submit");
+
+        // The reviewer runs `/new`: the occupant the store holds for its
+        // slot changes. The slot does not.
+        ws.record_session_id("TestOrg", "test-project", "reviewer", "a-brand-new-id");
+
+        ws.review_reply(&worker, "forge", "feat", "a", "impl", "fixed", "t").expect("reply");
+        let notices = ws.drain_review_activity(&worker);
+        assert_eq!(notices.len(), 1, "the reply still produces a notice");
+        match &notices[0] {
+            SessionUpdate::ReviewActivityNotice { key, .. } => {
+                assert_eq!(key, &reviewer, "routed to the slot the review was submitted from");
+            }
+            other => panic!("expected ReviewActivityNotice, got {other:?}"),
+        }
     }
 
     #[test]

@@ -329,6 +329,10 @@ pub enum Command {
         /// resuming worker. `None` -> no kick (the worker idles until
         /// told).
         kick: Option<String>,
+        /// Re-orient message delivered instead of the generic restart
+        /// note when this worker is later resumed. `None` on a re-spawn
+        /// keeps whatever the row already holds.
+        resume_kick: Option<String>,
         /// Whether this worker keeps the built-in `AskUserQuestion`
         /// tool. Read from the persisted row on a re-spawn, so it
         /// survives a forge restart.
@@ -604,10 +608,9 @@ impl std::fmt::Debug for Command {
                 .debug_struct("SpawnProject")
                 .field("project_name", project_name)
                 .finish_non_exhaustive(),
-            Self::SpawnSession { key, .. } => f
-                .debug_struct("SpawnSession")
-                .field("key", key)
-                .finish_non_exhaustive(),
+            Self::SpawnSession { key, .. } => {
+                f.debug_struct("SpawnSession").field("key", key).finish_non_exhaustive()
+            }
             Self::StartDefault { project_name, .. } => f
                 .debug_struct("StartDefault")
                 .field("project_name", project_name)
@@ -1200,10 +1203,9 @@ impl std::fmt::Debug for SessionUpdate {
             Self::Connected { key, .. } => {
                 f.debug_struct("Connected").field("key", key).finish_non_exhaustive()
             }
-            Self::SessionReplaced { key, .. } => f
-                .debug_struct("SessionReplaced")
-                .field("key", key)
-                .finish_non_exhaustive(),
+            Self::SessionReplaced { key, .. } => {
+                f.debug_struct("SessionReplaced").field("key", key).finish_non_exhaustive()
+            }
             Self::ConnectionFailed { key, .. } => {
                 f.debug_struct("ConnectionFailed").field("key", key).finish_non_exhaustive()
             }
@@ -1216,10 +1218,9 @@ impl std::fmt::Debug for SessionUpdate {
             Self::RuntimeReloadCompleted { key } => {
                 f.debug_struct("RuntimeReloadCompleted").field("key", key).finish()
             }
-            Self::RuntimeReloadFailed { key, .. } => f
-                .debug_struct("RuntimeReloadFailed")
-                .field("key", key)
-                .finish_non_exhaustive(),
+            Self::RuntimeReloadFailed { key, .. } => {
+                f.debug_struct("RuntimeReloadFailed").field("key", key).finish_non_exhaustive()
+            }
             Self::SetModeFailed { key, .. } => {
                 f.debug_struct("SetModeFailed").field("key", key).finish_non_exhaustive()
             }
@@ -1248,18 +1249,15 @@ impl std::fmt::Debug for SessionUpdate {
             Self::TurnError { key, .. } => {
                 f.debug_struct("TurnError").field("key", key).finish_non_exhaustive()
             }
-            Self::ChatAppended { key, .. } => f
-                .debug_struct("ChatAppended")
-                .field("key", key)
-                .finish_non_exhaustive(),
-            Self::HookObservation { key, .. } => f
-                .debug_struct("HookObservation")
-                .field("key", key)
-                .finish_non_exhaustive(),
-            Self::StatusSnapshot { key, .. } => f
-                .debug_struct("StatusSnapshot")
-                .field("key", key)
-                .finish_non_exhaustive(),
+            Self::ChatAppended { key, .. } => {
+                f.debug_struct("ChatAppended").field("key", key).finish_non_exhaustive()
+            }
+            Self::HookObservation { key, .. } => {
+                f.debug_struct("HookObservation").field("key", key).finish_non_exhaustive()
+            }
+            Self::StatusSnapshot { key, .. } => {
+                f.debug_struct("StatusSnapshot").field("key", key).finish_non_exhaustive()
+            }
             Self::ForgeAccountIdentity { key, .. } => {
                 f.debug_struct("ForgeAccountIdentity").field("key", key).finish_non_exhaustive()
             }
@@ -1269,18 +1267,15 @@ impl std::fmt::Debug for SessionUpdate {
             Self::DictateDevicePin { key, .. } => {
                 f.debug_struct("DictateDevicePin").field("key", key).finish_non_exhaustive()
             }
-            Self::OauthCredentialsSnapshot { key, .. } => f
-                .debug_struct("OauthCredentialsSnapshot")
-                .field("key", key)
-                .finish_non_exhaustive(),
-            Self::ContextUsageSnapshot { key, .. } => f
-                .debug_struct("ContextUsageSnapshot")
-                .field("key", key)
-                .finish_non_exhaustive(),
-            Self::McpSnapshot { key, .. } => f
-                .debug_struct("McpSnapshot")
-                .field("key", key)
-                .finish_non_exhaustive(),
+            Self::OauthCredentialsSnapshot { key, .. } => {
+                f.debug_struct("OauthCredentialsSnapshot").field("key", key).finish_non_exhaustive()
+            }
+            Self::ContextUsageSnapshot { key, .. } => {
+                f.debug_struct("ContextUsageSnapshot").field("key", key).finish_non_exhaustive()
+            }
+            Self::McpSnapshot { key, .. } => {
+                f.debug_struct("McpSnapshot").field("key", key).finish_non_exhaustive()
+            }
             Self::SessionsListed { key, sessions } => f
                 .debug_struct("SessionsListed")
                 .field("key", key)
@@ -1347,14 +1342,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("app", &notification.app)
                 .field("priority", &notification.priority)
                 .finish_non_exhaustive(),
-            Self::CronPromptAppended { key, .. } => f
-                .debug_struct("CronPromptAppended")
-                .field("key", key)
-                .finish_non_exhaustive(),
-            Self::SlackMessageAppended { key, .. } => f
-                .debug_struct("SlackMessageAppended")
-                .field("key", key)
-                .finish_non_exhaustive(),
+            Self::CronPromptAppended { key, .. } => {
+                f.debug_struct("CronPromptAppended").field("key", key).finish_non_exhaustive()
+            }
+            Self::SlackMessageAppended { key, .. } => {
+                f.debug_struct("SlackMessageAppended").field("key", key).finish_non_exhaustive()
+            }
             Self::SlackPostPending { key, draft } => f
                 .debug_struct("SlackPostPending")
                 .field("key", key)
