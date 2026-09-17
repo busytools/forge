@@ -2,9 +2,10 @@
 //!
 //! Worker persistence moved onto the `sessions` table, which is keyed by
 //! `(org, project, label)` and carries the same re-spawn arguments. This
-//! module survives for one thing: [`list_all`], which the boot's
-//! one-time sweep reads, and [`drop_table`], which then removes it. Do
-//! not add a write path back.
+//! module survives for one thing: [`list_all`], which the boot's sweep
+//! reads, [`delete`], which removes each row once it has been copied, and
+//! [`drop_table`], which then removes the table. Do not add a write path
+//! back.
 
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -66,6 +67,21 @@ pub fn list_all(db: &Db) -> anyhow::Result<Vec<DynamicWorker>> {
         }
     }
     Ok(out)
+}
+
+/// Remove one row, once the sweep has copied it into `sessions`. This is
+/// what makes the sweep's own progress durable: a row still here is a row
+/// whose arguments exist nowhere else yet, whatever happened to an earlier
+/// boot.
+pub fn delete(db: &Db, project_key: &str, label: &str) -> anyhow::Result<bool> {
+    let txn = db.database().begin_write()?;
+    let removed = match txn.open_table(DYNAMIC_WORKERS) {
+        Ok(mut table) => table.remove((project_key, label))?.is_some(),
+        Err(redb::TableError::TableDoesNotExist(_)) => false,
+        Err(e) => return Err(e.into()),
+    };
+    txn.commit()?;
+    Ok(removed)
 }
 
 /// Remove the table, once the sweep has drained it. Returns whether a

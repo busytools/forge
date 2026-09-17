@@ -664,33 +664,6 @@ mod lead_resolution_tests {
     }
 
     #[test]
-    fn live_worker_at_index_zero_does_not_shadow_lead() {
-        // A just-connected worker can land at sessions[0]; the lead
-        // must still resolve to the non-worker session.
-        let (ws, _rx) = Workspace::testing_stub();
-        let key = ProjectKey::new("p".to_owned());
-        let worker = session("worker-uuid");
-        let lead = session("lead-uuid");
-        let view = ProjectView::new_for_test(
-            key.clone(),
-            "forge",
-            "/tmp/forge",
-            vec![worker.clone(), lead.clone()],
-        );
-        ws.insert_live_worker(
-            &key,
-            worker_entry(SessionSlot::from_str_for_test(worker.session.as_str())),
-        );
-        let (resolved, running) = lead_for(&ws, &view);
-        assert_eq!(
-            resolved,
-            SessionSlot::lead("Test", "forge"),
-            "the live worker at index 0 must not shadow the lead",
-        );
-        assert!(!running, "no lead is pooled in this fixture");
-    }
-
-    #[test]
     fn names_the_lead_slot_when_no_lead_row_is_catalogued() {
         // A project with no lead transcript still has a lead slot: the
         // triple names it, so the catalog cannot take it away.

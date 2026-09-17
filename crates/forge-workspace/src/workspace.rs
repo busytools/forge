@@ -899,25 +899,39 @@ impl Workspace {
         // first boot that finds it empty, so a worker persisted before
         // this build has a row the re-spawn wave can read. Non-fatal,
         // like the loads above.
-        if let Some(db) = &db
-            && let Err(error) = crate::store::sessions::migrate_from_dynamic_workers(
+        let mut swept_clean = false;
+        if let Some(db) = &db {
+            match crate::store::sessions::migrate_from_dynamic_workers(
                 db,
                 &project_identities(&config),
-            )
-        {
-            tracing::warn!(
-                target: "forge_workspace::workspace",
-                %error,
-                "migrating persisted workers into the sessions table failed; the retired table \
-                 is left in place for the next boot",
-            );
+            ) {
+                Ok(outcome) => {
+                    if outcome.unkeyable > 0 {
+                        tracing::warn!(
+                            target: "forge_workspace::workspace",
+                            unkeyable = outcome.unkeyable,
+                            "the retired worker table holds rows no configured project can key; \
+                             they stay there and the table is not dropped",
+                        );
+                    }
+                    swept_clean = outcome.drained();
+                }
+                Err(error) => tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "migrating persisted workers into the sessions table failed; the retired \
+                     table is left in place for the next boot",
+                ),
+            }
         }
-        // The sweep has drained the retired table, so drop it and reclaim
-        // its pages - an emptied table is still allocated. A store that
-        // never had it drops nothing. Both are non-fatal for the same
-        // reason the sweep is: the boot carries on and the next boot
-        // retries.
-        if let Some(db) = db.as_mut() {
+        // Drop the retired table only once every row it held has been
+        // copied, and reclaim its pages - a copied table is still
+        // allocated. A sweep that errored, that left a row it could not
+        // key, or that did not run at all leaves rows there and only
+        // there, so dropping on any of those would lose a worker the user
+        // believes is durable, silently and with nothing to say which
+        // label went. A store that never had the table drops nothing.
+        if swept_clean && let Some(db) = db.as_mut() {
             match crate::store::dynamic_workers::drop_table(db) {
                 Ok(true) => {
                     if let Err(error) = db.compact() {
@@ -2499,6 +2513,20 @@ impl Workspace {
         })
     }
 
+    /// The charter the store holds for `slot`, if any. A worker's mission
+    /// lives in its conversation, so a `/new` that emptied it has to
+    /// re-deliver this or the worker comes back with no idea what it is
+    /// for. Only a worker has one, and a lead's absence is the ordinary
+    /// answer here.
+    pub(crate) fn stored_charter_for(&self, slot: &SessionSlot) -> Option<String> {
+        let db = self.db.lock();
+        let db = db.as_ref()?;
+        crate::store::sessions::get(db, slot.org(), slot.project(), slot.label())
+            .ok()
+            .flatten()
+            .and_then(|row| row.charter)
+    }
+
     /// The id the store holds for `slot`, unless `--new` (`force_new`)
     /// forces a fresh session. `Ok(Some(id))` => resume that id;
     /// `Ok(None)` => start fresh under a minted one. `force_new`
@@ -2511,19 +2539,6 @@ impl Workspace {
     /// from the transcripts. A store that cannot be read is an error
     /// rather than a mint: the session it names would be forked, and the
     /// new id written over the row that could not be read.
-    /// The charter the store holds for `slot`, if any. A worker's
-    /// mission lives in its conversation, so a `/new` that emptied it
-    /// has to re-deliver this or the worker comes back with no idea what
-    /// it is for. A lead has none, which is the ordinary answer here.
-    pub(crate) fn stored_charter_for(&self, slot: &SessionSlot) -> Option<String> {
-        let db = self.db.lock();
-        let db = db.as_ref()?;
-        crate::store::sessions::get(db, slot.org(), slot.project(), slot.label())
-            .ok()
-            .flatten()
-            .and_then(|row| row.charter)
-    }
-
     fn stored_resume_id(
         &self,
         slot: &SessionSlot,
@@ -7548,6 +7563,112 @@ provider = "anthropic"
         assert_eq!(row.session_id, None, "its id is derived when the row is read");
     }
 
+    /// The ordinary case the merge exists for: `sessions` already holds a
+    /// row - every lead spawn writes one - while a worker's spawn args
+    /// live only in the retired table, because the release before this one
+    /// wrote the worker's id to `sessions` and its args to
+    /// `dynamic_workers`. A sweep gated on "the sessions table is empty"
+    /// skips this store entirely and then drops the only copy of the
+    /// args, so the worker comes back on the next boot with an empty
+    /// charter.
+    #[tokio::test]
+    async fn booting_merges_worker_args_when_the_sessions_table_already_has_rows() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let app_support = dir.path().join("app-support");
+        fs::create_dir_all(&app_support).expect("app-support dir");
+        let db = crate::store::Db::open(&app_support.join("db.redb")).expect("open db");
+        let config = crate::config::load_from_dir(dir.path()).expect("load config");
+        let project_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &config.projects[0].path.to_string_lossy(),
+        ));
+        crate::store::sessions::put(
+            &db,
+            &crate::store::sessions::SessionRecord {
+                org: "Default".to_owned(),
+                project: "forge".to_owned(),
+                label: forge_primitives::LEAD_LABEL.to_owned(),
+                session_id: Some("lead-session-id".to_owned()),
+                charter: None,
+                kick: None,
+                resume_kick: None,
+                interactive: None,
+            },
+        )
+        .expect("seed the lead row a spawn writes");
+        crate::store::dynamic_workers::insert_for_test(
+            &db,
+            &crate::store::dynamic_workers::DynamicWorker {
+                project_key,
+                label: "steward".to_owned(),
+                charter: "mind the queues".to_owned(),
+                kick: Some("begin".to_owned()),
+                resume_kick: Some("re-read the notes".to_owned()),
+                interactive: true,
+            },
+        )
+        .expect("seed the worker only the retired table describes");
+        drop(db);
+
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
+
+        let guard = workspace.db.lock();
+        let db = guard.as_ref().expect("db");
+        let steward = crate::store::sessions::get(db, "Default", "forge", "steward")
+            .expect("read")
+            .expect("the sweep runs even though the lead row is there");
+        assert_eq!(
+            steward.charter.as_deref(),
+            Some("mind the queues"),
+            "and carries the spawn args over from the retired table",
+        );
+        assert_eq!(steward.kick.as_deref(), Some("begin"));
+        assert_eq!(steward.resume_kick.as_deref(), Some("re-read the notes"));
+        assert_eq!(steward.interactive, Some(true));
+        let lead =
+            crate::store::sessions::get(db, "Default", "forge", forge_primitives::LEAD_LABEL)
+                .expect("read")
+                .expect("the row that was already there survives");
+        assert_eq!(lead.session_id.as_deref(), Some("lead-session-id"), "with its id untouched");
+    }
+
+    /// The retired table is dropped only once every row it held has been
+    /// copied. A row no configured project can key stays where it is, so
+    /// the table has to stay with it: dropped, that worker exists nowhere
+    /// else and its label silently stops re-spawning, with nothing on
+    /// screen to say which one went.
+    #[tokio::test]
+    async fn booting_keeps_the_retired_table_when_a_row_could_not_be_keyed() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let app_support = dir.path().join("app-support");
+        fs::create_dir_all(&app_support).expect("app-support dir");
+        let db = crate::store::Db::open(&app_support.join("db.redb")).expect("open db");
+        crate::store::dynamic_workers::insert_for_test(
+            &db,
+            &crate::store::dynamic_workers::DynamicWorker {
+                project_key: "a-project-the-config-no-longer-names".to_owned(),
+                label: "steward".to_owned(),
+                charter: "mind the queues".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
+        )
+        .expect("seed a worker whose project is gone");
+        drop(db);
+
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
+
+        let guard = workspace.db.lock();
+        let left = crate::store::dynamic_workers::list_all(guard.as_ref().expect("db"))
+            .expect("read the retired table");
+        assert_eq!(
+            left.len(),
+            1,
+            "the row could not be keyed, so it is still only there and the table must survive",
+        );
+        assert_eq!(left[0].label, "steward");
+    }
+
     /// A project with no lead anywhere spawns under an id forge mints,
     /// and the row holds it: the second start re-enters that session
     /// instead of minting a third id for a project that had none.
@@ -12095,6 +12216,42 @@ provider = "anthropic"
             expected.to_str(),
             "the registry composes the worktree; the project root must not shadow it",
         );
+    }
+
+    /// The other arm of the same lookup, pinned next to it so the pair
+    /// says what the split is: a lead's cwd IS its project root, read
+    /// from the slot rather than from the catalog, because the catalog is
+    /// keyed by the id the CLI adopted and `/new` replaces that.
+    #[test]
+    fn a_lead_slot_resolves_to_its_project_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        let view =
+            ws.list_projects().into_iter().find(|v| v.name == "forge").expect("fixture project");
+
+        let resolved = ws.cwd_for_session(&SessionSlot::lead(&view.org, &view.name));
+        assert_eq!(resolved.as_deref(), view.path.to_str(), "a lead runs in its project root");
     }
 
     #[test]

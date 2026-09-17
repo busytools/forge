@@ -1105,33 +1105,6 @@ pub(crate) fn handle_spawn_worker(
         Some(resuming) => forge_primitives::SessionId::new(resuming),
         None => forge_primitives::SessionId::new(uuid::Uuid::new_v4().to_string()),
     };
-    // The row is the whole registry entry a boot re-spawns from, so it
-    // carries the spawn args alongside the id rather than leaving them in
-    // memory. A re-spawn dispatched from boot writes the same fields back
-    // over its own row, which is what keeps this one path for both.
-    let durability_warning = match workspace.record_worker_row(
-        &project_key,
-        label,
-        session_id.as_str(),
-        &charter,
-        kick.as_deref(),
-        resume_kick,
-        interactive,
-    ) {
-        Ok(()) => None,
-        Err(error) => {
-            tracing::warn!(
-                target: "forge_workspace::spawn",
-                project = %project_key.as_str(),
-                label = %label,
-                %error,
-                "recording the worker's row failed; it will not survive a restart",
-            );
-            Some(format!(
-                "recording this worker for durability failed ({error}); it will not survive a forge restart"
-            ))
-        }
-    };
     let tag = forge_primitives::worker_tag(label);
 
     // Insert WorkerEntry as Spawning BEFORE the agent spawn so the
@@ -1144,9 +1117,10 @@ pub(crate) fn handle_spawn_worker(
     // guaranteed by the caller).
     //
     // The entry is keyed by the worker's slot, and carries the id it
-    // runs under: a fresh one was minted and recorded just above, so the
-    // pool, the registry and the child's `--session-id` agree from the
-    // first instant and `Connected` has nothing to move.
+    // runs under: a fresh one was minted above and recorded below, once
+    // the guard admits the spawn, so the pool, the registry and the
+    // child's `--session-id` agree from the first instant and `Connected`
+    // has nothing to move.
     let entry = crate::mcp::workers::types::WorkerEntry {
         label: label.to_owned(),
         charter: charter.clone(),
@@ -1210,6 +1184,41 @@ pub(crate) fn handle_spawn_worker(
         }
         return;
     }
+    // The row is the whole registry entry a boot re-spawns from, so it
+    // carries the spawn args alongside the id rather than leaving them in
+    // memory. A re-spawn dispatched from boot writes the same fields back
+    // over its own row, which is what keeps this one path for both.
+    //
+    // AFTER the guard above, which is the point of the order: both
+    // refusals return without spawning, and a row written first would
+    // outlive them. A refused duplicate would have overwritten the
+    // RUNNING worker's row with a fresh id and the new args, so the next
+    // boot would resume an id no session ever ran under; an at-cap
+    // refusal would leave a row the boot re-spawn wave picks up with no
+    // cap, bringing back a worker the caller was told does not exist.
+    let durability_warning = match workspace.record_worker_row(
+        &project_key,
+        label,
+        session_id.as_str(),
+        &charter,
+        entry.kick.as_deref(),
+        resume_kick,
+        interactive,
+    ) {
+        Ok(()) => None,
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = %project_key.as_str(),
+                label = %label,
+                %error,
+                "recording the worker's row failed; it will not survive a restart",
+            );
+            Some(format!(
+                "recording this worker for durability failed ({error}); it will not survive a forge restart"
+            ))
+        }
+    };
     try_emit(
         workspace,
         "spawn_worker::WorkerStatusChanged::Added",
@@ -2611,6 +2620,72 @@ provider = "anthropic"
         let reply = rx.await.expect("reply channel");
         let err = reply.expect_err("a duplicate spawn replies an error");
         assert!(err.contains("already live"), "error names the collision: {err}");
+    }
+
+    /// A refused duplicate must leave the RUNNING worker's row exactly as
+    /// it was. The row is written after the guard for this reason: written
+    /// first, the refusal would have overwritten the live worker's id,
+    /// charter and kick with the refused attempt's, and the next boot
+    /// would resume an id no session ever ran under, orphaning the
+    /// transcript it belongs to.
+    ///
+    /// The sibling test above cannot see this: it runs on a `testing_stub`
+    /// with no DB, so the row write fails there and the ordering does not
+    /// matter.
+    #[tokio::test]
+    async fn a_refused_duplicate_leaves_the_running_workers_row_alone() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path());
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+        let spawn = |charter: &str| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            handle_spawn_worker(
+                &ws,
+                key.clone(),
+                WorkerSpawnArgs {
+                    label: "steward".to_owned(),
+                    charter: charter.to_owned(),
+                    kick: None,
+                    resume_kick: None,
+                    interactive: false,
+                },
+                SessionSlot::from_str_for_test("lead"),
+                None,
+                false,
+                tx,
+            );
+            rx
+        };
+
+        let first = spawn("mind the queues")
+            .await
+            .expect("reply channel")
+            .expect("the first spawn is admitted")
+            .session_id;
+
+        let refused = spawn("a second, refused charter").await.expect("reply channel");
+        assert!(refused.is_err(), "the second spawn for a live label is refused");
+
+        let rows = ws.worker_rows_for_project(&key);
+        let row = rows.iter().find(|r| r.label == "steward").expect("the running worker's row");
+        assert_eq!(
+            row.session_id.as_deref(),
+            Some(first.as_str()),
+            "the row still names the id the running worker was admitted under",
+        );
+        assert_eq!(
+            row.charter.as_deref(),
+            Some("mind the queues"),
+            "and keeps the args it was admitted with, not the refused attempt's",
+        );
     }
 
     /// Stub whose `forge.toml` caps the `forge` project at the given

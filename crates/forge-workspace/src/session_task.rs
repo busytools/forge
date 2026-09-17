@@ -716,6 +716,11 @@ impl SessionTask {
                 // with no idea what it is for. The TUI builds the launch
                 // settings for a `/new` and knows nothing of the charter,
                 // so re-deliver the one the store holds for this slot.
+                //
+                // Workers only. A lead's own instructions are appended to
+                // its prompt by the spawn, and the store holds no charter
+                // for a lead row, so a lead that runs `/new` still comes
+                // back without `LEAD_DELEGATION_PREAMBLE`.
                 let mut other = other;
                 if let Command::NewSession { launch_settings, .. } = &mut other
                     && let Some(charter) =

@@ -1325,15 +1325,15 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 /// failed can produce, and the reason the pane's rule carries that
 /// tie-break.
 fn switch_to_project_lead(app: &mut App, project_key: &str) {
-    // Resolve the project view up-front; it carries the name, the path
-    // and the catalog rows every branch below reads.
+    // Resolve the project view up-front; it carries the name and the path
+    // every branch below reads.
     let view = app
         .workspace
         .as_ref()
         .and_then(|w| w.list_projects().into_iter().find(|p| p.key.as_str() == project_key));
-    let (resolved_name, catalog_sessions) = match view.as_ref() {
-        Some(view) => (view.name.clone(), view.sessions.clone()),
-        None => (project_key.to_owned(), Vec::new()),
+    let resolved_name = match view.as_ref() {
+        Some(view) => view.name.clone(),
+        None => project_key.to_owned(),
     };
     let running_key = view.as_ref().and_then(|view| {
         let path = view.path.to_string_lossy();
@@ -1381,14 +1381,12 @@ fn switch_to_project_lead(app: &mut App, project_key: &str) {
         return;
     }
 
-    // Fallback to the disk catalog's most recent session for this
-    // project. If it's pooled, switch; otherwise dispatch a fresh
-    // SpawnProject (covers cold projects with no live bucket).
-    // The project's lead slot, named by the triple rather than by
-    // whichever catalog row happens to be most recent.
+    // Fallback for a project with no live bucket: its lead slot, named by
+    // the triple rather than by whichever catalog row happens to be most
+    // recent. If it is pooled, switch; otherwise dispatch a fresh
+    // SpawnProject.
     let lead_session_key =
         view.as_ref().map(|v| forge_workspace::SessionSlot::lead(&v.org, &v.name));
-    let _ = catalog_sessions;
     match lead_session_key {
         Some(key) if app.sessions.contains_key(&key) => {
             app.switch_active_session(key);

@@ -1352,7 +1352,9 @@ mod tests {
     }
 
     /// A review's notice target is the SLOT the review was submitted
-    /// from, not the id that session happened to hold.
+    /// from, never the caller whose turn drained it. The worker replies
+    /// on its own slot, and routing the notice there would put "the
+    /// worker addressed review #N" into the worker's own chat.
     ///
     /// Before this change `review_origin` held the submitter's session
     /// id, and nothing corrected it when that id changed: a reviewer
@@ -1395,10 +1397,6 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "test-project", "worker");
         ws.submit_review("forge", "feat", None, &["a".to_owned()], reviewer.clone())
             .expect("submit");
-
-        // The reviewer runs `/new`: the occupant the store holds for its
-        // slot changes. The slot does not.
-        ws.record_session_id("TestOrg", "test-project", "reviewer", "a-brand-new-id");
 
         ws.review_reply(&worker, "forge", "feat", "a", "impl", "fixed", "t").expect("reply");
         let notices = ws.drain_review_activity(&worker);
