@@ -3411,13 +3411,19 @@ impl Workspace {
                     resume_existing.is_some(),
                 )
             {
+                let wanted = crate::mcp::workers::types::worker_tag_dir(
+                    root,
+                    &worker.label,
+                    matches!(worker.is_git_repo, Some(true)),
+                );
                 tracing::warn!(
                     target: "forge_workspace::workers",
                     event_name = "boot_respawn_skipped_missing_worktree",
                     project = %project_key.as_str(),
                     label = %worker.label,
-                    "the worker's worktree is gone, so this boot re-spawn has no directory \
-                     to start in; the row is kept and stays unoffered until the worktree is back",
+                    directory = %wanted.display(),
+                    "the worker's directory is gone, so this boot re-spawn has nowhere to \
+                     start; the row is kept and stays unoffered until it is back",
                 );
                 continue;
             }

@@ -135,6 +135,20 @@ mod tests {
     }
 
     #[test]
+    fn cwd_not_found_display_names_the_directory() {
+        let err = Error::CwdNotFound { path: "/repo/.claude/worktrees/reviewer".into() };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("/repo/.claude/worktrees/reviewer"),
+            "expected the directory in the message, got: {rendered}"
+        );
+        assert!(
+            rendered.to_lowercase().contains("does not exist"),
+            "expected the reason in the message, got: {rendered}"
+        );
+    }
+
+    #[test]
     fn process_error_display_includes_exit_code() {
         let err = Error::Process { exit_code: Some(17), stderr: "permission denied".into() };
         let rendered = format!("{err}");
