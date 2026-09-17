@@ -10840,6 +10840,20 @@ mod worker_respawn_tests {
             "a row with no stored id re-spawns FRESH and creates its own worktree, so \
              the missing one must not strand it; spawned {spawned:?}",
         );
+
+        // Skipping is not deleting. The row is the only handle on the
+        // worker, so a restored worktree is what brings it back.
+        let kept = |key: &ProjectKey| -> Vec<String> {
+            workspace.worker_rows_for_project(key).into_iter().map(|r| r.label).collect()
+        };
+        assert!(
+            kept(&proj_x).contains(&"stranded".to_owned())
+                && kept(&proj_y).contains(&"ghostworktree".to_owned()),
+            "a skipped row must stay in the store, or the restore path this promises is \
+             gone; kept {:?} / {:?}",
+            kept(&proj_x),
+            kept(&proj_y),
+        );
     }
 
     /// The launchpad renders every persisted worker row, so a row the
