@@ -46,7 +46,6 @@ pub(super) struct HeightUpdateStats {
 pub(super) struct MeasureBudget {
     pub(super) remaining_msgs: usize,
     pub(super) remaining_lines: usize,
-    pub(super) remaining_cold_measures: usize,
     pub(super) deadline: Option<std::time::Instant>,
 }
 
@@ -60,7 +59,6 @@ impl MeasureBudget {
         Self {
             remaining_msgs: viewport_floor,
             remaining_lines: viewport_floor.saturating_mul(8).max(256),
-            remaining_cold_measures: usize::MAX,
             deadline: Some(std::time::Instant::now() + MEASURE_TIME_BUDGET),
         }
     }
@@ -68,14 +66,12 @@ impl MeasureBudget {
     fn exhausted(&self) -> bool {
         self.remaining_msgs == 0
             || self.remaining_lines == 0
-            || self.remaining_cold_measures == 0
             || self.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
     }
 
     fn consume(&mut self, wrapped_lines: usize) {
         self.remaining_msgs = self.remaining_msgs.saturating_sub(1);
         self.remaining_lines = self.remaining_lines.saturating_sub(wrapped_lines.max(1));
-        self.remaining_cold_measures = self.remaining_cold_measures.saturating_sub(1);
     }
 }
 
@@ -3779,20 +3775,14 @@ mod tests {
         assert!((viewport.scrollbar_thumb_size - 5.0).abs() < f32::EPSILON);
     }
 
-    fn bounded_budget(cold_measures: usize) -> super::MeasureBudget {
-        super::MeasureBudget {
-            remaining_msgs: 100,
-            remaining_lines: 100_000,
-            remaining_cold_measures: cold_measures,
-            deadline: None,
-        }
+    fn bounded_budget(msgs: usize) -> super::MeasureBudget {
+        super::MeasureBudget { remaining_msgs: msgs, remaining_lines: 100_000, deadline: None }
     }
 
     fn unbounded_budget() -> super::MeasureBudget {
         super::MeasureBudget {
             remaining_msgs: usize::MAX,
             remaining_lines: usize::MAX,
-            remaining_cold_measures: usize::MAX,
             deadline: None,
         }
     }
@@ -3805,7 +3795,6 @@ mod tests {
         let budget = |deadline| super::MeasureBudget {
             remaining_msgs: usize::MAX,
             remaining_lines: usize::MAX,
-            remaining_cold_measures: usize::MAX,
             deadline,
         };
 

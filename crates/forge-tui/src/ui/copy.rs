@@ -279,12 +279,7 @@ mod tests {
     /// Paint-only harness: strict determinism wants no wall-clock budget
     /// expiring mid-draw on a loaded machine.
     fn unbounded_budget() -> MeasureBudget {
-        MeasureBudget {
-            remaining_msgs: usize::MAX,
-            remaining_lines: usize::MAX,
-            remaining_cold_measures: usize::MAX,
-            deadline: None,
-        }
+        MeasureBudget { remaining_msgs: usize::MAX, remaining_lines: usize::MAX, deadline: None }
     }
 
     /// Draw the chat once so the app holds the rendered area and viewport

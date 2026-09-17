@@ -2144,7 +2144,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
-        let project_key = ProjectKey::new_for_test("alice-project");
+        let project_key = ProjectKey::new("alice-project");
         let worker_session_key = SessionSlot::from_str_for_test("worker-probe-a");
         let entry = WorkerEntry {
             label: "probe-a".into(),
@@ -2323,7 +2323,7 @@ mod tests {
         let version_budget =
             usize::from(width) - (1 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2 + PANEL_RIGHT_GUTTER);
         let mut app = App::test_default();
-        let project_key = forge_workspace::ProjectKey::new_for_test("forge");
+        let project_key = forge_workspace::ProjectKey::new("forge");
         let projects =
             vec![ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new())];
 
@@ -2658,7 +2658,7 @@ mod tests {
         use forge_workspace::ProjectKey;
 
         let mut app = App::test_default();
-        let project_key = ProjectKey::new_for_test("forge");
+        let project_key = ProjectKey::new("forge");
         let project =
             ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
@@ -2693,7 +2693,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
-        let project_key = ProjectKey::new_for_test("forge");
+        let project_key = ProjectKey::new("forge");
         let entry = WorkerEntry {
             label: "reviewer".into(),
             charter: "be sharp".into(),
@@ -2761,7 +2761,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("test_default seeds a workspace stub");
-        let project_key = ProjectKey::new_for_test("forge");
+        let project_key = ProjectKey::new("forge");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
@@ -2904,7 +2904,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
-        let project_key = ProjectKey::new_for_test("forge");
+        let project_key = ProjectKey::new("forge");
         let worker_key = SessionSlot::from_str_for_test("worker-1");
         workspace.insert_live_worker(
             &project_key,
@@ -2959,7 +2959,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
-        let project_key = ProjectKey::new_for_test("forge");
+        let project_key = ProjectKey::new("forge");
         let worker_key = SessionSlot::from_str_for_test("worker-1");
         workspace.insert_live_worker(
             &project_key,
@@ -3019,7 +3019,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
-        let project_key = ProjectKey::new_for_test("forge");
+        let project_key = ProjectKey::new("forge");
         let worker_key = SessionSlot::from_str_for_test("worker-1");
         workspace.insert_live_worker(
             &project_key,
@@ -3073,7 +3073,7 @@ mod tests {
         let first_key = SessionSlot::from_str_for_test("lead-first");
         let second_key = SessionSlot::from_str_for_test("lead-resumed");
         let project = ProjectView::new_for_test(
-            ProjectKey::new_for_test("resume-tie-project"),
+            ProjectKey::new("resume-tie-project"),
             "resume-tie-project",
             project_path,
             Vec::new(),
@@ -3147,7 +3147,7 @@ mod tests {
         }
         let workspace = app.workspace.clone().expect("workspace stub");
         workspace.insert_live_worker(
-            &ProjectKey::new_for_test("shared-cwd-project"),
+            &ProjectKey::new("shared-cwd-project"),
             WorkerEntry {
                 label: "reviewer".to_owned(),
                 charter: "noop".to_owned(),
@@ -3163,7 +3163,7 @@ mod tests {
             },
         );
         let project = ProjectView::new_for_test(
-            ProjectKey::new_for_test("shared-cwd-project"),
+            ProjectKey::new("shared-cwd-project"),
             "shared-cwd-project",
             project_path,
             Vec::new(),
@@ -3196,7 +3196,7 @@ mod tests {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
 
-        let project_key = ProjectKey::new_for_test("forge");
+        let project_key = ProjectKey::new("forge");
         let lead_session_key = SessionSlot::from_str_for_test("lead-session-1");
         let worker_session_key = SessionSlot::from_str_for_test("worker-resume-session-1");
 
@@ -3282,7 +3282,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
-        let project_key = ProjectKey::new_for_test("forge");
+        let project_key = ProjectKey::new("forge");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
@@ -3332,7 +3332,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
-        let project_key = ProjectKey::new_for_test("forge");
+        let project_key = ProjectKey::new("forge");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
@@ -3474,7 +3474,7 @@ mod tests {
         app.sessions.insert(lead_key.clone(), lead);
 
         let project = ProjectView::new_for_test(
-            ProjectKey::new_for_test("bg-activity-project"),
+            ProjectKey::new("bg-activity-project"),
             "bg-activity-project",
             project_path,
             Vec::new(),
@@ -3749,7 +3749,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
-        let project_key = ProjectKey::new_for_test("bg-worker-project");
+        let project_key = ProjectKey::new("bg-worker-project");
         let worker_session_key = SessionSlot::from_str_for_test("worker-bg");
         let entry = WorkerEntry {
             label: "runner".into(),
@@ -3821,7 +3821,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
-        let project_key = ProjectKey::new_for_test("bucketless-worker-project");
+        let project_key = ProjectKey::new("bucketless-worker-project");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
@@ -3893,7 +3893,7 @@ mod tests {
         let projects: Vec<ProjectView> = ["aaa-project", "zzz-project"]
             .into_iter()
             .map(|name| {
-                let key = ProjectKey::new_for_test(name);
+                let key = ProjectKey::new(name);
                 if name == owner {
                     for (idx, label) in ["probe-a", "probe-b"].into_iter().enumerate() {
                         workspace.insert_live_worker(

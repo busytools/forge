@@ -20,13 +20,4 @@ impl ProjectKey {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    /// Test-only constructor for cross-crate fixtures (forge-tui's
-    /// Projects pane snapshot tests). Byte-identical to
-    /// [`ProjectKey::new`]; the `test-helpers` gate, not a visibility
-    /// difference, is what keeps it out of production builds.
-    #[cfg(feature = "test-helpers")]
-    pub fn new_for_test(key: impl Into<String>) -> Self {
-        Self(key.into())
-    }
 }

@@ -60,7 +60,7 @@ fn render_to_lines(
 
 fn project_view(name: &str, sessions: Vec<SessionView>) -> ProjectView {
     ProjectView::new_for_test(
-        ProjectKey::new_for_test(name),
+        ProjectKey::new(name),
         name,
         format!("~/Projects/{name}"),
         sessions,
@@ -707,7 +707,7 @@ fn worker_selection_highlights_only_the_worker_row() {
     app.active_session_key = Some(worker_key.clone());
 
     workspace.insert_live_worker(
-        &ProjectKey::new_for_test("forge"),
+        &ProjectKey::new("forge"),
         forge_workspace::WorkerEntry {
             label: "reviewer".into(),
             charter: "be sharp".into(),

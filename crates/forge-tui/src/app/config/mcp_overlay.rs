@@ -1,7 +1,7 @@
 use super::ConfigOverlayState;
 use super::mcp::{
-    McpServerActionKind, available_mcp_actions, is_mcp_action_available, reconnect_mcp_server,
-    refresh_mcp_snapshot, set_mcp_server_enabled,
+    McpServerActionKind, available_mcp_actions, reconnect_mcp_server, refresh_mcp_snapshot,
+    set_mcp_server_enabled,
 };
 use super::overlay_input::step_index_clamped;
 use crate::app::App;
@@ -67,9 +67,6 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
     let Some(action) = actions.get(overlay.selected_index).copied() else {
         return;
     };
-    if !is_mcp_action_available(server, action) {
-        return;
-    }
 
     match action {
         McpServerActionKind::RefreshSnapshot => {

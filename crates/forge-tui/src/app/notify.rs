@@ -1,5 +1,4 @@
 use forge_workspace::SessionSlot;
-use std::borrow::Cow;
 
 /// Events that can trigger a user notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,7 +276,7 @@ fn notification_text(
 /// The escape one notification delivers. OSC 777 carries the title as
 /// its own field, which is what puts the session on the banner's bold
 /// line - OSC 9's single field leaves that line to the app name.
-fn notification_escape_sequence<'a>(title: &'a str, body: &'a str) -> Cow<'a, str> {
+fn notification_escape_sequence(title: &str, body: &str) -> String {
     let title = sanitize_notification_field(title);
     let body = sanitize_notification_field(body);
     let mut sequence = String::with_capacity(title.len() + body.len() + 20);
@@ -288,7 +287,7 @@ fn notification_escape_sequence<'a>(title: &'a str, body: &'a str) -> Cow<'a, st
     sequence.push_str(&body);
     sequence.push('\u{1b}');
     sequence.push('\\');
-    Cow::Owned(sequence)
+    sequence
 }
 
 /// One OSC 777 field, made safe to embed. `;` becomes a space the way
@@ -455,7 +454,7 @@ mod tests {
         app.active_session_key = Some(active.clone());
         seed_worker(
             &app,
-            &forge_workspace::ProjectKey::new_for_test("p-beta"),
+            &forge_workspace::ProjectKey::new("p-beta"),
             &worker,
             "egen-lead",
         );
@@ -506,7 +505,7 @@ mod tests {
         let worker_key = seed_bucket(&mut app, "session-worker", "beta");
         seed_worker(
             &app,
-            &forge_workspace::ProjectKey::new_for_test("p-beta"),
+            &forge_workspace::ProjectKey::new("p-beta"),
             &worker_key,
             "chat-stutter",
         );
@@ -540,7 +539,7 @@ mod tests {
         let worker_key = seed_bucket(&mut app, "session-worker", "busymail");
         seed_worker(
             &app,
-            &forge_workspace::ProjectKey::new_for_test("p-busymail"),
+            &forge_workspace::ProjectKey::new("p-busymail"),
             &worker_key,
             "demo-route",
         );
@@ -619,7 +618,7 @@ mod tests {
     #[test]
     fn notification_sequence_carries_two_delimited_fields() {
         assert_eq!(
-            notification_escape_sequence("companies", "Turn complete").as_ref(),
+            notification_escape_sequence("companies", "Turn complete").as_str(),
             "\u{1b}]777;notify;companies;Turn complete\u{1b}\\",
             "the escape is OSC 777 with notify, the title and the body as separate fields",
         );
@@ -646,7 +645,7 @@ mod tests {
     fn the_escape_sanitizes_control_characters_in_both_fields() {
         assert_eq!(
             notification_escape_sequence("hello\n\u{1b}world\u{07}", "a\u{9c}b\u{18}c\u{1a}d")
-                .as_ref(),
+                .as_str(),
             "\u{1b}]777;notify;hello world;abcd\u{1b}\\"
         );
     }

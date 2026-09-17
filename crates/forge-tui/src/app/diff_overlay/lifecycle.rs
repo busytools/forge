@@ -566,7 +566,7 @@ mod tests {
         // without a matching project would now fall back to cwd_raw.
         let project_root = "/tmp/project";
         workspace.seed_test_project("forge", project_root);
-        let project_key = ProjectKey::new_for_test(
+        let project_key = ProjectKey::new(
             forge_workspace::userdata::catalog::scan::project_key_for_directory(Some(project_root)),
         );
         let worker_key = SessionSlot::from_str_for_test("worker-uuid");

@@ -984,7 +984,7 @@ mod tests {
         app.active_session_key = Some(worker_key.clone());
         if let Some(ws) = app.workspace.as_ref() {
             ws.insert_live_worker(
-                &forge_workspace::ProjectKey::new_for_test("p-beta"),
+                &forge_workspace::ProjectKey::new("p-beta"),
                 forge_workspace::WorkerEntry {
                     label: "egen-lead".to_owned(),
                     charter: String::new(),
