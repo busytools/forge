@@ -387,8 +387,6 @@ fn decode(org: &str, project: &str, label: &str, value: &[u8]) -> anyhow::Result
     org.clone_into(&mut record.org);
     project.clone_into(&mut record.project);
     label.clone_into(&mut record.label);
-    project.clone_into(&mut record.project);
-    label.clone_into(&mut record.label);
     // An empty string is absence, not an id: the bridge's id slot starts
     // empty, so a blank must never read back as a session to resume.
     if record.session_id.as_deref() == Some("") {
