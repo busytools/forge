@@ -3825,8 +3825,9 @@ mod tests {
 
     /// Cold open of a large session: frame 1 must measure only a bounded,
     /// anchor-tail slice and leave the rest to converge over later frames.
-    /// Removing the per-frame cold cap or re-widening the bootstrap window
-    /// back to a whole-session index walk reintroduces the #1080 stall.
+    /// Dropping the budget's message allowance, which `bounded_budget(5)`
+    /// sets here, or re-widening the bootstrap window back to a
+    /// whole-session index walk reintroduces the #1080 stall.
     #[test]
     fn cold_bootstrap_measures_a_bounded_anchor_tail_then_converges() {
         let mut app = large_session_app(60);
