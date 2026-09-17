@@ -3127,6 +3127,111 @@ provider = "anthropic"
         );
     }
 
+    /// The named failure kind has to survive the join. `translate_event`
+    /// is the only production site that hands it to the worker-failure
+    /// handler, and the default there would put the message heuristic back
+    /// in charge: a `CwdNotFound` renders the directory it could not
+    /// enter, and for a worker that directory runs through
+    /// `.claude/worktrees/<label>`, so the row would be deleted and the
+    /// lead told the worktree could not be created.
+    #[tokio::test]
+    async fn a_named_spawn_failure_kind_reaches_the_worker_handler() {
+        let (workspace, _update_rx) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let db_dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_dir = tempfile::tempdir().expect("project dir");
+        workspace.seed_test_project("proj-x", &project_dir.path().to_string_lossy());
+        let project_key = workspace.project_key_for_name("proj-x").expect("seeded project");
+        // The row a worktree-creation verdict would delete.
+        workspace
+            .record_worker_row(
+                &project_key,
+                "reviewer",
+                "reviewer-uuid",
+                "c",
+                None,
+                None,
+                false,
+                true,
+            )
+            .expect("seed the worker's row");
+
+        let worker_slot = SessionSlot::from_str_for_test("worker-uuid");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "reviewer".to_owned(),
+                charter: "c".to_owned(),
+                slot: worker_slot.clone(),
+                session_id: Some(forge_primitives::SessionId::new("reviewer-uuid")),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
+                needs_tag: false,
+                is_git_repo_at_spawn: true,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        // A live lead, so "no notice" is a claim about the classifier and
+        // not about a notice with nowhere to go.
+        let lead_slot = SessionSlot::from_str_for_test("lead-uuid");
+        let (lead_handle, _lead_cmds) = Agent::testing_stub();
+        workspace.pool.lock().insert(
+            lead_slot,
+            crate::workspace::PooledAgent {
+                handle: Arc::new(lead_handle),
+                account: forge_gateway::AccountKey("test".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-session".to_owned(),
+            },
+        );
+
+        let (handle, _agent_cmds) = Agent::testing_stub();
+        let arc = Arc::new(handle);
+        let domain = workspace.register_domain_session(worker_slot.clone(), Some(Arc::clone(&arc)));
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: worker_slot.clone(),
+            handle: arc,
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "forge-sdk session resume failed: claude subprocess working directory \
+                      `/x/.claude/worktrees/reviewer` does not exist"
+                .to_owned(),
+            kind: SpawnFailureKind::WorkingDirMissing,
+        });
+
+        let rows = workspace.worker_rows_for_project(&project_key);
+        assert!(
+            rows.iter().any(|row| row.label == "reviewer"),
+            "a named missing-working-directory failure keeps the worker's row rather than \
+             deleting it as a worktree that could not be created; rows left {:?}",
+            rows.iter().map(|row| row.label.clone()).collect::<Vec<_>>(),
+        );
+        let notices: Vec<crate::protocol::Command> = workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .filter(|cmd| matches!(cmd, crate::protocol::Command::Prompt { .. }))
+            .collect();
+        assert!(
+            notices.is_empty(),
+            "the lead gets no worktree-creation notice for a failure that was not one, \
+             however the directory renders",
+        );
+    }
+
     /// Common harness for the `execute_command_via_handle` tests
     /// below: build a fresh stub handle + drain channel, return both.
     fn stub_handle_with_rx()
