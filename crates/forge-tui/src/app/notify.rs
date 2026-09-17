@@ -300,8 +300,8 @@ fn notification_escape_sequence(title: &str, body: &str) -> String {
 /// and SUB abort a sequence, and the C1 half is its introducers and
 /// terminator (DCS, SOS, SCI, CSI, ST, OSC, PM, APC).
 ///
-/// A field whose every character was dropped becomes a space rather
-/// than nothing, so the escape always carries two non-empty fields.
+/// A field that sanitizes to nothing becomes a space rather than
+/// nothing, so the escape always carries two non-empty fields.
 fn sanitize_notification_field(field: &str) -> String {
     let mut sanitized = String::with_capacity(field.len());
     for ch in field.chars() {
@@ -312,7 +312,7 @@ fn sanitize_notification_field(field: &str) -> String {
             _ => sanitized.push(ch),
         }
     }
-    if sanitized.is_empty() && !field.is_empty() {
+    if sanitized.is_empty() {
         sanitized.push(' ');
     }
     sanitized
@@ -639,8 +639,8 @@ mod tests {
         }
     }
 
-    /// A field made only of dropped characters still has to reach the
-    /// terminal as a field, so it becomes a space rather than nothing.
+    /// A field that sanitizes to nothing still has to reach the terminal
+    /// as a field, so it becomes a space rather than nothing.
     #[test]
     fn a_field_that_sanitizes_to_nothing_becomes_a_space() {
         assert_eq!(
@@ -652,6 +652,11 @@ mod tests {
             notification_escape_sequence("companies", "\u{9d}\u{9e}").as_str(),
             "\u{1b}]777;notify;companies; \u{1b}\\",
             "and the same for the body",
+        );
+        assert_eq!(
+            notification_escape_sequence("", "").as_str(),
+            "\u{1b}]777;notify; ; \u{1b}\\",
+            "an empty input is a space too, so no field is ever empty",
         );
     }
 
