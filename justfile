@@ -121,15 +121,24 @@ doc:
 # the inner loop. `release` gates on it instead, which is where the
 # ordering actually bites.
 #
-# `--all-features` is what makes this cover the shipped binary rather
-# than a configuration nobody installs: install.sh builds with `perf`
-# on, and the 18 feature gates behind it are release-compiled nowhere
-# else. Without the flag this check passes on a perf-gated release
-# break, measured.
+# `--all-features` is what gives the `perf` feature gates a release
+# compile; they are built nowhere else and this check passes on a
+# perf-gated release break without the flag, measured. It does NOT
+# stand in for the shipped configuration - it turns `test-helpers` on,
+# which `scripts/install.sh` leaves off. That is `check-install-config`.
 #
 # Compile the workspace in release. Mirrors CI's `cargo check --release`.
 check-release:
     RUSTFLAGS="-D warnings" cargo check --release --workspace --all-targets --all-features
+
+# Compiles exactly what `scripts/install.sh` builds - forge-tui's
+# `forge` bin, release, `perf` on and the test-only features off - so
+# production code reaching a `#[cfg(feature = "test-helpers")]`
+# constructor fails here instead of at the next `just install`.
+#
+# Compile the configuration the shipped binary is built from.
+check-install-config:
+    RUSTFLAGS="-D warnings" cargo check --release -p forge-tui --bin forge --features perf
 
 # Full pre-commit / pre-PR verification loop.
 #

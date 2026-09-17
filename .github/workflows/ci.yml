@@ -83,6 +83,26 @@ jobs:
           key: release
       - run: cargo check --release --workspace --all-targets --all-features
 
+  # The configuration `scripts/install.sh` builds: forge-tui's `forge`
+  # bin, release, `perf` on, the test-only features off. The job above
+  # cannot cover it - its `--all-features` turns `test-helpers` ON, so
+  # production code reaching a test-only constructor ships undetected.
+  install-config:
+    name: cargo check --release (install.sh config)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # forge-dictate captures audio through cpal, whose Linux backend
+      # is ALSA; without the headers `alsa-sys` fails to build and every
+      # compiling job dies. Removing this breaks audio, not just CI.
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: install-config
+      - run: cargo check --release -p forge-tui --bin forge --features perf
+
   docs:
     name: cargo doc
     runs-on: ubuntu-latest
