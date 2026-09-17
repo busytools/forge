@@ -68,11 +68,13 @@ impl SessionLaunchSettings {
 /// could not enter, and for a worker that path runs through
 /// `.claude/worktrees/<label>`, so the word "worktree" appears in a
 /// failure that has nothing to do with creating one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+// No `Default`: `Unclassified` is the value that hands classification
+// back to the message heuristics, so a site that omits the kind by
+// accident should not compile into the behaviour this exists to replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnFailureKind {
     /// The bridge could not attribute the failure - a child that exited,
     /// a closed stream, a refusal. Message heuristics stay in charge.
-    #[default]
     Unclassified,
     /// `forge_sdk::Error::CwdNotFound`: the subprocess had no working
     /// directory to start in.
