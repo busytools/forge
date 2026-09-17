@@ -2485,8 +2485,8 @@ impl Workspace {
                 })
             })
             .collect();
-        // Stable-sort the fallback group last, matching the picker's
-        // group order. `false` sorts before `true`, and the sort
+        // Stable-sort the fallback group last, matching the gateway
+        // view's group order. `false` sorts before `true`, and the sort
         // preserves within-group order.
         rows.sort_by_key(|row| row.fallback);
         rows

@@ -26,7 +26,7 @@ fn forge_toml_path(config_dir: &std::path::Path) -> PathBuf {
 }
 
 #[tokio::test]
-async fn picker_display_name_reaches_bridge() {
+async fn account_display_name_reaches_bridge() {
     let dir = tempdir().expect("tempdir");
     fs::write(
         forge_toml_path(dir.path()),
