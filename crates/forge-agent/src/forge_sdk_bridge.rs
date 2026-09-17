@@ -29,10 +29,19 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 
-use crate::client::{AgentEvent, SessionLaunchSettings};
+use crate::client::{AgentEvent, SessionLaunchSettings, SpawnFailureKind};
 use crate::forge_sdk_worker;
 use crate::forge_sdk_worker::SessionId;
 use forge_primitives::{PermissionMode, PermissionOutcome, QuestionOutcome};
+
+/// Name the class of a spawn failure from the SDK error itself, so a
+/// consumer never has to infer it from the rendered message.
+fn spawn_failure_kind(err: &anyhow::Error) -> SpawnFailureKind {
+    match err.downcast_ref::<forge_sdk::Error>() {
+        Some(forge_sdk::Error::CwdNotFound { .. }) => SpawnFailureKind::WorkingDirMissing,
+        _ => SpawnFailureKind::Unclassified,
+    }
+}
 
 /// Sentinel `config_dir` for `ForgeSdkBridge` test stubs that never
 /// exercise the path. Production code constructs the bridge with a
@@ -961,10 +970,11 @@ impl ForgeSdkBridge {
                 if let Err(err) =
                     forge_sdk_worker::spawn_session(&bridge, &cwd, id, &launch_settings).await
                 {
+                    let kind = spawn_failure_kind(&err);
                     let msg = format!("forge-sdk session spawn failed: {err}");
                     if bridge
                         .event_tx()
-                        .send(AgentEvent::ConnectionFailed { message: msg.clone() })
+                        .send(AgentEvent::ConnectionFailed { message: msg.clone(), kind })
                         .is_err()
                     {
                         tracing::warn!(
@@ -1002,10 +1012,11 @@ impl ForgeSdkBridge {
                 )
                 .await
                 {
+                    let kind = spawn_failure_kind(&err);
                     let msg = format!("forge-sdk session resume failed: {err}");
                     if bridge
                         .event_tx()
-                        .send(AgentEvent::ConnectionFailed { message: msg.clone() })
+                        .send(AgentEvent::ConnectionFailed { message: msg.clone(), kind })
                         .is_err()
                     {
                         tracing::warn!(
@@ -1106,7 +1117,12 @@ impl ForgeSdkBridge {
                 );
                 if bridge
                     .event_tx()
-                    .send(AgentEvent::ConnectionFailed { message: msg.clone() })
+                    .send(AgentEvent::ConnectionFailed {
+                        message: msg.clone(),
+                        // Three attempts collapsed into one message, so
+                        // there is no single variant to name.
+                        kind: SpawnFailureKind::Unclassified,
+                    })
                     .is_err()
                 {
                     tracing::warn!(
@@ -1193,6 +1209,28 @@ impl ForgeSdkBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bridge names the SDK variant, so a consumer classifies on it
+    /// rather than on rendered prose - the working directory's path runs
+    /// through `.claude/worktrees/<label>`, which is the word the
+    /// worktree-creation heuristic keys on.
+    #[test]
+    fn a_missing_working_directory_is_named_on_the_failure() {
+        let missing = anyhow::Error::new(forge_sdk::Error::CwdNotFound { path: "/gone".into() });
+        assert_eq!(
+            spawn_failure_kind(&missing),
+            SpawnFailureKind::WorkingDirMissing,
+            "the SDK error has to reach the kind through the anyhow wrapper \
+             spawn_session hands back",
+        );
+
+        let unnamed = anyhow::Error::new(forge_sdk::Error::CliNotFound { binary: "claude".into() });
+        assert_eq!(
+            spawn_failure_kind(&unnamed),
+            SpawnFailureKind::Unclassified,
+            "an unnamed failure leaves the message heuristics in charge",
+        );
+    }
 
     /// Bind the bridge's id slot. Every production bridge has one from
     /// the start: the slot is written once, where the spawn supplies the

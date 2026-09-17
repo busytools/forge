@@ -6,6 +6,7 @@
 
 use std::sync::{Arc, Weak};
 
+use forge_agent::client::SpawnFailureKind;
 use forge_primitives::WorkerStatus;
 
 use crate::SessionSlot;
@@ -183,17 +184,25 @@ pub enum WorkerDespawnError {
 /// - `"forge-sdk session resume failed: {err}"`
 /// - `"forge-sdk session spawn failed after resume fallback (resume err: {a}; new err: {b})"`
 ///
-/// None of those wrapper strings contain "worktree" or any of the
-/// other discriminators above, so the classifier's substring search
-/// remains correct even after wrapping. Any future bridge wrapper
-/// that introduces the word "worktree" into the literal prefix
-/// MUST update this classifier (or switch to a typed channel) -
-/// the unit test `bridge_prefix_does_not_collide_with_worktree_predicate`
-/// pins this contract so the breaking change surfaces in CI.
+/// The wrapper prefixes themselves carry no discriminator, but the
+/// wrapped error can: `Error::CwdNotFound` renders the path it could not
+/// enter, and for a worker that path runs through
+/// `.claude/worktrees/<label>`. That word is the worktree heuristic's own
+/// key, so a message-only classifier reads a resume with nowhere to start
+/// as a worktree that could not be CREATED, deletes the worker's row, and
+/// tells the lead something untrue. `kind` carries the SDK's own variant
+/// for exactly that case; the substring search below is what answers for
+/// everything the bridge could not name.
 pub fn classify_worker_spawn_failure(
     message: &str,
     is_git_repo_at_spawn: bool,
+    kind: SpawnFailureKind,
 ) -> WorkerSpawnError {
+    // A named variant is the truth and the message is only how it
+    // renders; searching the render cannot overrule it.
+    if !matches!(kind, SpawnFailureKind::Unclassified) {
+        return WorkerSpawnError::DispatchFailed { message: message.to_owned() };
+    }
     // The cap refusal embeds the project key, which derives from a
     // directory path, so it can carry "worktree" without being a
     // worktree failure.
@@ -614,7 +623,14 @@ impl WorkerFacade for ProdWorkerFacade {
             }
             Ok(Err(message)) => {
                 discard_refused_worktree(&view.path, &spawn_label, ensured.take());
-                Err(classify_worker_spawn_failure(&message, is_git_repo_at_spawn))
+                // The sync path's reply is a string the spawn handler
+                // built, not an SDK error, so there is no variant to
+                // name and the heuristics answer.
+                Err(classify_worker_spawn_failure(
+                    &message,
+                    is_git_repo_at_spawn,
+                    SpawnFailureKind::Unclassified,
+                ))
             }
             // No rollback here: a dropped reply means the command may
             // still run, and the spawn it would do needs the worktree.
@@ -1606,8 +1622,11 @@ mod worktree_creation_failed_tests {
     fn classify_routes_worktree_word_to_worktree_creation_failed_when_git() {
         // claude's worktree failures usually mention the word
         // "worktree" verbatim (e.g. "Error creating worktree: ...").
-        let err =
-            classify_worker_spawn_failure("Error creating worktree: something went wrong", true);
+        let err = classify_worker_spawn_failure(
+            "Error creating worktree: something went wrong",
+            true,
+            SpawnFailureKind::Unclassified,
+        );
         let WorkerSpawnError::WorktreeCreationFailed { reason } = err else {
             panic!("expected WorktreeCreationFailed; got {err:?}");
         };
@@ -1624,6 +1643,7 @@ mod worktree_creation_failed_tests {
         let err = classify_worker_spawn_failure(
             "Failed to resolve base branch \"HEAD\": git rev-parse failed",
             true,
+            SpawnFailureKind::Unclassified,
         );
         assert!(
             matches!(err, WorkerSpawnError::WorktreeCreationFailed { .. }),
@@ -1639,6 +1659,7 @@ mod worktree_creation_failed_tests {
         let err = classify_worker_spawn_failure(
             "fatal: 'reviewer' is already used by worktree at /a/b/c",
             true,
+            SpawnFailureKind::Unclassified,
         );
         assert!(
             matches!(err, WorkerSpawnError::WorktreeCreationFailed { .. }),
@@ -1654,6 +1675,7 @@ mod worktree_creation_failed_tests {
         let err = classify_worker_spawn_failure(
             "agent spawn failed: subprocess exited with code 2",
             true,
+            SpawnFailureKind::Unclassified,
         );
         let WorkerSpawnError::DispatchFailed { message } = err else {
             panic!("expected DispatchFailed; got {err:?}");
@@ -1669,11 +1691,45 @@ mod worktree_creation_failed_tests {
         // claude binary couldn't have emitted a worktree-creation
         // error since it wasn't asked to create one. Fall through to
         // DispatchFailed rather than mislabel it.
-        let err =
-            classify_worker_spawn_failure("Error creating worktree: something went wrong", false);
+        let err = classify_worker_spawn_failure(
+            "Error creating worktree: something went wrong",
+            false,
+            SpawnFailureKind::Unclassified,
+        );
         assert!(
             matches!(err, WorkerSpawnError::DispatchFailed { .. }),
             "expected DispatchFailed; got {err:?}",
+        );
+    }
+
+    /// `Error::CwdNotFound` renders the path it could not enter, and for
+    /// a worker that path runs through `.claude/worktrees/<label>` - the
+    /// one word the worktree heuristic keys on. Reading that as a
+    /// worktree-creation failure deletes the worker's row and tells the
+    /// lead its worktree could not be created, which is the opposite of
+    /// what happened and of what this change promises.
+    ///
+    /// The second half is the control: the identical message unclassified
+    /// still routes to the worktree variant, so the first assertion is
+    /// reading the named kind and not a message that stopped matching.
+    #[test]
+    fn classify_reads_a_named_variant_over_a_worktrees_path_in_the_message() {
+        let message = "forge-sdk session resume failed: claude subprocess working directory \
+                       `/repo/.claude/worktrees/reviewer` does not exist";
+        let named =
+            classify_worker_spawn_failure(message, true, SpawnFailureKind::WorkingDirMissing);
+        assert!(
+            matches!(named, WorkerSpawnError::DispatchFailed { .. }),
+            "a named missing-working-directory failure is not a worktree-creation \
+             failure, however its path renders; got {named:?}",
+        );
+
+        let unclassified =
+            classify_worker_spawn_failure(message, true, SpawnFailureKind::Unclassified);
+        assert!(
+            matches!(unclassified, WorkerSpawnError::WorktreeCreationFailed { .. }),
+            "control: the same message with no named variant must still route on the \
+             heuristic; got {unclassified:?}",
         );
     }
 
@@ -1682,7 +1738,11 @@ mod worktree_creation_failed_tests {
         // Be lenient about casing - claude has shipped messages with
         // varying capitalization across CLI versions. Match on the
         // lowercased message body.
-        let err = classify_worker_spawn_failure("WORKTREE creation failed", true);
+        let err = classify_worker_spawn_failure(
+            "WORKTREE creation failed",
+            true,
+            SpawnFailureKind::Unclassified,
+        );
         assert!(
             matches!(err, WorkerSpawnError::WorktreeCreationFailed { .. }),
             "expected case-insensitive match to WorktreeCreationFailed; got {err:?}",
@@ -1695,7 +1755,7 @@ mod worktree_creation_failed_tests {
         // string handed back to the LLM should preserve the original
         // casing - the LLM sees claude's verbatim error text.
         let original = "Error creating Worktree: nope";
-        let err = classify_worker_spawn_failure(original, true);
+        let err = classify_worker_spawn_failure(original, true, SpawnFailureKind::Unclassified);
         let WorkerSpawnError::WorktreeCreationFailed { reason } = err else {
             panic!("expected WorktreeCreationFailed; got {err:?}");
         };
@@ -1745,7 +1805,11 @@ mod worktree_creation_failed_tests {
         // Concretely: a non-worktree generic failure wrapped by the
         // bridge stays classified as DispatchFailed.
         let wrapped = "forge-sdk session resume failed: subprocess exited with code 2";
-        let err = classify_worker_spawn_failure(wrapped, /* is_git_repo_at_spawn */ true);
+        let err = classify_worker_spawn_failure(
+            wrapped,
+            /* is_git_repo_at_spawn */ true,
+            SpawnFailureKind::Unclassified,
+        );
         assert!(
             matches!(err, WorkerSpawnError::DispatchFailed { .. }),
             "wrapped generic failure must stay DispatchFailed; got {err:?}",
@@ -1756,7 +1820,7 @@ mod worktree_creation_failed_tests {
     fn the_cap_refusal_stays_a_dispatch_failure() {
         let message = crate::spawn::worker_limit_reached_message("my-worktree-proj", 2, 2);
         assert_eq!(
-            classify_worker_spawn_failure(&message, true),
+            classify_worker_spawn_failure(&message, true, SpawnFailureKind::Unclassified),
             WorkerSpawnError::DispatchFailed { message },
             "the cap refusal stays DispatchFailed even when the project key carries 'worktree'",
         );

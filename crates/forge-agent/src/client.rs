@@ -61,6 +61,24 @@ impl SessionLaunchSettings {
     pub const PERMISSIONS_DEFAULT_MODE_KEY: &str = "defaultMode";
 }
 
+/// The class of a spawn failure, when the SDK could name one.
+///
+/// A consumer that would otherwise search the rendered message for a
+/// word can read this instead: `Error::CwdNotFound` renders the path it
+/// could not enter, and for a worker that path runs through
+/// `.claude/worktrees/<label>`, so the word "worktree" appears in a
+/// failure that has nothing to do with creating one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpawnFailureKind {
+    /// The bridge could not attribute the failure - a child that exited,
+    /// a closed stream, a refusal. Message heuristics stay in charge.
+    #[default]
+    Unclassified,
+    /// `forge_sdk::Error::CwdNotFound`: the subprocess had no working
+    /// directory to start in.
+    WorkingDirMissing,
+}
+
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Connected {
@@ -78,8 +96,12 @@ pub enum AgentEvent {
         method_name: String,
         method_description: String,
     },
+    /// A spawn failure the bridge could name, carried beside the message
+    /// so a consumer reads the variant rather than searching rendered
+    /// prose for a word that a path can also contain.
     ConnectionFailed {
         message: String,
+        kind: SpawnFailureKind,
     },
     /// A user-facing turn never reached the CLI (or was never
     /// acknowledged): the TUI committed to `Thinking` before the

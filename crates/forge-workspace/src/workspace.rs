@@ -4678,6 +4678,7 @@ impl Workspace {
         self: &Arc<Self>,
         session_key: &SessionSlot,
         message: &str,
+        kind: forge_agent::client::SpawnFailureKind,
     ) -> bool {
         // Look up the worker entry WITHOUT removing it yet - the
         // worktree-failure path still removes (rollback semantics
@@ -4707,6 +4708,7 @@ impl Workspace {
         let classified = crate::mcp::workers::facade::classify_worker_spawn_failure(
             message,
             entry.is_git_repo_at_spawn,
+            kind,
         );
         if let crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { reason } =
             &classified
@@ -11789,6 +11791,7 @@ provider = "anthropic"
 mod async_worker_spawn_failure_tests {
     use super::*;
     use crate::mcp::workers::types::WorkerEntry;
+    use forge_agent::client::SpawnFailureKind;
 
     fn fake_worker(label: &str, worker_key: &str, lead_id: &str, is_git: bool) -> WorkerEntry {
         WorkerEntry {
@@ -11872,6 +11875,7 @@ mod async_worker_spawn_failure_tests {
         let handled = workspace.handle_async_worker_spawn_failure(
             &SessionSlot::from_str_for_test(worker_key),
             "fatal: 'reviewer' is already used by worktree at /a/b/c",
+            SpawnFailureKind::Unclassified,
         );
         assert!(handled, "async worker failure path must consume the failure");
 
@@ -11913,6 +11917,7 @@ mod async_worker_spawn_failure_tests {
         let handled = workspace.handle_async_worker_spawn_failure(
             &SessionSlot::from_str_for_test(worker_key),
             "agent spawn failed: subprocess exited with code 2",
+            SpawnFailureKind::Unclassified,
         );
         assert!(handled);
 
@@ -11942,7 +11947,11 @@ mod async_worker_spawn_failure_tests {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         let unknown = SessionSlot::from_str_for_test("not-a-worker");
-        let handled = workspace.handle_async_worker_spawn_failure(&unknown, "some unrelated error");
+        let handled = workspace.handle_async_worker_spawn_failure(
+            &unknown,
+            "some unrelated error",
+            SpawnFailureKind::Unclassified,
+        );
         assert!(!handled);
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
@@ -11981,18 +11990,30 @@ mod async_worker_spawn_failure_tests {
         // to-Failed isn't a no-op on re-fire).
         assert!(
             matches!(
-                crate::mcp::workers::facade::classify_worker_spawn_failure(worktree_msg, true),
+                crate::mcp::workers::facade::classify_worker_spawn_failure(
+                    worktree_msg,
+                    true,
+                    SpawnFailureKind::Unclassified,
+                ),
                 crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { .. },
             ),
             "test fixture must classify as worktree failure to exercise the removal path",
         );
 
-        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            worktree_msg,
+            SpawnFailureKind::Unclassified
+        ));
         let _ = workspace.drain_test_dispatch_buffer();
 
         // Second call: WorkerEntry already gone, returns false, no
         // new dispatch.
-        assert!(!workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(!workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            worktree_msg,
+            SpawnFailureKind::Unclassified
+        ));
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
 
@@ -12057,7 +12078,11 @@ mod async_worker_spawn_failure_tests {
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
 
         let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
-        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            worktree_msg,
+            SpawnFailureKind::Unclassified
+        ));
 
         assert!(
             persisted_labels(&workspace, &project_key).is_empty(),
@@ -12093,12 +12118,20 @@ mod async_worker_spawn_failure_tests {
         // Failed and emits no Removed event at all.
         assert!(
             matches!(
-                crate::mcp::workers::facade::classify_worker_spawn_failure(worktree_msg, true),
+                crate::mcp::workers::facade::classify_worker_spawn_failure(
+                    worktree_msg,
+                    true,
+                    SpawnFailureKind::Unclassified,
+                ),
                 crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { .. },
             ),
             "the fixture must drive a real worktree-creation failure",
         );
-        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            worktree_msg,
+            SpawnFailureKind::Unclassified
+        ));
 
         let mut dispositions = Vec::new();
         while let Ok(update) = update_rx.try_recv() {
@@ -12135,10 +12168,11 @@ mod async_worker_spawn_failure_tests {
         );
 
         let session_key = SessionSlot::from_str_for_test(worker_key);
-        assert!(
-            workspace
-                .handle_async_worker_spawn_failure(&session_key, "subprocess exited with code 2")
-        );
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            "subprocess exited with code 2",
+            SpawnFailureKind::Unclassified,
+        ));
 
         assert_eq!(
             persisted_labels(&workspace, &project_key),
@@ -12238,7 +12272,11 @@ mod async_worker_spawn_failure_tests {
             },
         );
 
-        workspace.handle_async_worker_spawn_failure(&session_key, "resume failed: boom");
+        workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            "resume failed: boom",
+            SpawnFailureKind::Unclassified,
+        );
         assert!(
             !workspace.inflight_asks.lock().contains_key(&id),
             "buffered worker ask expired on spawn failure"
@@ -12307,6 +12345,7 @@ mod async_worker_spawn_failure_tests {
         let handled = workspace.handle_async_worker_spawn_failure(
             &SessionSlot::from_str_for_test(worker_key),
             "fatal: 'reviewer' is already used by worktree at /a",
+            SpawnFailureKind::Unclassified,
         );
         assert!(handled, "still consumes the failure even when lead is gone");
 

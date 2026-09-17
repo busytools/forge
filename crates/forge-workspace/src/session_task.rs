@@ -363,7 +363,7 @@ impl SessionTask {
                     method_description,
                 });
             }
-            AgentEvent::ConnectionFailed { message } => {
+            AgentEvent::ConnectionFailed { message, kind } => {
                 let key = self.key.clone();
                 // A `/new` or `/resume` that fails to respawn ends the
                 // live turn without a Result, so flush the same way the
@@ -400,7 +400,7 @@ impl SessionTask {
                     // handle_spawn_worker). Lead-session and
                     // non-worker callers see no behavioural change
                     // - this branch is a no-op for them.
-                    workspace.handle_async_worker_spawn_failure(&key, &message);
+                    workspace.handle_async_worker_spawn_failure(&key, &message, kind);
                 }
                 self.emit(SessionUpdate::ConnectionFailed {
                     key: key.clone(),
@@ -1384,6 +1384,7 @@ fn spawn_question_response_forwarder(
 mod tests {
     use super::*;
     use forge_agent::Agent;
+    use forge_agent::client::SpawnFailureKind;
 
     fn empty_domain() -> DomainSession {
         let (handle, _rx) = Agent::testing_stub();
@@ -2031,8 +2032,10 @@ mod tests {
             workspace: Arc::downgrade(&workspace),
         };
 
-        let continues = task
-            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+        let continues = task.translate_event(AgentEvent::ConnectionFailed {
+            message: "spawn failed".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
 
         assert!(!continues, "ConnectionFailed must terminate the task");
         assert!(
@@ -2082,8 +2085,10 @@ mod tests {
             workspace: Arc::downgrade(&workspace),
         };
 
-        let continues = task
-            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+        let continues = task.translate_event(AgentEvent::ConnectionFailed {
+            message: "spawn failed".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
 
         assert!(!continues);
         assert!(
@@ -2133,8 +2138,10 @@ mod tests {
             workspace: Arc::downgrade(&workspace),
         };
 
-        let continues = task
-            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+        let continues = task.translate_event(AgentEvent::ConnectionFailed {
+            message: "spawn failed".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
 
         assert!(!continues);
         assert!(
@@ -2476,7 +2483,10 @@ provider = "anthropic"
 
         apply_event_to_domain(
             &mut domain,
-            &AgentEvent::ConnectionFailed { message: "reader died".to_owned() },
+            &AgentEvent::ConnectionFailed {
+                message: "reader died".to_owned(),
+                kind: SpawnFailureKind::Unclassified,
+            },
         );
 
         assert_eq!(domain.runtime_state, None, "runtime_state cleared on ConnectionFailed");
@@ -3094,7 +3104,10 @@ provider = "anthropic"
         };
 
         // The re-spawned agent fails to connect.
-        task.translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "spawn failed".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
 
         let mut saw_nonfatal = false;
         while let Ok(update) = update_rx.try_recv() {
