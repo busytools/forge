@@ -14,7 +14,7 @@ Toggled with <kbd>?</kbd>: a rounded panel above the input area, fixed 14 rows w
   <span class="dim">╭</span> <span class="accent bold">Help</span> <span class="dim">[</span><span class="accent bold">Keys</span><span class="dim"> | </span><span class="dim">Slash</span><span class="dim"> | </span><span class="dim">Subagents</span><span class="dim">]</span>  <span class="dim">(&lt; &gt; switch tabs)</span> <span class="dim">─────────────────╮</span>
   <span class="dim">│</span>                                                                     <span class="dim">│</span>
   <span class="dim">│</span>     <span class="bold">↑ / ↓</span><span class="dim"> : </span>Scroll chat       <span class="bold">Esc</span><span class="dim"> : </span>Cancel current action           <span class="dim">│</span>
-  <span class="dim">│</span>     <span class="bold">PgUp / PgDn</span><span class="dim"> : </span>Page         <span class="bold">Ctrl+C</span><span class="dim"> : </span>Interrupt response          <span class="dim">│</span>
+  <span class="dim">│</span>     <span class="bold">PgUp / PgDn</span><span class="dim"> : </span>Page         <span class="bold">Ctrl+C</span><span class="dim"> : </span>Quit                        <span class="dim">│</span>
   <span class="dim">│</span>     <span class="bold">Ctrl+X</span><span class="dim"> : </span>Expand tool      <span class="bold">?</span><span class="dim"> : </span>Toggle help                       <span class="dim">│</span>
   <span class="dim">│</span>                                                                     <span class="dim">│</span>
   <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
@@ -29,7 +29,7 @@ Toggled with <kbd>?</kbd>: a rounded panel above the input area, fixed 14 rows w
 <details>
 <summary>Platform-aware bindings</summary>
 
-Input-editing shortcuts swap modifiers per OS for undo / redo and copy / paste: macOS uses `Cmd+Z` / `Cmd+Shift+Z` and `Cmd+C` / `Cmd+V`, with `Ctrl+` accepted for those four too so a client that cannot send `Cmd` still gets them; Linux and Windows use `Ctrl+Z` to undo, `Ctrl+Y` to redo, and `Ctrl+C` / `Ctrl+V` for copy / paste. Word navigation (`Alt+Left/Right`) and word delete (`Alt+Backspace/Delete`) are `Alt+` on every platform. `Ctrl+C` still works as fallback copy + interrupt-on-empty everywhere. Reaching the app on macOS requires the kitty enhanced-keyboard protocol (Ghostty / kitty / WezTerm); forge negotiates the flags at startup and re-sets them on resize, since a byte-transparent session manager leaves them on the terminal a reattach left behind.
+Input-editing shortcuts swap modifiers per OS for undo / redo and copy / paste: macOS uses `Cmd+Z` / `Cmd+Shift+Z` and `Cmd+C` / `Cmd+V`, with `Ctrl+` accepted for those four too so a client that cannot send `Cmd` still gets them; Linux and Windows use `Ctrl+Z` to undo, `Ctrl+Y` to redo, and `Ctrl+C` / `Ctrl+V` for copy / paste. Word navigation (`Alt+Left/Right`) and word delete (`Alt+Backspace/Delete`) are `Alt+` on every platform. `Ctrl+C` copies a selection everywhere and quits forge when there is none; `Esc` is what cancels an in-flight turn. Reaching the app on macOS requires the kitty enhanced-keyboard protocol (Ghostty / kitty / WezTerm); forge negotiates the flags at startup and re-sets them on resize, since a byte-transparent session manager leaves them on the terminal a reattach left behind.
 
 </details>
 
