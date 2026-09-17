@@ -1531,68 +1531,44 @@ pub(crate) fn handle_despawn_worker(
 ) {
     use crate::protocol::DespawnResult;
 
+    // `lead` is not a worker label: it is the project lead's own row, the
+    // stored id an ordinary boot resumes the lead from, and the spawn path
+    // reserves the label so no worker can hold it. Clearing that row and
+    // reporting a despawn would orphan the lead's conversation.
+    if label == crate::store::sessions::LEAD_LABEL {
+        let _ = respond.send(DespawnResult::NotFound);
+        return;
+    }
+
     // Peek the latest-spawned matching worker WITHOUT removing it, so a
     // blocked despawn leaves it live.
-    let Some(entry) =
-        workspace.list_live_workers(project_key).into_iter().rev().find(|w| w.label == label)
-    else {
-        // `lead` is not a worker label: it is the project lead's own row,
-        // the stored id an ordinary boot resumes the lead from, and the
-        // spawn path reserves the label so no worker can hold it. The
-        // fall-through below would clear that row and report a despawn,
-        // orphaning the lead's conversation.
-        if label == crate::store::sessions::LEAD_LABEL {
-            let _ = respond.send(DespawnResult::NotFound);
-            return;
-        }
-        // No live worker, but the label can still hold a durable row - the
-        // tag-write rollback removes the entry without it - and then this
-        // tool, the one that removes a durable worker, answers NotFound
-        // over the row it exists to clear (#1142). Clear it.
-        //
-        // Nothing live was torn down, so the worktree step below has no
-        // entry to read its gitness from and no `Removed` event to emit;
-        // the row is the whole of this case.
-        match workspace.delete_worker_row(project_key, label) {
-            Ok(true) => {}
-            Ok(false) => {
-                let _ = respond.send(DespawnResult::NotFound);
-                return;
-            }
-            // A store that could not be read or written is not an absent
-            // row: reporting NotFound would send the caller looking for a
-            // worker that is right there. `delete_worker_row` has already
-            // logged why, so the caller gets the reason and the log has
-            // the site.
+    let live =
+        workspace.list_live_workers(project_key).into_iter().rev().find(|w| w.label == label);
+
+    // The gitness this despawn acts on: a live entry stamped it at spawn,
+    // and a stranded row records it - once the entry is gone the row is
+    // the only place it exists, and the worktree it names is still on
+    // disk to clean. Neither source answering means there is no worker by
+    // this label at all.
+    let is_git_repo = match live.as_ref() {
+        Some(entry) => Some(entry.is_git_repo_at_spawn),
+        None => match workspace.recorded_worker_is_git_repo(project_key, label) {
+            Ok(recorded) => recorded,
+            // A row that cannot be read is not an absent one, and reading
+            // it is how this call decides whether there is anything here.
             Err(error) => {
                 let _ = respond.send(DespawnResult::Failed {
                     reason: format!(
-                        "could not clear the durable row for '{label}': {error}; whether one \
-                         exists is unknown, so nothing was reported as removed"
+                        "could not read the durable row for '{label}': {error}; whether one \
+                         exists is unknown"
                     ),
                 });
                 return;
             }
-        }
-        // A despawn takes the worker's durable records with it, and a
-        // stranded row's label can still own subscriptions and crons from
-        // before it was orphaned. Clearing the row alone would report a
-        // completed despawn while leaving exactly the records the live
-        // path exists to clear.
-        workspace.remove_gotify_subscriptions_for_worker(project_key, label);
-        workspace.remove_slack_subscriptions_for_worker(project_key, label);
-        workspace.stop_slack_subsystem_if_idle();
-        workspace.delete_crons_for_worker(project_key, label);
-        tracing::info!(
-            target: "forge_workspace::spawn",
-            project = %project_key.as_str(),
-            label = %label,
-            "despawn: no live worker matched; cleared its stranded durable row and records",
-        );
-        let _ = respond.send(DespawnResult::Despawned {
-            worktree_cleanup_warning: None,
-            branch_cleanup_warning: None,
-        });
+        },
+    };
+    let Some(is_git_repo) = is_git_repo else {
+        let _ = respond.send(DespawnResult::NotFound);
         return;
     };
 
@@ -1600,7 +1576,7 @@ pub(crate) fn handle_despawn_worker(
     // `<project_root>/.claude/worktrees/<label>/`). Non-git workers
     // have no worktree to clean.
     let project_view = workspace.list_projects().into_iter().find(|v| v.key == *project_key);
-    let worktree_path = if entry.is_git_repo_at_spawn {
+    let worktree_path = if is_git_repo {
         project_view
             .as_ref()
             .map(|v| crate::mcp::workers::types::worker_tag_dir(&v.path, label, true))
@@ -1646,13 +1622,62 @@ pub(crate) fn handle_despawn_worker(
         return;
     }
 
-    // Teardown (kills the subprocess on drop). The single-threaded
-    // command loop means nothing mutated `live_workers` between the
-    // peek above and here, but re-checking the removal is defensive.
-    let Some(entry) = teardown_worker(workspace, project_key, label) else {
-        let _ = respond.send(DespawnResult::NotFound);
-        return;
-    };
+    // Teardown. A live worker goes through `teardown_worker`, which kills
+    // the subprocess on drop, removes the entry, deletes the row and
+    // clears the records and payloads addressed to it.
+    //
+    // A stranded row has no entry to tear down: the row is the whole of
+    // it, so it goes here with the records and payloads its label still
+    // owns. Without that, a despawn would report a worker gone while
+    // leaving exactly what the live path exists to clear (#1142).
+    if live.is_some() {
+        // The single-threaded command loop means nothing mutated
+        // `live_workers` between the peek above and here, but re-checking
+        // the removal is defensive.
+        if teardown_worker(workspace, project_key, label).is_none() {
+            let _ = respond.send(DespawnResult::NotFound);
+            return;
+        }
+    } else {
+        match workspace.delete_worker_row(project_key, label) {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = respond.send(DespawnResult::NotFound);
+                return;
+            }
+            // A store that could not be written is not an absent row:
+            // reporting NotFound would send the caller looking for a
+            // worker that is right there. `delete_worker_row` has already
+            // logged why, so the caller gets the reason and the log has
+            // the site.
+            Err(error) => {
+                let _ = respond.send(DespawnResult::Failed {
+                    reason: format!(
+                        "could not clear the durable row for '{label}': {error}; whether one \
+                         exists is unknown, so nothing was reported as removed"
+                    ),
+                });
+                return;
+            }
+        }
+        workspace.remove_gotify_subscriptions_for_worker(project_key, label);
+        workspace.remove_slack_subscriptions_for_worker(project_key, label);
+        workspace.stop_slack_subsystem_if_idle();
+        workspace.delete_crons_for_worker(project_key, label);
+        workspace.expire_inflight_for_closed_worker(project_key, label);
+        if let Some(view) = project_view.as_ref() {
+            workspace.expire_parked_for_slot(
+                &SessionSlot::worker(&view.org, &view.name, label),
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+            );
+        }
+        tracing::info!(
+            target: "forge_workspace::spawn",
+            project = %project_key.as_str(),
+            label = %label,
+            "despawn: no live worker matched; cleared its stranded durable row and records",
+        );
+    }
 
     // Resolve the torn-down worktree's `(project name, branch)` while
     // the path still exists, so its persisted review state can be judged
@@ -1729,11 +1754,16 @@ pub(crate) fn handle_despawn_worker(
     // git errors for a path it no longer tracks whether or not the
     // directory survives, and the toast's only claim is what is on disk.
     let worktree = match (worktree_path.as_ref(), worktree_cleanup_warning.as_ref()) {
-        (None, _) => WorktreeDisposition::untouched(entry.is_git_repo_at_spawn),
+        (None, _) => WorktreeDisposition::untouched(is_git_repo),
         (Some(path), Some(_)) if path.exists() => WorktreeDisposition::RemovalFailed,
         (Some(_), _) => WorktreeDisposition::Removed,
     };
-    emit_worker_removed(workspace, project_key, &entry, worktree);
+    // Only a torn-down live worker has a pane row to remove; a stranded
+    // row's label reaches the launchpad by reading the store per frame, so
+    // it needs no event.
+    if let Some(entry) = live.as_ref() {
+        emit_worker_removed(workspace, project_key, entry, worktree);
+    }
 
     let _ =
         respond.send(DespawnResult::Despawned { worktree_cleanup_warning, branch_cleanup_warning });
@@ -4121,6 +4151,93 @@ provider = "anthropic"
         assert!(
             !branch_exists(repo.path(), "worktree-reviewer"),
             "the worktree branch is reaped, not left behind"
+        );
+    }
+
+    /// The git fixture with its live entry gone and a durable row left
+    /// behind: the shape the tag-write rollback leaves, and the one a
+    /// despawn has to reach without a live worker to ask.
+    fn stranded_git_despawn_fixture(
+        label: &str,
+    ) -> (Arc<Workspace>, ProjectKey, std::path::PathBuf, tempfile::TempDir, tempfile::TempDir)
+    {
+        let (workspace, project_key, wt, repo, config) = git_despawn_fixture(label);
+        workspace.remove_latest_worker(&project_key, label);
+        workspace
+            .record_worker_row(
+                &project_key,
+                label,
+                "stranded-id",
+                "c",
+                Some("kick"),
+                None,
+                false,
+                // The row is what says this worker runs in a worktree, so
+                // it is what the despawn has to read the gitness from.
+                true,
+            )
+            .expect("seed the row that outlived its worker");
+        (workspace, project_key, wt, repo, config)
+    }
+
+    /// A stranded git worker is still a worker the tool must clean up
+    /// after: the row carries the gitness, so the despawn removes the
+    /// worktree and reaps the branch with no live entry to ask. Skipped,
+    /// the worktree is orphaned once the row is gone - nothing is left
+    /// for a later despawn to resolve it from.
+    #[tokio::test]
+    async fn despawn_clears_a_stranded_git_workers_worktree() {
+        let (workspace, project_key, wt, repo, _config) = stranded_git_despawn_fixture("reviewer");
+        assert!(wt.exists(), "the worktree exists before the despawn");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+        let result = resp_rx.await.expect("result");
+
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned {
+                    worktree_cleanup_warning: None,
+                    branch_cleanup_warning: None,
+                }
+            ),
+            "a stranded worker's clean worktree is removed like any other: {result:?}"
+        );
+        assert!(!wt.exists(), "the stranded worktree is removed, not orphaned");
+        assert!(
+            !branch_exists(repo.path(), "worktree-reviewer"),
+            "and the branch behind it is reaped"
+        );
+        assert!(
+            workspace.worker_rows_for_project(&project_key).is_empty(),
+            "with the row it was resolved from",
+        );
+    }
+
+    /// A dirty stranded worktree blocks before anything is cleared, the
+    /// same way a live one does: the row survives, so a later despawn (or
+    /// `force`) still has the worker to act on.
+    #[tokio::test]
+    async fn a_dirty_stranded_worktree_blocks_before_the_row_goes() {
+        let (workspace, project_key, wt, _repo, _config) = stranded_git_despawn_fixture("reviewer");
+        std::fs::write(wt.join("uncommitted.txt"), "work in progress").expect("dirty the worktree");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+
+        assert!(
+            matches!(
+                resp_rx.await.expect("result"),
+                crate::protocol::DespawnResult::Blocked { .. }
+            ),
+            "a dirty worktree blocks the despawn",
+        );
+        assert!(wt.exists(), "and the worktree is left alone");
+        assert_eq!(
+            workspace.worker_rows_for_project(&project_key).len(),
+            1,
+            "a blocked despawn clears nothing, so the row it would have taken is still there",
         );
     }
 
