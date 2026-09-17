@@ -29,7 +29,7 @@ use hyper::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use hyper::{HeaderMap, Method, Request, StatusCode};
 
 use crate::account::AccountKey;
-use crate::binding::{AUTH_TOKEN_VARIABLE, Bindings, DUMMY_CREDENTIAL, OAUTH_VARIABLE};
+use crate::binding::{Bindings, DUMMY_CREDENTIAL, credential_variable_for};
 use crate::listener::{RouteHandler, StreamBody, text_response};
 use crate::rotation::RotationState;
 use crate::splice::splice_model;
@@ -178,7 +178,7 @@ impl Gateway {
     /// the variable its provider authenticates with.
     fn credential_for(&self, account: &AccountKey) -> Option<(String, String)> {
         let (provider, env) = self.pool.provider_and_env(account)?;
-        let variable = if provider.uses_base_url() { AUTH_TOKEN_VARIABLE } else { OAUTH_VARIABLE };
+        let variable = credential_variable_for(provider);
         let credential = env.get(variable)?.trim().to_owned();
         if credential.is_empty() || credential == DUMMY_CREDENTIAL {
             return None;
@@ -1239,6 +1239,39 @@ mod tests {
                 fallback_accounts: Vec::new(),
             },
         )]);
+    }
+
+    /// The forward leg reads a native account's credential from the
+    /// variable the stamp put its dummy in - the same rule the stamper
+    /// and the loader call, so the reader cannot drift to the other
+    /// variable and 503 every turn.
+    #[tokio::test]
+    async fn the_forward_leg_reads_a_native_accounts_credential_variable() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "Anthropic");
+        harness
+            .gateway
+            .pool
+            .set_loading(&AccountKey("Anthropic".to_owned()), crate::LoadingState::Ready);
+        harness.gateway.bindings.bind(
+            "Busytools",
+            "forge",
+            "session-1",
+            AccountKey("Anthropic".to_owned()),
+        );
+
+        let response = post_model(&harness.client_url, "claude-sonnet-5").await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the credential is found in the account's own variable; reading the other one 503s",
+        );
+        let requests = harness.requests.lock();
+        assert_eq!(
+            requests[0].first("authorization"),
+            Some("Bearer real-oauth-token"),
+            "the real credential is read back out of the account's own variable",
+        );
     }
 
     /// The account's declared slug replaces the canonical model name

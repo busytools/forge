@@ -635,11 +635,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         if let Some(base_url) = &base_url {
             env.insert("ANTHROPIC_BASE_URL".to_owned(), base_url.clone());
         }
-        let credential_variable = if provider.uses_base_url() {
-            "ANTHROPIC_AUTH_TOKEN"
-        } else {
-            "CLAUDE_CODE_OAUTH_TOKEN"
-        };
+        let credential_variable = forge_gateway::binding::credential_variable_for(provider);
         env.insert(credential_variable.to_owned(), token);
         accounts.push(LoadedAccount {
             display_name: entry.display_name,

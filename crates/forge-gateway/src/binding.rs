@@ -184,8 +184,11 @@ fn stamped_gateway_keys(registration: &Registration, listener_base: &str) -> Vec
 }
 
 /// The variable the account's real credential lives in, which is the
-/// variable its dummy has to travel in too.
-fn credential_variable_for(provider: Provider) -> &'static str {
+/// variable its dummy has to travel in too. The one home for the rule:
+/// the config load maps the flat token onto it, the stamp puts the
+/// dummy in it, and the forward leg reads the real credential back out
+/// of it.
+pub fn credential_variable_for(provider: Provider) -> &'static str {
     if provider.uses_base_url() { AUTH_TOKEN_VARIABLE } else { OAUTH_VARIABLE }
 }
 
