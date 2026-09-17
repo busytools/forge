@@ -30,7 +30,10 @@ use serde::Deserialize;
 use crate::error::WorkspaceError;
 use crate::ui::UiSettings;
 
+/// The whole `forge.toml`. Unknown keys are rejected so a mistyped
+/// section name fails the load instead of being ignored.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ForgeToml {
     #[serde(default)]
     orgs: Vec<OrgEntry>,
@@ -72,6 +75,10 @@ struct ForgeToml {
     /// instead of silently dropping every per-project key.
     #[serde(default)]
     projects: Option<toml::Value>,
+    /// Ghost of the deleted `[selection]` section, read for the same
+    /// reason: a stale synced forge.toml warns instead of failing.
+    #[serde(default)]
+    selection: Option<toml::Value>,
     /// Optional top-level `[env]` table - the BASE every session
     /// starts from, overridden per key by `[accounts.env]` and then by
     /// the project's env. Merged into `LoadedAccount.env` at
@@ -197,7 +204,11 @@ impl ProjectEntry {
     }
 }
 
+/// One `[[orgs]]` entry. Unknown keys are rejected: a misspelled
+/// `fallback_accounts` parses clean as "no fallbacks" otherwise, which
+/// is a silent behaviour change from a typo.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OrgEntry {
     name: String,
     /// Account `display_name`s every project in this org is allowed
@@ -501,6 +512,24 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         );
     }
 
+    if parsed.ui.retired_notifications_osc9.is_some() {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "ui_notifications_osc9_ignored",
+            "[ui] notifications_osc9 is no longer read; forge writes the escape \
+             unconditionally, whatever the terminal reports",
+        );
+    }
+
+    if parsed.selection.is_some() {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "selection_section_ignored",
+            "[selection] is no longer read; the gateway walks an org's accounts \
+             and fallback_accounts in the order they are declared",
+        );
+    }
+
     if parsed.orgs.is_empty() {
         return Err(WorkspaceError::NoOrgsConfigured { path });
     }
@@ -540,47 +569,41 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 names: vec![entry.display_name],
             });
         };
-        let mut env = global_env.clone();
-        // The gateway keys are the flat keys' job, in every env layer:
-        // a base_url, credential or API key carried in [env] or
-        // [accounts.env] would sit beside its flat twin and silently
-        // lose or win depending on layering. Each conflict is named.
+        // The four gateway keys are the flat keys' and the stamp's
+        // alone. They are dropped from every env layer here, blank or
+        // not, before the layers merge: the stamp covers the child's
+        // env only, while the pool keeps this one, and the forward leg
+        // reads the upstream and the credential out of what the pool
+        // holds. A base URL left in would send real traffic, with the
+        // real credential attached, to an endpoint the config never
+        // named as an account.
         let gateway_keys = [
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_API_KEY",
         ];
-        let gateway_conflicts: Vec<String> = gateway_keys
-            .iter()
-            .filter(|k| {
-                let present = |env: &HashMap<String, String>| {
-                    env.get(**k).is_some_and(|v| !v.trim().is_empty())
-                };
-                present(&entry.env) || present(&global_env)
-            })
-            .map(|k| (*k).to_owned())
-            .collect();
-        if !gateway_conflicts.is_empty() {
-            let keys = gateway_conflicts.join(", ");
-            return Err(WorkspaceError::AccountEnvCarriesGatewayKeys {
-                path,
-                name: entry.display_name.clone(),
-                keys,
-            });
-        }
-        // A blank gateway key reads as absent for the conflict check
-        // and must read as absent downstream too: scrub it here rather
-        // than stamping an empty credential onto the child.
+        let mut dropped: Vec<&str> = Vec::new();
         for key in gateway_keys {
             for env in [&mut global_env, &mut entry.env] {
-                if env.get(key).is_some_and(|v| v.trim().is_empty()) {
-                    env.remove(key);
+                if env.remove(key).is_some() {
+                    dropped.push(key);
                 }
             }
         }
+        if !dropped.is_empty() {
+            dropped.dedup();
+            tracing::warn!(
+                target: "forge_workspace::config",
+                event_name = "gateway_keys_dropped_from_env_layer",
+                account = %entry.display_name,
+                keys = %dropped.join(", "),
+                "gateway keys in an env layer are dropped, not refused: the flat \
+                 base_url and token keys own them, and the spawn stamp owns the child",
+            );
+        }
+        let mut env = global_env.clone();
         env.extend(entry.env);
-        trim_setup_token(&mut env);
         // The flat credential: mapped onto the provider's own variable
         // below, which is what the probe, the gateway forward and the
         // child stamp all read.
@@ -656,11 +679,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         if let Some(base_url) = &base_url {
             env.insert("ANTHROPIC_BASE_URL".to_owned(), base_url.clone());
         }
-        let credential_variable = if provider.uses_base_url() {
-            "ANTHROPIC_AUTH_TOKEN"
-        } else {
-            "CLAUDE_CODE_OAUTH_TOKEN"
-        };
+        let credential_variable = forge_gateway::binding::credential_variable_for(provider);
         env.insert(credential_variable.to_owned(), token);
         accounts.push(LoadedAccount {
             display_name: entry.display_name,
@@ -788,9 +807,10 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
 /// A project's env: the `env_file` entries with the inline `env` table
 /// layered over them, since the inline form is the more explicit
 /// statement of the two.
-/// Trim the setup token once here: the probe and the spawned child
-/// both read these maps verbatim, so a padded value would authenticate
-/// one and fail the other.
+/// Trim the setup token a project's env declares: the spawned child
+/// reads that map verbatim, so a padded value would fail to
+/// authenticate. The account layers never reach here with one - the
+/// load drops the gateway keys before they merge.
 fn trim_setup_token<S: std::hash::BuildHasher>(env: &mut HashMap<String, String, S>) {
     if let Some(token) = env.get_mut(forge_gateway::CLAUDE_CODE_OAUTH_TOKEN_ENV) {
         *token = token.trim().to_owned();
@@ -1520,124 +1540,64 @@ base_url = "   "
         assert_eq!(account.env.len(), 1, "nothing else is injected");
     }
 
-    /// The boot gate for the real forge.toml: each of the four load
-    /// errors must fire and name what the user has to fix.
+    /// A gateway key declared in an env layer is dropped rather than
+    /// refused, and dropped from every layer, so it cannot reach the
+    /// pool. The stamp covers the child's env only, and the pool's env
+    /// is what the forward leg reads the upstream and the credential
+    /// out of: a base URL left there would send real traffic, with the
+    /// real credential attached, somewhere the config never named.
     #[test]
-    fn an_account_env_carrying_gateway_keys_fails_the_load() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Codex"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "codex"
-[accounts.env]
-ANTHROPIC_API_KEY = "sk-ant-123"
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("a gateway env key must not load");
-        let message = err.to_string();
-        assert!(
-            message.contains("ANTHROPIC_API_KEY"),
-            "the error names the offending key, got: {message}",
-        );
-    }
-
-    #[test]
-    fn a_whitespace_gateway_key_reads_as_absent() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Codex"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "codex"
-base_url = "http://localhost:18765"
-[accounts.env]
-ANTHROPIC_API_KEY = "   "
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("a blank gateway key is absent");
-        assert!(
-            config.accounts[0].env.get("ANTHROPIC_API_KEY").is_none_or(|v| v.trim().is_empty()),
-            "the blank key rides through as a blank value, not a rejection",
-        );
-    }
-
-    #[test]
-    fn two_conflicting_gateway_keys_are_both_named() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Codex"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "codex"
-base_url = "http://localhost:18765"
-[accounts.env]
-ANTHROPIC_API_KEY = "sk-1"
-ANTHROPIC_AUTH_TOKEN = "t2"
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("two conflicts must not load");
-        let message = err.to_string();
-        assert!(
-            message.contains("ANTHROPIC_API_KEY") && message.contains("ANTHROPIC_AUTH_TOKEN"),
-            "the error names both conflicting keys, got: {message}",
-        );
-    }
-
-    #[test]
-    fn a_global_env_gateway_key_fails_the_load_for_every_account() {
+    fn a_gateway_key_in_an_env_layer_never_reaches_the_account_env() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
             r#"
 [env]
 ANTHROPIC_BASE_URL = "https://proxy.example"
+ANTHROPIC_API_KEY = "sk-global"
 
 [[orgs]]
 name = "Personal"
-accounts = ["Codex"]
+accounts = ["Personal", "Scratch"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
-display_name = "Codex"
+display_name = "Personal"
 token = "t"
 models = ["claude-sonnet-5"]
+provider = "anthropic"
+[accounts.env]
+ANTHROPIC_AUTH_TOKEN = "t2"
+ANTHROPIC_API_KEY = "   "
+[[accounts]]
+display_name = "Scratch"
+token = "t3"
+models = ["claude-sonnet-5"]
 provider = "codex"
+base_url = "http://localhost:18765"
 "#,
         );
-        let err = load_from_dir(dir.path()).expect_err("a global gateway key must not load");
-        let message = err.to_string();
-        assert!(
-            message.contains("ANTHROPIC_BASE_URL"),
-            "the error names the offending global key, got: {message}",
+        let config = load_from_dir(dir.path()).expect("a gateway env key is not refused");
+        let personal = config.accounts.iter().find(|a| a.display_name == "Personal").expect("one");
+        for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] {
+            assert!(
+                !personal.env.contains_key(key),
+                "{key} must not survive into the account env the pool and the forward leg read",
+            );
+        }
+        assert_eq!(
+            personal.env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
+            Some("t"),
+            "the flat token still lands on the account's own variable",
+        );
+        // The scrub runs before the flat keys are mapped, so a base-url
+        // account keeps its own endpoint rather than losing it too.
+        let scratch = config.accounts.iter().find(|a| a.display_name == "Scratch").expect("one");
+        assert_eq!(
+            scratch.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("http://localhost:18765"),
+            "the flat base_url is mapped after the scrub, so it still lands",
         );
     }
 
@@ -1875,6 +1835,54 @@ provider = "anthropic"
         assert!(
             err.to_string().contains("permissionmode"),
             "deny_unknown_fields has to catch the near-miss, got: {err}",
+        );
+    }
+
+    /// The four sections that used to ignore an unknown key. A
+    /// misspelled `fallback_accounts` parses clean as "no fallbacks",
+    /// which is a silent behaviour change from a typo rather than a
+    /// refused boot.
+    #[test]
+    fn mistyped_keys_are_rejected_in_every_section() {
+        let base = minimal_config();
+        // (label, config text with the near-miss, the key the error must name)
+        let cases = [
+            ("top level", format!("mistyped = 1\n{base}"), "mistyped"),
+            (
+                "an org entry",
+                base.replacen(
+                    "accounts = [\"Stargate\"]",
+                    "accounts = [\"Stargate\"]\nfallback_account = \"Stargate\"",
+                    1,
+                ),
+                "fallback_account",
+            ),
+            (
+                "[gotify]",
+                format!("{base}\n[gotify]\nurl = \"https://notifier\"\nclient_tokens = \"t\"\n"),
+                "client_tokens",
+            ),
+            ("[ui]", format!("{base}\n[ui]\nspiner = \"ember\"\n"), "spiner"),
+        ];
+        // Collected rather than asserted one at a time: a section that
+        // started ignoring keys again should be named alongside the
+        // rest, not hide behind the first.
+        let mut failures: Vec<String> = Vec::new();
+        for (label, text, needle) in cases {
+            let dir = tempdir().expect("tempdir");
+            write_config(dir.path(), &text);
+            match load_from_dir(dir.path()) {
+                Ok(_) => failures.push(format!("{label}: loaded with `{needle}` in it")),
+                Err(err) if !err.to_string().contains(needle) => {
+                    failures.push(format!("{label}: error does not name `{needle}`: {err}"));
+                }
+                Err(_) => {}
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "every near-miss is refused and named:\n{}",
+            failures.join("\n")
         );
     }
 
@@ -2943,13 +2951,103 @@ provider = "anthropic"
         assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Stargate"));
     }
 
+    /// The three retired top-level sections are declared ghosts, not
+    /// unknown keys: each still loads, so a stale synced forge.toml
+    /// boots. The top level denies unknown fields now, so each ghost is
+    /// load-bearing - dropping one as dead weight refuses the boot of
+    /// every config still carrying it. That the load also warns about
+    /// them is [`every_ignored_key_warns`]'s half.
     #[test]
-    fn legacy_selection_section_is_silently_ignored() {
-        let dir = tempdir().expect("tempdir");
-        let mut config_text = minimal_config().to_owned();
-        config_text.push_str("\n[selection]\npolicy = \"round_robin\"\n");
-        write_config(dir.path(), &config_text);
-        let config = load_from_dir(dir.path()).expect("legacy [selection] should be ignored");
-        assert_eq!(config.default_project().name, "forge");
+    fn retired_top_level_sections_still_load() {
+        let cases = [
+            ("[selection]", "\n[selection]\npolicy = \"round_robin\"\n"),
+            ("[workers]", "\n[workers]\nmax_workers = 4\n"),
+            ("[projects.<name>]", "\n[projects.forge]\nmodel = \"claude-sonnet-5\"\n"),
+        ];
+        for (label, stanza) in cases {
+            let dir = tempdir().expect("tempdir");
+            write_config(dir.path(), &format!("{}{stanza}", minimal_config()));
+            let config = load_from_dir(dir.path())
+                .unwrap_or_else(|err| panic!("a retired {label} still loads: {err}"));
+            assert_eq!(config.default_project().name, "forge", "{label} left the load intact");
+        }
+    }
+
+    /// Every key the load ignores is warned about, at WARN, by its own
+    /// event name. A config that declares something forge no longer
+    /// reads must not go quiet, and the level is half of that: these
+    /// targets are not raised by the default filters, so a warn demoted
+    /// to debug is a warn that stopped being seen.
+    #[test]
+    fn every_ignored_key_warns() {
+        use std::sync::{Arc, Mutex};
+
+        /// One logged event: its level and the `event_name` it carries.
+        #[derive(Default, Clone)]
+        struct LoggedEvents(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+
+        struct CollectEventName(String);
+
+        impl tracing::field::Visit for CollectEventName {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "event_name" {
+                    self.0 = format!("{value:?}").trim_matches('"').to_owned();
+                }
+            }
+        }
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LoggedEvents {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut visitor = CollectEventName(String::new());
+                event.record(&mut visitor);
+                if !visitor.0.is_empty() {
+                    self.0.lock().expect("capture").push((*event.metadata().level(), visitor.0));
+                }
+            }
+        }
+
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let cases = [
+            (
+                "[selection]",
+                "\n[selection]\npolicy = \"round_robin\"\n",
+                "selection_section_ignored",
+            ),
+            ("[workers]", "\n[workers]\nmax_workers = 4\n", "workers_section_ignored"),
+            (
+                "[projects.<name>]",
+                "\n[projects.forge]\nmodel = \"x\"\n",
+                "projects_section_ignored",
+            ),
+            (
+                "[ui] notifications_osc9",
+                "\n[ui]\nnotifications_osc9 = \"off\"\n",
+                "ui_notifications_osc9_ignored",
+            ),
+            (
+                "a gateway key in an env layer",
+                "\n[env]\nANTHROPIC_BASE_URL = \"https://proxy.example\"\n",
+                "gateway_keys_dropped_from_env_layer",
+            ),
+        ];
+        for (label, stanza, event) in cases {
+            let dir = tempdir().expect("tempdir");
+            write_config(dir.path(), &format!("{}{stanza}", minimal_config()));
+            let logged = LoggedEvents::default();
+            let subscriber = tracing_subscriber::registry().with(logged.clone());
+            let loaded =
+                tracing::subscriber::with_default(subscriber, || load_from_dir(dir.path()));
+            assert!(loaded.is_ok(), "{label} still loads");
+            let seen = logged.0.lock().expect("capture");
+            assert!(
+                seen.iter().any(|(level, name)| name == event && *level == tracing::Level::WARN),
+                "{label} warns at WARN with {event}; saw {seen:?}",
+            );
+        }
     }
 }

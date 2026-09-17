@@ -63,6 +63,17 @@ the boot, naming the account and the valid names. An account may appear
 in both lists; it is then a primary only. See [the launchpad's chip
 description](./ui/launchpad.md) for the walk order.
 
+`accounts` and `fallback_accounts` must also agree on any env that
+changes the *shape* of a request, not only where it is sent. A child's
+env is frozen when its session spawns and the gateway never respawns
+it, so after a rotation the next account is handed a request shaped for
+the account the session started on. The live example is
+`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`: OpenRouter sets it and Zai
+leaves it unset, both declare `glm-5.3-flash`, and OpenRouter rejects
+the beta shape the flag suppresses. A project declaring `glm-5.3-flash`
+in an org holding both would spawn on Zai and then fail every rotation
+onto OpenRouter, with a restart the only way out.
+
 ## `[[orgs.projects]]`
 
 | Key | Type | Required | Default | Notes |
@@ -88,7 +99,7 @@ An array of tables. At least one is required, or the load fails with
 | `models` | list of strings | yes | | The canonical model names the account serves. Selection and the route's model gate match against this list; an empty list fails the load (`AccountModelsRequired`). |
 | `model_slugs` | table | no | `{}` | Canonical name -> upstream spelling, only where they differ. Every slug key must be in `models`, or the load fails (`AccountSlugUndeclared`). |
 | `model_aliases` | table | no | `{}` | Written as `[accounts.model_aliases]`. Canonical name -> the other names a request may arrive under for that model. Every key must be in `models`, or the load fails (`AccountAliasUndeclared`); an empty list fails (`AccountAliasEmpty`). |
-| `env` | table | no | `{}` | Written as `[accounts.env]`. Provider-behaviour extras only - timeouts, context caps, fallback switches. Gateway keys (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) are rejected here and in the global `[env]` layer (`AccountEnvCarriesGatewayKeys`): the flat `base_url` and `token` keys own them. |
+| `env` | table | no | `{}` | Written as `[accounts.env]`. Provider-behaviour extras only - timeouts, context caps, fallback switches. Gateway keys (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) declared here or in the global `[env]` layer are dropped at load and warned about: the flat `base_url` and `token` keys own them, and forge reads the account's endpoint and credential from those. |
 
 All accounts share one `claude` config directory, so MCP servers,
 plugins and settings are declared once for every account; what varies
@@ -240,10 +251,10 @@ key.
 A base-url account's endpoint and credential are its flat `base_url`
 and `token` keys, mapped onto the CLI's variable names at load.
 `[accounts.env]` carries only provider-behaviour extras - timeouts,
-context caps, fallback switches; declaring a base-url or credential key
-in any env layer, global or per-account, fails the load, because it
-would sit beside its flat twin and silently lose or win depending on
-layering. Setting `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` at the
+context caps, fallback switches. A base-url or credential key declared
+in an env layer is dropped at load, so it can reach neither the child
+nor the pool the usage probe and the forward leg read: the flat keys
+own them. Setting `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` at the
 *project* layer instead desynchronises forge's own accounting, because
 the usage probe, plan detection and the `/gateway` view all read the
 account map.
@@ -271,10 +282,11 @@ as all defaults.
 | `spinner` | string | `braille` | `braille`, `phase_of_moon`, `ember`, `bars_v`, `star`, `sparkle` |
 | `fps` | integer | `120` | 30 to 240 |
 
-`spinner` and `fps` are lenient, so a hand-edited typo does not stop
-forge booting. A `spinner` name forge does not recognise resolves to
-the default. An `fps` outside the range is clamped and warned about,
-and a non-integer `fps` resolves to the default.
+The two values are lenient, so a hand-edited typo does not stop forge
+booting. A `spinner` name forge does not recognise resolves to the
+default. An `fps` outside the range is clamped and warned about, and a
+non-integer `fps` resolves to the default. The keys are not lenient: an
+unrecognised key in this section fails the load like any other.
 
 Forge writes an OSC 777 desktop-notification escape every time it
 raises a notification, and asks nothing about the terminal first. A
@@ -398,10 +410,22 @@ being ignored. Keys an older forge read here (`trusted_marketplaces`,
 
 ## Unknown keys
 
-The top-level document does not reject unknown tables, so a section
-forge no longer reads is ignored rather than failing the load. The
-places that do reject unknown fields are `[[accounts]]`, `[[slack]]`,
-`[[orgs.projects]]`, `[gateway]`, `[dictate]` and `[plugins]`.
+Every table rejects unknown fields, so a mistyped key fails the load
+and names itself rather than parsing clean and meaning something else -
+a misspelled `fallback_accounts` would otherwise read as "no
+fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
+`[[accounts]]`, `[[slack]]`, `[gotify]`, `[ui]`, `[gateway]`,
+`[dictate]` and `[plugins]`.
+
+A key forge itself retired is a declared ghost rather than an unknown
+key, so a stale `forge.toml` still boots and warns instead of failing:
+`[workers]`, `[projects.<name>]`, `[selection]` and
+`[ui] notifications_osc9`. Anything else in those places is a typo and
+is refused.
+
+The one deliberate exception to the refusal is `[ui]`'s two values,
+`spinner` and `fps`: an unrecognised spinner name and an out-of-range
+`fps` resolve to defaults instead of failing the load.
 
 ## A complete example
 

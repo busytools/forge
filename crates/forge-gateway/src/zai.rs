@@ -468,6 +468,14 @@ mod tests {
             reqwest::Client::builder().timeout(timeout).build().map_err(|e| e.to_string())
         }
 
+        fn streaming_http_client(
+            &self,
+            _connect_timeout: Duration,
+            _idle_timeout: Duration,
+        ) -> Result<reqwest::Client, String> {
+            unreachable!("no probe streams a response")
+        }
+
         async fn user_agent(&self) -> Result<String, String> {
             unreachable!("the zai monitor probe sends no User-Agent header")
         }
@@ -478,6 +486,14 @@ mod tests {
     #[async_trait]
     impl ProviderHost for UnreachableHost {
         fn http_client(&self, _timeout: Duration) -> Result<reqwest::Client, String> {
+            unreachable!("the probe must not build a client for a missing base url")
+        }
+
+        fn streaming_http_client(
+            &self,
+            _connect_timeout: Duration,
+            _idle_timeout: Duration,
+        ) -> Result<reqwest::Client, String> {
             unreachable!("the probe must not build a client for a missing base url")
         }
 

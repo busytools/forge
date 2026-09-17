@@ -7,9 +7,9 @@
 pub use forge_primitives::SessionSlot;
 
 // `ProjectKey` lives in forge-primitives for the same reason
-// `SessionSlot` does: the gateway's account selection keys on it and the
-// workspace keys its own maps on it. Re-exported here so call sites
-// continue to import via `forge_workspace::ProjectKey`.
+// `SessionSlot` does: it addresses a project across the workspace and
+// the TUI, both of which key their own maps on it. Re-exported here so
+// call sites continue to import via `forge_workspace::ProjectKey`.
 pub use forge_primitives::ProjectKey;
 
 /// What [`crate::Workspace::get_agent_handle`] should hand back.

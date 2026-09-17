@@ -120,12 +120,6 @@ pub enum WorkspaceError {
     )]
     ProjectModelUndeclared { path: PathBuf, name: String, model: String },
 
-    #[error(
-        "account '{name}' in forge.toml at {} sets gateway keys ({keys}) in its env layer; declare them as the flat base_url and token keys instead",
-        path.display()
-    )]
-    AccountEnvCarriesGatewayKeys { path: PathBuf, name: String, keys: String },
-
     #[error("duplicate org name '{name}' in forge.toml at {}", path.display())]
     DuplicateOrg { path: PathBuf, name: String },
 

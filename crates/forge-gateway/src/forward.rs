@@ -29,7 +29,7 @@ use hyper::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use hyper::{HeaderMap, Method, Request, StatusCode};
 
 use crate::account::AccountKey;
-use crate::binding::{AUTH_TOKEN_VARIABLE, Bindings, DUMMY_CREDENTIAL, OAUTH_VARIABLE};
+use crate::binding::{Bindings, DUMMY_CREDENTIAL, credential_variable_for};
 use crate::listener::{RouteHandler, StreamBody, text_response};
 use crate::rotation::RotationState;
 use crate::splice::splice_model;
@@ -38,6 +38,19 @@ use crate::splice::splice_model;
 /// four Anthropic accounts declare none today, and the CLI's default
 /// host is what they have always used.
 const ANTHROPIC_UPSTREAM: &str = "https://api.anthropic.com";
+
+/// How long the upstream may produce nothing at all before the
+/// forwarded turn is abandoned. An idle bound, not a deadline for the
+/// whole response: a turn streams for as long as the model takes, and
+/// only silence means the leg is wedged.
+pub const FORWARD_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long the connect and the TLS handshake may take before the
+/// request is abandoned. Well under the idle bound: a host that
+/// blackholes the SYN never reaches the first byte, so the idle bound
+/// alone would hold the turn open for it, longer than the kernel's own
+/// connect timeout did before the leg carried any bound at all.
+pub const FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The error type a streamed body yields.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -70,11 +83,15 @@ pub struct Gateway {
 }
 
 impl Gateway {
-    pub fn new(pool: Arc<crate::AccountPool>) -> Self {
+    /// The caller builds `client` through `ProviderHost`, so the
+    /// forward leg carries the TLS trust and the bounds every other
+    /// outbound path does:
+    /// `host.streaming_http_client(FORWARD_CONNECT_TIMEOUT, FORWARD_IDLE_TIMEOUT)`.
+    pub fn new(pool: Arc<crate::AccountPool>, client: reqwest::Client) -> Self {
         Self {
             bindings: Bindings::default(),
             pool,
-            client: reqwest::Client::new(),
+            client,
             org_pins: parking_lot::Mutex::new(HashMap::new()),
             rotation: parking_lot::Mutex::new(RotationState::new()),
         }
@@ -169,7 +186,7 @@ impl Gateway {
     /// the variable its provider authenticates with.
     fn credential_for(&self, account: &AccountKey) -> Option<(String, String)> {
         let (provider, env) = self.pool.provider_and_env(account)?;
-        let variable = if provider.uses_base_url() { AUTH_TOKEN_VARIABLE } else { OAUTH_VARIABLE };
+        let variable = credential_variable_for(provider);
         let credential = env.get(variable)?.trim().to_owned();
         if credential.is_empty() || credential == DUMMY_CREDENTIAL {
             return None;
@@ -626,12 +643,46 @@ mod tests {
         script: ScriptHandle,
     }
 
+    /// The host the harness builds its forward client through, so the
+    /// leg runs against the port's own construction rather than a
+    /// hand-built client.
+    struct TestHost;
+
+    #[async_trait::async_trait]
+    impl crate::ProviderHost for TestHost {
+        fn http_client(&self, _timeout: Duration) -> Result<reqwest::Client, String> {
+            unreachable!("the forward harness runs no probe")
+        }
+
+        fn streaming_http_client(
+            &self,
+            connect_timeout: Duration,
+            idle_timeout: Duration,
+        ) -> Result<reqwest::Client, String> {
+            reqwest::Client::builder()
+                .connect_timeout(connect_timeout)
+                .read_timeout(idle_timeout)
+                .build()
+                .map_err(|e| e.to_string())
+        }
+
+        async fn user_agent(&self) -> Result<String, String> {
+            unreachable!("the forward harness runs no probe")
+        }
+    }
+
     /// Stub upstream + gateway listener + one registered session whose
     /// account's upstream is the stub. The pool holds one account per
     /// provider, both with the stub as their upstream, so a test that
     /// asserts "no upstream request" is airtight whichever account a
     /// broken selection could have picked.
     async fn harness(chunk_delay: Duration) -> Harness {
+        harness_with_idle_timeout(chunk_delay, FORWARD_IDLE_TIMEOUT).await
+    }
+
+    /// [`harness`] with the forward leg's idle bound under the test's
+    /// control, so a stalled upstream is reachable inside a test.
+    async fn harness_with_idle_timeout(chunk_delay: Duration, idle_timeout: Duration) -> Harness {
         let script: ScriptHandle =
             Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
         let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
@@ -679,7 +730,13 @@ mod tests {
                 env: anthropic_env,
             },
         ]));
-        let gateway = Arc::new(Gateway::new(Arc::clone(&pool)));
+        let client = crate::ProviderHost::streaming_http_client(
+            &TestHost,
+            FORWARD_CONNECT_TIMEOUT,
+            idle_timeout,
+        )
+        .expect("the test host builds a client");
+        let gateway = Arc::new(Gateway::new(Arc::clone(&pool), client));
 
         let listener_port = free_port().await;
         let listener = GatewayListener::bind(listener_port).await.expect("gateway bind");
@@ -965,6 +1022,48 @@ mod tests {
         assert!(started.elapsed() >= Duration::from_millis(1000), "the tail respects the gap");
     }
 
+    /// The connect bound is the tighter inner one, and that ordering is
+    /// its whole reason for existing: it is what a host that never
+    /// produces a first byte runs into, where the idle bound would hold
+    /// the turn open far longer than a connect ever should.
+    #[test]
+    fn the_connect_bound_stays_well_under_the_idle_bound() {
+        assert!(
+            FORWARD_CONNECT_TIMEOUT <= FORWARD_IDLE_TIMEOUT / 10,
+            "the connect bound is the tighter one; {FORWARD_CONNECT_TIMEOUT:?} against an idle \
+             bound of {FORWARD_IDLE_TIMEOUT:?} lets a blackholed connect outlast the wedge the \
+             leg is bounded to stop",
+        );
+    }
+
+    /// The forward leg's client is the host's, and a host that bounds
+    /// idle reads ends a wedged upstream: the CLI's turn is abandoned
+    /// instead of held open until the upstream produces anything.
+    #[tokio::test]
+    async fn a_stalled_upstream_ends_the_forwarded_stream_at_the_hosts_idle_bound() {
+        let harness =
+            harness_with_idle_timeout(Duration::from_secs(5), Duration::from_millis(200)).await;
+        let started = Instant::now();
+        let mut response =
+            post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+
+        let first = response.chunk().await.expect("a body chunk").expect("chunk bytes");
+        assert!(!first.is_empty(), "the first chunk arrives while the upstream is healthy");
+
+        let stalled = tokio::time::timeout(Duration::from_secs(8), response.chunk())
+            .await
+            .expect("the idle bound ends the stream; an unbounded client never returns here");
+        assert!(
+            stalled.is_err(),
+            "the stream is cut mid-body when the upstream goes quiet; got {stalled:?}",
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the host's bound ended the stream, not the upstream's next chunk; took {:?}",
+            started.elapsed(),
+        );
+    }
+
     #[tokio::test]
     async fn the_fifth_429_rotates_the_binding_and_the_cooled_account_is_skipped() {
         let harness = harness(Duration::ZERO).await;
@@ -1169,6 +1268,39 @@ mod tests {
                 fallback_accounts: Vec::new(),
             },
         )]);
+    }
+
+    /// The forward leg reads a native account's credential from the
+    /// variable the stamp put its dummy in - the same rule the stamper
+    /// and the loader call, so the reader cannot drift to the other
+    /// variable and 503 every turn.
+    #[tokio::test]
+    async fn the_forward_leg_reads_a_native_accounts_credential_variable() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "Anthropic");
+        harness
+            .gateway
+            .pool
+            .set_loading(&AccountKey("Anthropic".to_owned()), crate::LoadingState::Ready);
+        harness.gateway.bindings.bind(
+            "Busytools",
+            "forge",
+            "session-1",
+            AccountKey("Anthropic".to_owned()),
+        );
+
+        let response = post_model(&harness.client_url, "claude-sonnet-5").await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the credential is found in the account's own variable; reading the other one 503s",
+        );
+        let requests = harness.requests.lock();
+        assert_eq!(
+            requests[0].first("authorization"),
+            Some("Bearer real-oauth-token"),
+            "the real credential is read back out of the account's own variable",
+        );
     }
 
     /// The account's declared slug replaces the canonical model name
@@ -1408,7 +1540,7 @@ mod tests {
         for name in ["Cooling", "Ready"] {
             pool.set_loading(&AccountKey(name.to_owned()), crate::LoadingState::Ready);
         }
-        let gateway = Gateway::new(Arc::clone(&pool));
+        let gateway = Gateway::new(Arc::clone(&pool), reqwest::Client::new());
         gateway.set_org_pins([(
             "Default".to_owned(),
             crate::selection::OrgPin {
@@ -1444,7 +1576,8 @@ mod tests {
     /// render: the store underneath is a HashMap.
     #[test]
     fn published_org_pins_come_back_sorted_with_their_lists_intact() {
-        let gateway = Gateway::new(Arc::new(crate::AccountPool::empty_for_test()));
+        let gateway =
+            Gateway::new(Arc::new(crate::AccountPool::empty_for_test()), reqwest::Client::new());
         let pin = |accounts: &[&str], fallbacks: &[&str]| crate::selection::OrgPin {
             accounts: accounts.iter().map(|name| (*name).to_owned()).collect(),
             fallback_accounts: fallbacks.iter().map(|name| (*name).to_owned()).collect(),

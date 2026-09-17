@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use forge_gateway::AccountKey;
+use forge_gateway::ProviderHost as _;
 
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
@@ -992,7 +993,20 @@ impl Workspace {
         let catalog = Arc::new(Mutex::new(HashMap::new()));
 
         let accounts = Arc::new(forge_gateway::AccountPool::new(&config.accounts));
-        let gateway = Arc::new(forge_gateway::forward::Gateway::new(Arc::clone(&accounts)));
+        // The forward leg's client comes from the host port, like every
+        // other outbound path: the inference upstream then carries the
+        // same extra trust roots the probes do.
+        let forward_http = forge_agent::cloud::AgentHost
+            .streaming_http_client(
+                forge_gateway::forward::FORWARD_CONNECT_TIMEOUT,
+                forge_gateway::forward::FORWARD_IDLE_TIMEOUT,
+            )
+            .map_err(|error| WorkspaceError::ConfigInvalid {
+                path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                message: format!("forward-leg http client: {error}"),
+            })?;
+        let gateway =
+            Arc::new(forge_gateway::forward::Gateway::new(Arc::clone(&accounts), forward_http));
         // Hand the gateway each org's walk order so an unbound session
         // can select an account from its path alone - the restart case,
         // where the bindings are gone but the config is boot-frozen.

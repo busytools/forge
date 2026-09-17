@@ -97,6 +97,19 @@ pub trait ProviderHost: Send + Sync {
     /// A reqwest client with the NODE_EXTRA_CA_CERTS roots applied
     /// and the caller's timeout baked in.
     fn http_client(&self, timeout: Duration) -> Result<reqwest::Client, String>;
+    /// The same client for a streamed response: the NODE_EXTRA_CA_CERTS
+    /// roots applied, `connect_timeout` bounding the connect and the TLS
+    /// handshake, and `idle_timeout` bounding each read. The idle bound
+    /// covers the wait for the response headers and then resets on every
+    /// chunk; a streamed inference response has no known length, so the
+    /// total deadline [`ProviderHost::http_client`] bakes in would cut a
+    /// healthy long turn, while an idle bound still ends one whose
+    /// upstream has stopped producing bytes.
+    fn streaming_http_client(
+        &self,
+        connect_timeout: Duration,
+        idle_timeout: Duration,
+    ) -> Result<reqwest::Client, String>;
     /// `claude-code/<version>`, resolved by one `claude --version`
     /// shell-out per process and cached, off the async runtime via
     /// spawn_blocking. Err preserves the probe's UaProbe failure
