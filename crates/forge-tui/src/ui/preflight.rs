@@ -488,7 +488,8 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
         wrapped(
             2,
             &format!(
-                "{} will not start a session. forge starts without it; {}.",
+                "{} cannot authenticate. forge starts without it and picks it only as a last \
+                 resort; {}.",
                 row.display_name, tail
             ),
             error,
