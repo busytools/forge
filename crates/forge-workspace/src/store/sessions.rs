@@ -228,15 +228,20 @@ pub struct WorkerRowIndex {
     pub is_git_repo: Option<bool>,
 }
 
-/// The two body fields [`WorkerRowIndex`] reads. Deserialising into this
-/// rather than [`SessionRecord`] is the point: serde skips what it is not
-/// asked for, so the charter - kilobytes on a project's lead row - is
+/// What [`WorkerRowIndex`] reads out of a row's body. Deserialising into
+/// this rather than [`SessionRecord`] is the point: serde skips what it is
+/// not asked for, so the charter - kilobytes on a project's lead row - is
 /// never allocated.
+///
+/// The three identity fields are required exactly where [`SessionRecord`]
+/// requires them, so a body that will not decode as one will not decode as
+/// this either, and the two readers agree on which rows exist.
 #[derive(Deserialize)]
 struct RowStart {
-    #[serde(default)]
+    org: String,
+    project: String,
+    label: String,
     session_id: Option<String>,
-    #[serde(default)]
     is_git_repo: Option<bool>,
 }
 
@@ -256,17 +261,19 @@ pub fn worker_row_index(db: &Db) -> anyhow::Result<Vec<WorkerRowIndex>> {
     };
     let mut out = Vec::new();
     for entry in table.iter()? {
-        let (key, value) = entry?;
-        let (org, project, label) = key.value();
-        // A value that will not decode leaves both fields absent, which
-        // reads exactly like a row written before the gitness field
-        // existed: offerable, and the spawn repairs it.
-        let start = serde_json::from_slice::<RowStart>(value.value())
-            .unwrap_or(RowStart { session_id: None, is_git_repo: None });
+        let (_, value) = entry?;
+        // A body that will not decode is not a row to offer. `list_all`
+        // skips the same rows, and the boot wave reads through it, so
+        // reporting one here would draw a worker the wave never starts -
+        // the two sites have to agree on which rows exist. The loss is
+        // reported by `list_all`'s warn, on the wave's read.
+        let Ok(start) = serde_json::from_slice::<RowStart>(value.value()) else {
+            continue;
+        };
         out.push(WorkerRowIndex {
-            org: org.to_owned(),
-            project: project.to_owned(),
-            label: label.to_owned(),
+            org: start.org,
+            project: start.project,
+            label: start.label,
             // An empty string is absence, not an id - see `decode`.
             session_id: start.session_id.filter(|id| !id.is_empty()),
             is_git_repo: start.is_git_repo,
@@ -601,20 +608,23 @@ mod tests {
         );
     }
 
-    /// `worker_row_index` takes the identity off the composite key, so a
-    /// row whose body will not decode still reports its label and stays
-    /// offerable. That is what the launchpad's worker rows are built from,
-    /// once per frame: read through `list_all` instead and an undecodable
-    /// body takes its label off the screen, and every row's charter is
-    /// materialised on the render path.
+    /// `worker_row_index` reads a row without its body, and reports exactly
+    /// the rows `list_all` reports. An undecodable body is skipped by both,
+    /// which is what keeps the launchpad offering only what the boot wave
+    /// would start: a row the wave skips but the picker draws is a worker
+    /// nothing can bring back.
+    ///
+    /// It also has to read the same fields the launchpad decides off, and
+    /// treat a blank id as absence the way `decode` does.
     #[test]
-    fn worker_row_index_reports_labels_without_the_row_body() {
+    fn worker_row_index_reports_what_the_wave_reads_without_the_row_body() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
         put(&db, &record("Personal", "forge", "lead", Some("id-1"))).expect("put");
         let mut listed = record("Personal", "forge", "worker", Some("id-2"));
         listed.is_git_repo = Some(true);
         put(&db, &listed).expect("put");
+        put(&db, &record("Personal", "forge", "blank", Some(""))).expect("put");
         put_raw_for_test(&db, "Personal", "forge", "corrupt", b"not a record")
             .expect("plant the undecodable row");
 
@@ -622,8 +632,9 @@ mod tests {
         let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
         assert_eq!(
             labels,
-            vec!["corrupt", "lead", "worker"],
-            "every label survives, including the one whose body does not decode",
+            vec!["blank", "lead", "worker"],
+            "an undecodable body is skipped, exactly as `list_all` skips it - offering it \
+             would draw a worker the boot wave never starts",
         );
         let worker = rows.iter().find(|row| row.label == "worker").expect("the worker row");
         assert_eq!(worker.session_id.as_deref(), Some("id-2"), "the stored id is projected");
@@ -632,11 +643,39 @@ mod tests {
             Some(true),
             "and so is the gitness the launchpad decides off",
         );
-        let corrupt = rows.iter().find(|row| row.label == "corrupt").expect("the corrupt row");
+        let blank = rows.iter().find(|row| row.label == "blank").expect("the blank-id row");
         assert_eq!(
-            (corrupt.session_id.as_deref(), corrupt.is_git_repo),
-            (None, None),
-            "an unreadable body reads as unknown, which the launchpad offers",
+            blank.session_id, None,
+            "a blank id is absence, not an id - a launchpad reading it as real would call \
+             the row a resume",
+        );
+    }
+
+    /// `update` merges a field it was given and leaves one it was not, and
+    /// the gitness flag is no exception. Only a spawn supplies it today, so
+    /// this pins the arm rather than a caller: an arm nothing exercises is
+    /// one that silently stops merging.
+    #[test]
+    fn update_merges_the_gitness_flag_and_leaves_an_absent_one_alone() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        put(&db, &record("Personal", "forge", "worker", Some("id"))).expect("put");
+
+        let mut supplied = record("Personal", "forge", "worker", None);
+        supplied.is_git_repo = Some(true);
+        assert!(update(&db, &supplied).expect("update"), "the row exists to merge onto");
+        assert_eq!(
+            get(&db, "Personal", "forge", "worker").expect("get").and_then(|row| row.is_git_repo),
+            Some(true),
+            "a supplied gitness merges onto the row",
+        );
+
+        let blank = record("Personal", "forge", "worker", None);
+        assert!(update(&db, &blank).expect("update"));
+        assert_eq!(
+            get(&db, "Personal", "forge", "worker").expect("get").and_then(|row| row.is_git_repo),
+            Some(true),
+            "and an absent one leaves the stored value alone",
         );
     }
 
