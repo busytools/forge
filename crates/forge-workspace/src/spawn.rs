@@ -1963,17 +1963,23 @@ mod tests {
         crate::config::ensure_forge_data_dir(config_dir).expect("forge/ dir").join("forge.toml")
     }
 
-    fn write_forge_toml(dir: &std::path::Path) {
+    /// The project path the shared fixture points at. The maintainer's own
+    /// checkout, which is a git repo, so the gitness probe answers true for
+    /// it; a fixture that needs a different answer writes its own.
+    const FIXTURE_PROJECT_PATH: &str = "~/Projects/forge";
+
+    fn write_forge_toml(dir: &std::path::Path, project_path: &str) {
         fs::write(
             forge_toml_path(dir),
-            r#"
+            format!(
+                r#"
 [[orgs]]
 name = "Default"
 accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
-path = "~/Projects/forge"
+path = "{project_path}"
 auto_start = true
 model = "claude-sonnet-5"
 
@@ -1982,7 +1988,8 @@ display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-"#,
+"#
+            ),
         )
         .expect("write forge.toml");
     }
@@ -2043,7 +2050,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn spawn_project_unknown_project_emits_no_update() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
@@ -2067,7 +2074,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn spawn_project_known_project_announces_the_id_it_will_run_under() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
@@ -2098,7 +2105,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn start_default_failure_is_fatal() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
@@ -2137,7 +2144,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn spawn_session_unknown_session_emits_no_fatal() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
@@ -2181,7 +2188,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn handle_deliver_peer_prompt_unknown_target_is_no_op() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
@@ -2442,7 +2449,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_fresh_worker_is_keyed_by_the_id_it_runs_under() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         ws.seed_test_gateway_ready(true);
@@ -2512,7 +2519,7 @@ provider = "anthropic"
         seeded_is_git: Option<bool>,
     ) -> Option<crate::store::sessions::SessionRecord> {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_project("overlayonly", "/tmp/slack-worker-rollback");
         let key = ws
@@ -2640,30 +2647,7 @@ provider = "anthropic"
             .status()
             .expect("spawn git");
         assert!(status.success(), "fixture precondition: git init");
-        fs::write(
-            forge_toml_path(dir.path()),
-            format!(
-                r#"
-[[orgs]]
-name = "Default"
-accounts = ["Stargate"]
-
-[[orgs.projects]]
-name = "forge"
-path = "{}"
-auto_start = true
-model = "claude-sonnet-5"
-
-[[accounts]]
-display_name = "Stargate"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#,
-                repo.path().display()
-            ),
-        )
-        .expect("write forge.toml");
+        write_forge_toml(dir.path(), &repo.path().to_string_lossy());
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         ws.seed_test_gateway_ready(true);
@@ -2714,7 +2698,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_refused_spawn_leaves_the_parked_payload_to_the_caller() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         ws.park_slack(
@@ -2892,7 +2876,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_refused_duplicate_leaves_the_running_workers_row_alone() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path());
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         ws.seed_test_gateway_ready(true);
@@ -3825,7 +3809,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn spawn_rollback_reports_no_worktree_to_preserve() {
         let config = tempdir().expect("config tempdir");
-        write_forge_toml(config.path());
+        write_forge_toml(config.path(), FIXTURE_PROJECT_PATH);
         let workspace =
             Arc::new(Workspace::new_for_test(config.path().to_owned()).expect("workspace new"));
 

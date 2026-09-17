@@ -11009,6 +11009,11 @@ mod worker_respawn_tests {
     /// The launchpad renders every persisted worker row, so a row the
     /// wave skips would still be offered as a worker - which is the
     /// visible half of the same defect. It must not reach the pane.
+    ///
+    /// Only the skips are asserted here. Both sites call
+    /// `worker_row_can_start`, so an over-skip regression fails the boot
+    /// wave's test above; what this one pins is that this site calls the
+    /// predicate at all.
     #[test]
     fn launchpad_does_not_offer_a_row_whose_worktree_is_gone() {
         let (workspace, _rx) = Workspace::testing_stub();
@@ -11029,20 +11034,6 @@ mod worker_respawn_tests {
             !labels.contains(&"ghostworktree".to_owned()),
             "the launchpad must read the row's gitness, not the project's filesystem; \
              offered {labels:?}",
-        );
-        assert!(
-            labels.contains(&"present".to_owned()),
-            "a worker whose worktree stands must still be offered; offered {labels:?}",
-        );
-        assert!(
-            labels.contains(&"rooted".to_owned()),
-            "a worker whose row says it runs in the project root must still be offered; \
-             offered {labels:?}",
-        );
-        assert!(
-            labels.contains(&"unstarted".to_owned()),
-            "the pane must offer exactly the rows the wave would start, so an id-less \
-             row re-spawned fresh is offered too; offered {labels:?}",
         );
     }
 

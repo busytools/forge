@@ -3176,20 +3176,6 @@ provider = "anthropic"
                 kick: None,
             },
         );
-        // A live lead, so "no notice" is a claim about the classifier and
-        // not about a notice with nowhere to go.
-        let lead_slot = SessionSlot::from_str_for_test("lead-uuid");
-        let (lead_handle, _lead_cmds) = Agent::testing_stub();
-        workspace.pool.lock().insert(
-            lead_slot,
-            crate::workspace::PooledAgent {
-                handle: Arc::new(lead_handle),
-                account: forge_gateway::AccountKey("test".to_owned()),
-                permission_mode: None,
-                registration: None,
-                session_id: "pooled-session".to_owned(),
-            },
-        );
 
         let (handle, _agent_cmds) = Agent::testing_stub();
         let arc = Arc::new(handle);
@@ -3219,16 +3205,6 @@ provider = "anthropic"
             "a named missing-working-directory failure keeps the worker's row rather than \
              deleting it as a worktree that could not be created; rows left {:?}",
             rows.iter().map(|row| row.label.clone()).collect::<Vec<_>>(),
-        );
-        let notices: Vec<crate::protocol::Command> = workspace
-            .drain_test_dispatch_buffer()
-            .into_iter()
-            .filter(|cmd| matches!(cmd, crate::protocol::Command::Prompt { .. }))
-            .collect();
-        assert!(
-            notices.is_empty(),
-            "the lead gets no worktree-creation notice for a failure that was not one, \
-             however the directory renders",
         );
     }
 

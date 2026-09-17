@@ -369,6 +369,25 @@ mod tests {
     /// return its key. A non-git worker runs in that directory, so the
     /// wave checks it is still there before re-spawning the worker - a
     /// fixture path that cannot exist is not a shape production has.
+    /// A workspace whose `proj` sits at a real directory, with one worker
+    /// row for `label` recorded as git-backed and no worktree on disk -
+    /// the stranded-owner shape every fire test in this module is built on.
+    /// Both tempdirs must outlive the caller.
+    fn stranded_owner_fixture(
+        label: &str,
+    ) -> (Arc<Workspace>, ProjectKey, tempfile::TempDir, tempfile::TempDir) {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_dir = tempdir().expect("project dir");
+        let key = seed_project_with_a_real_root(&ws, &project_dir);
+        ws.record_worker_row(&key, label, &format!("{label}-uuid"), "c", None, None, false, true)
+            .expect("seed the stranded worker's row");
+        (ws, key, dir, project_dir)
+    }
+
     fn seed_project_with_a_real_root(ws: &crate::Workspace, dir: &tempfile::TempDir) -> ProjectKey {
         let root = dir.path().join("proj-root");
         std::fs::create_dir_all(&root).expect("create the project dir");
@@ -819,16 +838,9 @@ mod tests {
     /// only not there YET, so the prompt parks for its own Connected drain.
     #[test]
     fn deliver_worker_cron_parks_for_an_owner_that_is_still_spawning() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let dir = tempdir().expect("tempdir");
-        ws.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-        let key = seed_project_with_a_real_root(&ws, &dir);
         // A git worker whose worktree claude has not created yet: the row
         // alone says this one cannot start.
-        ws.record_worker_row(&key, "reviewer", "reviewer-uuid", "c", None, None, false, true)
-            .expect("seed the row");
+        let (ws, key, _db, _project) = stranded_owner_fixture("reviewer");
         ws.insert_live_worker(&key, live_worker_entry("proj", "reviewer"));
 
         ws.enable_test_dispatch_intercept();
@@ -858,15 +870,7 @@ mod tests {
     /// the unbounded park this whole arm exists to keep empty.
     #[test]
     fn deliver_worker_cron_does_not_park_for_a_failed_entry() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let dir = tempdir().expect("tempdir");
-        ws.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-        let key = seed_project_with_a_real_root(&ws, &dir);
-        // The row says worktree, and no worktree is there.
-        ws.record_worker_row(&key, "reviewer", "reviewer-uuid", "c", None, None, false, true)
-            .expect("seed the row");
+        let (ws, key, _db, _project) = stranded_owner_fixture("reviewer");
         let mut failed = live_worker_entry("proj", "reviewer");
         failed.status = forge_primitives::WorkerLiveness::Failed;
         ws.insert_live_worker(&key, failed);
@@ -1329,18 +1333,7 @@ provider = "anthropic"
     #[test]
     fn fire_due_crons_advances_recurring_and_keeps_a_one_shot_when_the_owner_cannot_be_woken() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
-        let (ws, _rx) = Workspace::testing_stub();
-        let dir = tempdir().expect("tempdir");
-        ws.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-        let project_dir = tempdir().expect("project dir");
-        ws.seed_test_project("proj", &project_dir.path().to_string_lossy());
-        let key = ws.project_key_for_name("proj").expect("seeded project");
-        // The row says the worker runs in a worktree that is not there, so
-        // the wave would skip it.
-        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true)
-            .expect("seed the stranded worker's row");
+        let (ws, _key, _db, _project) = stranded_owner_fixture("steward");
 
         let now = std::time::SystemTime::now();
         let past = std::time::SystemTime::UNIX_EPOCH;
