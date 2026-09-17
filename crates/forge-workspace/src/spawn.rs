@@ -2423,13 +2423,21 @@ provider = "anthropic"
         assert_eq!(stored.as_deref(), Some(reply.session_id.as_str()), "and the store row");
     }
 
-    #[tokio::test]
-    async fn a_failed_worker_spawn_rolls_the_live_entry_back() {
+    /// Drive a spawn that fails at dispatch and return the durable row it
+    /// left behind. The project is in the test overlay but not in
+    /// `forge.toml`, and the config lookup inside the spawn is what misses.
+    ///
+    /// A row is seeded first, under the same `(org, project, label)` the
+    /// spawn will write, so a missing row afterwards means one was removed
+    /// rather than that none was ever written - without it, `is_none()`
+    /// passes just as well against a `record_worker_row` that never ran.
+    async fn failed_spawn_leftover_row(
+        resume_existing: Option<&str>,
+        from_boot_respawn: bool,
+    ) -> Option<crate::store::sessions::SessionRecord> {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
-        // The overlay supplies the project the caller names; the config lookup
-        // inside the spawn is what misses, which is the failure under test.
         ws.seed_test_project("overlayonly", "/tmp/slack-worker-rollback");
         let key = ws
             .list_projects()
@@ -2437,8 +2445,24 @@ provider = "anthropic"
             .find(|v| v.name == "overlayonly")
             .expect("seeded project present")
             .key;
+        {
+            let db = ws.db.lock();
+            crate::store::sessions::put(
+                db.as_ref().expect("db"),
+                &crate::store::sessions::SessionRecord {
+                    org: "TestOrg".to_owned(),
+                    project: "overlayonly".to_owned(),
+                    label: "tester".to_owned(),
+                    session_id: Some("tester-id".to_owned()),
+                    charter: None,
+                    kick: None,
+                    resume_kick: None,
+                    interactive: None,
+                },
+            )
+            .expect("seed the row the spawn will write");
+        }
         let (tx, rx) = tokio::sync::oneshot::channel();
-
         handle_spawn_worker(
             &ws,
             key.clone(),
@@ -2450,8 +2474,8 @@ provider = "anthropic"
                 interactive: false,
             },
             SessionSlot::from_str_for_test("lead"),
-            None,
-            false,
+            resume_existing,
+            from_boot_respawn,
             tx,
         );
 
@@ -2460,16 +2484,49 @@ provider = "anthropic"
             ws.list_live_workers(&key).is_empty(),
             "and the placeholder entry is rolled back, not left live",
         );
-        let row = {
-            let db = ws.db.lock();
-            let db = db.as_ref().expect("db");
-            crate::store::sessions::get(db, "TestOrg", "overlayonly", "tester").expect("read")
-        };
+        let db = ws.db.lock();
+        crate::store::sessions::get(db.as_ref().expect("db"), "TestOrg", "overlayonly", "tester")
+            .expect("read")
+    }
+
+    #[tokio::test]
+    async fn a_failed_worker_spawn_rolls_the_live_entry_back() {
+        let row = failed_spawn_leftover_row(None, false).await;
         assert!(
             row.is_none(),
-            "and the durable row goes with it: left behind, the next boot re-spawns a worker \
-             the caller was told had failed",
+            "the durable row goes with the rollback: left behind, the next boot re-spawns a \
+             worker the caller was told had failed",
         );
+    }
+
+    /// A RESUME whose dispatch fails keeps its row, because that row is the
+    /// only durable handle on the id being resumed - deleting it loses the
+    /// worker rather than letting it retry. Nothing else reaches this arm
+    /// with the flag set, so without this the guard's negative half is
+    /// pinned by nothing.
+    #[tokio::test]
+    async fn a_failed_resume_spawn_keeps_the_row_holding_the_id() {
+        let row = failed_spawn_leftover_row(Some("tester-id"), false).await;
+        assert_eq!(
+            row.and_then(|row| row.session_id).as_deref(),
+            Some("tester-id"),
+            "the rollback leaves the row that names the id being resumed",
+        );
+    }
+
+    /// The same for a boot re-spawn, which carries no `resume_existing` when
+    /// it comes up fresh under `--new` - so the resume flag alone does not
+    /// separate it from a spawn a caller asked for, and the boot flag is
+    /// what keeps its row.
+    ///
+    /// That path mints a new id and writes it over the row, so what the
+    /// guard protects here is the row's survival rather than this id: the
+    /// boot wave owns the worker, and deleting the row on a failure would
+    /// drop it from every later restart.
+    #[tokio::test]
+    async fn a_failed_boot_respawn_keeps_its_row() {
+        let row = failed_spawn_leftover_row(None, true).await;
+        assert!(row.is_some(), "the boot re-spawn keeps the row a later restart re-spawns from");
     }
 
     /// A spawn refused before it reaches the project leaves the caller's
