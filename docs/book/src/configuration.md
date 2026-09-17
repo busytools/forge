@@ -99,7 +99,7 @@ An array of tables. At least one is required, or the load fails with
 | `models` | list of strings | yes | | The canonical model names the account serves. Selection and the route's model gate match against this list; an empty list fails the load (`AccountModelsRequired`). |
 | `model_slugs` | table | no | `{}` | Canonical name -> upstream spelling, only where they differ. Every slug key must be in `models`, or the load fails (`AccountSlugUndeclared`). |
 | `model_aliases` | table | no | `{}` | Written as `[accounts.model_aliases]`. Canonical name -> the other names a request may arrive under for that model. Every key must be in `models`, or the load fails (`AccountAliasUndeclared`); an empty list fails (`AccountAliasEmpty`). |
-| `env` | table | no | `{}` | Written as `[accounts.env]`. Provider-behaviour extras only - timeouts, context caps, fallback switches. Gateway keys (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) may be declared here and in the global `[env]` layer, but they are inert: the spawned session's env is stamped with the gateway's own values last. The flat `base_url` and `token` keys own them. |
+| `env` | table | no | `{}` | Written as `[accounts.env]`. Provider-behaviour extras only - timeouts, context caps, fallback switches. Gateway keys (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) declared here or in the global `[env]` layer are dropped at load and warned about: the flat `base_url` and `token` keys own them, and forge reads the account's endpoint and credential from those. |
 
 All accounts share one `claude` config directory, so MCP servers,
 plugins and settings are declared once for every account; what varies
@@ -251,12 +251,13 @@ key.
 A base-url account's endpoint and credential are its flat `base_url`
 and `token` keys, mapped onto the CLI's variable names at load.
 `[accounts.env]` carries only provider-behaviour extras - timeouts,
-context caps, fallback switches; a base-url or credential key declared
-in an env layer loads, but the spawn stamp overwrites it, so the child
-never receives it. Setting `ANTHROPIC_BASE_URL` or
-`ANTHROPIC_AUTH_TOKEN` at the *project* layer instead desynchronises
-forge's own accounting, because the usage probe, plan detection and the
-`/gateway` view all read the account map.
+context caps, fallback switches. A base-url or credential key declared
+in an env layer is dropped at load, so it can reach neither the child
+nor the pool the usage probe and the forward leg read: the flat keys
+own them. Setting `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` at the
+*project* layer instead desynchronises forge's own accounting, because
+the usage probe, plan detection and the `/gateway` view all read the
+account map.
 
 An `"anthropic"` account's flat `token` - minted by
 `claude setup-token` - is its credential. The usage endpoint
