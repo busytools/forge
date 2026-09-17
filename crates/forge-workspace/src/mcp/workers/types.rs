@@ -28,6 +28,16 @@ pub fn worker_tag_dir(project_root: &Path, label: &str, is_git_repo_at_spawn: bo
     }
 }
 
+/// Whether a persisted worker row still has a directory to run in: a
+/// git worker's cwd is its worktree, a non-git worker's is the project
+/// root. A `.git` marker on the root or any ancestor stands in for the
+/// `git rev-parse` probe `worker_tag_dir`'s callers use, because the
+/// launchpad calls this per row per frame.
+pub fn worker_working_dir_exists(project_root: &Path, label: &str) -> bool {
+    project_root.join(".claude/worktrees").join(label).exists()
+        || !project_root.ancestors().any(|dir| dir.join(".git").exists())
+}
+
 /// One live worker's liveness, without the spawn args. A render path
 /// reads only these three fields, and cloning a `WorkerEntry` to get
 /// them copies the worker's whole charter.

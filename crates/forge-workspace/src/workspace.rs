@@ -3397,6 +3397,25 @@ impl Workspace {
                     continue;
                 }
             };
+            // A resume starts the subprocess in the worker's worktree,
+            // and a subprocess cannot enter a directory that is not
+            // there: the spawn fails on every boot and the row never
+            // clears. A FRESH re-spawn runs in the project root and
+            // takes `--worktree`, so only a resume is stranded.
+            if resume_existing.is_some()
+                && let Some(root) = project.as_ref().map(|p| p.path.as_path())
+                && !crate::mcp::workers::types::worker_working_dir_exists(root, &worker.label)
+            {
+                tracing::warn!(
+                    target: "forge_workspace::workers",
+                    event_name = "boot_respawn_skipped_missing_worktree",
+                    project = %project_key.as_str(),
+                    label = %worker.label,
+                    "the worker's worktree is gone, so this boot re-spawn has no directory \
+                     to start in; the row is kept and stays unoffered until the worktree is back",
+                );
+                continue;
+            }
             let kick = if resume_existing.is_some() {
                 worker.resume_kick.clone().or_else(|| Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned()))
             } else {
@@ -3935,7 +3954,12 @@ impl Workspace {
             if label == forge_primitives::LEAD_LABEL {
                 continue;
             }
-            if let Some(view) = views.iter().find(|v| v.org == org && v.name == project) {
+            // A row with no directory left to run in is not a worker
+            // the launchpad can offer: the spawn cannot enter its cwd,
+            // so re-spawning it only produces a failure on every boot.
+            if let Some(view) = views.iter().find(|v| v.org == org && v.name == project)
+                && crate::mcp::workers::types::worker_working_dir_exists(&view.path, &label)
+            {
                 out.entry(view.key.clone()).or_default().push(label);
             }
         }
@@ -10654,6 +10678,137 @@ mod worker_respawn_tests {
             resume_kick: None,
             interactive: Some(false),
         }
+    }
+
+    /// A git worker's resume lands in its worktree, which a despawn or
+    /// an out-of-band removal takes away; re-spawning it would fail on
+    /// every boot forever. The wave skips it - while a sibling whose
+    /// worktree stands, and a worker in a non-git project (which runs in
+    /// the project root), both still spawn.
+    #[test]
+    fn boot_respawn_skips_a_row_whose_worktree_is_gone() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let repo = tempfile::tempdir().expect("git project dir");
+        run_git_in(repo.path(), &["init", "-q"]);
+        let plain = tempfile::tempdir().expect("non-git project dir");
+        workspace.seed_test_project("proj-x", repo.path().to_str().expect("utf8 repo path"));
+        workspace.seed_test_project("proj-y", plain.path().to_str().expect("utf8 plain path"));
+
+        // The stranded worker's worktree was never created, or was
+        // removed; its sibling's stands.
+        std::fs::create_dir_all(repo.path().join(".claude").join("worktrees").join("present"))
+            .expect("create the surviving worktree");
+
+        let seeded = [
+            (
+                "proj-x",
+                workspace.project_key_for_name("proj-x").expect("seeded project"),
+                "stranded",
+            ),
+            (
+                "proj-x",
+                workspace.project_key_for_name("proj-x").expect("seeded project"),
+                "present",
+            ),
+            ("proj-y", workspace.project_key_for_name("proj-y").expect("seeded project"), "rooted"),
+        ];
+        for (project, key, label) in &seeded {
+            workspace
+                .record_worker_row(key, label, &format!("{label}-uuid"), "c", None, None, false)
+                .expect("seed the row this wave re-spawns");
+            assert_eq!(
+                workspace.project_key_for_name(project).as_ref(),
+                Some(key),
+                "fixture precondition: {label} is seeded under {project}",
+            );
+        }
+
+        let rows = |project: &str| {
+            seeded
+                .iter()
+                .filter(|(p, _, _)| *p == project)
+                .map(|(_, _, label)| {
+                    let mut row = worker_row(label, None);
+                    row.project = project.to_owned();
+                    row
+                })
+                .collect::<Vec<_>>()
+        };
+        workspace.dispatch_worker_respawns(
+            &lead_slot(),
+            &workspace.project_key_for_name("proj-x").expect("seeded project"),
+            &rows("proj-x"),
+            false,
+        );
+        workspace.dispatch_worker_respawns(
+            &lead_slot(),
+            &workspace.project_key_for_name("proj-y").expect("seeded project"),
+            &rows("proj-y"),
+            false,
+        );
+
+        let spawned: Vec<String> = workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .map(|cmd| match cmd {
+                Command::SpawnWorker { label, .. } => label,
+                other => panic!("expected SpawnWorker, got {other:?}"),
+            })
+            .collect();
+        assert!(
+            !spawned.contains(&"stranded".to_owned()),
+            "a worker whose worktree is gone must not be re-spawned - the spawn cannot \
+             enter its cwd and would fail on every boot forever; spawned {spawned:?}",
+        );
+        assert!(
+            spawned.contains(&"present".to_owned()),
+            "a worker whose worktree stands must still re-spawn; spawned {spawned:?}",
+        );
+        assert!(
+            spawned.contains(&"rooted".to_owned()),
+            "a worker in a non-git project runs in the project root and must still \
+             re-spawn; spawned {spawned:?}",
+        );
+    }
+
+    /// The launchpad renders every persisted worker row, so a row the
+    /// wave skips would still be offered as a worker - which is the
+    /// visible half of the same defect. It must not reach the pane.
+    #[test]
+    fn launchpad_does_not_offer_a_row_whose_worktree_is_gone() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let repo = tempfile::tempdir().expect("git project dir");
+        run_git_in(repo.path(), &["init", "-q"]);
+        workspace.seed_test_project("proj-x", repo.path().to_str().expect("utf8 repo path"));
+        let project_key = workspace.project_key_for_name("proj-x").expect("seeded project");
+        std::fs::create_dir_all(repo.path().join(".claude").join("worktrees").join("present"))
+            .expect("create the surviving worktree");
+        for label in ["stranded", "present"] {
+            workspace
+                .record_worker_row(&project_key, label, "id", "c", None, None, false)
+                .expect("seed the row the launchpad renders");
+        }
+
+        let offered = workspace.worker_labels_by_project();
+        let labels = offered.get(&project_key).cloned().unwrap_or_default();
+        assert!(
+            !labels.contains(&"stranded".to_owned()),
+            "a worker whose worktree is gone must not be offered by the launchpad; \
+             offered {labels:?}",
+        );
+        assert!(
+            labels.contains(&"present".to_owned()),
+            "a worker whose worktree stands must still be offered; offered {labels:?}",
+        );
     }
 
     /// The interactive flag rides the subprocess CLI args, so a
