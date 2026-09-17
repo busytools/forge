@@ -1,7 +1,8 @@
 //! The Extensions page body: the tab bar with live counts, the filter,
-//! the Available toggle and update-all action row, and one tab's rows
-//! over the shared row grammar
-//! (`app::extensions::skills::render_extension_rows`).
+//! the Available toggle and update-all action row, and the active tab's
+//! rows. The row-backed tabs share
+//! `app::extensions::skills::render_extension_rows`; MCPs and
+//! Marketplaces draw their own.
 
 use super::theme;
 use crate::app::App;

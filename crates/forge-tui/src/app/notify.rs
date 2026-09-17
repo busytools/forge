@@ -42,7 +42,7 @@ impl NotificationText {
     }
 }
 
-/// What one unfocused notify() delivered, recorded instead of sent
+/// What one unfocused notify() delivered, recorded alongside the send
 /// when the `testing` feature is on: the two pre-sanitization escape
 /// fields and whether the bytes reached stdout, in delivery order.
 /// `written` is what makes the emission observable; without it a guard
@@ -105,10 +105,11 @@ impl NotificationManager {
 
     /// Send a notification if the terminal is not focused.
     ///
-    /// This is the single entry-point that all event handlers should call.
-    /// It is intentionally cheap when focused (just a bool check).
-    /// `session_key` is the event's own session, logged beside the
-    /// resolved context so a wrong title is diagnosable from the log.
+    /// Reached only through [`crate::app::App::notify`], which holds its
+    /// own focus gate ahead of this one. Intentionally cheap when
+    /// focused (just a bool check). `session_key` is the event's own
+    /// session, logged beside the resolved context so a wrong title is
+    /// diagnosable from the log.
     pub fn notify(&self, event: NotifyEvent, session_key: &SessionSlot, context: &NotifyContext) {
         if self.terminal_focused {
             return;
@@ -150,10 +151,9 @@ impl NotificationManager {
 impl crate::app::App {
     /// Raise `event` for `session_key`'s session through this app's
     /// notification manager. The single call site for every
-    /// notification, so nothing grows a second policy about when to
-    /// notify: the manager's own terminal-focus check decides that.
-    /// The notification text comes from the event session's project +
-    /// worker label.
+    /// notification, holding one terminal-focus gate ahead of the
+    /// manager's own. The notification text comes from the event
+    /// session's project + worker label.
     pub(crate) fn notify(&self, event: NotifyEvent, session_key: &SessionSlot) {
         // A session with no bucket has nothing to notify about, so this
         // is where an event for a closed or never-spawned key stops.
@@ -452,12 +452,7 @@ mod tests {
         let active = seed_bucket(&mut app, "session-a", "alpha");
         let worker = seed_bucket(&mut app, "session-b", "beta");
         app.active_session_key = Some(active.clone());
-        seed_worker(
-            &app,
-            &forge_workspace::ProjectKey::new("p-beta"),
-            &worker,
-            "egen-lead",
-        );
+        seed_worker(&app, &forge_workspace::ProjectKey::new("p-beta"), &worker, "egen-lead");
 
         assert_eq!(
             app.notification_context(&worker),
@@ -503,12 +498,7 @@ mod tests {
         let mut app = App::test_default();
         let lead_key = seed_bucket(&mut app, "session-lead", "beta");
         let worker_key = seed_bucket(&mut app, "session-worker", "beta");
-        seed_worker(
-            &app,
-            &forge_workspace::ProjectKey::new("p-beta"),
-            &worker_key,
-            "chat-stutter",
-        );
+        seed_worker(&app, &forge_workspace::ProjectKey::new("p-beta"), &worker_key, "chat-stutter");
         app.notifications = NotificationManager::new();
         app.notifications.on_focus_lost();
 

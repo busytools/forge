@@ -38,12 +38,9 @@ use crate::app::MessageRole;
 use crate::app::state::tool_call_info::{ToolCallInfo, is_execute_tool_name, is_monitor_tool_name};
 use crate::app::state::types::{BackgroundTask, SessionTaskCard, WorkflowEntry, WorkflowStatus};
 
-/// Soft cap on the rendered PROCESSES section. Sanity bound so a
-/// runaway process tree doesn't blow up the body line count; users
-/// scroll within the section to see everything below the cap. The
-/// `overflow` count on [`ProcessCollection`] is no longer rendered
-/// as a footer row (the scrollbar IS the overflow indicator) but
-/// is kept so future surfaces can show "n hidden" if needed.
+/// Soft cap on the rendered PROCESSES section: a sanity bound so a
+/// runaway process tree doesn't blow up the body line count. Rows past
+/// it are dropped, and the pane's scrollbar covers what is left.
 const PROCESSES_MAX: usize = 50;
 
 /// One row in the PROCESSES section.

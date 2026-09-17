@@ -59,12 +59,7 @@ fn render_to_lines(
 }
 
 fn project_view(name: &str, sessions: Vec<SessionView>) -> ProjectView {
-    ProjectView::new_for_test(
-        ProjectKey::new(name),
-        name,
-        format!("~/Projects/{name}"),
-        sessions,
-    )
+    ProjectView::new_for_test(ProjectKey::new(name), name, format!("~/Projects/{name}"), sessions)
 }
 
 fn session_view(id: &str, label: &str) -> SessionView {
