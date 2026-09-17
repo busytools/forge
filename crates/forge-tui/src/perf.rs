@@ -47,6 +47,11 @@
 //! on the select arm, which sits outside `drain`; `updates` is the
 //! phase that counts both apply sites.
 //!
+//! Inside a slow frame, `frame::terminal_draw` brackets `terminal.draw` and
+//! `frame::terminal_write` brackets only its post-render half - the buffer
+//! diff, the crossterm write and the stdout flush - so a frame that is slow
+//! outside `ui::render` says whether the cost is drawing or writing.
+//!
 //! Always pin `run_id` too - the file is appended to across restarts,
 //! so an unfiltered query measures several binaries at once, and older
 //! history rolls into `forge-perf.log.1` through `.5` rather than

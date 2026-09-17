@@ -545,7 +545,15 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             {
                 let timer = app.perf.as_ref().map(|p| p.start("frame_total"));
                 let draw_timer = app.perf.as_ref().map(|p| p.start("frame::terminal_draw"));
-                terminal.draw(|f| crate::ui::render(f, app))?;
+                // Started as the render callback ends so it brackets what
+                // `draw` does after it - the buffer diff, the crossterm write
+                // and the stdout flush, which no other span covers.
+                let mut write_timer: Option<crate::perf::Timer> = None;
+                terminal.draw(|f| {
+                    crate::ui::render(f, app);
+                    write_timer = app.perf.as_ref().map(|p| p.start("frame::terminal_write"));
+                })?;
+                drop(write_timer);
                 drop(draw_timer);
                 drop(timer);
             }
