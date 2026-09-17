@@ -351,12 +351,17 @@ pub(crate) enum CronFireOutcome {
     /// the entry instead of advancing a dead cron forever.
     TargetGone,
     /// The owner still has a row, but the boot wave would skip it, so
-    /// nothing will ever drain a prompt buffered for it. The caller
-    /// advances the schedule and drops the prompt - buffering it would
-    /// grow the bucket once per fire until process exit, and the prompt
-    /// cannot reach anyone meanwhile. Distinct from [`Self::TargetGone`]
-    /// because the row is kept: a restored worktree brings the owner back.
-    TargetCannotBeWoken,
+    /// nothing can drain a prompt buffered for it and the prompt cannot
+    /// reach anyone. `directory` is where its session would have started,
+    /// for the warning. Distinct from [`Self::TargetGone`] because the
+    /// row is kept: a restored worktree brings the owner back.
+    ///
+    /// The caller's fate for the entry splits on the kind. A recurring
+    /// cron drops this fire and advances - leaving it due would re-fire
+    /// every tick, and parking it would grow a bucket nothing drains. A
+    /// one-shot stays due instead, because advancing removes a one-shot:
+    /// dropping it would throw the prompt away with no later slot.
+    TargetCannotBeWoken { directory: std::path::PathBuf },
     /// The Command channel is closed (workspace shutting down). The caller
     /// leaves the cron due so the next boot catch-up re-fires it.
     DispatchFailed,
@@ -414,7 +419,9 @@ pub(crate) fn deliver_cron_prompt(
     // for the next tick rather than deleting a real owner's cron on a hiccup.
     match cron_slot_exists(workspace, &view, team_role) {
         CronOwnerCheck::Exists => {}
-        CronOwnerCheck::CannotBeWoken => return CronFireOutcome::TargetCannotBeWoken,
+        CronOwnerCheck::CannotBeWoken { directory } => {
+            return CronFireOutcome::TargetCannotBeWoken { directory };
+        }
         CronOwnerCheck::Absent => return CronFireOutcome::TargetGone,
         CronOwnerCheck::Unknown => return CronFireOutcome::DispatchFailed,
     }
@@ -506,8 +513,9 @@ enum CronOwnerCheck {
     Exists,
     /// The owner has a row, but the boot wave would skip it - a resume
     /// would have no directory to start in - so there is nothing to wake
-    /// and nothing that would drain a parked prompt.
-    CannotBeWoken,
+    /// and nothing that would drain a parked prompt. Carries that
+    /// directory for the fire's warning.
+    CannotBeWoken { directory: std::path::PathBuf },
     /// Conclusively gone: the read succeeded and the label has no row in
     /// the session store.
     Absent,
@@ -529,16 +537,32 @@ fn cron_slot_exists(
     let Some(label) = team_role else {
         return CronOwnerCheck::Exists;
     };
+    // A worker spawned this second is live before it is connected, and
+    // `live_cron_slot` cannot address it until it stamps a session id on
+    // connect. Its directory is being created along with it, so it is not
+    // unwakeable: the fire parks and the worker's own Connected drains it.
+    if workspace.list_live_workers(&view.key).iter().any(|w| w.label == label) {
+        return CronOwnerCheck::Exists;
+    }
     match workspace.stored_worker_row(&view.key, label) {
         Ok(None) => CronOwnerCheck::Absent,
         Ok(Some(row)) => {
+            let directory = crate::mcp::workers::types::worker_tag_dir(
+                &view.path,
+                &row.label,
+                matches!(row.is_git_repo, Some(true)),
+            );
             let can_start = crate::mcp::workers::types::worker_row_can_start(
                 &view.path,
                 &row.label,
                 row.is_git_repo,
                 row.session_id.is_some(),
             );
-            if can_start { CronOwnerCheck::Exists } else { CronOwnerCheck::CannotBeWoken }
+            if can_start {
+                CronOwnerCheck::Exists
+            } else {
+                CronOwnerCheck::CannotBeWoken { directory }
+            }
         }
         Err(_) => CronOwnerCheck::Unknown,
     }
@@ -2462,6 +2486,7 @@ provider = "anthropic"
     async fn failed_spawn_leftover_row(
         resume_existing: Option<&str>,
         from_boot_respawn: bool,
+        seeded_is_git: Option<bool>,
     ) -> Option<crate::store::sessions::SessionRecord> {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
@@ -2486,7 +2511,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: None,
-                    is_git_repo: None,
+                    is_git_repo: seeded_is_git,
                 },
             )
             .expect("seed the row the spawn will write");
@@ -2520,7 +2545,7 @@ provider = "anthropic"
 
     #[tokio::test]
     async fn a_failed_worker_spawn_rolls_the_live_entry_back() {
-        let row = failed_spawn_leftover_row(None, false).await;
+        let row = failed_spawn_leftover_row(None, false, None).await;
         assert!(
             row.is_none(),
             "the durable row goes with the rollback: left behind, the next boot re-spawns a \
@@ -2535,7 +2560,7 @@ provider = "anthropic"
     /// pinned by nothing.
     #[tokio::test]
     async fn a_failed_resume_spawn_keeps_the_row_holding_the_id() {
-        let row = failed_spawn_leftover_row(Some("tester-id"), false).await;
+        let row = failed_spawn_leftover_row(Some("tester-id"), false, None).await;
         assert_eq!(
             row.and_then(|row| row.session_id).as_deref(),
             Some("tester-id"),
@@ -2554,8 +2579,24 @@ provider = "anthropic"
     /// drop it from every later restart.
     #[tokio::test]
     async fn a_failed_boot_respawn_keeps_its_row() {
-        let row = failed_spawn_leftover_row(None, true).await;
+        let row = failed_spawn_leftover_row(None, true, None).await;
         assert!(row.is_some(), "the boot re-spawn keeps the row a later restart re-spawns from");
+    }
+
+    /// The spawn composes the working directory from the gitness the ROW
+    /// records, in preference to probing the project - that is what keeps
+    /// it on the directory the launchpad already cleared. A fixture whose
+    /// row agrees with the disk cannot tell the two apart, so this one
+    /// disagrees: the row says worktree, the project path is not a repo.
+    #[tokio::test]
+    async fn a_spawn_keeps_the_rows_recorded_gitness_over_a_probe() {
+        let row = failed_spawn_leftover_row(Some("tester-id"), false, Some(true)).await;
+        assert_eq!(
+            row.and_then(|row| row.is_git_repo),
+            Some(true),
+            "the spawn writes back the gitness the row recorded, not what a probe of the \
+             project path would answer",
+        );
     }
 
     /// A spawn refused before it reaches the project leaves the caller's

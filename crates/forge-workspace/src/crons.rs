@@ -218,19 +218,28 @@ impl Workspace {
                     self.remove_cron(&cron.project_name, id);
                 }
                 // The owner's row is kept but the wave skips it, so the
-                // prompt has nowhere to land. Advance the schedule and
-                // drop this fire: leaving it due would re-fire every tick
-                // and parking it would grow a bucket nothing drains.
-                CronFireOutcome::TargetCannotBeWoken => {
+                // prompt has nowhere to land right now. A recurring cron
+                // has another slot coming, so this fire is dropped and the
+                // schedule advances; parking it would grow a bucket
+                // nothing drains. A one-shot has no next slot, and
+                // advancing it removes it, so it stays due and fires once
+                // the owner can be woken.
+                CronFireOutcome::TargetCannotBeWoken { directory } => {
+                    let recurring = matches!(cron.kind, forge_primitives::CronKind::Recurring(_));
                     tracing::warn!(
                         target: "forge_workspace::crons",
+                        event_name = "cron_owner_cannot_be_woken",
                         project = %cron.project_name,
                         cron_id = %id,
-                        team_role = cron.team_role.as_deref().unwrap_or("lead"),
-                        "cron owner cannot be woken, so this fire is dropped; its row is \
-                         kept and the schedule advances",
+                        label = cron.team_role.as_deref().unwrap_or("lead"),
+                        directory = %directory.display(),
+                        recurring,
+                        "cron owner cannot be woken, so this fire did not land; the owner's \
+                         row is kept",
                     );
-                    self.advance_or_remove_cron(id, now);
+                    if recurring {
+                        self.advance_or_remove_cron(id, now);
+                    }
                 }
                 // Command channel closed (shutting down): leave the cron
                 // due so the next boot catch-up re-fires it - don't consume
@@ -779,6 +788,45 @@ mod tests {
         );
     }
 
+    /// A worker spawned this second is live before it connects, and a git
+    /// worker's worktree is created during that same window. Judged by its
+    /// row alone it looks unwakeable, and the fire would be dropped; it is
+    /// only not there YET, so the prompt parks for its own Connected drain.
+    #[test]
+    fn deliver_worker_cron_parks_for_an_owner_that_is_still_spawning() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let key = seed_project_with_a_real_root(&ws, &dir);
+        // A git worker whose worktree claude has not created yet: the row
+        // alone says this one cannot start.
+        ws.record_worker_row(&key, "reviewer", "reviewer-uuid", "c", None, None, false, true)
+            .expect("seed the row");
+        ws.insert_live_worker(&key, live_worker_entry("proj", "reviewer"));
+
+        ws.enable_test_dispatch_intercept();
+        let outcome = crate::spawn::deliver_cron_prompt(
+            &ws,
+            "proj",
+            Some("reviewer"),
+            "nightly".to_owned(),
+            false,
+        );
+        assert!(
+            matches!(outcome, crate::spawn::CronFireOutcome::Delivered),
+            "a worker still spawning is not unwakeable - its worktree is being created \
+             along with it; got {}",
+            outcome_name(&outcome),
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", Some("reviewer")),
+            vec!["nightly".to_owned()],
+            "the prompt parks for the spawning worker's Connected drain",
+        );
+    }
+
     #[tokio::test]
     async fn deliver_asleep_dynamic_worker_cron_buffers_and_wakes_the_project() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -859,7 +907,7 @@ mod tests {
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, "proj", Some("steward"), "x".to_owned(), false);
         assert!(
-            matches!(outcome, crate::spawn::CronFireOutcome::TargetCannotBeWoken),
+            matches!(outcome, crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. }),
             "an owner whose worktree is gone cannot be woken, so its fire is not delivered",
         );
         assert_eq!(
@@ -1028,7 +1076,7 @@ mod tests {
         match outcome {
             crate::spawn::CronFireOutcome::Delivered => "Delivered",
             crate::spawn::CronFireOutcome::TargetGone => "TargetGone",
-            crate::spawn::CronFireOutcome::TargetCannotBeWoken => "TargetCannotBeWoken",
+            crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. } => "TargetCannotBeWoken",
             crate::spawn::CronFireOutcome::DispatchFailed => "DispatchFailed",
         }
     }
@@ -1198,6 +1246,71 @@ provider = "anthropic"
         assert!(
             ws.crons_for_project("deleted-project").is_empty(),
             "an overdue cron whose project left forge.toml is removed, not advanced forever",
+        );
+    }
+
+    /// The router's fate for a fire whose owner cannot be woken. A
+    /// recurring cron has another slot coming, so this fire is dropped and
+    /// the schedule advances. A one-shot has no later slot and advancing
+    /// removes it, so it stays due: dropping it would throw away the only
+    /// prompt that cron will ever carry.
+    ///
+    /// Neither may park - that bucket has nothing to drain it.
+    #[test]
+    fn fire_due_crons_advances_recurring_and_keeps_a_one_shot_when_the_owner_cannot_be_woken() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_dir = tempdir().expect("project dir");
+        ws.seed_test_project("proj", &project_dir.path().to_string_lossy());
+        let key = ws.project_key_for_name("proj").expect("seeded project");
+        // The row says the worker runs in a worktree that is not there, so
+        // the wave would skip it.
+        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true)
+            .expect("seed the stranded worker's row");
+
+        let now = std::time::SystemTime::now();
+        let past = std::time::SystemTime::UNIX_EPOCH;
+        for (id, kind) in [
+            ("recurring", CronKind::Recurring("*/5 * * * *".to_owned())),
+            ("one-shot", CronKind::Once(past)),
+        ] {
+            ws.push_cron(CronEntry {
+                id: CronId::from(id),
+                project_name: "proj".to_owned(),
+                kind,
+                prompt: "p".to_owned(),
+                created_at: past,
+                description: None,
+                last_fire: None,
+                next_fire: past,
+                team_role: Some("steward".to_owned()),
+            });
+        }
+
+        ws.enable_test_dispatch_intercept();
+        ws.fire_due_crons(now);
+
+        let after = ws.crons_for_project("proj");
+        let ids: Vec<String> = after.iter().map(|c| c.id.0.clone()).collect();
+        let recurring = after.iter().find(|c| c.id == CronId::from("recurring"));
+        assert!(
+            recurring.is_some_and(|c| c.last_fire.is_some()),
+            "a recurring cron's fire is dropped and its schedule advances, rather than \
+             the entry being removed; entries left {ids:?}",
+        );
+        assert!(
+            after.iter().any(|c| c.id == CronId::from("one-shot")),
+            "a one-shot has no later slot, so it stays due rather than being removed \
+             along with its prompt; entries left {ids:?}",
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", Some("steward")).len(),
+            0,
+            "nothing parks for an owner that can never drain the bucket",
         );
     }
 
