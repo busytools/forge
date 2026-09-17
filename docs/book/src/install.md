@@ -68,9 +68,9 @@ set (with and without `--all-features`),
 doc steps each set `RUSTFLAGS=-D warnings` so a warning CI would reject
 fails locally too; CI sets it once at workflow level instead.
 
-Run it before opening a pull request. It is CI's set minus one job: CI
-also runs `cargo check --release`, which `just check` deliberately
-leaves out.
+Run it before opening a pull request. It is CI's set minus two jobs: CI
+also runs `cargo check --release` and `just check-feature-configs`, both
+of which `just check` deliberately leave out.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
 or `[ERROR] check: <step> failed`, and stops at the first failing step,
@@ -93,7 +93,17 @@ just doc              # rustdoc with warnings denied
 `just check-release` compiles the workspace in release mode. It is
 deliberately not part of `just check`, because a second full compile is
 too slow for the inner loop; it catches the errors only a release build
-sees, and `just release` gates on it.
+sees.
+
+`just check-feature-configs` compiles the two forge-tui configurations
+nothing else builds: the one `just install` produces - release, `perf`
+on, the test-only features off - and `testing` on its own.
+`--all-features` cannot stand in for either, because it turns every
+feature on regardless and so never exercises which configuration
+enables what: the install build leaving `test-helpers` off, or
+`testing` having to forward it.
+
+`just release` gates on both.
 
 ## Install the binary
 

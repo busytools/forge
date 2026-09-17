@@ -83,6 +83,29 @@ jobs:
           key: release
       - run: cargo check --release --workspace --all-targets --all-features
 
+  # The two forge-tui configurations nothing else builds: the one
+  # `scripts/install.sh` produces (release, `perf` on, the test-only
+  # features off) and `testing` on its own. The job above covers
+  # neither - with every feature on, it never exercises which
+  # configuration enables what: the install build leaving
+  # `test-helpers` off, or `testing` having to forward it.
+  feature-configs:
+    name: cargo check (install.sh + testing configs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # forge-dictate captures audio through cpal, whose Linux backend
+      # is ALSA; without the headers `alsa-sys` fails to build and every
+      # compiling job dies. Removing this breaks audio, not just CI.
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: feature-configs
+      - run: cargo check --locked --release -p forge-tui --bin forge --features perf
+      - run: cargo check --locked -p forge-tui --features testing
+
   docs:
     name: cargo doc
     runs-on: ubuntu-latest

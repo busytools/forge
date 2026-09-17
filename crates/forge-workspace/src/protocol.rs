@@ -1394,9 +1394,14 @@ impl std::fmt::Debug for SessionUpdate {
     }
 }
 
-/// Errors from `Workspace::dispatch`.
+/// Errors from the dispatch boundary. `UnknownSession` and
+/// `SessionClosed` are returned by `Workspace::dispatch`;
+/// `NoActiveSession` by `App::dispatch_command`, which has no slot to
+/// name.
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchError {
+    #[error("no active session")]
+    NoActiveSession,
     #[error("no session task registered for key {0:?}")]
     UnknownSession(SessionSlot),
     #[error("session task for key {0:?} has closed its command channel")]
