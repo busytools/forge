@@ -8,34 +8,24 @@ impl super::App {
     /// Returns `(label, value)` for the welcome message's account
     /// line. The line's *layout slot* is reserved from the first
     /// frame in workspace mode - `Account: ...` shows immediately,
-    /// then the value fills in once data lands. Avoids the
-    /// alternative options (line pops in late, or flickers
-    /// `Gateway` → `Gateway · team`) that surface as stale UI.
+    /// then the value fills in once the account lands. Avoids the
+    /// alternative options (line pops in late, or flickers) that
+    /// surface as stale UI.
     ///
     /// Resolution table:
-    /// - Workspace mode + both pieces → `"Account: name · tier"`.
-    /// - Workspace mode + partial/no data → `"Account: ..."` skeleton.
-    /// - Legacy mode (no workspace) + tier only → `"Subscription: tier"`.
-    /// - Legacy mode + no data → empty (renderer hides line).
+    /// - Workspace mode + a display name → `"Account: name"`.
+    /// - Workspace mode + no name yet → `"Account: ..."` skeleton.
+    /// - Legacy mode (no workspace) → empty (renderer hides line).
     fn welcome_account_display(&self) -> (String, String) {
-        // Both accessors return owned values from the bucket; trim +
-        // clone into owned form to avoid binding to temporaries.
         let display_name = self
             .active_account_display_name()
             .map(|n| n.trim().to_owned())
             .filter(|s| !s.is_empty());
-        let subscription = self
-            .account_info()
-            .and_then(|a| a.subscription_type)
-            .map(|t| t.trim().to_owned())
-            .filter(|s| !s.is_empty());
-        let workspace_mode = self.workspace.is_some();
 
-        match (workspace_mode, display_name, subscription) {
-            (_, Some(name), Some(tier)) => ("Account".to_owned(), format!("{name} · {tier}")),
-            (true, _, _) => ("Account".to_owned(), "\u{2026}".to_owned()),
-            (false, _, Some(tier)) => ("Subscription".to_owned(), tier),
-            (false, _, None) => (String::new(), String::new()),
+        match (self.workspace.is_some(), display_name) {
+            (true, Some(name)) => ("Account".to_owned(), name),
+            (true, None) => ("Account".to_owned(), "\u{2026}".to_owned()),
+            (false, _) => (String::new(), String::new()),
         }
     }
 

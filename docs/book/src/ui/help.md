@@ -35,7 +35,7 @@ Input-editing shortcuts swap modifiers per OS: macOS uses `Cmd+Z` / `Cmd+Shift+Z
 
 ## Welcome
 
-The first message in a fresh chat - a regular scrollback message, not an overlay: a rust-orange bold "Overview" banner over a Ferris-says ASCII block (rust orange), a metadata block (Version, Account, cwd, Session ID), and one rotating tip. The account line shows `Account: <display name> · <tier>` when workspace routing picked the account from `forge.toml`, falling back to `Subscription: <tier>` otherwise.
+The first message in a fresh chat - a regular scrollback message, not an overlay: a rust-orange bold "Overview" banner over a Ferris-says ASCII block (rust orange), a metadata block (Version, Account, cwd, Session ID), and one rotating tip. The account line shows `Account: <display name>` for the account `forge.toml` routed the session to, and holds the reserved `Account: ...` skeleton until the bridge reports which account that is.
 
 <div class="term">
 
@@ -54,7 +54,7 @@ The first message in a fresh chat - a regular scrollback message, not an overlay
 
 
   <span class="dim">Version:      </span><span class="dim">1.0.53 · 3cda0dee</span>
-  <span class="dim">Account:      </span><span class="accent bold">Stargate · team</span>
+  <span class="dim">Account:      </span><span class="accent bold">Stargate</span>
   <span class="dim">cwd:          ~/Projects/forge</span>
   <span class="dim">Session ID:   550e8400-e29b-41d4-a716-446655440000</span>
 

@@ -555,6 +555,13 @@ impl super::App {
         self.active_session().and_then(|s| s.active_account_display_name.clone())
     }
 
+    /// Active session's forge org, from its slot. This is the org in
+    /// `forge.toml` that owns the session's accounts: the gateway
+    /// selects only from the org the child's request path names.
+    pub fn session_org(&self) -> Option<&str> {
+        self.active_session_key.as_ref().map(forge_workspace::SessionSlot::org)
+    }
+
     /// Set the active session's forge-side account display name.
     pub fn set_active_account_display_name(&mut self, value: Option<String>) {
         if let Some(session) = self.active_bucket_mut() {

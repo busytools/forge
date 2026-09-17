@@ -2367,7 +2367,7 @@ mod tests {
     }
 
     #[test]
-    fn forge_account_identity_ready_stores_name_but_keeps_welcome_skeleton_until_tier_arrives() {
+    fn forge_account_identity_ready_fills_the_welcome_account_line() {
         let mut app = make_test_app();
         app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
@@ -2390,17 +2390,15 @@ mod tests {
         // App state stores the name (Status panel needs it).
         assert_eq!(app.active_account_display_name().as_deref(), Some("Stargate"));
 
-        // Welcome row shows the "Account: …" skeleton because the
-        // tier hasn't arrived yet - committing "Account: Stargate"
-        // now would flicker into "Account: Stargate · team" once
-        // the status snapshot lands.
+        // The name is all the line carries, so it fills on this event
+        // rather than waiting on anything else to arrive.
         let Some(MessageBlock::Welcome(welcome)) =
             app.messages().expect("active session")[0].blocks.first()
         else {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.account_label, "Account");
-        assert_eq!(welcome.subscription, "…");
+        assert_eq!(welcome.subscription, "Stargate");
     }
 
     #[test]
@@ -2437,7 +2435,7 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.account_label, "Account");
-        assert_eq!(welcome.subscription, "Stargate · team");
+        assert_eq!(welcome.subscription, "Stargate");
     }
 
     #[test]
@@ -2468,10 +2466,9 @@ mod tests {
             },
         );
 
-        // Workspace mode: without a forge_account display name to
-        // pair with the subscription tier, the row stays on the
-        // "Account: …" skeleton rather than flipping to the legacy
-        // `Subscription: <tier>` label.
+        // Workspace mode: with no forge_account display name the row
+        // stays on the "Account: …" skeleton. Nothing the status
+        // snapshot carries can fill it.
         let Some(MessageBlock::Welcome(welcome)) =
             app.messages().expect("active session")[0].blocks.first()
         else {

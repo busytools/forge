@@ -1301,12 +1301,11 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw(profile_fitted),
     ]));
 
-    // Org. Reads from the active session's `account.organization`;
-    // dim placeholder when the SDK hasn't reported one yet.
-    let org_value = app
-        .account_info()
-        .and_then(|account| account.organization.clone())
-        .unwrap_or_else(|| "\u{2014}".to_owned());
+    // Org. The forge org that owns the account serving this session:
+    // `forge.toml` lists each org's accounts, and the gateway selects
+    // only from the org the child's request path names. Dim placeholder
+    // when no session holds the pane.
+    let org_value = app.session_org().map_or_else(|| "\u{2014}".to_owned(), str::to_owned);
     let org_fitted = truncate_with_ellipsis(&org_value, value_budget);
     lines.push(Line::from(vec![
         Span::raw(" "),
@@ -2233,6 +2232,36 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("1 compaction"), "got:\n{rendered}");
         assert!(!rendered.contains("1 compactions"), "got:\n{rendered}");
+    }
+
+    /// The Org row names the org that owns the session's accounts - the
+    /// slot's org, which is what `forge.toml` groups accounts under -
+    /// rather than the SDK-reported organization, which nothing assigns.
+    /// Pinned by row index: the Profile row carries an account name, so
+    /// a needle search over the whole panel cannot say which row drew
+    /// the org.
+    #[test]
+    fn the_org_row_names_the_session_slot_org() {
+        let app = App::test_default();
+        let rows: Vec<String> = build_account_panel_lines(&app, 32).iter().map(line_text).collect();
+        assert!(
+            rows[2].contains("TestOrg"),
+            "row 2 is the Org row and it carries the session slot's org; got: {:?}",
+            rows[2],
+        );
+
+        // No session holding the pane: the row keeps its place and reads
+        // the dim placeholder the book documents.
+        let mut orphan = App::test_default();
+        orphan.sessions.clear();
+        orphan.active_session_key = None;
+        let orphan_rows: Vec<String> =
+            build_account_panel_lines(&orphan, 32).iter().map(line_text).collect();
+        assert!(
+            orphan_rows[2].contains('\u{2014}'),
+            "row 2 keeps its place and reads the placeholder with no session; got: {:?}",
+            orphan_rows[2],
+        );
     }
 
     /// Paint the pane to a `TestBackend` and return its rows, trailing
