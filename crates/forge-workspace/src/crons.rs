@@ -224,12 +224,13 @@ impl Workspace {
                         target: "forge_workspace::crons",
                         project = %cron.project_name,
                         cron_id = %id,
-                        "cron fire dispatch failed; leaving it due for the next boot",
+                        "cron fire deferred; leaving it due to retry",
                     );
                     let _ = self.update_tx.send(SessionUpdate::ServiceStatus {
                         severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
                         message: format!(
-                            "Cron in '{}' could not fire (its session is shutting down); it stays due for the next boot",
+                            "Cron in '{}' could not fire yet (its session is shutting down, or a \
+                             spawn would be refused right now); it stays due and retries",
                             cron.project_name
                         ),
                     });
@@ -924,6 +925,46 @@ mod tests {
         );
     }
 
+    /// A cooldown empties the project's walk until its reset, which is
+    /// transient the same way an unsettled map is, so the fire stays due
+    /// rather than parking a prompt the refusal would expire.
+    #[test]
+    fn deliver_cron_during_a_cooldown_leaves_the_fire_for_the_next_tick() {
+        let (ws, _dir) = workspace_with_one_unsettled_account();
+        ws.seed_test_ready_account("acct-a");
+        ws.enable_test_dispatch_intercept();
+
+        // Control: with the one account serving and not cooling, the same
+        // fire is delivered.
+        let served = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert_eq!(
+            outcome_name(&served),
+            "Delivered",
+            "the same fire with the account serving is delivered",
+        );
+
+        // The usage probe's own verdict is the public way to cool an
+        // account, and it takes epoch seconds.
+        let reset_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("epoch")
+            .as_secs()
+            + 60;
+        ws.gateway
+            .report_probe_limit(&forge_gateway::AccountKey("acct-a".to_owned()), Some(reset_at));
+        let cooling = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert_eq!(
+            outcome_name(&cooling),
+            "DispatchFailed",
+            "a cooling walk is a transient refusal, not a delivered fire",
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", None).len(),
+            1,
+            "the deferred fire parked nothing, so the retry parks it once rather than twice",
+        );
+    }
+
     /// The outcome's own name, so a failure says which variant it got
     /// rather than only that it was not the expected one.
     fn outcome_name(outcome: &crate::spawn::CronFireOutcome) -> &'static str {
@@ -934,9 +975,10 @@ mod tests {
         }
     }
 
-    /// A workspace over a forge.toml declaring one account and one
-    /// project. Nothing runs the account loader in a test, so the account
-    /// map starts unsettled. The tempdir must outlive the caller.
+    /// A workspace over a forge.toml declaring one account and one project
+    /// with a model, so the account walk is the thing a spawn would reach.
+    /// Nothing runs the account loader in a test, so the account map
+    /// starts unsettled. The tempdir must outlive the caller.
     ///
     /// `new_for_test` rather than a stubbed workspace on purpose: the
     /// stubs carry an EMPTY account pool, where `all_loaded` is vacuously
@@ -956,6 +998,7 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "proj"
 path = "/tmp/wc-unsettled"
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "acct-a"

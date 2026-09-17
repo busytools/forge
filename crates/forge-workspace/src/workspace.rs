@@ -1737,6 +1737,24 @@ impl Workspace {
         self.gateway.select_for(&project.org, model).is_ok()
     }
 
+    /// Whether a spawn in `project_key` would be refused because every
+    /// account serving its model is cooling. Narrower than
+    /// [`Self::project_would_bind`] on purpose: that is also false for a
+    /// model no account declares, which is permanent, and a wake refused
+    /// for it must not be left retrying forever.
+    pub(crate) fn project_walk_is_cooling(&self, project_key: &ProjectKey) -> bool {
+        let Some(project) = self.project_for_key(project_key) else {
+            return false;
+        };
+        let Some(model) = project.model.as_deref() else {
+            return false;
+        };
+        matches!(
+            self.gateway.select_for(&project.org, model),
+            Err(forge_gateway::SelectFailure::BudgetExhausted { .. })
+        )
+    }
+
     /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
     /// declaration order. Forge-tui's launchpad renders the per-
     /// account loading glyph row from this; the order matches

@@ -422,18 +422,32 @@ pub(crate) fn deliver_cron_prompt(
     // than a drop, because the next tick retries once the map settles;
     // parking now would have the spawn refusal expire the prompt instead.
     //
-    // This is NOT a boot gate. It reads "is the account map mid-flight
-    // right now", which goes false again long after boot: a usage poll
-    // that flips an account Ready to Bailed on a 401, and the recovery
-    // poll that walks it back through `Loading`, leaves the map unsettled
-    // mid-session while the user is working. A fire deferred there is a
-    // delay for the same reason. Do not simplify it into a boot check.
+    // This is NOT a boot gate, and do not simplify it into one. The two
+    // halves are different kinds of thing: `gateway_ready` is bind-time
+    // only and monotonic, while `all_loaded` is defined over the account
+    // map, so it goes false again whenever anything re-enters `Loading`.
+    // A fire deferred by the second half is a delay for the same reason
+    // as the first, not a drop.
     if !workspace.all_accounts_loaded() {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project_name,
             "cron fire deferred: the account map has not settled, so a spawn would be refused \
              and its parked prompt expired",
+        );
+        return CronFireOutcome::DispatchFailed;
+    }
+    // A cooldown empties the walk until its reset, which is transient the
+    // same way an unsettled map is, and a refusal there expires the park
+    // too. A walk empty because no account declares the model is the other
+    // case, and that one is permanent - deferring it would retry a broken
+    // cron forever, so it is left to fail as before.
+    if workspace.project_walk_is_cooling(&view.key) {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project_name,
+            "cron fire deferred: every account serving this project's model is cooling, so the \
+             wake would be refused and its parked prompt expired",
         );
         return CronFireOutcome::DispatchFailed;
     }
