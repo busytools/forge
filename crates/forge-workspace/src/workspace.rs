@@ -346,8 +346,8 @@ pub struct Workspace {
     pub(crate) gotify_subs: Mutex<Vec<forge_primitives::GotifySubscription>>,
     /// Machine-local redb store. Backs durable crons ([`crate::store::cron`]),
     /// Gotify and Slack subscriptions ([`crate::store::gotify`],
-    /// [`crate::store::slack`]) and persisted dynamic workers
-    /// ([`crate::store::dynamic_workers`]). `None` when the DB couldn't
+    /// [`crate::store::slack`]) and persisted sessions
+    /// ([`crate::store::sessions`]). `None` when the DB couldn't
     /// open (degrade to in-memory-only, no persistence) or in
     /// `testing_stub`. `pub(crate)` so the impl block in
     /// [`crate::review`] can reach it.
