@@ -84,9 +84,9 @@ Rides along as degraded - the row clears on a config edit plus a restart, or whe
         <span style="color:#7eb87a">●</span> normalization model                   <span class="dim">       ready</span>
           <span class="dim">(s1-mini-f16)</span>
 
-        <span class="error">Granite1 will not start a session. forge starts</span>
-        <span class="error">without it; fix the auth and restart forge to pick</span>
-        <span class="error">the re-mint up.</span>
+        <span class="error">Granite1 cannot authenticate. forge starts without</span>
+        <span class="error">it and picks it only as a last resort; fix the auth</span>
+        <span class="error">and restart forge to pick the re-mint up.</span>
 
         <span class="bold">Fix the auth</span>
           the account's token key
@@ -131,9 +131,9 @@ The token-path screens:
 <div class="term">
 
   <pre class="indent">
-        <span style="color:#cf6171">TokenAcct will not start a session. forge starts</span>
-        <span style="color:#cf6171">without it; fix the auth and restart forge to pick</span>
-        <span style="color:#cf6171">the re-mint up.</span>
+        <span style="color:#cf6171">TokenAcct cannot authenticate. forge starts without</span>
+        <span style="color:#cf6171">it and picks it only as a last resort; fix the auth</span>
+        <span style="color:#cf6171">and restart forge to pick the re-mint up.</span>
 
         <span class="bold">Fix the auth</span>
           the account's token key

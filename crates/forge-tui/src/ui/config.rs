@@ -74,14 +74,14 @@ fn extensions_help_text(app: &App) -> String {
         if app.plugins.search_focused {
             "Left/Right switch tab | Down list | Type to filter | Backspace erase | Del clear | Esc close".to_owned()
         } else if crate::app::extensions::tab_takes_available(app.plugins.active_tab) {
-            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close"
+            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | r refresh | Esc close"
                 .to_owned()
         } else {
-            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | u update all | c check updates | Esc close"
+            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | u update all | c check updates | r refresh | Esc close"
                 .to_owned()
         }
     } else {
-        "Left/Right switch tab | Up/Down move | Enter actions | Esc close".to_owned()
+        "Left/Right switch tab | Up/Down move | Enter actions | r refresh | Esc close".to_owned()
     }
 }
 
@@ -590,8 +590,8 @@ mod tests {
         app.plugins.search_focused = false;
         assert_eq!(
             super::extensions_help_text(&app),
-            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close",
-            "the list hint names the toggle, update and check keys: Installed takes the toggle too"
+            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | r refresh | Esc close",
+            "the list hint names the toggle, update, check and refresh keys: Installed takes the toggle too"
         );
     }
 
