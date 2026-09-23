@@ -269,28 +269,21 @@ impl Gateway {
         status: StatusCode,
         headers: &HeaderMap,
     ) {
-        if status == StatusCode::TOO_MANY_REQUESTS {
-            let now = SystemTime::now();
-            if self.rotation.lock().record_429(account, now) {
-                let cooldown = self.cooldown_for(account, headers);
-                self.rotate_off(account, org, project, session, now + cooldown);
-            }
-        } else {
-            if !status.is_success()
-                && (header_value_is(headers, "anthropic-ratelimit-unified-status", "rejected")
-                    || header_value_is(
-                        headers,
-                        "anthropic-ratelimit-unified-overage-status",
-                        "rejected",
-                    ))
-            {
-                let now = SystemTime::now();
-                let cooldown = self.cooldown_for(account, headers);
-                self.rotate_off(account, org, project, session, now + cooldown);
-            }
-            if status.is_success() {
-                self.rotation.lock().reset_streak(account);
-            }
+        let rejected = header_value_is(headers, "anthropic-ratelimit-unified-status", "rejected")
+            || header_value_is(headers, "anthropic-ratelimit-unified-overage-status", "rejected");
+        let now = SystemTime::now();
+        if status == StatusCode::TOO_MANY_REQUESTS && self.rotation.lock().record_429(account, now)
+        {
+            let cooldown = self.cooldown_for(account, headers);
+            self.rotate_off(account, org, project, session, now + cooldown);
+        }
+        if rejected {
+            let cooldown = self.cooldown_for(account, headers);
+            self.rotate_off(account, org, project, session, now + cooldown);
+        } else if status.is_success() {
+            // Rejected is not success: a rate-limit rejection must not
+            // read as the account recovering.
+            self.rotation.lock().reset_streak(account);
         }
     }
 
@@ -1133,6 +1126,92 @@ mod tests {
         );
         let retry = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
         assert_eq!(retry.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A `rejected` header means the same thing on any status, so a 200
+    /// carrying it is a rate-limit rejection too, and either header
+    /// carries the verdict.
+    #[tokio::test]
+    async fn a_success_carrying_rejected_rotates_on_either_header() {
+        for header in
+            ["anthropic-ratelimit-unified-status", "anthropic-ratelimit-unified-overage-status"]
+        {
+            let harness = harness(Duration::ZERO).await;
+            harness.script.lock().push_back((
+                StatusCode::OK.as_u16(),
+                vec![(header.to_owned(), "rejected".to_owned())],
+            ));
+            let response =
+                post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+            assert_eq!(response.status(), StatusCode::OK, "the status streams back untouched");
+            assert_eq!(
+                harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+                None,
+                "{header}: a rejected verdict rotates whatever status carries it",
+            );
+            assert!(
+                harness
+                    .gateway
+                    .rotation
+                    .lock()
+                    .is_cooling_down(&AccountKey("OpenRouter".to_owned()), SystemTime::now()),
+                "{header}: the rejected account cools, so the retry cannot come back to it",
+            );
+        }
+    }
+
+    /// A rejected response is not a success: it rotates without clearing
+    /// the streak on its way past. `retry-after: 0` reads as no reset
+    /// time and a zero no-reset cooldown cools the account to the
+    /// instant, so the rotated account is selectable again at once and
+    /// the streak alone decides whether the next 429 is the fifth.
+    #[tokio::test]
+    async fn a_rejected_response_does_not_clear_the_429_streak() {
+        let harness = harness(Duration::ZERO).await;
+        harness.gateway.set_org_pins([(
+            "Busytools".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["OpenRouter".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        harness
+            .gateway
+            .pool
+            .set_loading(&AccountKey("OpenRouter".to_owned()), crate::LoadingState::Ready);
+        harness.gateway.set_rotation_numbers(crate::rotation::RotationNumbers {
+            no_reset_cooldown: Duration::ZERO,
+            ..Default::default()
+        });
+        for _ in 0..4 {
+            harness
+                .script
+                .lock()
+                .push_back((429, vec![("retry-after".to_owned(), "30".to_owned())]));
+            let response =
+                post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS, "the streak is counting");
+        }
+        harness.script.lock().push_back((
+            StatusCode::OK.as_u16(),
+            vec![
+                ("anthropic-ratelimit-unified-status".to_owned(), "rejected".to_owned()),
+                ("retry-after".to_owned(), "0".to_owned()),
+            ],
+        ));
+        post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        harness.script.lock().push_back((429, vec![("retry-after".to_owned(), "30".to_owned())]));
+        let fifth = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(
+            fifth.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the fifth 429 reached the upstream, so the binding below is the streak's verdict",
+        );
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            None,
+            "the rejection left the four 429s standing, so this one is the fifth",
+        );
     }
 
     #[tokio::test]

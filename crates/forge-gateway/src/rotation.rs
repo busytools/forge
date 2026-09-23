@@ -4,7 +4,7 @@
 //! Four triggers mark an account exhausted (spec, Rotation): a
 //! `rate_limit_event` whose status is not `allowed`, a
 //! `anthropic-ratelimit-unified-status` / `-overage-status` of
-//! `rejected` on the failing response, any window at 100% utilization
+//! `rejected` on the response, any window at 100% utilization
 //! with a reset ahead, and five consecutive 429s from one account
 //! inside 60 seconds. The first three are proven exhaustion; the
 //! streak is the heuristic, which is why its numbers are config.
