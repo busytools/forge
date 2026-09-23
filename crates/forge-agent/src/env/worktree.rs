@@ -801,10 +801,12 @@ pub fn reap_agent_worktree(agent_worktree: &AgentWorktree) -> AgentWorktreeReap 
     }
     // `git worktree remove` refuses a worktree holding initialized
     // submodules however clean it is (git-worktree(1)), so the unforced
-    // form cannot serve here. The porcelain gate above is what authorizes
-    // `--force`: no live writer can dirty the tree between them, because
-    // the completion hook runs after the subagent returned and the sweep
-    // lists only trees untouched for an hour with no live owner.
+    // form cannot serve here. The porcelain gate above authorizes
+    // `--force` and is then the only dirtiness gate on this path: the hook
+    // runs once the subagent has returned, and the sweep lists only trees
+    // whose top-level dir has gone untouched for an hour and whose lock
+    // has no live pid - neither of which excludes a process the subagent
+    // left running behind it.
     match remove_worktree(path, true) {
         Ok(()) => AgentWorktreeReap::Reaped {
             branch: reap_worktree_branch(&agent_worktree.repo_root, &agent_worktree.branch),
