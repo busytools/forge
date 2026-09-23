@@ -1754,37 +1754,63 @@ pub(crate) fn handle_despawn_worker(
             );
             None
         }
-        Some(path) => match forge_agent::env::worktree::remove_worktree(path, force) {
-            Ok(()) => {
-                tracing::info!(
-                    target: "forge_workspace::spawn",
-                    project = %project_key.as_str(),
-                    label = %label,
-                    worktree = %path.display(),
-                    "despawn: worktree removed",
-                );
-                // Only after a successful removal: while the worktree
-                // stands it holds the branch checked out, and git refuses
-                // to delete a checked-out branch.
-                branch_cleanup_warning = reap_branch_and_reviews(
-                    workspace,
-                    project_view.as_ref(),
-                    review_key.as_ref(),
-                    label,
-                );
-                None
+        Some(path) => {
+            // git refuses a worktree holding initialized submodules
+            // however clean it is (git-worktree(1)), so its refusal is
+            // not a verdict on the disk and cannot stand as one. Re-judge
+            // it against the worktree as it is now: `--force` discards
+            // uncommitted work, so it stands in only for a verdict taken
+            // here rather than one taken before the worker was torn down.
+            let removal = match forge_agent::env::worktree::remove_worktree(path, force) {
+                Err(err)
+                    if !force
+                        && forge_agent::env::worktree::worktree_dirty_reason(path).is_none() =>
+                {
+                    tracing::debug!(
+                        target: "forge_workspace::spawn",
+                        event_name = "despawn_worktree_removal_forced",
+                        project = %project_key.as_str(),
+                        label = %label,
+                        worktree = %path.display(),
+                        error = %err,
+                        "despawn: git refused the removal of a clean worktree; retrying with --force",
+                    );
+                    forge_agent::env::worktree::remove_worktree(path, true)
+                }
+                other => other,
+            };
+            match removal {
+                Ok(()) => {
+                    tracing::info!(
+                        target: "forge_workspace::spawn",
+                        project = %project_key.as_str(),
+                        label = %label,
+                        worktree = %path.display(),
+                        "despawn: worktree removed",
+                    );
+                    // Only after a successful removal: while the worktree
+                    // stands it holds the branch checked out, and git refuses
+                    // to delete a checked-out branch.
+                    branch_cleanup_warning = reap_branch_and_reviews(
+                        workspace,
+                        project_view.as_ref(),
+                        review_key.as_ref(),
+                        label,
+                    );
+                    None
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target: "forge_workspace::spawn",
+                        project = %project_key.as_str(),
+                        label = %label,
+                        error = %err,
+                        "despawn: worker torn down but worktree cleanup failed"
+                    );
+                    Some(err.to_string())
+                }
             }
-            Err(err) => {
-                tracing::warn!(
-                    target: "forge_workspace::spawn",
-                    project = %project_key.as_str(),
-                    label = %label,
-                    error = %err,
-                    "despawn: worker torn down but worktree cleanup failed"
-                );
-                Some(err.to_string())
-            }
-        },
+        }
         None => None,
     };
 
@@ -3847,6 +3873,17 @@ provider = "anthropic"
         assert!(status.success(), "git {args:?} failed in {dir:?}");
     }
 
+    /// `git rev-parse <rev>` in `dir`, trimmed.
+    fn git_rev(dir: &std::path::Path, rev: &str) -> String {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", rev])
+            .current_dir(dir)
+            .output()
+            .expect("spawn git");
+        assert!(out.status.success(), "git rev-parse {rev} failed in {dir:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
     fn branch_exists(repo: &std::path::Path, branch: &str) -> bool {
         let out = std::process::Command::new("git")
             .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
@@ -4190,6 +4227,107 @@ provider = "anthropic"
 
         workspace.insert_live_worker(&project_key, fake_git_worker_entry(label, "worker-1"));
         (workspace, project_key, wt, repo, config)
+    }
+
+    /// The despawn fixture whose worker worktree holds an initialized
+    /// submodule. The repo gains the submodule and the worktree's branch
+    /// follows it, then `git submodule update --init` runs in the
+    /// worktree - what a worker does - which is what leaves
+    /// `<repo>/.git/worktrees/<label>/modules` behind.
+    fn git_despawn_fixture_with_submodule(
+        label: &str,
+    ) -> (Arc<Workspace>, ProjectKey, std::path::PathBuf, tempfile::TempDir, tempfile::TempDir)
+    {
+        let (workspace, project_key, wt, repo, config) = git_despawn_fixture(label);
+        let source = tempdir().expect("submodule source tempdir");
+        run_git(source.path(), &["init", "-q"]);
+        std::fs::write(source.path().join("sub.txt"), "submodule seed").expect("write seed");
+        run_git(source.path(), &["add", "."]);
+        run_git(
+            source.path(),
+            &[
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-q",
+                "-m",
+                "sub",
+            ],
+        );
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                source.path().to_str().expect("utf8 path"),
+                "contracts/sub",
+            ],
+        );
+        run_git(repo.path(), &["commit", "-q", "-m", "add submodule"]);
+        // The worktree is cut from the pre-submodule commit, so its branch
+        // has to take the repo's HEAD before the submodule exists to init.
+        run_git(&wt, &["reset", "--hard", &git_rev(repo.path(), "HEAD")]);
+        run_git(&wt, &["-c", "protocol.file.allow=always", "submodule", "update", "--init"]);
+        (workspace, project_key, wt, repo, config)
+    }
+
+    /// The shape `git worktree remove` refuses however clean the worktree
+    /// is: a worker that ran `git submodule update --init` in its own
+    /// worktree, whose directory the despawn must still remove. Left
+    /// unfixed, git's refusal reads as a disk-state failure and the
+    /// maintainer gets a toast about a worktree that is in fact clean.
+    #[tokio::test]
+    async fn despawn_removes_a_clean_worktree_holding_initialized_submodules() {
+        let (workspace, project_key, wt, repo, _config) =
+            git_despawn_fixture_with_submodule("reviewer");
+        // Fixture precondition, and the reason the test exists: git will
+        // not remove this worktree unforced. Asserted rather than assumed
+        // so a git that stops refusing fails here instead of quietly
+        // passing without exercising the fix.
+        assert!(
+            repo.path().join(".git").join("worktrees").join("reviewer").join("modules").is_dir(),
+            "fixture precondition: the worktree's gitdir holds the submodule's modules dir",
+        );
+        let refused = std::process::Command::new("git")
+            .args(["worktree", "remove", wt.to_str().expect("utf8 path")])
+            .current_dir(wt.parent().expect("wt parent"))
+            .output()
+            .expect("spawn git");
+        assert!(
+            !refused.status.success(),
+            "fixture precondition: git refuses this worktree unforced"
+        );
+        assert!(wt.exists(), "and the refusal leaves it on disk");
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+        let result = resp_rx.await.expect("result");
+
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned {
+                    worktree_cleanup_warning: None,
+                    branch_cleanup_warning: None,
+                }
+            ),
+            "a clean worktree git refuses by shape despawns without the caller forcing: {result:?}"
+        );
+        assert!(!wt.exists(), "the worktree is removed, not orphaned");
+        assert_eq!(
+            drain_removed_dispositions(&mut rx),
+            vec![WorktreeDisposition::Removed],
+            "and the toast is told the disk agrees, not that the removal failed",
+        );
+        assert!(
+            !branch_exists(repo.path(), "worktree-reviewer"),
+            "the branch behind it is reaped as usual"
+        );
     }
 
     /// A git worker with a clean worktree despawns AND removes the
