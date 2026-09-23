@@ -49,22 +49,56 @@ fn error_body() -> StreamBody {
     )
 }
 
-/// Capture-machine identifiers - the real name, home path in both the
-/// plain and the dash-sanitised form the CLI derives its project slugs
-/// from, email, city, the throwaway config dir the capture spawns
-/// under, and long hex-shaped runs (UUIDs, the CLI's 64-hex device id,
-/// hashes) - are capture-local. The bare GitHub username, org, account
-/// and project names are public and stay.
+/// The capture machine's own identifiers, derived rather than listed.
+///
+/// A hardcoded list names one machine's home, one person's name and one
+/// email, so the needles are themselves a leak in a published repository,
+/// and it is the weaker test besides: a needle list naming one user only
+/// proves the redactor worked for that user. Deriving them redacts
+/// whatever machine the capture runs on.
+///
+/// One entry the old list carried is NOT derivable, and it is the city.
+/// It reached the body through the CLI's memory injection, which
+/// `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` now keeps out of a capture, so there
+/// is no environment source to derive it from and nothing to substitute.
+fn identity_needles() -> &'static [String] {
+    static NEEDLES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NEEDLES.get_or_init(|| {
+        let mut out = Vec::new();
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = home.to_string_lossy().to_string();
+            if !home.is_empty() {
+                // The dash-sanitised form is what the CLI derives its
+                // project slugs from.
+                out.push(home.replace('/', "-"));
+                out.push(home);
+            }
+        }
+        for key in ["user.email", "user.name"] {
+            if let Some(value) = git_config(key) {
+                out.push(value);
+            }
+        }
+        out
+    })
+}
+
+/// One `git config --get`, or `None` when git is missing or the key unset.
+fn git_config(key: &str) -> Option<String> {
+    let output = std::process::Command::new("git").args(["config", "--get", key]).output().ok()?;
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+/// Capture-machine identifiers - the home path in both the plain and the
+/// dash-sanitised form above, the git identity, the throwaway config dir
+/// the capture spawns under, and long hex-shaped runs (UUIDs, the CLI's
+/// 64-hex device id, hashes) - are capture-local. The bare GitHub
+/// username, org, account and project names are public and stay.
 fn redact(text: &str, config_dir: &str) -> String {
     let mut out = text.to_owned();
-    for secret in [
-        "/Users/vedhavyas",
-        "-Users-vedhavyas",
-        "7549475+vedhavyas@users.noreply.github.com",
-        "Vedhavyas Singareddi",
-        "Hyderabad",
-    ] {
-        out = out.replace(secret, "<REDACTED>");
+    for secret in identity_needles() {
+        out = out.replace(secret.as_str(), "<REDACTED>");
     }
     if !config_dir.is_empty() {
         out = out.replace(config_dir, "<REDACTED>");
@@ -133,6 +167,13 @@ fn the_committed_capture_carries_no_capture_machine_path() {
     ] {
         assert!(!body.contains(needle), "the committed capture carries {what} ({needle})");
     }
+    // The CLI marks injected memory with this heading. It is not
+    // capture-local like a path, so the loop above cannot see it, and a
+    // capture that skips the memory lever inlines the whole file.
+    assert!(
+        !body.contains("# claudeMd"),
+        "the committed capture carries the CLI's injected CLAUDE.md",
+    );
 }
 
 #[tokio::test]
@@ -192,6 +233,11 @@ async fn capture_a_real_messages_request_body() {
         .env("ANTHROPIC_BASE_URL", format!("{base}/Capture/forge/capture-1"))
         .env("CLAUDE_CODE_OAUTH_TOKEN", "forge-gateway-unused")
         .env("ANTHROPIC_API_KEY", "")
+        // A throwaway config dir does not keep the user's global CLAUDE.md
+        // out of the body: the CLI reads that from the real home regardless
+        // of CLAUDE_CONFIG_DIR and $HOME. Without this the capture inlines
+        // the whole file, which is how a previous fixture came to commit it.
+        .env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1")
         .output()
         .await
         .expect("claude runs");
