@@ -669,6 +669,7 @@ pub(crate) mod tests {
             id: uuid::Uuid::new_v4(),
             workspace: workspace.to_owned(),
             conversation: conversation.to_owned(),
+            conversation_label: conversation.to_owned(),
             thread_ts: None,
             text: text.to_owned(),
             tool: "slack__post".to_owned(),

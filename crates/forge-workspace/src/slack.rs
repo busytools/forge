@@ -1102,6 +1102,7 @@ mod tests {
             id: Uuid::new_v4(),
             workspace: workspace.to_owned(),
             conversation: conversation.to_owned(),
+            conversation_label: conversation.to_owned(),
             thread_ts: None,
             text: "hello".to_owned(),
             tool: "slack__post".to_owned(),

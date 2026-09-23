@@ -253,6 +253,9 @@ pub struct SlackDraft {
     pub id: Uuid,
     pub workspace: String,
     pub conversation: String,
+    /// Display name for the conversation, which the approval prompt shows
+    /// in place of the id: the DM partner's id when Slack names none.
+    pub conversation_label: String,
     /// `None` posts a root message; `Some(ts)` replies into that thread.
     pub thread_ts: Option<String>,
     pub text: String,

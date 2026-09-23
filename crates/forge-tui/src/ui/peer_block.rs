@@ -910,7 +910,7 @@ fn push_tree_body_lines(
 /// Both `message.user` and a DM's conversation label reach the prose as one
 /// until the producer resolves a handle. The shape is a heuristic, not a
 /// guarantee: an all-caps channel name matches it and loses its `#`.
-fn is_slack_id(text: &str) -> bool {
+pub(crate) fn is_slack_id(text: &str) -> bool {
     let mut chars = text.chars();
     chars.next().is_some_and(|first| first.is_ascii_uppercase())
         && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())

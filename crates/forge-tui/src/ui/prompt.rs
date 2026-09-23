@@ -183,9 +183,20 @@ fn build_header_lines(prompt: &PromptState, content_width: usize) -> Vec<Line<'s
         }
         PromptSource::SlackDraft { draft, .. } => {
             let mut out = Vec::new();
+            // The user approves against a conversation they recognise, so
+            // the resolved name is what shows. An id is never dressed as a
+            // channel: a DM's label is the partner's user id, and
+            // `#U0AE0CBJ77G` reads as a channel that does not exist.
+            let conversation = if crate::ui::peer_block::is_slack_id(&draft.conversation_label) {
+                draft.conversation_label.clone()
+            } else {
+                format!("#{}", draft.conversation_label)
+            };
             let where_to = match &draft.thread_ts {
-                Some(ts) => format!("Reply in Slack · {} · thread {ts}", draft.workspace),
-                None => format!("Post to Slack · {} · {}", draft.workspace, draft.conversation),
+                Some(ts) => {
+                    format!("Reply in Slack · {} · {conversation} · thread {ts}", draft.workspace)
+                }
+                None => format!("Post to Slack · {} · {conversation}", draft.workspace),
             };
             out.push(Line::from(Span::styled(
                 where_to,
@@ -879,6 +890,7 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 workspace: "acme".to_owned(),
                 conversation: "C1".to_owned(),
+                conversation_label: "general".to_owned(),
                 thread_ts: None,
                 text: "please review this text".to_owned(),
                 tool: "slack__post".to_owned(),
@@ -896,5 +908,35 @@ mod tests {
         assert!(rendered.contains("acme"), "the target workspace renders: {rendered}");
         assert!(rendered.contains("Post"), "the approve option renders: {rendered}");
         assert!(rendered.contains("Do not post"), "the reject option renders: {rendered}");
+    }
+
+    /// The user approves against a conversation they recognise. A raw id
+    /// names nothing, so the prompt shows the resolved name - and never
+    /// both, which would only raise the question of which one is the
+    /// target.
+    #[test]
+    fn the_approval_prompt_names_the_conversation_not_its_id() {
+        let prompt = crate::app::prompt::PromptState::from_slack_draft(
+            forge_primitives::SessionSlot::from_str_for_test("caller"),
+            forge_primitives::slack::SlackDraft {
+                id: uuid::Uuid::new_v4(),
+                workspace: "acme".to_owned(),
+                conversation: "C0A9K3L".to_owned(),
+                conversation_label: "granite-staging-alerts".to_owned(),
+                thread_ts: None,
+                text: "the body".to_owned(),
+                tool: "slack__post".to_owned(),
+            },
+        );
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some(""), None);
+
+        let rendered = buffer_text(&buf);
+        assert!(
+            rendered.contains("#granite-staging-alerts"),
+            "the channel the message goes to is named: {rendered}",
+        );
+        assert!(!rendered.contains("C0A9K3L"), "and its id is not what is shown: {rendered}");
     }
 }

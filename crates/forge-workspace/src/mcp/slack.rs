@@ -595,8 +595,10 @@ impl Tool for Post {
         "Post a message to Slack as the user - a root message, or a reply into an existing \
          thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call does not return \
          until the user decides in the dock prompt, and a rejected or unanswered draft posts \
-         nothing. Text past 4000 characters is split into numbered parts automatically. Returns \
-         how many messages were posted. Any session in the project may call this."
+         nothing. Text past 4000 characters is split into numbered parts automatically, each a \
+         separate message. Returns the `ts` of every message it posted, in the order they went \
+         out; slack__edit, slack__react and a reply each take one. Any session in the project \
+         may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -637,9 +639,7 @@ impl Tool for Post {
             text: args.text,
         };
         match self.facade.post(&self.slot, request).await {
-            Ok(outcome) => {
-                ToolOutput::text(format!("posted to Slack ({} message(s))", outcome.posted))
-            }
+            Ok(outcome) => ToolOutput::text(format!("posted to Slack: {}", outcome.ts.join(", "))),
             Err(err) => tool_error(format_post_error(&err)),
         }
     }
@@ -1247,7 +1247,7 @@ impl Tool for Bookmarks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::slack::facade::MockSlackFacade;
+    use crate::mcp::slack::facade::{MockSlackFacade, SlackPostOutcome};
     use forge_primitives::slack::{
         SlackBookmark, SlackConversation, SlackConversationText, SlackPin, SlackPinMessage,
     };
@@ -1350,6 +1350,27 @@ mod tests {
         assert!(
             out.blocks[0].text.contains(&id.to_string()),
             "the created id is what a caller unsubscribes with: {}",
+            out.blocks[0].text,
+        );
+    }
+
+    /// Editing, deleting or reacting all take the ts, and Slack has already
+    /// sent it: a count is not a handle.
+    #[tokio::test]
+    async fn slack_post_reports_the_ts_of_what_it_posted() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.post_result.lock() =
+            Some(Ok(SlackPostOutcome { ts: vec!["1790186552.442169".to_owned()] }));
+        let tool = Post { facade: mock, slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({ "workspace": "acme", "conversation": "C1",
+                                            "text": "hello" })))
+            .await;
+
+        assert!(
+            out.blocks[0].text.contains("1790186552.442169"),
+            "the posted ts is the handle the next call needs: {}",
             out.blocks[0].text,
         );
     }

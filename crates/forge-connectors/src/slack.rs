@@ -134,13 +134,15 @@ pub trait SlackApi: Send + Sync {
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError>;
-    /// Post one message, as a root or into an existing thread.
+    /// Post one message, as a root or into an existing thread. Returns the
+    /// posted message's `ts`, the handle a reply, an edit, a delete and a
+    /// reaction all take.
     async fn post_message(
         &self,
         channel: &str,
         text: &str,
         thread_ts: Option<&str>,
-    ) -> Result<(), SlackError>;
+    ) -> Result<String, SlackError>;
     /// Replace the text of one of the authenticated user's own messages.
     async fn update_message(&self, channel: &str, ts: &str, text: &str) -> Result<(), SlackError>;
     /// Delete one of the authenticated user's own messages.
@@ -225,7 +227,7 @@ impl SlackApi for SlackClient {
         channel: &str,
         text: &str,
         thread_ts: Option<&str>,
-    ) -> Result<(), SlackError> {
+    ) -> Result<String, SlackError> {
         SlackClient::post_message(self, channel, text, thread_ts).await
     }
 
@@ -1306,6 +1308,12 @@ pub async fn run_workspace_pump(
     host.set_connected(&workspace, false);
 }
 
+/// What `chat.postMessage` answers with, of which forge needs the `ts`.
+#[derive(Debug, Deserialize)]
+struct PostedMessage {
+    ts: String,
+}
+
 /// `auth.test` - who the token belongs to.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuthTest {
@@ -1665,19 +1673,20 @@ impl SlackClient {
         decode_message_page("conversations.replies", &body)
     }
 
-    /// Post one message, as a root or into an existing thread.
+    /// Post one message, as a root or into an existing thread. Returns the
+    /// posted message's `ts`.
     pub async fn post_message(
         &self,
         channel: &str,
         text: &str,
         thread_ts: Option<&str>,
-    ) -> Result<(), SlackError> {
+    ) -> Result<String, SlackError> {
         let mut params = vec![("channel", channel.to_owned()), ("text", text.to_owned())];
         if let Some(thread_ts) = thread_ts {
             params.push(("thread_ts", thread_ts.to_owned()));
         }
-        let _: serde_json::Value = self.call("chat.postMessage", &params).await?;
-        Ok(())
+        let posted: PostedMessage = self.call("chat.postMessage", &params).await?;
+        Ok(posted.ts)
     }
 
     /// Replace the text of one of the user's own messages. Slack drops
@@ -2682,8 +2691,8 @@ mod tests {
             _channel: &str,
             _text: &str,
             _thread_ts: Option<&str>,
-        ) -> Result<(), SlackError> {
-            Ok(())
+        ) -> Result<String, SlackError> {
+            Ok("1.0".to_owned())
         }
 
         async fn update_message(
