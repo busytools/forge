@@ -1545,15 +1545,19 @@ pub(crate) fn handle_despawn_worker(
     let live =
         workspace.list_live_workers(project_key).into_iter().rev().find(|w| w.label == label);
 
-    // The gitness this despawn acts on: a live entry stamped it at spawn,
-    // and a stranded row records it - once the entry is gone the row is
-    // the only place it exists, and the worktree it names is still on
-    // disk to clean. Neither source answering means there is no worker by
-    // this label at all.
+    // The gitness this despawn acts on, and whether there is a worker here
+    // at all. A live entry stamped its gitness at spawn; with no entry the
+    // durable row answers both, and the two questions are separate: a row
+    // whose `is_git_repo` is absent has a worker but no known worktree,
+    // which is how `worker_tag_dir` and the boot wave read the same field.
+    // Asking one question for both is what makes a row the migration wrote
+    // - it records no gitness before the first spawn - look like no row,
+    // and that row is exactly the one #1142 exists to reach.
     let is_git_repo = match live.as_ref() {
         Some(entry) => Some(entry.is_git_repo_at_spawn),
-        None => match workspace.recorded_worker_is_git_repo(project_key, label) {
-            Ok(recorded) => recorded,
+        None => match workspace.stored_worker_row(project_key, label) {
+            Ok(Some(row)) => Some(matches!(row.is_git_repo, Some(true))),
+            Ok(None) => None,
             // A row that cannot be read is not an absent one, and reading
             // it is how this call decides whether there is anything here.
             Err(error) => {
@@ -4229,6 +4233,50 @@ provider = "anthropic"
             workspace.worker_rows_for_project(&project_key).is_empty(),
             "with the row it was resolved from",
         );
+    }
+
+    /// A row the migration wrote carries no gitness until its worker's
+    /// first spawn fills it in, and that is a worker with no known
+    /// worktree rather than no worker. Reading "no gitness" as "no row"
+    /// leaves exactly the class of stranded row #1142 exists to clear.
+    #[tokio::test]
+    async fn despawn_reaches_a_row_that_records_no_gitness() {
+        let StoreBackedStub { workspace, project, mut rx, .. } = store_backed_stub();
+        {
+            let db = workspace.db.lock();
+            crate::store::sessions::put(
+                db.as_ref().expect("db"),
+                &crate::store::sessions::SessionRecord {
+                    org: "TestOrg".to_owned(),
+                    project: "proj-x".to_owned(),
+                    label: "migrated".to_owned(),
+                    session_id: None,
+                    charter: Some("c".to_owned()),
+                    kick: None,
+                    resume_kick: None,
+                    interactive: None,
+                    // The shape `migrate_from_dynamic_workers` writes.
+                    is_git_repo: None,
+                },
+            )
+            .expect("seed the row the migration writes");
+        }
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "migrated", false, tx);
+
+        assert!(
+            matches!(
+                resp_rx.await.expect("result"),
+                crate::protocol::DespawnResult::Despawned { .. }
+            ),
+            "a row with no recorded gitness is a worker the despawn must reach",
+        );
+        assert!(
+            workspace.worker_rows_for_project(&project).is_empty(),
+            "and it is cleared like any other",
+        );
+        assert!(rx.try_recv().is_err(), "nothing live was torn down");
     }
 
     /// A stranded row whose worktree is already gone is the shape the boot
