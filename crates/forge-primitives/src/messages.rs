@@ -340,6 +340,25 @@ pub enum Message {
         session_id: String,
     },
 
+    /// The CLI refused a tool call on permission grounds. Subtype
+    /// `"permission_denied"` (first observed on 2.1.280).
+    PermissionDenied {
+        /// Name of the tool the CLI refused (e.g. `"Bash"`).
+        tool_name: String,
+        /// Id of the `tool_use` block that was refused.
+        tool_use_id: String,
+        /// Machine-readable reason category (e.g. `"other"`).
+        decision_reason_type: String,
+        /// Reason token the CLI recorded (e.g. `"Contains simple_expansion"`).
+        decision_reason: String,
+        /// Text of the refusal shown to the session.
+        message: String,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
     /// A compaction finished and the transcript was replaced. Subtype
     /// `"compact_boundary"`.
     ///
@@ -506,6 +525,7 @@ impl Message {
             | Message::CommandsChanged { session_id, .. }
             | Message::HookStarted { session_id, .. }
             | Message::HookProgress { session_id, .. }
+            | Message::PermissionDenied { session_id, .. }
             | Message::HookResponse { session_id, .. }
             | Message::Notification { session_id, .. }
             | Message::CompactBoundary { session_id, .. }
@@ -1087,6 +1107,15 @@ enum TypedSystemRepr {
         uuid: String,
         session_id: String,
     },
+    PermissionDenied {
+        tool_name: String,
+        tool_use_id: String,
+        decision_reason_type: String,
+        decision_reason: String,
+        message: String,
+        uuid: String,
+        session_id: String,
+    },
     CompactBoundary {
         compact_metadata: CompactMetadataRepr,
         uuid: String,
@@ -1294,6 +1323,23 @@ impl From<MessageRepr> for Message {
                 uuid,
                 session_id,
             })) => Message::Notification { key, text, priority, uuid, session_id },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::PermissionDenied {
+                tool_name,
+                tool_use_id,
+                decision_reason_type,
+                decision_reason,
+                message,
+                uuid,
+                session_id,
+            })) => Message::PermissionDenied {
+                tool_name,
+                tool_use_id,
+                decision_reason_type,
+                decision_reason,
+                message,
+                uuid,
+                session_id,
+            },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CompactBoundary {
                 compact_metadata: CompactMetadataRepr { trigger, pre_tokens },
                 uuid,
@@ -1573,6 +1619,23 @@ impl From<Message> for MessageRepr {
                     session_id,
                 }))
             }
+            Message::PermissionDenied {
+                tool_name,
+                tool_use_id,
+                decision_reason_type,
+                decision_reason,
+                message,
+                uuid,
+                session_id,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::PermissionDenied {
+                tool_name,
+                tool_use_id,
+                decision_reason_type,
+                decision_reason,
+                message,
+                uuid,
+                session_id,
+            })),
             Message::CompactBoundary { trigger, pre_tokens, uuid, session_id } => {
                 MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CompactBoundary {
                     compact_metadata: CompactMetadataRepr { trigger, pre_tokens },
@@ -2487,6 +2550,29 @@ mod tests_message_extras {
         assert_eq!(hook_name, "SessionStart:startup");
         assert_eq!(hook_event, "SessionStart");
         assert_eq!(stdout, "{\"async\": true}");
+    }
+
+    #[test]
+    fn permission_denied_decodes_as_typed_variant() {
+        // Shape first observed on 2.1.280.
+        let raw = json!({
+            "type": "system",
+            "subtype": "permission_denied",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_01FCzjj9ZBDd3HA6HF1LaBGE",
+            "decision_reason_type": "other",
+            "decision_reason": "Contains simple_expansion",
+            "message": "Contains simple_expansion",
+            "uuid": "8c7161ee-b318-485e-b733-92cea085ac5b",
+            "session_id": "4513c0dc-06a8-4c91-add5-9fdad5d00783",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::PermissionDenied { tool_name, tool_use_id, decision_reason, .. } = msg else {
+            panic!("expected PermissionDenied, got {msg:?}");
+        };
+        assert_eq!(tool_name, "Bash");
+        assert_eq!(tool_use_id, "toolu_01FCzjj9ZBDd3HA6HF1LaBGE");
+        assert_eq!(decision_reason, "Contains simple_expansion");
     }
 
     #[test]

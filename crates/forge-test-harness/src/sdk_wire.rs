@@ -161,10 +161,10 @@ pub fn attach_recording(builder: OptionsBuilder) -> (OptionsBuilder, Arc<Mutex<T
 /// a baseline name; the two namespaces diverge (`worker_spawn.jsonl`
 /// comes from `worker_spawn_scenario`). It substring-matches, so a
 /// loose argument fires several live captures and bills for all of
-/// them. The `real_session_*` baselines have no capture recipe at all -
-/// they come from the `sdk_redact_session` example. The full ritual is
-/// in `.claude/skills/claude-cli-upgrade/`.
-pub const PINNED_CLI_VERSION: &str = "2.1.263";
+/// them. The `real_session_*` baselines are not capture-produced; their
+/// recipe is in `.claude/skills/claude-cli-upgrade/`, which also holds
+/// the rest of the ritual.
+pub const PINNED_CLI_VERSION: &str = "2.1.280";
 
 /// Directory holding the committed trace baselines for the pinned CLI
 /// version. Resolves to
@@ -178,10 +178,11 @@ pub fn baseline_dir() -> std::path::PathBuf {
 
 /// Directory holding the legacy-surface corpus for the pinned CLI
 /// version: the same scenarios captured with the CLI's ambient routing
-/// on a model id it does not recognize. The CLI tailors its tool
-/// surface by model recognition (recognized Anthropic models get a
-/// pruned built-in set; unrecognized ids keep the legacy full surface,
-/// e.g. the Task* family), so both surfaces are committed and replayed.
+/// on a model id it does not recognize. The CLI tailors its tool surface
+/// per model, so this corpus records the surface a proxy-backed account
+/// actually gets. That surface is neither identical to the recognized
+/// one nor a superset of it: measure both rather than assuming the older
+/// "unrecognized ids keep the full legacy surface" story still holds.
 /// Resolves to `baseline_dir()`'s `legacy-surface/` subdirectory, which
 /// keeps the two corpora out of each other's diffs.
 pub fn legacy_baseline_dir() -> std::path::PathBuf {
