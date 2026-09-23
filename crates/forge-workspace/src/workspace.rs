@@ -7356,6 +7356,8 @@ provider = "anthropic"
             thread_ts: None,
             user: Some("U9".to_owned()),
             text: text.to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
             files: Vec::new(),
         }
     }

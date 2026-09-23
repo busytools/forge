@@ -253,10 +253,16 @@ pub struct SlackMessage {
     /// Not `Option`, so a caller never has to invent a fallback.
     pub conversation_label: String,
     pub ts: String,
-    /// `None` for a top-level message, the thread's parent `ts` otherwise.
+    /// `None` on a message with no thread at all. Equal to `ts` on a
+    /// thread's parent, and the parent's `ts` on a reply.
     pub thread_ts: Option<String>,
     pub user: Option<String>,
     pub text: String,
+    /// Set on a reply, carrying the parent's author. This, not `thread_ts`,
+    /// is what marks a reply: a parent carries `thread_ts` too.
+    pub parent_user_id: Option<String>,
+    /// A parent's newest reply `ts`. Absent on a message with no replies.
+    pub latest_reply: Option<String>,
     /// Files shared on the message. A file-share with no text is a real
     /// message, and the ids are what `slack__attachment` fetches with.
     pub files: Vec<SlackFile>,

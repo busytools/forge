@@ -1292,6 +1292,8 @@ mod tests {
             thread_ts: None,
             user: Some("U9".to_owned()),
             text: "ping".to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
             files: Vec::new(),
         };
         assert!(host.auto_subscribe("acme", &message), "the mention subscribes the conversation");
@@ -1769,6 +1771,8 @@ mod tests {
             thread_ts: None,
             user: Some("U9".to_owned()),
             text: "hello".to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
             files: Vec::new(),
         };
 
@@ -1793,6 +1797,8 @@ mod tests {
             thread_ts: None,
             user: Some("U9".to_owned()),
             text: "hello".to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
             files: Vec::new(),
         };
 

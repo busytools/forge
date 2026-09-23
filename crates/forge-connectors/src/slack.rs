@@ -879,6 +879,8 @@ pub(crate) async fn sweep(
                     thread_ts: message.thread_ts.clone(),
                     user: message.user.clone(),
                     text: message.text.clone(),
+                    parent_user_id: message.parent_user_id.clone(),
+                    latest_reply: message.latest_reply.clone(),
                     files: message.files.clone(),
                 })
                 .collect();
@@ -995,6 +997,8 @@ pub(crate) async fn sweep(
                             thread_ts: Some(thread.parent_ts.clone()),
                             user: reply.user.clone(),
                             text: reply.text.clone(),
+                            parent_user_id: reply.parent_user_id.clone(),
+                            latest_reply: reply.latest_reply.clone(),
                             files: reply.files.clone(),
                         }],
                     ) {
@@ -1131,6 +1135,10 @@ pub(crate) async fn sweep_mentions(
                 thread_ts: hit.thread_ts.clone(),
                 user: hit.user.clone(),
                 text: hit.text.clone(),
+                // A search hit carries neither: only a conversation read
+                // reports the reply markers.
+                parent_user_id: None,
+                latest_reply: None,
                 files: hit.files.clone(),
             };
             let mut all_handed = true;
@@ -1344,10 +1352,17 @@ pub struct SlackHistoryMessage {
     pub ts: String,
     pub user: Option<String>,
     pub text: String,
-    /// `None` for a top-level message, the parent's `ts` for a reply.
+    /// `None` on a message with no thread at all. Equal to `ts` on a
+    /// thread's parent, and the parent's `ts` on a reply.
     pub thread_ts: Option<String>,
     /// Non-zero on a parent whose thread has replies.
     pub reply_count: u32,
+    /// Set on a reply, carrying the parent's author, and absent on a
+    /// parent. This, not `thread_ts`, is what marks a reply: a parent
+    /// carries `thread_ts` too.
+    pub parent_user_id: Option<String>,
+    /// A parent's newest reply `ts`. Absent on a message with no replies.
+    pub latest_reply: Option<String>,
     /// Files shared on the message, ids and all.
     pub files: Vec<SlackFile>,
 }
@@ -1380,6 +1395,10 @@ struct RawWireMessage {
     #[serde(default)]
     reply_count: u32,
     #[serde(default)]
+    parent_user_id: Option<String>,
+    #[serde(default)]
+    latest_reply: Option<String>,
+    #[serde(default)]
     files: Vec<SlackFile>,
 }
 
@@ -1397,6 +1416,8 @@ fn decode_message_page(method: &str, body: &str) -> Result<MessagePage, SlackErr
             text: message.text,
             thread_ts: message.thread_ts,
             reply_count: message.reply_count,
+            parent_user_id: message.parent_user_id,
+            latest_reply: message.latest_reply,
             files: message.files,
         })
         .collect();
@@ -2161,6 +2182,47 @@ mod tests {
         );
     }
 
+    /// Measured against live Slack 2026-09-23 and captured in the two
+    /// fixtures: a parent carries `thread_ts` equal to its own `ts`,
+    /// `reply_count > 0` and `latest_reply`; a reply carries
+    /// `parent_user_id` and a `thread_ts` that differs from its `ts`. So a
+    /// present `thread_ts` does NOT mean "this is a reply".
+    #[test]
+    fn a_parent_carries_its_latest_reply_and_a_reply_does_not() {
+        let page = decode_message_page(
+            "conversations.history",
+            include_str!("../fixtures/slack_parent.json"),
+        )
+        .expect("the captured parent decodes");
+        let parent = &page.messages[0];
+        assert_eq!(
+            parent.latest_reply.as_deref(),
+            Some("1790186555.957249"),
+            "a parent names its newest reply",
+        );
+        assert_eq!(parent.parent_user_id, None, "a parent carries no parent_user_id");
+        assert_eq!(
+            parent.thread_ts.as_deref(),
+            Some(parent.ts.as_str()),
+            "a real parent's thread_ts is its own ts, never None",
+        );
+        assert_eq!(parent.reply_count, 2, "and it reports how many replies it has");
+
+        let replies = decode_message_page(
+            "conversations.replies",
+            include_str!("../fixtures/slack_reply.json"),
+        )
+        .expect("the captured thread decodes");
+        let reply = &replies.messages[1];
+        assert!(reply.parent_user_id.is_some(), "parent_user_id is what marks a reply");
+        assert_eq!(reply.latest_reply, None, "a reply names no newest reply");
+        assert_ne!(
+            reply.thread_ts.as_deref(),
+            Some(reply.ts.as_str()),
+            "a reply's thread_ts is the parent's, not its own",
+        );
+    }
+
     /// Drives both ports from seeded responses, so a sweep runs with no
     /// workspace and no network. One type implements both traits because
     /// the sweep's two arguments are the same double in every test.
@@ -2881,6 +2943,8 @@ mod tests {
             text: text.to_owned(),
             thread_ts: None,
             reply_count: 0,
+            parent_user_id: None,
+            latest_reply: None,
             files: Vec::new(),
         }
     }
@@ -2896,6 +2960,8 @@ mod tests {
             thread_ts: None,
             user: Some("U9".to_owned()),
             text: text.to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
             files: Vec::new(),
         }
     }
