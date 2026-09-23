@@ -529,6 +529,8 @@ const PUMP_TIMEOUT: Duration = Duration::from_secs(30);
 /// What one sweep did.
 #[derive(Debug, Default)]
 pub(crate) struct SweepOutcome {
+    /// Blocks handed over: one per conversation per subscription that had
+    /// news, and one per mention hit.
     pub delivered: usize,
     /// Set when a call was throttled, so the caller backs off rather than
     /// hammering. A 429 is a report, not an error.
@@ -845,72 +847,68 @@ pub(crate) async fn sweep(
 
         let label =
             conversation.name.clone().or_else(|| conversation.user.clone()).unwrap_or_default();
-        let mut newest_delivered: Option<String> = None;
-        let mut batch_failed = false;
-        for message in &batch {
-            // Every subscription that wants this message gets it: a lead
-            // and a worker watching the same conversation are two owners,
-            // and find-first would starve whichever sorted second.
-            let mut all_handed = true;
-            for subscription in subscriptions.iter().filter(|subscription| {
-                matches(
-                    subscription,
-                    conversation,
-                    message.user.as_deref(),
-                    &message.text,
-                    &user_id,
-                )
-            }) {
-                if host.deliver(
-                    subscription,
-                    &[SlackMessage {
-                        workspace: workspace.to_owned(),
-                        conversation: conversation.id.clone(),
-                        conversation_label: label.clone(),
-                        ts: message.ts.clone(),
-                        thread_ts: message.thread_ts.clone(),
-                        user: message.user.clone(),
-                        text: message.text.clone(),
-                        files: message.files.clone(),
-                    }],
-                ) {
-                    if let Some(parent_ts) = followed_parent_of(message) {
-                        host.follow_thread(
-                            workspace,
-                            &conversation.id,
-                            &parent_ts,
-                            SlackThreadOwner {
-                                project: subscription.project.clone(),
-                                team_role: subscription.team_role.clone(),
-                            },
-                            &message.ts,
-                        );
-                    }
-                } else {
-                    all_handed = false;
-                }
+        // One block per subscription that wants this conversation's news:
+        // a lead and a worker watching one channel are two destinations,
+        // and one shared block would starve whichever sorted second. No
+        // subscription wants anything here means nothing is delivered at
+        // all - never an empty block.
+        let mut all_handed = true;
+        for subscription in &subscriptions {
+            let wanted: Vec<&SlackHistoryMessage> = batch
+                .iter()
+                .filter(|message| {
+                    matches(
+                        subscription,
+                        conversation,
+                        message.user.as_deref(),
+                        &message.text,
+                        &user_id,
+                    )
+                })
+                .collect();
+            if wanted.is_empty() {
+                continue;
             }
-            if !all_handed {
-                // Stop at the failure: the cursor holds at its previous
-                // value rather than advancing past the message that did
-                // not reach every matching subscription - under the wire's
-                // newest-first pages, any advance here would jump ABOVE
-                // the failure and lose everything at and below it. Dedupe
-                // absorbs the re-delivery on the next sweep.
-                batch_failed = true;
-                break;
+            let messages: Vec<SlackMessage> = wanted
+                .iter()
+                .map(|message| SlackMessage {
+                    workspace: workspace.to_owned(),
+                    conversation: conversation.id.clone(),
+                    conversation_label: label.clone(),
+                    ts: message.ts.clone(),
+                    thread_ts: message.thread_ts.clone(),
+                    user: message.user.clone(),
+                    text: message.text.clone(),
+                    files: message.files.clone(),
+                })
+                .collect();
+            if !host.deliver(subscription, &messages) {
+                all_handed = false;
+                continue;
             }
             delivered += 1;
-            // Pages arrive newest-first, so the watermark is the newest
-            // delivered message, not the last one processed.
-            if newest_delivered.as_deref().is_none_or(|current| message.ts.as_str() > current) {
-                newest_delivered = Some(message.ts.clone());
+            for message in wanted {
+                if let Some(parent_ts) = followed_parent_of(message) {
+                    host.follow_thread(
+                        workspace,
+                        &conversation.id,
+                        &parent_ts,
+                        SlackThreadOwner {
+                            project: subscription.project.clone(),
+                            team_role: subscription.team_role.clone(),
+                        },
+                        &message.ts,
+                    );
+                }
             }
         }
 
-        // Advanced last, and only over a batch that was handed off whole.
-        if !batch_failed && let Some(newest) = newest_delivered {
-            host.set_watermark(workspace, &conversation.id, &newest);
+        // Advanced last, and only over a batch that was handed off whole:
+        // a cursor advanced past an undelivered message loses it, and the
+        // wire's newest-first pages mean any advance jumps over everything
+        // at and below the failure. Dedupe absorbs the re-delivery.
+        if all_handed && let Some(newest) = batch.iter().map(|message| message.ts.as_str()).max() {
+            host.set_watermark(workspace, &conversation.id, newest);
         }
 
         // Threads followed from earlier deliveries. Replies never appear
@@ -2186,6 +2184,9 @@ mod tests {
         /// The owner of each successful delivery, index-aligned with
         /// `delivered`.
         delivered_owners: std::sync::Mutex<Vec<SlackThreadOwner>>,
+        /// Each batch handed over, in delivery order, so a test can see how
+        /// the sweep grouped a conversation's news.
+        batches: std::sync::Mutex<Vec<Vec<SlackMessage>>>,
         search: std::sync::Mutex<Vec<Vec<SlackSearchMatch>>>,
         search_calls: std::sync::Mutex<usize>,
         auto_subscribed: std::sync::Mutex<Vec<String>>,
@@ -2282,6 +2283,10 @@ mod tests {
 
         fn delivered(&self) -> Vec<SlackMessage> {
             self.delivered.lock().expect("lock").clone()
+        }
+
+        fn batches(&self) -> Vec<Vec<SlackMessage>> {
+            self.batches.lock().expect("lock").clone()
         }
 
         fn connected(&self) -> Option<bool> {
@@ -2405,6 +2410,7 @@ mod tests {
                 project: subscription.project.clone(),
                 team_role: subscription.team_role.clone(),
             };
+            self.batches.lock().expect("lock").push(messages.to_vec());
             for message in messages {
                 self.delivered.lock().expect("lock").push(message.clone());
                 self.delivered_owners.lock().expect("lock").push(owner.clone());
@@ -2910,6 +2916,50 @@ mod tests {
         assert_eq!(host.delivered().len(), 3, "a bundle carries every member, not just the last");
     }
 
+    /// A quiet conversation is the common case: the sweep runs every few
+    /// seconds and most of what it looks at has nothing new. It must
+    /// deliver nothing at all, never an empty block.
+    #[tokio::test]
+    async fn a_sweep_with_nothing_new_delivers_nothing() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.set_watermark("acme", "D1", "100.0");
+        host.seed_history("D1", vec![history_message("100.0", "U9", "already delivered")]);
+
+        let outcome = sweep(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(outcome.delivered, 0, "a quiet tick must not deliver an empty bundle");
+        assert!(host.batches().is_empty(), "and must not call the seam at all");
+    }
+
+    /// Two conversations with news are two blocks, each carrying its own
+    /// conversation's members. One block holding both would attribute one
+    /// conversation's messages to the other.
+    #[tokio::test]
+    async fn two_active_conversations_deliver_two_bundles() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.set_watermark("acme", "D1", "100.0");
+        host.set_watermark("acme", "D2", "100.0");
+        host.seed_history(
+            "D1",
+            // The wire's order: newest first.
+            vec![
+                history_message("300.1", "U9", "d1 newest"),
+                history_message("200.1", "U9", "d1 older"),
+            ],
+        );
+        host.seed_history("D2", vec![history_message("200.2", "U8", "d2 only")]);
+
+        let outcome = sweep(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(outcome.delivered, 2, "one delivery per conversation, never one merged one");
+        let batches = host.batches();
+        assert_eq!(batches.len(), 2, "two blocks, never one per message");
+        assert_ne!(batches[0][0].conversation, batches[1][0].conversation);
+        assert_eq!(
+            batches.iter().map(Vec::len).sum::<usize>(),
+            3,
+            "every message rides its own conversation's block",
+        );
+    }
+
     fn sub_dm(workspace: &str) -> SlackSubscription {
         let mut sub = sub_for(SlackSubscriptionTarget::DirectMessages);
         sub.workspace = workspace.to_owned();
@@ -3083,7 +3133,8 @@ mod tests {
 
     /// A dispatch failure must leave the cursor where it was, so the next
     /// sweep re-fetches the whole window; dedupe absorbs what already
-    /// reached a session.
+    /// reached a session. The conversation's news is one delivery now, so
+    /// a failure holds the whole of it rather than part.
     #[tokio::test]
     async fn a_failed_delivery_holds_the_cursor_at_its_previous_value() {
         let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
@@ -3093,15 +3144,15 @@ mod tests {
             // The wire's order: newest first.
             vec![
                 history_message("300.1", "U9", "newest"),
-                history_message("200.1", "U9", "fails"),
+                history_message("200.1", "U9", "in the same batch"),
                 history_message("100.1", "U9", "oldest"),
             ],
         );
-        host.fail_delivery_at(1);
+        host.fail_delivery_at(0);
 
         let outcome = sweep(&host, &host, "acme").await.expect("sweep");
-        assert_eq!(outcome.delivered, 1, "the sweep stops at the failed message");
-        assert_eq!(host.delivered()[0].text, "newest");
+        assert_eq!(outcome.delivered, 0, "a block that did not land is not delivered");
+        assert!(host.delivered().is_empty(), "nothing of a failed block reached the session");
         assert_eq!(
             host.watermark("acme", "D1"),
             Ok(Some("050.0".to_owned())),
