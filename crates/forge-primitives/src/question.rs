@@ -12,13 +12,6 @@ pub struct QuestionOption {
     pub label: String,
     pub description: Option<String>,
     pub preview: Option<String>,
-    /// #273: Mirrors the CLI 2.1.156 `(Recommended)` suffix on option
-    /// labels; `parse_ask_user_question_prompts` hoists the marked
-    /// option to the front of the list and leaves the marker in the
-    /// label text. `#[serde(default)]` keeps replay of older captures
-    /// (without this field) decode-clean.
-    #[serde(default)]
-    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

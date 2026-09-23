@@ -506,39 +506,6 @@ mod tests {
     }
 
     #[test]
-    fn recommended_option_renders_without_emphasis() {
-        // Only the caret row is white + BOLD, so a re-added bold on a
-        // recommended option draws it exactly like the row Enter
-        // answers.
-        let mut request = make_question_request(false);
-        request.prompt.options[1].recommended = true; // Blue is recommended
-        let prompt = PromptState::from_question("tc-q".into(), request);
-        // Render into a buffer so we can inspect cell modifiers.
-        let area = Rect::new(0, 0, 80, 14);
-        let mut buf = Buffer::empty(area);
-        render(area, &mut buf, &prompt, 1, None, None);
-        // Locate the `B` of "Blue" on its row.
-        let mut found = false;
-        for y in 0..area.height {
-            for x in 0..area.width {
-                if buf[(x, y)].symbol() == "B" {
-                    let style = buf[(x, y)].style();
-                    assert!(
-                        !style.add_modifier.contains(Modifier::BOLD),
-                        "unfocused option row must not be bold; got {style:?}",
-                    );
-                    found = true;
-                    break;
-                }
-            }
-            if found {
-                break;
-            }
-        }
-        assert!(found, "expected to find Blue option in rendered buffer");
-    }
-
-    #[test]
     fn multi_select_renders_checkbox_markers() {
         let request = make_question_request(true);
         let mut prompt = PromptState::from_question("tc-q".into(), request);

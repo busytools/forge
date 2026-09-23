@@ -141,7 +141,6 @@ fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<TuiQues
                 Some(opt.description.clone())
             },
             preview: opt.preview.clone(),
-            recommended: opt.recommended,
         })
         .collect()
 }
@@ -389,14 +388,12 @@ mod tests {
                 label: "A".to_owned(),
                 description: None,
                 preview: Some("a-preview".to_owned()),
-                recommended: false,
             },
             TuiQuestionOption {
                 option_id: "question_1".to_owned(),
                 label: "B".to_owned(),
                 description: None,
                 preview: Some("b-preview".to_owned()),
-                recommended: false,
             },
         ];
         let derived = derive_annotation(&opts, None).unwrap();
@@ -474,46 +471,6 @@ mod tests {
         }]});
         let prompts = parse_ask_user_question_prompts(&input);
         assert!(!prompts[0].options[0].recommended);
-    }
-
-    #[test]
-    fn build_request_propagates_recommended_flag_to_wire_option() {
-        let prompt = AskUserQuestionPrompt {
-            question: "Q?".to_owned(),
-            question_key: "Q?".to_owned(),
-            header: "H".to_owned(),
-            multi_select: false,
-            options: vec![
-                AskUserQuestionOption {
-                    label: "A".to_owned(),
-                    description: String::new(),
-                    preview: None,
-                    recommended: false,
-                },
-                AskUserQuestionOption {
-                    label: "B".to_owned(),
-                    description: String::new(),
-                    preview: None,
-                    recommended: true,
-                },
-            ],
-        };
-        let base = ToolCall {
-            tool_call_id: "tu".to_owned(),
-            title: "AskUserQuestion".to_owned(),
-            kind: forge_primitives::ToolKind::Other,
-            status: forge_primitives::ToolCallStatus::Pending,
-            content: Vec::new(),
-            raw_input: None,
-            raw_output: None,
-            output_metadata: None,
-            task_metadata: None,
-            locations: Vec::new(),
-            meta: None,
-        };
-        let req = build_question_request(&base, &prompt, 0, 1);
-        assert!(!req.prompt.options[0].recommended);
-        assert!(req.prompt.options[1].recommended);
     }
 
     #[test]

@@ -755,14 +755,12 @@ pub(crate) mod tests {
                         label: "Red".into(),
                         description: None,
                         preview: None,
-                        recommended: false,
                     },
                     forge_primitives::question::QuestionOption {
                         option_id: "q1".into(),
                         label: "Blue".into(),
                         description: None,
                         preview: None,
-                        recommended: false,
                     },
                 ],
             },
@@ -850,25 +848,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn from_question_focuses_first_option_when_one_is_recommended() {
-        // The caret is not a second recommendation signal: index 0
-        // whatever the flags say, and the marked option is hoisted there
-        // upstream.
-        let mut request = make_question_request(false);
-        request.prompt.options[1].recommended = true;
-        let state = PromptState::from_question("tc-q".into(), request);
-        assert_eq!(
-            state.focused_option_index, 0,
-            "the caret starts on the first option; the marker rides on its label",
-        );
-    }
-
-    #[test]
-    fn from_question_focuses_first_option_when_none_is_recommended() {
+    fn from_question_focuses_first_option() {
+        // The caret is not a recommendation signal: it starts on the
+        // first option unconditionally, and a `(Recommended)` option was
+        // hoisted to that index upstream.
         let state = PromptState::from_question("tc-q".into(), make_question_request(false));
         assert_eq!(
             state.focused_option_index, 0,
-            "with no marker the CLI's order stands and the caret starts at the top",
+            "the caret starts on the first option, whatever the marker said",
         );
     }
 
@@ -1192,8 +1179,7 @@ pub(crate) mod tests {
     }
 
     /// A question answers on the first Enter, with no arrow or space
-    /// first. No option here is recommended, so focus sits on index 0,
-    /// which is just the first option.
+    /// first: focus sits on index 0, the first option.
     #[test]
     fn enter_answers_a_freshly_enqueued_question_on_the_first_press() {
         let mut app = crate::app::App::test_default();

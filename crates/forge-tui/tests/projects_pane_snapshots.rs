@@ -615,7 +615,6 @@ fn build_question_request() -> forge_primitives::question::QuestionRequest {
                 label: "Red".into(),
                 description: None,
                 preview: None,
-                recommended: false,
             }],
         },
         question_index: 0,
