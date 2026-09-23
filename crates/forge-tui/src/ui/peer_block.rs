@@ -95,8 +95,9 @@ pub(crate) enum PeerInboundKind {
     Cron {
         prompt: String,
     },
-    /// `[Slack - workspace 'X', <channel>] id ... ts ...\n<author>: <text>` -
-    /// a matched Slack message delivered as a user turn. Rendered with the
+    /// `[Slack - workspace 'X', <channel>] id ... ts ...` then one
+    /// `<author>: <text> [ts ...]` line per delivered message - a
+    /// conversation's news, delivered as a user turn. Rendered with the
     /// ◇ glyph + a `Slack` source label so it reads as an external event,
     /// not agent traffic. Never groups with peer envelopes (see
     /// [`PeerInboundKind::peer_sender_identity`]).
@@ -106,7 +107,8 @@ pub(crate) enum PeerInboundKind {
         /// `None` when there is no name to print: a bot message arrives with
         /// `user: None`, which the producer writes as `unknown`, and
         /// `message.user` is otherwise a raw id until the producer resolves a
-        /// handle.
+        /// handle. Also `None` for a multi-message body, whose members each
+        /// name their own author.
         author: Option<String>,
         body: String,
     },
@@ -263,12 +265,24 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
 
     if let Some(rest) = header.strip_prefix("Slack - workspace '") {
         let (workspace, channel) = take_until(rest, "', ")?;
-        // The `id … ts …` tail (and ` in thread …`) sits past the closing
-        // bracket, so the body is what follows the newline.
-        let (_, rest) = after_bracket.split_once('\n')?;
-        // `slack_message_to_prose` always writes `<author>: <text>`, so a body
-        // without the separator is not this shape at all.
+        // The `id … ts …` tail (and a bundle's member count) sits past the
+        // closing bracket, so the body is what follows the newline.
+        let (tail, rest) = after_bracket.split_once('\n')?;
+        // `slack_bundle_to_prose` writes `<author>: <text>` on every member
+        // line, so a body without the separator is not this shape at all.
         let (author, body) = rest.split_once(": ")?;
+        // Every member of a bundle names its own author, so the header names
+        // none of them: promoting the first would read as the block's author
+        // and lose the rest. The count is what says so - a single message's
+        // own text may wrap just as a bundle's members do.
+        if bundle_member_count(tail).is_some() {
+            return Some(PeerInboundKind::Slack {
+                workspace: workspace.to_owned(),
+                channel: channel.to_owned(),
+                author: None,
+                body: rest.to_owned(),
+            });
+        }
         // A raw Slack id is not a name to print: `message.user` reaches the
         // prose as a `U…` id, and a bot post as the literal `unknown`.
         let author =
@@ -900,6 +914,13 @@ fn is_slack_id(text: &str) -> bool {
     let mut chars = text.chars();
     chars.next().is_some_and(|first| first.is_ascii_uppercase())
         && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
+/// The member count a delivered bundle's header carries, and `None` for a
+/// single message - which is what tells the two apart, since one message's
+/// text may wrap over as many lines as a bundle's members do.
+fn bundle_member_count(tail: &str) -> Option<usize> {
+    tail.rsplit_once('(')?.1.strip_suffix(" messages)")?.parse().ok()
 }
 
 /// Split `s` at the first occurrence of `marker`. Returns
@@ -1551,6 +1572,72 @@ mod tests {
             "the second body line stays hidden: {s:?}",
         );
         assert!(s.iter().any(|line| line.contains("click or ctrl+x to expand")));
+    }
+
+    /// A bundle's body is one line per member, so three members render as
+    /// three rows under the one header rather than three messages crowding
+    /// a single row.
+    #[test]
+    fn a_bundle_renders_one_row_per_member_under_one_header() {
+        let prose = "[Slack - workspace 'acme', general] id C1 ts 3.3 (3 messages)\n\
+                     alice: one [ts 1.1]\n\
+                     bob: two [ts 2.2]\n\
+                     carol: three [ts 3.3]";
+        let kind = detect_inbound(prose).expect("a bundle is a Slack envelope");
+        let rendered = render_lines_to_strings(&render_inbound(&kind, false, false));
+
+        assert!(rendered[0].contains("#general"), "one header: {rendered:?}");
+        let members: Vec<&String> = rendered.iter().filter(|line| line.contains("[ts ")).collect();
+        assert_eq!(members.len(), 3, "one row per member: {rendered:?}");
+        assert!(members[0].contains("alice"), "the first keeps its author: {rendered:?}");
+        assert!(members[2].contains("carol"), "and the last its own: {rendered:?}");
+    }
+
+    /// Every member of a bundle carries its own `<author>: `, so the header
+    /// names none of them: promoting the first would read as the block's
+    /// author and silently drop the rest.
+    #[test]
+    fn a_bundle_header_names_no_author() {
+        let prose = "[Slack - workspace 'acme', general] id C1 ts 2.2 (2 messages)\n\
+                     alice: one [ts 1.1]\n\
+                     bob: two [ts 2.2]";
+        match detect_inbound(prose).expect("slack") {
+            PeerInboundKind::Slack { author, body, .. } => {
+                assert_eq!(author, None, "a multi-member body names its own authors");
+                assert!(body.contains("alice: one"), "the body keeps every member: {body}");
+            }
+            other => panic!("expected Slack, got {other:?}"),
+        }
+    }
+
+    /// A one-member bundle is the shape a single message always had: its
+    /// author rides the header and the body is its text alone.
+    #[test]
+    fn a_single_member_bundle_keeps_the_author_on_the_header() {
+        let prose = "[Slack - workspace 'acme', general] id C1 ts 1.1\nalice: one [ts 1.1]";
+        match detect_inbound(prose).expect("slack") {
+            PeerInboundKind::Slack { author, body, .. } => {
+                assert_eq!(author.as_deref(), Some("alice"));
+                assert_eq!(body, "one [ts 1.1]");
+            }
+            other => panic!("expected Slack, got {other:?}"),
+        }
+    }
+
+    /// One message's own text wraps over as many lines as a bundle's
+    /// members do, so the member count - never the line count - is what
+    /// tells the two apart.
+    #[test]
+    fn a_wrapped_single_message_is_not_read_as_a_bundle() {
+        let text = "[Slack - workspace 'acme', general] id C1 ts 1.1\n\
+                    alice: line one\nline two [ts 1.1]";
+        match detect_inbound(text).expect("slack") {
+            PeerInboundKind::Slack { author, body, .. } => {
+                assert_eq!(author.as_deref(), Some("alice"), "one member keeps its header author");
+                assert_eq!(body, "line one\nline two [ts 1.1]");
+            }
+            other => panic!("expected Slack, got {other:?}"),
+        }
     }
 
     /// A raw user id is not a name, so production drops the author clause on

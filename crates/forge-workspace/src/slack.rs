@@ -160,24 +160,26 @@ impl Workspace {
     }
 
     /// Record a hand-off so a sweep re-run drops it. Committed only after
-    /// a successful hand-off: a failed dispatch leaves the key
+    /// a successful hand-off: a failed dispatch leaves the keys
     /// unrecorded, so the next sweep re-delivers instead of losing the
-    /// message behind a cursor that moved on.
+    /// messages behind a cursor that moved on.
     pub(crate) fn slack_delivery_commit(
         &self,
         project: &str,
         team_role: Option<&str>,
-        message: &SlackMessage,
+        messages: &[SlackMessage],
     ) {
-        let key = (
-            project.to_owned(),
-            team_role.map(str::to_owned),
-            message.conversation.clone(),
-            message.ts.clone(),
-        );
         let mut seen = self.slack_recently_delivered.lock();
         seen.retain(|_, seen_at| seen_at.elapsed() < DELIVERY_REMEMBER);
-        seen.insert(key, std::time::Instant::now());
+        for message in messages {
+            let key = (
+                project.to_owned(),
+                team_role.map(str::to_owned),
+                message.conversation.clone(),
+                message.ts.clone(),
+            );
+            seen.insert(key, std::time::Instant::now());
+        }
     }
 
     /// Hold a composed draft and hand back its id plus the receiver the
@@ -1036,18 +1038,12 @@ impl SlackHost for SlackSubsystemHost {
         // own outcome, and a bus round-trip reports only that the command
         // was accepted - a mid-delivery failure would read as success and
         // advance the cursor past an undelivered message.
-        let mut all_handed = true;
-        for message in messages {
-            if !crate::spawn::deliver_slack_message(
-                &ws,
-                &subscription.project,
-                subscription.team_role.as_deref(),
-                message.clone(),
-            ) {
-                all_handed = false;
-            }
-        }
-        all_handed
+        crate::spawn::deliver_slack_message(
+            &ws,
+            &subscription.project,
+            subscription.team_role.as_deref(),
+            messages.to_vec(),
+        )
     }
 }
 
@@ -1777,7 +1773,7 @@ mod tests {
         };
 
         assert!(!ws.slack_delivery_seen("forge", None, &message), "the first delivery is unseen");
-        ws.slack_delivery_commit("forge", None, &message);
+        ws.slack_delivery_commit("forge", None, std::slice::from_ref(&message));
         assert!(
             ws.slack_delivery_seen("forge", None, &message),
             "the same ts in the same conversation to the same owner is a re-run",
@@ -1800,7 +1796,7 @@ mod tests {
             files: Vec::new(),
         };
 
-        ws.slack_delivery_commit("forge", None, &message);
+        ws.slack_delivery_commit("forge", None, std::slice::from_ref(&message));
         assert!(
             !ws.slack_delivery_seen("forge", Some("tester"), &message),
             "the worker's delivery is its own, never the lead's duplicate",

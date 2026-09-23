@@ -963,10 +963,10 @@ impl SessionTask {
         }
     }
 
-    /// Deliver the Slack messages parked for this session's slot. Each is
-    /// echoed into chat as a notification block and re-dispatched as a
-    /// plain `Command::Prompt`, landing as an ordinary user turn. Mirrors
-    /// [`Self::deliver_parked_gotify`].
+    /// Deliver the Slack messages parked for this session's slot. Each
+    /// conversation's is echoed into chat as one notification block and
+    /// re-dispatched as a plain `Command::Prompt`, landing as an ordinary
+    /// user turn. Mirrors [`Self::deliver_parked_gotify`].
     fn deliver_parked_slack(
         &self,
         workspace: &Arc<crate::Workspace>,
@@ -975,8 +975,15 @@ impl SessionTask {
         if pending.is_empty() {
             return;
         }
+        // The parked bucket is flat, so regroup it into the per-conversation
+        // block each batch was read as.
+        let mut by_conversation: std::collections::BTreeMap<String, Vec<_>> =
+            std::collections::BTreeMap::new();
         for message in pending {
-            let prose = crate::spawn::slack_message_to_prose(&message);
+            by_conversation.entry(message.conversation.clone()).or_default().push(message);
+        }
+        for messages in by_conversation.into_values() {
+            let prose = crate::spawn::slack_bundle_to_prose(&messages);
             crate::spawn::push_slack_message_into_chat(workspace, &self.key, &prose);
             if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, prose) {
                 tracing::warn!(
@@ -1820,7 +1827,7 @@ mod tests {
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         workspace.park_slack(
             &session_key,
-            forge_primitives::slack::SlackMessage {
+            vec![forge_primitives::slack::SlackMessage {
                 workspace: "acme".to_owned(),
                 conversation: "D1".to_owned(),
                 conversation_label: "U9".to_owned(),
@@ -1829,7 +1836,7 @@ mod tests {
                 user: Some("U9".to_owned()),
                 text: "the buffered text".to_owned(),
                 files: Vec::new(),
-            },
+            }],
         );
 
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
@@ -1887,7 +1894,7 @@ mod tests {
         workspace.seed_test_project("slack-rekey", "/tmp/slack-rekey");
         let slot = SessionSlot::lead("TestOrg", "slack-rekey");
         let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(slot.clone(), None)));
-        workspace.park_slack(&slot, buffered_slack("buffered while asleep"));
+        workspace.park_slack(&slot, vec![buffered_slack("buffered while asleep")]);
 
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
@@ -2281,7 +2288,7 @@ mod tests {
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
         workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
-        workspace.park_slack(&test_slot(), buffered_slack("parked while spawning"));
+        workspace.park_slack(&test_slot(), vec![buffered_slack("parked while spawning")]);
 
         let mut task = SessionTask {
             key: key.clone(),

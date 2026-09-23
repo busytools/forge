@@ -7384,7 +7384,7 @@ provider = "anthropic"
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         ws.enable_test_dispatch_intercept();
 
-        crate::spawn::deliver_slack_message(&ws, "glead", None, slack_message_for("ping"));
+        crate::spawn::deliver_slack_message(&ws, "glead", None, vec![slack_message_for("ping")]);
 
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
@@ -7454,8 +7454,12 @@ provider = "anthropic"
         drop(rx);
         ws.command_senders.lock().insert(lead_key.clone(), tx);
 
-        let delivered =
-            crate::spawn::deliver_slack_message(&ws, "glead", None, slack_message_for("ping"));
+        let delivered = crate::spawn::deliver_slack_message(
+            &ws,
+            "glead",
+            None,
+            vec![slack_message_for("ping")],
+        );
 
         assert!(!delivered, "a failed dispatch tells the sweep to re-run the message");
         let echoed = drain_updates(&mut update_rx)
@@ -7473,7 +7477,7 @@ provider = "anthropic"
         ws.seed_test_project("glead", "/tmp/slack-lead-asleep");
         ws.enable_test_dispatch_intercept();
 
-        crate::spawn::deliver_slack_message(&ws, "glead", None, slack_message_for("wake up"));
+        crate::spawn::deliver_slack_message(&ws, "glead", None, vec![slack_message_for("wake up")]);
 
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
@@ -7507,11 +7511,11 @@ provider = "anthropic"
 
         let message = slack_message_for("hello");
         assert!(
-            crate::spawn::deliver_slack_message(&ws, "glead", None, message.clone()),
+            crate::spawn::deliver_slack_message(&ws, "glead", None, vec![message.clone()]),
             "the first delivery lands",
         );
         assert!(
-            crate::spawn::deliver_slack_message(&ws, "glead", None, message),
+            crate::spawn::deliver_slack_message(&ws, "glead", None, vec![message]),
             "the re-run reads as already delivered, not as a failure",
         );
 
