@@ -1731,13 +1731,25 @@ pub(crate) fn handle_despawn_worker(
         // would be a warning about nothing. A live worker's worktree
         // vanishing is the opposite: anomalous, and the live shape below
         // keeps reporting what git said.
-        Some(path) if live.is_none() && !path.exists() => {
+        //
+        // The BRANCH is a different matter, and it is still there: `git
+        // worktree remove` never deletes one. With the directory gone the
+        // branch is certainly not checked out, so this is the one place
+        // reaping it is unambiguously safe.
+        Some(_) if worktree_already_gone => {
             tracing::debug!(
                 target: "forge_workspace::spawn",
+                event_name = "despawn_stranded_worktree_already_gone",
                 project = %project_key.as_str(),
                 label = %label,
-                worktree = %path.display(),
+                worktree = %worktree_display,
                 "despawn: the stranded row's worktree is already gone; nothing to remove",
+            );
+            branch_cleanup_warning = reap_branch_and_reviews(
+                workspace,
+                project_view.as_ref(),
+                review_key.as_ref(),
+                label,
             );
             None
         }
@@ -1753,17 +1765,12 @@ pub(crate) fn handle_despawn_worker(
                 // Only after a successful removal: while the worktree
                 // stands it holds the branch checked out, and git refuses
                 // to delete a checked-out branch.
-                branch_cleanup_warning =
-                    project_view.as_ref().and_then(|v| reap_worker_branch(&v.path, label));
-                // Threads are only orphaned once their branch is gone, and
-                // the reap above can be what removes it - a worker that
-                // made no branch of its own sits on `worktree-<label>`.
-                if let Some((project, branch)) = review_key.as_ref()
-                    && let Some(view) = project_view.as_ref()
-                    && !forge_agent::env::worktree::branch_ref_exists(&view.path, branch)
-                {
-                    workspace.delete_branch_review_state(project, branch);
-                }
+                branch_cleanup_warning = reap_branch_and_reviews(
+                    workspace,
+                    project_view.as_ref(),
+                    review_key.as_ref(),
+                    label,
+                );
                 None
             }
             Err(err) => {
@@ -1797,6 +1804,33 @@ pub(crate) fn handle_despawn_worker(
 
     let _ =
         respond.send(DespawnResult::Despawned { worktree_cleanup_warning, branch_cleanup_warning });
+}
+
+/// Reap the worker's branch and, once that is gone, the review state keyed
+/// to it. Returns the warning a kept branch produces, which the caller's
+/// result carries.
+///
+/// The branch outlives the worktree - `git worktree remove` does not delete
+/// one - so this runs after a removal, and also for a worktree that was
+/// already gone: gone means the branch is no longer checked out, which is
+/// exactly when the delete is safe.
+fn reap_branch_and_reviews(
+    workspace: &Arc<Workspace>,
+    project_view: Option<&crate::views::ProjectView>,
+    review_key: Option<&(String, String)>,
+    label: &str,
+) -> Option<String> {
+    let warning = project_view.and_then(|view| reap_worker_branch(&view.path, label));
+    // Threads are only orphaned once their branch is gone, and the reap
+    // above can be what removes it - a worker that made no branch of its
+    // own sits on `worktree-<label>`.
+    if let Some((project, branch)) = review_key
+        && let Some(view) = project_view
+        && !forge_agent::env::worktree::branch_ref_exists(&view.path, branch)
+    {
+        workspace.delete_branch_review_state(project, branch);
+    }
+    warning
 }
 
 /// Reap the `worktree-<label>` branch claude creates for a worker's
@@ -4320,6 +4354,12 @@ provider = "anthropic"
         assert!(
             workspace.worker_rows_for_project(&project_key).is_empty(),
             "and the row still goes, which is the whole point of the call",
+        );
+        assert!(
+            !branch_exists(repo.path(), "worktree-reviewer"),
+            "the branch outlives the worktree - `git worktree remove` never deletes one - so a \
+             worktree that is already gone is still a branch to reap, and with the directory gone \
+             it is not checked out",
         );
     }
 
