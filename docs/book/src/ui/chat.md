@@ -603,7 +603,7 @@ One call can carry N questions (CLI 2.1.156+); each dispatches as its own dock p
 <details>
 <summary>Answered cards</summary>
 
-While the dock prompt is live the tool call is chat-suppressed; once answered it un-hides and renders a compact answered-card so the Q&A survives after the dock clears. A picked option shows its label; a typed "Other" answer shows the literal text. A multiSelect answer may carry both - picked labels first, then the typed line - and a multi-question call accumulates one pair per answered question. A `(Recommended)` suffix on a label is stripped and the option pre-selected; the "... Tell Claude something else" escape hatch appends to every question's options.
+While the dock prompt is live the tool call is chat-suppressed; once answered it un-hides and renders a compact answered-card so the Q&A survives after the dock clears. A picked option shows its label; a typed "Other" answer shows the literal text. A multiSelect answer may carry both - picked labels first, then the typed line - and a multi-question call accumulates one pair per answered question. A `(Recommended)` suffix stays in the label and the option moves to the top of the list; the "... Tell Claude something else" escape hatch appends to every question's options.
 
 </details>
 

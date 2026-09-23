@@ -234,6 +234,8 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 
 </div>
 
+**Recommended options.** A `(Recommended)` suffix on an option label is the CLI's own text: it reaches the row verbatim and the option moves to the top of the list, so the marker and the `▸` pointer land on the same row. The pointer starts on the first option either way, and a recommended option is styled like any other unfocused one - dim, with no extra emphasis. A question with no suffix keeps the CLI's order exactly.
+
 <details>
 <summary>The dictate blip on the dock</summary>
 
