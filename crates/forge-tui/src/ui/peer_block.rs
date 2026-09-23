@@ -104,11 +104,12 @@ pub(crate) enum PeerInboundKind {
     Slack {
         workspace: String,
         channel: String,
-        /// `None` when there is no name to print: a bot message arrives with
-        /// `user: None`, which the producer writes as `unknown`, and
-        /// `message.user` is otherwise a raw id until the producer resolves a
-        /// handle. Also `None` for a multi-message body, whose members each
-        /// name their own author.
+        /// `None` when there is no name to print. The producer resolves the
+        /// author before the prose is written, so a bot's message carries the
+        /// `user` id it always had and its own profile name beside it; a name
+        /// that resolved to nothing leaves `unknown` in the clause, which is
+        /// dropped here. Also `None` for a multi-message body, whose members
+        /// each name their own author.
         author: Option<String>,
         body: String,
     },
@@ -283,8 +284,9 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
                 body: rest.to_owned(),
             });
         }
-        // A raw Slack id is not a name to print: `message.user` reaches the
-        // prose as a `U…` id, and a bot post as the literal `unknown`.
+        // A raw Slack id is not a name to print: the prose writes the
+        // resolved author when there is one, and falls back to `message.user`
+        // - a `U…` id - or to `unknown` when there is nothing at all.
         let author =
             if author == "unknown" || is_slack_id(author) { None } else { Some(author.to_owned()) };
         return Some(PeerInboundKind::Slack {
@@ -1381,10 +1383,11 @@ mod tests {
         assert_eq!(kind.peer_sender_identity(), None);
     }
 
-    /// The shipped prose exactly as `slack_message_to_prose` emits it: the
-    /// bracketed part carries the workspace and conversation, the line under
-    /// it is `<author>: <text>`, and a bot message arrives with no author at
-    /// all - which reaches the prose as the literal `unknown`.
+    /// The shipped prose exactly as `slack_bundle_to_prose` emits it: the
+    /// bracketed part carries the workspace and conversation, and the line
+    /// under it is `<author>: <text>`. `unknown` is the producer's last
+    /// resort when a message carries no author at all, and it is never
+    /// printed as a name.
     #[test]
     fn detect_slack_inbound_parses_header_and_drops_the_unknown_author() {
         let text = "[Slack - workspace 'Trust Machines', granite-staging-alerts] id C0AE0CBJ77G ts 1789182982.499299\nunknown: _Large STX Transfer_\nAmount: 233468.293536 STX (~$60434.82 USD)";
