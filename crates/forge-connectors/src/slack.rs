@@ -1924,6 +1924,16 @@ mod tests {
         }
     }
 
+    /// `auth.test` is where forge learns the token's own user id. The id,
+    /// not the handle: every own-message filter compares ids, so a
+    /// handle-only probe would silently stop filtering.
+    #[test]
+    fn auth_test_yields_the_tokens_own_user_id() {
+        let body = r#"{"ok":true,"team":"acme","user":"ved","team_id":"T1","user_id":"U123","url":"https://x.slack.com/"}"#;
+        let auth: AuthTest = decode_envelope("auth.test", body).expect("decodes");
+        assert_eq!(auth.user_id, "U123", "the id is what the filters compare");
+    }
+
     #[test]
     fn an_ok_true_envelope_decodes_its_payload() {
         let body = r#"{"ok":true,"team":"Trust Machines","user":"ved","team_id":"T1","user_id":"U1","url":"https://x.slack.com/"}"#;
