@@ -1476,11 +1476,13 @@ provider = "anthropic"
 workspace = "acme"
 token = "xoxp-test"
 poll_seconds = 45
+thread_idle_days = 30
 "#;
         let parsed: ForgeToml = toml::from_str(toml).expect("slack section parses");
         assert_eq!(parsed.slack.len(), 1);
         assert_eq!(parsed.slack[0].workspace, "acme");
         assert_eq!(parsed.slack[0].poll_seconds, 45);
+        assert_eq!(parsed.slack[0].thread_idle_days, 30);
 
         let bad = r#"
 [[slack]]
@@ -1497,6 +1499,13 @@ poll_second = 45
         let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
         let parsed: ForgeToml = toml::from_str(toml).expect("parses without poll_seconds");
         assert_eq!(parsed.slack[0].poll_seconds, 30);
+    }
+
+    #[test]
+    fn slack_thread_idle_days_defaults_to_fourteen() {
+        let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
+        let parsed: ForgeToml = toml::from_str(toml).expect("parses without thread_idle_days");
+        assert_eq!(parsed.slack[0].thread_idle_days, 14);
     }
 
     #[test]

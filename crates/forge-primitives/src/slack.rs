@@ -20,10 +20,19 @@ pub struct SlackConfig {
     /// Sweep interval for this workspace, in seconds.
     #[serde(default = "default_poll_seconds")]
     pub poll_seconds: u64,
+    /// A followed thread with nothing new for this many days is dropped:
+    /// one that quiet is resolved in practice, whatever its parent's age.
+    #[serde(default = "default_thread_idle_days")]
+    pub thread_idle_days: u64,
 }
 
 fn default_poll_seconds() -> u64 {
     30
+}
+
+/// The idle window a workspace gets when it names none.
+pub fn default_thread_idle_days() -> u64 {
+    14
 }
 
 /// Hand-written because the token must never be printed, the same reason
@@ -34,6 +43,7 @@ impl std::fmt::Debug for SlackConfig {
             .field("workspace", &self.workspace)
             .field("token", &"[redacted]")
             .field("poll_seconds", &self.poll_seconds)
+            .field("thread_idle_days", &self.thread_idle_days)
             .finish()
     }
 }
@@ -278,6 +288,7 @@ mod tests {
             workspace: "acme".to_owned(),
             token: "xoxp-supersecret".to_owned(),
             poll_seconds: 30,
+            thread_idle_days: 14,
         };
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("supersecret"), "token leaked: {rendered}");

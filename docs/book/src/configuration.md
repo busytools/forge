@@ -371,6 +371,7 @@ means the Slack connector stays dormant.
 | `workspace` | string | none | Label for this workspace, distinct per entry. It addresses the workspace in `slack__list`. |
 | `token` | string | none | User token, `xoxp-...`. |
 | `poll_seconds` | integer | `30` | Sweep interval for this workspace, in seconds. |
+| `thread_idle_days` | integer | `14` | Drop a followed thread with nothing new for this many days. A thread that quiet is resolved in practice, whatever its parent's age. |
 
 `workspace` and `token` are mandatory once an entry is present. Three
 mistakes fail the load rather than booting a connector that cannot work:
@@ -503,6 +504,7 @@ client_token = "CxxxxxxxxxxxxxxxA"
 workspace = "acme"
 token = "xoxp-xxxxxxxxxxxx"
 poll_seconds = 30
+thread_idle_days = 14
 
 [plugins]
 auto_update = true

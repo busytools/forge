@@ -1695,7 +1695,12 @@ mod tests {
     }
 
     fn cfg(label: &str) -> SlackConfig {
-        SlackConfig { workspace: label.to_owned(), token: "xoxp-test".to_owned(), poll_seconds: 30 }
+        SlackConfig {
+            workspace: label.to_owned(),
+            token: "xoxp-test".to_owned(),
+            poll_seconds: 30,
+            thread_idle_days: 14,
+        }
     }
 
     fn workspace_with_no_slack() -> Arc<Workspace> {

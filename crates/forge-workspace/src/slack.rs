@@ -14,7 +14,7 @@ use std::time::Duration;
 use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
     SlackConfig, SlackDraft, SlackFollowedThread, SlackMessage, SlackSubscription,
-    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord,
+    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord, default_thread_idle_days,
 };
 use uuid::Uuid;
 
@@ -25,10 +25,6 @@ use crate::workspace::Workspace;
 /// sweep that re-runs after a 429 or a restart, short enough that the map
 /// stays small.
 const DELIVERY_REMEMBER: Duration = Duration::from_secs(300);
-
-/// A followed thread that has seen no reply newer than its cursor for
-/// this many days is dropped, so the tracked set stays bounded.
-const THREAD_IDLE_DROP_DAYS: u64 = 14;
 
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
@@ -414,10 +410,21 @@ impl Workspace {
         }
     }
 
+    /// The idle window this workspace drops a thread after, from its
+    /// `[[slack]]` entry: the followed set is per workspace, so its window
+    /// is too. A workspace whose entry is gone keeps the default.
+    fn slack_thread_idle_days(&self, workspace: &str) -> u64 {
+        self.config
+            .slack
+            .iter()
+            .find(|config| config.workspace.trim() == workspace)
+            .map_or_else(default_thread_idle_days, |config| config.thread_idle_days)
+    }
+
     /// The threads tracked for a conversation, pruned while listed: an
     /// owner with no remaining subscription in the workspace is dropped
     /// from the record, a row whose last owner goes is deleted, and a row
-    /// idle past [`THREAD_IDLE_DROP_DAYS`] is dropped with a debug log.
+    /// idle past the workspace's window is dropped with a debug log.
     pub(crate) fn slack_followed_threads(
         &self,
         workspace: &str,
@@ -453,7 +460,7 @@ impl Workspace {
                 let _ = crate::store::slack::remove_thread(db, workspace, conversation, &parent_ts);
                 continue;
             }
-            if thread_idle_days(&record.cursor) >= THREAD_IDLE_DROP_DAYS {
+            if thread_idle_days(&record.cursor) >= self.slack_thread_idle_days(workspace) {
                 let _ = crate::store::slack::remove_thread(db, workspace, conversation, &parent_ts);
                 tracing::debug!(
                     target: "forge_workspace::slack",
@@ -1054,7 +1061,12 @@ mod tests {
     use uuid::Uuid;
 
     fn cfg(workspace: &str, token: &str) -> SlackConfig {
-        SlackConfig { workspace: workspace.to_owned(), token: token.to_owned(), poll_seconds: 30 }
+        SlackConfig {
+            workspace: workspace.to_owned(),
+            token: token.to_owned(),
+            poll_seconds: 30,
+            thread_idle_days: 14,
+        }
     }
 
     fn sub_for(project: &str, team_role: Option<&str>) -> SlackSubscription {
@@ -1508,6 +1520,49 @@ mod tests {
         (crate::slack::SlackSubsystemHost::new(&ws), ws, dir)
     }
 
+    /// As [`host_with_c1_subscriber`], with the workspace's own idle
+    /// window, so a test can show the prune reads it rather than a
+    /// compiled default.
+    fn host_with_c1_subscriber_and_idle_days(
+        project: &str,
+        team_role: Option<&str>,
+        thread_idle_days: u64,
+    ) -> (crate::slack::SlackSubsystemHost, Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.slack = vec![SlackConfig { thread_idle_days, ..cfg("acme", "xoxp-test") }];
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation(project, team_role, "C1"), true);
+        (crate::slack::SlackSubsystemHost::new(&ws), ws, dir)
+    }
+
+    /// The idle window is the workspace's own. Both sides of it are
+    /// exercised at a distance the 14-day default would get wrong in
+    /// opposite directions.
+    #[test]
+    fn a_workspace_configured_idle_window_is_what_the_prune_uses() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the clock is past the epoch")
+            .as_secs();
+        let days_ago = |days: u64| format!("{}.{:06}", now - days * 24 * 60 * 60, 0);
+
+        for (window, kept) in [(30_u64, 1_usize), (7, 0)] {
+            let (host, _ws, _dir) = host_with_c1_subscriber_and_idle_days("forge", None, window);
+            host.follow_thread("acme", "C1", &days_ago(20), owner("forge", None), &days_ago(20));
+
+            assert_eq!(
+                host.followed_threads("acme", "C1").len(),
+                kept,
+                "a thread quiet for 20 days under a {window}-day window",
+            );
+        }
+    }
+
     /// A thread a delivered message anchors is tracked from the caller's
     /// `since`, owned once per session even when both followed it.
     #[test]
@@ -1617,7 +1672,7 @@ mod tests {
     #[test]
     fn an_unparseable_thread_cursor_reads_as_ancient() {
         assert!(
-            thread_idle_days("not-a-ts") >= THREAD_IDLE_DROP_DAYS,
+            thread_idle_days("not-a-ts") >= default_thread_idle_days(),
             "an unparseable cursor must drop the row, not keep it: {}",
             thread_idle_days("not-a-ts"),
         );

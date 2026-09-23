@@ -432,6 +432,7 @@ mod tests {
             workspace: "acme".to_owned(),
             token: String::new(),
             poll_seconds: 30,
+            thread_idle_days: 14,
         }];
         config
     }
