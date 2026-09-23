@@ -504,7 +504,6 @@ fn build_permission_request() -> PermissionRequest {
             name: "Allow".into(),
             kind: PermissionOptionKind::Allow,
             action: PermissionAction::Allow,
-            recommended: false,
         }],
         display: None,
     }

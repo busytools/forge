@@ -89,7 +89,6 @@ impl PromptState {
                 name: "Tell Claude something else".into(),
                 kind: forge_primitives::permission_ui::PermissionOptionKind::Notes,
                 action: forge_primitives::permission_ui::PermissionAction::Deny,
-                recommended: false,
             });
         }
 
@@ -135,7 +134,6 @@ impl PromptState {
                 name: opt.label.clone(),
                 kind: PermissionOptionKind::Allow,
                 action: PermissionAction::Allow,
-                recommended: opt.recommended,
             })
             .collect();
         options.push(PermissionOption {
@@ -143,7 +141,6 @@ impl PromptState {
             name: "Tell Claude something else".into(),
             kind: PermissionOptionKind::Notes,
             action: PermissionAction::Deny,
-            recommended: false,
         });
 
         Self {
@@ -178,14 +175,12 @@ impl PromptState {
                 name: "Post".into(),
                 kind: PermissionOptionKind::Allow,
                 action: PermissionAction::Allow,
-                recommended: true,
             },
             PermissionOption {
                 option_id: "do_not_post".into(),
                 name: "Do not post".into(),
                 kind: PermissionOptionKind::Deny,
                 action: PermissionAction::Deny,
-                recommended: false,
             },
         ];
         Self {
@@ -797,14 +792,12 @@ pub(crate) mod tests {
                     name: "Allow once".into(),
                     kind: PermissionOptionKind::Allow,
                     action: PermissionAction::Allow,
-                    recommended: false,
                 },
                 PermissionOption {
                     option_id: "deny".into(),
                     name: "Deny".into(),
                     kind: PermissionOptionKind::Deny,
                     action: PermissionAction::Deny,
-                    recommended: false,
                 },
             ],
             display: None,
@@ -877,8 +870,6 @@ pub(crate) mod tests {
             state.focused_option_index, 0,
             "with no marker the CLI's order stands and the caret starts at the top",
         );
-        assert!(!state.options[0].recommended);
-        assert!(!state.options[1].recommended);
     }
 
     #[test]
@@ -1201,8 +1192,8 @@ pub(crate) mod tests {
     }
 
     /// A question answers on the first Enter, with no arrow or space
-    /// first. No option here is recommended, so focus sits on the
-    /// fallback index 0.
+    /// first. No option here is recommended, so focus sits on index 0,
+    /// which is just the first option.
     #[test]
     fn enter_answers_a_freshly_enqueued_question_on_the_first_press() {
         let mut app = crate::app::App::test_default();

@@ -2886,7 +2886,6 @@ mod tests {
                 name: "Allow".into(),
                 kind: PermissionOptionKind::Allow,
                 action: PermissionAction::Allow,
-                recommended: false,
             }],
             display: None,
         };

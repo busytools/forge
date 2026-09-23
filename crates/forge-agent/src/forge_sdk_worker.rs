@@ -1714,7 +1714,6 @@ fn build_permission_options(
         name: "Allow once".to_owned(),
         kind: PermissionOptionKind::Allow,
         action: PermissionAction::Allow,
-        recommended: false,
     });
 
     // 2. Derive "Allow always" options from ctx.suggestions, with macOS
@@ -1768,7 +1767,6 @@ fn build_permission_options(
             name,
             kind: PermissionOptionKind::Allow,
             action,
-            recommended: false,
         });
     }
 
@@ -1779,7 +1777,6 @@ fn build_permission_options(
             name: "Allow with edits".to_owned(),
             kind: PermissionOptionKind::Edit,
             action: PermissionAction::AllowWithInput,
-            recommended: false,
         });
     }
 
@@ -1789,7 +1786,6 @@ fn build_permission_options(
         name: "Deny".to_owned(),
         kind: PermissionOptionKind::Deny,
         action: PermissionAction::Deny,
-        recommended: false,
     });
 
     // 5. Universal: Tell Claude something else.
@@ -1798,7 +1794,6 @@ fn build_permission_options(
         name: "Tell Claude something else".to_owned(),
         kind: PermissionOptionKind::Notes,
         action: PermissionAction::Deny,
-        recommended: false,
     });
 
     opts

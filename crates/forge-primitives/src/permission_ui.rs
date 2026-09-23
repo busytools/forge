@@ -50,12 +50,6 @@ pub struct PermissionOption {
     pub name: String,
     pub kind: PermissionOptionKind,
     pub action: PermissionAction,
-    /// #273: Mirrors `QuestionOption.recommended`, the CLI's
-    /// `(Recommended)` marker on an AskUserQuestion option label.
-    /// `#[serde(default)]` for back-compat with captured prompts that
-    /// predate the field.
-    #[serde(default)]
-    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
