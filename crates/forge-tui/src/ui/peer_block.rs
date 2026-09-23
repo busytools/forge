@@ -1640,6 +1640,23 @@ mod tests {
         }
     }
 
+    /// The producer resolves a handle before the prose is written, so the
+    /// author clause survives the id check and the reader sees a name.
+    #[test]
+    fn slack_inbound_keeps_a_resolved_author_on_the_header() {
+        let text = "[Slack - workspace 'acme', general] id C1 ts 1.1\narchitect2: hi [ts 1.1]";
+        let block = render_inbound(&detect_inbound(text).expect("slack"), false, false);
+        let rendered = render_lines_to_strings(&block);
+        assert!(
+            rendered[0].contains("architect2"),
+            "the resolved handle rides the header: {rendered:?}",
+        );
+        assert!(
+            rendered.iter().all(|line| !line.contains("U0ATEK2EAGP")),
+            "and no id reaches the reader: {rendered:?}",
+        );
+    }
+
     /// A raw user id is not a name, so production drops the author clause on
     /// every real delivery until the producer resolves a handle.
     #[test]

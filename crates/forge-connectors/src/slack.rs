@@ -6,7 +6,7 @@
 //! logical failure, so a 200 is not success. Only a 429 arrives as a
 //! status, and it carries `Retry-After`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +34,15 @@ pub trait SlackHost: Send + Sync {
     /// The authenticated user's id for a workspace, resolved at boot.
     /// Needed to recognise `<@U...>` mentions.
     fn user_id(&self, workspace: &str) -> Option<String>;
+
+    /// The display name this workspace has already resolved for a user id,
+    /// or `None` when it has not. A `users.info` lookup is a call, so the
+    /// host keeps what it has learned rather than the sweep re-asking for
+    /// every message from a known author.
+    fn user_name(&self, workspace: &str, user: &str) -> Option<String>;
+
+    /// Record a user's display name, so the next message from them is free.
+    fn set_user_name(&self, workspace: &str, user: &str, name: &str);
 
     /// The subscriptions scoped to one workspace.
     fn subscriptions(&self, workspace: &str) -> Vec<SlackSubscription>;
@@ -855,6 +864,44 @@ pub(crate) async fn sweep(
             }
         }
 
+        // What each author of this batch is called. A bot's name rides the
+        // message; a human's id costs a lookup, once per user per
+        // workspace, so a familiar author is free from then on.
+        let mut authors: HashMap<String, String> = HashMap::new();
+        for message in &batch {
+            let Some(user) = message.user.as_deref() else { continue };
+            if authors.contains_key(user) {
+                continue;
+            }
+            if let Some(known) = host.user_name(workspace, user) {
+                authors.insert(user.to_owned(), known);
+                continue;
+            }
+            let name = match &message.bot_name {
+                Some(name) => Some(name.clone()),
+                None => match api.user_info(user).await {
+                    Ok(user) => Some(user.name).filter(|name| !name.is_empty()),
+                    // Not every user is visible to this token, and a
+                    // missing name is not a failed delivery: the block
+                    // drops the id rather than printing it.
+                    Err(error) => {
+                        tracing::debug!(
+                            target: "forge_connectors::slack",
+                            workspace,
+                            user,
+                            %error,
+                            "resolving a slack author failed; the message carries no name",
+                        );
+                        None
+                    }
+                },
+            };
+            if let Some(name) = name {
+                host.set_user_name(workspace, user, &name);
+                authors.insert(user.to_owned(), name);
+            }
+        }
+
         let label =
             conversation.name.clone().or_else(|| conversation.user.clone()).unwrap_or_default();
         // One block per subscription that wants this conversation's news:
@@ -888,6 +935,7 @@ pub(crate) async fn sweep(
                     ts: message.ts.clone(),
                     thread_ts: message.thread_ts.clone(),
                     user: message.user.clone(),
+                    author: message.user.as_deref().and_then(|user| authors.get(user)).cloned(),
                     text: message.text.clone(),
                     parent_user_id: message.parent_user_id.clone(),
                     latest_reply: message.latest_reply.clone(),
@@ -1011,6 +1059,11 @@ pub(crate) async fn sweep(
                             ts: reply.ts.clone(),
                             thread_ts: Some(thread.parent_ts.clone()),
                             user: reply.user.clone(),
+                            author: reply
+                                .user
+                                .as_deref()
+                                .and_then(|user| authors.get(user))
+                                .cloned(),
                             text: reply.text.clone(),
                             parent_user_id: reply.parent_user_id.clone(),
                             latest_reply: reply.latest_reply.clone(),
@@ -1149,6 +1202,9 @@ pub(crate) async fn sweep_mentions(
                 ts: hit.ts.clone(),
                 thread_ts: hit.thread_ts.clone(),
                 user: hit.user.clone(),
+                // A search hit sends the handle alongside the id, so the
+                // mention path needs no lookup at all.
+                author: hit.username.clone().filter(|name| !name.is_empty()),
                 text: hit.text.clone(),
                 // A search hit carries neither: only a conversation read
                 // reports the reply markers.
@@ -1378,6 +1434,9 @@ pub struct SlackHistoryMessage {
     pub thread_ts: Option<String>,
     /// Non-zero on a parent whose thread has replies.
     pub reply_count: u32,
+    /// A bot's own display name, which rides the message: free where a
+    /// human's id has to be looked up.
+    pub bot_name: Option<String>,
     /// Set on a reply, carrying the parent's author, and absent on a
     /// parent. This, not `thread_ts`, is what marks a reply: a parent
     /// carries `thread_ts` too.
@@ -1416,11 +1475,21 @@ struct RawWireMessage {
     #[serde(default)]
     reply_count: u32,
     #[serde(default)]
+    bot_profile: Option<BotProfile>,
+    #[serde(default)]
     parent_user_id: Option<String>,
     #[serde(default)]
     latest_reply: Option<String>,
     #[serde(default)]
     files: Vec<SlackFile>,
+}
+
+/// A bot message's own profile. `name` is the app's name, which is the
+/// only display name a bot message carries.
+#[derive(Debug, Deserialize)]
+struct BotProfile {
+    #[serde(default)]
+    name: Option<String>,
 }
 
 /// Split out of the async path so the decode is testable without HTTP.
@@ -1437,6 +1506,7 @@ fn decode_message_page(method: &str, body: &str) -> Result<MessagePage, SlackErr
             text: message.text,
             thread_ts: message.thread_ts,
             reply_count: message.reply_count,
+            bot_name: message.bot_profile.and_then(|profile| profile.name),
             parent_user_id: message.parent_user_id,
             latest_reply: message.latest_reply,
             files: message.files,
@@ -2271,6 +2341,12 @@ mod tests {
         history: std::sync::Mutex<HashMap<String, Vec<Vec<SlackHistoryMessage>>>>,
         /// Seeded failures: channel -> the error history returns.
         history_errors: std::sync::Mutex<HashMap<String, SlackError>>,
+        /// Display names the fake's `users.info` answers with, and how many
+        /// times it was asked - a lookup is a call.
+        user_names: std::sync::Mutex<HashMap<String, String>>,
+        user_info_calls: std::sync::Mutex<usize>,
+        /// What the host has already resolved, the cache the port keeps.
+        resolved_names: std::sync::Mutex<HashMap<String, String>>,
         replies: std::sync::Mutex<HashMap<String, Vec<Vec<SlackHistoryMessage>>>>,
         watermarks: std::sync::Mutex<HashMap<String, String>>,
         connected: std::sync::Mutex<Option<bool>>,
@@ -2383,6 +2459,14 @@ mod tests {
             self.batches.lock().expect("lock").clone()
         }
 
+        fn seed_user_name(&self, user: &str, name: &str) {
+            self.user_names.lock().expect("lock").insert(user.to_owned(), name.to_owned());
+        }
+
+        fn user_info_calls(&self) -> usize {
+            *self.user_info_calls.lock().expect("lock")
+        }
+
         fn connected(&self) -> Option<bool> {
             *self.connected.lock().expect("lock")
         }
@@ -2446,6 +2530,14 @@ mod tests {
 
         fn user_id(&self, _workspace: &str) -> Option<String> {
             self.user_id_slot.lock().expect("lock").clone()
+        }
+
+        fn user_name(&self, _workspace: &str, user: &str) -> Option<String> {
+            self.resolved_names.lock().expect("lock").get(user).cloned()
+        }
+
+        fn set_user_name(&self, _workspace: &str, user: &str, name: &str) {
+            self.resolved_names.lock().expect("lock").insert(user.to_owned(), name.to_owned());
         }
 
         fn subscriptions(&self, _workspace: &str) -> Vec<SlackSubscription> {
@@ -2764,8 +2856,17 @@ mod tests {
             })
         }
 
-        async fn user_info(&self, _user: &str) -> Result<SlackUser, SlackError> {
-            Ok(SlackUser { id: String::new(), name: String::new(), real_name: None, tz: None })
+        async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
+            *self.user_info_calls.lock().expect("lock") += 1;
+            let name = self.user_names.lock().expect("lock").get(user).cloned();
+            let Some(name) = name else {
+                return Err(SlackError::Api {
+                    method: "users.info".to_owned(),
+                    error: "user_not_found".to_owned(),
+                    needed: None,
+                });
+            };
+            Ok(SlackUser { id: user.to_owned(), name, real_name: None, tz: None })
         }
 
         async fn pins(&self, _channel: &str) -> Result<Vec<SlackPin>, SlackError> {
@@ -2975,6 +3076,7 @@ mod tests {
             text: text.to_owned(),
             thread_ts: None,
             reply_count: 0,
+            bot_name: None,
             parent_user_id: None,
             latest_reply: None,
             files: Vec::new(),
@@ -2991,6 +3093,7 @@ mod tests {
             ts: ts.to_owned(),
             thread_ts: None,
             user: Some("U9".to_owned()),
+            author: None,
             text: text.to_owned(),
             parent_user_id: None,
             latest_reply: None,
@@ -3537,6 +3640,86 @@ mod tests {
             "C1",
             &parent.ts,
             vec![parent.clone(), history_message("105.0", "U1", "the user's own reply")],
+        );
+    }
+
+    /// The search path sends a handle alongside the id, and the mention
+    /// sweep has it for free.
+    #[tokio::test]
+    async fn a_mention_delivers_the_username_slack_sent() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        let mut hit = search_match("200.1", "C1", "ping <@U1>");
+        hit.username = Some("architect".to_owned());
+        host.seed_search(vec![hit]);
+
+        sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(
+            host.delivered()[0].author.as_deref(),
+            Some("architect"),
+            "the handle Slack sent is what the block shows",
+        );
+    }
+
+    /// A conversation's message carries a bare id, so the name has to be
+    /// looked up - once per user, since a lookup is a call.
+    #[tokio::test]
+    async fn a_conversation_message_resolves_its_author_once_per_user() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_user_name("U9", "ved");
+        host.seed_history(
+            "C1",
+            vec![history_message("300.0", "U9", "second"), history_message("200.0", "U9", "first")],
+        );
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        let delivered = host.delivered();
+        assert_eq!(delivered.len(), 2, "both messages are delivered");
+        assert!(
+            delivered.iter().all(|message| message.author.as_deref() == Some("ved")),
+            "each carries the resolved handle: {delivered:?}",
+        );
+        assert_eq!(host.user_info_calls(), 1, "the second message costs no lookup");
+    }
+
+    /// A bot's name rides the message itself, so it costs nothing at all.
+    #[tokio::test]
+    async fn a_bot_message_takes_its_name_from_the_payload() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
+        let mut message = history_message("300.0", "U0ATEK2EAGP", "transfer");
+        message.bot_name = Some("architect2".to_owned());
+        host.seed_history("C1", vec![message]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert_eq!(
+            host.delivered()[0].author.as_deref(),
+            Some("architect2"),
+            "a bot names itself, and the block shows that",
+        );
+        assert_eq!(host.user_info_calls(), 0, "a bot's name is free");
+    }
+
+    /// An author the token cannot look up keeps no name, so the block falls
+    /// back to dropping the id rather than inventing one.
+    #[tokio::test]
+    async fn an_unresolvable_author_keeps_no_name() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_history("C1", vec![history_message("300.0", "U9", "hello")]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert_eq!(host.delivered()[0].author, None, "no name is invented for a failed lookup");
+        assert_eq!(
+            host.delivered()[0].user.as_deref(),
+            Some("U9"),
+            "and the id is still there for the own-message filter",
         );
     }
 

@@ -724,9 +724,11 @@ fn in_thread_order(messages: &[SlackMessage]) -> Vec<&SlackMessage> {
 }
 
 /// One bundle member. The `<author>: ` clause is what the chat block's
-/// detector keys on, so a member always carries one.
+/// detector keys on, so a member always carries one. A resolved name is
+/// preferred; the raw id is only a fallback the block drops, since an id
+/// is never a name to print.
 fn member_line(message: &SlackMessage) -> String {
-    let author = message.user.as_deref().unwrap_or("unknown");
+    let author = message.author.as_deref().or(message.user.as_deref()).unwrap_or("unknown");
     let mut out = format!("{author}: {} [ts {}", message.text, message.ts);
     // A parent carries its own ts as `thread_ts`, and the ts above already
     // answers into that thread, so only a real parent's reply says so.
@@ -2590,6 +2592,7 @@ provider = "anthropic"
             ts: "100.000001".to_owned(),
             thread_ts: None,
             user: Some("U9".to_owned()),
+            author: None,
             text: text.to_owned(),
             parent_user_id: None,
             latest_reply: None,
@@ -3213,6 +3216,19 @@ provider = "anthropic"
 
         let prose = slack_bundle_to_prose(&[reply]);
         assert!(prose.contains("in thread 1.1"), "the parent ts must survive: {prose}");
+    }
+
+    /// The name the connector resolved is what the block shows. The raw id
+    /// stays on the message for the own-message filter, and the block drops
+    /// it, so the resolved name is the only one that reaches a reader.
+    #[test]
+    fn a_bundle_prefers_the_resolved_author_over_the_id() {
+        let mut message = slack_msg_at("1.1", "U0ATEK2EAGP", "hi");
+        message.author = Some("architect2".to_owned());
+
+        let prose = slack_bundle_to_prose(&[message]);
+        assert!(prose.contains("architect2: hi"), "the resolved handle is shown: {prose}");
+        assert!(!prose.contains("U0ATEK2EAGP"), "an id is never a name to print: {prose}");
     }
 
     /// A parent carries its own `ts` as `thread_ts`, so saying so again on

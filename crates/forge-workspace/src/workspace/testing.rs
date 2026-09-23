@@ -201,6 +201,7 @@ impl Workspace {
             slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
+            slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(false),

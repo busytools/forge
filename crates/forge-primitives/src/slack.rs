@@ -278,6 +278,11 @@ pub struct SlackMessage {
     /// thread's parent, and the parent's `ts` on a reply.
     pub thread_ts: Option<String>,
     pub user: Option<String>,
+    /// The name to display for the author, resolved by the connector: the
+    /// handle the search path sends, a bot's own name, or a `users.info`
+    /// lookup. `None` means no name is known, and `user` carries a raw id
+    /// that must never be shown as one.
+    pub author: Option<String>,
     pub text: String,
     /// Set on a reply, carrying the parent's author. This, not `thread_ts`,
     /// is what marks a reply: a parent carries `thread_ts` too.

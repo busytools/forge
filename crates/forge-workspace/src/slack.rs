@@ -968,6 +968,16 @@ impl SlackHost for SlackSubsystemHost {
         None
     }
 
+    fn user_name(&self, workspace: &str, user: &str) -> Option<String> {
+        let ws = self.0.upgrade()?;
+        ws.slack_user_names.lock().get(&(workspace.to_owned(), user.to_owned())).cloned()
+    }
+
+    fn set_user_name(&self, workspace: &str, user: &str, name: &str) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.slack_user_names.lock().insert((workspace.to_owned(), user.to_owned()), name.to_owned());
+    }
+
     fn subscriptions(&self, workspace: &str) -> Vec<SlackSubscription> {
         let Some(ws) = self.0.upgrade() else { return Vec::new() };
         ws.slack_subs.lock().iter().filter(|sub| sub.workspace == workspace).cloned().collect()
@@ -1304,6 +1314,7 @@ mod tests {
             ts: "200.1".to_owned(),
             thread_ts: None,
             user: Some("U9".to_owned()),
+            author: None,
             text: "ping".to_owned(),
             parent_user_id: None,
             latest_reply: None,
@@ -1826,6 +1837,7 @@ mod tests {
             ts: "200.1".to_owned(),
             thread_ts: None,
             user: Some("U9".to_owned()),
+            author: None,
             text: "hello".to_owned(),
             parent_user_id: None,
             latest_reply: None,
@@ -1852,6 +1864,7 @@ mod tests {
             ts: "200.1".to_owned(),
             thread_ts: None,
             user: Some("U9".to_owned()),
+            author: None,
             text: "hello".to_owned(),
             parent_user_id: None,
             latest_reply: None,
