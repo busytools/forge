@@ -79,6 +79,13 @@ fn identity_needles() -> &'static [String] {
                 out.push(value);
             }
         }
+        // An empty list would mean the redactor quietly redacts less than it
+        // claims while the capture still succeeds. Fail here instead.
+        assert!(
+            !out.is_empty(),
+            "no identity needles could be derived: HOME is unset and git is missing or \
+             unconfigured, so the redaction would silently narrow",
+        );
         out
     })
 }
@@ -88,6 +95,13 @@ fn git_config(key: &str) -> Option<String> {
     let output = std::process::Command::new("git").args(["config", "--get", key]).output().ok()?;
     let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+/// The derivation is load-bearing, so fail here rather than only inside a
+/// live capture, which is ignored by default and would not report it.
+#[test]
+fn identity_needles_are_derived_on_this_machine() {
+    assert!(!identity_needles().is_empty());
 }
 
 /// Capture-machine identifiers - the home path in both the plain and the
@@ -169,7 +183,9 @@ fn the_committed_capture_carries_no_capture_machine_path() {
     }
     // The CLI marks injected memory with this heading. It is not
     // capture-local like a path, so the loop above cannot see it, and a
-    // capture that skips the memory lever inlines the whole file.
+    // capture that skips the memory lever inlines the whole file. The
+    // heading is the shape 2.1.280 emits, so re-check it on the next CLI
+    // bump rather than assuming it is stable.
     assert!(
         !body.contains("# claudeMd"),
         "the committed capture carries the CLI's injected CLAUDE.md",
