@@ -4,7 +4,7 @@ use super::overlay::{
 };
 use super::theme;
 use crate::app::App;
-use crate::app::config::{available_mcp_actions, is_mcp_action_available};
+use crate::app::config::available_mcp_actions;
 use crate::app::extensions::skills::{mcp_status_label, transport_label};
 use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
 use ratatui::Frame;
@@ -124,14 +124,10 @@ fn mcp_action_lines(
     let mut lines = vec![section_heading("Actions"), Line::default()];
     for (index, action) in actions.into_iter().enumerate() {
         let selected = index == overlay.selected_index;
-        let mut spans = vec![Span::styled(
+        let spans = vec![Span::styled(
             format!("{} {}", if selected { ">" } else { " " }, action.label()),
             overlay_line_style(selected, true),
         )];
-        if !is_mcp_action_available(server, action) {
-            spans.push(Span::styled("  ", Style::default()));
-            spans.push(badge_span("not available", Color::Black, theme::STATUS_WARNING));
-        }
         lines.push(Line::from(spans));
     }
     lines
@@ -200,10 +196,6 @@ fn section_heading(title: &str) -> Line<'static> {
         title.to_owned(),
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     ))
-}
-
-fn badge_span(label: &str, fg: Color, bg: Color) -> Span<'static> {
-    Span::styled(format!(" {label} "), Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD))
 }
 
 fn wrapped_height(text: Text<'static>, width: u16) -> u16 {

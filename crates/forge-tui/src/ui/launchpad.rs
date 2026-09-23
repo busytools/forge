@@ -129,6 +129,9 @@ struct PickerRow {
     org: String,
     last_activity_label: String,
     lifecycle: SessionLifecycleState,
+    /// Whether the project's live bucket has a backgrounded task drawing
+    /// an Inspector row. Promotes the glyph to the spinner.
+    has_background_work: bool,
     /// Last connection error message if the row is in Failed state,
     /// to render below the row.
     error: Option<String>,
@@ -178,6 +181,7 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
                 org: org.clone(),
                 last_activity_label,
                 lifecycle,
+                has_background_work: resolve_background_work(app, project),
                 error,
                 is_last_in_org: idx + 1 == count,
             });
@@ -210,6 +214,13 @@ fn resolve_lifecycle(app: &App, project: &ProjectView) -> SessionLifecycleState 
 
 fn resolve_error(app: &App, project: &ProjectView) -> Option<String> {
     find_live_bucket(app, project).and_then(|s| s.last_connection_error.clone())
+}
+
+/// Whether the project's live bucket is running a backgrounded task.
+/// `false` for a project with no bucket, which has nothing to promote.
+fn resolve_background_work(app: &App, project: &ProjectView) -> bool {
+    find_live_bucket(app, project)
+        .is_some_and(crate::app::session::UiSession::has_live_background_work)
 }
 
 /// `since` is `(last_activity, now)`, absent for a row with no
@@ -665,7 +676,8 @@ fn push_project_row(
     _area_width: u16,
 ) {
     let connector = if row.is_last_in_org { "└─" } else { "├─" };
-    let (glyph, glyph_color) = glyph_for_row(row.lifecycle, app.active_spinner_glyph());
+    let (glyph, glyph_color) =
+        glyph_for_row(row.lifecycle, row.has_background_work, app.active_spinner_glyph());
     let intent = effective_click_intent(app, &row.project_name, row.lifecycle);
     // Base name style - BOLD when the row is interactive (Idle /
     // Running / Sleeping / Failed), DIM when not (Spawning waits for
@@ -788,7 +800,11 @@ fn push_worker_rows(
         let is_last = idx + 1 == count;
         let tree_glyph = if is_last { "└─" } else { "├─" };
         let lifecycle = worker_lifecycle(app, live, label);
-        let (glyph, glyph_color) = glyph_for_row(lifecycle, app.active_spinner_glyph());
+        let (glyph, glyph_color) = glyph_for_row(
+            lifecycle,
+            worker_has_background_work(app, live, label),
+            app.active_spinner_glyph(),
+        );
         let chip_info = workspace.session_chip_for(&project.key);
         let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
         let name_label = truncate_to(label, WORKER_NAME_WIDTH);
@@ -909,20 +925,39 @@ fn push_unspawnable_hint_row(lines: &mut Vec<Line<'static>>, area_width: u16, me
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(truncated, style)]));
 }
 
-fn glyph_for_row(lifecycle: SessionLifecycleState, spinner_glyph: char) -> (String, Color) {
+/// Whether the worker labelled `label` has a live backgrounded task
+/// drawing an Inspector row. `false` for a label with no live entry.
+fn worker_has_background_work(
+    app: &App,
+    live: &[forge_workspace::LiveWorkerState],
+    label: &str,
+) -> bool {
+    live.iter()
+        .find(|worker| worker.label == label)
+        .and_then(|entry| app.sessions.get(&entry.slot))
+        .is_some_and(crate::app::session::UiSession::has_live_background_work)
+}
+
+/// The row's glyph. A session with a live backgrounded task is working,
+/// so it spins rather than reading as idle - the promotion the Projects
+/// pane applies, so the two surfaces agree about the row.
+fn glyph_for_row(
+    lifecycle: SessionLifecycleState,
+    has_background_work: bool,
+    spinner_glyph: char,
+) -> (String, Color) {
+    if crate::app::session::session_shows_spinner(lifecycle, has_background_work) {
+        return (spinner_glyph.to_string(), theme::RUST_ORANGE);
+    }
     match lifecycle {
         // Idle = "alive, no turn in flight". `●` filled bullet in
         // `RUST_ORANGE` - same accent as the Projects pane uses for
         // its active-Idle glyph (see `glyph_for_lifecycle` over there).
         // Sharing the colour keeps the two surfaces visually coherent.
         SessionLifecycleState::Idle => ("●".to_owned(), theme::RUST_ORANGE),
-        // Spawning + Running both animate the spinner. Spawning is
-        // "subprocess starting up"; Running is "claude is mid-turn".
-        // Both are transient busy states the picker should signal to
-        // the user - picking a Running row should feel like jumping
-        // into a session that's actively thinking, not one that's
-        // already idle. Same `RUST_ORANGE` colour as the Projects
-        // pane uses for its spinner glyph.
+        // Spawning + Running both animate the spinner, so the early
+        // return above already took them; the arm is here so the match
+        // stays exhaustive over the lifecycle enum.
         SessionLifecycleState::Spawning | SessionLifecycleState::Running => {
             (spinner_glyph.to_string(), theme::RUST_ORANGE)
         }
@@ -1292,6 +1327,7 @@ mod tests {
                     org: org.to_owned(),
                     last_activity_label: "now".to_owned(),
                     lifecycle: SessionLifecycleState::Sleeping,
+                    has_background_work: false,
                     error: None,
                     is_last_in_org: i + 1 == n,
                 });
@@ -1337,6 +1373,17 @@ mod tests {
     /// `reviewer` and `scratch` persisted as workers, and the account
     /// Ready, so every chip-bearing row carries one.
     fn render_picker_rows() -> (Vec<String>, tempfile::TempDir, tempfile::TempDir) {
+        let (rendered, _app, config_dir, project_dir) = render_picker_rows_with(|_| {});
+        (rendered, config_dir, project_dir)
+    }
+
+    /// Renders the picker after `seed` has run against the app, and hands
+    /// the app back so a test can ask it what the renderer asked - the
+    /// active spinner frame, say. Seeding happens here rather than before
+    /// the call because it needs the workspace already in place.
+    fn render_picker_rows_with(
+        seed: impl FnOnce(&mut App),
+    ) -> (Vec<String>, App, tempfile::TempDir, tempfile::TempDir) {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         let forge = config_dir.path().join("forge");
@@ -1361,13 +1408,14 @@ mod tests {
 
         let mut app = App::test_default();
         app.workspace = Some(std::sync::Arc::new(workspace));
+        seed(&mut app);
         let rows = build_picker_rows(&app);
         let (lines, _) = build_picker_content(&app, &rows, PICKER_WIDTH);
         let rendered = lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect();
-        (rendered, config_dir, project_dir)
+        (rendered, app, config_dir, project_dir)
     }
 
     /// The per-account glyph row appears only when it has something to
@@ -1647,6 +1695,86 @@ mod tests {
             SessionLifecycleState::Sleeping,
             "a label with no live worker at all is sleeping",
         );
+    }
+
+    /// A bucket the Inspector draws a row for: Idle, with one live
+    /// backgrounded bash task whose card carries the wire command.
+    /// `has_live_background_work` wants all three.
+    fn bucket_with_background_work(key: SessionSlot) -> UiSession {
+        use crate::app::{BackgroundTask, SessionTaskCard};
+
+        let mut bucket = UiSession::new(key, "test-project");
+        bucket.lifecycle_state = SessionLifecycleState::Idle;
+        bucket.background_tasks.push(BackgroundTask {
+            task_id: "t1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "gh run watch".to_owned(),
+        });
+        bucket.session_task_tool_use_ids.insert(
+            "t1".to_owned(),
+            SessionTaskCard {
+                tool_use_id: "tu-1".to_owned(),
+                card_seen: true,
+                command: Some("gh run watch 123".to_owned()),
+            },
+        );
+        bucket
+    }
+
+    /// A live worker entry for `label`, running.
+    fn live_worker_entry(label: &str, slot: SessionSlot) -> forge_workspace::WorkerEntry {
+        forge_workspace::WorkerEntry {
+            label: label.to_owned(),
+            charter: "charter".to_owned(),
+            slot,
+            session_id: None,
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::now(),
+            spawned_by: SessionSlot::lead("Default", "picker"),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    /// A project whose session has a live backgrounded task spins, the
+    /// way the Projects pane draws that session. Asserted on the rendered
+    /// row rather than on the glyph helper, so a call site that stops
+    /// passing the flag fails here.
+    #[test]
+    fn a_project_with_live_background_work_renders_a_spinner() {
+        let (rendered, app, _config_dir, _project_dir) = render_picker_rows_with(|app| {
+            let lead = SessionSlot::lead("Default", "picker");
+            app.sessions.insert(lead.clone(), bucket_with_background_work(lead));
+        });
+        let row = row_containing(&rendered, "picker");
+
+        assert!(
+            app.spinner_style.frames().iter().any(|frame| row.contains(*frame)),
+            "a project whose session has live background work spins; got {row:?}",
+        );
+        assert!(!row.contains('\u{25cf}'), "and does not fall back to the idle dot; got {row:?}");
+    }
+
+    /// The same for a worker row, which resolves its bucket through the
+    /// live-worker registry rather than the project's lead slot.
+    #[test]
+    fn a_worker_with_live_background_work_renders_a_spinner() {
+        let (rendered, app, _config_dir, _project_dir) = render_picker_rows_with(|app| {
+            let workspace = app.workspace.as_ref().expect("workspace").clone();
+            let project = workspace.list_projects().into_iter().next().expect("one project");
+            let slot = SessionSlot::from_str_for_test("worker-reviewer".to_owned());
+            workspace.insert_live_worker(&project.key, live_worker_entry("reviewer", slot.clone()));
+            app.sessions.insert(slot.clone(), bucket_with_background_work(slot));
+        });
+        let row = row_containing(&rendered, "reviewer");
+
+        assert!(
+            app.spinner_style.frames().iter().any(|frame| row.contains(*frame)),
+            "a worker with live background work spins; got {row:?}",
+        );
+        assert!(!row.contains('\u{25cf}'), "and does not fall back to the idle dot; got {row:?}");
     }
 
     #[test]

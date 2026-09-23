@@ -275,13 +275,6 @@ pub(crate) fn available_mcp_actions(
     actions
 }
 
-pub(crate) fn is_mcp_action_available(
-    _server: &forge_primitives::McpServerStatus,
-    _action: McpServerActionKind,
-) -> bool {
-    true
-}
-
 pub(crate) fn handle_mcp_operation_error(
     app: &mut App,
     key: &forge_workspace::SessionSlot,

@@ -36,8 +36,7 @@ pub struct AccountInfo {
     pub api_provider: Option<String>,
 }
 
-/// Forge's view of the active account - the picker-side identity
-/// from `forge.toml`'s `[[accounts]]`, peer to the CLI-side
+/// Forge's own view of the active account, peer to the CLI-side
 /// [`AccountInfo`].
 ///
 /// `AccountInfo` mirrors the `claude` CLI's wire payload (email,

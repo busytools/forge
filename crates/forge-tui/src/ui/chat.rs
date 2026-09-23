@@ -46,7 +46,6 @@ pub(super) struct HeightUpdateStats {
 pub(super) struct MeasureBudget {
     pub(super) remaining_msgs: usize,
     pub(super) remaining_lines: usize,
-    pub(super) remaining_cold_measures: usize,
     pub(super) deadline: Option<std::time::Instant>,
 }
 
@@ -60,7 +59,6 @@ impl MeasureBudget {
         Self {
             remaining_msgs: viewport_floor,
             remaining_lines: viewport_floor.saturating_mul(8).max(256),
-            remaining_cold_measures: usize::MAX,
             deadline: Some(std::time::Instant::now() + MEASURE_TIME_BUDGET),
         }
     }
@@ -68,14 +66,12 @@ impl MeasureBudget {
     fn exhausted(&self) -> bool {
         self.remaining_msgs == 0
             || self.remaining_lines == 0
-            || self.remaining_cold_measures == 0
             || self.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
     }
 
     fn consume(&mut self, wrapped_lines: usize) {
         self.remaining_msgs = self.remaining_msgs.saturating_sub(1);
         self.remaining_lines = self.remaining_lines.saturating_sub(wrapped_lines.max(1));
-        self.remaining_cold_measures = self.remaining_cold_measures.saturating_sub(1);
     }
 }
 
@@ -3779,22 +3775,43 @@ mod tests {
         assert!((viewport.scrollbar_thumb_size - 5.0).abs() < f32::EPSILON);
     }
 
-    fn bounded_budget(cold_measures: usize) -> super::MeasureBudget {
-        super::MeasureBudget {
-            remaining_msgs: 100,
-            remaining_lines: 100_000,
-            remaining_cold_measures: cold_measures,
-            deadline: None,
-        }
+    fn bounded_budget(msgs: usize) -> super::MeasureBudget {
+        super::MeasureBudget { remaining_msgs: msgs, remaining_lines: 100_000, deadline: None }
     }
 
     fn unbounded_budget() -> super::MeasureBudget {
         super::MeasureBudget {
             remaining_msgs: usize::MAX,
             remaining_lines: usize::MAX,
-            remaining_cold_measures: usize::MAX,
             deadline: None,
         }
+    }
+
+    /// The deadline is the only arm that bounds a measure pass by wall clock,
+    /// and every other test budget leaves it `None`, so nothing else fails if
+    /// it stops firing or starts firing on presence alone.
+    #[test]
+    fn the_deadline_arm_exhausts_on_the_clock_rather_than_on_presence() {
+        let budget = |deadline| super::MeasureBudget {
+            remaining_msgs: usize::MAX,
+            remaining_lines: usize::MAX,
+            deadline,
+        };
+
+        let one_ms_ago = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(1))
+            .expect("one millisecond before now is representable");
+        let expired = budget(Some(one_ms_ago));
+        assert!(
+            expired.exhausted(),
+            "a passed deadline must exhaust a budget whose every other lever is still open"
+        );
+
+        let ahead = budget(Some(std::time::Instant::now() + std::time::Duration::from_secs(60)));
+        assert!(
+            !ahead.exhausted(),
+            "a deadline still ahead must not exhaust a budget whose every other lever is open"
+        );
     }
 
     fn large_session_app(message_count: usize) -> App {
@@ -3808,8 +3825,9 @@ mod tests {
 
     /// Cold open of a large session: frame 1 must measure only a bounded,
     /// anchor-tail slice and leave the rest to converge over later frames.
-    /// Removing the per-frame cold cap or re-widening the bootstrap window
-    /// back to a whole-session index walk reintroduces the #1080 stall.
+    /// Dropping the budget's message allowance, which `bounded_budget(5)`
+    /// sets here, or re-widening the bootstrap window back to a
+    /// whole-session index walk reintroduces the #1080 stall.
     #[test]
     fn cold_bootstrap_measures_a_bounded_anchor_tail_then_converges() {
         let mut app = large_session_app(60);

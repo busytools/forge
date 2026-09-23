@@ -1,9 +1,8 @@
 //! `ProjectKey` - the canonical on-disk project identity.
 //!
-//! Lives in forge-primitives so the same key addresses a project
-//! through the account selection in the gateway and through the
-//! workspace that keys its own maps on it, without either crate
-//! growing its own near-identical newtype.
+//! Lives in forge-primitives so one key addresses a project across the
+//! crates that key their own maps on it - the workspace and the TUI -
+//! without either growing its own near-identical newtype.
 
 /// Project root path key - the canonicalised, sanitised string form
 /// produced by `forge_agent::userdata::catalog::scan::project_key_for_directory`.
@@ -19,14 +18,5 @@ impl ProjectKey {
 
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// Test-only constructor for cross-crate fixtures (forge-tui's
-    /// Projects pane snapshot tests). Byte-identical to
-    /// [`ProjectKey::new`]; the `test-helpers` gate, not a visibility
-    /// difference, is what keeps it out of production builds.
-    #[cfg(feature = "test-helpers")]
-    pub fn new_for_test(key: impl Into<String>) -> Self {
-        Self(key.into())
     }
 }

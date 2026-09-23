@@ -216,9 +216,10 @@ fn a_model_reads_by_role_with_its_file_beneath() {
     );
 }
 
-/// A bailed account stops forge starting, so the screen has to name
-/// BOTH exits: either one alone strands a reader who cannot take that
-/// route. They are not equivalent, and the screen says which is which -
+/// A bailed account does not stop forge starting - it is a degraded row
+/// the walk keeps as a last resort - so the screen has to name BOTH
+/// exits: either one alone strands a reader who cannot take that route.
+/// They are not equivalent, and the screen says which is which -
 /// repairing the account keeps it configured, dropping it does not.
 #[test]
 fn a_bailed_account_names_both_exits() {
@@ -234,8 +235,8 @@ fn a_bailed_account_names_both_exits() {
     .join("\n");
 
     assert!(
-        text.contains("Granite1 will not start"),
-        "the screen names the account that stopped it; got:\n{text}",
+        text.contains("Granite1 cannot authenticate"),
+        "the screen names the failing account and its failure; got:\n{text}",
     );
     assert!(
         text.contains("Fix the auth") && text.contains("claude setup-token"),

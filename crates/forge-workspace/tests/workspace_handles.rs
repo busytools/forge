@@ -1,6 +1,6 @@
 //! `Workspace::get_agent_handle` integration tests - verify the
-//! cross-crate plumbing from `forge.toml` through the account picker
-//! into the spawned `AgentHandle`'s bound `config_dir`. No real
+//! cross-crate plumbing from `forge.toml` through the account
+//! selection into the spawned `AgentHandle`'s bound `config_dir`. No real
 //! `claude` subprocesses are spawned; the test asserts up to the
 //! `AgentHandle`/`Bridge` boundary, where the bridge's typed
 //! `config_dir` field is the source of truth (read by every
@@ -26,7 +26,7 @@ fn forge_toml_path(config_dir: &std::path::Path) -> PathBuf {
 }
 
 #[tokio::test]
-async fn picker_display_name_reaches_bridge() {
+async fn account_display_name_reaches_bridge() {
     let dir = tempdir().expect("tempdir");
     fs::write(
         forge_toml_path(dir.path()),

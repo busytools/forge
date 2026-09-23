@@ -46,7 +46,7 @@ pub(crate) const INSTALLED: &str = r"
 │
 │
 │
-│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close
+│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | r refresh | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
 // Justification: the Available toggle is now a hide (the available
@@ -92,7 +92,7 @@ pub(crate) const SKILLS_HIDDEN: &str = r"
 │
 │
 │
-│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close
+│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | r refresh | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
 pub(crate) const SKILLS: &str = r"
@@ -134,7 +134,7 @@ pub(crate) const SKILLS: &str = r"
 │
 │
 │
-│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close
+│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | r refresh | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
 pub(crate) const AGENTS: &str = r"
@@ -176,7 +176,7 @@ pub(crate) const AGENTS: &str = r"
 │
 │
 │
-│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close
+│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | r refresh | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
 pub(crate) const COMMANDS: &str = r"
@@ -218,7 +218,7 @@ pub(crate) const COMMANDS: &str = r"
 │
 │
 │
-│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close
+│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | r refresh | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
 pub(crate) const HOOKS: &str = r"
@@ -260,7 +260,7 @@ pub(crate) const HOOKS: &str = r"
 │
 │
 │
-│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close
+│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | r refresh | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
 pub(crate) const LSP: &str = r"
@@ -302,7 +302,7 @@ pub(crate) const LSP: &str = r"
 │
 │
 │
-│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close
+│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | r refresh | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
 // Justification: the Mcps tab joins the shared row grammar - one row
@@ -349,7 +349,7 @@ pub(crate) const MCPS: &str = r"
 │
 │
 │
-│Left/Right switch tab | Up/Down move | Enter actions | Esc close
+│Left/Right switch tab | Up/Down move | Enter actions | r refresh | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
 // Justification: the Marketplaces tab joins the shared row grammar -
@@ -397,7 +397,7 @@ pub(crate) const MARKETPLACES: &str = r"
 │
 │
 │
-│Left/Right switch tab | Up/Down move | Enter actions | Esc close
+│Left/Right switch tab | Up/Down move | Enter actions | r refresh | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
 // Justification: this pin renders on the Installed tab, so it picks
@@ -443,5 +443,5 @@ pub(crate) const UPDATES: &str = r"
 │
 │
 │
-│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close
+│Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | r refresh | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";

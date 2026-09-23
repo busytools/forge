@@ -265,8 +265,6 @@ mod tests {
     ) -> AccountRow {
         AccountRow {
             display_name: name.to_owned(),
-            config_dir: std::path::PathBuf::from("/cfg"),
-            is_current: false,
             unusable,
             budget,
             fallback,

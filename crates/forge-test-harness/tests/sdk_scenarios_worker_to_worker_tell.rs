@@ -35,7 +35,7 @@ use forge_workspace::{CallerProject, MockWorkerFacade, WorkerFacade, build_worke
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn worker_to_worker_tell_scenario() {
     let caller = SessionSlot::from_str_for_test("lead-test-session");
-    let project_key = forge_workspace::ProjectKey::new_for_test("forge");
+    let project_key = forge_workspace::ProjectKey::new("forge");
 
     let mock = MockWorkerFacade::new();
     mock.callers.lock().insert(caller.clone(), CallerProject { project_key, is_lead: true });

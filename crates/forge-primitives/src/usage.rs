@@ -205,7 +205,8 @@ pub enum AccountBudget {
         /// windows, or `None` when all three are absent.
         seven_day_util: Option<f64>,
         /// When the account unlocks - `Some` only while it is at its
-        /// cap, so the picker shows a reset ETA on limited rows only.
+        /// cap, so the gateway view shows a reset ETA on limited rows
+        /// only.
         resets_at: Option<std::time::SystemTime>,
     },
     /// Per-key spend in USD over the three periods the backend

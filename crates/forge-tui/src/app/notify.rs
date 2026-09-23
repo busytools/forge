@@ -1,5 +1,4 @@
 use forge_workspace::SessionSlot;
-use std::borrow::Cow;
 
 /// Events that can trigger a user notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +42,7 @@ impl NotificationText {
     }
 }
 
-/// What one unfocused notify() delivered, recorded instead of sent
+/// What one unfocused notify() delivered, recorded alongside the send
 /// when the `testing` feature is on: the two pre-sanitization escape
 /// fields and whether the bytes reached stdout, in delivery order.
 /// `written` is what makes the emission observable; without it a guard
@@ -106,10 +105,11 @@ impl NotificationManager {
 
     /// Send a notification if the terminal is not focused.
     ///
-    /// This is the single entry-point that all event handlers should call.
-    /// It is intentionally cheap when focused (just a bool check).
-    /// `session_key` is the event's own session, logged beside the
-    /// resolved context so a wrong title is diagnosable from the log.
+    /// Reached only through [`crate::app::App::notify`], which holds its
+    /// own focus gate ahead of this one. Intentionally cheap when
+    /// focused (just a bool check). `session_key` is the event's own
+    /// session, logged beside the resolved context so a wrong title is
+    /// diagnosable from the log.
     pub fn notify(&self, event: NotifyEvent, session_key: &SessionSlot, context: &NotifyContext) {
         if self.terminal_focused {
             return;
@@ -151,10 +151,9 @@ impl NotificationManager {
 impl crate::app::App {
     /// Raise `event` for `session_key`'s session through this app's
     /// notification manager. The single call site for every
-    /// notification, so nothing grows a second policy about when to
-    /// notify: the manager's own terminal-focus check decides that.
-    /// The notification text comes from the event session's project +
-    /// worker label.
+    /// notification, holding one terminal-focus gate ahead of the
+    /// manager's own. The notification text comes from the event
+    /// session's project + worker label.
     pub(crate) fn notify(&self, event: NotifyEvent, session_key: &SessionSlot) {
         // A session with no bucket has nothing to notify about, so this
         // is where an event for a closed or never-spawned key stops.
@@ -277,7 +276,7 @@ fn notification_text(
 /// The escape one notification delivers. OSC 777 carries the title as
 /// its own field, which is what puts the session on the banner's bold
 /// line - OSC 9's single field leaves that line to the app name.
-fn notification_escape_sequence<'a>(title: &'a str, body: &'a str) -> Cow<'a, str> {
+fn notification_escape_sequence(title: &str, body: &str) -> String {
     let title = sanitize_notification_field(title);
     let body = sanitize_notification_field(body);
     let mut sequence = String::with_capacity(title.len() + body.len() + 20);
@@ -288,20 +287,33 @@ fn notification_escape_sequence<'a>(title: &'a str, body: &'a str) -> Cow<'a, st
     sequence.push_str(&body);
     sequence.push('\u{1b}');
     sequence.push('\\');
-    Cow::Owned(sequence)
+    sequence
 }
 
 /// One OSC 777 field, made safe to embed. `;` becomes a space the way
 /// CR and LF do: it is content this encoding cannot carry, not a
 /// control character.
+///
+/// What is dropped is ECMA-48's sequence-control characters in both
+/// halves, because any one of them opens or closes a sequence the rest
+/// of the field would be read as: BEL and ESC terminate this OSC, CAN
+/// and SUB abort a sequence, and the C1 half is its introducers and
+/// terminator (DCS, SOS, SCI, CSI, ST, OSC, PM, APC).
+///
+/// A field that sanitizes to nothing becomes a space rather than
+/// nothing, so the escape always carries two non-empty fields.
 fn sanitize_notification_field(field: &str) -> String {
     let mut sanitized = String::with_capacity(field.len());
     for ch in field.chars() {
         match ch {
-            '\u{07}' | '\u{1b}' | '\u{9c}' | '\u{18}' | '\u{1a}' => {}
+            '\u{07}' | '\u{18}' | '\u{1a}' | '\u{1b}' | '\u{90}' | '\u{98}' | '\u{9a}'
+            | '\u{9b}' | '\u{9c}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => {}
             '\r' | '\n' | ';' => sanitized.push(' '),
             _ => sanitized.push(ch),
         }
+    }
+    if sanitized.is_empty() {
+        sanitized.push(' ');
     }
     sanitized
 }
@@ -453,12 +465,7 @@ mod tests {
         let active = seed_bucket(&mut app, "session-a", "alpha");
         let worker = seed_bucket(&mut app, "session-b", "beta");
         app.active_session_key = Some(active.clone());
-        seed_worker(
-            &app,
-            &forge_workspace::ProjectKey::new_for_test("p-beta"),
-            &worker,
-            "egen-lead",
-        );
+        seed_worker(&app, &forge_workspace::ProjectKey::new("p-beta"), &worker, "egen-lead");
 
         assert_eq!(
             app.notification_context(&worker),
@@ -504,12 +511,7 @@ mod tests {
         let mut app = App::test_default();
         let lead_key = seed_bucket(&mut app, "session-lead", "beta");
         let worker_key = seed_bucket(&mut app, "session-worker", "beta");
-        seed_worker(
-            &app,
-            &forge_workspace::ProjectKey::new_for_test("p-beta"),
-            &worker_key,
-            "chat-stutter",
-        );
+        seed_worker(&app, &forge_workspace::ProjectKey::new("p-beta"), &worker_key, "chat-stutter");
         app.notifications = NotificationManager::new();
         app.notifications.on_focus_lost();
 
@@ -540,7 +542,7 @@ mod tests {
         let worker_key = seed_bucket(&mut app, "session-worker", "busymail");
         seed_worker(
             &app,
-            &forge_workspace::ProjectKey::new_for_test("p-busymail"),
+            &forge_workspace::ProjectKey::new("p-busymail"),
             &worker_key,
             "demo-route",
         );
@@ -562,32 +564,6 @@ mod tests {
                 ("busymail [demo-route]".to_owned(), "Needs input".to_owned()),
                 ("busymail [demo-route]".to_owned(), "Needs your answer".to_owned()),
             ],
-        );
-    }
-
-    /// Nothing persisted can turn a notification off. A stored channel
-    /// preference that used to select "no notification" has no reader
-    /// left, so the escape is written regardless.
-    #[test]
-    fn a_stored_channel_preference_cannot_suppress_the_escape() {
-        let mut app = App::test_default();
-        let key = seed_bucket(&mut app, "session-a", "companies");
-        app.config.committed_preferences_document =
-            serde_json::json!({ "preferredNotifChannel": "notifications_disabled" });
-        app.notifications.on_focus_lost();
-
-        app.notify(NotifyEvent::TurnComplete, &key);
-
-        let fields: Vec<_> = app
-            .notifications
-            .take_delivered()
-            .into_iter()
-            .map(|delivered| (delivered.title, delivered.body))
-            .collect();
-        assert_eq!(
-            fields,
-            vec![("companies".to_owned(), "Turn complete".to_owned())],
-            "a stored channel preference must not change what is delivered",
         );
     }
 
@@ -619,7 +595,7 @@ mod tests {
     #[test]
     fn notification_sequence_carries_two_delimited_fields() {
         assert_eq!(
-            notification_escape_sequence("companies", "Turn complete").as_ref(),
+            notification_escape_sequence("companies", "Turn complete").as_str(),
             "\u{1b}]777;notify;companies;Turn complete\u{1b}\\",
             "the escape is OSC 777 with notify, the title and the body as separate fields",
         );
@@ -642,11 +618,53 @@ mod tests {
         );
     }
 
+    /// Every C1 introducer and terminator is a sequence the rest of the
+    /// field would be read as, so none may survive into the escape.
+    #[test]
+    fn every_c1_sequence_control_character_is_stripped_from_both_fields() {
+        for introducer in
+            ['\u{90}', '\u{98}', '\u{9a}', '\u{9b}', '\u{9c}', '\u{9d}', '\u{9e}', '\u{9f}']
+        {
+            let title = format!("a{introducer}b");
+            let escape = notification_escape_sequence(&title, "Turn complete");
+            assert_eq!(
+                escape, "\u{1b}]777;notify;ab;Turn complete\u{1b}\\",
+                "a C1 sequence control in the title must be dropped, not embedded",
+            );
+            assert_eq!(
+                notification_escape_sequence("companies", &title),
+                "\u{1b}]777;notify;companies;ab\u{1b}\\",
+                "and the same in the body",
+            );
+        }
+    }
+
+    /// A field that sanitizes to nothing still has to reach the terminal
+    /// as a field, so it becomes a space rather than nothing.
+    #[test]
+    fn a_field_that_sanitizes_to_nothing_becomes_a_space() {
+        assert_eq!(
+            notification_escape_sequence("\u{9b}\u{1b}\u{07}", "Turn complete").as_str(),
+            "\u{1b}]777;notify; ;Turn complete\u{1b}\\",
+            "an all-stripped title is a space, so the field is never empty",
+        );
+        assert_eq!(
+            notification_escape_sequence("companies", "\u{9d}\u{9e}").as_str(),
+            "\u{1b}]777;notify;companies; \u{1b}\\",
+            "and the same for the body",
+        );
+        assert_eq!(
+            notification_escape_sequence("", "").as_str(),
+            "\u{1b}]777;notify; ; \u{1b}\\",
+            "an empty input is a space too, so no field is ever empty",
+        );
+    }
+
     #[test]
     fn the_escape_sanitizes_control_characters_in_both_fields() {
         assert_eq!(
             notification_escape_sequence("hello\n\u{1b}world\u{07}", "a\u{9c}b\u{18}c\u{1a}d")
-                .as_ref(),
+                .as_str(),
             "\u{1b}]777;notify;hello world;abcd\u{1b}\\"
         );
     }

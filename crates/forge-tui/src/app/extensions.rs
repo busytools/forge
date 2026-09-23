@@ -25,7 +25,7 @@ pub mod updates;
 
 pub use state::{
     ExtensionsTab, TabState, available_count_for_tab, count_for_tab, row_matches, rows_for_tab,
-    tab_takes_available, update_all_count, window_offset,
+    update_all_count, window_offset,
 };
 
 // Plugin registry types defined in forge_primitives::plugins;
@@ -130,7 +130,7 @@ impl PluginsState {
 }
 
 pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
-    if !search_enabled(app.plugins.active_tab) || !app.plugins.search_focused {
+    if !app.plugins.active_tab.filters_rows() || !app.plugins.search_focused {
         return false;
     }
     let normalized = normalize_single_line_input(text);
@@ -175,7 +175,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Up, KeyModifiers::NONE) => {
-            if search_enabled(app.plugins.active_tab)
+            if app.plugins.active_tab.filters_rows()
                 && !app.plugins.search_focused
                 && app.plugins.selected_index_for(app.plugins.active_tab) == 0
             {
@@ -232,7 +232,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             ExtensionsTab::Marketplaces => open_marketplace_overlay(app),
         },
         (KeyCode::Backspace, KeyModifiers::NONE) => {
-            if search_enabled(app.plugins.active_tab)
+            if app.plugins.active_tab.filters_rows()
                 && app.plugins.search_focused
                 && let Some(query) = app.plugins.active_search_query_mut()
                 && query.textarea_delete_char_before()
@@ -242,7 +242,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Delete, KeyModifiers::NONE) => {
-            if search_enabled(app.plugins.active_tab)
+            if app.plugins.active_tab.filters_rows()
                 && app.plugins.search_focused
                 && let Some(query) = app.plugins.active_search_query_mut()
                 && !query.is_empty()
@@ -270,7 +270,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             if matches!(ch, 'u' | 'U')
                 && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
                 && !app.plugins.search_focused
-                && search_enabled(app.plugins.active_tab) =>
+                && app.plugins.active_tab.filters_rows() =>
         {
             start_update_run(app, PluginUpdateTrigger::Manual);
             true
@@ -279,7 +279,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             if matches!(ch, 'a' | 'A')
                 && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
                 && !app.plugins.search_focused
-                && tab_takes_available(app.plugins.active_tab) =>
+                && app.plugins.active_tab.filters_rows() =>
         {
             app.plugins.hide_available = !app.plugins.hide_available;
             reset_selection_for_active_tab(app);
@@ -289,7 +289,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             if matches!(ch, 'c' | 'C')
                 && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
                 && !app.plugins.search_focused
-                && search_enabled(app.plugins.active_tab) =>
+                && app.plugins.active_tab.filters_rows() =>
         {
             start_check_run(app);
             true
@@ -297,7 +297,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Char(ch), modifiers)
             if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
         {
-            if search_enabled(app.plugins.active_tab)
+            if app.plugins.active_tab.filters_rows()
                 && app.plugins.search_focused
                 && let Some(query) = app.plugins.active_search_query_mut()
                 && !matches!(ch, '\n' | '\r')
@@ -723,7 +723,7 @@ fn clamp_scroll(app: &mut App, tab: ExtensionsTab) {
 /// windowing stays the visibility authority even if the frame has not
 /// been painted at this size yet.
 fn list_viewport_height(app: &App, tab: ExtensionsTab) -> usize {
-    let top = u16::from(search_enabled(tab)) + 1;
+    let top = u16::from(tab.filters_rows()) + 1;
     let chrome = 6 + top + panel_block_height(app);
     usize::from(app.cached_frame_area.height.saturating_sub(chrome))
 }
@@ -768,7 +768,7 @@ pub(crate) fn visible_row_count(app: &App, tab: ExtensionsTab) -> usize {
 /// hidden them.
 pub(crate) fn tab_rows(app: &App, tab: ExtensionsTab) -> Vec<&ExtensionRow> {
     let mut rows = rows_for_tab(&app.plugins.installed_rows, tab);
-    if tab_takes_available(tab) && !app.plugins.hide_available {
+    if tab.filters_rows() && !app.plugins.hide_available {
         rows.extend(rows_for_tab(&app.plugins.available_rows, tab));
     }
     rows
@@ -2551,10 +2551,6 @@ fn move_selection(app: &mut App, delta: isize) {
 
 fn clamp_index(current: usize, len: usize) -> usize {
     if len == 0 { 0 } else { current.min(len.saturating_sub(1)) }
-}
-
-pub(crate) const fn search_enabled(tab: ExtensionsTab) -> bool {
-    tab.filters_rows()
 }
 
 #[cfg(test)]

@@ -12,8 +12,11 @@ use serde::{Deserialize, Serialize};
 
 /// All `[ui]` section knobs. Every field has a default so an
 /// absent `[ui]` section in `forge.toml` is equivalent to all
-/// defaults.
+/// defaults. Unknown keys are rejected; what is lenient here is a
+/// field's value (an unknown spinner name, an out-of-range fps),
+/// never the key.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct UiSettings {
     /// Active spinner style for every animated surface (launchpad,
     /// chat thinking/working, input box, projects pane, inspector).
@@ -28,6 +31,21 @@ pub struct UiSettings {
     /// default rather than failing the load (see `deserialize_fps`).
     #[serde(default, deserialize_with = "deserialize_fps")]
     pub fps: RepaintCadence,
+    /// Ghost of the removed `notifications_osc9` key: any value is
+    /// accepted and dropped, so a synced forge.toml still carrying the
+    /// key loads instead of refusing the boot. `Some` means the key was
+    /// there, which is what the load warns about.
+    #[serde(default, rename = "notifications_osc9", deserialize_with = "ignore_value")]
+    pub(crate) retired_notifications_osc9: Option<()>,
+}
+
+/// Accept any value for a key forge no longer reads, and record that it
+/// was there.
+fn ignore_value<'de, D>(deserializer: D) -> Result<Option<()>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| Some(()))
 }
 
 /// Repaint rate when `[ui] fps` is absent.
@@ -472,13 +490,23 @@ mod tests {
 
     /// `notifications_osc9` is gone. A forge.toml still carrying it must
     /// load: forge always writes the escape now, and a removed key must
-    /// never refuse boot on a config that has one.
+    /// never refuse boot on a config that has one. It sets nothing, and
+    /// it is recorded so the load can warn about it.
     #[test]
     fn a_removed_notifications_osc9_key_still_loads() {
         for value in ["auto", "on", "off"] {
             let parsed: UiSettings = toml::from_str(&format!("notifications_osc9 = \"{value}\"\n"))
                 .unwrap_or_else(|err| panic!("a stale key must not refuse the load: {err}"));
-            assert_eq!(parsed, UiSettings::default(), "the removed key must not set anything");
+            assert!(
+                parsed.retired_notifications_osc9.is_some(),
+                "the removed key is recorded, which is what the load warns from",
+            );
+            assert_eq!(
+                parsed.spinner,
+                UiSettings::default().spinner,
+                "the removed key sets no spinner",
+            );
+            assert_eq!(parsed.fps, UiSettings::default().fps, "the removed key sets no cadence");
         }
     }
 

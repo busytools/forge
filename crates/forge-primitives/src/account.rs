@@ -55,8 +55,8 @@ pub struct LoadedAccount {
     /// The flat `base_url` key. `None` for an Anthropic account: the
     /// gateway constant is its upstream.
     pub base_url: Option<String>,
-    /// The canonical model names the account serves. Drives selection
-    /// and the picker.
+    /// The canonical model names the account serves. Drives the
+    /// gateway's selection walk.
     pub models: Vec<String>,
     /// Canonical name -> upstream slug, only where the spellings
     /// differ. Keys are always members of [`Self::models`].

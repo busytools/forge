@@ -84,8 +84,8 @@ Five patterns get caught in review repeatedly:
 - **Defining the same shape in two crates.** Lift it to primitives, or
   import the re-export.
 - **Provider dispatch outside `forge-gateway`.** A match on
-  `Provider` in workspace or tui is the thing the provider-backends
-  crate exists to delete.
+  `Provider` in workspace or tui is the thing `forge-gateway` exists
+  to delete.
 - **Reaching around the command bus for a user action.** User-initiated
   actions go through `dispatch`; query-style refreshes are direct
   methods.

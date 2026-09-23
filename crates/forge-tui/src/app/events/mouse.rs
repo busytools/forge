@@ -1851,7 +1851,7 @@ mod tests {
         let mut app = App::test_default();
         let lead = SessionSlot::from_str_for_test("hub-modules-lead");
         let projects = vec![ProjectView::new_for_test(
-            ProjectKey::new_for_test("hub-modules"),
+            ProjectKey::new("hub-modules"),
             "hub-modules",
             PROJECT_PATH,
             // A real sleeping row paints a relative-time label in the
@@ -2007,7 +2007,7 @@ mod tests {
 
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("test_default seeds a workspace stub");
-        let project_key = ProjectKey::new_for_test(CLOSE_ROW_PROJECT);
+        let project_key = ProjectKey::new(CLOSE_ROW_PROJECT);
 
         let lead = SessionSlot::from_str_for_test("hub-modules-lead");
         let mut bucket = UiSession::new(lead.clone(), CLOSE_ROW_PROJECT);
@@ -2727,7 +2727,7 @@ mod tests {
     fn close_worker_dispatch_is_idempotent_on_test_stub() {
         let mut app = App::test_default();
         let initial_active = app.active_session_key.clone();
-        close_worker(&mut app, &forge_workspace::ProjectKey::new_for_test("forge"), "reviewer");
+        close_worker(&mut app, &forge_workspace::ProjectKey::new("forge"), "reviewer");
         assert_eq!(
             app.active_session_key, initial_active,
             "close_worker dispatch is fire-and-forget",
@@ -2852,7 +2852,7 @@ mod tests {
         let worker_key = forge_workspace::SessionSlot::from_str_for_test("worker-uuid");
         app.sessions.insert(worker_key.clone(), UiSession::new(worker_key.clone(), "test-project"));
         app.pane_hit_targets.push(PaneHitTarget::WorkerRow {
-            project_key: forge_workspace::ProjectKey::new_for_test("p"),
+            project_key: forge_workspace::ProjectKey::new("p"),
             label: "steward".to_owned(),
             session_key: worker_key.clone(),
             y: 0,

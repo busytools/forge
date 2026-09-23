@@ -1,7 +1,8 @@
 //! The Extensions page body: the tab bar with live counts, the filter,
-//! the Available toggle and update-all action row, and one tab's rows
-//! over the shared row grammar
-//! (`app::extensions::skills::render_extension_rows`).
+//! the Available toggle and update-all action row, and the active tab's
+//! rows. The row-backed tabs share
+//! `app::extensions::skills::render_extension_rows`; MCPs and
+//! Marketplaces draw their own.
 
 use super::theme;
 use crate::app::App;
@@ -10,7 +11,7 @@ use crate::app::extensions::skills::{
 };
 use crate::app::extensions::{
     ExtensionsTab, PANEL_ROW_CAP, available_count_for_tab, count_for_tab, panel_block_height,
-    search_enabled, tab_takes_available, update_all_count, updates, visible_rows, window_offset,
+    update_all_count, updates, visible_rows, window_offset,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -20,7 +21,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let body = area.inner(Margin { vertical: 1, horizontal: 1 });
-    let top_height: u16 = if search_enabled(app.plugins.active_tab) { 2 } else { 1 };
+    let top_height: u16 = if app.plugins.active_tab.filters_rows() { 2 } else { 1 };
     let panel_height = panel_block_height(app);
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -33,7 +34,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         .split(body);
 
     frame.render_widget(Paragraph::new(tab_header_line(app)), sections[0]);
-    if search_enabled(app.plugins.active_tab) {
+    if app.plugins.active_tab.filters_rows() {
         frame.render_widget(Paragraph::new(action_row_line(app)), sections[1]);
     }
     render_list_region(frame, sections[2], app);
@@ -95,7 +96,7 @@ fn action_row_line(app: &App) -> Line<'static> {
         },
     )];
 
-    if tab_takes_available(app.plugins.active_tab) {
+    if app.plugins.active_tab.filters_rows() {
         let available_count =
             available_count_for_tab(&app.plugins.available_rows, app.plugins.active_tab);
         let toggle_style = if app.plugins.hide_available {
