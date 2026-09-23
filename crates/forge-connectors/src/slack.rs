@@ -395,7 +395,16 @@ fn targets(subscriptions: &[SlackSubscription], conversation: &SlackConversation
 /// replies, and nothing for a plain top-level message - or every message
 /// would grow the tracked set.
 fn followed_parent_of(message: &SlackHistoryMessage) -> Option<String> {
-    message.thread_ts.clone().or_else(|| (message.reply_count > 0).then(|| message.ts.clone()))
+    message.thread_ts.clone().or_else(|| is_thread_parent(message).then(|| message.ts.clone()))
+}
+
+/// Whether a message is a thread's parent, which is what decides whose
+/// replies the sweep fetches. Slack sends a parent with `thread_ts` equal
+/// to its own `ts`; `thread_ts` being present therefore says nothing about
+/// whether a message is a reply, and a parent is instead the message that
+/// reports replies and is its own thread root.
+fn is_thread_parent(message: &SlackHistoryMessage) -> bool {
+    message.reply_count > 0 && message.thread_ts.as_deref() == Some(message.ts.as_str())
 }
 
 const API_ROOT: &str = "https://slack.com/api";
@@ -823,8 +832,8 @@ pub(crate) async fn sweep(
         // the only place the sweep can see who is in a thread.
         let parents: Vec<String> = batch
             .iter()
-            .filter(|message| message.reply_count > 0 && message.thread_ts.is_none())
-            .map(|message| message.ts.clone())
+            .filter(|message| is_thread_parent(message))
+            .map(|m| m.ts.clone())
             .collect();
         let mut participated: HashSet<String> = HashSet::new();
         for parent in parents {
@@ -3085,6 +3094,58 @@ mod tests {
 
     /// One matched message as delivery sees it, with the fields a test
     /// cares about set.
+    /// A parent as Slack sends one: `thread_ts` equal to its own `ts` and
+    /// a non-zero reply count. A parent built as a plain message with a
+    /// reply count is a shape Slack never sends, and one the sweep would
+    /// never fetch replies for.
+    fn parent_with_replies(ts: &str, replies: u32) -> SlackHistoryMessage {
+        SlackHistoryMessage {
+            thread_ts: Some(ts.to_owned()),
+            reply_count: replies,
+            ..history_message(ts, "U9", "trigger")
+        }
+    }
+
+    /// A reply as Slack sends one: `thread_ts` is the parent's, and it
+    /// carries `parent_user_id`.
+    fn reply(ts: &str, parent: &str, user: &str, text: &str) -> SlackHistoryMessage {
+        SlackHistoryMessage {
+            thread_ts: Some(parent.to_owned()),
+            parent_user_id: Some("U9".to_owned()),
+            ..history_message(ts, user, text)
+        }
+    }
+
+    /// The fixture a test builds a parent from has to be the shape Slack
+    /// sends, or the test passes on a payload that never arrives.
+    #[test]
+    fn a_fixture_parent_matches_the_shape_slack_sends() {
+        let fixture = parent_with_replies("1.0", 2);
+        assert_eq!(
+            fixture.thread_ts.as_deref(),
+            Some(fixture.ts.as_str()),
+            "a captured parent carries `thread_ts` equal to its own `ts`",
+        );
+    }
+
+    /// A sweep selects a parent by the shape Slack sends it in, which is
+    /// what decides whose replies are fetched.
+    #[test]
+    fn a_parent_with_replies_is_selected_for_its_thread() {
+        assert!(
+            is_thread_parent(&parent_with_replies("1.0", 2)),
+            "a real parent must be selected, or its replies are never fetched",
+        );
+        assert!(
+            !is_thread_parent(&history_message("1.0", "U9", "plain")),
+            "a message with no replies starts no thread",
+        );
+        assert!(
+            !is_thread_parent(&reply("1.1", "1.0", "U8", "a reply")),
+            "a reply is not a parent, however it is spelled",
+        );
+    }
+
     fn delivered_message(ts: &str, conversation: &str, text: &str) -> SlackMessage {
         SlackMessage {
             workspace: "acme".to_owned(),
@@ -3461,17 +3522,17 @@ mod tests {
         let host =
             FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
         host.set_watermark("acme", "C1", "050.0");
-        let mut root = history_message("100.0", "U9", "root");
-        root.reply_count = 2;
-        host.seed_history("C1", vec![root]);
+        let root =
+            SlackHistoryMessage { text: "root".to_owned(), ..parent_with_replies("100.0", 2) };
+        host.seed_history("C1", vec![root.clone()]);
         host.seed_replies(
             "C1",
             "100.0",
             vec![
-                history_message("100.0", "U9", "root"),
-                history_message("200.1", "U8", "reply one"),
-                history_message("100.0", "U9", "root"),
-                history_message("300.2", "U8", "reply two"),
+                root.clone(),
+                reply("200.1", "100.0", "U8", "reply one"),
+                root,
+                reply("300.2", "100.0", "U8", "reply two"),
             ],
         );
 
@@ -3497,8 +3558,7 @@ mod tests {
             Some("tester"),
             "C1",
         )]);
-        let mut parent = history_message("100.0", "U9", "trigger");
-        parent.reply_count = 2;
+        let parent = parent_with_replies("100.0", 2);
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
         seed_user_participation(&host, &parent);
@@ -3544,8 +3604,7 @@ mod tests {
             sub_conversation_owned_by("acme", "forge", Some("a"), "C1"),
             sub_conversation_owned_by("acme", "forge", Some("b"), "C1"),
         ]);
-        let mut parent = history_message("100.0", "U9", "trigger");
-        parent.reply_count = 1;
+        let parent = parent_with_replies("100.0", 1);
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
         seed_user_participation(&host, &parent);
@@ -3583,8 +3642,7 @@ mod tests {
         let host =
             FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
         host.set_watermark("acme", "C1", "050.0");
-        let mut parent = history_message("100.0", "U9", "trigger");
-        parent.reply_count = 2;
+        let parent = parent_with_replies("100.0", 2);
         host.seed_history("C1", vec![parent]);
         host.seed_replies(
             "C1",
@@ -3611,8 +3669,7 @@ mod tests {
         let host =
             FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
         host.set_watermark("acme", "C1", "050.0");
-        let mut parent = history_message("100.0", "U9", "trigger");
-        parent.reply_count = 2;
+        let parent = parent_with_replies("100.0", 2);
         host.seed_history("C1", vec![parent]);
         host.seed_replies(
             "C1",
@@ -3775,8 +3832,7 @@ mod tests {
             Some("tester"),
             "C1",
         )]);
-        let mut parent = history_message("100.0", "U9", "trigger");
-        parent.reply_count = 3;
+        let parent = parent_with_replies("100.0", 3);
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
         seed_user_participation(&host, &parent);
@@ -3820,8 +3876,7 @@ mod tests {
             Some("tester"),
             "C1",
         )]);
-        let mut parent = history_message("100.0", "U9", "trigger");
-        parent.reply_count = 2;
+        let parent = parent_with_replies("100.0", 2);
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
         seed_user_participation(&host, &parent);
@@ -3860,8 +3915,7 @@ mod tests {
             Some("tester"),
             "C1",
         )]);
-        let mut parent = history_message("100.0", "U9", "trigger");
-        parent.reply_count = 2;
+        let parent = parent_with_replies("100.0", 2);
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
         seed_user_participation(&host, &parent);
