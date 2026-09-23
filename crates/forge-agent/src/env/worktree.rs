@@ -106,8 +106,10 @@ pub fn worktree_dirty_reason(path: &Path) -> Option<String> {
 /// reaches this on a verified-clean worktree, or when the caller
 /// explicitly passed `force`).
 ///
-/// Without `--force`, git itself refuses to remove a worktree with
-/// uncommitted/untracked changes; the unpushed-commits guard lives in
+/// Without `--force`, git itself refuses a worktree with
+/// uncommitted/untracked changes, and also one holding initialized
+/// submodules however clean it is - git-worktree(1) puts both cases
+/// under `--force`. The unpushed-commits guard lives in
 /// [`worktree_dirty_reason`] (git's own check does not cover unpushed).
 pub fn remove_worktree(path: &Path, force: bool) -> Result<(), WorktreeError> {
     let parent =
