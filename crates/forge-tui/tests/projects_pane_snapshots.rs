@@ -504,7 +504,6 @@ fn build_permission_request() -> PermissionRequest {
             name: "Allow".into(),
             kind: PermissionOptionKind::Allow,
             action: PermissionAction::Allow,
-            recommended: false,
         }],
         display: None,
     }
@@ -616,7 +615,6 @@ fn build_question_request() -> forge_primitives::question::QuestionRequest {
                 label: "Red".into(),
                 description: None,
                 preview: None,
-                recommended: false,
             }],
         },
         question_index: 0,

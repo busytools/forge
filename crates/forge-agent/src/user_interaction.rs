@@ -15,20 +15,15 @@ use forge_primitives::{
 
 pub const ASK_USER_QUESTION_TOOL_NAME: &str = "AskUserQuestion";
 
-/// #273: CLI 2.1.156 convention for marking the "best" choice in an
-/// `AskUserQuestion` option list is a literal ` (Recommended)`
-/// suffix on the option label (space + paren + capital R). When the
-/// suffix is present, return the stripped label + `true`; otherwise
-/// return the unchanged label + `false`. Match is case-sensitive
-/// because the CLI emits the canonical form; lower-case `recommended`
-/// from the model's own prose stays as a literal label.
-fn strip_recommended_suffix(label: &str) -> (String, bool) {
-    const SUFFIX: &str = " (Recommended)";
-    if let Some(prefix) = label.strip_suffix(SUFFIX) {
-        (prefix.trim_end().to_owned(), true)
-    } else {
-        (label.to_owned(), false)
-    }
+/// #273: CLI 2.1.156 marks the "best" choice in an
+/// `AskUserQuestion` option list with a literal ` (Recommended)`
+/// suffix on the option label (space + paren + capital R). The label
+/// itself reaches the UI verbatim; this only reports the marker's
+/// presence. Match is case-sensitive because the CLI emits the
+/// canonical form; lower-case `recommended` from the model's own
+/// prose is just label text.
+fn has_recommended_suffix(label: &str) -> bool {
+    label.ends_with(" (Recommended)")
 }
 
 #[derive(Debug)]
@@ -36,11 +31,9 @@ pub struct AskUserQuestionOption {
     pub label: String,
     pub description: String,
     pub preview: Option<String>,
-    /// #273: Set when the CLI 2.1.156 wire label carried a
-    /// trailing ` (Recommended)` suffix. The suffix is stripped
-    /// from `label` so renderers don't have to handle it; the
-    /// renderer (or `PromptState::from_question`) bolds and
-    /// pre-selects the first recommended option.
+    /// #273: Set when the CLI 2.1.156 wire label carried a trailing
+    /// ` (Recommended)` suffix. `label` keeps the marker text; the
+    /// option is hoisted to the front of the list.
     pub recommended: bool,
 }
 
@@ -99,12 +92,23 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned);
-                let (label, recommended) = strip_recommended_suffix(&raw_label);
-                if label.is_empty() {
+                let recommended = has_recommended_suffix(&raw_label);
+                if raw_label.is_empty() {
                     continue;
                 }
-                options.push(AskUserQuestionOption { label, description, preview, recommended });
+                options.push(AskUserQuestionOption {
+                    label: raw_label,
+                    description,
+                    preview,
+                    recommended,
+                });
             }
+        }
+        // #273: the caret always starts at index 0, so the marked
+        // option leads the list.
+        if let Some(idx) = options.iter().position(|opt| opt.recommended) {
+            let marked = options.remove(idx);
+            options.insert(0, marked);
         }
         if options.len() < 2 {
             continue;
@@ -137,7 +141,6 @@ fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<TuiQues
                 Some(opt.description.clone())
             },
             preview: opt.preview.clone(),
-            recommended: opt.recommended,
         })
         .collect()
 }
@@ -385,14 +388,12 @@ mod tests {
                 label: "A".to_owned(),
                 description: None,
                 preview: Some("a-preview".to_owned()),
-                recommended: false,
             },
             TuiQuestionOption {
                 option_id: "question_1".to_owned(),
                 label: "B".to_owned(),
                 description: None,
                 preview: Some("b-preview".to_owned()),
-                recommended: false,
             },
         ];
         let derived = derive_annotation(&opts, None).unwrap();
@@ -405,7 +406,10 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn parse_detects_recommended_suffix_and_strips_label() {
+    fn parse_keeps_recommended_marker_in_label() {
+        // The label is the CLI's own text and reaches the UI verbatim.
+        // A re-added strip takes `(Recommended)` off the screen and
+        // leaves the marker with no visible form.
         let input = json!({"questions": [{
             "question": "Pick a rule shape",
             "options": [
@@ -415,18 +419,49 @@ mod tests {
         }]});
         let prompts = parse_ask_user_question_prompts(&input);
         assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts[0].options.len(), 2);
-        assert_eq!(prompts[0].options[0].label, "Use deny rules");
-        assert!(prompts[0].options[0].recommended);
+        assert_eq!(prompts[0].options[0].label, "Use deny rules (Recommended)");
+        assert!(
+            prompts[0].options[0].recommended,
+            "the marker must still be detected, or the reorder has nothing to act on",
+        );
         assert_eq!(prompts[0].options[1].label, "Use allow rules");
         assert!(!prompts[0].options[1].recommended);
     }
 
     #[test]
+    fn parse_hoists_recommended_option_to_front() {
+        // The caret always starts at index 0, so the marked option has
+        // to lead the list or the two signals point at different rows.
+        let input = json!({"questions": [{
+            "question": "Pick a rule shape",
+            "options": [
+                {"label": "First"},
+                {"label": "Second"},
+                {"label": "Third (Recommended)"},
+            ],
+        }]});
+        let prompts = parse_ask_user_question_prompts(&input);
+        let labels: Vec<&str> = prompts[0].options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["Third (Recommended)", "First", "Second"]);
+    }
+
+    #[test]
+    fn parse_preserves_cli_order_when_nothing_is_recommended() {
+        // With no marker there is nothing to hoist, and reordering
+        // anyway would put an option the model did not choose first.
+        let input = json!({"questions": [{
+            "question": "Pick a rule shape",
+            "options": [{"label": "First"}, {"label": "Second"}, {"label": "Third"}],
+        }]});
+        let prompts = parse_ask_user_question_prompts(&input);
+        let labels: Vec<&str> = prompts[0].options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["First", "Second", "Third"]);
+    }
+
+    #[test]
     fn parse_recommended_suffix_is_case_sensitive() {
-        // Lowercase / mid-string `recommended` stays as a literal
-        // part of the label - CLI emits the canonical
-        // ` (Recommended)` form only.
+        // CLI emits the canonical ` (Recommended)` form only; a
+        // lowercase suffix in the model's own prose is not the marker.
         let input = json!({"questions": [{
             "question": "Q",
             "options": [
@@ -435,48 +470,7 @@ mod tests {
             ],
         }]});
         let prompts = parse_ask_user_question_prompts(&input);
-        assert_eq!(prompts[0].options[0].label, "Plan with rationale (recommended)");
         assert!(!prompts[0].options[0].recommended);
-    }
-
-    #[test]
-    fn build_request_propagates_recommended_flag_to_wire_option() {
-        let prompt = AskUserQuestionPrompt {
-            question: "Q?".to_owned(),
-            question_key: "Q?".to_owned(),
-            header: "H".to_owned(),
-            multi_select: false,
-            options: vec![
-                AskUserQuestionOption {
-                    label: "A".to_owned(),
-                    description: String::new(),
-                    preview: None,
-                    recommended: false,
-                },
-                AskUserQuestionOption {
-                    label: "B".to_owned(),
-                    description: String::new(),
-                    preview: None,
-                    recommended: true,
-                },
-            ],
-        };
-        let base = ToolCall {
-            tool_call_id: "tu".to_owned(),
-            title: "AskUserQuestion".to_owned(),
-            kind: forge_primitives::ToolKind::Other,
-            status: forge_primitives::ToolCallStatus::Pending,
-            content: Vec::new(),
-            raw_input: None,
-            raw_output: None,
-            output_metadata: None,
-            task_metadata: None,
-            locations: Vec::new(),
-            meta: None,
-        };
-        let req = build_question_request(&base, &prompt, 0, 1);
-        assert!(!req.prompt.options[0].recommended);
-        assert!(req.prompt.options[1].recommended);
     }
 
     #[test]
