@@ -2,7 +2,7 @@
 
 This directory holds raw captures from `claude --print` probes. The stream-json captures (the tool-family table below) were nudged so the model invoked each new tool family; use them when designing forge UI surfaces (Inspector pane rendering, chat suppression rules, glyph mapping, special-case routing) so the implementation works against real wire data rather than guesses. Hook-envelope captures record the PostToolUse hook input for one tool instead, for parser-facing shapes.
 
-The stream-json captures were taken against `claude` CLI **2.1.156** on **2026-05-29**. If a newer CLI ships a different tool surface, regenerate via the `claude-cli-upgrade` skill's Phase 4.
+The stream-json captures were taken against `claude` CLI **2.1.156** on **2026-05-29**. They are a design aid rather than a wire-conformance baseline, and the `claude-cli-upgrade` skill deliberately leaves them out of an upgrade. Regenerate them in a PR of their own when a tool family's shape needs re-checking.
 
 These are redacted, not raw. A capture from `claude --print` carries whatever the capture machine's own hooks printed and whatever skills and slash commands it had installed, so `session_redact` replaces the hook bodies and the command / skill inventory wholesale. Regenerating means re-running a fresh capture through `sdk_reredact_capture` before committing; `sdk_capture_hygiene` fails the build otherwise.
 
@@ -69,4 +69,4 @@ For each new tool family above, before writing renderer code:
 
 ## Skill recap
 
-To regenerate these captures against a future CLI version, re-run the `claude-cli-upgrade` skill's Phase 4 with whatever the current `claude` binary is. The skill captures the same set against the new wire and updates this directory.
+The `claude-cli-upgrade` skill does NOT regenerate these. Its Phase 4 covers the scenario corpora under `baselines/sdk/`, and hand-nudged per-tool probes are a different job that should not ride along with a version bump. To regenerate them, take the same set against whatever the current `claude` binary is, in a PR of its own.

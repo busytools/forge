@@ -170,9 +170,10 @@ mod tests {
 
     /// A real CLI-emitted request body, captured through the gateway
     /// against a local 401 stub (nothing billed) and redacted of
-    /// session-local identifiers. Committed so the splice parser and
-    /// its pin share no blind spots: whatever the real body contains,
-    /// the test sees.
+    /// session-local identifiers. Committed so the splice parser and its
+    /// pin share no blind spots: every field the splice touches, and the
+    /// body's structure throughout, are the real capture's. One block was
+    /// replaced with a placeholder, so that text is the exception.
     fn live_capture_body() -> Vec<u8> {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/messages_request.json");

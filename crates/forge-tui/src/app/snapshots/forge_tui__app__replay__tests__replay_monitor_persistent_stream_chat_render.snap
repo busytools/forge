@@ -2,27 +2,43 @@
 source: crates/forge-tui/src/app/replay.rs
 expression: snapshot
 ---
-There's no Monitor tool in this session - my tool set here is Agent, Bash,
-Cron*, Edit/Write/Read, LSP, TaskOutput/TaskStop, Web*, Workflow, Skill, plus
-the Playwright and Context7 MCP servers. No streaming-watch tool, and no
-ToolSearch to pull one in, so I can't start a persistent watch or get a monitor
-taskId to stop.
+     ├─ Run the three-line echo loop
+     ├─ Print three numbered lines with delays
+     └─ Print three numbered lines
 
-I ran the command directly instead so you at least have the output:
+I couldn't do what you asked — there is no Monitor tool available in this
+session.
 
-  ✓ 1 tool call   ctrl+x to expand
-  └─ ▶ bash
-     └─ Emit three test lines
+The deferred tool list here is: CronCreate, CronDelete, CronList,
+EnterWorktree, ExitWorktree, NotebookEdit, RemoteTrigger, SendMessage,
+TaskStop, WebFetch, WebSearch. I searched by exact name and by keyword
+("monitor stream events watch persistent") and got no match. TaskStop does
+exist, but there was no monitor task for it to stop, so I never called it.
 
-The three lines:
+Two things worth flagging:
+
+1. No event notifications were received, so I can't report on persistent: true
+streaming behavior, the forge-monitor-test description, or a taskId. If this
+was a harness test of Monitor, the result is "tool not registered."
+2. Don't mistake the SessionStart hook output for monitor events. The session
+began with a hook emitting capture-line-1 / capture-line-2 / capture-line-3.
+Those are superficially similar to the expected output but come from a
+different source entirely.
+
+To still give you the three lines, I ran the command directly with Bash (a
+plain foreground run — not streamed, not persistent):
 
   monitor-line-1
   monitor-line-2
   monitor-line-3
 
-But to be clear about what did and didn't happen: these came from a plain Bash
-run, not from a streamed watch. No monitor was started, no event notifications
-arrived, and no TaskStop was called - there was no taskId to stop. If the
-Monitor tool is supposed to be exposed here, something is wrong with the tool
-wiring for this session.
-↳ 20.7s · 13k↑ 892↓ · 60% cached · 62k written [▶ expand]
+Note this took three attempts: the sandbox's static analyzer rejected $i in a
+for loop as simple_expansion and a while read loop as unanalyzable shell
+syntax, so the working version is seq -f 'monitor-line-%.0f' 1 3 — which
+produces identical output but does not reproduce the 0.3s inter-line delay. If
+the timing is what you're testing, this run doesn't cover it.
+
+If Monitor should be present, it's likely a registration issue on the harness
+side. Let me know if you want me to dig into how tools are registered in this
+worktree.
+↳ 41.0s · 14↑ 1.7k↓ · 93% cached · 7.0k written [▶ expand]                     ▐

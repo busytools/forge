@@ -74,13 +74,17 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         // - 2.1.263 `notification`: CLI host notification (e.g.
         //   stop-hook error); forge surfaces the underlying condition
         //   itself, so the frame is a no-op.
+        // - 2.1.280 `permission_denied`: the CLI refused a tool call;
+        //   forge surfaces the refusal through the tool result, so the
+        //   frame is a no-op.
         Message::StreamEvent { .. }
         | Message::Unknown { .. }
         | Message::TurnDuration { .. }
         | Message::HookStarted { .. }
         | Message::HookProgress { .. }
         | Message::HookResponse { .. }
-        | Message::Notification { .. } => {}
+        | Message::Notification { .. }
+        | Message::PermissionDenied { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
         Message::ThinkingTokens { estimated_tokens_delta, .. } => {
             handle_thinking_tokens(app, estimated_tokens_delta);

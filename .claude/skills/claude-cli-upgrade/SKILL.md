@@ -148,18 +148,52 @@ DO NOT run `cargo nextest run --test sdk_replay` here. It will panic - the harne
 Re-capture every scenario against the new CLI binary. With PINNED now pointing at NEW_VERSION, captures land in the fresh `baselines/sdk/<NEW_VERSION>/` directory; the OLD directory remains untouched for diffing.
 
 **The capture inherits the invoking session's environment.** The harness
-spawns `claude` as a child, so ambient `ANTHROPIC_*` routing, auth and
-model selection flow straight into the corpus. A session running through
-a proxy (OpenRouter, z-ai) captures THAT model's wire - including a
-different init tool surface (unrecognized model ids still list the Task*
-family; recognized Anthropic models do not). Pin the capture env
-explicitly: a `CLAUDE_CODE_OAUTH_TOKEN` with the proxy vars unset, and
-`ANTHROPIC_MODEL` set to the model the previous corpus used, so the diff
-isolates the CLI's version delta. The corpus records the CLI's own
-behaviour; the model is held constant only to make that readable. The
-ambient config dir's own settings (hooks, plugins, MCP) ride along the
-same way; for a corpus free of machine-local content, point
-`CLAUDE_CONFIG_DIR` at a scratch directory for the capture run.
+spawns `claude` as a child, so ambient routing, auth and model selection
+flow straight into the corpus. A session running through a proxy
+(OpenRouter, z-ai) captures THAT model's surface, and the CLI tailors its
+tool surface per model, so two recognized models can differ from each
+other as well as from an unrecognized one.
+
+Two things must be pinned, and both are load-bearing:
+
+- **The routing.** A `CLAUDE_CODE_OAUTH_TOKEN` with the proxy vars unset,
+  and `ANTHROPIC_MODEL` set to the model the previous corpus used, so the
+  diff isolates the CLI's version delta. The model is held constant only
+  to make that readable.
+- **The config dir, and the memory lever.** Point `CLAUDE_CONFIG_DIR` at a
+  scratch directory, or the machine's plugins, skills, hooks and MCP
+  servers ride into every init frame and the corpus can no longer separate
+  the CLI's drift from the capture machine's. Measured on the 2.1.280
+  upgrade: capturing against the ambient dir put a user-scope skill's body
+  and a third-party plugin's prose into 89 of 89 files.
+
+  A scratch config dir is NOT enough on its own, and neither is a scratch
+  `$HOME`. Both were probed and both fail. The CLI reads the user's global
+  `~/.claude/CLAUDE.md` from the real home, and `CLAUDE_CONFIG_DIR` is not
+  consulted for user memory at all: a `CLAUDE.md` written into the scratch
+  config dir is ignored, and so is a scratch `$HOME` holding its own
+  `.claude/CLAUDE.md`, with the session reporting the real global file's
+  heading in both cases. A spawned session asked for its home directory
+  answers the real one even under `env HOME=...`, so the binary does not
+  take home from `$HOME` either.
+
+  The lever is `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`. Against the same control
+  that reports the real global heading, setting it makes the session report
+  no user memory at all. Set it in the capture env alongside the scratch
+  config dir.
+
+  This matters most on a repo that publishes the corpus. Without the lever,
+  a compaction summary reproduced the private global rules verbatim, and the
+  legacy corpus leaked them through the model's thinking. A redaction rule
+  cannot be the fix, because the leak travels as model prose rather than
+  through a redacted field, and the redactor has to stay a fixed point on a
+  machine that never had this `~/.claude`.
+
+  Give the scratch config a `SessionStart` hook and a `Stop` hook, or three
+  typed variants lose their only coverage: `hook_started`, `hook_progress`
+  and `hook_response` all come from settings hooks, so a hermetic config
+  with no hooks empties them. A bare `echo` does not produce
+  `hook_progress`; it appears for a hook that writes output progressively.
 
 **The ritual is dual-corpus.** The CLI tailors its surface by model
 recognition, so every upgrade captures and commits BOTH surfaces:
@@ -168,14 +202,61 @@ recognition, so every upgrade captures and commits BOTH surfaces:
   captured with the pinned env (OAuth + `ANTHROPIC_MODEL` set to the
   model the previous corpus used).
 - **Legacy-surface corpus** -> `baselines/sdk/<NEW_VERSION>/legacy-surface/`:
-  captured with the session's ambient env, so the model id is one the
-  CLI does not recognize and the legacy full surface is what ships.
+  captured with the ambient routing, so the model id is one the CLI does
+  not recognize. This is the surface a proxy-backed forge account gets.
+  It is NOT necessarily a superset of the recognized one - at 2.1.280 it
+  is a strict subset - so measure both before describing the difference
+  rather than assuming the old "legacy keeps the full surface" story.
   Promote with `cp target/wire-traces/capture-<scenario>-<ts>.jsonl \
   crates/forge-test-harness/baselines/sdk/<NEW_VERSION>/legacy-surface/<scenario>.jsonl`.
 
 Diff and replay BOTH (replay runs `all_baselines_decode_cleanly` and
 `all_legacy_baselines_decode_cleanly`), classification-scan both, and
 the PR documents both tool surfaces.
+
+### Real-session fixtures (regenerate each upgrade)
+
+`real_session_sample`, `real_session_image` and `real_session_pdf` are NOT
+capture-produced. They are redacted on-disk session transcripts, produced
+with the `sdk_redact_session` example, and they are regenerated at every
+upgrade - they are the only coverage for the `image` and `document`
+content blocks. The regeneration before the 2.1.280 one is what surfaced
+`hookInfos` entries arriving without `durationMs`, which is why that
+field is optional end to end.
+
+Each fixture is a multi-turn session: turn 1 carries the media block (or
+none, for `sample`) plus a `Write` round. Nothing else supplies the
+`stop_hook_summary` frame: under an ambient config dir the machine's own
+settings hooks did, and a scratch one has none, so give the scratch
+settings a succeeding Stop hook or that frame is simply absent. There is
+no committed generator; the recipe is:
+
+1. Spawn a session with a pinned id so the persisted path is known -
+   `OptionsBuilder::session_id`, `AcceptEdits`, `allowed_tools(["Write"])`,
+   `max_turns` of 8 or so. A scratch `examples/` driver works; the
+   `user_message_blocks` scenario is the starting point, since
+   `Client::send_user_message_with_content` is what puts an `image` or
+   `document` block in the user message.
+2. Send turn 1 (media block plus "write a file"), drain to `Result`, then
+   send a second turn and drain again.
+3. Redact the persisted session over the fixture:
+   `cargo run -p forge-test-harness --example sdk_redact_session -- \
+   "$CLAUDE_CONFIG_DIR/projects/<slug>/<session-id>.jsonl" \
+   crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/real_session_<name>.jsonl`
+4. Replay both corpora and run `sdk_capture_hygiene`.
+
+Do not delete the directory instead of regenerating it: doing so silently
+drops image and document coverage, and the replay tests stay green.
+
+### Reference captures are deliberately out of scope
+
+`reference-captures/` holds raw `claude --print` probes of individual tool
+families, captured by hand and not regenerated since CLI 2.1.156 (one
+hook-envelope file in the directory is newer, at 2.1.220). They are a
+design aid for forge-tui surfaces, not wire-conformance baselines, and
+this upgrade does NOT regenerate them. Hand-nudged probes are a different kind of work from
+a version bump and should not ride along with one. Regenerate them in a
+PR of their own when a tool family's shape actually needs re-checking.
 
 ```bash
 # Capture all scenarios fresh. FORGE_WIRE_CAPTURE=1 tells the harness
@@ -322,7 +403,6 @@ Adding a scenario (Hard Rule #9 requires one for any new wire surface):
 write `tests/sdk_scenarios_<name>.rs`, run it with the env var above,
 copy the capture into
 `baselines/sdk/<PINNED_CLI_VERSION>/`, and commit the test plus its
-baseline together. Some fixtures are NOT capture-produced: the
-`real_session_*` multimodal ones come from redacted on-disk sessions via
-the `sdk_redact_session` example, so deleting a baseline directory
-silently drops image and document coverage.
+baseline together. The `real_session_*` multimodal fixtures are NOT
+capture-produced - see "Real-session fixtures" above for their
+regeneration recipe.

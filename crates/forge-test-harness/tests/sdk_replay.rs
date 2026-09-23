@@ -220,8 +220,39 @@ fn committed_baselines_carry_hook_progress_frames_to_the_typed_variant() {
 
     assert!(
         progresses >= 1,
-        "the trivial baseline carries no hook_progress frame reaching the typed variant - a \
-         shape drift to the generic bucket would replay clean while covering nothing",
+        "the trivial baseline carries no hook_progress frame reaching the typed variant - the \
+         frame can leave the corpus outright and replay still reports clean, because nothing \
+         else asserts that any scenario carries this subtype",
+    );
+}
+
+/// `permission_denied` reaches the corpus incidentally: a model in an
+/// unrelated scenario attempts an out-of-band call and the CLI refuses
+/// it. Nothing else pins the frame, so a recapture that drops it would
+/// leave the typed variant uncovered with every other gate still green.
+#[test]
+fn committed_baselines_carry_permission_denied_frames_to_the_typed_variant() {
+    let mut denials = 0usize;
+    for dir in [baseline_dir(), legacy_baseline_dir()] {
+        for scenario in committed_scenarios_in(&dir) {
+            let log = load_baseline_from(&dir, &scenario);
+            denials += log
+                .inbound()
+                .iter()
+                .filter(|line| {
+                    matches!(
+                        decode_dispatch(line, 1),
+                        DecodedLine::Message(Message::PermissionDenied { .. })
+                    )
+                })
+                .count();
+        }
+    }
+
+    assert!(
+        denials >= 1,
+        "no baseline carries a permission_denied frame reaching the typed variant - the frame \
+         arrives incidentally, so a recapture can drop it while every other gate stays green",
     );
 }
 
