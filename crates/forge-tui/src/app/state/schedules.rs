@@ -244,7 +244,7 @@ impl super::App {
     fn active_session_team_role(&self) -> Option<String> {
         let ws = self.workspace.as_ref()?;
         let key = self.active_session_key.as_ref()?;
-        ws.worker_lookup_for_session(key).map(|(_, label, _)| label)
+        ws.worker_lookup_for_session(key).map(|(_, label, _, _)| label)
     }
 }
 

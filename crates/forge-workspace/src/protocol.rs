@@ -115,6 +115,10 @@ pub enum DespawnResult {
     Blocked { reason: String },
     /// No live worker matched `label` (already gone or never existed).
     NotFound,
+    /// The despawn could not be carried out: the worker's durable row
+    /// could not be read or removed, so whether one is there is unknown.
+    /// Distinct from [`Self::NotFound`], which claims there is none.
+    Failed { reason: String },
 }
 
 /// Mutation kind for a `SessionUpdate::WorkerStatusChanged` event.
@@ -735,7 +739,16 @@ pub enum DictateOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpawnRole {
     Lead,
-    Worker(String),
+    Worker {
+        label: String,
+        /// Whether this spawn wrote the worker's durable row rather than
+        /// adopting one that was already there. A rollback may take the
+        /// row away only when it did: a resume and a boot re-spawn are
+        /// handed a row that holds the worker's charter, kick and the id
+        /// being resumed, so the row is the worker, not this spawn's
+        /// leftover.
+        wrote_row: bool,
+    },
 }
 
 /// Update envelope: forge-workspace -> forge-tui.

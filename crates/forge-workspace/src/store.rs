@@ -8,13 +8,16 @@
 //! This wrapper is deliberately general - open plus the raw handle.
 //! Table logic lives per-tenant in the submodules: Gotify subscriptions
 //! ([`gotify`]), Slack subscriptions ([`slack`]), durable crons
-//! ([`cron`]), dynamic workers
-//! ([`dynamic_workers`]), session identities ([`sessions`]), review
+//! ([`cron`]), session identities ([`sessions`]), review
 //! threads ([`review`]), forge state
 //! ([`state`], the spinner override + account-usage cache), the
 //! `/usage` view's per-file token summaries ([`token_usage`]), cached
 //! model pricing ([`pricing`]), plugin update history ([`plugins`]),
 //! and the catalog's per-file worker-tag scans ([`session_tags`]).
+//!
+//! [`dynamic_workers`] is the retired worker table: nothing writes it,
+//! and it holds only until the boot sweep has moved every row onto
+//! [`sessions`].
 //!
 //! [`model_catalog`] is retired rather than live: it exists only to drop
 //! the table the deleted catalog machinery left behind in older stores.

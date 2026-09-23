@@ -170,8 +170,8 @@ impl GotifyFacade for ProdGotifyFacade {
 
 /// Resolve a caller to `(project_name, team_role, durable)`. `team_role`
 /// is the worker's role label (`None` targets the lead); `durable` is
-/// true for the lead or a worker with a row in the `dynamic_workers`
-/// table, false for a worker without one.
+/// true for the lead or a worker with a persisted row in the session
+/// store, false for a worker without one.
 pub(crate) fn resolve_identity(
     ws: &Workspace,
     caller: &SessionSlot,
@@ -193,8 +193,8 @@ pub(crate) fn resolve_identity(
 
 /// `(team_role, durable)` for a caller's worker label (`None` = the lead
 /// or a plain catalog session). A lead is always durable and targets
-/// itself. A worker is durable when its label lives in a durable store:
-/// the `dynamic_workers` table, since that row is what brings it back.
+/// itself. A worker is durable when its label holds a persisted row in
+/// the session store, since that row is what brings it back.
 fn durable_identity(
     worker_label: Option<&str>,
     dynamic_labels: &[String],

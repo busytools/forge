@@ -28,10 +28,18 @@ pub const LEAD_LABEL: &str = "lead";
 /// `session_id` is absent on a worker row the sweep creates, because
 /// `dynamic_workers` never stored one; every other field is worker-only,
 /// so a lead's row carries none of them.
+///
+/// The identity is the row's key: the three fields are here because a
+/// caller building a record has to name the row it writes, but they are
+/// not stored in the body - every reader fills them from the key, and a
+/// body that carried them anyway (written before this change) is ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
+    #[serde(default, skip_serializing)]
     pub org: String,
+    #[serde(default, skip_serializing)]
     pub project: String,
+    #[serde(default, skip_serializing)]
     pub label: String,
     #[serde(default)]
     pub session_id: Option<String>,
@@ -81,7 +89,7 @@ pub fn get(
     let Some(value) = table.get((org, project, label))? else {
         return Ok(None);
     };
-    decode(value.value()).map(Some)
+    decode(org, project, label, value.value()).map(Some)
 }
 
 /// Write `record`, replacing any prior row for the same identity.
@@ -97,6 +105,21 @@ pub fn put(db: &Db, record: &SessionRecord) -> anyhow::Result<()> {
     }
     txn.commit()?;
     Ok(())
+}
+
+/// The bytes a row holds, so a test can assert what the body carries.
+/// Test-only: every production read goes through [`get`] / [`list_all`].
+#[cfg(test)]
+pub(crate) fn raw_for_test(
+    db: &Db,
+    org: &str,
+    project: &str,
+    label: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let txn = db.database().begin_read()?;
+    let table = txn.open_table(SESSIONS)?;
+    let value = table.get((org, project, label))?.expect("the row is there");
+    Ok(value.value().to_vec())
 }
 
 /// Write raw bytes at a row, so a test can plant a record that will not
@@ -231,16 +254,16 @@ pub struct WorkerRowIndex {
 /// What [`WorkerRowIndex`] reads out of a row's body. Deserialising into
 /// this rather than [`SessionRecord`] is the point: serde skips what it is
 /// not asked for, so the charter - kilobytes on a project's lead row - is
-/// never allocated.
+/// never allocated. The identity is not here because it is not in the
+/// body: the key carries it, and this reader takes it from there.
 ///
-/// The three identity fields are required exactly where [`SessionRecord`]
-/// requires them, so a body that will not decode as one will not decode as
-/// this either, and the two readers agree on which rows exist.
+/// A body that is not a record at all fails here exactly as it fails
+/// [`SessionRecord`], so the two readers agree on every row a running
+/// forge writes. They part company only for a body whose identity fields
+/// are the wrong type, which this reader no longer parses: a corrupted
+/// store rather than a shape forge produces.
 #[derive(Deserialize)]
 struct RowStart {
-    org: String,
-    project: String,
-    label: String,
     session_id: Option<String>,
     is_git_repo: Option<bool>,
 }
@@ -261,19 +284,19 @@ pub fn worker_row_index(db: &Db) -> anyhow::Result<Vec<WorkerRowIndex>> {
     };
     let mut out = Vec::new();
     for entry in table.iter()? {
-        let (_, value) = entry?;
+        let (key, value) = entry?;
         // A body that will not decode is not a row to offer. `list_all`
         // skips the same rows, and the boot wave reads through it, so
-        // reporting one here would draw a worker the wave never starts -
-        // the two sites have to agree on which rows exist. The loss is
-        // reported by `list_all`'s warn, on the wave's read.
+        // reporting one here would draw a worker the wave never starts.
+        // The loss is reported by `list_all`'s warn, on the wave's read.
         let Ok(start) = serde_json::from_slice::<RowStart>(value.value()) else {
             continue;
         };
+        let (org, project, label) = key.value();
         out.push(WorkerRowIndex {
-            org: start.org,
-            project: start.project,
-            label: start.label,
+            org: org.to_owned(),
+            project: project.to_owned(),
+            label: label.to_owned(),
             // An empty string is absence, not an id - see `decode`.
             session_id: start.session_id.filter(|id| !id.is_empty()),
             is_git_repo: start.is_git_repo,
@@ -295,13 +318,13 @@ pub fn list_all(db: &Db) -> anyhow::Result<Vec<SessionRecord>> {
     let mut out = Vec::new();
     for entry in table.iter()? {
         let (key, value) = entry?;
-        match decode(value.value()) {
+        let (row_org, row_project, row_label) = key.value();
+        match decode(row_org, row_project, row_label, value.value()) {
             Ok(row) => out.push(row),
             // One undecodable row (schema drift, a corrupt blob) must not
             // hide the rest. The key stays readable when the value does
             // not, so name which session lost its row.
             Err(error) => {
-                let (row_org, row_project, row_label) = key.value();
                 tracing::warn!(
                     target: "forge_workspace::store::sessions",
                     org = %row_org,
@@ -361,9 +384,14 @@ pub fn delete(db: &Db, org: &str, project: &str, label: &str) -> anyhow::Result<
     Ok(existed)
 }
 
-fn decode(value: &[u8]) -> anyhow::Result<SessionRecord> {
+fn decode(org: &str, project: &str, label: &str, value: &[u8]) -> anyhow::Result<SessionRecord> {
     let mut record: SessionRecord =
         serde_json::from_slice(value).context("decode session record")?;
+    // The key is the single source of the identity, so a body written
+    // before the identity left it cannot place its row anywhere else.
+    org.clone_into(&mut record.org);
+    project.clone_into(&mut record.project);
+    label.clone_into(&mut record.label);
     // An empty string is absence, not an id: the bridge's id slot starts
     // empty, so a blank must never read back as a session to resume.
     if record.session_id.as_deref() == Some("") {
@@ -689,6 +717,78 @@ mod tests {
         assert_eq!(
             get(&db, "Personal", "forge", "lead").expect("get").and_then(|row| row.session_id),
             None,
+        );
+    }
+
+    /// The row's identity is its key and only its key: a body carrying a
+    /// second copy is a second answer to the same question, and the two
+    /// can disagree.
+    #[test]
+    fn the_identity_is_the_key_and_is_not_repeated_in_the_body() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let mut row = record("Personal", "forge", "steward", Some("id-1"));
+        row.charter = Some("charter".to_owned());
+        put(&db, &row).expect("put");
+
+        let raw = raw_for_test(&db, "Personal", "forge", "steward").expect("read the stored bytes");
+        let body: serde_json::Value = serde_json::from_slice(&raw).expect("the body is json");
+        for field in ["org", "project", "label"] {
+            assert!(
+                body.get(field).is_none(),
+                "the key carries {field}, so the body must not restate it: {body}",
+            );
+        }
+        assert_eq!(
+            body.get("charter").and_then(serde_json::Value::as_str),
+            Some("charter"),
+            "the fields that belong to the body are still written there: {body}",
+        );
+    }
+
+    /// A row written before this change carries the identity in its body.
+    /// It still reads, and every reader takes the identity from the key -
+    /// including when the body disagrees, which is the disagreement the
+    /// duplicate copy made possible.
+    #[test]
+    fn a_legacy_body_reads_back_under_its_key() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        put_raw_for_test(
+            &db,
+            "Personal",
+            "forge",
+            "steward",
+            br#"{"org":"Elsewhere","project":"elsewhere","label":"ghost","session_id":"id-1","charter":"c"}"#,
+        )
+        .expect("plant a row of the shape the previous build wrote");
+
+        let row = get(&db, "Personal", "forge", "steward")
+            .expect("a legacy body decodes")
+            .expect("the row is there");
+        assert_eq!(row.org, "Personal", "the key names the row's org, not its stale body");
+        assert_eq!(row.project, "forge", "the key names the row's project, not its stale body");
+        assert_eq!(row.label, "steward", "and its label");
+        assert_eq!(row.session_id.as_deref(), Some("id-1"), "the body's own fields still decode");
+        assert_eq!(row.charter.as_deref(), Some("c"), "including the charter");
+
+        assert_eq!(
+            list_for_project(&db, "Personal", "forge").expect("list").len(),
+            1,
+            "the row lists under the project its key names",
+        );
+        assert!(
+            list_for_project(&db, "Personal", "elsewhere").expect("list").is_empty(),
+            "and not under the one its stale body names",
+        );
+        let index = worker_row_index(&db).expect("the key-only reader reads it");
+        assert_eq!(
+            index
+                .iter()
+                .map(|row| (row.org.as_str(), row.project.as_str(), row.label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("Personal", "forge", "steward")],
+            "the launcher's reader takes the identity from the key too",
         );
     }
 }

@@ -544,8 +544,9 @@ view, which makes it safe to sync between machines.
 
 Everything mutable lives in a single embedded redb database at
 `<app-support>/db.redb`: durable crons, Gotify subscriptions, Slack
-subscriptions and the sweep watermarks beside them, dynamic workers
-spawned at runtime, the session identity per project and label, review
+subscriptions and the sweep watermarks beside them, the session
+identity per project and label - the lead's and every worker's, which is
+what brings a worker back after a restart - review
 threads, the `/spinner` override, the
 per-account usage cache, cached model pricing, and the `/usage` view's
 per-file token summaries.
