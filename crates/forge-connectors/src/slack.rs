@@ -808,12 +808,14 @@ pub(crate) async fn sweep(
             .collect();
 
         // Thread replies never appear in `conversations.history`, so a
-        // parent that reports replies is the only way to reach them.
+        // parent that reports replies is the only way to reach them - and
+        // the only place the sweep can see who is in a thread.
         let parents: Vec<String> = batch
             .iter()
             .filter(|message| message.reply_count > 0 && message.thread_ts.is_none())
             .map(|message| message.ts.clone())
             .collect();
+        let mut participated: HashSet<String> = HashSet::new();
         for parent in parents {
             let replies = match fetch_replies(api, &conversation.id, &parent, None).await {
                 Ok(replies) => replies,
@@ -838,6 +840,12 @@ pub(crate) async fn sweep(
                     continue;
                 }
             };
+            // Scanned before the watermark filter: the reply that puts the
+            // user in a thread is usually older than the cursor by the time
+            // anyone else's reply arrives.
+            if replies.iter().any(|reply| reply.user.as_deref() == Some(user_id.as_str())) {
+                participated.insert(parent.clone());
+            }
             for reply in replies {
                 if is_newer(&reply.ts, watermark.as_deref()) && seen.insert(reply.ts.clone()) {
                     batch.push(reply);
@@ -890,7 +898,12 @@ pub(crate) async fn sweep(
             }
             delivered += 1;
             for message in wanted {
-                if let Some(parent_ts) = followed_parent_of(message) {
+                // Only a thread the user is in is followed. His own replies
+                // reach Slack from the app, never from forge's record, so
+                // this is detected rather than remembered.
+                if let Some(parent_ts) = followed_parent_of(message)
+                    && participated.contains(&parent_ts)
+                {
                     host.follow_thread(
                         workspace,
                         &conversation.id,
@@ -3376,6 +3389,7 @@ mod tests {
         parent.reply_count = 2;
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
+        seed_user_participation(&host, &parent);
 
         sweep(&host, &host, "acme").await.expect("trigger sweep");
         assert_eq!(host.delivered()[0].ts, "100.0", "the trigger itself is delivered");
@@ -3422,6 +3436,7 @@ mod tests {
         parent.reply_count = 1;
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
+        seed_user_participation(&host, &parent);
         sweep(&host, &host, "acme").await.expect("trigger sweep");
         assert_eq!(
             host.followed_threads("acme", "C1").first().map(|thread| thread.owners.len()),
@@ -3445,6 +3460,74 @@ mod tests {
             host.thread_cursor("acme", "C1", "100.0"),
             Some("100.0".to_owned()),
             "the cursor stays below a reply that did not reach every owner",
+        );
+    }
+
+    /// A thread is followed because the user is in it, and a conversation's
+    /// reply fetch is the only place the sweep sees who is. His own reply is
+    /// never delivered, and it is what marks the thread.
+    #[tokio::test]
+    async fn a_thread_the_user_replied_in_is_followed() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
+        let mut parent = history_message("100.0", "U9", "trigger");
+        parent.reply_count = 2;
+        host.seed_history("C1", vec![parent]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                history_message("100.0", "U9", "trigger"),
+                history_message("150.0", "U1", "my own reply"),
+                history_message("160.0", "U8", "someone else's"),
+            ],
+        );
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(
+            host.followed_threads("acme", "C1").len(),
+            1,
+            "the user replied here, so it is followed",
+        );
+    }
+
+    /// Following a thread the user is not in would follow every thread in
+    /// the workspace, and deliver replies nobody asked for.
+    #[tokio::test]
+    async fn a_thread_the_user_is_absent_from_is_not_followed() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
+        let mut parent = history_message("100.0", "U9", "trigger");
+        parent.reply_count = 2;
+        host.seed_history("C1", vec![parent]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                history_message("100.0", "U9", "trigger"),
+                history_message("150.0", "U9", "one"),
+                history_message("160.0", "U8", "two"),
+            ],
+        );
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+        assert!(
+            host.followed_threads("acme", "C1").is_empty(),
+            "matching anyone would follow every thread in the workspace",
+        );
+    }
+
+    /// Pin the user into a thread's replies before a trigger sweep. A
+    /// parent reporting replies it does not have is a shape Slack never
+    /// sends, and it is the replies fetch that tells the sweep the user is
+    /// in the thread.
+    fn seed_user_participation(host: &FakeHost, parent: &SlackHistoryMessage) {
+        host.seed_replies(
+            "C1",
+            &parent.ts,
+            vec![parent.clone(), history_message("105.0", "U1", "the user's own reply")],
         );
     }
 
@@ -3504,6 +3587,7 @@ mod tests {
         parent.reply_count = 3;
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
+        seed_user_participation(&host, &parent);
         sweep(&host, &host, "acme").await.expect("trigger sweep");
 
         host.seed_replies_pages(
@@ -3548,6 +3632,7 @@ mod tests {
         parent.reply_count = 2;
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
+        seed_user_participation(&host, &parent);
         sweep(&host, &host, "acme").await.expect("trigger sweep");
 
         host.seed_replies(
@@ -3587,6 +3672,7 @@ mod tests {
         parent.reply_count = 2;
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
+        seed_user_participation(&host, &parent);
         sweep(&host, &host, "acme").await.expect("trigger sweep");
         assert_eq!(host.thread_cursor("acme", "C1", "100.0"), Some("100.0".to_owned()));
 
