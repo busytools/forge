@@ -3975,6 +3975,7 @@ impl Workspace {
         let Some(db) = guard.as_ref() else {
             tracing::warn!(
                 target: "forge_workspace::workspace",
+                event_name = "worker_row_delete_store_unavailable",
                 project = %project_key.as_str(),
                 label = %label,
                 "the session store is unavailable; the worker's row is left where it is",

@@ -1687,6 +1687,7 @@ pub(crate) fn handle_despawn_worker(
         }
         tracing::info!(
             target: "forge_workspace::spawn",
+            event_name = "despawn_cleared_stranded_worker",
             project = %project_key.as_str(),
             label = %label,
             "despawn: no live worker matched; cleared its stranded durable row and records",
