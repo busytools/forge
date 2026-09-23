@@ -1603,10 +1603,20 @@ pub(crate) fn handle_despawn_worker(
         "despawn: starting",
     );
 
+    // A stranded row whose worktree is already gone is the shape the boot
+    // wave skips: nothing is on disk to remove and nothing in it to lose,
+    // so the checks that guard live work stand down for it. A live
+    // worker's worktree vanishing is the opposite case, and keeps them.
+    let worktree_already_gone =
+        live.is_none() && worktree_path.as_ref().is_some_and(|path| !path.exists());
+
     // Dirty-check BEFORE teardown: block (nothing torn down) when the
     // worktree is dirty and `force` is not set. `force` skips the probe
-    // rather than ignoring its verdict.
-    let dirty_reason = if force {
+    // rather than ignoring its verdict, and so does a worktree that is not
+    // there to probe - `worktree_dirty_reason` cannot read a directory
+    // that does not exist, and blocking on that would refuse a despawn
+    // over work there is no worktree to hold.
+    let dirty_reason = if force || worktree_already_gone {
         None
     } else {
         worktree_path
@@ -4281,17 +4291,20 @@ provider = "anthropic"
 
     /// A stranded row whose worktree is already gone is the shape the boot
     /// wave skips, so the despawn has nothing to remove and must not report
-    /// a removal failure over it. The live shape reports git's failure for
-    /// the same state, which `despawn_reports_removed_when_the_worktree_is_
+    /// a removal failure over it. It also has nothing to protect, so it
+    /// runs without `force`: the dirty probe cannot read a directory that
+    /// is not there, and blocking on that would refuse a despawn over work
+    /// no worktree can hold. The live shape reports git's failure for the
+    /// same state, which `despawn_reports_removed_when_the_worktree_is_
     /// already_off_disk` pins.
     #[tokio::test]
-    async fn a_stranded_row_whose_worktree_is_gone_despawns_quietly() {
+    async fn a_stranded_row_whose_worktree_is_gone_despawns_without_force() {
         let (workspace, project_key, wt, repo, _config) = stranded_git_despawn_fixture("reviewer");
         run_git(repo.path(), &["worktree", "remove", wt.to_str().expect("utf8 path")]);
         assert!(!wt.exists(), "nothing on disk before the despawn");
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
-        handle_despawn_worker(&workspace, &project_key, "reviewer", true, tx);
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
         let result = resp_rx.await.expect("result");
 
         assert!(
