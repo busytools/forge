@@ -140,6 +140,28 @@ fn list_rows(
         .collect()
 }
 
+/// The caller's own class subscriptions - the DM class and the mention
+/// target. Neither covers one conversation, so no row can carry them, and
+/// their ids are the only handle `slack__unsubscribe` accepts. The target
+/// names match the ones the Inspector's SLACK section shows.
+fn class_subscriptions(subscribed: &[SlackSubscription]) -> Vec<serde_json::Value> {
+    subscribed
+        .iter()
+        .filter_map(|sub| {
+            let target = match &sub.target {
+                SlackSubscriptionTarget::DirectMessages => "direct messages",
+                SlackSubscriptionTarget::Mentions => "mentions anywhere",
+                SlackSubscriptionTarget::Conversation { .. } => return None,
+            };
+            Some(serde_json::json!({
+                "id": sub.id.to_string(),
+                "workspace": sub.workspace,
+                "target": target,
+            }))
+        })
+        .collect()
+}
+
 /// Whether one conversation passes `slack__list`'s optional filters: a
 /// case-insensitive substring over the display name, purpose and topic,
 /// and an exact kind match.
@@ -206,8 +228,12 @@ impl Tool for List {
          subscribed, counting only your own subscriptions rather than another session's. Pass \
          `workspace` to choose one; omit it when only one is configured. Pass `name` for only \
          conversations whose name, purpose or topic contains that text (case-insensitive), or \
-         `kind` for only one conversation type. Returns a JSON array of \
-         {id, name, kind, subscribed}. Any session in the project may call this."
+         `kind` for only one conversation type. Returns a JSON object of two keys. \
+         `conversations` is an array of {id, name, kind, subscribed, subscription_ids}; \
+         `subscription_ids` lists your own ids covering that conversation, which is what \
+         slack__unsubscribe takes. `subscriptions` lists your class subscriptions - the DM \
+         class, and the workspace mention target with its id - since neither covers one \
+         conversation, so no row can carry them. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -258,7 +284,11 @@ impl Tool for List {
                     .cloned()
                     .collect();
                 let rows = list_rows(&kept, &subscribed, &own);
-                match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
+                let listed = serde_json::json!({
+                    "conversations": rows,
+                    "subscriptions": class_subscriptions(&own),
+                });
+                match serde_json::to_string_pretty(&listed) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => {
                         tool_error(format!("conversation-list serialization failed: {err}"))
@@ -343,7 +373,8 @@ impl Tool for Subscribe {
          search lag means a mention is not instantaneous. A conversation in `mentions` mode \
          delivers only messages that mention the user; `all` delivers every message. Pass \
          `workspace` to choose one, or omit it when only one is configured. Returns the new \
-         subscription ids. Any session in the project may call this."
+         subscription ids, which are the only handle slack__unsubscribe accepts. Any session in \
+         the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -427,7 +458,11 @@ impl Tool for Subscribe {
                 }
             }
         }
-        ToolOutput::text(format!("subscribed to Slack ({})", ids.len()))
+        if ids.is_empty() {
+            return ToolOutput::text("subscribed to Slack; nothing new to watch".to_owned());
+        }
+        let listed: Vec<String> = ids.iter().map(Uuid::to_string).collect();
+        ToolOutput::text(format!("subscribed to Slack: {}", listed.join(", ")))
     }
 }
 
@@ -1274,6 +1309,51 @@ mod tests {
         }
     }
 
+    /// A mention target covers no conversation, so it appears on no row. It
+    /// is still live and swept, and without its id nothing can remove it.
+    #[tokio::test]
+    async fn slack_list_reports_class_subscriptions_with_their_ids() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.conversations_result.lock() = Some(Ok(vec![channel("C1", "general")]));
+        let mentions = owned_sub(Uuid::from_u128(0x77), SlackSubscriptionTarget::Mentions);
+        *mock.subscribed_targets.lock() = vec![mentions.clone()];
+        let tool = List { facade: mock, slot: caller_slot() };
+
+        let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
+
+        assert!(!out.is_error, "the list succeeds: {}", out.blocks[0].text);
+        assert!(
+            out.blocks[0].text.contains(&mentions.id.to_string()),
+            "the class target's id is reachable: {}",
+            out.blocks[0].text,
+        );
+        assert!(
+            out.blocks[0].text.contains("mentions anywhere"),
+            "and it is named as the target it is: {}",
+            out.blocks[0].text,
+        );
+    }
+
+    /// The ids are the only handle `slack__unsubscribe` accepts, and the
+    /// tool's description promises them: a count loses every one.
+    #[tokio::test]
+    async fn slack_subscribe_reports_the_ids_it_created() {
+        let mock = Arc::new(MockSlackFacade::new());
+        let id = Uuid::from_u128(0xabc);
+        *mock.subscribe_result.lock() = Some(Ok(vec![id]));
+        let tool = Subscribe { facade: mock, slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({ "workspace": "acme", "direct_messages": true })))
+            .await;
+
+        assert!(
+            out.blocks[0].text.contains(&id.to_string()),
+            "the created id is what a caller unsubscribes with: {}",
+            out.blocks[0].text,
+        );
+    }
+
     #[test]
     fn list_marks_a_conversation_as_subscribed_only_when_it_is() {
         let conversations = vec![channel("C1", "general")];
@@ -1499,10 +1579,11 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
         assert!(!out.is_error, "list succeeds: {}", out.blocks[0].text);
-        let rows: serde_json::Value =
+        let listed: serde_json::Value =
             serde_json::from_str(&out.blocks[0].text).expect("the output is JSON");
         let by_id = |id: &str| {
-            rows.as_array()
+            listed["conversations"]
+                .as_array()
                 .expect("an array of rows")
                 .iter()
                 .find(|row| row["id"] == id)
@@ -1531,9 +1612,9 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({ "kind": "im" }))).await;
         assert!(!out.is_error, "a known kind succeeds: {}", out.blocks[0].text);
-        let rows: serde_json::Value =
+        let listed: serde_json::Value =
             serde_json::from_str(&out.blocks[0].text).expect("the output is JSON");
-        let ids: Vec<&str> = rows
+        let ids: Vec<&str> = listed["conversations"]
             .as_array()
             .expect("an array of rows")
             .iter()

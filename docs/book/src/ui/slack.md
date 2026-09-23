@@ -8,8 +8,8 @@ The in-process MCP server exposes the `mcp__forge__slack__*` tools to every sess
 
 | Tool | What it does |
 |---|---|
-| `slack__list` | Every conversation the token's user is in, each row marked with whether YOU subscribe to it. An optional `name` substring filters over name, purpose and topic, and an optional `kind` filter keeps one conversation type (`public`, `private`, `im`, `mpim`). |
-| `slack__subscribe` | Watch the whole DM class, named conversations each with a mode (`all` or `mentions`), or the workspace-wide mention target. |
+| `slack__list` | Every conversation the token's user is in, each row marked with whether YOU subscribe to it, plus your class subscriptions. An optional `name` substring filters over name, purpose and topic, and an optional `kind` filter keeps one conversation type (`public`, `private`, `im`, `mpim`). |
+| `slack__subscribe` | Watch the whole DM class, named conversations each with a mode (`all` or `mentions`), or the workspace-wide mention target. Returns the ids it created. |
 | `slack__unsubscribe` | Drop one of the caller's own subscriptions by id. |
 | `slack__post` | Post a message as the user, as a root message or into a thread. Text past 4000 characters is split into numbered parts. Held for approval. |
 | `slack__edit` | Replace or delete one of the user's own messages. Held for approval. |
@@ -21,6 +21,8 @@ The in-process MCP server exposes the `mcp__forge__slack__*` tools to every sess
 | `slack__bookmarks` | A conversation's bookmarks. |
 
 Reads are plain calls. `slack__post`, `slack__edit`, `slack__react` and an upload are held: the tool call does not return until the user approves or rejects in the dock prompt, and a rejected or unanswered draft sends nothing.
+
+`slack__list` returns an object with two keys. `conversations` is the array of rows, each carrying its own `subscription_ids` - the caller's ids covering that conversation, which is what `slack__unsubscribe` takes. `subscriptions` carries the caller's class subscriptions, the DM class and the mention target, since neither covers one conversation and so no row can hold them; a mention target that no row names is otherwise invisible and unremovable.
 
 ## What a mention subscription reaches
 
