@@ -118,9 +118,8 @@ impl PromptState {
 
     /// Construct from a wire `QuestionRequest`. Always includes the
     /// forge-synthesized "Tell Claude something else" escape hatch as
-    /// the last option. #273: pre-focuses the first recommended
-    /// option when any option carries the flag; falls back to index
-    /// 0 otherwise.
+    /// the last option. The caret starts on the first option, which is
+    /// where a `(Recommended)` option was hoisted.
     pub fn from_question(tool_id: String, request: QuestionRequest) -> Self {
         use forge_primitives::permission_ui::{
             PermissionAction, PermissionOption, PermissionOptionKind,
@@ -139,11 +138,6 @@ impl PromptState {
                 recommended: opt.recommended,
             })
             .collect();
-        // #273: first recommended option pre-selects so the user can
-        // hit Enter without scrolling. Multi-recommended (defensive)
-        // picks the first one in source order.
-        let focused_option_index =
-            request.prompt.options.iter().position(|opt| opt.recommended).unwrap_or(0);
         options.push(PermissionOption {
             option_id: "tell_claude".into(),
             name: "Tell Claude something else".into(),
@@ -160,7 +154,7 @@ impl PromptState {
             },
             tool_id,
             options,
-            focused_option_index,
+            focused_option_index: 0,
             selected_option_indices: BTreeSet::new(),
             mode: PromptMode::OptionPicker,
             edited_input: None,
@@ -863,29 +857,26 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn from_question_preselects_first_recommended_option() {
-        // #273: when the wire `QuestionOption.recommended` flag is set
-        // on any option, the prompt opens with the first recommended
-        // entry focused so the user can hit Enter without scrolling.
+    fn from_question_focuses_first_option_when_one_is_recommended() {
+        // The caret is not a second recommendation signal: index 0
+        // whatever the flags say, and the marked option is hoisted there
+        // upstream.
         let mut request = make_question_request(false);
         request.prompt.options[1].recommended = true;
         let state = PromptState::from_question("tc-q".into(), request);
-        assert_eq!(state.focused_option_index, 1);
-        // Recommended flag also propagates to the rendered
-        // PermissionOption so the renderer can bold it.
-        assert!(state.options[1].recommended);
-        assert!(!state.options[0].recommended);
-        // The synthesised Notes "Tell Claude something else" never
-        // carries the flag.
-        let last = state.options.last().expect("last");
-        assert_eq!(last.kind, PermissionOptionKind::Notes);
-        assert!(!last.recommended);
+        assert_eq!(
+            state.focused_option_index, 0,
+            "the caret starts on the first option; the marker rides on its label",
+        );
     }
 
     #[test]
-    fn from_question_defaults_to_first_when_no_recommended() {
+    fn from_question_focuses_first_option_when_none_is_recommended() {
         let state = PromptState::from_question("tc-q".into(), make_question_request(false));
-        assert_eq!(state.focused_option_index, 0);
+        assert_eq!(
+            state.focused_option_index, 0,
+            "with no marker the CLI's order stands and the caret starts at the top",
+        );
         assert!(!state.options[0].recommended);
         assert!(!state.options[1].recommended);
     }

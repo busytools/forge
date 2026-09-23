@@ -235,13 +235,8 @@ fn build_option_lines(
         } else {
             Style::default()
         };
-        // #273: bold recommended AskUserQuestion options even when
-        // unfocused so the (Recommended) signal survives the suffix
-        // strip. Focused options stay BOLD + white as before.
         let name_style = if is_focused {
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-        } else if opt.recommended {
-            Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -511,18 +506,13 @@ mod tests {
     }
 
     #[test]
-    fn recommended_option_renders_with_bold_modifier_even_when_unfocused() {
-        // #273: an option flagged `recommended` keeps BOLD styling on
-        // its label even when the cursor is on a different option, so
-        // the visual signal that survived the suffix strip stays
-        // visible. Focused-row BOLD is already exercised by the
-        // pointer test; this asserts the recommended-row BOLD path.
+    fn recommended_option_renders_without_emphasis() {
+        // Only the caret row is white + BOLD, so a re-added bold on a
+        // recommended option draws it exactly like the row Enter
+        // answers.
         let mut request = make_question_request(false);
         request.prompt.options[1].recommended = true; // Blue is recommended
-        let mut prompt = PromptState::from_question("tc-q".into(), request);
-        // Move focus to the first option (Red) so the recommended
-        // option (Blue) is unfocused.
-        prompt.focused_option_index = 0;
+        let prompt = PromptState::from_question("tc-q".into(), request);
         // Render into a buffer so we can inspect cell modifiers.
         let area = Rect::new(0, 0, 80, 14);
         let mut buf = Buffer::empty(area);
@@ -534,8 +524,8 @@ mod tests {
                 if buf[(x, y)].symbol() == "B" {
                     let style = buf[(x, y)].style();
                     assert!(
-                        style.add_modifier.contains(Modifier::BOLD),
-                        "recommended unfocused row must be bold; got {style:?}",
+                        !style.add_modifier.contains(Modifier::BOLD),
+                        "unfocused option row must not be bold; got {style:?}",
                     );
                     found = true;
                     break;
