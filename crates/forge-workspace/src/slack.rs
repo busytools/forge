@@ -1030,18 +1030,24 @@ impl SlackHost for SlackSubsystemHost {
         )
     }
 
-    fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool {
+    fn deliver(&self, subscription: &SlackSubscription, messages: &[SlackMessage]) -> bool {
         let Some(ws) = self.0.upgrade() else { return false };
         // Direct, not via the command bus: the pump needs the delivery's
         // own outcome, and a bus round-trip reports only that the command
         // was accepted - a mid-delivery failure would read as success and
         // advance the cursor past an undelivered message.
-        crate::spawn::deliver_slack_message(
-            &ws,
-            &subscription.project,
-            subscription.team_role.as_deref(),
-            message.clone(),
-        )
+        let mut all_handed = true;
+        for message in messages {
+            if !crate::spawn::deliver_slack_message(
+                &ws,
+                &subscription.project,
+                subscription.team_role.as_deref(),
+                message.clone(),
+            ) {
+                all_handed = false;
+            }
+        }
+        all_handed
     }
 }
 

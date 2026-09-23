@@ -92,11 +92,12 @@ pub trait SlackHost: Send + Sync {
     /// was subscribed keeps the stored name.
     fn name_conversation(&self, workspace: &str, conversation: &str, name: &str);
 
-    /// Hand one matched message to its subscriber's session. Returns
-    /// whether it was handed off: a `false` means the caller did not
-    /// advance the conversation cursor past this message, so the next
-    /// sweep re-delivers it instead of losing it.
-    fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool;
+    /// Hand one conversation's matched messages to its subscriber's
+    /// session, as the one block they will be read as. Returns whether
+    /// delivery succeeded: a `false` means the caller did not advance the
+    /// conversation cursor past this batch, so the next sweep re-delivers
+    /// it instead of losing it.
+    fn deliver(&self, subscription: &SlackSubscription, messages: &[SlackMessage]) -> bool;
 
     /// Called after a mention is delivered, so the conversation it came
     /// from is watched too and the agent can reply into it rather than
@@ -862,7 +863,7 @@ pub(crate) async fn sweep(
             }) {
                 if host.deliver(
                     subscription,
-                    &SlackMessage {
+                    &[SlackMessage {
                         workspace: workspace.to_owned(),
                         conversation: conversation.id.clone(),
                         conversation_label: label.clone(),
@@ -871,7 +872,7 @@ pub(crate) async fn sweep(
                         user: message.user.clone(),
                         text: message.text.clone(),
                         files: message.files.clone(),
-                    },
+                    }],
                 ) {
                     if let Some(parent_ts) = followed_parent_of(message) {
                         host.follow_thread(
@@ -988,7 +989,7 @@ pub(crate) async fn sweep(
                     };
                     if !host.deliver(
                         subscription,
-                        &SlackMessage {
+                        &[SlackMessage {
                             workspace: workspace.to_owned(),
                             conversation: conversation.id.clone(),
                             conversation_label: label.clone(),
@@ -997,7 +998,7 @@ pub(crate) async fn sweep(
                             user: reply.user.clone(),
                             text: reply.text.clone(),
                             files: reply.files.clone(),
-                        },
+                        }],
                     ) {
                         all_handed = false;
                     }
@@ -1136,7 +1137,7 @@ pub(crate) async fn sweep_mentions(
             };
             let mut all_handed = true;
             for subscription in &mention_subscriptions {
-                if !host.deliver(subscription, &message) {
+                if !host.deliver(subscription, std::slice::from_ref(&message)) {
                     all_handed = false;
                 }
             }
@@ -2389,7 +2390,9 @@ mod tests {
             }
         }
 
-        fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool {
+        fn deliver(&self, subscription: &SlackSubscription, messages: &[SlackMessage]) -> bool {
+            // One attempt per batch, not per message: the whole slice lands
+            // or none of it does, which is what `fail_delivery_at` indexes.
             let attempt = {
                 let mut attempts = self.deliver_attempts.lock().expect("lock");
                 *attempts += 1;
@@ -2398,11 +2401,14 @@ mod tests {
             if self.deliver_failures.lock().expect("lock").contains(&attempt) {
                 return false;
             }
-            self.delivered.lock().expect("lock").push(message.clone());
-            self.delivered_owners.lock().expect("lock").push(SlackThreadOwner {
+            let owner = SlackThreadOwner {
                 project: subscription.project.clone(),
                 team_role: subscription.team_role.clone(),
-            });
+            };
+            for message in messages {
+                self.delivered.lock().expect("lock").push(message.clone());
+                self.delivered_owners.lock().expect("lock").push(owner.clone());
+            }
             true
         }
 
@@ -2871,6 +2877,37 @@ mod tests {
             reply_count: 0,
             files: Vec::new(),
         }
+    }
+
+    /// One matched message as delivery sees it, with the fields a test
+    /// cares about set.
+    fn delivered_message(ts: &str, conversation: &str, text: &str) -> SlackMessage {
+        SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: conversation.to_owned(),
+            conversation_label: conversation.to_lowercase(),
+            ts: ts.to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            text: text.to_owned(),
+            files: Vec::new(),
+        }
+    }
+
+    /// A sweep hands a conversation's news over as one slice: the seam
+    /// carries every member of it, never only the last.
+    #[test]
+    fn deliver_receives_every_message_in_the_bundle() {
+        let host = FakeHost::default();
+        let sub = sub_dm("acme");
+        let batch = vec![
+            delivered_message("100.1", "D1", "one"),
+            delivered_message("100.2", "D1", "two"),
+            delivered_message("100.3", "D1", "three"),
+        ];
+
+        assert!(host.deliver(&sub, &batch));
+        assert_eq!(host.delivered().len(), 3, "a bundle carries every member, not just the last");
     }
 
     fn sub_dm(workspace: &str) -> SlackSubscription {
