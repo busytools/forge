@@ -799,7 +799,13 @@ pub fn reap_agent_worktree(agent_worktree: &AgentWorktree) -> AgentWorktreeReap 
     if let Some(tip) = detached_unique_tip(&agent_worktree.repo_root, path) {
         return AgentWorktreeReap::KeptUniqueCommit { tip };
     }
-    match remove_worktree(path, false) {
+    // `git worktree remove` refuses a worktree holding initialized
+    // submodules however clean it is (git-worktree(1)), so the unforced
+    // form cannot serve here. The porcelain gate above is what authorizes
+    // `--force`: no live writer can dirty the tree between them, because
+    // the completion hook runs after the subagent returned and the sweep
+    // lists only trees untouched for an hour with no live owner.
+    match remove_worktree(path, true) {
         Ok(()) => AgentWorktreeReap::Reaped {
             branch: reap_worktree_branch(&agent_worktree.repo_root, &agent_worktree.branch),
         },
@@ -1773,6 +1779,85 @@ mod tests {
             repo_root: dir.to_path_buf(),
             branch: branch.to_owned(),
         }
+    }
+
+    /// The agent fixture whose tree holds an initialized submodule: the
+    /// repo gains the submodule and the tree's branch follows it, then
+    /// `git submodule update --init` runs in the tree - what a subagent
+    /// does - which is what leaves
+    /// `<repo>/.git/worktrees/agent-<hex>/modules` behind.
+    fn init_repo_with_submodule_agent_worktree(
+        hex: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let (dir, wt, branch) = init_repo_with_agent_worktree(hex);
+        let source = tempdir().expect("submodule source tempdir");
+        run_git(source.path(), &["init", "-q"]);
+        fs::write(source.path().join("sub.txt"), "submodule seed").expect("write seed");
+        run_git(source.path(), &["add", "."]);
+        run_git(
+            source.path(),
+            &[
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-q",
+                "-m",
+                "sub",
+            ],
+        );
+        run_git(
+            dir.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                source.path().to_str().expect("utf8 path"),
+                "contracts/sub",
+            ],
+        );
+        run_git(dir.path(), &["commit", "-q", "-m", "add submodule"]);
+        // The tree is cut from the pre-submodule commit, so its branch has
+        // to take the repo's HEAD before the submodule exists to init.
+        run_git(&wt, &["reset", "--hard", &git_stdout(dir.path(), &["rev-parse", "HEAD"])]);
+        run_git(&wt, &["-c", "protocol.file.allow=always", "submodule", "update", "--init"]);
+        (dir, wt, branch)
+    }
+
+    /// The shape `git worktree remove` refuses however clean the tree is:
+    /// a subagent that ran `git submodule update --init` in its own
+    /// worktree, which the reap must still remove. Left unfixed the tree
+    /// survives the completion hook AND every spawn-time sweep, so it
+    /// leaks instead of being retried away.
+    #[test]
+    fn reaps_a_clean_agent_worktree_holding_initialized_submodules() {
+        let (dir, wt, branch) = init_repo_with_submodule_agent_worktree("abc123");
+        // Fixture precondition, and the reason the test exists: git will
+        // not remove this tree unforced. Asserted rather than assumed so a
+        // git that stops refusing fails here instead of passing without
+        // exercising the fix.
+        assert!(
+            dir.path().join(".git").join("worktrees").join("agent-abc123").join("modules").is_dir(),
+            "fixture precondition: the tree's gitdir holds the submodule's modules dir",
+        );
+        let refused = std::process::Command::new("git")
+            .args(["worktree", "remove", wt.to_str().expect("utf8 path")])
+            .current_dir(wt.parent().expect("wt parent"))
+            .output()
+            .expect("spawn git");
+        assert!(!refused.status.success(), "fixture precondition: git refuses this tree unforced");
+        assert!(wt.exists(), "and the refusal leaves it on disk");
+
+        let outcome = reap_agent_worktree(&agent_worktree_for(dir.path(), "abc123", &branch));
+
+        assert!(
+            matches!(outcome, AgentWorktreeReap::Reaped { .. }),
+            "a clean tree git refuses by shape is reaped, not leaked: {outcome:?}"
+        );
+        assert!(!wt.exists(), "the directory is gone");
+        assert!(!branch_exists(dir.path(), &branch), "the conventional branch goes with it");
     }
 
     #[test]
