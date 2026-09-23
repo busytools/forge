@@ -26,13 +26,21 @@ pub struct SlackConfig {
     pub thread_idle_days: u64,
 }
 
+/// Sweep interval a workspace gets when it names none. Slack's API
+/// allowance is per workspace, and the DM class costs one history call per
+/// DM conversation it covers, so a workspace with a large inbox wants its
+/// own `poll_seconds`.
+pub const DEFAULT_POLL_SECONDS: u64 = 5;
+
+/// Idle window a workspace gets when it names none.
+pub const DEFAULT_THREAD_IDLE_DAYS: u64 = 14;
+
 fn default_poll_seconds() -> u64 {
-    30
+    DEFAULT_POLL_SECONDS
 }
 
-/// The idle window a workspace gets when it names none.
-pub fn default_thread_idle_days() -> u64 {
-    14
+fn default_thread_idle_days() -> u64 {
+    DEFAULT_THREAD_IDLE_DAYS
 }
 
 /// Hand-written because the token must never be printed, the same reason

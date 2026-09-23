@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
-    SlackConfig, SlackDraft, SlackFollowedThread, SlackMessage, SlackSubscription,
-    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord, default_thread_idle_days,
+    DEFAULT_POLL_SECONDS, DEFAULT_THREAD_IDLE_DAYS, SlackConfig, SlackDraft, SlackFollowedThread,
+    SlackMessage, SlackSubscription, SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord,
 };
 use uuid::Uuid;
 
@@ -418,7 +418,7 @@ impl Workspace {
             .slack
             .iter()
             .find(|config| config.workspace.trim() == workspace)
-            .map_or_else(default_thread_idle_days, |config| config.thread_idle_days)
+            .map_or(DEFAULT_THREAD_IDLE_DAYS, |config| config.thread_idle_days)
     }
 
     /// The threads tracked for a conversation, pruned while listed: an
@@ -884,7 +884,7 @@ impl Workspace {
                 .slack
                 .iter()
                 .find(|config| config.workspace.trim() == label.as_str())
-                .map_or(30, |config| config.poll_seconds);
+                .map_or(DEFAULT_POLL_SECONDS, |config| config.poll_seconds);
             let host: Arc<dyn SlackHost> = Arc::new(SlackSubsystemHost::new(self));
             tokio::spawn(forge_connectors::slack::run_workspace_pump(
                 host,
@@ -1672,7 +1672,7 @@ mod tests {
     #[test]
     fn an_unparseable_thread_cursor_reads_as_ancient() {
         assert!(
-            thread_idle_days("not-a-ts") >= default_thread_idle_days(),
+            thread_idle_days("not-a-ts") >= DEFAULT_THREAD_IDLE_DAYS,
             "an unparseable cursor must drop the row, not keep it: {}",
             thread_idle_days("not-a-ts"),
         );

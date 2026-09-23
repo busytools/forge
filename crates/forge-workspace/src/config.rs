@@ -1495,10 +1495,10 @@ poll_second = 45
     }
 
     #[test]
-    fn slack_poll_seconds_defaults_to_thirty() {
+    fn slack_poll_seconds_defaults_to_five() {
         let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
         let parsed: ForgeToml = toml::from_str(toml).expect("parses without poll_seconds");
-        assert_eq!(parsed.slack[0].poll_seconds, 30);
+        assert_eq!(parsed.slack[0].poll_seconds, 5);
     }
 
     #[test]

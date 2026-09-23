@@ -370,7 +370,7 @@ means the Slack connector stays dormant.
 |---|---|---|---|
 | `workspace` | string | none | Label for this workspace, distinct per entry. It addresses the workspace in `slack__list`. |
 | `token` | string | none | User token, `xoxp-...`. |
-| `poll_seconds` | integer | `30` | Sweep interval for this workspace, in seconds. |
+| `poll_seconds` | integer | `5` | Sweep interval for this workspace, in seconds. Slack's allowance is per workspace and a `direct_messages` subscription costs one history call per DM it covers, so a large inbox wants a longer interval here. |
 | `thread_idle_days` | integer | `14` | Drop a followed thread with nothing new for this many days. A thread that quiet is resolved in practice, whatever its parent's age. |
 
 `workspace` and `token` are mandatory once an entry is present. Three
@@ -503,7 +503,7 @@ client_token = "CxxxxxxxxxxxxxxxA"
 [[slack]]
 workspace = "acme"
 token = "xoxp-xxxxxxxxxxxx"
-poll_seconds = 30
+poll_seconds = 5
 thread_idle_days = 14
 
 [plugins]
