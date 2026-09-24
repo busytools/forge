@@ -1,10 +1,10 @@
-# Peer MCP - cross-agent coordination
+# Agents MCP - cross-agent coordination
 
 Every spawned `claude` child gets an in-process MCP server exposing the agents, review, cron, [Gotify](./inspector-processes.md) and [Slack](./slack.md) groups; the table below covers the agents and cron ones. A session is addressed by its slot: the `forge.toml` project name, the project's org, and a label - `lead` for the project's own agent. When the LLM in project A calls `agents__ask`, forge wraps the prompt in a bracket-prefixed envelope and dispatches it as a synthetic user turn to the addressed seat; the reply lands as another wrapped envelope on A's chat. The renderer matches the wrappers and shows a styled peer block instead of the raw bracket prose. All `mcp__forge__*` calls are auto-approved, and the default tool card is suppressed so the chat shows the styled block. See the [Projects pane](./projects-pane.md) for the per-row in-flight badges.
 
-## Peer / worker chat blocks
+## Agent chat blocks
 
-Every peer / worker tool call and inbound envelope renders as one block shape: a TitleCase verb names the kind, a directional icon (`⤴` out, `⤵` in) the direction, and the body indents under the tool-card connectors. No source label sits above - the row names its own kind and peer.
+Every agent tool call and inbound envelope renders as one block shape: a TitleCase verb names the kind, a directional icon (`⤴` out, `⤵` in) the direction, and the body indents under the tool-card connectors. No source label sits above - the row names its own kind and its target, which is a project for another project's own agent and `project/label` for a worker.
 
 | Verb | Direction | Comes from |
 |---|---|---|
@@ -59,7 +59,7 @@ Notices stay single-line with a `⚠` modifier inline.
 </div>
 
 <details>
-<summary>Peer block details</summary>
+<summary>Agent block details</summary>
 
 - Collapse: the body ellipses to one line (`└─ <first 60 chars>...`); click the row to expand the full body inline.
 - Same-worker streak: three consecutive envelopes from the same worker stack body lines under one header - no repeated `Message <same-name>` rows; different workers in the same project still get one header each.
@@ -197,6 +197,10 @@ These are the agents and cron tools, all auto-approved. The four verbs that act 
 | `agents__list` | `project` (optional) | Every project's own agent in `forge.toml` - the caller's included - with its liveness and in-flight counters, plus the caller's own live workers. `project` narrows it to one project. |
 | `agents__tell` | `org` · `project` · `label` (optional) · `message` · `in_reply_to` (optional) | Fire-and-forget; returns a correlation id. A reply to a still-open ask renders as `Reply` and closes it, and needs no target - it is routed to whoever asked. A target that names no configured project is refused rather than guessed at. |
 | `agents__ask` | `org` · `project` · `label` (optional) · `prompt` | Returns a correlation id; the ask goes in-flight and the reply lands as a synthetic user turn. In-flight until a reply lands or the target is lost. An unknown target fails synchronously; async failures deliver a `[Ask ... failed to deliver: ...]` envelope. |
+| `agents__spawn` | `label` · `charter` · `kick` (optional) · `resume_kick` (optional) · `interactive` (optional) · `resume_session` (optional) | Lead-only. A new durable worker in the caller's own project: its own `claude` subprocess, chat view and permissions, addressed by `label` under that project's slot. Without `kick` it idles until told. `resume_session` re-spawns a despawned label onto its prior session, recreating its worktree. |
+| `agents__despawn` | `label` · `force` (optional) | Lead-only. Tears the worker down and removes its git worktree. A dirty worktree blocks the despawn unless `force`; nothing is silently discarded. |
+| `agents__update` | `label` · `charter` / `kick` / `resume_kick` (at least one) | Lead-only. Revises an existing worker's stored texts, taking effect on its next respawn. Never creates a worker. |
+| `agents__capacity` | - | Lead-only. The caller's project cap, live count, free slots, and whether the cap came from `max_workers` or the default. |
 | `cron__create` | `schedule` (5-field cron) or `run_once_at` (RFC3339) · `prompt` · `description` (optional) | Register a durable cron for the caller's project (any caller). Exactly one of schedule / run-once-at; `next_fire` in the host's local timezone; the caller stamped as owner. The description headlines the [SCHEDULES](./inspector-processes.md) row, else the prompt's first line. Fires into its owner, waking the project when asleep; durable across restarts with catch-up-once on boot. |
 | `cron__list` | - | The caller's own crons: id, project, schedule, prompt, next fire. |
 | `cron__delete` | `id` | Deletes a cron by id, scoped to the caller's own crons. |

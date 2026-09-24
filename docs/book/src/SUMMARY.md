@@ -16,7 +16,7 @@
 - [Preflight](./ui/preflight.md)
 - [Launchpad](./ui/launchpad.md)
 - [Chat](./ui/chat.md)
-- [Peers](./ui/peers.md)
+- [Agents](./ui/agents.md)
 - [Slack connector](./ui/slack.md)
 - [Input](./ui/input.md)
 - [Help and welcome](./ui/help.md)

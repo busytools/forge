@@ -24,7 +24,7 @@
 //! fresh; results aren't cached (text is small, render frames don't
 //! call this hot enough to need a cache).
 //!
-//! Visual reference: `docs/book/src/ui/peers.md`.
+//! Visual reference: `docs/book/src/ui/agents.md`.
 
 use crate::app::ToolCallInfo;
 use crate::ui::chat_tree;
