@@ -92,6 +92,22 @@ pub struct WorkerSpawnReply {
     /// warning so the lead knows the "durable" promise didn't hold for
     /// this one. Mirrors `worktree_cleanup_warning` on despawn.
     pub durability_warning: Option<String>,
+    /// Which session the spawn landed on. The handler states what its own
+    /// arguments say; the MCP facade restates it with the resolution it
+    /// made, which is the only place a `resume_session` fallback is known.
+    pub session_choice: SessionChoice,
+}
+
+/// Which session a worker spawn landed on, as the spawn tool reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionChoice {
+    /// The label's prior session was found and resumed.
+    Resumed,
+    /// A new session, because the caller did not ask to resume.
+    Fresh,
+    /// A new session, because the caller asked to resume and the label
+    /// had no prior session to resume.
+    FreshWithoutPrior,
 }
 
 /// Outcome of a [`Command::DespawnWorker`], sent back to the calling
@@ -1432,6 +1448,7 @@ mod workers_command_tests {
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         };
         assert_eq!(r.tag, "forge:worker:reviewer");
     }

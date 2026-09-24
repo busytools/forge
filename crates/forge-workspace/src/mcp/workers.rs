@@ -18,6 +18,7 @@ use crate::mcp::workers::facade::{
     DespawnOutcome, LEAD_LABEL, WorkerCapSource, WorkerDeliverError, WorkerDespawnError,
     WorkerFacade, WorkerLeadDeliverError, WorkerSpawnError, WorkerUpdateError,
 };
+use crate::protocol::SessionChoice;
 
 pub mod facade;
 pub mod types;
@@ -74,7 +75,8 @@ pub(crate) fn add_tools(
 /// - `resume_kick` (string, optional) - re-orient message used in place
 ///   of the generic restart note whenever this worker is resumed
 ///
-/// Returns a JSON object: `{ "session_id": "...", "tag": "forge:worker:..." }`.
+/// Returns a JSON object: `{ "session_id": "...", "tag":
+/// "forge:worker:...", "session": <which session it landed on> }`.
 pub(crate) struct Spawn {
     pub(crate) facade: Arc<dyn WorkerFacade>,
     pub(crate) slot: SessionSlot,
@@ -211,6 +213,13 @@ impl Tool for Spawn {
                 let mut body = serde_json::json!({
                     "session_id": reply.session_id,
                     "tag": reply.tag,
+                    "session": match reply.session_choice {
+                        SessionChoice::Resumed => "resumed the label's prior session",
+                        SessionChoice::Fresh => "started a new session (resume_session was not set)",
+                        SessionChoice::FreshWithoutPrior => {
+                            "started a new session: no prior session for this label"
+                        }
+                    },
                 });
                 if let Some(account) = &reply.rate_limited_account {
                     body["notice"] = serde_json::Value::String(format!(
@@ -256,14 +265,10 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         WorkerSpawnError::WorktreeCreationFailed { reason } => {
             format!("worktree creation failed: {reason}")
         }
-        WorkerSpawnError::NoPriorSession { label } => format!(
-            "the store holds no session id for '{label}' in this project, so there is nothing \
-             to resume; spawn without resume_session to start fresh"
-        ),
-        WorkerSpawnError::SessionStoreUnreadable { label, message } => format!(
-            "could not read the session store for '{label}', so there is nothing to resume \
-             onto: {message}. Nothing was spawned; retry, and if it persists the session may \
-             still exist under the id the store holds"
+        WorkerSpawnError::ResumeLookupFailed { label, message } => format!(
+            "could not look up a prior session for '{label}': {message}. Nothing was spawned, \
+             because a failed lookup is not the same answer as no prior session; retry, or \
+             spawn without resume_session to start fresh"
         ),
     }
 }
@@ -1090,7 +1095,7 @@ mod tests {
     use crate::mcp::workers::facade::{
         CallerProject, MockWorkerFacade, WorkerCapSource, WorkerCapacity,
     };
-    use crate::protocol::WorkerSpawnReply;
+    use crate::protocol::{SessionChoice, WorkerSpawnReply};
 
     fn fake_key(s: &str) -> SessionSlot {
         SessionSlot::from_str_for_test(s)
@@ -1113,6 +1118,7 @@ mod tests {
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let facade = mock.into_arc();
         let tool = Spawn { facade, slot: fake_key("lead-key") };
@@ -1129,6 +1135,48 @@ mod tests {
             serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
         assert_eq!(parsed["session_id"], "new-uuid");
         assert_eq!(parsed["tag"], "forge:worker:reviewer");
+    }
+
+    /// The response says which session the spawn landed on. A
+    /// `resume_session` spawn that found nothing is a fallback the caller
+    /// has to be able to see, and a spawn that never asked to resume has
+    /// to be tellable apart from it in the other direction.
+    #[tokio::test]
+    async fn spawn_response_reports_which_session_it_landed_on() {
+        let cases = [
+            (SessionChoice::Resumed, "resumed", false),
+            (SessionChoice::Fresh, "started a new session", false),
+            (SessionChoice::FreshWithoutPrior, "started a new session", true),
+        ];
+        for (choice, expected, names_the_fallback) in cases {
+            let mock = MockWorkerFacade::new();
+            mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+            *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+                session_id: "new-uuid".into(),
+                tag: "forge:worker:reviewer".into(),
+                rate_limited_account: None,
+                durability_warning: None,
+                session_choice: choice,
+            }));
+            let facade = mock.into_arc();
+            let tool = Spawn { facade, slot: fake_key("lead-key") };
+            let output = tool
+                .call(ToolInput {
+                    value: serde_json::json!({
+                        "label": "reviewer",
+                        "charter": "Review every diff before merge.",
+                    }),
+                })
+                .await;
+            assert!(!output.is_error, "{choice:?} is not an error: {:?}", output.blocks);
+            let text = &output.blocks[0].text;
+            assert!(text.contains(expected), "{choice:?} must say `{expected}`: {text}");
+            assert_eq!(
+                text.contains("no prior session"),
+                names_the_fallback,
+                "{choice:?} names the fallback only when there was nothing to resume: {text}",
+            );
+        }
     }
 
     #[tokio::test]
@@ -1261,6 +1309,7 @@ mod tests {
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, slot: caller };
@@ -1294,6 +1343,7 @@ mod tests {
             tag: "forge:worker:steward".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, slot: caller };
@@ -1330,6 +1380,7 @@ mod tests {
             tag: "t".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, slot: caller };
@@ -1361,6 +1412,7 @@ mod tests {
             tag: "t".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, slot: caller };
@@ -1399,6 +1451,7 @@ mod tests {
             tag: "forge:worker:pairing".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, slot: caller };
@@ -1428,6 +1481,7 @@ mod tests {
             tag: "t".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, slot: caller };
@@ -1463,6 +1517,7 @@ mod tests {
             durability_warning: Some(
                 "spawned, but persisting this worker for durability failed".into(),
             ),
+            session_choice: SessionChoice::Fresh,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, slot: caller };
@@ -1490,6 +1545,7 @@ mod tests {
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, slot: caller };
@@ -1517,6 +1573,7 @@ mod tests {
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: Some("gateway".into()),
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, slot: caller };
@@ -1542,6 +1599,7 @@ mod tests {
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, slot: caller };

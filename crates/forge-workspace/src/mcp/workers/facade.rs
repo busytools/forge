@@ -12,7 +12,7 @@ use forge_primitives::WorkerStatus;
 use crate::SessionSlot;
 use crate::mcp::peers::facade::{PeerStatsDelta, ReplyDeliverError};
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedPrompt};
-use crate::protocol::{Command, WorkerSpawnReply};
+use crate::protocol::{Command, SessionChoice, WorkerSpawnReply};
 use crate::workspace::{ResumeTarget, Workspace};
 
 /// Synchronous decision from `deliver_worker_prompt` - whether the
@@ -90,15 +90,12 @@ pub enum WorkerSpawnError {
     /// pick a different label, or `git commit --allow-empty` first
     /// in the empty-repo case).
     WorktreeCreationFailed { reason: String },
-    /// `resume_session` was set but the store holds no id for the
-    /// label, so there is nothing to resume. Refused before any
-    /// dispatch.
-    NoPriorSession { label: String },
-    /// The store could not be read, so whether the label has a prior
-    /// session is unknown. Distinct from [`Self::NoPriorSession`]: the
-    /// session may well exist, and starting a fresh one would mint over
-    /// the row that could not be read.
-    SessionStoreUnreadable { label: String, message: String },
+    /// `resume_session` was set and the label's prior session could not
+    /// be looked up: the transcript directory is there and unreadable,
+    /// or the row that stands in for one could not be read. Nothing was
+    /// spawned. A lookup that found nothing is not this - that one falls
+    /// back to a fresh session and reports it.
+    ResumeLookupFailed { label: String, message: String },
 }
 
 /// Synchronous error from `update_worker`. Gating (lead-only, non-empty
@@ -295,8 +292,10 @@ pub trait WorkerFacade: Send + Sync {
     /// after a forge restart. `interactive` keeps the built-in
     /// `AskUserQuestion` tool, which every other worker is denied.
     /// `resume_session` resumes the label's most recent prior session
-    /// (the same pick a forge restart makes) instead of starting fresh;
-    /// `NoPriorSession` when the label has none.
+    /// (the same pick a forge restart makes) instead of starting fresh.
+    /// A label with none resolves to `ResumeTarget::None`, which starts
+    /// a fresh session and says so in the reply's
+    /// [`SessionChoice`]; only a lookup that failed is an error.
     async fn spawn_worker(
         &self,
         caller: &SessionSlot,
@@ -565,10 +564,10 @@ impl WorkerFacade for ProdWorkerFacade {
         // The worktree is recreated before the spawn: a despawn removes
         // it, and `--worktree <label>` needs it to exist so the resumed
         // session lands back in the directory it first ran in. What
-        // ensure did is kept so a later refusal can undo exactly that
-        // work.
+        // ensure did is kept so a refusal can undo exactly that work -
+        // and, on the fallback below, so the fresh session inherits it.
         let mut ensured = None;
-        let resume_existing = if resume_session {
+        let (resume_existing, session_choice) = if resume_session {
             let worktree = if is_git_repo_at_spawn {
                 Some(crate::mcp::workers::types::worker_tag_dir(
                     &view.path,
@@ -599,23 +598,26 @@ impl WorkerFacade for ProdWorkerFacade {
                 Some(worktree) => ws.resolve_worker_resume_session(worktree),
                 None => ws.recorded_worker_session(&view.org, &view.name, &label),
             };
-            let session_id = match target {
-                Ok(ResumeTarget::Found(session_id)) => session_id,
-                Ok(ResumeTarget::None) => {
-                    discard_refused_worktree(&view.path, &label, ensured.take());
-                    return Err(WorkerSpawnError::NoPriorSession { label });
-                }
+            match target {
+                Ok(ResumeTarget::Found(session_id)) => (Some(session_id), SessionChoice::Resumed),
+                // Best effort: a label with nothing to resume starts a
+                // new session and the reply says so. The worktree the
+                // ensure minted stays - it is where the new session runs.
+                Ok(ResumeTarget::None) => (None, SessionChoice::FreshWithoutPrior),
+                // A lookup that failed is not an absence. Starting fresh
+                // on it would answer a question the lookup never
+                // answered, leaving the caller holding context it does
+                // not have.
                 Err(error) => {
                     discard_refused_worktree(&view.path, &label, ensured.take());
-                    return Err(WorkerSpawnError::SessionStoreUnreadable {
+                    return Err(WorkerSpawnError::ResumeLookupFailed {
                         label,
                         message: error.to_string(),
                     });
                 }
-            };
-            Some(session_id)
+            }
         } else {
-            None
+            (None, SessionChoice::Fresh)
         };
 
         // The worker's row is written by the spawn handler itself, from
@@ -645,6 +647,7 @@ impl WorkerFacade for ProdWorkerFacade {
         }
         match rx.await {
             Ok(Ok(mut reply)) => {
+                reply.session_choice = session_choice;
                 if let Some(warning) = reply.durability_warning.take() {
                     tracing::error!(
                         target: "forge_workspace::mcp::workers",
@@ -1227,6 +1230,7 @@ mod mock_tests {
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
             durability_warning: None,
+            session_choice: SessionChoice::Fresh,
         }));
         let res = mock
             .spawn_worker(

@@ -1416,6 +1416,15 @@ pub(crate) fn handle_spawn_worker(
                 // re-spawn paths drop the reply, so they read the warn
                 // instead.
                 durability_warning,
+                // What the arguments say, which is all this handler
+                // knows: a `resume_session` spawn whose lookup found
+                // nothing arrives here as a fresh spawn like any other,
+                // and the facade that resolved it restates this.
+                session_choice: if is_resume {
+                    crate::protocol::SessionChoice::Resumed
+                } else {
+                    crate::protocol::SessionChoice::Fresh
+                },
             }));
         }
         Err(err) => {

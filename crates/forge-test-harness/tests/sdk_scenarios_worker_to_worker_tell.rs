@@ -44,6 +44,7 @@ async fn worker_to_worker_tell_scenario() {
         tag: forge_primitives::worker_tag("beta"),
         rate_limited_account: None,
         durability_warning: None,
+        session_choice: forge_workspace::protocol::SessionChoice::Fresh,
     }));
     // Pre-seed the worker pool so workers__tell finds a live target
     // by label. The spawn call captures the request but does not

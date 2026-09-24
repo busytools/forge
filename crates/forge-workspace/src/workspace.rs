@@ -11751,39 +11751,45 @@ provider = "anthropic"
         );
     }
 
-    /// A `resume_session` spawn for a label the store holds no id for
-    /// refuses before dispatching anything, so the lead learns the label
-    /// has nothing to resume instead of silently getting a fresh spawn.
+    /// A `resume_session` spawn for a label with nothing to resume starts
+    /// a new session rather than refusing: the caller asked for old
+    /// context and has to be told it did not get it, but a fresh worker
+    /// is usually what it wanted anyway.
     #[tokio::test]
-    async fn mcp_spawn_resume_without_prior_session_refuses() {
+    async fn mcp_spawn_resume_without_prior_session_starts_fresh() {
         let project = tempfile::tempdir().expect("project dir");
         let cfg = tempfile::tempdir().expect("cfg dir");
-        let (ws, _key, _path, _session_id) = resumable_worker_fixture(&project, &cfg);
+        let (ws, _key, worktree) = git_worker_fixture(&project, &cfg, "never-used");
+        ws.enable_test_dispatch_intercept();
         let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
 
-        let err = facade
-            .spawn_worker(
-                &lead_slot(),
-                "never-used".to_owned(),
-                "charter".to_owned(),
-                None,
-                None,
-                false,
-                true,
-            )
-            .await
-            .expect_err("no prior session to resume");
-        assert_eq!(
-            err,
-            crate::mcp::workers::facade::WorkerSpawnError::NoPriorSession {
-                label: "never-used".to_owned()
-            },
-        );
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &lead_slot(),
+                    "never-used".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                )
+                .await
+        });
+        let resume_existing = poll_spawn_worker_field(&ws, |cmd| match cmd {
+            Command::SpawnWorker { label, resume_existing, .. } if label == "never-used" => {
+                Some(resume_existing.clone())
+            }
+            _ => None,
+        })
+        .await
+        .expect("a label with no prior session still spawns");
+        let _ = spawner.await.expect("facade task joins");
+
+        assert!(resume_existing.is_none(), "there was nothing to resume, so the session is fresh");
         assert!(
-            ws.drain_test_dispatch_buffer()
-                .iter()
-                .all(|c| !matches!(c, Command::SpawnWorker { .. })),
-            "the refusal happens before any dispatch",
+            worktree.exists(),
+            "the worktree the ensure minted is the directory the fresh session runs in",
         );
     }
 
@@ -11910,54 +11916,14 @@ provider = "anthropic"
         forge_sdk::projects_dir_for(cfg.path()).join(storage_key)
     }
 
-    /// A typo'd label in a git project mints a worktree and a branch on
-    /// the ensure step, then refuses with NoPriorSession. The refusal
-    /// must undo both - otherwise every typo leaves an orphan branch
-    /// behind, the exact litter despawn's branch reap exists to prevent.
+    /// The attach case is the data-loss guard on a path that still
+    /// refuses: the branch predates the spawn and holds the worker's only
+    /// copy of its commits, so the rollback removes the worktree it
+    /// created and spares the branch.
     #[tokio::test]
-    async fn mcp_resume_refusal_does_not_strand_a_minted_worktree() {
-        let project = tempfile::tempdir().expect("project dir");
-        let cfg = tempfile::tempdir().expect("cfg dir");
-        let (ws, _key, worktree) = git_worker_fixture(&project, &cfg, "typo");
-        ws.enable_test_dispatch_intercept();
-        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+    async fn mcp_resume_lookup_failure_keeps_a_pre_existing_branch() {
+        use std::os::unix::fs::PermissionsExt as _;
 
-        let err = facade
-            .spawn_worker(
-                &lead_slot(),
-                "typo".to_owned(),
-                "charter".to_owned(),
-                None,
-                None,
-                false,
-                true,
-            )
-            .await
-            .expect_err("no prior session for the typo'd label");
-        assert_eq!(
-            err,
-            crate::mcp::workers::facade::WorkerSpawnError::NoPriorSession {
-                label: "typo".to_owned()
-            },
-        );
-        assert!(!worktree.exists(), "the worktree the refusal minted is rolled back");
-        assert!(
-            !forge_agent::env::worktree::branch_ref_exists(project.path(), "worktree-typo"),
-            "the branch the refusal minted is reaped"
-        );
-        assert!(
-            ws.drain_test_dispatch_buffer()
-                .iter()
-                .all(|c| !matches!(c, Command::SpawnWorker { .. })),
-            "the refusal happens before any dispatch",
-        );
-    }
-
-    /// The attach case is the data-loss guard: the branch predates the
-    /// spawn and holds the worker's only copy of its commits, so the
-    /// rollback removes the worktree it created and spares the branch.
-    #[tokio::test]
-    async fn mcp_resume_refusal_keeps_a_pre_existing_branch() {
         let project = tempfile::tempdir().expect("project dir");
         let cfg = tempfile::tempdir().expect("cfg dir");
         let (ws, _key, worktree) = git_worker_fixture(&project, &cfg, "steward");
@@ -11969,6 +11935,10 @@ provider = "anthropic"
         std::fs::write(worktree.join("work.txt"), "a worker committed here").expect("write work");
         run_git_in(&worktree, &["add", "."]);
         run_git_in(&worktree, &["commit", "-q", "-m", "real work"]);
+        write_tagged_transcript(&cfg, &worktree, "550e8400-e29b-41d4-a716-446655440099", "steward");
+        let transcripts = worker_transcript_dir(&cfg, &worktree);
+        std::fs::set_permissions(&transcripts, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod");
         run_git_in(project.path(), &["worktree", "remove", "--force", worktree_str.as_str()]);
         ws.enable_test_dispatch_intercept();
         let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
@@ -11984,11 +11954,14 @@ provider = "anthropic"
                 true,
             )
             .await
-            .expect_err("no prior session to resume");
-        assert!(matches!(
-            err,
-            crate::mcp::workers::facade::WorkerSpawnError::NoPriorSession { .. }
-        ));
+            .expect_err("the label's transcript directory cannot be read");
+        std::fs::set_permissions(&transcripts, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod back");
+
+        assert!(
+            matches!(err, crate::mcp::workers::facade::WorkerSpawnError::ResumeLookupFailed { .. }),
+            "an unreadable lookup is reported as a failure, got {err:?}",
+        );
         assert!(!worktree.exists(), "the attached worktree is rolled back");
         assert!(
             forge_agent::env::worktree::branch_ref_exists(project.path(), "worktree-steward"),
