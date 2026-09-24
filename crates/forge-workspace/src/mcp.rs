@@ -253,60 +253,78 @@ mod tests {
         }
     }
 
-    /// Every `.rs` and `.md` file in the tree, except the recorded
-    /// baselines under `forge-test-harness`. A capture holds whatever the
-    /// capture machine printed, so a name in one is a recording of
-    /// something real rather than a surface still naming it.
-    fn source_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
-        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            let Ok(entries) = std::fs::read_dir(dir) else { return };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let skipped = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name == ".git" || name == "target");
-                if path.is_dir() {
-                    if !skipped {
-                        walk(&path, out);
-                    }
-                } else if !skipped
-                    && matches!(path.extension().and_then(|ext| ext.to_str()), Some("rs" | "md"))
-                {
-                    out.push(path);
-                }
-            }
-        }
-        let mut paths = Vec::new();
-        walk(root, &mut paths);
-        paths.sort();
-        paths
-            .into_iter()
-            .filter(|path| {
-                let path = path.to_string_lossy();
-                // `baselines/` holds recordings; `.superpowers/` holds an
-                // agent run's own scratch. Neither is a surface forge ships.
-                !path.contains("/baselines/") && !path.contains("/.superpowers/")
+    /// A line carrying this marker may name a retired tool, and so may the
+    /// line above it - rustfmt decides which of the two an arm's comment
+    /// lands on, and the exemption should not depend on the formatter's
+    /// choice of shape.
+    ///
+    /// It exists for one case: a transcript reader recognising what a
+    /// session recorded before the rename. Nothing can call a retired tool,
+    /// so the marker cannot be an alias, and writing it is a deliberate act
+    /// unlike quietly widening an exemption.
+    const REPLAY_ONLY: &str = "replay-only:";
+
+    /// The tracked `.rs` and `.md` files, read from the working tree.
+    ///
+    /// Tracked content, not a filesystem walk. A surface forge ships is a
+    /// file in the repository, and a walk descends into everything git
+    /// excludes - `docs/superpowers/`, `.claude/plans/`, another
+    /// worktree's checkout - so it reports a clean tree or a red one
+    /// depending on who else is using the machine. The recorded baselines
+    /// are `.jsonl`, so the extension filter leaves them out: a capture
+    /// holds whatever the capture machine printed.
+    fn tracked_source_files(root: &std::path::Path) -> Vec<(String, String)> {
+        let listed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["ls-files", "-z"])
+            .output()
+            .expect("git ls-files runs");
+        assert!(listed.status.success(), "git ls-files failed: {listed:?}");
+        let listing = String::from_utf8(listed.stdout).expect("git lists UTF-8 paths");
+        listing
+            .split('\0')
+            .filter(|rel| {
+                matches!(
+                    std::path::Path::new(rel).extension().and_then(|ext| ext.to_str()),
+                    Some("rs" | "md")
+                )
             })
-            .filter_map(|path| std::fs::read_to_string(&path).ok().map(|text| (path, text)))
+            .filter_map(|rel| {
+                std::fs::read_to_string(root.join(rel)).ok().map(|text| (rel.to_owned(), text))
+            })
             .collect()
     }
 
     /// The names are gone rather than aliased, so a session that follows a
     /// stale instruction calls a tool that no longer exists, and nothing
-    /// errors until it does. Only this file may name them, and only to
-    /// assert them away.
+    /// errors until it does.
     #[test]
     fn no_surface_still_names_a_retired_tool() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let files = tracked_source_files(&root);
+        // A scan that read nothing reports the same clean result as a scan
+        // that read everything, so the population is asserted alongside the
+        // verdict. The repository carries several hundred of these.
+        assert!(
+            files.len() > 300,
+            "the scan read only {} files, too few for its verdict to mean anything",
+            files.len(),
+        );
         let mut offenders = Vec::new();
-        for (path, text) in source_files(&root) {
-            if path.ends_with("crates/forge-workspace/src/mcp.rs") {
+        for (path, text) in files {
+            // This file names them to assert them away.
+            if path == "crates/forge-workspace/src/mcp.rs" {
                 continue;
             }
-            for (number, line) in text.lines().enumerate() {
-                if OLD_NAMES.iter().any(|old| line.contains(old)) {
-                    offenders.push(format!("{}:{}", path.display(), number + 1));
+            let lines: Vec<&str> = text.lines().collect();
+            for (number, line) in lines.iter().enumerate() {
+                let marked = line.contains(REPLAY_ONLY)
+                    || number.checked_sub(1).is_some_and(|above| {
+                        lines.get(above).is_some_and(|prev| prev.contains(REPLAY_ONLY))
+                    });
+                if !marked && OLD_NAMES.iter().any(|old| line.contains(old)) {
+                    offenders.push(format!("{path}:{}", number + 1));
                 }
             }
         }

@@ -116,10 +116,19 @@ mod tests {
     #[test]
     fn a_project_the_org_does_not_own_is_refused() {
         // `proj` exists, but under `other`. Matching on the name alone would
-        // send to the wrong seat, which is worse than refusing.
+        // send to the wrong seat, which is worse than refusing. The VARIANT
+        // is the assertion, not just a refusal: reporting a malformed
+        // component would tell the caller its filled-in project field is
+        // empty, and hide the roster it needs to correct itself.
         let projects = configured_projects();
-        assert!(AgentTarget::parse(&projects, "acme", "proj", Some("w")).is_err());
-        assert!(AgentTarget::parse(&projects, "acme", "absent", Some("w")).is_err());
+        assert!(matches!(
+            AgentTarget::parse(&projects, "acme", "proj", Some("w")),
+            Err(TargetError::UnknownProject { .. })
+        ));
+        assert!(matches!(
+            AgentTarget::parse(&projects, "acme", "absent", Some("w")),
+            Err(TargetError::UnknownProject { .. })
+        ));
     }
 
     #[test]

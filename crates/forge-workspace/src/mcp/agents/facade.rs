@@ -157,8 +157,9 @@ mod tests {
 
     #[test]
     fn a_project_name_the_caller_shares_with_another_org_is_not_its_own_project() {
-        // `core` exists under both orgs. Routing on the name alone would
-        // send an in-project target to the wrong project's engine.
+        // `core` exists under both orgs here, which the config loader would
+        // refuse - it is the pair the dispatcher compares, and this is
+        // that comparison on its own rather than a state forge can reach.
         let (peers, _workers, dispatcher) = host();
         let caller = SessionSlot::lead("acme", "core");
         let status = dispatcher

@@ -229,17 +229,6 @@ pub struct CallerProject {
     pub is_lead: bool,
 }
 
-/// Display identity for the sender of an `agents__tell` or
-/// `agents__ask` envelope. Returned by [`WorkerFacade::caller_identity`]
-/// and stamped into `WrappedPrompt::sender_name` / `sender_org` so the
-/// recipient's chat renders `from agent '<name>' (org '<org>')` with a
-/// human-readable label rather than the raw session UUID.
-#[derive(Debug, PartialEq, Eq)]
-pub struct WorkerIdentity {
-    pub name: String,
-    pub org: String,
-}
-
 /// Whether a project's worker cap came from its
 /// `[[orgs.projects]]` `max_workers` override or the built-in default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,18 +260,6 @@ pub trait WorkerFacade: Send + Sync {
     /// Resolve the caller's project key + lead/worker flag.
     /// Returns `None` when `caller` matches no known session.
     fn caller_project(&self, caller: &SessionSlot) -> Option<CallerProject>;
-
-    /// Resolve a display identity for `caller`. Always returns a value
-    /// (no `Option`); the production impl falls back to the raw
-    /// session id for genuinely unresolvable callers so the envelope
-    /// at least renders something. Three resolved shapes:
-    ///
-    /// - lead caller → `(project_key, "Personal")`
-    /// - worker caller with a live `WorkerEntry` →
-    ///   `(label, "worker in <project_key>")`
-    /// - worker caller whose entry was reaped (detached, mid-shutdown) →
-    ///   `(session_id, "worker in <project_key> (detached)")`
-    fn caller_identity(&self, caller: &SessionSlot) -> WorkerIdentity;
 
     /// Dispatch a `Command::SpawnWorker` and await its synchronous
     /// reply. Gating (lead-only, non-empty label, non-empty charter)
@@ -440,31 +417,6 @@ pub(super) fn validate_worker_spawn(
     Ok(())
 }
 
-/// Identity classification shared by the production and mock
-/// `caller_identity` impls so the lead / labeled-worker / detached
-/// mapping is exercised against the real rules. The caller resolves
-/// `matched_label` from its own source (prod: live workers; mock: its
-/// preloaded map); the mapping lives here once.
-fn classify_worker_identity(
-    is_lead: bool,
-    project_key: &crate::ProjectKey,
-    matched_label: Option<String>,
-    caller: &SessionSlot,
-) -> WorkerIdentity {
-    if is_lead {
-        return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: PERSONAL_ORG.to_owned() };
-    }
-    match matched_label {
-        Some(label) => {
-            WorkerIdentity { name: label, org: format!("worker in {}", project_key.as_str()) }
-        }
-        None => WorkerIdentity {
-            name: caller.label().to_owned(),
-            org: format!("worker in {} (detached)", project_key.as_str()),
-        },
-    }
-}
-
 /// Undo the worktree a refused spawn's `ensure_worker_worktree` step
 /// created, so a refusal strands neither worktree nor branch. `ensured`
 /// is `None` when this spawn never touched a worktree.
@@ -508,24 +460,6 @@ impl WorkerFacade for ProdWorkerFacade {
         let ws = self.workspace.upgrade()?;
         let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
         Some(CallerProject { project_key: cx.project_key, is_lead: cx.is_lead })
-    }
-
-    fn caller_identity(&self, caller: &SessionSlot) -> WorkerIdentity {
-        let Some(ws) = self.workspace.upgrade() else {
-            return WorkerIdentity { name: caller.label().to_owned(), org: String::new() };
-        };
-        let Some(cp) = self.caller_project(caller) else {
-            return WorkerIdentity { name: caller.label().to_owned(), org: String::new() };
-        };
-        let label = if cp.is_lead {
-            None
-        } else {
-            ws.list_live_workers(&cp.project_key)
-                .into_iter()
-                .find(|w| w.slot == *caller)
-                .map(|w| w.label)
-        };
-        classify_worker_identity(cp.is_lead, &cp.project_key, label, caller)
     }
 
     async fn spawn_worker(
@@ -991,10 +925,6 @@ pub struct MockWorkerFacade {
     pub spawn_reply: parking_lot::Mutex<Option<Result<WorkerSpawnReply, WorkerSpawnError>>>,
     /// Captured `update_worker` calls.
     pub update_calls: parking_lot::Mutex<Vec<RecordedUpdateCall>>,
-    /// Pre-loaded result for `update_worker`. When `None`, the mock
-    /// reports success, so a test that cares only about the args
-    /// passed through does not have to set it.
-    pub update_result: parking_lot::Mutex<Option<Result<(), WorkerUpdateError>>>,
     /// Captured `deliver_worker_prompt` calls.
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionSlot, String, WrappedPrompt)>>,
     /// Captured `deliver_worker_prompt_to_project` calls.
@@ -1014,9 +944,6 @@ pub struct MockWorkerFacade {
     pub bumps: parking_lot::Mutex<Vec<(SessionSlot, PeerStatsDelta)>>,
     /// Captured `despawn_worker` calls: (caller, label, force).
     pub despawn_calls: parking_lot::Mutex<Vec<(SessionSlot, String, bool)>>,
-    /// Pre-loaded outcome for `despawn_worker` on a known label. When
-    /// `None`, defaults to `Despawned` with neither warning set.
-    pub despawn_outcome: parking_lot::Mutex<Option<DespawnOutcome>>,
     /// Pre-loaded reply for `capacity`. When `None`, the mock derives
     /// it from the workers map: default cap, live count from the
     /// caller's project's entries.
@@ -1039,21 +966,6 @@ impl MockWorkerFacade {
 impl WorkerFacade for MockWorkerFacade {
     fn caller_project(&self, caller: &SessionSlot) -> Option<CallerProject> {
         self.callers.lock().get(caller).cloned()
-    }
-
-    fn caller_identity(&self, caller: &SessionSlot) -> WorkerIdentity {
-        let Some(cp) = self.caller_project(caller) else {
-            return WorkerIdentity { name: caller.label().to_owned(), org: String::new() };
-        };
-        let label = if cp.is_lead {
-            None
-        } else {
-            self.workers
-                .lock()
-                .get(cp.project_key.as_str())
-                .and_then(|ws| ws.iter().find(|w| w.slot == *caller).map(|w| w.label.clone()))
-        };
-        classify_worker_identity(cp.is_lead, &cp.project_key, label, caller)
     }
 
     async fn spawn_worker(
@@ -1098,7 +1010,7 @@ impl WorkerFacade for MockWorkerFacade {
             kick,
             resume_kick,
         ));
-        self.update_result.lock().clone().unwrap_or(Ok(()))
+        Ok(())
     }
 
     async fn despawn_worker(
@@ -1126,10 +1038,10 @@ impl WorkerFacade for MockWorkerFacade {
             });
         }
         self.despawn_calls.lock().push((caller.clone(), label.to_owned(), force));
-        Ok(self.despawn_outcome.lock().clone().unwrap_or(DespawnOutcome::Despawned {
+        Ok(DespawnOutcome::Despawned {
             worktree_cleanup_warning: None,
             branch_cleanup_warning: None,
-        }))
+        })
     }
 
     fn list_workers(&self, caller: &SessionSlot) -> Vec<WorkerStatus> {
@@ -1412,77 +1324,6 @@ mod mock_tests {
         );
         // No matching label.
         assert!(crate::mcp::workers::types::live_worker_with_label(&running, "tester").is_none());
-    }
-
-    #[test]
-    fn caller_identity_lead_returns_lead_label_and_personal() {
-        // Lead callers stamp the symbolic `lead` label into the
-        // wire envelope's `sender_name`, not the sanitized project
-        // path - workers address the lead as `label="lead"`, so the
-        // reverse direction must match for the chat
-        // surfaces to render `▶ Message lead` instead of the
-        // hyphenated env-key path.
-        let mock = MockWorkerFacade::new();
-        let lead = SessionSlot::from_str_for_test("lead-uuid");
-        mock.callers.lock().insert(
-            lead.clone(),
-            CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
-        );
-        let id = mock.caller_identity(&lead);
-        assert_eq!(id.name, LEAD_LABEL);
-        assert_eq!(id.org, "Personal");
-    }
-
-    #[test]
-    fn caller_identity_worker_with_live_entry_returns_label_and_worker_in_project() {
-        let mock = MockWorkerFacade::new();
-        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
-        mock.callers.lock().insert(
-            worker_key.clone(),
-            CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: false },
-        );
-        mock.workers.lock().insert(
-            "forge".into(),
-            vec![WorkerStatus {
-                label: "reviewer".into(),
-                charter: "review the diff".into(),
-                status: forge_primitives::WorkerLiveness::Running,
-                session_id: "worker-uuid".into(),
-                slot: SessionSlot::from_str_for_test("worker-uuid"),
-                spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
-                diagnostic: None,
-                activity: None,
-            }],
-        );
-        let id = mock.caller_identity(&worker_key);
-        assert_eq!(id.name, "reviewer");
-        assert_eq!(id.org, "worker in forge");
-    }
-
-    #[test]
-    fn caller_identity_detached_worker_falls_back_to_session_id() {
-        let mock = MockWorkerFacade::new();
-        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
-        mock.callers.lock().insert(
-            worker_key.clone(),
-            CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: false },
-        );
-        // Caller resolves to project, but no matching WorkerEntry in
-        // live_workers (e.g. reaped mid-shutdown).
-        let id = mock.caller_identity(&worker_key);
-        assert_eq!(id.name, "worker-uuid");
-        assert_eq!(id.org, "worker in forge (detached)");
-    }
-
-    #[test]
-    fn caller_identity_unknown_caller_returns_session_id_with_empty_org() {
-        let mock = MockWorkerFacade::new();
-        let unknown = SessionSlot::from_str_for_test("ghost-uuid");
-        // No entry in mock.callers - mirrors the genuinely-unresolved case.
-        let id = mock.caller_identity(&unknown);
-        assert_eq!(id.name, "ghost-uuid");
-        assert_eq!(id.org, "");
     }
 
     #[test]

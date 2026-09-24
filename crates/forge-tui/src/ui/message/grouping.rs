@@ -83,7 +83,17 @@ fn is_edit_tool(sdk_tool_name: &str) -> bool {
 /// card). Name-based because `detect_outbound` matches by
 /// `sdk_tool_name` literal. Mirror its match set exactly.
 fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
-    matches!(sdk_tool_name, "mcp__forge__agents__ask" | "mcp__forge__agents__tell")
+    // The four retired names below are replay-only, matching what a
+    // transcript recorded before the rename holds; see `detect_outbound`.
+    matches!(
+        sdk_tool_name,
+        "mcp__forge__agents__ask"
+            | "mcp__forge__agents__tell"
+            | "mcp__forge__peers__ask_agent" // replay-only: peers__ask_agent
+            | "mcp__forge__peers__tell_agent" // replay-only: peers__tell_agent
+            | "mcp__forge__workers__ask" // replay-only: workers__ask
+            | "mcp__forge__workers__tell" // replay-only: workers__tell
+    )
 }
 
 /// One kind-line in a group's L2 summary: a glyph-family (or MCP
@@ -971,6 +981,15 @@ mod tests {
             assert!(
                 is_run_breaker(&tool_call_block("x", name)),
                 "{name} renders as an agent block and MUST break runs",
+            );
+        }
+        // A pre-rename card in a resumed transcript renders the same way,
+        // so it has to break runs the same way.
+        // replay-only: peers__ask_agent, workers__tell
+        for name in ["mcp__forge__peers__ask_agent", "mcp__forge__workers__tell"] {
+            assert!(
+                is_run_breaker(&tool_call_block("x", name)),
+                "{name} is read from a recorded transcript and MUST break runs",
             );
         }
         // AskUserQuestion is hidden (pass-through) while unanswered;

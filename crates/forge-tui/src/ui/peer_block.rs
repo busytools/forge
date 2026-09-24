@@ -335,6 +335,36 @@ pub(crate) fn detect_outbound(tc: &ToolCallInfo) -> Option<PeerOutboundKind> {
             let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
             Some(PeerOutboundKind::Tell { target, body })
         }
+        // The four arms below read transcripts, not calls. A session
+        // recorded before the agents family replaced the two it used to
+        // have still holds these cards, and resuming feeds that history
+        // through this same walker - so matching them keeps those rows
+        // rendering as agent blocks instead of degrading to generic tool
+        // cards. Nothing can call them; they are registered nowhere.
+        // replay-only: peers__ask_agent
+        "mcp__forge__peers__ask_agent" => {
+            let target = raw.get("target")?.as_str()?.to_owned();
+            let body = raw.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            Some(PeerOutboundKind::Ask { target, body })
+        }
+        // replay-only: workers__ask
+        "mcp__forge__workers__ask" => {
+            let target = raw.get("label")?.as_str()?.to_owned();
+            let body = raw.get("question").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            Some(PeerOutboundKind::Ask { target, body })
+        }
+        // replay-only: peers__tell_agent
+        "mcp__forge__peers__tell_agent" => {
+            let target = raw.get("target")?.as_str()?.to_owned();
+            let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            Some(PeerOutboundKind::Tell { target, body })
+        }
+        // replay-only: workers__tell
+        "mcp__forge__workers__tell" => {
+            let target = raw.get("label")?.as_str()?.to_owned();
+            let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            Some(PeerOutboundKind::Tell { target, body })
+        }
         _ => None,
     }
 }
@@ -346,7 +376,7 @@ pub(crate) fn detect_outbound(tc: &ToolCallInfo) -> Option<PeerOutboundKind> {
 fn address(raw: &serde_json::Value) -> Option<String> {
     let project = raw.get("project")?.as_str()?;
     match raw.get("label").and_then(|v| v.as_str()) {
-        Some(label) if label != "lead" => Some(format!("{project}/{label}")),
+        Some(label) if label != forge_workspace::LEAD_LABEL => Some(format!("{project}/{label}")),
         _ => Some(project.to_owned()),
     }
 }
@@ -1966,6 +1996,38 @@ mod tests {
             serde_json::json!({ "message": "answer", "in_reply_to": "q-7f3a92e0" }),
         );
         assert!(detect_outbound(&reply).is_none(), "a reply falls through to a standard tool card");
+    }
+
+    #[test]
+    fn detect_outbound_still_reads_a_card_a_transcript_recorded_before_the_rename() {
+        // Resume feeds recorded history through this same walker, so a
+        // pre-rename card has to keep rendering as an agent block rather
+        // than degrade to a generic tool card.
+        let peer = make_tc(
+            // replay-only: peers__tell_agent
+            "mcp__forge__peers__tell_agent",
+            serde_json::json!({ "target": "gateway-backend", "message": "landed" }),
+        );
+        match detect_outbound(&peer) {
+            Some(PeerOutboundKind::Tell { target, body }) => {
+                assert_eq!(target, "gateway-backend");
+                assert_eq!(body, "landed");
+            }
+            other => panic!("expected Tell, got {other:?}"),
+        }
+
+        let worker = make_tc(
+            // replay-only: workers__ask
+            "mcp__forge__workers__ask",
+            serde_json::json!({ "label": "planner", "question": "ready?" }),
+        );
+        match detect_outbound(&worker) {
+            Some(PeerOutboundKind::Ask { target, body }) => {
+                assert_eq!(target, "planner");
+                assert_eq!(body, "ready?");
+            }
+            other => panic!("expected Ask, got {other:?}"),
+        }
     }
 
     #[test]

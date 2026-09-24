@@ -8,7 +8,7 @@
 //! its own, neither the other's; `gotify__apps` / `gotify__recent` are
 //! read-only server queries (application names, recent-notification
 //! catch-up). All are ANY-CALLER - mirroring the cron family, not the
-//! lead-only peers tools, down to the owner scoping on list + remove.
+//! lead-only agents verbs, down to the owner scoping on list + remove.
 //!
 //! - [`facade`] - the `GotifyFacade` seam (prod over `Weak<Workspace>` +
 //!   a mock for tool tests).

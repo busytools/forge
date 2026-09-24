@@ -99,6 +99,24 @@ struct TargetArgs {
     label: Option<String>,
 }
 
+/// The name and org an envelope carries for the session that sent it,
+/// derived from that session's own slot: the project for a project's own
+/// agent, `project/label` for a worker, with the org beside it.
+///
+/// Derived rather than delegated to an engine, because one identity has to
+/// hold on every path. A reply names no target, and the two engines
+/// answered this differently - the in-project one by label, the
+/// cross-project one by project - so a single worker rendered as two
+/// senders depending on which verb carried its message.
+fn sender_identity(slot: &SessionSlot) -> (String, String) {
+    let name = if slot.is_lead() {
+        slot.project().to_owned()
+    } else {
+        format!("{}/{}", slot.project(), slot.label())
+    };
+    (name, slot.org().to_owned())
+}
+
 impl TargetArgs {
     /// The seat this call names. Optional on the schema because a reply
     /// routes by `in_reply_to` and never needs one - which is why a
@@ -315,9 +333,9 @@ impl Tool for Tell {
          \
          Use this instead of mutating another project's files directly \
          whenever the user asks you to notify or hand off work to another \
-         project - e.g. \\\"let the gateway backend know the rewriter \
-         cleanup landed\\\", \\\"ask forge to pick this up next \
-         session\\\". Reading another project's files for your own context \
+         project - e.g. \"let the gateway backend know the rewriter \
+         cleanup landed\", \"ask forge to pick this up next \
+         session\". Reading another project's files for your own context \
          is still allowed; only state changes and hand-offs go through \
          this tool. \
          \
@@ -385,7 +403,7 @@ impl Tool for Tell {
         if let Some(id) = in_reply_to_id.as_ref()
             && let Some(ask) = self.dispatcher.workers().resolve_correlation(id)
         {
-            let (sender_name, sender_org) = self.identity();
+            let (sender_name, sender_org) = sender_identity(&self.slot);
             let wrapped = WrappedPrompt {
                 correlation_id: correlation_id.clone(),
                 kind: WrappedKind::Reply,
@@ -434,7 +452,7 @@ impl Tool for Tell {
                  Re-check the correlation id if you meant to reply."
             )
         });
-        let (sender_name, sender_org) = self.identity_for(&target);
+        let (sender_name, sender_org) = sender_identity(&self.slot);
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Message,
@@ -450,37 +468,6 @@ impl Tool for Tell {
 }
 
 impl Tell {
-    /// The name and org a reply carries. A reply needs no target, so it
-    /// cannot pick an engine's naming; the caller's own slot says both,
-    /// and it is the only thing that keeps two repliers apart. Any
-    /// project may be asked now, and a bare label would render every
-    /// lead's reply as `lead`, which the recipient's chat groups as one
-    /// sender.
-    fn identity(&self) -> (String, String) {
-        let name = if self.slot.is_lead() {
-            self.slot.project().to_owned()
-        } else {
-            format!("{}/{}", self.slot.project(), self.slot.label())
-        };
-        (name, self.slot.org().to_owned())
-    }
-
-    /// The name and org a message carries. Each engine already answers
-    /// this for its own path, so a message reads the same as it did
-    /// before the two families merged.
-    fn identity_for(&self, target: &AgentTarget) -> (String, String) {
-        let own_project =
-            target.org() == self.slot.org() && target.project() == self.slot.project();
-        if own_project {
-            self.identity()
-        } else {
-            match self.dispatcher.peers().whoami(&self.slot) {
-                Some(identity) => (identity.name, identity.org),
-                None => (self.slot.label().to_owned(), String::new()),
-            }
-        }
-    }
-
     fn delivered_response(
         correlation_id: &CorrelationId,
         status: &str,
@@ -597,15 +584,7 @@ impl Tool for Ask {
         let correlation_id = CorrelationId::new_ask();
         let own_project =
             target.org() == self.slot.org() && target.project() == self.slot.project();
-        let (sender_name, sender_org) = if own_project {
-            let identity = self.dispatcher.workers().caller_identity(&self.slot);
-            (identity.name, identity.org)
-        } else {
-            match self.dispatcher.peers().whoami(&self.slot) {
-                Some(identity) => (identity.name, identity.org),
-                None => (self.slot.label().to_owned(), String::new()),
-            }
-        };
+        let (sender_name, sender_org) = sender_identity(&self.slot);
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
@@ -1037,12 +1016,12 @@ impl Tool for Capacity {
     }
 
     fn description(&self) -> &'static str {
-        "Report the worker capacity of YOUR project: the configured \
-         cap, how many workers are live, and how many slots are free. \
-         Use it before spawning to see whether a spawn would hit the \
-         limit. The cap is the project's max_workers in forge.toml \
-         when set, else forge's default; cap_source names which. \
-         Takes no arguments."
+        "Report the worker capacity of YOUR project (lead-only): the \
+         configured cap, how many workers are live, and how many slots \
+         are free. Use it before spawning to see whether a spawn would \
+         hit the limit. The cap is the project's max_workers in \
+         forge.toml when set, else forge's default; cap_source names \
+         which. Takes no arguments."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1205,9 +1184,13 @@ mod tests {
     use super::*;
     use crate::ProjectKey;
     use crate::mcp::agents::target::{AgentTarget, LEAD_LABEL};
+    use crate::mcp::peers::facade::ReplyDeliverError;
     use crate::mcp::peers::facade::{MockWorkspaceFacade, WorkspaceFacade};
     use crate::mcp::peers::types::PeerLiveness;
-    use crate::mcp::workers::facade::{CallerProject, MockWorkerFacade, WorkerFacade};
+    use crate::mcp::workers::facade::{
+        CallerProject, MockWorkerFacade, WorkerCapacity, WorkerFacade,
+    };
+    use crate::protocol::WorkerSpawnReply;
     use forge_primitives::{WorkerLiveness, WorkerStatus};
 
     struct Host {
@@ -1216,20 +1199,36 @@ mod tests {
         dispatcher: Arc<AgentDispatcher>,
     }
 
-    /// The caller leads `acme`/`core`; `other`/`proj` runs a worker `w1`.
+    /// The lead of `acme`/`core` is a caller, and so is one of its workers;
+    /// `other`/`proj` runs a worker `w1`. Both callers resolve to the same
+    /// project, which is what makes a lead's call and a worker's call
+    /// comparable.
     fn host() -> Host {
         let peers = Arc::new(MockWorkspaceFacade::new());
-        peers.peers.lock().extend([configured("acme", "core"), configured("other", "proj")]);
+        // The peers mock resolves identity by the caller's label rather
+        // than by its project, so the worker caller needs a project
+        // named after it. The lead's slot is already named `lead`, which
+        // is what the mock looks for.
+        peers.peers.lock().extend([
+            configured("acme", "core"),
+            configured("other", "proj"),
+            PeerStatus { name: worker_caller().label().to_owned(), ..configured("acme", "core") },
+        ]);
         let workers = Arc::new(MockWorkerFacade::new());
-        // `core` is the key the caller resolves to, so its own pool is
+        // `core` is the key both callers resolve to, so its own pool is
         // what `list` reads; `proj` is what a cross-project target
         // resolves against.
-        workers.workers.lock().insert("core".to_owned(), vec![worker("acme", "core", "w1")]);
-        workers.workers.lock().insert("proj".to_owned(), vec![worker("other", "proj", "w1")]);
-        workers.callers.lock().insert(
-            caller(),
-            CallerProject { project_key: ProjectKey::new("core"), is_lead: true },
+        workers.workers.lock().insert(
+            "core".to_owned(),
+            vec![worker("acme", "core", "w1"), worker("acme", "core", "w2")],
         );
+        workers.workers.lock().insert("proj".to_owned(), vec![worker("other", "proj", "w1")]);
+        for (slot, is_lead) in [(caller(), true), (worker_caller(), false)] {
+            workers
+                .callers
+                .lock()
+                .insert(slot, CallerProject { project_key: ProjectKey::new("core"), is_lead });
+        }
         let dispatcher = AgentDispatcher::new(
             Arc::clone(&peers) as Arc<dyn WorkspaceFacade>,
             Arc::clone(&workers) as Arc<dyn WorkerFacade>,
@@ -1239,6 +1238,13 @@ mod tests {
 
     fn caller() -> SessionSlot {
         SessionSlot::lead("acme", "core")
+    }
+
+    /// A worker on the lead's own team. Every shared verb has to work for
+    /// it as well as for the lead: the whole point of the merge is that a
+    /// worker's reach is the same.
+    fn worker_caller() -> SessionSlot {
+        SessionSlot::worker("acme", "core", "w2")
     }
 
     fn configured(org: &str, name: &str) -> PeerStatus {
@@ -1475,6 +1481,198 @@ mod tests {
             .unwrap_or_else(|| panic!("the caller's own worker is a row: {rows:?}"));
         assert_eq!(row["slot"]["project"], "core");
         assert_eq!(row["charter"], "w1's charter", "a worker row carries its snapshot");
+    }
+
+    /// A worker's own call, one per shared verb. The role-set tests pin that
+    /// a worker is OFFERED these four; these pin that they work when it calls
+    /// them, which is the reach the merge widened and which nothing else
+    /// exercises - every other test in this file runs as a lead.
+    #[tokio::test]
+    async fn a_worker_can_read_its_own_identity() {
+        let host = host();
+        let tool = Whoami { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
+        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!output.is_error, "whoami must resolve a worker caller: {:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(parsed["slot"]["label"], "w2");
+        assert_eq!(parsed["slot"]["project"], "core");
+    }
+
+    #[tokio::test]
+    async fn a_worker_lists_its_own_projects_pool() {
+        let host = host();
+        let tool = List { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
+        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!output.is_error, "list must answer a worker caller: {:?}", output.blocks);
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&output.blocks[0].text).expect("JSON array");
+        assert!(
+            rows.iter().any(|row| row["slot"]["label"] == "w1"),
+            "a worker sees its project's pool: {rows:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worker_can_tell_its_lead() {
+        let host = host();
+        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "org": "acme",
+                    "project": "core",
+                    "label": LEAD_LABEL,
+                    "message": "done",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "a worker's tell to its lead must land: {:?}", output.blocks);
+        // The reserved label takes the lead path, and only that path:
+        // the worker path would look for a worker labelled `lead` in the
+        // caller's pool and refuse.
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(parsed["target_status"], "delivered");
+    }
+
+    #[tokio::test]
+    async fn a_worker_can_ask_its_lead() {
+        let host = host();
+        let tool = Ask { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "org": "acme",
+                    "project": "core",
+                    "label": LEAD_LABEL,
+                    "prompt": "which PR first?",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "a worker's ask to its lead must land: {:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(parsed["target_status"], "delivered");
+    }
+
+    #[tokio::test]
+    async fn capacity_floors_at_zero_free_slots_when_the_cap_drops_below_the_pool() {
+        // `max_workers` can be lowered under a live pool, and the free-slot
+        // count is rendered to the model: subtracting without flooring
+        // wraps to a 20-digit number, or panics in a debug build.
+        let host = host();
+        *host.workers.capacity_reply.lock() = Some(WorkerCapacity {
+            project: "core".to_owned(),
+            cap: 1,
+            live: 3,
+            cap_source: WorkerCapSource::Default,
+        });
+        let tool =
+            Capacity { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!output.is_error, "capacity must answer: {:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(parsed["available"], 0, "a cap under the live count leaves no free slot");
+    }
+
+    #[tokio::test]
+    async fn spawn_hands_the_kick_and_the_interactive_flag_to_the_facade() {
+        // `kick` is what starts a worker at all and `interactive` decides
+        // whether it keeps AskUserQuestion. Both are persisted, so
+        // defaulting either here is a worker that never starts or one
+        // that can never ask its user anything.
+        let host = host();
+        *host.workers.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "s-1".to_owned(),
+            tag: "forge:worker:reviewer".to_owned(),
+            rate_limited_account: None,
+            durability_warning: None,
+            session_choice: SessionChoice::Fresh,
+        }));
+        let tool =
+            Spawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "reviewer",
+                    "charter": "review the diff",
+                    "kick": "start with the diff",
+                    "interactive": true,
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "the spawn must be answered: {:?}", output.blocks);
+        let calls = host.workers.spawn_calls.lock();
+        assert_eq!(calls.len(), 1, "the facade saw the spawn");
+        assert_eq!(calls[0].3.as_deref(), Some("start with the diff"), "the kick reaches it");
+        assert!(calls[0].5, "the interactive flag reaches it");
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_cannot_reach_its_asker_leaves_the_ask_open() {
+        // An asker's session can close between the ask and the reply.
+        // The replier has to be told, and the ask must stay open rather
+        // than be closed by a reply that landed nowhere.
+        let host = host();
+        let ask_id = CorrelationId::new_ask();
+        host.workers.inflight.lock().insert(
+            ask_id.clone(),
+            InflightAsk {
+                correlation_id: ask_id.clone(),
+                caller: SessionSlot::worker("other", "proj", "w1"),
+                target_project: "proj::w1".to_owned(),
+                target_session: None,
+            },
+        );
+        *host.workers.force_reply_error.lock() = Some(ReplyDeliverError::CallerSessionGone);
+        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "message": "answer",
+                    "in_reply_to": ask_id.as_str(),
+                }),
+            })
+            .await;
+        assert!(output.is_error, "a reply that cannot land is not a success");
+        assert!(
+            output.blocks[0].text.contains("no longer available"),
+            "the refusal says why: {}",
+            output.blocks[0].text,
+        );
+        assert!(
+            host.workers.inflight.lock().contains_key(&ask_id),
+            "the ask stays open, since nothing answered it",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_closes_the_ask_and_clears_the_askers_outgoing_counter() {
+        let host = host();
+        let ask_id = CorrelationId::new_ask();
+        let asker = SessionSlot::worker("other", "proj", "w1");
+        host.workers.inflight.lock().insert(
+            ask_id.clone(),
+            InflightAsk {
+                correlation_id: ask_id.clone(),
+                caller: asker.clone(),
+                target_project: "proj::w1".to_owned(),
+                target_session: None,
+            },
+        );
+        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "message": "answer",
+                    "in_reply_to": ask_id.as_str(),
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "the reply must land: {:?}", output.blocks);
+        assert!(host.workers.inflight.lock().get(&ask_id).is_none(), "an answered ask is closed");
+        assert!(
+            host.workers.bumps.lock().contains(&(asker, PeerStatsDelta::OutgoingMinus1)),
+            "the asker stops counting an ask that has been answered",
+        );
     }
 
     #[tokio::test]

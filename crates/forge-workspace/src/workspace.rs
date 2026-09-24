@@ -1615,9 +1615,10 @@ impl Workspace {
 
         // Build the per-session `forge` MCP server. ONE server name;
         // tool surface depends on whether this spawn is for a project
-        // lead or a worker. Leads see peers + workers (cross-project
-        // coordination is a lead-only role); workers see workers
-        // only. See `crate::mcp::SessionKind` for the rationale.
+        // lead or a worker. Both kinds reach any other session by its
+        // slot; a lead additionally gets the four verbs that act on its
+        // own project (spawn / despawn / update / capacity). See
+        // `crate::mcp::SessionKind` for the rationale.
         // One source for both answers: the slot's label decides the kind,
         // so a worker's tool surface and a worker's address cannot
         // disagree.
@@ -5664,7 +5665,7 @@ impl Workspace {
     /// (a worker asker has no addressable project name), so this
     /// by-session path is load-bearing for closing a cross-agent ask.
     /// Confirms the caller session is still live before dispatching.
-    /// Shared by the peers + workers facades.
+    /// Reached through the in-project facade.
     pub(crate) fn deliver_reply_to_caller(
         self: &Arc<Self>,
         caller: &SessionSlot,

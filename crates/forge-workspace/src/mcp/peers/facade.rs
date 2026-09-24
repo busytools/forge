@@ -72,7 +72,7 @@ pub enum ReplyDeliverError {
 
 impl ReplyDeliverError {
     /// LLM-facing sentence explaining why the reply could not land.
-    /// Shared by the peers + workers tell handlers.
+    /// The agents tell handler's reply path renders it.
     pub(crate) fn user_message(&self) -> String {
         match self {
             ReplyDeliverError::CallerSessionGone => {

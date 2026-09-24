@@ -1194,8 +1194,9 @@ fn build_options_with_callback(
         .hooks(observation_hooks)
         .permission_prompt_tool_name("stdio");
     // Forge-workspace-supplied in-process MCP servers. Today the
-    // only one is `forge` (peers tools on leads only); future
-    // modules (worktree, memory) will hang under their own names.
+    // only one is `forge`, whose surface varies by session kind;
+    // future modules (worktree, memory) will hang under their own
+    // names.
     // Each spawned `claude` subprocess sees them
     // as `mcp__<server_name>__<tool_name>`.
     //

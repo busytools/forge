@@ -109,7 +109,6 @@ pub use workspace::{SessionChipInfo, SessionChipState, Workspace};
 // `SessionUpdate` payloads. The `testing`-feature block below adds the
 // extra surface the `forge-test-harness` integration tests need (MCP
 // server builders, mock facades, the caller-key resolver).
-pub use mcp::agents::target::{AgentTarget, TargetError};
 pub use mcp::cron::schedule::next_fire_after;
 pub use mcp::gotify::types::GotifyNotification;
 pub use mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
