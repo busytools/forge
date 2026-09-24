@@ -188,6 +188,7 @@ impl Workspace {
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: None,
             crons: Mutex::new(Vec::new()),
+            tasks: Mutex::new(Vec::new()),
             parked_by_slot: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(Vec::new()),
             db: Arc::new(Mutex::new(None)),

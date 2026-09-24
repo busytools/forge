@@ -332,6 +332,12 @@ pub struct Workspace {
     /// file, so this mutex alone serialises writes.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) crons: Mutex<Vec<forge_primitives::CronEntry>>,
+    /// The live task list (`mcp__forge__tasks`). In-memory working set,
+    /// loaded from the machine-local store at boot and persisted back
+    /// after every mutation through the one [`Workspace::with_tasks_mut`]
+    /// path. `pub(crate)` so the impl block in [`crate::tasks`] can reach
+    /// it.
+    pub(crate) tasks: Mutex<Vec<forge_primitives::tasks::Task>>,
     /// Payloads addressed to a slot that had no live session when they
     /// arrived - a peer prompt, a fired cron, a Gotify notification, a
     /// Slack message - keyed by `(org, project, label)` (`None` = lead),
@@ -897,6 +903,17 @@ impl Workspace {
             }),
             None => Vec::new(),
         };
+        let tasks = match &db {
+            Some(db) => crate::store::tasks::list(db).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "loading durable tasks failed; starting with none this run",
+                );
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
         let gotify_subs = match &db {
             Some(db) => crate::store::gotify::list(db).unwrap_or_else(|error| {
                 tracing::warn!(
@@ -1135,6 +1152,7 @@ impl Workspace {
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
+            tasks: Mutex::new(tasks),
             parked_by_slot: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(gotify_subs),
             db,
@@ -1635,6 +1653,7 @@ impl Workspace {
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let slack_facade = crate::mcp::slack::facade::ProdSlackFacade::from_arc(self);
+            let tasks_facade = crate::mcp::tasks::facade::ProdTasksFacade::from_arc(self);
             crate::mcp::build_forge_server(
                 workspace_facade,
                 worker_facade,
@@ -1642,6 +1661,7 @@ impl Workspace {
                 cron_facade,
                 gotify_facade,
                 slack_facade,
+                tasks_facade,
                 session_slot.clone(),
                 session_kind,
             )
@@ -10997,6 +11017,7 @@ mod worker_respawn_tests {
             crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
             crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
             crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
+            crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
             SessionSlot::from_str_for_test("caller"),
             kind,
         );

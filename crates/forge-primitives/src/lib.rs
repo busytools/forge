@@ -75,6 +75,7 @@ pub mod session_slot;
 pub mod session_update;
 pub mod slack;
 pub mod subagents;
+pub mod tasks;
 pub mod token_usage;
 pub mod turn_error;
 pub mod usage;
@@ -140,5 +141,6 @@ pub use session_update::{
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, ToolOutputMetadata,
 };
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
+pub use tasks::{Task, TaskId, TaskStatus};
 pub use turn_error::TurnErrorClass;
 pub use workers::{FORGE_WORKER_TAG_PREFIX, LEAD_LABEL, WorkerLiveness, WorkerStatus, worker_tag};

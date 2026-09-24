@@ -12,6 +12,7 @@
 //! - `review` - the review-conversation loop (list / get / reply /
 //!   resolve). Tools render as `mcp__forge__review__<name>`.
 //! - `cron` - the caller's own project's durable crons.
+//! - `tasks` - the caller's own project's live task list.
 //! - `gotify` - the caller's own Gotify subscriptions.
 //! - `slack` - the caller's own Slack subscriptions, reads and held
 //!   outbound actions.
@@ -44,6 +45,7 @@ use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::WorkspaceFacade;
 use crate::mcp::review::facade::ReviewFacade;
 use crate::mcp::slack::facade::SlackFacade;
+use crate::mcp::tasks::facade::TasksFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub(crate) mod caller_context;
@@ -52,6 +54,7 @@ pub mod gotify;
 pub mod peers;
 pub mod review;
 pub mod slack;
+pub mod tasks;
 pub mod workers;
 
 /// Identifies which kind of session the MCP server is being built
@@ -70,14 +73,16 @@ pub enum SessionKind {
 /// `forge` carrying the coordination tool groups appropriate for the
 /// calling session's [`SessionKind`]:
 ///
-/// - [`SessionKind::Lead`] → peers + workers + review + cron + gotify + slack.
-/// - [`SessionKind::Worker`] → workers + review + cron + gotify + slack (no
-///   cross-project peers).
+/// - [`SessionKind::Lead`] → peers + workers + review + cron + tasks +
+///   gotify + slack.
+/// - [`SessionKind::Worker`] → workers + review + cron + tasks + gotify +
+///   slack (no cross-project peers).
 ///
-/// `review`, `cron`, `gotify` and `slack` are any-caller (every session
-/// manages its own project's reviews / crons / subscriptions), so they
-/// register for both kinds - unlike `peers`, which is lead-only. A worker is
-/// exactly the session a review nudge lands on, so it needs `review__*`.
+/// `review`, `cron`, `tasks`, `gotify` and `slack` are any-caller (every
+/// session manages its own project's reviews / crons / tasks /
+/// subscriptions), so they register for both kinds - unlike `peers`, which
+/// is lead-only. A worker is exactly the session a review nudge lands on,
+/// so it needs `review__*`.
 ///
 /// All submodules share the server name so the LLM sees a single
 /// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
@@ -100,6 +105,7 @@ pub fn build_forge_server(
     cron_facade: Arc<dyn CronFacade>,
     gotify_facade: Arc<dyn GotifyFacade>,
     slack_facade: Arc<dyn SlackFacade>,
+    tasks_facade: Arc<dyn TasksFacade>,
     slot: SessionSlot,
     kind: SessionKind,
 ) -> McpServer {
@@ -111,6 +117,7 @@ pub fn build_forge_server(
     builder = review::add_tools(builder, review_facade, slot.clone());
     builder = cron::add_tools(builder, cron_facade, slot.clone());
     builder = gotify::add_tools(builder, gotify_facade, slot.clone());
+    builder = tasks::add_tools(builder, tasks_facade, slot.clone());
     builder = slack::add_tools(builder, slack_facade, slot);
     builder.build()
 }
@@ -123,6 +130,7 @@ mod tests {
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::review::facade::MockReviewFacade;
     use crate::mcp::slack::facade::MockSlackFacade;
+    use crate::mcp::tasks::facade::MockTasksFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
 
     fn fake_key(s: &str) -> SessionSlot {
@@ -130,13 +138,14 @@ mod tests {
     }
 
     #[test]
-    fn build_forge_server_lead_registers_peers_workers_review_cron_gotify_and_slack() {
+    fn build_forge_server_lead_registers_peers_workers_review_cron_tasks_gotify_and_slack() {
         let workspace_facade = MockWorkspaceFacade::new().into_arc();
         let worker_facade = MockWorkerFacade::new().into_arc();
         let review_facade = MockReviewFacade::new().into_arc();
         let cron_facade = MockCronFacade::new().into_arc();
         let gotify_facade = MockGotifyFacade::new().into_arc();
         let slack_facade = MockSlackFacade::new().into_arc();
+        let tasks_facade = MockTasksFacade::new().into_arc();
         let server = build_forge_server(
             workspace_facade,
             worker_facade,
@@ -144,6 +153,7 @@ mod tests {
             cron_facade,
             gotify_facade,
             slack_facade,
+            tasks_facade,
             fake_key("test"),
             SessionKind::Lead,
         );
@@ -164,6 +174,10 @@ mod tests {
             "cron__create",
             "cron__list",
             "cron__delete",
+            "tasks__create",
+            "tasks__update",
+            "tasks__list",
+            "tasks__delete",
             "gotify__subscribe",
             "gotify__list",
             "gotify__unsubscribe",
@@ -193,13 +207,15 @@ mod tests {
     }
 
     #[test]
-    fn build_forge_server_worker_registers_workers_review_cron_gotify_and_slack_but_not_peers() {
+    fn build_forge_server_worker_registers_workers_review_cron_tasks_gotify_and_slack_but_not_peers()
+     {
         let workspace_facade = MockWorkspaceFacade::new().into_arc();
         let worker_facade = MockWorkerFacade::new().into_arc();
         let review_facade = MockReviewFacade::new().into_arc();
         let cron_facade = MockCronFacade::new().into_arc();
         let gotify_facade = MockGotifyFacade::new().into_arc();
         let slack_facade = MockSlackFacade::new().into_arc();
+        let tasks_facade = MockTasksFacade::new().into_arc();
         let server = build_forge_server(
             workspace_facade,
             worker_facade,
@@ -207,14 +223,15 @@ mod tests {
             cron_facade,
             gotify_facade,
             slack_facade,
+            tasks_facade,
             fake_key("test"),
             SessionKind::Worker,
         );
         let debug = format!("{server:?}");
         // Workers see workers__* (talk to sibling workers), review__* (a
         // review nudge lands on the worker being reviewed), and cron__* /
-        // gotify__* / slack__* (all any-caller - a worker may schedule or
-        // subscribe for its project).
+        // tasks__* / gotify__* / slack__* (all any-caller - a worker may
+        // schedule, declare its own work, or subscribe for its project).
         for expected in [
             "workers__spawn",
             "workers__list",
@@ -227,6 +244,10 @@ mod tests {
             "cron__create",
             "cron__list",
             "cron__delete",
+            "tasks__create",
+            "tasks__update",
+            "tasks__list",
+            "tasks__delete",
             "gotify__subscribe",
             "gotify__list",
             "gotify__unsubscribe",
