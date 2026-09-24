@@ -89,6 +89,7 @@ impl App {
         scoped.sort_by_key(|t| status_rank(t.status));
         self.ui_task_rows = scoped.iter().map(|t| build_task_row(t, &all)).collect();
         self.forge_tasks = scoped;
+        self.forge_project_tasks = all;
     }
 }
 
@@ -182,6 +183,18 @@ pub(crate) mod tests {
         });
         let mut app = app_with_tasks(tasks);
         app.focus_lead_session();
+        app.refresh_tasks();
+        app
+    }
+
+    /// A worker's view of a parent task and one row under it, so the
+    /// section renders its one dim parent line.
+    pub(crate) fn app_with_task_rows_with_parent() -> App {
+        let mut app = app_with_tasks(vec![
+            task_with_parent("epic", None),
+            task_with_parent("sub-a", Some("epic")),
+        ]);
+        app.focus_worker_session(WORKER);
         app.refresh_tasks();
         app
     }

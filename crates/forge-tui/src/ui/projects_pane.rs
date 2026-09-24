@@ -156,6 +156,7 @@ fn shift_body_hit_targets(app: &mut App, start_idx: usize, body_top: u16, offset
             | crate::app::PaneHitTarget::InspectorGitPrOpen { .. }
             | crate::app::PaneHitTarget::InspectorMcpOpenStatus { .. }
             | crate::app::PaneHitTarget::InspectorAttentionRow { .. }
+            | crate::app::PaneHitTarget::InspectorTaskRow { .. }
             | crate::app::PaneHitTarget::CopySessionId { .. } => {}
         }
     }

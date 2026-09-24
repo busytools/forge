@@ -30,6 +30,7 @@ pub(crate) mod prompt;
 pub(crate) mod schedule_format;
 pub(crate) mod spinner;
 pub(crate) mod spinner_picker;
+pub(crate) mod tasks_detail;
 pub(crate) mod theme;
 pub(crate) mod tool_call;
 pub mod top_bar;
@@ -77,6 +78,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.dictate_picker.is_some() {
         let area = frame.area();
         dictate_picker::render(frame, area, app);
+    }
+    if app.task_detail.is_some() {
+        let area = frame.area();
+        tasks_detail::render(frame, area, app);
     }
 }
 

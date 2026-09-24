@@ -116,6 +116,18 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             if modal_picker_open(app) {
                 return;
             }
+            // The TASKS detail overlay owns the screen while open: a
+            // click inside the panel is consumed, and one outside it
+            // dismisses, so a click behind the overlay never reaches the
+            // chrome it covers.
+            if app.task_detail.is_some() {
+                let panel = crate::ui::tasks_detail::panel_rect(app.cached_frame_area);
+                if !rect_contains(panel, mouse.column, mouse.row) {
+                    app.task_detail = None;
+                    app.needs_redraw = true;
+                }
+                return;
+            }
             if handle_pane_click(app, mouse) {
                 return;
             }
@@ -998,6 +1010,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                     | PaneHitTarget::InspectorMcpOpenStatus { .. }
                     | PaneHitTarget::InspectorAttentionRow { .. }
                     | PaneHitTarget::CopySessionId { .. }
+                    | PaneHitTarget::InspectorTaskRow { .. }
                     | PaneHitTarget::CloseWorker { .. }
             ) && t.contains(mouse.column, mouse.row)
         })
@@ -1083,6 +1096,11 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 copy_session_id_to_clipboard(&session_id);
                 return true;
             }
+            PaneHitTarget::InspectorTaskRow { task_id, .. } => {
+                app.task_detail = Some(task_id);
+                app.needs_redraw = true;
+                return true;
+            }
             PaneHitTarget::CloseWorker { project_key, label, .. } => {
                 close_worker(app, &project_key, &label);
                 app.needs_redraw = true;
@@ -1147,10 +1165,10 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             | PaneHitTarget::InspectorMcpOpenStatus { .. }
             | PaneHitTarget::InspectorAttentionRow { .. }
             | PaneHitTarget::CopySessionId { .. }
+            | PaneHitTarget::InspectorTaskRow { .. }
             | PaneHitTarget::CloseWorker { .. } => true,
         };
     }
-
     // Inline pane (Wide / Medium): row routing gated by the inline
     // pane rect, which is also what keeps the Inspector's targets out
     // of this fallthrough.
@@ -1204,6 +1222,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         | PaneHitTarget::InspectorMcpOpenStatus { .. }
         | PaneHitTarget::InspectorAttentionRow { .. }
         | PaneHitTarget::CopySessionId { .. }
+        | PaneHitTarget::InspectorTaskRow { .. }
         | PaneHitTarget::CloseWorker { .. } => true,
     }
 }
@@ -1422,6 +1441,36 @@ fn switch_to_project_lead(app: &mut App, project_key: &str) {
 mod tests {
     use super::*;
     use crate::app::session::{SessionLifecycleState, UiSession};
+
+    #[test]
+    fn clicking_a_task_row_opens_that_task_detail() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(3);
+        crate::ui::inspector_pane::tests::click_task_row(&mut app, 1);
+        assert_eq!(
+            app.task_detail,
+            Some(forge_primitives::tasks::TaskId::from("t-2")),
+            "the clicked task opens",
+        );
+    }
+
+    #[test]
+    fn clicking_the_tasks_header_opens_nothing() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(3);
+        crate::ui::inspector_pane::tests::click_tasks_header(&mut app);
+        assert_eq!(app.task_detail, None, "the section header is not a target");
+    }
+
+    #[test]
+    fn clicking_outside_an_open_detail_closes_it() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(3);
+        crate::ui::inspector_pane::tests::click_task_row(&mut app, 0);
+        assert!(app.task_detail.is_some(), "the first click opened the detail");
+
+        // The test app has no cached frame, so every click is outside the
+        // panel - which is what makes the dismissal observable here.
+        crate::ui::inspector_pane::tests::click_at(&mut app, 1, 1);
+        assert_eq!(app.task_detail, None, "a click outside the panel closes it");
+    }
 
     #[test]
     fn pointer_shape_osc_sequences() {

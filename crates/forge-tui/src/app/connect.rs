@@ -203,6 +203,8 @@ fn create_app_impl(
         forge_schedule_rows: Vec::new(),
         forge_tasks: Vec::new(),
         ui_task_rows: Vec::new(),
+        forge_project_tasks: Vec::new(),
+        task_detail: None,
         gotify_subs: Vec::new(),
         gotify_connected: false,
         slack_subs: Vec::new(),

@@ -259,6 +259,17 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
         return crate::app::dictate_picker::handle_key(app, key);
     }
 
+    // The TASKS detail overlay is modal and binds nothing but its close:
+    // `Esc` dismisses it and every other key is swallowed, so a printable
+    // key cannot reach the composer behind it.
+    if app.task_detail.is_some() {
+        if matches!(key.code, KeyCode::Esc) {
+            app.task_detail = None;
+            app.needs_redraw = true;
+        }
+        return true;
+    }
+
     // Launchpad has its own keymap and intentionally swallows every
     // other key (including the pane-toggle chords and printable
     // input) so
@@ -1348,6 +1359,32 @@ mod tests {
         TextBlock,
     };
     use crossterm::event::{KeyCode, KeyModifiers};
+
+    #[test]
+    fn escape_closes_the_task_detail() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(3);
+        crate::ui::inspector_pane::tests::click_task_row(&mut app, 0);
+        assert!(app.task_detail.is_some(), "the click opened a detail");
+        crate::ui::inspector_pane::tests::press_escape(&mut app);
+        assert_eq!(app.task_detail, None, "Esc closes it");
+    }
+
+    #[test]
+    fn the_task_detail_swallows_keys_it_does_not_bind() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(3);
+        crate::ui::inspector_pane::tests::click_task_row(&mut app, 0);
+        let before = app.input().expect("active session").text().clone();
+        crate::app::handle_terminal_event(
+            &mut app,
+            crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+        assert!(app.task_detail.is_some(), "a printable key leaves the detail open");
+        assert_eq!(
+            app.input().expect("active session").text(),
+            before,
+            "and does not reach the composer behind the overlay",
+        );
+    }
     use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
 
