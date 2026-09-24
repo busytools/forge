@@ -19,14 +19,13 @@
 //!
 //! Why there and not beside the other forge state in `<config_dir>/forge/`:
 //! `flock` binds the open file description (the inode), not the path, and
-//! rewriting a file by renaming a temp over it swaps the inode. forge's
-//! own data files (forge.toml / cron.toml) are rewritten that way, so the
-//! lock must be a dedicated file that is only ever opened + flocked, never
-//! renamed; and the config dir is Syncthing-synced across the user's Macs,
-//! where Syncthing also applies incoming changes by rename - a lock synced
-//! in from another Mac would swap the inode out from under a running forge,
+//! rewriting a file by renaming a temp over it swaps the inode, so the lock
+//! must be a dedicated file that is only ever opened + flocked, never
+//! renamed. The config dir is Syncthing-synced across the user's Macs, and
+//! Syncthing applies incoming changes by rename - a lock synced in from
+//! another Mac would swap the inode out from under a running forge,
 //! orphaning its flock and letting a second instance start. A machine-local
-//! lock outside the synced dir sidesteps both.
+//! lock outside the synced dir sidesteps it.
 //!
 //! A v0.18.0 boot may have left a stray `<config_dir>/forge/forge.lock`; it
 //! is now unused and harmless (a fresh boot writes the machine-local lock

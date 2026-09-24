@@ -30,16 +30,24 @@ pub(crate) enum CronCreateError {
     NoUpcomingOccurrence,
 }
 
-/// Why `cron__delete` failed.
+/// Why `cron__delete` failed. The last two are the two cases a refusal
+/// keeps apart: an id the project holds under another session reads
+/// differently from one the project never had.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CronDeleteError {
+    /// The caller couldn't be mapped to a project (transient race, or the
+    /// session ended). Shouldn't happen for a live session.
     UnknownCallerProject,
+    /// No cron with that id in the caller's project.
+    NoSuchCron,
+    /// The id is in the caller's project but belongs to another session.
+    NotOwnedByCaller,
 }
 
 /// The cron tools' view of the workspace. Sync - cron-list mutations are
 /// direct state writes with no async handler to await.
 pub(crate) trait CronFacade: Send + Sync {
-    /// Validate + register a cron for the caller's project: compute
+    /// Validate + register a cron owned by the caller: compute
     /// `next_fire`, persist, and return the new entry. `description` is
     /// the caller-supplied human summary (already trimmed to `None` when
     /// blank).
@@ -51,13 +59,14 @@ pub(crate) trait CronFacade: Send + Sync {
         description: Option<String>,
     ) -> Result<CronEntry, CronCreateError>;
 
-    /// The crons registered for the caller's project.
+    /// The crons the caller registered, within its project.
     fn list_crons(&self, caller: &SessionSlot) -> Vec<CronEntry>;
 
-    /// Delete a cron by id within the caller's project. `Ok(true)` if an
-    /// entry was removed, `Ok(false)` if no such cron belongs to the
-    /// caller's project.
-    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<bool, CronDeleteError>;
+    /// Delete the caller's own cron by id, within its project. A refusal
+    /// says which case it is: [`CronDeleteError::NoSuchCron`] when the
+    /// project has no such id, [`CronDeleteError::NotOwnedByCaller`] when
+    /// it has one under another session.
+    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<(), CronDeleteError>;
 }
 
 /// Production facade over `Weak<Workspace>` (weak to avoid a cycle with
@@ -116,10 +125,20 @@ impl CronFacade for ProdCronFacade {
             .collect()
     }
 
-    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<bool, CronDeleteError> {
+    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<(), CronDeleteError> {
         let ws = self.workspace.upgrade().ok_or(CronDeleteError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(CronDeleteError::UnknownCallerProject)?;
-        Ok(ws.remove_cron_owned_by(&cx.project_name, id, cx.worker_label.as_deref()))
+        if ws.remove_cron_owned_by(&cx.project_name, id, cx.worker_label.as_deref()) {
+            return Ok(());
+        }
+        // The owner-scoped removal matched nothing, which is either an id
+        // the project never had or one another session owns; the caller is
+        // told which.
+        if ws.crons_for_project(&cx.project_name).iter().any(|c| c.id == *id) {
+            Err(CronDeleteError::NotOwnedByCaller)
+        } else {
+            Err(CronDeleteError::NoSuchCron)
+        }
     }
 }
 
@@ -137,7 +156,7 @@ pub(crate) struct MockCronFacade {
     pub create_calls: parking_lot::Mutex<Vec<CreateCall>>,
     pub create_result: parking_lot::Mutex<Option<Result<CronEntry, CronCreateError>>>,
     pub delete_calls: parking_lot::Mutex<Vec<(SessionSlot, CronId)>>,
-    pub delete_result: parking_lot::Mutex<Option<Result<bool, CronDeleteError>>>,
+    pub delete_result: parking_lot::Mutex<Option<Result<(), CronDeleteError>>>,
 }
 
 #[cfg(test)]
@@ -185,9 +204,9 @@ impl CronFacade for MockCronFacade {
         self.crons.lock().clone()
     }
 
-    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<bool, CronDeleteError> {
+    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<(), CronDeleteError> {
         self.delete_calls.lock().push((caller.clone(), id.clone()));
-        self.delete_result.lock().clone().unwrap_or(Ok(false))
+        self.delete_result.lock().clone().unwrap_or(Ok(()))
     }
 }
 
@@ -266,17 +285,48 @@ mod prod_facade_tests {
         assert_eq!(lead_list.len(), 1, "the lead sees only lead crons");
         assert_eq!(lead_list[0].id, lead_cron.id);
 
-        assert!(
-            !facade.delete_cron(&worker, &lead_cron.id).expect("delete"),
-            "a worker cannot delete a lead's cron",
+        assert_eq!(
+            facade.delete_cron(&worker, &lead_cron.id),
+            Err(CronDeleteError::NotOwnedByCaller),
+            "a worker cannot delete a lead's cron, and the refusal says which case it is",
         );
-        assert!(
-            !facade.delete_cron(&lead, &worker_cron.id).expect("delete"),
+        assert_eq!(
+            facade.delete_cron(&lead, &worker_cron.id),
+            Err(CronDeleteError::NotOwnedByCaller),
             "a lead cannot delete a worker's cron",
         );
-        assert!(
-            facade.delete_cron(&worker, &worker_cron.id).expect("delete"),
-            "a worker deletes its own cron",
+        facade.delete_cron(&worker, &worker_cron.id).expect("a worker deletes its own cron");
+    }
+
+    /// The other half of the refusal: an id the project never had is a
+    /// different answer from one that exists under another session.
+    #[test]
+    fn delete_refuses_an_id_the_project_never_had() {
+        let (_ws, facade, lead, _worker) = fixture();
+
+        assert_eq!(
+            facade.delete_cron(&lead, &CronId::from("ghost")),
+            Err(CronDeleteError::NoSuchCron),
+            "an id with no entry in the project is reported as absent",
+        );
+    }
+
+    /// Both clauses of that message are about the caller's own project:
+    /// an id living in another project is not "in this project but not
+    /// registered by you", it is not in this project at all.
+    #[test]
+    fn delete_refuses_an_id_from_another_project_as_absent() {
+        let (ws, facade, lead, _worker) = fixture();
+        ws.seed_test_project("otherproj", "/tmp/b2-otherproj");
+        let other = SessionSlot::lead("TestOrg", "otherproj");
+        let (kind, prompt) = daily("other-standup");
+        let other_cron =
+            facade.create_cron(&other, kind, prompt, None).expect("the other project's create");
+
+        assert_eq!(
+            facade.delete_cron(&lead, &other_cron.id),
+            Err(CronDeleteError::NoSuchCron),
+            "an id that lives in another project is absent here, not a cron of this project's",
         );
     }
 }
