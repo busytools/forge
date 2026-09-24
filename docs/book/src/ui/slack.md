@@ -8,10 +8,10 @@ The in-process MCP server exposes the `mcp__forge__slack__*` tools to every sess
 
 | Tool | What it does |
 |---|---|
-| `slack__list` | Every conversation the token's user is in, each row marked with whether YOU subscribe to it. An optional `name` substring filters over name, purpose and topic, and an optional `kind` filter keeps one conversation type (`public`, `private`, `im`, `mpim`). |
-| `slack__subscribe` | Watch the whole DM class, named conversations each with a mode (`all` or `mentions`), or the workspace-wide mention target. |
+| `slack__list` | Every conversation the token's user is in, each row marked with whether YOU subscribe to it, plus your class subscriptions. An optional `name` substring filters over name, purpose and topic, and an optional `kind` filter keeps one conversation type (`public`, `private`, `im`, `mpim`). |
+| `slack__subscribe` | Watch the whole DM class, named conversations each with a mode (`all` or `mentions`), or the workspace-wide mention target. Returns the ids it created. |
 | `slack__unsubscribe` | Drop one of the caller's own subscriptions by id. |
-| `slack__post` | Post a message as the user, as a root message or into a thread. Text past 4000 characters is split into numbered parts. Held for approval. |
+| `slack__post` | Post a message as the user, as a root message or into a thread. Text past 4000 characters is split into numbered parts, each a separate message. Returns the `ts` of each message it posted. Held for approval. |
 | `slack__edit` | Replace or delete one of the user's own messages. Held for approval. |
 | `slack__react` | Add or remove a reaction. Held for approval. |
 | `slack__attachment` | Fetch a Slack file to a local directory, or upload a local file into a conversation. Fetching is not held; an upload is. |
@@ -21,6 +21,8 @@ The in-process MCP server exposes the `mcp__forge__slack__*` tools to every sess
 | `slack__bookmarks` | A conversation's bookmarks. |
 
 Reads are plain calls. `slack__post`, `slack__edit`, `slack__react` and an upload are held: the tool call does not return until the user approves or rejects in the dock prompt, and a rejected or unanswered draft sends nothing.
+
+`slack__list` returns an object with two keys. `conversations` is the array of rows, each carrying its own `subscription_ids` - the caller's ids covering that conversation, which is what `slack__unsubscribe` takes. `subscriptions` carries the caller's class subscriptions, the DM class and the mention target, since neither covers one conversation and so no row can hold them; a mention target that no row names is otherwise invisible and unremovable.
 
 ## What a mention subscription reaches
 
@@ -33,8 +35,14 @@ A `mentions` subscription is swept by one workspace-wide search per tick rather 
 
 A matched mention starts the conversation it came from being watched by the mention subscription's owner, so the agent can reply back and forth without anyone subscribing to the channel by hand. A message the user authored is never delivered, or an agent answering in Slack would answer itself.
 
+## What the sweep costs
+
+Two clocks, because two things are watched. The conversations a subscription names are a fixed handful, and one history read each per pass; the DM class is every DM in the workspace, so its cost scales with the inbox rather than with what is subscribed to, and it is swept on its own slower clock (`dm_poll_seconds`, 75 seconds by default, beside `poll_seconds` at 5). A DM a subscription also names is read on the conversation clock rather than twice. The mention stream is one search per workspace per pass, which is what makes it affordable at any number of subscriptions.
+
 ## Thread following
 
-Replies never appear in a conversation's history fetch, so a thread a session was pulled into is followed on its own. A delivered message that carries a `thread_ts`, or that starts a thread, is tracked per conversation and parent, and each sweep walks every tracked thread's replies on the thread's own cursor. A new reply is delivered to every session that owns the thread, wherever the parent has aged in the channel.
+Replies never appear in a conversation's history fetch, so a thread is tracked on its own, per conversation and parent, and walked by its own cursor rather than by the conversation's. A thread is tracked as soon as the sweep sees its parent report replies, whoever wrote the parent - the sweep reads a window of the conversation's recent page, which is also where it learns from `latest_reply` that a tracked thread has moved: one that has not costs no call at all, and one whose parent has aged out of the window costs its own fetch. A mention inside a thread tracks that thread too, since the mention is what brought it in.
 
-Tracking stays bounded: it ends for a session whose subscription is removed, the thread stops being tracked when its last owner goes, and a thread that has seen no new reply for 14 days is dropped.
+Tracking is not the same as delivering. A new reply is delivered only when the user is in the thread, which the sweep works out by reading the thread's replies and looking for his own user id among them - he replies from the Slack app, so forge has no other way to know. A thread he is absent from is tracked and walked, and delivers nothing. A new reply is delivered to every session that owns the thread, wherever the parent has aged in the channel.
+
+Tracking stays bounded: it ends for a session whose subscription is removed, the thread stops being tracked when its last owner goes, and a thread with nothing new for the workspace's `thread_idle_days` (14 by default) is dropped. The clock runs from the newest reply seen, not from the thread's start, so a weeks-old parent with a live conversation survives.

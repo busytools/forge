@@ -1,0 +1,50 @@
+{
+  "ok": true,
+  "messages": [
+    {
+      "user": "U0TESTBOT01",
+      "type": "message",
+      "ts": "1790186552.442169",
+      "bot_id": "B0TESTBOT01",
+      "app_id": "A0TESTAPP01",
+      "text": "capture-parent",
+      "team": "T0TESTTEAM1",
+      "bot_profile": {
+        "id": "B0TESTBOT01",
+        "deleted": false,
+        "name": "testbot",
+        "updated": 1776602852,
+        "app_id": "A0TESTAPP01",
+        "user_id": "U0TESTBOT01",
+        "team_id": "T0TESTTEAM1"
+      },
+      "thread_ts": "1790186552.442169",
+      "reply_count": 2,
+      "reply_users_count": 1,
+      "latest_reply": "1790186555.957249",
+      "is_locked": false,
+      "subscribed": false
+    },
+    {
+      "user": "U0TESTBOT01",
+      "type": "message",
+      "ts": "1790186555.291369",
+      "bot_id": "B0TESTBOT01",
+      "app_id": "A0TESTAPP01",
+      "text": "capture-reply",
+      "team": "T0TESTTEAM1",
+      "bot_profile": {
+        "id": "B0TESTBOT01",
+        "app_id": "A0TESTAPP01",
+        "user_id": "U0TESTBOT01",
+        "name": "testbot",
+        "deleted": false,
+        "updated": 1776602852,
+        "team_id": "T0TESTTEAM1"
+      },
+      "thread_ts": "1790186552.442169",
+      "parent_user_id": "U0TESTBOT01"
+    }
+  ],
+  "has_more": false
+}

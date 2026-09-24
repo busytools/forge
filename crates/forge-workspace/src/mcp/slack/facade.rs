@@ -7,7 +7,7 @@
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
-use forge_connectors::slack::{MENTION_CURSOR, SlackError};
+use forge_connectors::slack::{MENTION_CURSOR, SlackApi, SlackError};
 use forge_primitives::slack::{
     SlackBookmark, SlackConversation, SlackDraft, SlackPin, SlackSearchMatch, SlackSubscription,
     SlackSubscriptionTarget, SlackUser, SlackWatchMode,
@@ -73,11 +73,12 @@ pub(crate) enum SlackPostError {
     Fetch(String),
 }
 
-/// What a post did. A draft past the truncation point is split and
-/// posted in sequence, so this is usually one.
+/// What a post did: the `ts` of each message it sent, in the order they
+/// went out. A draft past the truncation point is split and posted in
+/// sequence, so a long one is several messages a reply can attach to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SlackPostOutcome {
-    pub posted: usize,
+    pub ts: Vec<String>,
 }
 
 /// One message to edit or delete. Both actions are gated like a post.
@@ -379,6 +380,36 @@ impl ProdSlackFacade {
         Arc::new(Self { workspace: Arc::downgrade(workspace) })
     }
 
+    /// The conversation's display name for the approval prompt, falling
+    /// back to the id: a DM is named after its partner, and Slack's own
+    /// name for it is empty. A failed lookup is not a reason to refuse the
+    /// action - but it IS why the prompt would show an id, so it says so.
+    async fn conversation_label(
+        api: &Arc<dyn SlackApi>,
+        workspace: &str,
+        conversation: &str,
+    ) -> String {
+        let conversations = match api.list_conversations().await {
+            Ok(conversations) => conversations,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    workspace,
+                    conversation,
+                    %error,
+                    "listing conversations failed; the approval prompt names the id instead",
+                );
+                return conversation.to_owned();
+            }
+        };
+        conversations
+            .iter()
+            .find(|known| known.id == conversation)
+            .map(|known| known.name.clone().or_else(|| known.user.clone()).unwrap_or_default())
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| conversation.to_owned())
+    }
+
     /// Register a draft for the user's decision and wait for it. The one
     /// place "did the user approve this" is decided, so the fail-closed
     /// path exists once rather than at each gated operation - posting,
@@ -450,10 +481,13 @@ impl SlackFacade for ProdSlackFacade {
         let label = resolve_label(&ws.slack, request.workspace.as_deref())
             .ok_or(SlackPostError::UnknownWorkspace)?;
         let api = ws.slack.client(&label).ok_or(SlackPostError::UnknownWorkspace)?;
+        let conversation_label =
+            Self::conversation_label(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
             conversation: request.conversation,
+            conversation_label,
             thread_ts: request.thread_ts,
             text: request.text,
             tool: "slack__post".to_owned(),
@@ -464,11 +498,11 @@ impl SlackFacade for ProdSlackFacade {
             GateDecision::Expired => return Err(SlackPostError::Expired),
         }
         let parts = forge_connectors::slack::split_for_post(&draft.text);
-        let mut posted = 0;
+        let mut ts: Vec<String> = Vec::new();
         for part in &parts {
             match api.post_message(&draft.conversation, part, draft.thread_ts.as_deref()).await {
-                Ok(()) => posted += 1,
-                Err(error) if posted == 0 => {
+                Ok(posted) => ts.push(posted),
+                Err(error) if ts.is_empty() => {
                     // Nothing landed, so the failure is an ordinary one.
                     return Err(SlackPostError::Fetch(error.to_string()));
                 }
@@ -477,14 +511,14 @@ impl SlackFacade for ProdSlackFacade {
                     // is live and readable, so a retry must resume rather
                     // than duplicate the parts already sent.
                     return Err(SlackPostError::Partial {
-                        posted,
+                        posted: ts.len(),
                         total: parts.len(),
                         source: error.to_string(),
                     });
                 }
             }
         }
-        Ok(SlackPostOutcome { posted: parts.len() })
+        Ok(SlackPostOutcome { ts })
     }
 
     async fn edit(
@@ -501,10 +535,13 @@ impl SlackFacade for ProdSlackFacade {
         // a deletion changes what they see on a message attributed to him -
         // and unlike a bad edit it cannot be fixed by editing again. Both
         // go through the same gate a post does.
+        let conversation_label =
+            Self::conversation_label(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
             conversation: request.conversation.clone(),
+            conversation_label,
             thread_ts: Some(request.ts.clone()),
             text: match &request.text {
                 Some(text) => text.clone(),
@@ -549,10 +586,13 @@ impl SlackFacade for ProdSlackFacade {
         // A reaction is authored content in the user's name, so it goes
         // through the same gate a post does.
         let verb = if request.add { "react" } else { "unreact" };
+        let conversation_label =
+            Self::conversation_label(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
             conversation: request.conversation.clone(),
+            conversation_label,
             thread_ts: Some(request.ts.clone()),
             text: format!("[{verb}: {}]", request.name),
             tool: "slack__react".to_owned(),
@@ -675,10 +715,13 @@ impl SlackFacade for ProdSlackFacade {
         // will be called. The name is caller-controlled and can look
         // innocuous, so approving it without the local path would be
         // approving something the user has not seen.
+        let conversation_label =
+            Self::conversation_label(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
             conversation: request.conversation.clone(),
+            conversation_label,
             thread_ts: request.thread_ts.clone(),
             text: format!("[file] {name}\nfrom {}", request.path.display()),
             tool: "slack__attachment".to_owned(),
@@ -745,6 +788,30 @@ impl SlackFacade for ProdSlackFacade {
         let mut ids = Vec::with_capacity(targets.len());
         let mut mentions_requested = false;
         for target in targets {
+            // A conversation goes through the owner's own record, which hands
+            // back the id it already has rather than adding a second row for
+            // one channel, and updates the mode when the caller asks for a
+            // different one. Mentions and the DM class are deliberately not
+            // deduped - two sessions may each want their own feed.
+            if let SlackSubscriptionTarget::Conversation { id, mode, .. } = &target {
+                // A subscription starts from now rather than from the
+                // channel's history - but only when the conversation has no
+                // cursor yet, since the cursor is shared by every owner
+                // watching it and resetting it would drop their pending
+                // windows.
+                if !ws.slack_has_cursor(&label, id) {
+                    ws.set_slack_watermark(&label, id, &slack_ts_now());
+                }
+                ids.push(ws.watch_slack_conversation(
+                    &label,
+                    &project,
+                    team_role.as_deref(),
+                    id,
+                    *mode,
+                    durable,
+                ));
+                continue;
+            }
             if matches!(target, SlackSubscriptionTarget::Mentions) {
                 mentions_requested = true;
             }
@@ -905,7 +972,10 @@ impl SlackFacade for MockSlackFacade {
         request: SlackPostRequest,
     ) -> Result<SlackPostOutcome, SlackPostError> {
         self.post_calls.lock().push(request);
-        self.post_result.lock().clone().unwrap_or(Ok(SlackPostOutcome { posted: 1 }))
+        self.post_result
+            .lock()
+            .clone()
+            .unwrap_or(Ok(SlackPostOutcome { ts: vec!["1.0".to_owned()] }))
     }
 
     async fn edit(
@@ -985,6 +1055,10 @@ mod tests {
         bookmark_rows: parking_lot::Mutex<HashMap<String, Vec<SlackBookmark>>>,
         pin_reads: parking_lot::Mutex<Vec<String>>,
         bookmark_reads: parking_lot::Mutex<Vec<String>>,
+        /// The ts `chat.postMessage` answers with.
+        post_ts: parking_lot::Mutex<Option<String>>,
+        /// Seeded conversations, for the display name a held draft carries.
+        conversations: parking_lot::Mutex<Vec<SlackConversation>>,
     }
 
     impl RecordingApi {
@@ -1009,6 +1083,23 @@ mod tests {
         fn uploads(&self) -> Vec<(String, String, Option<String>)> {
             self.uploads.lock().clone()
         }
+        fn seed_conversation(&self, id: &str, name: &str) {
+            self.conversations.lock().push(SlackConversation {
+                id: id.to_owned(),
+                name: Some(name.to_owned()),
+                is_channel: true,
+                is_private: false,
+                is_im: false,
+                is_mpim: false,
+                is_archived: false,
+                user: None,
+                purpose: None,
+                topic: None,
+            });
+        }
+        fn answer_posts_with(&self, ts: &str) {
+            *self.post_ts.lock() = Some(ts.to_owned());
+        }
     }
 
     #[async_trait::async_trait]
@@ -1024,7 +1115,7 @@ mod tests {
         }
 
         async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
-            Ok(Vec::new())
+            Ok(self.conversations.lock().clone())
         }
 
         async fn history(
@@ -1053,13 +1144,13 @@ mod tests {
             channel: &str,
             text: &str,
             thread_ts: Option<&str>,
-        ) -> Result<(), SlackError> {
+        ) -> Result<String, SlackError> {
             self.posts.lock().push((
                 channel.to_owned(),
                 text.to_owned(),
                 thread_ts.map(str::to_owned),
             ));
-            Ok(())
+            Ok(self.post_ts.lock().clone().unwrap_or_else(|| "1.0".to_owned()))
         }
 
         async fn update_message(
@@ -1393,6 +1484,63 @@ mod tests {
         );
     }
 
+    /// The approval prompt shows the conversation. The id is not a name
+    /// anybody recognises, so it is resolved before the draft is held.
+    #[tokio::test]
+    async fn a_held_draft_names_the_conversation_not_its_id() {
+        let (facade, ws, api, mut rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+
+        let mut seen = None;
+        for _ in 0..200 {
+            while let Ok(update) = rx.try_recv() {
+                if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } = update {
+                    seen = Some(draft.conversation_label);
+                }
+            }
+            if seen.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            seen.expect("the draft reaches the prompt"),
+            "ops",
+            "the prompt names the channel the message goes to",
+        );
+
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), false);
+        let _ = task.await;
+    }
+
+    /// The ts Slack answers a post with is the handle an edit, a delete or
+    /// a reaction takes, and Slack has already sent it.
+    #[tokio::test]
+    async fn a_post_carries_the_ts_slack_answered_with() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.answer_posts_with("1790186552.442169");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), true);
+
+        let outcome = task.await.expect("the post task does not panic").expect("the post landed");
+        assert_eq!(
+            outcome.ts,
+            vec!["1790186552.442169".to_owned()],
+            "the ts the wire sent reaches the caller",
+        );
+    }
+
     /// The draft text is what the prompt shows. A file NAME is
     /// caller-controlled and can look innocuous, so approving it without
     /// the local path it comes from approves something the user has not
@@ -1695,7 +1843,13 @@ mod tests {
     }
 
     fn cfg(label: &str) -> SlackConfig {
-        SlackConfig { workspace: label.to_owned(), token: "xoxp-test".to_owned(), poll_seconds: 30 }
+        SlackConfig {
+            workspace: label.to_owned(),
+            token: "xoxp-test".to_owned(),
+            poll_seconds: 30,
+            dm_poll_seconds: 150,
+            thread_idle_days: 14,
+        }
     }
 
     fn workspace_with_no_slack() -> Arc<Workspace> {
@@ -1748,6 +1902,45 @@ mod tests {
         facade.subscribe(&caller(), Some("acme"), SlackSubscribeRequest::Mentions).expect("second");
 
         assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2);
+    }
+
+    /// A conversation is deduped where a mention feed is not: a repeat hands
+    /// back the record that exists rather than adding a second Inspector row
+    /// for one channel, and a mode the caller asks for is the mode it gets,
+    /// since there is no other route to change one.
+    #[tokio::test]
+    async fn subscribing_twice_to_a_conversation_yields_one_record() {
+        let (facade, ws, _api, _rx) = facade_with_recording_slack();
+        let watching = |mode| {
+            SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
+                id: "C1".to_owned(),
+                mode,
+            }])
+        };
+
+        let first = facade
+            .subscribe(&caller(), Some("acme"), watching(SlackWatchMode::All))
+            .expect("first");
+        assert_eq!(first.len(), 1, "the first subscribe creates the record");
+
+        let second = facade
+            .subscribe(&caller(), Some("acme"), watching(SlackWatchMode::MentionsOnly))
+            .expect("second");
+        assert_eq!(
+            second, first,
+            "the repeat hands back the id it already has, so the caller can drop it without a lookup",
+        );
+        let stored = ws.slack_subscriptions_for_project("forge");
+        assert_eq!(stored.len(), 1, "one record, so the Inspector renders one row");
+        assert_eq!(
+            stored[0].target,
+            SlackSubscriptionTarget::Conversation {
+                id: "C1".to_owned(),
+                name: None,
+                mode: SlackWatchMode::MentionsOnly,
+            },
+            "and the mode asked for is the mode stored",
+        );
     }
 
     #[tokio::test]

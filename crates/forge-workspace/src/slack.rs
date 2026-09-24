@@ -13,8 +13,9 @@ use std::time::Duration;
 
 use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
+    DEFAULT_DM_POLL_SECONDS, DEFAULT_POLL_SECONDS, DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS,
     SlackConfig, SlackDraft, SlackFollowedThread, SlackMessage, SlackSubscription,
-    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord,
+    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -25,10 +26,6 @@ use crate::workspace::Workspace;
 /// sweep that re-runs after a 429 or a restart, short enough that the map
 /// stays small.
 const DELIVERY_REMEMBER: Duration = Duration::from_secs(300);
-
-/// A followed thread that has seen no reply newer than its cursor for
-/// this many days is dropped, so the tracked set stays bounded.
-const THREAD_IDLE_DROP_DAYS: u64 = 14;
 
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
@@ -160,24 +157,26 @@ impl Workspace {
     }
 
     /// Record a hand-off so a sweep re-run drops it. Committed only after
-    /// a successful hand-off: a failed dispatch leaves the key
+    /// a successful hand-off: a failed dispatch leaves the keys
     /// unrecorded, so the next sweep re-delivers instead of losing the
-    /// message behind a cursor that moved on.
+    /// messages behind a cursor that moved on.
     pub(crate) fn slack_delivery_commit(
         &self,
         project: &str,
         team_role: Option<&str>,
-        message: &SlackMessage,
+        messages: &[SlackMessage],
     ) {
-        let key = (
-            project.to_owned(),
-            team_role.map(str::to_owned),
-            message.conversation.clone(),
-            message.ts.clone(),
-        );
         let mut seen = self.slack_recently_delivered.lock();
         seen.retain(|_, seen_at| seen_at.elapsed() < DELIVERY_REMEMBER);
-        seen.insert(key, std::time::Instant::now());
+        for message in messages {
+            let key = (
+                project.to_owned(),
+                team_role.map(str::to_owned),
+                message.conversation.clone(),
+                message.ts.clone(),
+            );
+            seen.insert(key, std::time::Instant::now());
+        }
     }
 
     /// Hold a composed draft and hand back its id plus the receiver the
@@ -385,10 +384,21 @@ impl Workspace {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
         let mut record = match crate::store::slack::thread(db, workspace, conversation, parent_ts) {
-            Ok(record) => record.unwrap_or_else(|| forge_primitives::slack::SlackThreadRecord {
-                cursor: since.to_owned(),
-                owners: Vec::new(),
-            }),
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                // A thread whose newest reply is already older than the idle
+                // window would be dropped the moment the sweep listed it, and
+                // the sweep anchors every parent it can see on every tick -
+                // so writing the row would rewrite it forever for nothing.
+                if thread_idle_days(since) >= self.slack_thread_idle_days(workspace) {
+                    return;
+                }
+                forge_primitives::slack::SlackThreadRecord {
+                    cursor: since.to_owned(),
+                    owners: Vec::new(),
+                    participating: false,
+                }
+            }
             Err(error) => {
                 tracing::warn!(
                     target: "forge_workspace::slack",
@@ -398,9 +408,10 @@ impl Workspace {
                 return;
             }
         };
-        if !record.owners.contains(&owner) {
-            record.owners.push(owner);
+        if record.owners.contains(&owner) {
+            return;
         }
+        record.owners.push(owner);
         if let Err(error) =
             crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &record)
         {
@@ -412,10 +423,51 @@ impl Workspace {
         }
     }
 
+    /// Record that the user is in a thread, so every later walk reads past the
+    /// cursor rather than the whole thread.
+    pub(crate) fn mark_slack_thread_participating(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+    ) {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        let Ok(Some(mut record)) =
+            crate::store::slack::thread(db, workspace, conversation, parent_ts)
+        else {
+            return;
+        };
+        if record.participating {
+            return;
+        }
+        record.participating = true;
+        if let Err(error) =
+            crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &record)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "writing a Slack thread failed",
+            );
+        }
+    }
+
+    /// The idle window this workspace drops a thread after, from its
+    /// `[[slack]]` entry: the followed set is per workspace, so its window
+    /// is too. A workspace whose entry is gone keeps the default.
+    fn slack_thread_idle_days(&self, workspace: &str) -> u64 {
+        self.config
+            .slack
+            .iter()
+            .find(|config| config.workspace.trim() == workspace)
+            .map_or(DEFAULT_THREAD_IDLE_DAYS, |config| config.thread_idle_days)
+    }
+
     /// The threads tracked for a conversation, pruned while listed: an
     /// owner with no remaining subscription in the workspace is dropped
     /// from the record, a row whose last owner goes is deleted, and a row
-    /// idle past [`THREAD_IDLE_DROP_DAYS`] is dropped with a debug log.
+    /// idle past the workspace's window is dropped with a debug log.
     pub(crate) fn slack_followed_threads(
         &self,
         workspace: &str,
@@ -451,7 +503,7 @@ impl Workspace {
                 let _ = crate::store::slack::remove_thread(db, workspace, conversation, &parent_ts);
                 continue;
             }
-            if thread_idle_days(&record.cursor) >= THREAD_IDLE_DROP_DAYS {
+            if thread_idle_days(&record.cursor) >= self.slack_thread_idle_days(workspace) {
                 let _ = crate::store::slack::remove_thread(db, workspace, conversation, &parent_ts);
                 tracing::debug!(
                     target: "forge_workspace::slack",
@@ -462,7 +514,11 @@ impl Workspace {
                 );
                 continue;
             }
-            out.push(SlackFollowedThread { parent_ts, owners: record.owners });
+            out.push(SlackFollowedThread {
+                parent_ts,
+                owners: record.owners,
+                participating: record.participating,
+            });
         }
         out
     }
@@ -496,6 +552,7 @@ impl Workspace {
             Ok(None) => forge_primitives::slack::SlackThreadRecord {
                 cursor: ts.to_owned(),
                 owners: Vec::new(),
+                participating: false,
             },
             Err(error) => {
                 tracing::warn!(
@@ -509,6 +566,7 @@ impl Workspace {
         let advanced = forge_primitives::slack::SlackThreadRecord {
             cursor: ts.to_owned(),
             owners: record.owners,
+            participating: record.participating,
         };
         if let Err(error) =
             crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &advanced)
@@ -596,6 +654,76 @@ impl Workspace {
     /// One entry per workspace a pump has reported on.
     pub fn slack_connected_workspaces(&self) -> std::collections::BTreeMap<String, bool> {
         self.slack_connected.lock().clone()
+    }
+
+    /// Watch a conversation for this owner, handing back the record that
+    /// already exists when there is one - a second record renders as a second
+    /// Inspector row for one channel. A watch whose mode differs updates that
+    /// record, since the caller asked for something it did not have and there
+    /// is no other route to change a mode. The check and the write share one
+    /// guard, so two subscribes racing cannot both create.
+    pub(crate) fn watch_slack_conversation(
+        &self,
+        workspace: &str,
+        project: &str,
+        team_role: Option<&str>,
+        conversation: &str,
+        mode: SlackWatchMode,
+        durable: bool,
+    ) -> Uuid {
+        let db = self.db.lock();
+        let mut subs = self.slack_subs.lock();
+        if let Some(existing) = subs.iter_mut().find(|sub| {
+            sub.workspace == workspace
+                && sub.project == project
+                && sub.team_role.as_deref() == team_role
+                && matches!(
+                    &sub.target,
+                    SlackSubscriptionTarget::Conversation { id, .. } if id == conversation
+                )
+        }) {
+            if let SlackSubscriptionTarget::Conversation { mode: stored, .. } = &mut existing.target
+            {
+                *stored = mode;
+            }
+            let id = existing.id;
+            if durable
+                && let Some(db) = db.as_ref()
+                && let Err(error) = crate::store::slack::insert(db, existing)
+            {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "persisting a Slack subscription failed",
+                );
+            }
+            return id;
+        }
+        let sub = SlackSubscription {
+            id: Uuid::new_v4(),
+            workspace: workspace.to_owned(),
+            project: project.to_owned(),
+            team_role: team_role.map(str::to_owned),
+            target: SlackSubscriptionTarget::Conversation {
+                id: conversation.to_owned(),
+                name: None,
+                mode,
+            },
+            created_at: std::time::SystemTime::now(),
+        };
+        let id = sub.id;
+        if durable
+            && let Some(db) = db.as_ref()
+            && let Err(error) = crate::store::slack::insert(db, &sub)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "persisting a Slack subscription failed",
+            );
+        }
+        subs.push(sub);
+        id
     }
 
     /// Every Slack subscription owned in `project`, whichever session
@@ -760,7 +888,11 @@ impl Workspace {
                     workspace,
                     &conversation,
                     &parent_ts,
-                    &SlackThreadRecord { cursor: record.cursor, owners: kept },
+                    &SlackThreadRecord {
+                        cursor: record.cursor,
+                        owners: kept,
+                        participating: record.participating,
+                    },
                 );
             }
         }
@@ -870,17 +1002,20 @@ impl Workspace {
             guard.insert(label.clone(), shutdown_tx);
             drop(guard);
 
-            let poll_seconds = self
-                .config
-                .slack
-                .iter()
-                .find(|config| config.workspace.trim() == label.as_str())
-                .map_or(30, |config| config.poll_seconds);
+            let entry =
+                self.config.slack.iter().find(|config| config.workspace.trim() == label.as_str());
+            let poll_seconds = entry.map_or(DEFAULT_POLL_SECONDS, |config| config.poll_seconds);
+            // Clamped because the two clocks share one token's allowance: a
+            // value below the floor is the overrun the key exists to prevent.
+            let dm_poll_seconds = entry
+                .map_or(DEFAULT_DM_POLL_SECONDS, |config| config.dm_poll_seconds)
+                .max(MIN_DM_POLL_SECONDS);
             let host: Arc<dyn SlackHost> = Arc::new(SlackSubsystemHost::new(self));
             tokio::spawn(forge_connectors::slack::run_workspace_pump(
                 host,
                 label,
                 poll_seconds,
+                dm_poll_seconds,
                 shutdown_rx,
             ));
         }
@@ -959,6 +1094,16 @@ impl SlackHost for SlackSubsystemHost {
         None
     }
 
+    fn user_name(&self, workspace: &str, user: &str) -> Option<String> {
+        let ws = self.0.upgrade()?;
+        ws.slack_user_names.lock().get(&(workspace.to_owned(), user.to_owned())).cloned()
+    }
+
+    fn set_user_name(&self, workspace: &str, user: &str, name: &str) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.slack_user_names.lock().insert((workspace.to_owned(), user.to_owned()), name.to_owned());
+    }
+
     fn subscriptions(&self, workspace: &str) -> Vec<SlackSubscription> {
         let Some(ws) = self.0.upgrade() else { return Vec::new() };
         ws.slack_subs.lock().iter().filter(|sub| sub.workspace == workspace).cloned().collect()
@@ -998,6 +1143,16 @@ impl SlackHost for SlackSubsystemHost {
         ws.set_slack_thread_watermark(workspace, conversation, parent_ts, ts);
     }
 
+    fn mark_thread_participating(&self, workspace: &str, conversation: &str, parent_ts: &str) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.mark_slack_thread_participating(workspace, conversation, parent_ts);
+    }
+
+    fn first_author_failure(&self, workspace: &str, user: &str) -> bool {
+        let Some(ws) = self.0.upgrade() else { return true };
+        ws.slack_author_failures.lock().insert((workspace.to_owned(), user.to_owned()))
+    }
+
     fn follow_thread(
         &self,
         workspace: &str,
@@ -1030,7 +1185,7 @@ impl SlackHost for SlackSubsystemHost {
         )
     }
 
-    fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool {
+    fn deliver(&self, subscription: &SlackSubscription, messages: &[SlackMessage]) -> bool {
         let Some(ws) = self.0.upgrade() else { return false };
         // Direct, not via the command bus: the pump needs the delivery's
         // own outcome, and a bus round-trip reports only that the command
@@ -1040,7 +1195,7 @@ impl SlackHost for SlackSubsystemHost {
             &ws,
             &subscription.project,
             subscription.team_role.as_deref(),
-            message.clone(),
+            messages.to_vec(),
         )
     }
 }
@@ -1052,7 +1207,13 @@ mod tests {
     use uuid::Uuid;
 
     fn cfg(workspace: &str, token: &str) -> SlackConfig {
-        SlackConfig { workspace: workspace.to_owned(), token: token.to_owned(), poll_seconds: 30 }
+        SlackConfig {
+            workspace: workspace.to_owned(),
+            token: token.to_owned(),
+            poll_seconds: 30,
+            dm_poll_seconds: 150,
+            thread_idle_days: 14,
+        }
     }
 
     fn sub_for(project: &str, team_role: Option<&str>) -> SlackSubscription {
@@ -1088,6 +1249,7 @@ mod tests {
             id: Uuid::new_v4(),
             workspace: workspace.to_owned(),
             conversation: conversation.to_owned(),
+            conversation_label: conversation.to_owned(),
             thread_ts: None,
             text: "hello".to_owned(),
             tool: "slack__post".to_owned(),
@@ -1289,7 +1451,10 @@ mod tests {
             ts: "200.1".to_owned(),
             thread_ts: None,
             user: Some("U9".to_owned()),
+            author: None,
             text: "ping".to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
             files: Vec::new(),
         };
         assert!(host.auto_subscribe("acme", &message), "the mention subscribes the conversation");
@@ -1504,6 +1669,229 @@ mod tests {
         (crate::slack::SlackSubsystemHost::new(&ws), ws, dir)
     }
 
+    /// As [`host_with_c1_subscriber`], with the workspace's own idle
+    /// window, so a test can show the prune reads it rather than a
+    /// compiled default.
+    fn host_with_c1_subscriber_and_idle_days(
+        project: &str,
+        team_role: Option<&str>,
+        thread_idle_days: u64,
+    ) -> (crate::slack::SlackSubsystemHost, Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.slack = vec![SlackConfig { thread_idle_days, ..cfg("acme", "xoxp-test") }];
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation(project, team_role, "C1"), true);
+        (crate::slack::SlackSubsystemHost::new(&ws), ws, dir)
+    }
+
+    /// The idle window is the workspace's own. Both sides of it are
+    /// exercised at a distance the 14-day default would get wrong in
+    /// opposite directions.
+    #[test]
+    fn a_workspace_configured_idle_window_is_what_the_prune_uses() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the clock is past the epoch")
+            .as_secs();
+        let days_ago = |days: u64| format!("{}.{:06}", now - days * 24 * 60 * 60, 0);
+
+        for (window, kept) in [(30_u64, 1_usize), (7, 0)] {
+            let (host, _ws, _dir) = host_with_c1_subscriber_and_idle_days("forge", None, window);
+            host.follow_thread("acme", "C1", &days_ago(20), owner("forge", None), &days_ago(20));
+
+            assert_eq!(
+                host.followed_threads("acme", "C1").len(),
+                kept,
+                "a thread quiet for 20 days under a {window}-day window",
+            );
+        }
+    }
+
+    /// The workspace label the live test configures, and the project whose
+    /// running lead receives the block.
+    const LIVE_WORKSPACE: &str = "live-test";
+    const LIVE_PROJECT_PATH: &str = "/tmp/forge-slack-live";
+
+    /// Layer-below integration test: a real Slack workspace, a real sweep,
+    /// and the block the session is handed.
+    ///
+    /// Opt-in, because it needs three things a CI machine has not - a user
+    /// token, a bot token, and a channel the bot can post into. Absent any
+    /// of them it skips, so the suite stays green without them:
+    ///
+    /// ```text
+    /// SLACK_TEST_USER_TOKEN=... SLACK_TEST_BOT_TOKEN=... SLACK_TEST_CHANNEL=... \
+    ///     cargo nextest run -p forge-workspace slack_live_bundle
+    /// ```
+    ///
+    /// The bot posts and the user reads, so the reader never filters the
+    /// poster's own messages out of the sweep.
+    #[tokio::test]
+    async fn slack_live_bundle_delivers_a_conversations_news_as_one_block() {
+        let (Ok(user_token), Ok(bot_token), Ok(channel_name)) = (
+            std::env::var("SLACK_TEST_USER_TOKEN"),
+            std::env::var("SLACK_TEST_BOT_TOKEN"),
+            std::env::var("SLACK_TEST_CHANNEL"),
+        ) else {
+            eprintln!(
+                "skipping slack_live_bundle: set SLACK_TEST_USER_TOKEN, SLACK_TEST_BOT_TOKEN \
+                 and SLACK_TEST_CHANNEL to run it against a real workspace",
+            );
+            return;
+        };
+        // The sweep's own log is the only place a live failure says why, so
+        // run this test with the log visible: `--no-capture`.
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(std::io::stderr)
+            .try_init();
+
+        let http = reqwest::Client::builder().build().expect("an http client");
+        let bot = SlackClient::new(http.clone(), bot_token);
+        let user = SlackClient::new(http, user_token.clone());
+
+        // Either the id or the name, since Slack hands out the first and a
+        // person reads the second.
+        let channel = bot
+            .list_conversations()
+            .await
+            .expect("the bot reads its own channels")
+            .into_iter()
+            .find(|conversation| {
+                conversation.id == channel_name
+                    || conversation.name.as_deref() == Some(channel_name.as_str())
+            })
+            .expect("the channel SLACK_TEST_CHANNEL names is one the bot is in");
+        let conversation_id = channel.id.clone();
+        // The name the header should carry, which is not the id: asserting
+        // the id would pass on the header's `id` field alone.
+        let channel_label = channel.name.clone().unwrap_or_else(|| conversation_id.clone());
+
+        // Everything at or below this is old news, so the sweep's news is
+        // exactly what is posted below.
+        let watermark = user
+            .history(&conversation_id, None, 1, None)
+            .await
+            .expect("the user reads the channel")
+            .messages
+            .first()
+            .map_or_else(|| "0".to_owned(), |message| message.ts.clone());
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the clock is past the epoch")
+            .as_secs();
+        let texts: Vec<String> = (1..=3).map(|n| format!("live bundle {n} {stamp}")).collect();
+        let mut posted = Vec::new();
+        for text in &texts {
+            posted
+                .push(bot.post_message(&conversation_id, text, None).await.expect("the bot posts"));
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.slack = vec![SlackConfig {
+            workspace: LIVE_WORKSPACE.to_owned(),
+            token: user_token,
+            poll_seconds: 1,
+            dm_poll_seconds: 1,
+            thread_idle_days: 14,
+        }];
+        let (ws, mut update_rx) =
+            Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub config's [[slack]] entries are well-formed");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        // The own id is what boot's auth probe caches; without it the sweep
+        // refuses the tick rather than echo the user's own posts back.
+        let own_id = user.auth_test().await.expect("the user token proves").user_id;
+        ws.slack_user_ids.lock().insert(LIVE_WORKSPACE.to_owned(), own_id);
+
+        ws.seed_test_project("live", LIVE_PROJECT_PATH);
+        let mut sub = sub_for_conversation("live", None, &conversation_id);
+        sub.workspace = LIVE_WORKSPACE.to_owned();
+        ws.add_slack_subscription(sub, true);
+        ws.set_slack_watermark(LIVE_WORKSPACE, &conversation_id, &watermark);
+        // Checked before the pump starts: a subscription filed under another
+        // workspace leaves the sweep with nothing to do, which it does in
+        // silence and which reads from the outside as a connector that never
+        // delivers.
+        assert_eq!(
+            ws.slack_subscriptions_for_project("live").len(),
+            1,
+            "the subscription has to be in the workspace the pump sweeps",
+        );
+
+        // A running lead is where the block lands. The dispatch is
+        // intercepted so the test never spawns a child.
+        ws.record_connected_session(LIVE_PROJECT_PATH, "live-lead", None);
+        let lead_key = SessionSlot::lead("TestOrg", "live");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::new(handle),
+                account: forge_gateway::AccountKey("test".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "live-lead".to_owned(),
+            },
+        );
+        ws.mark_session_connected_for_test(&lead_key, "live-lead");
+        ws.enable_test_dispatch_intercept();
+
+        let host: Arc<dyn SlackHost> = Arc::new(SlackSubsystemHost::new(&ws));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let pump = tokio::spawn(forge_connectors::slack::run_workspace_pump(
+            host,
+            LIVE_WORKSPACE.to_owned(),
+            1,
+            1,
+            shutdown_rx,
+        ));
+
+        let mut delivered = None;
+        for _ in 0..600 {
+            while let Ok(update) = update_rx.try_recv() {
+                if let crate::protocol::SessionUpdate::SlackMessageAppended { prose, .. } = update {
+                    delivered = Some(prose);
+                }
+            }
+            if delivered.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let _ = shutdown_tx.send(());
+        let _ = pump.await;
+
+        let prose = delivered.expect("the sweep delivered the block the session is handed");
+        assert!(
+            prose.contains(&format!("({} messages)", texts.len())),
+            "one block holding all three: {prose}",
+        );
+        assert!(prose.contains(&channel_label), "the header names the channel: {prose}");
+        // The shape, line by line: a collapse that delivered only the newest
+        // message would still carry its own text and ts, so the count is
+        // what says all three arrived.
+        let members = prose.lines().filter(|line| line.contains(" [ts ")).count();
+        assert_eq!(members, texts.len(), "one member line per posted message: {prose}");
+        for (index, text) in texts.iter().enumerate() {
+            assert!(prose.contains(text.as_str()), "member {index} is in the block: {prose}");
+            assert!(
+                prose.contains(&posted[index]),
+                "and keeps its own ts, so the agent can answer it alone: {prose}",
+            );
+        }
+    }
+
     /// A thread a delivered message anchors is tracked from the caller's
     /// `since`, owned once per session even when both followed it.
     #[test]
@@ -1613,7 +2001,7 @@ mod tests {
     #[test]
     fn an_unparseable_thread_cursor_reads_as_ancient() {
         assert!(
-            thread_idle_days("not-a-ts") >= THREAD_IDLE_DROP_DAYS,
+            thread_idle_days("not-a-ts") >= DEFAULT_THREAD_IDLE_DAYS,
             "an unparseable cursor must drop the row, not keep it: {}",
             thread_idle_days("not-a-ts"),
         );
@@ -1766,12 +2154,15 @@ mod tests {
             ts: "200.1".to_owned(),
             thread_ts: None,
             user: Some("U9".to_owned()),
+            author: None,
             text: "hello".to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
             files: Vec::new(),
         };
 
         assert!(!ws.slack_delivery_seen("forge", None, &message), "the first delivery is unseen");
-        ws.slack_delivery_commit("forge", None, &message);
+        ws.slack_delivery_commit("forge", None, std::slice::from_ref(&message));
         assert!(
             ws.slack_delivery_seen("forge", None, &message),
             "the same ts in the same conversation to the same owner is a re-run",
@@ -1790,11 +2181,14 @@ mod tests {
             ts: "200.1".to_owned(),
             thread_ts: None,
             user: Some("U9".to_owned()),
+            author: None,
             text: "hello".to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
             files: Vec::new(),
         };
 
-        ws.slack_delivery_commit("forge", None, &message);
+        ws.slack_delivery_commit("forge", None, std::slice::from_ref(&message));
         assert!(
             !ws.slack_delivery_seen("forge", Some("tester"), &message),
             "the worker's delivery is its own, never the lead's duplicate",

@@ -201,6 +201,8 @@ impl Workspace {
             slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
+            slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
+            slack_author_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(false),
@@ -432,6 +434,8 @@ mod tests {
             workspace: "acme".to_owned(),
             token: String::new(),
             poll_seconds: 30,
+            dm_poll_seconds: 150,
+            thread_idle_days: 14,
         }];
         config
     }

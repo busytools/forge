@@ -45,13 +45,13 @@ impl crate::Workspace {
         self.parked_by_slot.lock().entry(slot.clone()).or_default().gotify.push(notification);
     }
 
-    /// Park a Slack message for `slot`.
+    /// Park a Slack batch for `slot`.
     pub(crate) fn park_slack(
         &self,
         slot: &SessionSlot,
-        message: forge_primitives::slack::SlackMessage,
+        messages: Vec<forge_primitives::slack::SlackMessage>,
     ) {
-        self.parked_by_slot.lock().entry(slot.clone()).or_default().slack.push(message);
+        self.parked_by_slot.lock().entry(slot.clone()).or_default().slack.extend(messages);
     }
 
     /// Take (and clear) everything parked for the connecting session's

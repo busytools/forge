@@ -1476,11 +1476,15 @@ provider = "anthropic"
 workspace = "acme"
 token = "xoxp-test"
 poll_seconds = 45
+dm_poll_seconds = 120
+thread_idle_days = 30
 "#;
         let parsed: ForgeToml = toml::from_str(toml).expect("slack section parses");
         assert_eq!(parsed.slack.len(), 1);
         assert_eq!(parsed.slack[0].workspace, "acme");
         assert_eq!(parsed.slack[0].poll_seconds, 45);
+        assert_eq!(parsed.slack[0].dm_poll_seconds, 120);
+        assert_eq!(parsed.slack[0].thread_idle_days, 30);
 
         let bad = r#"
 [[slack]]
@@ -1493,10 +1497,27 @@ poll_second = 45
     }
 
     #[test]
-    fn slack_poll_seconds_defaults_to_thirty() {
+    fn slack_poll_seconds_defaults_to_five() {
         let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
         let parsed: ForgeToml = toml::from_str(toml).expect("parses without poll_seconds");
-        assert_eq!(parsed.slack[0].poll_seconds, 30);
+        assert_eq!(parsed.slack[0].poll_seconds, 5);
+    }
+
+    #[test]
+    fn slack_dm_poll_seconds_defaults_to_a_hundred_and_fifty() {
+        let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
+        let parsed: ForgeToml = toml::from_str(toml).expect("parses without dm_poll_seconds");
+        assert_eq!(
+            parsed.slack[0].dm_poll_seconds, 150,
+            "the DM class shares the token's allowance with the conversation sweep",
+        );
+    }
+
+    #[test]
+    fn slack_thread_idle_days_defaults_to_fourteen() {
+        let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
+        let parsed: ForgeToml = toml::from_str(toml).expect("parses without thread_idle_days");
+        assert_eq!(parsed.slack[0].thread_idle_days, 14);
     }
 
     #[test]

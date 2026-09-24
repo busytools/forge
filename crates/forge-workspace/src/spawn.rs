@@ -679,67 +679,110 @@ pub(crate) fn deliver_gotify_message(
     }
 }
 
-/// The user-turn prose for a delivered Slack message. It carries the ids a
-/// reply needs - conversation, ts, thread - because the only way an agent
-/// can answer in place is to feed those back to `slack__post` or
-/// `slack__edit`. The session chat parses this shape back into a Slack block
-/// (`forge_tui::ui::peer_block`), so the bracketed header and the
-/// `<author>: ` line are a contract with it.
-pub(crate) fn slack_message_to_prose(message: &SlackMessage) -> String {
-    let author = message.user.as_deref().unwrap_or("unknown");
+/// The user-turn prose for one conversation's delivered Slack messages. It
+/// carries the ids a reply needs - conversation, each member's own ts, and
+/// its thread - because the only way an agent can answer in place is to feed
+/// those back to `slack__post` or `slack__edit`. The session chat parses
+/// this shape back into a Slack block (`forge_tui::ui::peer_block`), so the
+/// bracketed header, its member count and the one-line-per-member body are a
+/// contract with it.
+pub(crate) fn slack_bundle_to_prose(messages: &[SlackMessage]) -> String {
+    let Some(head) = messages.first() else { return String::new() };
+    let newest = messages.iter().map(|message| message.ts.as_str()).max().unwrap_or(&head.ts);
     let mut out = format!(
-        "[Slack - workspace '{}', {}] id {} ts {}{}\n{}: {}",
-        message.workspace,
-        message.conversation_label,
-        message.conversation,
-        message.ts,
-        message
-            .thread_ts
-            .as_deref()
-            .map(|thread| format!(" in thread {thread}"))
-            .unwrap_or_default(),
-        author,
-        message.text,
+        "[Slack - workspace '{}', {}] id {} ts {newest}",
+        head.workspace, head.conversation_label, head.conversation,
     );
-    for file in &message.files {
-        let _ = writeln!(out, "\n[file {} {}]", file.id, file.name);
+    if messages.len() > 1 {
+        let _ = write!(out, " ({} messages)", messages.len());
+    }
+    for message in in_thread_order(messages) {
+        out.push('\n');
+        out.push_str(&member_line(message));
     }
     out
 }
 
-/// Deliver one matched Slack message to its subscriber's session: dispatch
-/// it now when that session is running, buffer it on the session's own
-/// domain when it is still spawning. Mirrors [`deliver_gotify_message`],
-/// including its rule that a worker-owned subscription falls through to
-/// the lead only when the worker is gone entirely (teardown removed its
-/// subscriptions first, so this is the despawn race, not steady state) -
-/// and that fall-through commits under the worker's own dedupe key, so a
-/// durable worker that respawns later re-delivers what it missed.
+/// The bundle's members in reading order: oldest first, with a thread's
+/// replies directly under the parent they answer.
+fn in_thread_order(messages: &[SlackMessage]) -> Vec<&SlackMessage> {
+    let mut grouped: Vec<(String, &SlackMessage)> = messages
+        .iter()
+        .map(|message| {
+            // A reply whose parent is not in the bundle keeps its place in
+            // time: the parent ages out of the sweep window while the
+            // thread keeps moving.
+            let key = match &message.thread_ts {
+                Some(parent) if messages.iter().any(|other| &other.ts == parent) => parent.clone(),
+                _ => message.ts.clone(),
+            };
+            (key, message)
+        })
+        .collect();
+    grouped.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.ts.cmp(&b.1.ts)));
+    grouped.into_iter().map(|(_, message)| message).collect()
+}
+
+/// One bundle member. The `<author>: ` clause is what the chat block's
+/// detector keys on, so a member always carries one. A resolved name is
+/// preferred; the raw id is only a fallback the block drops, since an id
+/// is never a name to print.
+fn member_line(message: &SlackMessage) -> String {
+    let author = message.author.as_deref().or(message.user.as_deref()).unwrap_or("unknown");
+    let mut out = format!("{author}: {} [ts {}", message.text, message.ts);
+    // A parent carries its own ts as `thread_ts`, and the ts above already
+    // answers into that thread, so only a real parent's reply says so.
+    if let Some(thread) = message.thread_ts.as_deref()
+        && thread != message.ts
+    {
+        let _ = write!(out, " in thread {thread}");
+    }
+    out.push(']');
+    for file in &message.files {
+        let _ = write!(out, " [file {} {}]", file.id, file.name);
+    }
+    out
+}
+
+/// Deliver one conversation's matched Slack messages to its subscriber's
+/// session: dispatch them now when that session is running, buffer them on
+/// the session's own domain when it is still spawning. Mirrors
+/// [`deliver_gotify_message`], including its rule that a worker-owned
+/// subscription falls through to the lead only when the worker is gone
+/// entirely (teardown removed its subscriptions first, so this is the
+/// despawn race, not steady state) - and that fall-through commits under the
+/// worker's own dedupe key, so a durable worker that respawns later
+/// re-delivers what it missed.
 ///
-/// Returns whether the message reached a destination it can be read from:
+/// Returns whether the batch reached a destination it can be read from:
 /// dispatched, or buffered for one that will. `false` tells the pump the
-/// cursor must not advance past this message, so a sweep re-runs it -
-/// which is why the dedupe entry commits only after a successful hand-off.
+/// cursor must not advance past this batch, so a sweep re-runs it - which is
+/// why the dedupe entries commit only after a successful hand-off.
 pub(crate) fn deliver_slack_message(
     workspace: &Arc<Workspace>,
     project: &str,
     team_role: Option<&str>,
-    message: SlackMessage,
+    messages: Vec<SlackMessage>,
 ) -> bool {
-    let prose = slack_message_to_prose(&message);
     // A sweep re-runs a batch after a 429, a failed watermark write or a
     // crash; the re-run must drop what was already handed over. "Already
     // delivered" is success for the caller: the cursor may advance.
-    if workspace.slack_delivery_seen(project, team_role, &message) {
+    let Some(head) = messages.first() else { return true };
+    let conversation = head.conversation.clone();
+    let pending: Vec<SlackMessage> = messages
+        .into_iter()
+        .filter(|message| !workspace.slack_delivery_seen(project, team_role, message))
+        .collect();
+    if pending.is_empty() {
         tracing::debug!(
             target: "forge_workspace::spawn",
             project = %project,
-            conversation = %message.conversation,
-            ts = %message.ts,
-            "slack message already delivered; dropping the re-run",
+            conversation = %conversation,
+            "every message in this slack batch was already delivered; dropping the re-run",
         );
         return true;
     }
+    let prose = slack_bundle_to_prose(&pending);
 
     if let Some(role) = team_role
         && let Some(worker_key) = team_worker_key(workspace, project, role)
@@ -760,18 +803,18 @@ pub(crate) fn deliver_slack_message(
                 return false;
             }
             // Echo only once the dispatch lands: a failed one returns false so
-            // the sweep re-runs the message, and an echo pushed before it would
+            // the sweep re-runs the batch, and an echo pushed before it would
             // paint the block twice for a turn the LLM sees once.
             push_slack_message_into_chat(workspace, &worker_key, &prose);
-            workspace.slack_delivery_commit(project, team_role, &message);
+            workspace.slack_delivery_commit(project, team_role, &pending);
         } else {
             // Still spawning: commit the dedupe (the sweep must not
             // re-run it) and park it for the worker's slot, drained by
             // its own first `Connected`. The slot carries the worker's
             // own org and project, so a project dropped from forge.toml
             // since its spawn still keys correctly.
-            workspace.slack_delivery_commit(project, team_role, &message);
-            workspace.park_slack(&worker_key, message);
+            workspace.slack_delivery_commit(project, team_role, &pending);
+            workspace.park_slack(&worker_key, pending);
         }
         return true;
     }
@@ -794,9 +837,9 @@ pub(crate) fn deliver_slack_message(
             return false;
         }
         // Echo after the dispatch lands, so the sweep's re-run of a failed
-        // delivery does not paint a second block for the same message.
+        // delivery does not paint a second block for the same batch.
         push_slack_message_into_chat(workspace, &target_key, &prose);
-        workspace.slack_delivery_commit(project, team_role, &message);
+        workspace.slack_delivery_commit(project, team_role, &pending);
         return true;
     }
 
@@ -814,8 +857,8 @@ pub(crate) fn deliver_slack_message(
         return false;
     };
 
-    workspace.slack_delivery_commit(project, team_role, &message);
-    workspace.park_slack(&crate::SessionSlot::lead(&view.org, &view.name), message);
+    workspace.slack_delivery_commit(project, team_role, &pending);
+    workspace.park_slack(&crate::SessionSlot::lead(&view.org, &view.name), pending);
 
     if let Err(err) = workspace.dispatch(Command::SpawnProject {
         project_name: project.to_owned(),
@@ -2549,9 +2592,16 @@ provider = "anthropic"
             ts: "100.000001".to_owned(),
             thread_ts: None,
             user: Some("U9".to_owned()),
+            author: None,
             text: text.to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
             files: Vec::new(),
         }
+    }
+
+    fn slack_msg_at(ts: &str, user: &str, text: &str) -> SlackMessage {
+        SlackMessage { ts: ts.to_owned(), user: Some(user.to_owned()), ..slack_msg(text) }
     }
 
     #[test]
@@ -2566,7 +2616,7 @@ provider = "anthropic"
         entry.slot = worker_key.clone();
         ws.insert_live_worker(&key, entry);
 
-        deliver_slack_message(&ws, "forge", Some("tester"), slack_msg("hello"));
+        deliver_slack_message(&ws, "forge", Some("tester"), vec![slack_msg("hello")]);
 
         let parked =
             ws.parked_by_slot.lock().get(&worker_key).map_or(0, |parked| parked.slack.len());
@@ -2596,7 +2646,7 @@ provider = "anthropic"
         ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
         ws.enable_test_dispatch_intercept();
 
-        deliver_slack_message(&ws, "forge", Some("tester"), slack_msg("hello"));
+        deliver_slack_message(&ws, "forge", Some("tester"), vec![slack_msg("hello")]);
 
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
@@ -3012,7 +3062,7 @@ provider = "anthropic"
         ws.seed_test_ready_account("Stargate");
         ws.park_slack(
             &crate::SessionSlot::lead("Default", "missing"),
-            slack_msg("parked while asleep"),
+            vec![slack_msg("parked while asleep")],
         );
 
         let result = ws.get_agent_handle_at_key(
@@ -3054,7 +3104,7 @@ provider = "anthropic"
         ws.seed_test_project("overlayonly", "/tmp/slack-overlay-only");
         ws.park_slack(
             &crate::SessionSlot::lead("TestOrg", "overlayonly"),
-            slack_msg("parked while asleep"),
+            vec![slack_msg("parked while asleep")],
         );
 
         crate::spawn::handle_spawn_project(
@@ -3086,7 +3136,8 @@ provider = "anthropic"
         // Connected, but with no pooled handle and no conn: the dispatch fails.
         ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
 
-        let delivered = deliver_slack_message(&ws, "forge", Some("tester"), slack_msg("hello"));
+        let delivered =
+            deliver_slack_message(&ws, "forge", Some("tester"), vec![slack_msg("hello")]);
 
         assert!(!delivered, "a failed dispatch tells the sweep to re-run the message");
         let echoed = std::iter::from_fn(|| update_rx.try_recv().ok())
@@ -3106,23 +3157,90 @@ provider = "anthropic"
             url_private: "https://files.slack.com/x".to_owned(),
         }];
 
-        let prose = slack_message_to_prose(&message);
+        let prose = slack_bundle_to_prose(&[message]);
         assert!(prose.contains("D1"), "the conversation id is present: {prose}");
         assert!(prose.contains("100.000001"), "the ts is present: {prose}");
         assert!(prose.contains("in thread 100.0"), "the thread is present: {prose}");
         assert!(prose.contains("F1"), "the file id is present: {prose}");
     }
 
-    /// The header and the `<author>: ` line are a contract with the chat
-    /// block's detector, so the whole shape is pinned: a reformat here
+    /// The header and the `<author>: ` member line are a contract with the
+    /// chat block's detector, so the whole shape is pinned: a reformat here
     /// silently reverts the block to painting nothing.
     #[test]
     fn slack_prose_names_the_workspace_and_the_author() {
-        let prose = slack_message_to_prose(&slack_msg("hello there"));
+        let prose = slack_bundle_to_prose(&[slack_msg("hello there")]);
         assert_eq!(
-            prose, "[Slack - workspace 'acme', U9] id D1 ts 100.000001\nU9: hello there",
+            prose,
+            "[Slack - workspace 'acme', U9] id D1 ts 100.000001\nU9: hello there [ts 100.000001]",
             "the exact prose the chat block's detector keys on",
         );
+    }
+
+    /// Every member keeps its own `ts`, because that is the handle an agent
+    /// answers one message with without touching the others.
+    #[test]
+    fn a_bundle_names_every_member_with_its_own_ts() {
+        let prose = slack_bundle_to_prose(&[
+            slack_msg_at("1.1", "alice", "hi"),
+            slack_msg_at("1.2", "bob", "there"),
+        ]);
+
+        assert!(prose.contains("[ts 1.1]"), "the first member's ts: {prose}");
+        assert!(prose.contains("[ts 1.2]"), "and the second's: {prose}");
+        assert!(prose.contains("alice: hi"), "each member names its author: {prose}");
+        assert!(prose.contains("bob: there"), "and so does the second: {prose}");
+    }
+
+    /// A reply belongs under the parent it answers, whatever order the wire
+    /// handed the two over in - history pages arrive newest first.
+    #[test]
+    fn a_bundle_shows_thread_replies_under_their_parent() {
+        let mut reply = slack_msg_at("1.3", "carol", "agreed");
+        reply.thread_ts = Some("1.1".to_owned());
+
+        let prose = slack_bundle_to_prose(&[reply, slack_msg_at("1.1", "alice", "hi")]);
+
+        let parent_at = prose.find("[ts 1.1").expect("the parent is present");
+        let reply_at = prose.find("[ts 1.3").expect("the reply is present");
+        assert!(reply_at > parent_at, "a reply is grouped under its parent: {prose}");
+    }
+
+    /// A parent ages out of the sweep window while its thread keeps moving,
+    /// so a bundle can hold a reply whose parent it never saw. Without the
+    /// parent's ts the agent cannot answer in that thread at all.
+    #[test]
+    fn a_reply_whose_parent_is_absent_still_carries_the_parent_ts() {
+        let mut reply = slack_msg_at("1.3", "carol", "agreed");
+        reply.thread_ts = Some("1.1".to_owned());
+
+        let prose = slack_bundle_to_prose(&[reply]);
+        assert!(prose.contains("in thread 1.1"), "the parent ts must survive: {prose}");
+    }
+
+    /// The name the connector resolved is what the block shows. The raw id
+    /// stays on the message for the own-message filter, and the block drops
+    /// it, so the resolved name is the only one that reaches a reader.
+    #[test]
+    fn a_bundle_prefers_the_resolved_author_over_the_id() {
+        let mut message = slack_msg_at("1.1", "U0ATEK2EAGP", "hi");
+        message.author = Some("architect2".to_owned());
+
+        let prose = slack_bundle_to_prose(&[message]);
+        assert!(prose.contains("architect2: hi"), "the resolved handle is shown: {prose}");
+        assert!(!prose.contains("U0ATEK2EAGP"), "an id is never a name to print: {prose}");
+    }
+
+    /// A parent carries its own `ts` as `thread_ts`, so saying so again on
+    /// the member line is noise - the ts is already the handle a reply into
+    /// that thread passes.
+    #[test]
+    fn a_parent_does_not_restate_its_own_ts_as_a_thread() {
+        let mut parent = slack_msg_at("1.1", "alice", "hi");
+        parent.thread_ts = Some("1.1".to_owned());
+
+        let prose = slack_bundle_to_prose(&[parent]);
+        assert!(!prose.contains("in thread"), "no self-referential thread clause: {prose}");
     }
 
     /// #1: the at-most-one-live-per-label guard lives in the shared
@@ -5339,7 +5457,7 @@ provider = "anthropic"
         entry.slot = worker_key.clone();
         workspace.insert_live_worker(&project, entry);
         workspace.register_domain_session(worker_key.clone(), None);
-        workspace.park_slack(&worker_key, slack_msg("buffered while spawning"));
+        workspace.park_slack(&worker_key, vec![slack_msg("buffered while spawning")]);
 
         handle_close_worker(&workspace, &project, "reviewer");
 

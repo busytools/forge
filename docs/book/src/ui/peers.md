@@ -122,32 +122,36 @@ The `[Cron]` wrapper is display-only: it drives the visible block and inherits t
 
 ## Slack notification chat block
 
-Every matched Slack message delivered into a subscribed session echoes into the chat as an external-notification block, ahead of the response it triggers - every message is its own turn. It is an external event, not agent traffic: a Slack source label, the `◇` glyph in place of `▶`, and a one-line header naming the conversation and the workspace over the message.
+One conversation's matched Slack messages are delivered into a subscribed session as a single external-notification block, ahead of the response it triggers: the block holds every message that arrived since that conversation was last swept, one line per message, oldest first, with a thread's replies directly under the parent they answer. A sweep with news in two conversations delivers two blocks, and the new replies of a followed thread arrive as a block of their own, one per thread. It is an external event, not agent traffic: a Slack source label, the `◇` glyph in place of `▶`, and a header naming the conversation and the workspace over the members. Above one member the prose also carries a member count; the block reads it to tell a bundle from one message whose text wraps, and does not display it.
 
-The header prefixes the conversation with `#` when the label looks like a channel name rather than an id. A DM's label is the partner's user id, and an id is never dressed as a channel - though the test is a shape, so an all-caps channel name loses its `#` too. The author clause needs a resolved handle, and the producer does not emit one yet: `message.user` reaches the prose as a raw id, and a bot post as the literal `unknown`, so both are dropped.
+The header prefixes the conversation with `#` when the label looks like a channel name rather than an id. A DM's label is the partner's user id, and an id is never dressed as a channel - though the test is a shape, so an all-caps channel name loses its `#` too. A block of more than one message names no author in its header - each member line names its own - so the clause is dropped there too.
 
-Slack's mrkdwn is tidied for display: `*bold*` and `_italic_` lose their markers, and `<url|label>` reads `label: url`. The message body renders under the block's own tree connectors, not the [user turn's gutter](./chat.md#user-message).
+The author is a name, resolved before the prose is written: the handle a mention arrives with, a bot's own name from the message payload, or a `users.info` lookup for a human's bare id, kept per workspace so a familiar author costs nothing after the first. An id is never shown as a name, so an author that resolves to nothing has its clause dropped rather than printed as `U0ATEK2EAGP` or `unknown`.
+
+Slack's mrkdwn is tidied for display: `*bold*` and `_italic_` lose their markers, and `<url|label>` reads `label: url`. The members render under the block's own tree connectors, not the [user turn's gutter](./chat.md#user-message).
 
 <div class="term">
 
   <pre class="indent">
    <span class="slack bold">Slack</span>
 
-     <span class="slack bold">&#x25C7;</span> <span class="bold">#granite-staging-alerts</span> <span class="dim">&#183; Trust Machines</span>
+     <span class="slack bold">&#x25C7;</span> <span class="bold">#granite-staging-alerts</span> <span class="dim">&#183; Trust Machines &#183; granite-bot</span>
      <span class="dim">&#x2502;&nbsp;&nbsp;Large STX Transfer</span>
-     <span class="dim">&#x2514;&#x2500; Amount: 233468.293536 STX (~$60434.82 USD)</span>
+     <span class="dim">&#x2514;&#x2500; Amount: 233468.293536 STX (~$60434.82 USD) [ts 1789182982.499299]</span>
 
-     <span class="slack bold">&#x25C7;</span> <span class="bold">U0AE0CBJ77G</span> <span class="dim">&#183; Trust Machines</span>
-     <span class="dim">&#x2514;&#x2500; Slow slot: 57296338 took 1s 347ms 924us against a 1s 200ms threshold</span></pre>
+     <span class="slack bold">&#x25C7;</span> <span class="bold">#ops</span> <span class="dim">&#183; Trust Machines</span>
+     <span class="dim">&#x2502;&nbsp;&nbsp;alice: deploy is green [ts 1789183001.000100]</span>
+     <span class="dim">&#x2502;&nbsp;&nbsp;bob: shipping the indexer now [ts 1789183042.000200]</span>
+     <span class="dim">&#x2514;&#x2500; carol: agreed, watching the queue [ts 1789183079.000300]</span></pre>
 
 </div>
 
 <details>
 <summary>Slack block details</summary>
 
-The block never merges into a peer messaging group - it keeps its own source label and the `◇` glyph. It appends at the tail in arrival order, opens a fresh assistant placeholder so the thinking spinner pins to the bottom, and flips the session to a running state - the same delivery path the peer block uses. Collapse is the same one-line ellipsis with click to expand.
+The block never merges into a peer messaging group - it keeps its own source label and the `◇` glyph. It appends at the tail in arrival order, opens a fresh assistant placeholder so the thinking spinner pins to the bottom, and flips the session to a running state - the same delivery path the peer block uses. Collapse is the same one-line ellipsis with click to expand, summarising the first member.
 
-The block hides the conversation and message ids the delivered turn carries; the prose the agent receives is unchanged, so a reply still feeds those ids back to `slack__post`.
+The block hides the conversation and message ids the delivered turn carries; the prose the agent receives is unchanged, so a reply still feeds those ids back to `slack__post`. Each member line carries its own message `ts`, so the agent can answer one message of a block without touching the others; a reply adds the parent's `ts` as `in thread`.
 
 </details>
 
