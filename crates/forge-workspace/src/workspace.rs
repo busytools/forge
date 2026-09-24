@@ -497,6 +497,15 @@ pub enum LiveWorkerRefusal {
     AtCap { live: usize, cap: usize },
 }
 
+/// The session a worker label resumes onto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResumeTarget {
+    /// A prior session for the label, named by id.
+    Found(String),
+    /// The label has no prior session to resume.
+    None,
+}
+
 /// Kick off the catalog scan on the tokio runtime. Idempotent via
 /// `started`; a caller with no runtime gets a warn and an
 /// immediately-ready flag with an empty catalog rather than a scan
@@ -3598,16 +3607,45 @@ impl Workspace {
         *self.unwakeable_crons.lock() = ids;
     }
 
-    /// The session id the store holds for the label, if any. `None` when
-    /// the label has no row or its row has no id. Backs the MCP
-    /// `resume_session` spawn argument.
+    /// The session a worker label resumes onto, taken from the label's
+    /// own transcript directory with the newest session winning.
+    ///
+    /// `Ok(ResumeTarget::None)` is a label with nothing to resume there,
+    /// and `Err` is a directory that is there but could not be read.
+    /// Only the first is a fallback: a caller that started a fresh
+    /// session on the second would be answering a question the lookup
+    /// never answered.
     pub(crate) fn resolve_worker_resume_session(
+        &self,
+        worktree: &std::path::Path,
+    ) -> Result<ResumeTarget, anyhow::Error> {
+        let found = forge_agent::userdata::transcripts::newest_session_for_worktree(
+            &self.config_dir,
+            worktree,
+        )?;
+        Ok(match found {
+            Some(session_id) => ResumeTarget::Found(session_id),
+            None => ResumeTarget::None,
+        })
+    }
+
+    /// The session id the store holds for a worker label, if any.
+    ///
+    /// A worker without a worktree of its own runs in the project root,
+    /// whose transcript directory holds every session that ever ran
+    /// there - the lead's included - so newest-by-time does not name the
+    /// worker's session and the row is the only label-scoped pointer it
+    /// has.
+    pub(crate) fn recorded_worker_session(
         &self,
         org: &str,
         project: &str,
         label: &str,
-    ) -> Result<Option<String>, anyhow::Error> {
-        self.stored_session_id(org, project, label)
+    ) -> Result<ResumeTarget, anyhow::Error> {
+        Ok(match self.stored_session_id(org, project, label)? {
+            Some(session_id) => ResumeTarget::Found(session_id),
+            None => ResumeTarget::None,
+        })
     }
 
     /// Release the per-project respawn in-flight guard. Paired with
@@ -11795,6 +11833,53 @@ provider = "anthropic"
         (ws, key, worktree)
     }
 
+    /// The regression this change exists for: a despawn deletes the
+    /// store row, and the row used to be the only pointer to the session
+    /// the label resumes onto. The transcript survives the despawn.
+    #[tokio::test]
+    async fn a_despawned_label_resolves_from_its_transcripts() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, worktree) = git_worker_fixture(&project, &cfg, "steward");
+        std::fs::create_dir_all(&worktree).expect("worktree dir");
+        write_tagged_transcript(&cfg, &worktree, "aaaa", "steward");
+        let _store = seed_stored_session(&ws, "steward", "bbbb");
+        assert!(
+            ws.delete_worker_row(&key, "steward").expect("delete the row"),
+            "fixture precondition: the despawn took the row the label used to be found by",
+        );
+
+        let found = ws.resolve_worker_resume_session(&worktree).expect("lookup");
+        assert_eq!(
+            found,
+            ResumeTarget::Found("aaaa".to_owned()),
+            "the label resolves to its newest transcript, which is what a despawn leaves behind",
+        );
+    }
+
+    /// A directory that is there but cannot be read is a failure, not an
+    /// absence: a caller told to start fresh would be told a resume
+    /// happened on an answer the lookup never gave.
+    #[tokio::test]
+    async fn an_unreadable_transcript_directory_is_a_failure_not_an_absence() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, _key, worktree) = git_worker_fixture(&project, &cfg, "steward");
+        std::fs::create_dir_all(&worktree).expect("worktree dir");
+        write_tagged_transcript(&cfg, &worktree, "aaaa", "steward");
+        let dir = worker_transcript_dir(&cfg, &worktree);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        let found = ws.resolve_worker_resume_session(&worktree);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod back");
+
+        assert!(
+            found.is_err(),
+            "a directory that cannot be read is a failure, not an absence: {found:?}",
+        );
+    }
+
     /// Write a `forge:worker:<label>` tagged transcript under the
     /// worktree's storage key, computed while the worktree exists - the
     /// way claude names the directory at session time.
@@ -11805,9 +11890,7 @@ provider = "anthropic"
         label: &str,
     ) {
         let worktree_str = worktree.to_string_lossy().replace('\\', "/");
-        let storage_key =
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&worktree_str));
-        let jsonl_dir = forge_sdk::projects_dir_for(cfg.path()).join(&storage_key);
+        let jsonl_dir = worker_transcript_dir(cfg, worktree);
         std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
         std::fs::write(
             jsonl_dir.join(format!("{session_id}.jsonl")),
@@ -11817,6 +11900,14 @@ provider = "anthropic"
             ),
         )
         .expect("write tagged jsonl");
+    }
+
+    /// The config-dir directory claude writes `worktree`'s sessions in.
+    fn worker_transcript_dir(cfg: &tempfile::TempDir, worktree: &std::path::Path) -> PathBuf {
+        let worktree_str = worktree.to_string_lossy().replace('\\', "/");
+        let storage_key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&worktree_str));
+        forge_sdk::projects_dir_for(cfg.path()).join(storage_key)
     }
 
     /// A typo'd label in a git project mints a worktree and a branch on

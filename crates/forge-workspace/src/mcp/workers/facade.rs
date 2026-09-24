@@ -13,7 +13,7 @@ use crate::SessionSlot;
 use crate::mcp::peers::facade::{PeerStatsDelta, ReplyDeliverError};
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedPrompt};
 use crate::protocol::{Command, WorkerSpawnReply};
-use crate::workspace::Workspace;
+use crate::workspace::{ResumeTarget, Workspace};
 
 /// Synchronous decision from `deliver_worker_prompt` - whether the
 /// target was found (delivered) or unknown (label has no live
@@ -569,16 +569,20 @@ impl WorkerFacade for ProdWorkerFacade {
         // work.
         let mut ensured = None;
         let resume_existing = if resume_session {
-            if is_git_repo_at_spawn {
-                let worktree = crate::mcp::workers::types::worker_tag_dir(
+            let worktree = if is_git_repo_at_spawn {
+                Some(crate::mcp::workers::types::worker_tag_dir(
                     &view.path,
                     &label,
                     is_git_repo_at_spawn,
-                );
+                ))
+            } else {
+                None
+            };
+            if let Some(worktree) = worktree.as_ref() {
                 match forge_agent::env::worktree::ensure_worker_worktree(
-                    &view.path, &label, &worktree,
+                    &view.path, &label, worktree,
                 ) {
-                    Ok(outcome) => ensured = Some((worktree, outcome)),
+                    Ok(outcome) => ensured = Some((worktree.clone(), outcome)),
                     Err(err) => {
                         return Err(WorkerSpawnError::WorktreeCreationFailed {
                             reason: err.to_string(),
@@ -586,9 +590,18 @@ impl WorkerFacade for ProdWorkerFacade {
                     }
                 }
             }
-            let session_id = match ws.resolve_worker_resume_session(&view.org, &view.name, &label) {
-                Ok(Some(session_id)) => session_id,
-                Ok(None) => {
+            // A worker with a worktree of its own resolves from that
+            // worktree's transcripts; one without runs in the project
+            // root, whose transcript directory holds every session that
+            // ever ran there, so its row is the only label-scoped
+            // pointer it has.
+            let target = match worktree.as_ref() {
+                Some(worktree) => ws.resolve_worker_resume_session(worktree),
+                None => ws.recorded_worker_session(&view.org, &view.name, &label),
+            };
+            let session_id = match target {
+                Ok(ResumeTarget::Found(session_id)) => session_id,
+                Ok(ResumeTarget::None) => {
                     discard_refused_worktree(&view.path, &label, ensured.take());
                     return Err(WorkerSpawnError::NoPriorSession { label });
                 }
