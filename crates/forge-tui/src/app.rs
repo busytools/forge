@@ -40,7 +40,7 @@ pub mod session;
 mod session_runtime;
 pub(crate) mod slash;
 pub(crate) mod spinner_picker;
-mod state;
+pub(crate) mod state;
 pub(crate) mod subagent;
 mod tab_title;
 mod todos;

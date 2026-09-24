@@ -225,6 +225,10 @@ fn apply_timer_tick(app: &mut App) {
     // render (the git-diff snapshot pattern).
     app.refresh_forge_crons();
 
+    // Same cadence for the Inspector TASKS section's snapshot (the active
+    // project's live tasks, scoped to what this session owns).
+    app.refresh_tasks();
+
     // Same cadence for the Inspector GOTIFY section's snapshot (active
     // project's subscriptions + stream connection status).
     app.refresh_gotify();

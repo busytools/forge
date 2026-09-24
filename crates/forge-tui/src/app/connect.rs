@@ -201,6 +201,8 @@ fn create_app_impl(
         pending_spawn_focus: None,
         forge_crons: Vec::new(),
         forge_schedule_rows: Vec::new(),
+        forge_tasks: Vec::new(),
+        ui_task_rows: Vec::new(),
         gotify_subs: Vec::new(),
         gotify_connected: false,
         slack_subs: Vec::new(),

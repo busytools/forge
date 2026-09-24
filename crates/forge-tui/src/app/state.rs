@@ -8,6 +8,7 @@ pub mod monitors;
 pub(crate) mod render_budget;
 pub mod schedules;
 pub mod sessions;
+pub mod tasks;
 pub mod tool_call_info;
 pub mod tool_calls;
 pub(crate) mod turn;
@@ -391,6 +392,18 @@ pub struct App {
     /// the local timezone + humanizing per frame; the live countdown
     /// still recomputes from each row's `fire_at` at render time.
     pub forge_schedule_rows: Vec<crate::app::state::types::ScheduleEntry>,
+    /// The active project's live tasks (`mcp__forge__tasks`), refreshed on
+    /// the ~1s ticker by [`App::refresh_tasks`] and narrowed by session
+    /// kind: a lead holds the top-level rows, a worker the rows it owns.
+    /// The Inspector TASKS section reads this cache each render instead of
+    /// hitting the workspace per frame. Empty when there's no active
+    /// project or the project has no tasks in flight.
+    pub forge_tasks: Vec<forge_primitives::tasks::Task>,
+    /// Presentation rows for the Inspector TASKS section, resolved once
+    /// per ~1s tick by [`App::refresh_tasks`] (parallel to
+    /// `forge_tasks`). The render reads these so it pays nothing per
+    /// frame for the rollup, the owner label or the breadcrumb.
+    pub ui_task_rows: Vec<crate::app::state::tasks::TaskRow>,
     /// The Gotify subscriptions the active session itself created, plus
     /// the stream connection status. Refreshed on the ~1s tick by
     /// [`App::refresh_gotify`] and scoped by own `team_role`; the
@@ -982,6 +995,8 @@ impl App {
             pending_spawn_focus: None,
             forge_crons: Vec::new(),
             forge_schedule_rows: Vec::new(),
+            forge_tasks: Vec::new(),
+            ui_task_rows: Vec::new(),
             gotify_subs: Vec::new(),
             gotify_connected: false,
             slack_subs: Vec::new(),

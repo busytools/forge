@@ -55,6 +55,7 @@ use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
     GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, RepoGate,
 };
+use forge_primitives::tasks::TaskStatus;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -67,7 +68,6 @@ use crate::app::App;
 use crate::app::AttentionEntry;
 use crate::app::AttentionKind;
 use crate::app::PaneHitTarget;
-use crate::app::TodoStatus;
 use crate::app::processes::{
     ProcessCollection, ProcessKind, ProcessRow, collect_active_processes, format_memory_short,
 };
@@ -591,11 +591,9 @@ fn append_body(
         append_git_section(lines, app, width)
     };
 
-    let todos = app.todos().unwrap_or_default();
-    // Section visibility gates on PENDING/IN-PROGRESS tasks
-    // (completed are hidden by the renderer anyway).
-    let has_live_tasks = todos.iter().any(|t| t.status != TodoStatus::Completed);
-    if has_live_tasks {
+    // The section renders the store's rows, so an empty store suppresses
+    // the header and the rule with it, like every other section.
+    if !app.ui_task_rows.is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
@@ -1542,18 +1540,17 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
 }
 
 fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    let todos = app.todos().unwrap_or_default();
+    let rows = &app.ui_task_rows;
     let active_glyph = app.active_spinner_glyph();
 
-    if todos.is_empty() {
+    if rows.is_empty() {
         return;
     }
 
     // Done / total counter for the header - m is completed, n is the
-    // full todo list (including hidden completed and visible
-    // pending/in-progress). Reads at a glance as a progress meter.
-    let total = todos.len();
-    let done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+    // full row set. Reads at a glance as a progress meter.
+    let total = rows.len();
+    let done = rows.iter().filter(|r| r.status == TaskStatus::Completed).count();
 
     // TASKS section header - DIM bold, 2-col indent (matches the
     // left pane's `ACTIVE` / `INACTIVE` section headers). Trailing
@@ -1582,75 +1579,33 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let chrome_chars = usize::from(glyph_indent) + usize::from(PANE_PAD);
     let text_budget = row_text_budget(usize::from(width), chrome_chars);
 
-    // Visibility tiering: show as much as fits within TASKS_MAX (5).
-    //
-    // 1. **Everything fits** (total <= cap): show ALL tasks in their
-    //    original order, completed included. So a 3-task list with
-    //    1 done + 1 in-progress + 1 pending renders all three -
-    //    you can see what's behind you AND what's ahead, not just
-    //    the current step.
-    // 2. **Total exceeds cap but non-completed fits**: hide
-    //    completed entirely, show non-completed. The `m/n` count in
-    //    the section header still surfaces the done count so they
-    //    aren't lost from the eye.
-    // 3. **Non-completed itself overflows cap**: truncate at
-    //    TASKS_MAX-1 and emit `+N more` for the remainder
-    //    (completed counted as hidden too).
-    let total_count = todos.len();
-    let non_completed: Vec<&_> =
-        todos.iter().filter(|t| t.status != TodoStatus::Completed).collect();
-    let visible_todos: Vec<&_>;
-    let hidden: usize;
-    if total_count <= TASKS_MAX {
-        // Tier 1 - original order, all included.
-        visible_todos = todos.iter().collect();
-        hidden = 0;
-    } else if non_completed.len() <= TASKS_MAX {
-        // Tier 2 - completed silently hidden; m/n header conveys
-        // the missing count.
-        visible_todos = non_completed;
-        hidden = 0;
-    } else {
-        // Tier 3 - non-completed itself exceeds the cap. Top
-        // TASKS_MAX-1 non-completed + `+N more` overflow row.
-        let cap = TASKS_MAX.saturating_sub(1);
-        visible_todos = non_completed.iter().copied().take(cap).collect();
-        hidden = total_count - cap;
-    }
-
-    let shown_iter = visible_todos.iter().copied();
-    let shown_count = visible_todos.len();
-    for (idx, todo) in shown_iter.enumerate() {
+    // Every row in the store renders. The pane's body scrolls, so a
+    // long list is navigated the way the rest of the pane is.
+    let shown_count = rows.len();
+    for (idx, row) in rows.iter().enumerate() {
         // Glyph language matches PROCESSES + Projects pane:
-        // ○ DIM for pending, RUST_ORANGE braille spinner for the
-        // currently-running task, ✓ green for completed (hidden in
-        // practice - the visible_todos filter strips them).
-        let (glyph, glyph_color) = match todo.status {
-            TodoStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
-            TodoStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
-            TodoStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
+        // ○ DIM for pending and blocked, RUST_ORANGE braille spinner
+        // for the currently-running task, ✓ green for completed.
+        let (glyph, glyph_color) = match row.status {
+            TaskStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
+            TaskStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
+            TaskStatus::Blocked | TaskStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
         };
-        let text_style = match todo.status {
-            TodoStatus::Completed => {
+        let text_style = match row.status {
+            TaskStatus::Completed => {
                 Style::default().fg(theme::DIM).add_modifier(Modifier::CROSSED_OUT)
             }
-            TodoStatus::InProgress => {
+            TaskStatus::InProgress => {
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
             }
-            TodoStatus::Pending => Style::default().fg(Color::Gray),
-        };
-        let display_text = if todo.status == TodoStatus::InProgress && !todo.active_form.is_empty()
-        {
-            todo.active_form.clone()
-        } else {
-            todo.content.clone()
+            TaskStatus::Blocked | TaskStatus::Pending => Style::default().fg(Color::Gray),
         };
 
-        if todo.status == TodoStatus::InProgress {
+        if row.status == TaskStatus::InProgress {
             // Wrap onto continuation lines, indented under the text
             // column so the glyph stays visually associated with the
             // first wrapped row.
-            let wrapped = wrap_text(&display_text, text_budget);
+            let wrapped = wrap_text(&row.display, text_budget);
             let mut iter = wrapped.into_iter();
             if let Some(first) = iter.next() {
                 lines.push(Line::from(vec![
@@ -1660,7 +1615,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                     Span::styled(first, text_style),
                 ]));
             } else {
-                // Empty `display_text` - still render the glyph row
+                // Empty `display` - still render the glyph row
                 // so the pane shape stays consistent.
                 lines.push(Line::from(vec![
                     Span::raw(" "),
@@ -1675,7 +1630,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
             }
         } else {
             // Truncate with `...` at the right edge.
-            let truncated = truncate_with_ellipsis(&display_text, text_budget);
+            let truncated = truncate_with_ellipsis(&row.display, text_budget);
             lines.push(Line::from(vec![
                 Span::raw(" "),
                 Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
@@ -1686,27 +1641,11 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         // Blank between tasks for breathing room. Skipped after the
         // last item so we don't leave a trailing blank at the end of
         // the TASKS section.
-        if idx + 1 < shown_count || hidden > 0 {
+        if idx + 1 < shown_count {
             lines.push(Line::default());
         }
     }
-
-    if hidden > 0 {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                format!("+{hidden} more"),
-                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-    }
 }
-
-/// Per-section cap on TASKS rows. Completed tasks are filtered out
-/// before counting; beyond `TASKS_MAX - 1` remaining items the tail
-/// collapses to a single `+N more` row. Matches the PROCESSES
-/// per-parent cap so both surfaces feel consistent.
-const TASKS_MAX: usize = 5;
 
 /// Render the Inspector SCHEDULES section: header + one row per pending
 /// `ScheduleWakeup` / `CronCreate` (chat-parsed cloud routines) AND per
@@ -5465,6 +5404,48 @@ mod tests {
         session.prompt_queue.push_back(prompt);
         app.sessions.insert(key, session);
         app
+    }
+
+    /// Draw the inline Inspector into a `width` x `height` buffer and
+    /// return its text. Rendering stamps `pane_hit_targets`, so the app is
+    /// taken by `&mut`.
+    fn render_inspector_to_string(app: &mut App, width: u16, height: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal.draw(|f| render(f, Rect::new(0, 0, width, height), app, &[])).expect("draw");
+        buffer_text(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn every_live_task_renders_with_no_overflow_tail() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(9);
+        let text = render_inspector_to_string(&mut app, 30, 60);
+        assert!(!text.contains("more"), "no `+N more` tail at any length; rendered:\n{text}");
+        for n in 0..9 {
+            assert!(text.contains(&format!("task {n}")), "task {n} is rendered; got:\n{text}");
+        }
+    }
+
+    #[test]
+    fn completed_rows_render_rather_than_being_filtered_out() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows_mixed_status();
+        let text = render_inspector_to_string(&mut app, 30, 60);
+        assert!(text.contains("the finished one"), "a completed row is still shown:\n{text}");
+    }
+
+    #[test]
+    fn a_long_subject_wraps_when_running_and_truncates_when_not() {
+        let long = "a subject far longer than thirty columns can possibly hold";
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows_with_subject(long);
+        let text = render_inspector_to_string(&mut app, 30, 60);
+        assert!(text.contains("a subject far longer"), "the running row wraps:\n{text}");
+        assert!(!text.contains(long), "no row exceeds the pane width:\n{text}");
+        assert!(
+            text.matches('\u{2026}').count() >= 2,
+            "completed and pending rows truncate with an ellipsis:\n{text}",
+        );
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
