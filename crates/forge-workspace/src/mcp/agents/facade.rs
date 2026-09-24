@@ -101,7 +101,9 @@ fn unknown_label_message(target: &AgentTarget, err: &WorkerDeliverError) -> Stri
     let WorkerDeliverError::UnknownLabel { project_key, label } = err;
     format!(
         "worker '{label}' is not available (no live worker by that label in '{project_key}', \
-         the project you addressed as '{}'/'{}'). Call agents__list to see the current pool.",
+         the project you addressed as '{}'/'{}'). Call agents__list for your own project's \
+         pool; a worker in another project is addressed by whatever label that project's \
+         own agent gives you.",
         target.org(),
         target.project(),
     )

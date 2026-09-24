@@ -39,7 +39,9 @@ It exposes agent-coordination tools: agents__whoami, agents__list, \
 agents__tell and agents__ask. Every forge session is addressed by its \
 slot - org, project and label - so these tools reach another project's \
 own agent, a worker on your team, or a worker in another project the \
-user is running side-by-side with this one.";
+user is running side-by-side with this one. agents__list names every \
+project's own agent and your own project's workers; another project's \
+worker labels come from that project's agent, not from the list.";
 
 /// Append-text the spawned session's system prompt receives when the
 /// `forge` in-process MCP server is attached. Tells the recipient

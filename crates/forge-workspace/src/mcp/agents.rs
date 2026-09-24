@@ -128,7 +128,9 @@ impl Tool for Whoami {
     fn description(&self) -> &'static str {
         "Returns your own forge identity: the slot you are addressed by \
          (org, project, label) and what forge knows about it - project \
-         path, current status, and your in-flight ask counters. Useful \
+         path, current status, and your project's in-flight ask counters \
+         (the project's, not the seat's - a worker reads the same \
+         counters its lead does). Useful \
          when an inbound envelope says 'from agent X' and you want to \
          confirm whether X is you, when you need to tell another agent \
          which slot to answer, or when you need your own org and project \
@@ -188,13 +190,18 @@ impl Tool for List {
          \
          A project's own agent is reachable whether or not it is \
          currently running: a sleeping project's agent is spawned by the \
-         first ask or tell it receives. A worker row must be live for \
-         the ask or tell to land. \
+         first ask or tell it receives, which is true of another \
+         project's agent - your own is already up if you are reading \
+         this. A worker row must be live for the ask or tell to land. \
          \
          Rows differ in what they carry - a project's agent reports its \
          path and liveness, a worker reports its charter, current \
          activity and session id. Every row carries the slot to pass \
          back to agents__tell / agents__ask. \
+         \
+         Only your own project's workers are listed. Another project's \
+         workers are addressed by their labels, and those labels come \
+         from that project's own agent rather than from here. \
          \
          CROSS-PROJECT RULE (mutations only): whenever the user asks you \
          to CHANGE state in a project other than your own - edit files, \
@@ -285,7 +292,9 @@ impl Tool for Tell {
          slot: `project` and `org` name it, and `label` names the seat \
          inside that project. Omit `label` to reach the project's own \
          agent; set it to a worker's label to reach that worker. Run \
-         agents__list first if you do not know the label. \
+         agents__list for a label in your own project; a worker in \
+         another project is addressed by whatever label that project's \
+         own agent gives you. \
          \
          Two shapes: (1) REPLY to an inbound agents__ask - set \
          in_reply_to to the correlation_id from that ask's envelope, and \
@@ -398,7 +407,21 @@ impl Tool for Tell {
         let known = self.dispatcher.peers().list_peers();
         let target = match args.target.resolve(&known) {
             Ok(target) => target,
-            Err(message) => return tool_error(message),
+            Err(message) => {
+                // A caller that passed in_reply_to meant to reply, and the
+                // shipped instruction tells it not to guess a target - so
+                // a missing-target complaint points at a call it did not
+                // make. Name the id it should re-check instead.
+                return tool_error(match in_reply_to_id.as_ref() {
+                    Some(id) => format!(
+                        "{message} Your in_reply_to {id} did not match an open \
+                                         ask either, so nothing was sent as a reply: it may be \
+                                         stale, already answered, or its asker's session may \
+                                         have closed."
+                    ),
+                    None => message,
+                });
+            }
         };
         let note = in_reply_to_id.as_ref().map(|id| {
             format!(
@@ -424,11 +447,18 @@ impl Tool for Tell {
 
 impl Tell {
     /// The name and org a reply carries. A reply needs no target, so it
-    /// cannot pick an engine's naming, and the caller's own label is the
-    /// information the recipient's chat has no other way to get.
+    /// cannot pick an engine's naming; the caller's own slot says both,
+    /// and it is the only thing that keeps two repliers apart. Any
+    /// project may be asked now, and a bare label would render every
+    /// lead's reply as `lead`, which the recipient's chat groups as one
+    /// sender.
     fn identity(&self) -> (String, String) {
-        let identity = self.dispatcher.workers().caller_identity(&self.slot);
-        (identity.name, identity.org)
+        let name = if self.slot.is_lead() {
+            self.slot.project().to_owned()
+        } else {
+            format!("{}/{}", self.slot.project(), self.slot.label())
+        };
+        (name, self.slot.org().to_owned())
     }
 
     /// The name and org a message carries. Each engine already answers
@@ -491,7 +521,9 @@ impl Tool for Ask {
          slot: `org` and `project` name it, and `label` names the seat \
          inside that project. Omit `label` to ask the project's own \
          agent; set it to a worker's label to ask that worker. Run \
-         agents__list first if you do not know the label. \
+         agents__list for a label in your own project; a worker in \
+         another project is addressed by whatever label that project's \
+         own agent gives you. \
          \
          Returns IMMEDIATELY with a correlation_id (for example \
          q-7f3a92e0); this tool does NOT wait for the reply. The target's \
@@ -693,7 +725,7 @@ fn format_despawn_error(err: &WorkerDespawnError) -> String {
             "could not resolve caller to a known project (forge bug)".to_owned()
         }
         WorkerDespawnError::UnknownLabel { label, project_key } => format!(
-            "no live worker with label '{label}' in project '{project_key}'. Call agents__list to see the current pool."
+            "no live worker with label '{label}' in project '{project_key}'. Call agents__list for your own project's pool; a worker in another project is addressed by whatever label that project's own agent gives you."
         ),
         WorkerDespawnError::DispatchFailed { message } => {
             format!("worker despawn failed: {message}")
@@ -1185,6 +1217,10 @@ mod tests {
         let peers = Arc::new(MockWorkspaceFacade::new());
         peers.peers.lock().extend([configured("acme", "core"), configured("other", "proj")]);
         let workers = Arc::new(MockWorkerFacade::new());
+        // `core` is the key the caller resolves to, so its own pool is
+        // what `list` reads; `proj` is what a cross-project target
+        // resolves against.
+        workers.workers.lock().insert("core".to_owned(), vec![worker("acme", "core", "w1")]);
         workers.workers.lock().insert("proj".to_owned(), vec![worker("other", "proj", "w1")]);
         workers.callers.lock().insert(
             caller(),
@@ -1366,6 +1402,75 @@ mod tests {
         let replies = host.workers.reply_to_caller_calls.lock();
         assert_eq!(replies.len(), 1, "the reply reached the asker's session");
         assert_eq!(replies[0].0, asker, "and the asker is the session that asked");
+    }
+
+    #[tokio::test]
+    async fn two_repliers_are_told_apart_by_their_own_project() {
+        // A reply is routed to whoever asked, so it needs no target and
+        // cannot pick an engine's naming. Left to the label alone every
+        // lead's reply reads `lead`, and the recipient's chat groups two
+        // projects' replies as one sender.
+        let host = host();
+        let ask_id = CorrelationId::new_ask();
+        host.workers.inflight.lock().insert(
+            ask_id.clone(),
+            InflightAsk {
+                correlation_id: ask_id.clone(),
+                caller: SessionSlot::worker("other", "proj", "w1"),
+                target_project: "proj::w1".to_owned(),
+                target_session: None,
+            },
+        );
+        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "message": "answer",
+                    "in_reply_to": ask_id.as_str(),
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "the reply must land: {:?}", output.blocks);
+        let replies = host.workers.reply_to_caller_calls.lock();
+        assert_eq!(replies[0].1.sender_name, "core", "the reply names the project that sent it");
+        assert_eq!(replies[0].1.sender_org, "acme", "and its org");
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_no_longer_resolves_says_so_instead_of_asking_for_a_target() {
+        // A stale id with no target is exactly what the shipped reply
+        // instruction produces, since it says not to guess a target.
+        // Reporting a missing target points at a call the caller did not
+        // make and does not name the id it should re-check.
+        let host = host();
+        let stale = CorrelationId::new_ask();
+        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "message": "answer",
+                    "in_reply_to": stale.as_str(),
+                }),
+            })
+            .await;
+        assert!(output.is_error, "nothing was addressed, so the call cannot succeed");
+        assert!(
+            output.blocks[0].text.contains(stale.as_str()),
+            "the refusal names the correlation id it could not resolve: {}",
+            output.blocks[0].text,
+        );
+    }
+
+    #[tokio::test]
+    async fn list_carries_the_callers_own_workers_under_their_labels() {
+        let host = host();
+        let rows = call_list(&host, None).await;
+        let row = rows
+            .iter()
+            .find(|row| row["slot"]["label"] == "w1")
+            .unwrap_or_else(|| panic!("the caller's own worker is a row: {rows:?}"));
+        assert_eq!(row["slot"]["project"], "core");
+        assert_eq!(row["charter"], "w1's charter", "a worker row carries its snapshot");
     }
 
     #[tokio::test]

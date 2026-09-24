@@ -181,7 +181,7 @@ The modal wears the composer chrome with the comment count in its title and a `â
 - `review__reply(comment_id, text)` - append a worker turn and flip the thread Open â†’ Addressed (a resolved comment stays resolved).
 - `review__resolve(comment_id)` - mark a comment resolved.
 
-The caller resolves to its project and branch the same way the peers tools do; a `comment_id` outside that scope is rejected, and when that resolution fails the tool names the step that failed (workspace gone, caller in no project, no cwd recorded, checkout not on disk, git reported no branch, detached HEAD) rather than asserting one of them. When the worker's turn ends, forge pings the review's submit origin with one batched system line - `worker addressed review #N - A replied, B resolved, C open. Open /diff.` - rather than one line per call.
+The caller resolves to its project and branch the same way the `agents__*` tools do; a `comment_id` outside that scope is rejected, and when that resolution fails the tool names the step that failed (workspace gone, caller in no project, no cwd recorded, checkout not on disk, git reported no branch, detached HEAD) rather than asserting one of them. When the worker's turn ends, forge pings the review's submit origin with one batched system line - `worker addressed review #N - A replied, B resolved, C open. Open /diff.` - rather than one line per call.
 
 </details>
 
