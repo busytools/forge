@@ -91,14 +91,15 @@ for any tool whose name starts with mcp__forge__.";
 const FORGE_CRON_SYSTEM_PROMPT: &str = "\
 The same forge MCP server also lets you schedule durable work. \
 `mcp__forge__cron__create` registers a prompt that fires into this \
-project as a fresh session turn - either recurring on a 5-field cron \
+session as a fresh session turn - either recurring on a 5-field cron \
 expression (e.g. \"0 9 * * *\" = 9am daily, in the host's local \
-timezone) or once at an RFC3339 timestamp. `cron__list` shows your \
-project's crons; `cron__delete` removes one by id. Crons persist across \
-forge restarts and re-spawn the session if it isn't open at fire time. \
-Reach for this whenever the user wants recurring or deferred work - a \
-morning summary, a reminder, a follow-up check later - rather than \
-assuming you can only act in the current turn.";
+timezone) or once at an RFC3339 timestamp. `cron__list` shows the crons \
+you registered and `cron__delete` removes one by id. Crons persist \
+across forge restarts and re-spawn this session if it isn't open at \
+fire time, unless it can no longer be started. Reach for this whenever \
+the user wants recurring or deferred \
+work - a morning summary, a reminder, a follow-up check later - rather \
+than assuming you can only act in the current turn.";
 
 /// Append-text for what forge's own surfaces depend on and the CLI
 /// cannot know: the tool tree labels a Bash card with the
@@ -2604,6 +2605,48 @@ mod tests {
             "the Bash description ask rides the base append, not a charter"
         );
         assert!(!bare.contains("CATALOG"));
+    }
+
+    /// The cron tools are owner-scoped, so a block claiming the project's
+    /// crons sends a session looking for a set it cannot query.
+    #[test]
+    fn cron_block_scopes_to_the_session_not_the_project() {
+        let out = build_forge_system_prompt(true, None, None);
+        assert!(
+            out.contains("crons you registered"),
+            "the cron block must name the session's own crons: {out}",
+        );
+        assert!(
+            !out.contains("your project's crons"),
+            "the cron block must not claim a project-wide list: {out}",
+        );
+    }
+
+    /// A worker's directory can be gone with its row kept, and then
+    /// nothing starts the owner and the fire does not land - so the
+    /// block cannot promise an unconditional re-spawn either.
+    #[test]
+    fn cron_block_qualifies_the_spawn_promise() {
+        let out = build_forge_system_prompt(true, None, None);
+        assert!(
+            out.contains("unless it can no longer be started"),
+            "the cron block's re-spawn promise must carry that case: {out}",
+        );
+    }
+
+    /// The fired prompt lands in the session that registered the cron, so
+    /// the block must not send a worker looking in the project.
+    #[test]
+    fn cron_block_names_the_registering_session_as_the_fire_target() {
+        let out = build_forge_system_prompt(true, None, None);
+        assert!(
+            out.contains("fires into this session"),
+            "the cron block must say where the prompt lands: {out}",
+        );
+        assert!(
+            !out.contains("fires into this project"),
+            "the prompt does not land in the project: {out}",
+        );
     }
 
     #[test]

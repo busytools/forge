@@ -116,9 +116,11 @@ impl Workspace {
         });
     }
 
-    /// The crons registered for `project_name`. Backs `cron__list` and
-    /// the Inspector SCHEDULES snapshot, which scopes by the active tab's
-    /// stamped project name.
+    /// The crons registered for `project_name`, whatever their owner. The
+    /// two scoping consumers narrow it - `cron__list` to the caller's own
+    /// crons, the Inspector SCHEDULES snapshot to the active tab's - while
+    /// the refused-delete determination reads it whole, because telling
+    /// "not in this project" from "not yours" needs the other owners' rows.
     pub fn crons_for_project(&self, project_name: &str) -> Vec<forge_primitives::CronEntry> {
         self.crons.lock().iter().filter(|c| c.project_name == project_name).cloned().collect()
     }
@@ -153,9 +155,8 @@ impl Workspace {
                         crons[pos].next_fire = next;
                     } else {
                         // A recurring expr that parses but never matches
-                        // (e.g. "0 0 30 2 *") - reachable via a hand-edited
-                        // cron.toml. Don't drop it silently; the warning
-                        // below is the only trace.
+                        // (e.g. "0 0 30 2 *"). Don't drop it silently; the
+                        // warning below is the only trace.
                         let removed = crons.remove(pos);
                         let expr = if let forge_primitives::CronKind::Recurring(e) = &removed.kind {
                             e.as_str()

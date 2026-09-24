@@ -453,8 +453,7 @@ mod tests {
 
     /// The facade reports `false` both for an unknown id and for one
     /// owned by another session, so reaching for someone else's
-    /// subscription gets exactly what a bad id gets - the same treatment
-    /// `cron__delete` gives.
+    /// subscription gets exactly what a bad id gets.
     #[tokio::test]
     async fn unsubscribe_unowned_or_missing_id_is_error() {
         let mock = Arc::new(MockGotifyFacade::new());

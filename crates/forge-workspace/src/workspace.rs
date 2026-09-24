@@ -325,11 +325,12 @@ pub struct Workspace {
     /// `None` in `testing_stub` and on the degraded acquire path.
     _single_instance_lock: Option<std::fs::File>,
     /// Durable forge crons (`mcp__forge__cron`). In-memory working set,
-    /// loaded from `cron.toml` at boot and persisted back after
-    /// every mutation - create/delete, the scheduler's fire-advance, and
-    /// boot catch-up - through the one [`Workspace::with_crons_mut`] path.
-    /// The single-instance guard makes this the only process touching the
-    /// file, so this mutex alone serialises writes.
+    /// loaded at boot from the machine-local redb store ([`crate::store::cron`])
+    /// and persisted back after every mutation - create/delete, the
+    /// scheduler's fire-advance, and boot catch-up - through the one
+    /// [`Workspace::with_crons_mut`] path. The single-instance guard keeps
+    /// this the only process holding that store, so this mutex alone
+    /// serialises writes.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) crons: Mutex<Vec<forge_primitives::CronEntry>>,
     /// Payloads addressed to a slot that had no live session when they

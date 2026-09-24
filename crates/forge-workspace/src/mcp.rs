@@ -11,7 +11,7 @@
 //!   list / tell / ask). Tools render as `mcp__forge__workers__<name>`.
 //! - `review` - the review-conversation loop (list / get / reply /
 //!   resolve). Tools render as `mcp__forge__review__<name>`.
-//! - `cron` - the caller's own project's durable crons.
+//! - `cron` - the caller's own durable crons.
 //! - `gotify` - the caller's own Gotify subscriptions.
 //! - `slack` - the caller's own Slack subscriptions, reads and held
 //!   outbound actions.
@@ -74,10 +74,12 @@ pub enum SessionKind {
 /// - [`SessionKind::Worker`] → workers + review + cron + gotify + slack (no
 ///   cross-project peers).
 ///
-/// `review`, `cron`, `gotify` and `slack` are any-caller (every session
-/// manages its own project's reviews / crons / subscriptions), so they
-/// register for both kinds - unlike `peers`, which is lead-only. A worker is
-/// exactly the session a review nudge lands on, so it needs `review__*`.
+/// `review`, `cron`, `gotify` and `slack` are any-caller, so they register
+/// for both kinds - unlike `peers`, which is lead-only. What each acts on is
+/// scoped rather than gated on session kind: a review conversation belongs to
+/// a project and branch, crons and subscriptions to the caller that made
+/// them. A worker is exactly the session a review nudge lands on, so it needs
+/// `review__*`.
 ///
 /// All submodules share the server name so the LLM sees a single
 /// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
