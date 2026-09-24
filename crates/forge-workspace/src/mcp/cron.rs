@@ -9,7 +9,7 @@
 //!
 //! The tools (`cron__create` / `cron__list` / `cron__delete`) are
 //! ANY-CALLER, scoped to the caller's own project - mirroring
-//! `workers__list`, not the lead-only `workers__spawn`. Cron-list
+//! `agents__list`, not the lead-only `agents__spawn`. Cron-list
 //! mutations are direct `Workspace` methods (state writes), not
 //! Command-bus dispatches.
 //!

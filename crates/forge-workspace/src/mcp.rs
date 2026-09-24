@@ -3,12 +3,10 @@
 //!
 //! The single MCP server is named `forge` and grouped by submodule:
 //!
-//! - `peers` (#114 v1) - cross-agent ask / tell / list / whoami.
-//!   Tools are named `peers__ask_agent`, `peers__tell_agent`,
-//!   `peers__list_agents`, `peers__whoami`. From the LLM's view they
-//!   render as `mcp__forge__peers__ask_agent` and similar.
-//! - `workers` - project-internal child-agent coordination (spawn /
-//!   list / tell / ask). Tools render as `mcp__forge__workers__<name>`.
+//! - `agents` - every session reaches every other by its slot: `list`,
+//!   `tell`, `ask` and `whoami` for any caller, plus `spawn`,
+//!   `despawn`, `update` and `capacity` for a lead. Tools render as
+//!   `mcp__forge__agents__<name>`.
 //! - `review` - the review-conversation loop (list / get / reply /
 //!   resolve). Tools render as `mcp__forge__review__<name>`.
 //! - `cron` - the caller's own project's durable crons.
@@ -18,16 +16,13 @@
 //!
 //! Tool surface depends on the calling session's kind:
 //!
-//! - **Lead** sessions (project leads, including peer-spawned project
-//!   sessions) see BOTH `peers__*` and `workers__*`. The lead is the
-//!   project's representative in cross-project coordination and the
-//!   only role that can spawn workers.
-//! - **Worker** sessions see ONLY `workers__*`. Cross-project chatter
-//!   is the lead's role; a worker that needs cross-project info
-//!   surfaces the need to the lead and lets the lead drive the peer
-//!   round-trip. Workers retain `workers__*` so they can talk to
-//!   their peer workers within the same project (a worker can ask
-//!   sibling workers, the lead can spawn / close them).
+//! - **Lead** sessions (project leads, including project sessions
+//!   another agent spawned) see all eight `agents__*` verbs. A lead is
+//!   the only role that can spawn, despawn, update or read capacity,
+//!   because each of those acts on the caller's own project.
+//! - **Worker** sessions see the four shared verbs and none of the
+//!   lead-only ones. The reach is the same: a worker may address any
+//!   other session by its slot, its own lead and siblings included.
 //!
 //! Future submodules slot in alongside these (e.g. `worktree`,
 //! `memory`) without changing the server name or the auto-approve
@@ -60,11 +55,11 @@ pub mod workers;
 /// for. Drives the tool-surface filter in [`build_forge_server`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
-    /// Project lead - the session representing a project in cross-
-    /// project coordination. Sees both `peers__*` and `workers__*`.
+    /// Project lead - the session representing a project. Sees all
+    /// eight `agents__*` verbs.
     Lead,
-    /// Worker - a project-internal child agent spawned by the lead.
-    /// Sees only `workers__*` (no cross-project peer tools).
+    /// Worker - a child agent a lead spawned. Sees the four shared
+    /// `agents__*` verbs and none of the lead-only ones.
     Worker,
 }
 
@@ -72,14 +67,15 @@ pub enum SessionKind {
 /// `forge` carrying the coordination tool groups appropriate for the
 /// calling session's [`SessionKind`]:
 ///
-/// - [`SessionKind::Lead`] → peers + workers + review + cron + gotify + slack.
-/// - [`SessionKind::Worker`] → workers + review + cron + gotify + slack (no
-///   cross-project peers).
+/// - [`SessionKind::Lead`] → agents (all eight) + review + cron + gotify + slack.
+/// - [`SessionKind::Worker`] → agents (the shared four) + review + cron +
+///   gotify + slack.
 ///
 /// `review`, `cron`, `gotify` and `slack` are any-caller (every session
 /// manages its own project's reviews / crons / subscriptions), so they
-/// register for both kinds - unlike `peers`, which is lead-only. A worker is
-/// exactly the session a review nudge lands on, so it needs `review__*`.
+/// register for both kinds - unlike the lead-only `agents__*` verbs. A
+/// worker is exactly the session a review nudge lands on, so it needs
+/// `review__*`.
 ///
 /// All submodules share the server name so the LLM sees a single
 /// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
@@ -255,6 +251,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every `.rs` and `.md` file in the tree, except the recorded
+    /// baselines under `forge-test-harness`. A capture holds whatever the
+    /// capture machine printed, so a name in one is a recording of
+    /// something real rather than a surface still naming it.
+    fn source_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let skipped = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == ".git" || name == "target");
+                if path.is_dir() {
+                    if !skipped {
+                        walk(&path, out);
+                    }
+                } else if !skipped
+                    && matches!(path.extension().and_then(|ext| ext.to_str()), Some("rs" | "md"))
+                {
+                    out.push(path);
+                }
+            }
+        }
+        let mut paths = Vec::new();
+        walk(root, &mut paths);
+        paths.sort();
+        paths
+            .into_iter()
+            .filter(|path| {
+                let path = path.to_string_lossy();
+                // `baselines/` holds recordings; `.superpowers/` holds an
+                // agent run's own scratch. Neither is a surface forge ships.
+                !path.contains("/baselines/") && !path.contains("/.superpowers/")
+            })
+            .filter_map(|path| std::fs::read_to_string(&path).ok().map(|text| (path, text)))
+            .collect()
+    }
+
+    /// The names are gone rather than aliased, so a session that follows a
+    /// stale instruction calls a tool that no longer exists, and nothing
+    /// errors until it does. Only this file may name them, and only to
+    /// assert them away.
+    #[test]
+    fn no_surface_still_names_a_retired_tool() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut offenders = Vec::new();
+        for (path, text) in source_files(&root) {
+            if path.ends_with("crates/forge-workspace/src/mcp.rs") {
+                continue;
+            }
+            for (number, line) in text.lines().enumerate() {
+                if OLD_NAMES.iter().any(|old| line.contains(old)) {
+                    offenders.push(format!("{}:{}", path.display(), number + 1));
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "a retired tool name survives at: {offenders:?}");
     }
 
     #[test]

@@ -50,7 +50,7 @@ pub struct Options {
     /// Caller (forge-workspace via forge-agent) typically supplies a
     /// closure that auto-approves any tool whose name starts with the
     /// `mcp__<server>__` prefix of one of its in-process MCP servers
-    /// (e.g. `mcp__forge__peers__ask_agent`) - those servers are
+    /// (e.g. `mcp__forge__agents__ask`) - those servers are
     /// already opted into by the user's forge.toml so a permission
     /// prompt would just be noise.
     pub auto_approve_tool: Option<AutoApproveToolPredicate>,
@@ -539,15 +539,15 @@ mod tests_options_build {
             .auto_approve_tool(|name: &str| name.starts_with("mcp__forge__"))
             .build();
         let pred = opts.auto_approve_tool.expect("predicate stored");
-        assert!(pred("mcp__forge__peers__whoami"));
-        assert!(pred("mcp__forge__peers__ask_agent"));
-        // Workers tools live under the same `mcp__forge__` namespace
-        // - auto-approve must cover them with one predicate.
-        assert!(pred("mcp__forge__workers__spawn"));
-        assert!(pred("mcp__forge__workers__list"));
-        assert!(pred("mcp__forge__workers__tell"));
-        assert!(pred("mcp__forge__workers__ask"));
-        assert!(pred("mcp__forge__workers__despawn"));
+        assert!(pred("mcp__forge__agents__whoami"));
+        assert!(pred("mcp__forge__agents__ask"));
+        // The lead-only verbs live under the same `mcp__forge__`
+        // namespace - auto-approve must cover them with one predicate.
+        assert!(pred("mcp__forge__agents__spawn"));
+        assert!(pred("mcp__forge__agents__list"));
+        assert!(pred("mcp__forge__agents__tell"));
+        assert!(pred("mcp__forge__agents__update"));
+        assert!(pred("mcp__forge__agents__despawn"));
         // Cron tools share the same namespace - one predicate covers them.
         assert!(pred("mcp__forge__cron__create"));
         assert!(pred("mcp__forge__cron__list"));

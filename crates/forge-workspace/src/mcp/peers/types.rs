@@ -16,7 +16,7 @@
 //! v1 supports one session per project - the project name is the
 //! stable identity that peers address each other by. All messages
 //! between peers go through forge's in-process MCP server (named
-//! `forge`) with the four `peers__*` tools.
+//! `forge`) with the `agents__*` tools.
 //!
 //! ## Wire wrapping
 //!
@@ -93,8 +93,7 @@ fn hex_8() -> String {
     s[..8].to_owned()
 }
 
-/// Liveness of a peer agent (= project) from the perspective of any
-/// other agent calling `peers__list_agents`.
+/// Liveness of a project's own agent, as `agents__list` reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerLiveness {
@@ -206,9 +205,9 @@ impl WrappedPrompt {
     }
 }
 
-/// Live snapshot of a peer agent returned by `peers__list_agents` or
-/// `peers__whoami`. Built fresh on each tool call from forge.toml +
-/// workspace per-session state. Not persisted.
+/// Live snapshot of a project's own agent, as `agents__list` and
+/// `agents__whoami` report it. Built fresh on each tool call from
+/// forge.toml + workspace per-session state. Not persisted.
 #[derive(Clone, Debug, Serialize)]
 pub struct PeerStatus {
     /// Project name as configured in forge.toml.

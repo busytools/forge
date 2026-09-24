@@ -3,23 +3,22 @@
 //! Two responsibilities:
 //!
 //! 1. **Inbound detection + rendering**. Pattern-match the bracket-
-//!    wrapped prose `forge_workspace::deliver_peer_prompt` injects
-//!    into user-turn text (e.g. `[Question id=q-... from
-//!    agent 'forge' (org 'Personal') - reply with peers__tell_agent
-//!    in_reply_to=q-...]\n\n<body>`) and render a styled block in
-//!    place of the default user-message bubble. Catches the five
-//!    peer/worker kinds the workspace produces (`Question`, `Message`,
-//!    `Reply`, `DeliveryFailure`, `WorkerSpawnFailed`) plus the `Gotify`,
-//!    `Cron` and `Slack` blocks, which render with their own chrome (glyph
-//!    + source label).
+//!    wrapped prose `forge_workspace` injects into user-turn text
+//!    (e.g. `[Question id=q-... from agent 'forge' (org 'Personal') -
+//!    reply with agents__tell in_reply_to=q-...]\n\n<body>`) and
+//!    render a styled block in place of the default user-message
+//!    bubble. Catches the five agent kinds the workspace produces
+//!    (`Question`, `Message`, `Reply`, `DeliveryFailure`,
+//!    `WorkerSpawnFailed`) plus the `Gotify`, `Cron` and `Slack`
+//!    blocks, which render with their own chrome (glyph + source
+//!    label).
 //!
 //! 2. **Outbound rendering**. Replace the default tool_use card for
-//!    `mcp__forge__peers__ask_agent` / `peers__tell_agent` /
-//!    `workers__ask` / `workers__tell` with a one-line
+//!    `mcp__forge__agents__ask` / `agents__tell` with a one-line
 //!    `▶ Verb name` row + a body preview pulled from the tool
-//!    arguments. `workers__spawn` / `workers__list` are NOT handled
-//!    here - they render as standard tool cards because they're
-//!    worker-lifecycle tool calls, not peer comms.
+//!    arguments. The other `agents__*` verbs are NOT handled here -
+//!    they render as standard tool cards because they're lifecycle,
+//!    roster and reply calls, not new outbound comms.
 //!
 //! Pure rendering - no I/O, no state. Each call parses the text
 //! fresh; results aren't cached (text is small, render frames don't
@@ -152,10 +151,9 @@ impl PeerInboundKind {
     }
 }
 
-/// One outbound peer or worker block parsed from a `mcp__forge__peers__*`
-/// or `mcp__forge__workers__ask|tell` tool_use card. The redesigned
-/// chrome drops the family / correlation_id chrome - both peer and
-/// worker calls render with the same `▶ Verb name` shape.
+/// One outbound agent block parsed from a `mcp__forge__agents__ask` or
+/// `mcp__forge__agents__tell` tool_use card. Both render with the same
+/// `▶ Verb name` shape; `target` is the addressed seat.
 #[derive(Debug)]
 pub(crate) enum PeerOutboundKind {
     Ask { target: String, body: String },
@@ -318,35 +316,38 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
     None
 }
 
-/// Detect a peer / worker outbound tool_use card. Returns `None` for
-/// every other tool (the chat renderer falls through to the default
-/// tool-card rendering) and explicitly for `workers__spawn` /
-/// `workers__list` - those are worker-lifecycle tool calls that render
-/// as standard tool cards rather than peer comms.
+/// Detect an agent outbound tool_use card. Returns `None` for every
+/// other tool - the chat renderer falls through to the default
+/// tool-card rendering - including `agents__spawn`, `agents__despawn`,
+/// `agents__update`, `agents__capacity` and `agents__list`: those are
+/// lifecycle and roster calls that render as standard tool cards
+/// rather than as agent comms.
 pub(crate) fn detect_outbound(tc: &ToolCallInfo) -> Option<PeerOutboundKind> {
     let raw = tc.raw_input.as_ref()?;
     match tc.sdk_tool_name.as_str() {
-        "mcp__forge__peers__ask_agent" => {
-            let target = raw.get("target")?.as_str()?.to_owned();
+        "mcp__forge__agents__ask" => {
+            let target = address(raw)?;
             let body = raw.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_owned();
             Some(PeerOutboundKind::Ask { target, body })
         }
-        "mcp__forge__peers__tell_agent" => {
-            let target = raw.get("target")?.as_str()?.to_owned();
-            let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Tell { target, body })
-        }
-        "mcp__forge__workers__ask" => {
-            let target = raw.get("label")?.as_str()?.to_owned();
-            let body = raw.get("question").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Ask { target, body })
-        }
-        "mcp__forge__workers__tell" => {
-            let target = raw.get("label")?.as_str()?.to_owned();
+        "mcp__forge__agents__tell" => {
+            let target = address(raw)?;
             let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
             Some(PeerOutboundKind::Tell { target, body })
         }
         _ => None,
+    }
+}
+
+/// The `${project}` / `${project}/${label}` a header shows for a
+/// call's target. `None` when the call carries no target at all, which
+/// is a reply: it goes to whoever asked, and the header says so by
+/// falling through to the default tool card.
+fn address(raw: &serde_json::Value) -> Option<String> {
+    let project = raw.get("project")?.as_str()?;
+    match raw.get("label").and_then(|v| v.as_str()) {
+        Some(label) if label != "lead" => Some(format!("{project}/{label}")),
+        _ => Some(project.to_owned()),
     }
 }
 
@@ -996,7 +997,7 @@ mod tests {
 
     #[test]
     fn detect_question_inbound() {
-        let text = "[Question id=q-7f3a92e0 from agent 'forge' (org 'Personal') - reply with peers__tell_agent in_reply_to=q-7f3a92e0]\n\nWhat's the test setup?";
+        let text = "[Question id=q-7f3a92e0 from agent 'forge' (org 'Personal') - reply with agents__tell in_reply_to=q-7f3a92e0]\n\nWhat's the test setup?";
         let kind = detect_inbound(text).expect("question");
         match kind {
             PeerInboundKind::Question { from, org, body } => {
@@ -1897,10 +1898,10 @@ mod tests {
     }
 
     #[test]
-    fn detect_outbound_recognises_peers_ask_with_target_arg() {
+    fn detect_outbound_recognises_an_agents_ask_at_another_projects_agent() {
         let tc = make_tc(
-            "mcp__forge__peers__ask_agent",
-            serde_json::json!({ "target": "gateway-backend", "prompt": "?" }),
+            "mcp__forge__agents__ask",
+            serde_json::json!({ "org": "Gateway", "project": "gateway-backend", "prompt": "?" }),
         );
         match detect_outbound(&tc) {
             Some(PeerOutboundKind::Ask { target, body }) => {
@@ -1912,14 +1913,19 @@ mod tests {
     }
 
     #[test]
-    fn detect_outbound_recognises_workers_ask_with_label_arg() {
+    fn detect_outbound_shows_a_worker_target_as_a_seat_in_its_project() {
         let tc = make_tc(
-            "mcp__forge__workers__ask",
-            serde_json::json!({ "label": "planner", "question": "ready?" }),
+            "mcp__forge__agents__ask",
+            serde_json::json!({
+                "org": "Personal",
+                "project": "forge",
+                "label": "planner",
+                "prompt": "ready?",
+            }),
         );
         match detect_outbound(&tc) {
             Some(PeerOutboundKind::Ask { target, body }) => {
-                assert_eq!(target, "planner");
+                assert_eq!(target, "forge/planner");
                 assert_eq!(body, "ready?");
             }
             other => panic!("expected Ask, got {other:?}"),
@@ -1927,14 +1933,19 @@ mod tests {
     }
 
     #[test]
-    fn detect_outbound_recognises_workers_tell_with_label_arg() {
+    fn detect_outbound_recognises_an_agents_tell() {
         let tc = make_tc(
-            "mcp__forge__workers__tell",
-            serde_json::json!({ "label": "implementer", "message": "PR #199 ready" }),
+            "mcp__forge__agents__tell",
+            serde_json::json!({
+                "org": "Personal",
+                "project": "forge",
+                "label": "implementer",
+                "message": "PR #199 ready",
+            }),
         );
         match detect_outbound(&tc) {
             Some(PeerOutboundKind::Tell { target, body }) => {
-                assert_eq!(target, "implementer");
+                assert_eq!(target, "forge/implementer");
                 assert_eq!(body, "PR #199 ready");
             }
             other => panic!("expected Tell, got {other:?}"),
@@ -1942,15 +1953,19 @@ mod tests {
     }
 
     #[test]
-    fn detect_outbound_ignores_workers_spawn_and_list() {
-        let spawn = make_tc(
-            "mcp__forge__workers__spawn",
-            serde_json::json!({ "label": "planner", "charter": "..." }),
-        );
-        assert!(detect_outbound(&spawn).is_none(), "spawn falls through to standard tool card");
+    fn detect_outbound_ignores_the_lifecycle_verbs_and_a_reply() {
+        for name in ["mcp__forge__agents__spawn", "mcp__forge__agents__list"] {
+            let tc = make_tc(name, serde_json::json!({ "label": "planner", "charter": "..." }));
+            assert!(detect_outbound(&tc).is_none(), "{name} falls through to a standard tool card");
+        }
 
-        let list = make_tc("mcp__forge__workers__list", serde_json::json!({}));
-        assert!(detect_outbound(&list).is_none(), "list falls through to standard tool card");
+        // A reply names no target: it is routed to whoever asked, so
+        // there is no seat for the header to show.
+        let reply = make_tc(
+            "mcp__forge__agents__tell",
+            serde_json::json!({ "message": "answer", "in_reply_to": "q-7f3a92e0" }),
+        );
+        assert!(detect_outbound(&reply).is_none(), "a reply falls through to a standard tool card");
     }
 
     #[test]

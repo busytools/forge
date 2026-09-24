@@ -605,7 +605,7 @@ mod lead_resolution_tests {
         assert!(facade.whoami(&SessionSlot::from_str_for_test("nobody")).is_none());
     }
 
-    /// #298 Cause 1: workers can call `peers__whoami` and see their
+    /// #298 Cause 1: workers can call `agents__whoami` and see their
     /// project's peer identity. Pre-fix, the impl required the caller
     /// to be the lead session, which returned None for any worker.
     #[test]

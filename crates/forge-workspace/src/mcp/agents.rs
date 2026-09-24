@@ -87,15 +87,28 @@ fn target_error_message(err: &TargetError, known: &[PeerStatus]) -> String {
 
 #[derive(serde::Deserialize)]
 struct TargetArgs {
-    org: String,
-    project: String,
+    #[serde(default)]
+    org: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
     #[serde(default)]
     label: Option<String>,
 }
 
 impl TargetArgs {
+    /// The seat this call names. Optional on the schema because a reply
+    /// routes by `in_reply_to` and never needs one - which is why a
+    /// missing target is a message-path error rather than a parse one.
     fn resolve(&self, known: &[PeerStatus]) -> Result<AgentTarget, String> {
-        AgentTarget::parse(known, &self.org, &self.project, self.label.as_deref())
+        let (Some(org), Some(project)) = (self.org.as_deref(), self.project.as_deref()) else {
+            return Err(
+                "an unsolicited message needs a target: pass `org` and `project`, and `label` \
+                 to reach a worker rather than the project's own agent. Call agents__list to \
+                 see who you can reach."
+                    .to_owned(),
+            );
+        };
+        AgentTarget::parse(known, org, project, self.label.as_deref())
             .map_err(|err| target_error_message(&err, known))
     }
 }
@@ -277,8 +290,11 @@ impl Tool for Tell {
          Two shapes: (1) REPLY to an inbound agents__ask - set \
          in_reply_to to the correlation_id from that ask's envelope, and \
          the original asker sees your message rendered as a Reply in its \
-         own chat, wherever it lives; (2) UNSOLICITED - omit in_reply_to \
-         to send standalone prose (announcements, an FYI, a hand-off). \
+         own chat, wherever it lives. A reply needs no target: it is \
+         routed to whoever asked, so leave `org`, `project` and `label` \
+         off entirely rather than guessing them. (2) UNSOLICITED - omit \
+         in_reply_to to send standalone prose (announcements, an FYI, a \
+         hand-off); this form does need a target. \
          The target sees the message as a new user turn and may respond \
          by asking or telling you back, or simply continue its own work. \
          A request addressed to another project's own agent is delivered \
@@ -304,11 +320,11 @@ impl Tool for Tell {
             "properties": {
                 "org": {
                     "type": "string",
-                    "description": "Org the target project belongs to, as shown by agents__list. Case-sensitive.",
+                    "description": "Org the target project belongs to, as shown by agents__list. Case-sensitive. Required for an unsolicited message; leave it off when replying.",
                 },
                 "project": {
                     "type": "string",
-                    "description": "Project name of the target, as shown by agents__list. Case-sensitive. Your own project's name addresses a seat in your own project.",
+                    "description": "Project name of the target, as shown by agents__list. Case-sensitive. Your own project's name addresses a seat in your own project. Required for an unsolicited message; leave it off when replying.",
                 },
                 "label": {
                     "type": "string",
@@ -323,7 +339,7 @@ impl Tool for Tell {
                     "description": "Optional. Set to the correlation_id (q-XXXXXXXX) of an inbound agents__ask to mark this as a reply. The original asker sees it as a Reply envelope and the ask closes. Omit for unsolicited messages.",
                 },
             },
-            "required": ["org", "project", "message"],
+            "required": ["message"],
             "additionalProperties": false,
         })
     }
@@ -332,11 +348,6 @@ impl Tool for Tell {
         let args: TellArgs = match serde_json::from_value(input.value) {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
-        };
-        let known = self.dispatcher.peers().list_peers();
-        let target = match args.target.resolve(&known) {
-            Ok(target) => target,
-            Err(message) => return tool_error(message),
         };
         // A malformed id would miss the inflight-map lookup silently and
         // degrade a reply to a plain message, hiding the real problem.
@@ -354,15 +365,14 @@ impl Tool for Tell {
         };
 
         let correlation_id = CorrelationId::new_tell();
-        let own_project =
-            target.org() == self.slot.org() && target.project() == self.slot.project();
 
-        // A reply routes to whichever session asked, by slot: with one
-        // family there is no second channel for it to have arrived on.
+        // Classified before the target is resolved, because a reply does
+        // not need one: it routes to whoever asked, by slot, and the
+        // sender's own slot may not be addressable from here at all.
         if let Some(id) = in_reply_to_id.as_ref()
             && let Some(ask) = self.dispatcher.workers().resolve_correlation(id)
         {
-            let (sender_name, sender_org) = self.identity(own_project);
+            let (sender_name, sender_org) = self.identity();
             let wrapped = WrappedPrompt {
                 correlation_id: correlation_id.clone(),
                 kind: WrappedKind::Reply,
@@ -382,9 +392,14 @@ impl Tool for Tell {
             self.dispatcher
                 .workers()
                 .bump_inflight_stats(&ask.caller, PeerStatsDelta::OutgoingMinus1);
-            return Self::delivered_response(&correlation_id, &target, "delivered", None);
+            return Self::delivered_response(&correlation_id, "delivered", None);
         }
 
+        let known = self.dispatcher.peers().list_peers();
+        let target = match args.target.resolve(&known) {
+            Ok(target) => target,
+            Err(message) => return tool_error(message),
+        };
         let note = in_reply_to_id.as_ref().map(|id| {
             format!(
                 "in_reply_to {id} did not match an open ask (it may be stale or already \
@@ -392,7 +407,7 @@ impl Tool for Tell {
                  Re-check the correlation id if you meant to reply."
             )
         });
-        let (sender_name, sender_org) = self.identity(own_project);
+        let (sender_name, sender_org) = self.identity_for(&target);
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Message,
@@ -401,20 +416,29 @@ impl Tool for Tell {
             body: args.message,
         };
         match self.dispatcher.deliver(&self.slot, &target, wrapped) {
-            Ok(status) => Self::delivered_response(&correlation_id, &target, status, note),
+            Ok(status) => Self::delivered_response(&correlation_id, status, note),
             Err(message) => tool_error(message),
         }
     }
 }
 
 impl Tell {
-    /// The name and org the recipient's chat renders as the sender.
-    /// Each engine already answers this for its own path, so a message
-    /// reads the same as it did before the two families merged.
-    fn identity(&self, own_project: bool) -> (String, String) {
+    /// The name and org a reply carries. A reply needs no target, so it
+    /// cannot pick an engine's naming, and the caller's own label is the
+    /// information the recipient's chat has no other way to get.
+    fn identity(&self) -> (String, String) {
+        let identity = self.dispatcher.workers().caller_identity(&self.slot);
+        (identity.name, identity.org)
+    }
+
+    /// The name and org a message carries. Each engine already answers
+    /// this for its own path, so a message reads the same as it did
+    /// before the two families merged.
+    fn identity_for(&self, target: &AgentTarget) -> (String, String) {
+        let own_project =
+            target.org() == self.slot.org() && target.project() == self.slot.project();
         if own_project {
-            let identity = self.dispatcher.workers().caller_identity(&self.slot);
-            (identity.name, identity.org)
+            self.identity()
         } else {
             match self.dispatcher.peers().whoami(&self.slot) {
                 Some(identity) => (identity.name, identity.org),
@@ -425,14 +449,12 @@ impl Tell {
 
     fn delivered_response(
         correlation_id: &CorrelationId,
-        target: &AgentTarget,
         status: &str,
         note: Option<String>,
     ) -> ToolOutput {
         let mut body = serde_json::json!({
             "correlation_id": correlation_id.as_str(),
             "target_status": status,
-            "slot": slot_json(&SessionSlot::new(target.org(), target.project(), target.label())),
         });
         if let Some(note) = note
             && let Some(obj) = body.as_object_mut()
@@ -1312,6 +1334,38 @@ mod tests {
         assert_eq!(parsed["slot"]["org"], "acme");
         assert_eq!(parsed["slot"]["project"], "core");
         assert_eq!(parsed["slot"]["label"], LEAD_LABEL);
+    }
+
+    #[tokio::test]
+    async fn a_reply_needs_no_target() {
+        // A reply routes to whoever asked, by slot. The asker here is a
+        // worker in another project, whose slot the replier may not be
+        // able to name - so a reply that names no target must still land.
+        let host = host();
+        let ask_id = CorrelationId::new_ask();
+        let asker = SessionSlot::worker("other", "proj", "w1");
+        host.workers.inflight.lock().insert(
+            ask_id.clone(),
+            InflightAsk {
+                correlation_id: ask_id.clone(),
+                caller: asker.clone(),
+                target_project: "proj::w1".to_owned(),
+                target_session: None,
+            },
+        );
+        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "message": "answer",
+                    "in_reply_to": ask_id.as_str(),
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "a reply must land without a target: {:?}", output.blocks);
+        let replies = host.workers.reply_to_caller_calls.lock();
+        assert_eq!(replies.len(), 1, "the reply reached the asker's session");
+        assert_eq!(replies[0].0, asker, "and the asker is the session that asked");
     }
 
     #[tokio::test]

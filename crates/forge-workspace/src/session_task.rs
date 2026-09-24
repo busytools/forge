@@ -3713,7 +3713,7 @@ mod connected_hook_tests {
         slot
     }
 
-    /// A worker spawned with `workers__spawn(kick=...)` gets that kick
+    /// A worker spawned with `agents__spawn(kick=...)` gets that kick
     /// delivered as its first turn, verbatim, through the rate-limited
     /// dispatcher.
     #[tokio::test(start_paused = true)]
@@ -3773,7 +3773,7 @@ mod connected_hook_tests {
     }
 
     /// A live worker whose entry carries no kick gets none - it idles
-    /// until the lead sends a workers__tell.
+    /// until the lead sends an agents__tell.
     #[tokio::test(start_paused = true)]
     async fn worker_without_inline_kick_for_adhoc_label_does_not_kick() {
         let (workspace, _update_rx) = Workspace::testing_stub();

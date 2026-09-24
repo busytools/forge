@@ -1,6 +1,6 @@
 # Peer MCP - cross-agent coordination
 
-Every spawned `claude` child gets an in-process MCP server exposing the peer, worker, review, cron, [Gotify](./inspector-processes.md) and [Slack](./slack.md) groups; the table below covers the peer and cron ones. The `forge.toml` project name is the agent identity - one session per project. When the LLM in project A calls `peers__ask_agent`, forge wraps the prompt in a bracket-prefixed envelope and dispatches it as a synthetic user turn to project B; B's reply lands as another wrapped envelope on A's chat. The renderer matches the wrappers and shows a styled peer block instead of the raw bracket prose. All `mcp__forge__*` calls are auto-approved, and the default tool card is suppressed so the chat shows the styled block. See the [Projects pane](./projects-pane.md) for the per-row in-flight badges.
+Every spawned `claude` child gets an in-process MCP server exposing the agents, review, cron, [Gotify](./inspector-processes.md) and [Slack](./slack.md) groups; the table below covers the agents and cron ones. A session is addressed by its slot: the `forge.toml` project name, the project's org, and a label - `lead` for the project's own agent. When the LLM in project A calls `agents__ask`, forge wraps the prompt in a bracket-prefixed envelope and dispatches it as a synthetic user turn to the addressed seat; the reply lands as another wrapped envelope on A's chat. The renderer matches the wrappers and shows a styled peer block instead of the raw bracket prose. All `mcp__forge__*` calls are auto-approved, and the default tool card is suppressed so the chat shows the styled block. See the [Projects pane](./projects-pane.md) for the per-row in-flight badges.
 
 ## Peer / worker chat blocks
 
@@ -8,8 +8,8 @@ Every peer / worker tool call and inbound envelope renders as one block shape: a
 
 | Verb | Direction | Comes from |
 |---|---|---|
-| `Tell` | outbound unsolicited | `workers__tell` / `peers__tell_agent` |
-| `Ask` | outbound question | `workers__ask` / `peers__ask_agent` |
+| `Tell` | outbound unsolicited | `agents__tell` |
+| `Ask` | outbound question | `agents__ask` |
 | `Message` | inbound unsolicited | a `[Message ...]` envelope |
 | `Question` | inbound question | a `[Question ...]` envelope |
 | `Reply` | inbound response | a `[Reply ...]` envelope; a late one carries a `⚠ late` modifier |
@@ -63,7 +63,7 @@ Notices stay single-line with a `⚠` modifier inline.
 
 - Collapse: the body ellipses to one line (`└─ <first 60 chars>...`); click the row to expand the full body inline.
 - Same-worker streak: three consecutive envelopes from the same worker stack body lines under one header - no repeated `Message <same-name>` rows; different workers in the same project still get one header each.
-- `workers__spawn` / `workers__list` render as standard tool cards; only the ask / tell calls are suppressed.
+- `agents__spawn` / `agents__despawn` / `agents__update` / `agents__capacity` / `agents__list` render as standard tool cards; only the ask / tell calls are suppressed. A reply carries no target, so it renders as a standard tool card too.
 - Arrival order: an inbound turn appends at the tail in arrival order - never repositioned above the in-flight assistant turn that holds the outbound send. Delivery strips any stranded empty placeholder (so a rapid Gotify flood never leaves a blank bubble between turns), opens a fresh assistant placeholder at the tail so the thinking spinner pins to the bottom above the input, and flips the session to a running state (chat spinner plus a Projects-pane spin). A resumed history opens no live turn.
 - Malformed envelopes fall through to the default user-message rendering rather than erroring. A `[Worker ... spawn failed ...]` envelope stays a one-line system notice with no kind icon - a workspace lifecycle event, not agent traffic.
 
@@ -186,17 +186,17 @@ Sleeping projects have no live state to read peer counters from, so their rows c
 
 ## Tools exposed by the `mcp__forge__` server
 
-These are the peer and cron tools, all auto-approved. `peers__*` is lead-only, so a worker's server carries the cron half of this table and not the peer half.
+These are the agents and cron tools, all auto-approved. The four verbs that act on the caller's own project - `spawn`, `despawn`, `update` and `capacity` - are lead-only, so a worker's server carries the shared four and the cron tools.
 
 <details>
-<summary>The peer and cron tools</summary>
+<summary>The agents and cron tools</summary>
 
 | Tool | Inputs | Semantics |
 |---|---|---|
-| `peers__whoami` | - | The caller's own status: project, org, cwd, model, in-flight counts. |
-| `peers__list_agents` | - | Every project in `forge.toml` with its liveness, model, and in-flight counters; the caller's own row included. |
-| `peers__tell_agent` | `target` · `message` · `in_reply_to` (optional) | Fire-and-forget; returns a correlation id. A reply to a still-open ask renders as `Reply` and closes it; a wrong target or stale id demotes to `Message`, with a note in the result to retry. |
-| `peers__ask_agent` | `target` · `prompt` | Returns a correlation id; the ask goes in-flight and the reply lands as a synthetic user turn. In-flight until a reply lands or the target is lost. An unknown target fails synchronously; async failures deliver a `[Ask ... failed to deliver: ...]` envelope. |
+| `agents__whoami` | - | The caller's own slot (org, project, label) plus its status: path, liveness, in-flight counts. |
+| `agents__list` | `project` (optional) | Every project's own agent in `forge.toml` - the caller's included - with its liveness and in-flight counters, plus the caller's own live workers. `project` narrows it to one project. |
+| `agents__tell` | `org` · `project` · `label` (optional) · `message` · `in_reply_to` (optional) | Fire-and-forget; returns a correlation id. A reply to a still-open ask renders as `Reply` and closes it, and needs no target - it is routed to whoever asked. A target that names no configured project is refused rather than guessed at. |
+| `agents__ask` | `org` · `project` · `label` (optional) · `prompt` | Returns a correlation id; the ask goes in-flight and the reply lands as a synthetic user turn. In-flight until a reply lands or the target is lost. An unknown target fails synchronously; async failures deliver a `[Ask ... failed to deliver: ...]` envelope. |
 | `cron__create` | `schedule` (5-field cron) or `run_once_at` (RFC3339) · `prompt` · `description` (optional) | Register a durable cron for the caller's project (any caller). Exactly one of schedule / run-once-at; `next_fire` in the host's local timezone; the caller stamped as owner. The description headlines the [SCHEDULES](./inspector-processes.md) row, else the prompt's first line. Fires into its owner, waking the project when asleep; durable across restarts with catch-up-once on boot. |
 | `cron__list` | - | The caller's own crons: id, project, schedule, prompt, next fire. |
 | `cron__delete` | `id` | Deletes a cron by id, scoped to the caller's own crons. |

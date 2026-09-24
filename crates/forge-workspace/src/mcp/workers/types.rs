@@ -77,7 +77,7 @@ pub struct LiveWorkerState {
 }
 
 /// In-memory entry stored in `Workspace.live_workers[project_key]`.
-/// `WorkerStatus` is the wire shape returned by `workers__list`;
+/// `WorkerStatus` is the wire shape `agents__list` carries for a worker;
 /// `session_key` is the workspace-internal routing handle.
 ///
 /// `needs_tag` is workspace-internal scratch state (not part of the
@@ -118,8 +118,8 @@ pub struct WorkerEntry {
     pub diagnostic: Option<String>,
     /// First-turn message, delivered as the worker's first user turn on
     /// Connected (see `maybe_kick_worker_on_connected`). `None` for a
-    /// kick-less spawn, where the worker idles until the lead sends a
-    /// `workers__tell`.
+    /// kick-less spawn, where the worker idles until the lead sends an
+    /// `agents__tell`.
     pub kick: Option<String>,
 }
 
@@ -140,7 +140,7 @@ impl WorkerEntry {
     /// consumers read `status` alone, with one exception -
     /// `Workspace::worker_status_snapshot` builds on this via
     /// struct-update syntax and overwrites `activity` with the derived
-    /// value, which is what `workers__list` returns.
+    /// value, which is what `agents__list` returns.
     pub fn to_status(&self) -> WorkerStatus {
         WorkerStatus {
             label: self.label.clone(),
@@ -173,7 +173,7 @@ pub(crate) fn live_worker_with_label<'a>(
 }
 
 /// Workers that count against the cap. The cap check and the
-/// `workers__capacity` read both go through here, so the reported
+/// `agents__capacity` read both go through here, so the reported
 /// number cannot drift from the enforced one.
 pub(crate) fn live_worker_count(entries: &[WorkerEntry]) -> usize {
     entries.iter().filter(|w| w.is_live()).count()

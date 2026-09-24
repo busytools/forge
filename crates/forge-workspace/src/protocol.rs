@@ -74,7 +74,7 @@ impl std::fmt::Debug for PendingInteractionSlot {
 
 /// Synchronous return from `Command::SpawnWorker` - the session_id
 /// that the new worker was issued and the tag value applied. Threaded
-/// back to the calling `workers__spawn` Tool impl via the oneshot
+/// back to the calling `agents__spawn` Tool impl via the oneshot
 /// receiver so the LLM sees `{session_id, tag}` in the tool result.
 #[derive(Debug, Clone)]
 pub struct WorkerSpawnReply {
@@ -111,7 +111,7 @@ pub enum SessionChoice {
 }
 
 /// Outcome of a [`Command::DespawnWorker`], sent back to the calling
-/// `workers__despawn` Tool via the command's `respond` oneshot.
+/// `agents__despawn` Tool via the command's `respond` oneshot.
 #[derive(Debug)]
 pub enum DespawnResult {
     /// The worker was torn down (subprocess killed, dropped from
@@ -150,7 +150,7 @@ pub enum WorkerStatusAction {
 
 /// What has happened to a worker's git worktree as of the
 /// `SessionUpdate::WorkerStatusChanged` event carrying it. Only the
-/// `workers__despawn` path ever removes one. Among the spawn
+/// `agents__despawn` path ever removes one. Among the spawn
 /// rollbacks, the dividing line is `Connected`: one that fires before
 /// the subprocess connected reports [`Self::Absent`], because claude
 /// never ran to create a worktree, while a rollback after `Connected`
@@ -295,9 +295,9 @@ pub enum Command {
         project_name: Option<String>,
         launch_settings: SessionLaunchSettings,
     },
-    /// Peer-coordination delivery (#114 v1). Dispatched by the
-    /// `mcp__forge__peers__ask_agent` / `peers__tell_agent` tool
-    /// impls via `WorkspaceFacade::deliver_peer_prompt`. Routed to
+    /// Cross-project delivery (#114 v1). Dispatched by the
+    /// `mcp__forge__agents__tell` / `agents__ask` tool impls via
+    /// `WorkspaceFacade::deliver_peer_prompt`. Routed to
     /// `spawn::handle_deliver_peer_prompt` which: (a) resolves
     /// `target_project` to a `SessionSlot`; (b) if target is running,
     /// dispatches a plain `Command::Prompt` carrying the wrapper
@@ -316,7 +316,7 @@ pub enum Command {
         wrapped: WrappedPrompt,
     },
     /// Spawn a new worker session in `project_key`. Dispatched by
-    /// the `workers__spawn` MCP Tool impl after caller-tag validation,
+    /// the `agents__spawn` MCP Tool impl after caller-tag validation,
     /// or by the lead Connected hook when reviving
     /// across-restart workers.
     ///
@@ -326,7 +326,7 @@ pub enum Command {
     /// `forge:worker:<label>` tag (the lead Connected hook verifies
     /// this before dispatching). `WorkerEntry::needs_tag` is set false
     /// on the resume path since the tag is already on disk. `None`
-    /// preserves the original fresh-spawn path used by `workers__spawn`.
+    /// preserves the original fresh-spawn path used by `agents__spawn`.
     ///
     /// `return_to` carries the spawn result back to the calling tool
     /// invocation; `Ok((session_id, tag))` on success, `Err(message)`
@@ -343,7 +343,7 @@ pub enum Command {
         spawned_by: SessionSlot,
         resume_existing: Option<String>,
         /// First message delivered as the worker's user turn on Connected,
-        /// via the rate-limited kick dispatcher. Either `workers__spawn`'s
+        /// via the rate-limited kick dispatcher. Either `agents__spawn`'s
         /// `kick`, or - on a re-spawn - the row's `resume_kick` or the
         /// generic restart note, which is the only thing that wakes a
         /// resuming worker. `None` -> no kick (the worker idles until
@@ -384,7 +384,7 @@ pub enum Command {
     /// Despawn the worker identified by `label` in `project_key`:
     /// terminate its agent, drop it from `live_workers`, expire its
     /// inflight asks, AND clean up its git worktree. Dispatched by the
-    /// `workers__despawn` MCP tool (lead-only). Unlike `CloseWorker`
+    /// `agents__despawn` MCP tool (lead-only). Unlike `CloseWorker`
     /// (the TUI X-button), this also removes the worker's git worktree:
     /// a clean worktree is removed; a dirty one (uncommitted/untracked
     /// or unpushed commits) blocks the despawn unless `force`. The
@@ -404,9 +404,9 @@ pub enum Command {
         target_label: String,
         wrapped: WrappedPrompt,
     },
-    /// Deliver a wrapped peer-style prompt from a worker back to its
-    /// lead. Dispatched by the `workers__tell` / `workers__ask` Tool
-    /// impls when the caller addresses `label="lead"`. The target
+    /// Deliver a wrapped prompt from a worker back to its lead.
+    /// Dispatched by the `agents__tell` / `agents__ask` Tool impls
+    /// when the caller addresses `label="lead"`. The target
     /// `SessionSlot` is resolved at Tool dispatch time from the
     /// worker's `spawned_by_session_id` so the handler can deliver
     /// directly without re-doing the lookup against a possibly-mutated

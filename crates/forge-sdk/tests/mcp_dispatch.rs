@@ -61,9 +61,9 @@ fn req(id: i64, method: &str, params: serde_json::Value) -> JsonRpcRequest {
 
 #[test]
 fn has_tool_prefix_matches_registered_names_only() {
-    let server = McpServerBuilder::new("forge", "0.0.0").tool(NamedTool("workers__list")).build();
-    assert!(server.has_tool_prefix("workers__"));
-    assert!(!server.has_tool_prefix("peers__"), "no peers tool registered");
+    let server = McpServerBuilder::new("forge", "0.0.0").tool(NamedTool("agents__list")).build();
+    assert!(server.has_tool_prefix("agents__"));
+    assert!(!server.has_tool_prefix("review__"), "no review tool registered");
 }
 
 #[tokio::test]

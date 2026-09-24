@@ -50,10 +50,10 @@ pub enum WorkerLeadDeliverError {
     LeadGone,
 }
 
-/// Label string the workers MCP reserves for addressing the caller's
-/// lead via `workers__tell` / `workers__ask`. Workers may target the
-/// lead with `label="lead"`; `workers__spawn` rejects the label so
-/// no live worker can shadow the keyword.
+/// The label reserved for a project's own agent. A caller addresses it
+/// as the `label` of an `agents__tell` / `agents__ask` target;
+/// `agents__spawn` rejects the label so no live worker can shadow the
+/// keyword.
 pub use forge_primitives::LEAD_LABEL;
 
 /// Org string stamped into a lead caller's wire envelope (and the
@@ -115,7 +115,7 @@ pub enum WorkerUpdateError {
 /// Synchronous outcome of `despawn_worker` - the success-shaped half
 /// of a `Command::DespawnWorker`. Gating + dispatch errors are the
 /// `Err` arm of the result; these two variants are what the
-/// `workers__despawn` Tool renders as `status: "despawned" | "blocked"`.
+/// `agents__despawn` Tool renders as `status: "despawned" | "blocked"`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DespawnOutcome {
     /// Worker torn down. `worktree_cleanup_warning` is `Some` when the
@@ -229,8 +229,8 @@ pub struct CallerProject {
     pub is_lead: bool,
 }
 
-/// Display identity for the sender of a `workers__tell` or
-/// `workers__ask` envelope. Returned by [`WorkerFacade::caller_identity`]
+/// Display identity for the sender of an `agents__tell` or
+/// `agents__ask` envelope. Returned by [`WorkerFacade::caller_identity`]
 /// and stamped into `WrappedPrompt::sender_name` / `sender_org` so the
 /// recipient's chat renders `from agent '<name>' (org '<org>')` with a
 /// human-readable label rather than the raw session UUID.
@@ -405,16 +405,15 @@ pub trait WorkerFacade: Send + Sync {
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk>;
 
     /// Look up an `InflightAsk` without removing it. Used by
-    /// `workers__tell` to classify an `in_reply_to` argument as
-    /// either a clean reply (entry exists, target matches) or a
-    /// degraded message (entry gone / mismatched).
+    /// `agents__tell` to classify an `in_reply_to` argument as either a
+    /// clean reply (entry exists) or a degraded message (entry gone).
     fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk>;
 
-    /// Bump per-session peer-inflight stats counters. Same map the
-    /// peer-MCP uses; workers__ask bumps `OutgoingPlus1` on the
-    /// caller when it fires, workers__tell with `in_reply_to`
-    /// decrements `OutgoingMinus1` on the original asker and
-    /// `IncomingMinus1` on the replier.
+    /// Bump per-session inflight stats counters, the map the sidebar
+    /// badge reads. `agents__ask` bumps `OutgoingPlus1` on the caller
+    /// when it fires; `agents__tell` with `in_reply_to` decrements
+    /// `OutgoingMinus1` on the original asker and `IncomingMinus1` on
+    /// the replier.
     fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta);
 }
 
@@ -1419,8 +1418,8 @@ mod mock_tests {
     fn caller_identity_lead_returns_lead_label_and_personal() {
         // Lead callers stamp the symbolic `lead` label into the
         // wire envelope's `sender_name`, not the sanitized project
-        // path - workers address the lead via `workers__tell("lead",
-        // ...)`, so the reverse direction must match for the chat
+        // path - workers address the lead as `label="lead"`, so the
+        // reverse direction must match for the chat
         // surfaces to render `▶ Message lead` instead of the
         // hyphenated env-key path.
         let mock = MockWorkerFacade::new();
@@ -1548,7 +1547,7 @@ mod mock_tests {
     }
 }
 
-/// The `workers__list` read path is the only producer of
+/// The `agents__list` read path is the only producer of
 /// `WorkerStatus::activity`, so it needs pinning here rather than only
 /// on the projection it calls - reverting this one `map` to
 /// `WorkerEntry::to_status` makes the whole field inert.
@@ -1595,7 +1594,7 @@ mod prod_list_workers_tests {
         assert_eq!(
             listed[0].activity,
             Some(SessionLifecycleState::Idle),
-            "workers__list must report the derived activity, not leave it unset",
+            "agents__list must report the derived activity, not leave it unset",
         );
 
         domain.lock().turn_pending = true;

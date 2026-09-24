@@ -28,10 +28,9 @@ use crate::app::MessageBlock;
 ///   (`ui/message.rs::renders_as_lifecycle_block`). Keyed on the render,
 ///   not the name: a Monitor whose input does not parse paints an
 ///   ordinary tool card and folds like one.
-/// - Tools rendered as a peer block
+/// - Tools rendered as an agent block
 ///   (`ui/peer_block.rs::detect_outbound` match set:
-///   peers__ask_agent / peers__tell_agent / workers__ask /
-///   workers__tell).
+///   agents__ask / agents__tell).
 ///
 /// `tc.hidden == true` (chat-suppressed: Task* / AskUserQuestion while
 /// unanswered / Schedule* / Cron*) is NOT a breaker - hidden tools
@@ -84,13 +83,7 @@ fn is_edit_tool(sdk_tool_name: &str) -> bool {
 /// card). Name-based because `detect_outbound` matches by
 /// `sdk_tool_name` literal. Mirror its match set exactly.
 fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
-    matches!(
-        sdk_tool_name,
-        "mcp__forge__peers__ask_agent"
-            | "mcp__forge__peers__tell_agent"
-            | "mcp__forge__workers__ask"
-            | "mcp__forge__workers__tell",
-    )
+    matches!(sdk_tool_name, "mcp__forge__agents__ask" | "mcp__forge__agents__tell")
 }
 
 /// One kind-line in a group's L2 summary: a glyph-family (or MCP
@@ -974,15 +967,10 @@ mod tests {
             !is_run_breaker(&tool_call_block("x", "Monitor")),
             "a Monitor with no parseable input paints an ordinary card and folds",
         );
-        for name in [
-            "mcp__forge__peers__ask_agent",
-            "mcp__forge__peers__tell_agent",
-            "mcp__forge__workers__ask",
-            "mcp__forge__workers__tell",
-        ] {
+        for name in ["mcp__forge__agents__ask", "mcp__forge__agents__tell"] {
             assert!(
                 is_run_breaker(&tool_call_block("x", name)),
-                "{name} renders as a peer block and MUST break runs",
+                "{name} renders as an agent block and MUST break runs",
             );
         }
         // AskUserQuestion is hidden (pass-through) while unanswered;
@@ -1707,7 +1695,7 @@ mod tests {
         let blocks = vec![
             tool_call_block("a", "Read"),
             tool_call_block("b", "Read"),
-            tool_call_block("c", "mcp__forge__peers__ask_agent"),
+            tool_call_block("c", "mcp__forge__agents__ask"),
             tool_call_block("d", "Read"),
             tool_call_block("e", "Read"),
         ];
@@ -1798,14 +1786,14 @@ mod tests {
         // `kind` is "Tell" or "Ask"; map to the matching MCP tool name
         // + raw_input shape that `peer_block::detect_outbound` keys on.
         let (sdk_tool_name, body_key) = match kind {
-            "Tell" => ("mcp__forge__peers__tell_agent", "message"),
-            "Ask" => ("mcp__forge__peers__ask_agent", "prompt"),
+            "Tell" => ("mcp__forge__agents__tell", "message"),
+            "Ask" => ("mcp__forge__agents__ask", "prompt"),
             other => panic!("unknown outbound kind {other:?}; use Tell|Ask"),
         };
         let mut block = tool_call_block(&next_fixture_id("tu-out"), sdk_tool_name);
         if let MessageBlock::ToolCall(tc) = &mut block {
             tc.raw_input = Some(serde_json::json!({
-                "target": target,
+                "project": target,
                 body_key: "body",
             }));
         }

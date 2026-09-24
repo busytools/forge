@@ -1,13 +1,12 @@
 //! Shared "who's calling, and what's their project context?" helper
-//! consumed by both the peers MCP and the workers MCP facades.
+//! consumed by both the cross-project and the in-project facades.
 //!
-//! Before this helper, peers `whoami` and workers `caller_project`
-//! each carried their own walk over `list_projects()` and disagreed:
-//! peers required the caller == the project's lead session; workers
-//! walked both `live_workers` and the catalog. The peers walk was
-//! the buggy one (#298 Cause 1) - workers couldn't call
-//! `peers__whoami`. This helper consolidates the lookup so both
-//! facades see the same answer.
+//! Before this helper the two facades each carried their own walk over
+//! `list_projects()` and disagreed: one required the caller to be the
+//! project's lead session, the other walked both `live_workers` and
+//! the catalog. The stricter walk was the buggy one (#298 Cause 1) -
+//! a worker could not resolve its own identity. This helper
+//! consolidates the lookup so both facades see the same answer.
 
 use std::path::PathBuf;
 
