@@ -10,9 +10,7 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::{PeerInflightStats, SDKSessionInfo};
 
-use crate::mcp::peers::types::{
-    AskChannel, CorrelationId, InflightAsk, WrappedKind, WrappedPrompt,
-};
+use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -4909,7 +4907,6 @@ impl Workspace {
                 let wrapped = WrappedPrompt {
                     correlation_id: CorrelationId::new_tell(),
                     kind: WrappedKind::WorkerSpawnFailedNotice,
-                    channel: AskChannel::Workers,
                     sender_name: entry.label.clone(),
                     sender_org: String::new(),
                     body: reason.clone(),
@@ -5645,7 +5642,6 @@ impl Workspace {
         let caller_notice = WrappedPrompt {
             correlation_id: id.clone(),
             kind: WrappedKind::DeliveryFailureNotice,
-            channel: ask.channel,
             sender_name: ask.target_project.clone(),
             sender_org: target_org,
             body,
@@ -9378,7 +9374,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
                 target_project: "gateway-backend".to_owned(),
                 target_session: None,
@@ -9412,7 +9407,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
                 target_project: "gateway-backend".to_owned(),
                 target_session: None,
@@ -9438,7 +9432,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn expire_inflight_ask_failed_emits_peer_envelope_echo() {
         use crate::mcp::peers::types::{
-            AskChannel, CorrelationId, InflightAsk, PeerFailureReason, WrappedKind,
+            CorrelationId, InflightAsk, PeerFailureReason, WrappedKind,
         };
         let dir = forge_toml_with_two_projects();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
@@ -9450,7 +9444,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: AskChannel::Peers,
                 caller: caller.clone(),
                 target_project: "gateway-backend".to_owned(),
                 target_session: None,
@@ -9490,7 +9483,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Workers,
                 caller: SessionSlot::from_str_for_test("lead-1"),
                 target_project: crate::mcp::workers::worker_target_project_key("forge", "builder"),
                 target_session: Some(worker_key.clone()),
@@ -9521,7 +9513,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
                 target_project: "gateway-backend".to_owned(),
                 target_session: Some(target.clone()),
@@ -9563,7 +9554,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: SessionSlot::from_str_for_test("asker"),
                 target_project: "gateway-backend".to_owned(),
                 target_session: None,
@@ -9585,7 +9575,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn deliver_reply_to_caller_routes_by_session_and_guards() {
         use crate::mcp::peers::facade::ReplyDeliverError;
-        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
+        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
         let (ws, _rx) = Workspace::testing_stub();
         ws.enable_test_dispatch_intercept();
 
@@ -9593,7 +9583,6 @@ provider = "anthropic"
         let reply = WrappedPrompt {
             correlation_id: CorrelationId::new_tell(),
             kind: WrappedKind::Reply,
-            channel: AskChannel::Workers,
             sender_name: "worker".to_owned(),
             sender_org: "worker in forge".to_owned(),
             body: "here's the answer".to_owned(),
@@ -9639,7 +9628,7 @@ provider = "anthropic"
     /// signal that renders the inbound `[Reply ...]` chat block.
     #[tokio::test]
     async fn deliver_reply_to_caller_emits_peer_envelope_echo() {
-        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
+        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
         let (ws, mut rx) = Workspace::testing_stub();
         ws.enable_test_dispatch_intercept();
 
@@ -9647,7 +9636,6 @@ provider = "anthropic"
         let reply = WrappedPrompt {
             correlation_id: CorrelationId::new_tell(),
             kind: WrappedKind::Reply,
-            channel: AskChannel::Workers,
             sender_name: "worker".to_owned(),
             sender_org: "worker in forge".to_owned(),
             body: "here's the answer".to_owned(),
@@ -9735,7 +9723,6 @@ provider = "anthropic"
                 id_a.clone(),
                 InflightAsk {
                     correlation_id: id_a.clone(),
-                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_a.clone(),
                     target_project: "gateway-backend".to_owned(),
                     target_session: None,
@@ -9745,7 +9732,6 @@ provider = "anthropic"
                 id_b.clone(),
                 InflightAsk {
                     correlation_id: id_b.clone(),
-                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_b.clone(),
                     target_project: "gateway-backend".to_owned(),
                     target_session: None,
@@ -9755,7 +9741,6 @@ provider = "anthropic"
                 id_c.clone(),
                 InflightAsk {
                     correlation_id: id_c.clone(),
-                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_c.clone(),
                     target_project: "forge".to_owned(),
                     target_session: None,
@@ -10988,8 +10973,14 @@ mod worker_respawn_tests {
     }
 
     /// The tool names the per-session `forge` MCP server registers for
-    /// `kind`, composed exactly as the spawn path composes them.
-    fn forge_tool_surface(workspace: &Arc<Workspace>, kind: crate::mcp::SessionKind) -> String {
+    /// `kind`, composed exactly as the spawn path composes them. Read
+    /// off the server's debug listing rather than substring-searched in
+    /// it, so a description naming a tool cannot answer for the
+    /// registration.
+    fn forge_tool_surface(
+        workspace: &Arc<Workspace>,
+        kind: crate::mcp::SessionKind,
+    ) -> Vec<String> {
         let server = crate::mcp::build_forge_server(
             crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
             crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
@@ -11000,7 +10991,14 @@ mod worker_respawn_tests {
             SessionSlot::from_str_for_test("caller"),
             kind,
         );
-        format!("{server:?}")
+        let debug = format!("{server:?}");
+        let (_, tools) = debug.split_once("tools: [").expect("debug lists the tool names");
+        let (tools, _) = tools.split_once(']').expect("the tool list is closed");
+        tools
+            .split(", ")
+            .map(|name| name.trim_matches('"').to_owned())
+            .filter(|name| !name.is_empty())
+            .collect()
     }
 
     /// The guard refuses a second claim while the first is outstanding.
@@ -11065,8 +11063,8 @@ mod worker_respawn_tests {
             crate::mcp::SessionKind::Worker
         };
         assert!(
-            !forge_tool_surface(&ws, kind).contains("peers__"),
-            "and a worker's forge server carries no peers tools",
+            !forge_tool_surface(&ws, kind).contains(&"agents__spawn".to_owned()),
+            "and a worker's forge server carries no lead-only verb",
         );
     }
 
@@ -11088,13 +11086,14 @@ mod worker_respawn_tests {
     /// A tool surface for each kind, which is what the role gates: this is
     /// the lead half of the pair above, and it is the control that stops a
     /// derivation answering Worker for everything from satisfying the
-    /// worker case while stripping peers from every lead.
+    /// worker case while stripping the lead-only verbs from every lead.
     #[test]
-    fn a_lead_tool_surface_keeps_its_peers_tools() {
+    fn a_lead_tool_surface_keeps_its_lead_only_verbs() {
         let (ws, _rx) = Workspace::testing_stub();
         assert!(
-            forge_tool_surface(&ws, crate::mcp::SessionKind::Lead).contains("peers__ask_agent"),
-            "a lead keeps its peers tools",
+            forge_tool_surface(&ws, crate::mcp::SessionKind::Lead)
+                .contains(&"agents__spawn".to_owned()),
+            "a lead keeps the verbs only a lead may call",
         );
     }
 
@@ -13081,7 +13080,6 @@ mod async_worker_spawn_failure_tests {
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Workers,
                 caller: SessionSlot::from_str_for_test("lead-1"),
                 target_project: crate::mcp::workers::worker_target_project_key("proj-x", "builder"),
                 target_session: None,

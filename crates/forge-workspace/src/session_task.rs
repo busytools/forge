@@ -2768,7 +2768,7 @@ provider = "anthropic"
     /// method directly).
     #[tokio::test]
     async fn first_connected_drains_parked_peer_prompts_in_fifo_order() {
-        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
+        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
 
         let (workspace, _update_rx) = crate::Workspace::testing_stub();
 
@@ -2786,7 +2786,6 @@ provider = "anthropic"
                 WrappedPrompt {
                     correlation_id: CorrelationId::new_tell(),
                     kind: WrappedKind::Message,
-                    channel: AskChannel::Peers,
                     sender_name: "forge".to_owned(),
                     sender_org: "Default".to_owned(),
                     body: body.to_owned(),

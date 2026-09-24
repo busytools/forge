@@ -13,11 +13,16 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 use crate::SessionSlot;
 use crate::mcp::agents::facade::AgentDispatcher;
-use crate::mcp::agents::target::{AgentTarget, TargetError};
-use crate::mcp::peers::facade::PeerStatsDelta;
+use crate::mcp::agents::target::{AgentTarget, LEAD_LABEL, TargetError};
+use crate::mcp::peers::facade::{PeerStatsDelta, WorkspaceFacade};
 use crate::mcp::peers::types::{
-    AskChannel, CorrelationId, InflightAsk, PeerStatus, WrappedKind, WrappedPrompt,
+    CorrelationId, InflightAsk, PeerStatus, WrappedKind, WrappedPrompt,
 };
+use crate::mcp::workers::facade::{
+    DespawnOutcome, WorkerCapSource, WorkerDespawnError, WorkerFacade, WorkerSpawnError,
+    WorkerUpdateError,
+};
+use crate::protocol::SessionChoice;
 
 /// Attach the four any-caller verbs to an existing [`McpServerBuilder`].
 pub(crate) fn add_shared_tools(
@@ -361,7 +366,6 @@ impl Tool for Tell {
             let wrapped = WrappedPrompt {
                 correlation_id: correlation_id.clone(),
                 kind: WrappedKind::Reply,
-                channel: ask.channel,
                 sender_name,
                 sender_org,
                 body: args.message,
@@ -392,7 +396,6 @@ impl Tool for Tell {
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Message,
-            channel: if own_project { AskChannel::Workers } else { AskChannel::Peers },
             sender_name,
             sender_org,
             body: args.message,
@@ -548,7 +551,6 @@ impl Tool for Ask {
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
-            channel: if own_project { AskChannel::Workers } else { AskChannel::Peers },
             sender_name,
             sender_org,
             body: args.prompt,
@@ -572,7 +574,6 @@ impl Tool for Ask {
         };
         self.dispatcher.workers().register_inflight_ask(InflightAsk {
             correlation_id: correlation_id.clone(),
-            channel: wrapped.channel,
             caller: self.slot.clone(),
             target_project,
             target_session: None,
@@ -596,6 +597,547 @@ impl Tool for Ask {
                     .bump_inflight_stats(&self.slot, PeerStatsDelta::OutgoingMinus1);
                 tool_error(message)
             }
+        }
+    }
+}
+
+/// Build a standalone `forge` MCP server carrying the whole `agents__*`
+/// family as a lead sees it. The wire-conformance harness drives the
+/// surface through this against mock facades.
+#[cfg(any(test, feature = "testing"))]
+pub fn build_server(
+    peers: Arc<dyn WorkspaceFacade>,
+    workers: Arc<dyn WorkerFacade>,
+    slot: SessionSlot,
+) -> forge_sdk::mcp::server::McpServer {
+    let dispatcher = Arc::new(AgentDispatcher::new(peers, workers.clone()));
+    let builder = forge_sdk::mcp::server::McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"));
+    let builder = add_shared_tools(builder, dispatcher, slot.clone());
+    add_lead_tools(builder, workers, slot).build()
+}
+
+/// Attach the four lead-only verbs to an existing [`McpServerBuilder`].
+/// Each acts on the caller's own project, so a worker has no project to
+/// act on and is not offered the surface.
+pub(crate) fn add_lead_tools(
+    builder: forge_sdk::mcp::server::McpServerBuilder,
+    facade: Arc<dyn WorkerFacade>,
+    slot: SessionSlot,
+) -> forge_sdk::mcp::server::McpServerBuilder {
+    let spawn = Spawn { facade: facade.clone(), slot: slot.clone() };
+    let capacity = Capacity { facade: facade.clone(), slot: slot.clone() };
+    let despawn = Despawn { facade: facade.clone(), slot: slot.clone() };
+    let update = Update { facade, slot };
+    builder.tool(spawn).tool(capacity).tool(despawn).tool(update)
+}
+
+fn format_spawn_error(err: &WorkerSpawnError) -> String {
+    match err {
+        WorkerSpawnError::NotLeadCaller => {
+            "agents__spawn is lead-only; this session is a worker. Workers cannot \
+             spawn other workers in v1."
+                .to_owned()
+        }
+        WorkerSpawnError::EmptyLabel => "label must be non-empty after trim".to_owned(),
+        WorkerSpawnError::ReservedLabel => format!(
+            "label '{LEAD_LABEL}' is reserved - agents__tell / agents__ask use it as \
+             the addressing keyword for the caller's project's own agent. Pick a different label."
+        ),
+        WorkerSpawnError::EmptyCharter => "charter must be non-empty after trim".to_owned(),
+        WorkerSpawnError::UnknownCallerProject => {
+            "could not resolve caller to a known project (forge bug)".to_owned()
+        }
+        WorkerSpawnError::DispatchFailed { message } => {
+            format!("worker spawn failed: {message}")
+        }
+        WorkerSpawnError::WorktreeCreationFailed { reason } => {
+            format!("worktree creation failed: {reason}")
+        }
+        WorkerSpawnError::ResumeLookupFailed { label, message } => format!(
+            "could not look up a prior session for '{label}': {message}. Nothing was spawned, \
+             because a failed lookup is not the same answer as no prior session; retry, or \
+             spawn without resume_session to start fresh"
+        ),
+    }
+}
+
+fn format_despawn_error(err: &WorkerDespawnError) -> String {
+    match err {
+        WorkerDespawnError::NotLeadCaller => {
+            "agents__despawn is lead-only; this session is a worker. Only the project lead may despawn workers.".to_owned()
+        }
+        WorkerDespawnError::EmptyLabel => "label must be non-empty after trim".to_owned(),
+        WorkerDespawnError::UnknownCallerProject => {
+            "could not resolve caller to a known project (forge bug)".to_owned()
+        }
+        WorkerDespawnError::UnknownLabel { label, project_key } => format!(
+            "no live worker with label '{label}' in project '{project_key}'. Call agents__list to see the current pool."
+        ),
+        WorkerDespawnError::DispatchFailed { message } => {
+            format!("worker despawn failed: {message}")
+        }
+    }
+}
+
+fn format_update_error(err: &WorkerUpdateError) -> String {
+    match err {
+        WorkerUpdateError::UnknownCallerProject => {
+            "could not resolve caller to a known project (forge bug)".to_owned()
+        }
+        WorkerUpdateError::NoSuchWorker { label, project_key } => format!(
+            "no dynamic worker '{label}' in project '{project_key}'. agents__update revises a \
+             worker created by agents__spawn, so if you meant to create one, spawn it first."
+        ),
+        WorkerUpdateError::StoreFailed { message } => format!("worker update failed: {message}"),
+    }
+}
+
+/// `agents__spawn` - lead-only. Allocates a new session in the caller's
+/// project, threading `charter` through the new session's system-prompt
+/// addendum, then returns the assigned `session_id` and `tag`
+/// (`forge:worker:<label>`).
+pub(crate) struct Spawn {
+    pub(crate) facade: Arc<dyn WorkerFacade>,
+    pub(crate) slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct SpawnArgs {
+    label: String,
+    charter: String,
+    #[serde(default)]
+    kick: Option<String>,
+    #[serde(default)]
+    resume_kick: Option<String>,
+    #[serde(default)]
+    interactive: bool,
+    #[serde(default)]
+    resume_session: bool,
+}
+
+#[async_trait::async_trait]
+impl Tool for Spawn {
+    fn name(&self) -> &'static str {
+        "agents__spawn"
+    }
+
+    fn description(&self) -> &'static str {
+        "Spawn a new worker session inside YOUR project (lead-only). \
+         The worker is a full forge session - its own claude subprocess, \
+         own chat view, own permissions - addressable from your session \
+         by its label, via agents__tell / agents__ask with your own \
+         org and project. `charter` is the worker's mission, threaded \
+         into the new session's system prompt, and defines what that \
+         worker is. PROVIDE `kick` TO START THE WORKER IMMEDIATELY: \
+         the kick is delivered as the worker's first user-turn the moment \
+         it connects, so it begins working at once. WITHOUT a kick the \
+         worker sits idle until you send it an agents__tell - a 'begin \
+         now' line in the charter does NOT run on its own, so pass `kick` \
+         for any ad-hoc spawn you want to start now. Returns the worker's \
+         session_id and tag (`forge:worker:<label>`). A spawned worker is \
+         DURABLE: it survives forge restarts and is automatically \
+         re-spawned, resuming where it left off (a restarted worker is \
+         told to continue, not start over), until you explicitly despawn \
+         it with agents__despawn (or close its row in the Projects \
+         pane). A worker whose worktree has gone is not re-spawned \
+         automatically - its resume would have nowhere to start - so it \
+         stops being offered until the worktree is back; passing \
+         `resume_session` recreates that worktree and brings it back. \
+         DESPAWNED A WORKER WHOSE CONTEXT YOU STILL WANT? Re-spawn \
+         the same label with `resume_session` set: it resumes the label's \
+         most recent prior session instead of starting fresh. When the \
+         label has no prior session a fresh one starts and the response \
+         says which session it landed on. \
+         PASS `resume_kick` FOR A LONG-LIVED WORKER whose restart \
+         needs specific steps - re-read a file, catch up a queue, check \
+         what was mid-run - rather than that generic continue; it \
+         replaces the restart note on every resume. Omit it and the \
+         generic note is what a resumed worker gets. A worker cannot ask \
+         the user anything directly - it has no AskUserQuestion - and \
+         reaches them through you instead; PASS `interactive` only for a \
+         worker the user asked to talk to directly. So spawn one per \
+         distinct piece of work, and despawn once the worker has handed \
+         over what you spawned it to produce: a merged PR, or equally a \
+         written report, an answered question, a finished sweep - a \
+         worker whose output is not a PR has no merge to wait for and \
+         still needs closing. A forgotten worker keeps coming back on \
+         every restart. At most one live worker per label - \
+         if one already exists, this errors and you should message it \
+         with agents__tell / agents__ask instead of spawning again. \
+         The label 'lead' is reserved (it addresses a project's own \
+         agent) and rejected here. \
+         Use agents__list to see your project's current worker pool. \
+         This tool errors if called from a worker session; only the \
+         project lead may spawn."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Identifier you will use to address this worker later, as the `label` of an agents__tell / agents__ask target. Non-empty after trim. At most one live worker per label - reusing a label with a live worker is rejected.",
+                },
+                "charter": {
+                    "type": "string",
+                    "description": "The worker's mission, threaded into the new session's system prompt. This is what defines the worker, so say what it is responsible for and how it should work. Non-empty after trim.",
+                },
+                "kick": {
+                    "type": "string",
+                    "description": "Optional first-turn message delivered to the worker the moment it connects, so it STARTS WORKING IMMEDIATELY (equivalent to sending an agents__tell right after spawn). STRONGLY RECOMMENDED for ad-hoc spawns: WITHOUT a kick the worker sits idle until you send it an agents__tell - a 'begin now' line in the charter does NOT run on its own. Omit only when you intend to drive the worker yourself with a later agents__tell.",
+                },
+                "resume_kick": {
+                    "type": "string",
+                    "description": "Optional re-orient message delivered every time this worker is RESUMED after a forge restart, in place of the generic 'continue where you left off' note. For a LONG-LIVED worker whose restart needs specific steps - re-read a file, catch up a queue, check whether something was mid-run before re-running it - rather than a generic continue. Stored at spawn rather than delivered now; the first turn of a fresh spawn is `kick`. Non-empty after trim when provided - to keep the generic restart note, OMIT the argument rather than passing an empty string, which is rejected.",
+                },
+                "interactive": {
+                    "type": "boolean",
+                    "description": "Set true ONLY when the user asked for a worker they will talk to DIRECTLY and will have its row open. It keeps the built-in AskUserQuestion tool, which every other worker is denied: a worker's question renders in its own row, which nobody is usually watching, and an answer that does arrive is indistinguishable from a decision the user actually made - so a worker can attribute a choice to the user in good faith that the user never saw. Defaults to false, which is right for any worker you are spawning on your own initiative; that worker reaches the user through you, via its agents__ask to you. This is fixed at spawn - changing it means despawning the worker and spawning it again.",
+                },
+                "resume_session": {
+                    "type": "boolean",
+                    "description": "Set true to RESUME this label's most recent prior session instead of starting fresh, so the old conversation arrives as history and the worker continues where it left off. The natural move after despawning a worker whose context you still want: re-spawn the same label with this set. The session is resolved from what the label is registered under, or from its own transcripts by worker tag once that is gone; if there is none to resume, a fresh one starts and the response says which happened. A live worker on the same label is still rejected; despawn or close it first. A git worker's worktree is recreated if despawn removed it, so the resumed session lands back in its run directory.",
+                },
+            },
+            "required": ["label", "charter"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: SpawnArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+
+        // An empty one is `Some`, so it would beat the restart-note
+        // fallback and dispatch a blank first turn on every resume - the
+        // same contract agents__update holds this arg to.
+        if args.resume_kick.as_ref().is_some_and(|text| text.trim_end().is_empty()) {
+            return tool_error("resume_kick must be non-empty after trim when provided".to_owned());
+        }
+        match self
+            .facade
+            .spawn_worker(
+                &self.slot,
+                args.label,
+                args.charter,
+                args.kick,
+                args.resume_kick,
+                args.interactive,
+                args.resume_session,
+            )
+            .await
+        {
+            Ok(reply) => {
+                let mut body = serde_json::json!({
+                    "session_id": reply.session_id,
+                    "tag": reply.tag,
+                    "session": match reply.session_choice {
+                        SessionChoice::Resumed => "resumed the label's prior session",
+                        SessionChoice::Fresh => "started a new session (resume_session was not set)",
+                        SessionChoice::FreshWithoutPrior => {
+                            "started a new session: no prior session found for this label"
+                        }
+                    },
+                });
+                if let Some(account) = &reply.rate_limited_account {
+                    body["notice"] = serde_json::Value::String(format!(
+                        "assigned account '{account}' is currently rate-limited or bailed. The worker spawns anyway but may hit a 429 right away; free up an account or wait for a reset."
+                    ));
+                }
+                if let Some(warning) = &reply.durability_warning {
+                    body["durability_warning"] = serde_json::Value::String(warning.clone());
+                }
+                json_output(&body)
+            }
+            Err(err) => tool_error(format_spawn_error(&err)),
+        }
+    }
+}
+
+/// `agents__despawn` - lead-only. Closes a worker by label and cleans
+/// up its git worktree. A clean worktree is removed; a dirty one
+/// (uncommitted/untracked or unpushed commits) blocks the despawn
+/// unless `force`.
+pub(crate) struct Despawn {
+    pub(crate) facade: Arc<dyn WorkerFacade>,
+    pub(crate) slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct DespawnArgs {
+    label: String,
+    #[serde(default)]
+    force: Option<bool>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Despawn {
+    fn name(&self) -> &'static str {
+        "agents__despawn"
+    }
+
+    fn description(&self) -> &'static str {
+        "Despawn (close + clean up) a worker in YOUR project by label \
+         (lead-only). Kills the worker's claude subprocess, removes it \
+         from agents__list, expires any inflight asks addressed to it, \
+         AND cleans up its git worktree. A CLEAN worktree is removed as \
+         part of the despawn; a DIRTY one (uncommitted/untracked changes \
+         or unpushed commits) BLOCKS the despawn and returns a reason - \
+         clean it up (commit + push, or reset) and retry, or pass \
+         force=true to tear down and discard the worktree. Nothing is \
+         ever silently discarded. The worktree-<label> branch claude \
+         created for the worker is deleted alongside the worktree, but \
+         only when every commit on it is reachable from some other ref - \
+         another branch, a tag, a remote-tracking ref, or a worktree's \
+         HEAD, so a branch \
+         you already pushed still counts as reapable. One carrying \
+         commits that exist nowhere else is left alone and named in a \
+         branch_cleanup_warning. Returns {status:\"despawned\"} (with an \
+         optional worktree_cleanup_warning when the worktree removal \
+         itself failed, and an optional branch_cleanup_warning when the \
+         branch was kept) or {status:\"blocked\", reason}. This is how you \
+         PERMANENTLY remove a durable worker: a spawned worker otherwise \
+         survives forge restarts and re-spawns automatically, so despawn \
+         is what makes it stop coming back. Closing the worker's row in \
+         the Projects pane does the same. Despawn once a worker has handed \
+         over what it was spawned to produce: a worker whose output is a \
+         PR lives until that PR merges; a worker whose output is not a PR \
+         - a written report, an answered question - has no merge to wait \
+         for and is done when it hands over. Errors if called from \
+         a worker session; only the project lead may despawn."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Worker label from agents__list to close. Non-empty after trim.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Tear down and discard the worktree even if it has uncommitted/untracked changes or unpushed commits. Default false: a dirty worktree blocks the despawn with a reason instead, so work is never silently discarded.",
+                },
+            },
+            "required": ["label"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: DespawnArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+
+        match self.facade.despawn_worker(&self.slot, &args.label, args.force.unwrap_or(false)).await
+        {
+            Ok(DespawnOutcome::Despawned { worktree_cleanup_warning, branch_cleanup_warning }) => {
+                let mut body = serde_json::json!({ "status": "despawned" });
+                if let Some(warning) = worktree_cleanup_warning
+                    && let Some(map) = body.as_object_mut()
+                {
+                    map.insert(
+                        "worktree_cleanup_warning".to_owned(),
+                        serde_json::Value::String(warning),
+                    );
+                }
+                if let Some(warning) = branch_cleanup_warning
+                    && let Some(map) = body.as_object_mut()
+                {
+                    map.insert(
+                        "branch_cleanup_warning".to_owned(),
+                        serde_json::Value::String(warning),
+                    );
+                }
+                json_output(&body)
+            }
+            Ok(DespawnOutcome::Blocked { reason }) => {
+                json_output(&serde_json::json!({ "status": "blocked", "reason": reason }))
+            }
+            Err(err) => tool_error(format_despawn_error(&err)),
+        }
+    }
+}
+
+/// `agents__capacity` - lead-only aggregate read of the caller's
+/// project worker capacity. One JSON object rather than the per-worker
+/// snapshots `agents__list` returns.
+pub(crate) struct Capacity {
+    pub(crate) facade: Arc<dyn WorkerFacade>,
+    pub(crate) slot: SessionSlot,
+}
+
+#[async_trait::async_trait]
+impl Tool for Capacity {
+    fn name(&self) -> &'static str {
+        "agents__capacity"
+    }
+
+    fn description(&self) -> &'static str {
+        "Report the worker capacity of YOUR project: the configured \
+         cap, how many workers are live, and how many slots are free. \
+         Use it before spawning to see whether a spawn would hit the \
+         limit. The cap is the project's max_workers in forge.toml \
+         when set, else forge's default; cap_source names which. \
+         Takes no arguments."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, _input: ToolInput) -> ToolOutput {
+        let Some(capacity) = self.facade.capacity(&self.slot) else {
+            return tool_error(
+                "could not resolve caller to a known project (forge bug)".to_owned(),
+            );
+        };
+        json_output(&serde_json::json!({
+            "project": capacity.project,
+            "cap": capacity.cap,
+            "live": capacity.live,
+            "available": capacity.cap.saturating_sub(capacity.live),
+            "cap_source": match capacity.cap_source {
+                WorkerCapSource::ProjectMaxWorkers => "max_workers",
+                WorkerCapSource::Default => "default",
+            },
+        }))
+    }
+}
+
+/// `agents__update` - lead-only. Revises the stored `charter`, `kick`
+/// and `resume_kick` of an EXISTING worker, keyed by
+/// `(project_key, label)` exactly as `agents__spawn` persisted it.
+///
+/// Refuses when no row exists. A row is what makes a worker re-spawn on
+/// the next lead connect, so creating one here would mean revising a
+/// definition silently produces a worker.
+pub(crate) struct Update {
+    pub(crate) facade: Arc<dyn WorkerFacade>,
+    pub(crate) slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateArgs {
+    label: String,
+    #[serde(default)]
+    charter: Option<String>,
+    #[serde(default)]
+    kick: Option<String>,
+    #[serde(default)]
+    resume_kick: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Update {
+    fn name(&self) -> &'static str {
+        "agents__update"
+    }
+
+    fn description(&self) -> &'static str {
+        "Revise a worker's stored instructions without despawning it \
+         (lead-only). Replaces any of `charter`, `kick` and `resume_kick` \
+         on that worker's persisted record; a field you omit keeps its \
+         current value, and at least one must be supplied. TAKES EFFECT ON \
+         THE WORKER'S NEXT RESPAWN, NOT IMMEDIATELY - a session's system \
+         prompt is fixed when the session spawns, so a running worker \
+         keeps what it started with; use agents__tell to redirect it now. \
+         The worker must already exist: this never creates one, so spawn \
+         it with agents__spawn first (which takes the same three texts). \
+         Address it by the same `label` you spawned it with, as shown by \
+         agents__list."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "The worker to revise, as passed to agents__spawn and listed by agents__list. Non-empty after trim. Must already exist - this never creates a worker.",
+                },
+                "charter": {
+                    "type": "string",
+                    "description": "Replacement mission text, threaded into the worker's system prompt on its next respawn. Omit to leave the stored charter unchanged. Non-empty after trim when provided.",
+                },
+                "kick": {
+                    "type": "string",
+                    "description": "Replacement first-turn message used when this worker is spawned fresh. Omit to leave the stored kick unchanged. Non-empty after trim when provided.",
+                },
+                "resume_kick": {
+                    "type": "string",
+                    "description": "Replacement re-orient message delivered when this worker is resumed after a forge restart, in place of the generic restart note. Omit to leave the stored value unchanged. Non-empty after trim when provided.",
+                },
+            },
+            "required": ["label"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: UpdateArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+
+        let Some(caller_project) = self.facade.caller_project(&self.slot) else {
+            return tool_error("agents__update: caller resolves to no known project".to_owned());
+        };
+        if !caller_project.is_lead {
+            return tool_error(
+                "agents__update is lead-only; this session is a worker. Workers cannot revise \
+                 other workers."
+                    .to_owned(),
+            );
+        }
+
+        let label = args.label.trim();
+        if label.is_empty() {
+            return tool_error("label must be non-empty after trim".to_owned());
+        }
+
+        // Same non-empty contract the spawn path holds these texts to.
+        // #685 and #686 record its known gaps; match the predicate rather
+        // than inventing a stronger one here.
+        let mut updated: Vec<&str> = Vec::new();
+        for (name, value) in
+            [("charter", &args.charter), ("kick", &args.kick), ("resume_kick", &args.resume_kick)]
+        {
+            if let Some(text) = value {
+                if text.trim_end().is_empty() {
+                    return tool_error(format!(
+                        "{name} must be non-empty after trim when provided"
+                    ));
+                }
+                updated.push(name);
+            }
+        }
+        if updated.is_empty() {
+            return tool_error(
+                "supply at least one of charter, kick or resume_kick; an update with none of \
+                 them would change nothing."
+                    .to_owned(),
+            );
+        }
+
+        match self.facade.update_worker(
+            &self.slot,
+            label,
+            args.charter,
+            args.kick,
+            args.resume_kick,
+        ) {
+            Ok(()) => json_output(&serde_json::json!({ "label": label, "updated": updated })),
+            Err(err) => tool_error(format_update_error(&err)),
         }
     }
 }

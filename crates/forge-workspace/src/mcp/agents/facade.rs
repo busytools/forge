@@ -132,9 +132,7 @@ mod tests {
     use super::*;
     use crate::ProjectKey;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
-    use crate::mcp::peers::types::{
-        AskChannel, CorrelationId, PeerLiveness, PeerStatus, WrappedKind,
-    };
+    use crate::mcp::peers::types::{CorrelationId, PeerLiveness, PeerStatus, WrappedKind};
     use crate::mcp::workers::facade::{CallerProject, MockWorkerFacade};
     use forge_primitives::{WorkerLiveness, WorkerStatus};
 
@@ -208,7 +206,6 @@ mod tests {
         WrappedPrompt {
             correlation_id: CorrelationId::new_tell(),
             kind: WrappedKind::Message,
-            channel: AskChannel::Peers,
             sender_name: "lead".to_owned(),
             sender_org: "Personal".to_owned(),
             body: "hi".to_owned(),

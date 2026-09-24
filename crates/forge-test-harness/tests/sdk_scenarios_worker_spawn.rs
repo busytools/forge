@@ -1,18 +1,19 @@
-//! Live-capture scenario: lead drives `mcp__forge__workers__spawn` and
-//! `mcp__forge__workers__list`.
+//! Live-capture scenario: lead drives `mcp__forge__agents__spawn` and
+//! `mcp__forge__agents__list`.
 //!
-//! Registers the in-process workers MCP server (backed by
-//! `MockWorkerFacade`) on a single `claude` subprocess and asks the
-//! model to spawn a worker labelled "reviewer" then list workers. The
-//! captured trace covers the wire shape we care about:
+//! Registers the in-process agents MCP server (backed by
+//! `MockWorkerFacade` + `MockWorkspaceFacade`) on a single `claude`
+//! subprocess and asks the model to spawn a worker labelled "reviewer"
+//! then list agents. The captured trace covers the wire shape we care
+//! about:
 //!
 //! - `mcp_message:initialize` + `tools/list` round trips for the
-//!   `forge` MCP server (carries the `workers__*` tool definitions).
-//! - `mcp_message:tools/call` for `workers__spawn` (CLI -> SDK).
+//!   `forge` MCP server (carries the `agents__*` tool definitions).
+//! - `mcp_message:tools/call` for `agents__spawn` (CLI -> SDK).
 //! - SDK `control_response` carrying the mock's
 //!   `{session_id, tag: "forge:worker:reviewer"}` reply.
-//! - `mcp_message:tools/call` for `workers__list` (CLI -> SDK) with
-//!   the SDK responding with the pre-seeded worker pool.
+//! - `mcp_message:tools/call` for `agents__list` (CLI -> SDK) with
+//!   the SDK responding with the pre-seeded agents.
 //!
 //! No real worker subprocess is spawned. The mock facade returns
 //! synthetic IDs so the test stays a single-process wire-conformance
@@ -33,7 +34,9 @@ use forge_sdk::{OptionsBuilder, PermissionMode};
 use forge_test_harness::sdk_wire::run_live_scenario;
 use forge_workspace::SessionSlot;
 use forge_workspace::protocol::WorkerSpawnReply;
-use forge_workspace::{CallerProject, MockWorkerFacade, WorkerFacade, build_workers_server};
+use forge_workspace::{
+    CallerProject, MockWorkerFacade, MockWorkspaceFacade, WorkerFacade, build_agents_server,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
@@ -52,7 +55,7 @@ async fn worker_spawn_scenario() {
         durability_warning: None,
         session_choice: forge_workspace::protocol::SessionChoice::Fresh,
     }));
-    // Pre-seed the worker pool so a follow-up workers__list call
+    // Pre-seed the worker pool so a follow-up agents__list call
     // returns the spawned worker without needing the spawn-side
     // dispatch path to mutate state (the mock's spawn_worker captures
     // the call but does not update its own `workers` map).
@@ -72,7 +75,19 @@ async fn worker_spawn_scenario() {
     );
     let facade: Arc<dyn WorkerFacade> = Arc::new(mock);
 
-    let server = build_workers_server(facade, caller);
+    // `agents__list` reads the configured projects off the peers facade,
+    // so seed the one the caller's workers live in.
+    let peers = MockWorkspaceFacade::new();
+    peers.peers.lock().push(forge_workspace::PeerStatus {
+        name: "forge".into(),
+        org: "TestOrg".into(),
+        path: std::path::PathBuf::from("/tmp/forge"),
+        status: forge_workspace::PeerLiveness::Running,
+        in_flight_incoming: 0,
+        in_flight_outgoing: 0,
+        spawned_at: None,
+    });
+    let server = build_agents_server(Arc::new(peers), facade, caller);
 
     let opts = OptionsBuilder::new()
         .max_turns(4)
@@ -83,10 +98,10 @@ async fn worker_spawn_scenario() {
     run_live_scenario("worker_spawn", opts, |client, events| async move {
         client
             .send_user_message(
-                "Call mcp__forge__workers__spawn with label=\"reviewer\" and \
+                "Call mcp__forge__agents__spawn with label=\"reviewer\" and \
                  charter=\"You are a terse reviewer. Reply with one word answers.\". \
-                 Then call mcp__forge__workers__list (no arguments) and report the list. \
-                 Reply with a one-line summary of what you spawned and the workers you see.",
+                 Then call mcp__forge__agents__list (no arguments) and report the list. \
+                 Reply with a one-line summary of what you spawned and the agents you see.",
             )
             .await?;
         Ok((client, events))

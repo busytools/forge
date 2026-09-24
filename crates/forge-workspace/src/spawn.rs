@@ -2414,7 +2414,6 @@ provider = "anthropic"
         WrappedPrompt {
             correlation_id: crate::mcp::peers::types::CorrelationId::new_tell(),
             kind: crate::mcp::peers::types::WrappedKind::Message,
-            channel: crate::mcp::peers::types::AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Default".to_owned(),
             body: "fyi".to_owned(),
@@ -5416,7 +5415,7 @@ provider = "anthropic"
     /// `<project_key>::<label>` covers worker-bound traffic.
     #[tokio::test]
     async fn close_worker_expires_inflight_asks_addressed_to_it() {
-        use crate::mcp::peers::types::{AskChannel, CorrelationId, InflightAsk};
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
         let (workspace, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
         workspace.insert_live_worker(&project, fake_worker_entry("reviewer", "worker-1"));
@@ -5430,7 +5429,6 @@ provider = "anthropic"
             cid.clone(),
             InflightAsk {
                 correlation_id: cid.clone(),
-                channel: AskChannel::Workers,
                 caller: SessionSlot::from_str_for_test("lead-uuid"),
                 target_project: composite,
                 target_session: None,

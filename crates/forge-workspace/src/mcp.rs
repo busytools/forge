@@ -106,13 +106,11 @@ pub fn build_forge_server(
     kind: SessionKind,
 ) -> McpServer {
     let mut builder = McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"));
-    let dispatcher =
-        Arc::new(AgentDispatcher::new(workspace_facade.clone(), worker_facade.clone()));
-    if matches!(kind, SessionKind::Lead) {
-        builder = peers::add_tools(builder, workspace_facade, slot.clone());
-    }
-    builder = workers::add_tools(builder, worker_facade, slot.clone());
+    let dispatcher = Arc::new(AgentDispatcher::new(workspace_facade, worker_facade.clone()));
     builder = agents::add_shared_tools(builder, dispatcher, slot.clone());
+    if matches!(kind, SessionKind::Lead) {
+        builder = agents::add_lead_tools(builder, worker_facade, slot.clone());
+    }
     builder = review::add_tools(builder, review_facade, slot.clone());
     builder = cron::add_tools(builder, cron_facade, slot.clone());
     builder = gotify::add_tools(builder, gotify_facade, slot.clone());
@@ -134,136 +132,140 @@ mod tests {
         SessionSlot::from_str_for_test(s)
     }
 
-    #[test]
-    fn build_forge_server_lead_registers_peers_workers_review_cron_gotify_and_slack() {
-        let workspace_facade = MockWorkspaceFacade::new().into_arc();
-        let worker_facade = MockWorkerFacade::new().into_arc();
-        let review_facade = MockReviewFacade::new().into_arc();
-        let cron_facade = MockCronFacade::new().into_arc();
-        let gotify_facade = MockGotifyFacade::new().into_arc();
-        let slack_facade = MockSlackFacade::new().into_arc();
-        let server = build_forge_server(
-            workspace_facade,
-            worker_facade,
-            review_facade,
-            cron_facade,
-            gotify_facade,
-            slack_facade,
+    fn forge_server(kind: SessionKind) -> McpServer {
+        build_forge_server(
+            MockWorkspaceFacade::new().into_arc(),
+            MockWorkerFacade::new().into_arc(),
+            MockReviewFacade::new().into_arc(),
+            MockCronFacade::new().into_arc(),
+            MockGotifyFacade::new().into_arc(),
+            MockSlackFacade::new().into_arc(),
             fake_key("test"),
-            SessionKind::Lead,
+            kind,
+        )
+    }
+
+    /// Every tool name the server registered, read off its debug
+    /// listing - which is exactly the set the LLM is offered.
+    fn registered_names(kind: SessionKind) -> Vec<String> {
+        let debug = format!("{:?}", forge_server(kind));
+        let (_, tools) = debug.split_once("tools: [").expect("debug lists the tool names");
+        let (tools, _) = tools.split_once(']').expect("the tool list is closed");
+        tools
+            .split(", ")
+            .map(|name| name.trim_matches('"').to_owned())
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    fn agents_tools(kind: SessionKind) -> Vec<String> {
+        registered_names(kind).into_iter().filter(|name| name.starts_with("agents__")).collect()
+    }
+
+    /// The eleven names the agents family replaces. None may survive:
+    /// an alias would leave two names for one verb in the shipped text,
+    /// which is the confusion the merge exists to remove.
+    const OLD_NAMES: [&str; 11] = [
+        "peers__whoami",
+        "peers__list_agents",
+        "peers__tell_agent",
+        "peers__ask_agent",
+        "workers__spawn",
+        "workers__list",
+        "workers__capacity",
+        "workers__tell",
+        "workers__ask",
+        "workers__despawn",
+        "workers__update",
+    ];
+
+    /// Every group that is any-caller: both session kinds manage their
+    /// own project's reviews, crons and subscriptions.
+    const ANY_CALLER_TOOLS: [&str; 23] = [
+        "review__list",
+        "review__get",
+        "review__reply",
+        "review__resolve",
+        "cron__create",
+        "cron__list",
+        "cron__delete",
+        "gotify__subscribe",
+        "gotify__list",
+        "gotify__unsubscribe",
+        "gotify__apps",
+        "gotify__recent",
+        "slack__list",
+        "slack__subscribe",
+        "slack__unsubscribe",
+        "slack__post",
+        "slack__edit",
+        "slack__react",
+        "slack__attachment",
+        "slack__search",
+        "slack__user",
+        "slack__pins",
+        "slack__bookmarks",
+    ];
+
+    #[test]
+    fn a_lead_sees_all_eight() {
+        assert_eq!(
+            agents_tools(SessionKind::Lead),
+            [
+                "agents__ask",
+                "agents__capacity",
+                "agents__despawn",
+                "agents__list",
+                "agents__spawn",
+                "agents__tell",
+                "agents__update",
+                "agents__whoami",
+            ],
         );
-        let debug = format!("{server:?}");
-        for expected in [
-            "peers__whoami",
-            "peers__list_agents",
-            "peers__tell_agent",
-            "peers__ask_agent",
-            "workers__spawn",
-            "workers__list",
-            "workers__tell",
-            "workers__ask",
-            "review__list",
-            "review__get",
-            "review__reply",
-            "review__resolve",
-            "cron__create",
-            "cron__list",
-            "cron__delete",
-            "gotify__subscribe",
-            "gotify__list",
-            "gotify__unsubscribe",
-            "gotify__apps",
-            "gotify__recent",
-            "slack__list",
-            "slack__subscribe",
-            "slack__unsubscribe",
-            "slack__post",
-            "slack__edit",
-            "slack__react",
-            "slack__attachment",
-            "slack__search",
-            "slack__user",
-            "slack__pins",
-            "slack__bookmarks",
-        ] {
-            assert!(
-                debug.contains(expected),
-                "lead build_forge_server must include {expected}; debug: {debug}",
-            );
-        }
-        // Server name is `forge` so tools render as `mcp__forge__<name>`
-        // on the LLM side and the SDK auto-approve fast-path covers every
-        // group with one `mcp__forge__` prefix check.
-        assert!(debug.contains("name: \"forge\""), "server name must be 'forge'; debug: {debug}");
     }
 
     #[test]
-    fn build_forge_server_worker_registers_workers_review_cron_gotify_and_slack_but_not_peers() {
-        let workspace_facade = MockWorkspaceFacade::new().into_arc();
-        let worker_facade = MockWorkerFacade::new().into_arc();
-        let review_facade = MockReviewFacade::new().into_arc();
-        let cron_facade = MockCronFacade::new().into_arc();
-        let gotify_facade = MockGotifyFacade::new().into_arc();
-        let slack_facade = MockSlackFacade::new().into_arc();
-        let server = build_forge_server(
-            workspace_facade,
-            worker_facade,
-            review_facade,
-            cron_facade,
-            gotify_facade,
-            slack_facade,
-            fake_key("test"),
-            SessionKind::Worker,
+    fn a_worker_sees_only_the_shared_four() {
+        // The role gate: a worker gains the cross-project reach the
+        // merge adds, and must NOT gain a lead-only verb with it.
+        assert_eq!(
+            agents_tools(SessionKind::Worker),
+            ["agents__ask", "agents__list", "agents__tell", "agents__whoami"],
         );
-        let debug = format!("{server:?}");
-        // Workers see workers__* (talk to sibling workers), review__* (a
-        // review nudge lands on the worker being reviewed), and cron__* /
-        // gotify__* / slack__* (all any-caller - a worker may schedule or
-        // subscribe for its project).
-        for expected in [
-            "workers__spawn",
-            "workers__list",
-            "workers__tell",
-            "workers__ask",
-            "review__list",
-            "review__get",
-            "review__reply",
-            "review__resolve",
-            "cron__create",
-            "cron__list",
-            "cron__delete",
-            "gotify__subscribe",
-            "gotify__list",
-            "gotify__unsubscribe",
-            "gotify__apps",
-            "gotify__recent",
-            "slack__list",
-            "slack__subscribe",
-            "slack__unsubscribe",
-            "slack__post",
-            "slack__edit",
-            "slack__react",
-            "slack__attachment",
-            "slack__search",
-            "slack__user",
-            "slack__pins",
-            "slack__bookmarks",
-        ] {
-            assert!(
-                debug.contains(expected),
-                "worker build_forge_server must include {expected}; debug: {debug}",
-            );
+    }
+
+    #[test]
+    fn the_eleven_old_names_are_gone() {
+        for kind in [SessionKind::Lead, SessionKind::Worker] {
+            let names = registered_names(kind);
+            for old in OLD_NAMES {
+                assert!(!names.contains(&old.to_owned()), "{old} survives for {kind:?}: {names:?}");
+            }
         }
-        // Workers MUST NOT see peers__* - cross-project coordination
-        // is a lead-only role; advertising those tools to a worker
-        // dumps a non-functional surface on the worker LLM that errors
-        // out at call time (a worker's slot names no peer identity).
-        for forbidden in
-            ["peers__whoami", "peers__list_agents", "peers__tell_agent", "peers__ask_agent"]
-        {
+    }
+
+    #[test]
+    fn every_any_caller_group_registers_for_both_kinds() {
+        for kind in [SessionKind::Lead, SessionKind::Worker] {
+            let names = registered_names(kind);
+            for expected in ANY_CALLER_TOOLS {
+                assert!(
+                    names.contains(&expected.to_owned()),
+                    "{expected} must register for {kind:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_server_is_named_forge_for_every_session_kind() {
+        // The SDK auto-approve fast-path matches `mcp__forge__` once, so
+        // every group has to share the server name.
+        for kind in [SessionKind::Lead, SessionKind::Worker] {
+            let debug = format!("{:?}", forge_server(kind));
             assert!(
-                !debug.contains(forbidden),
-                "worker build_forge_server must NOT include {forbidden}; debug: {debug}",
+                debug.contains("name: \"forge\""),
+                "server name must be 'forge'; debug: {debug}"
             );
         }
     }

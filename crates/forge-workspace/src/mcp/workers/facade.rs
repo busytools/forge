@@ -1272,7 +1272,7 @@ impl WorkerFacade for MockWorkerFacade {
 #[cfg(test)]
 mod mock_tests {
     use super::*;
-    use crate::mcp::peers::types::{AskChannel, WrappedKind};
+    use crate::mcp::peers::types::WrappedKind;
 
     #[test]
     fn mock_caller_project_returns_preloaded() {
@@ -1497,7 +1497,6 @@ mod mock_tests {
         let wrapped = WrappedPrompt {
             correlation_id: CorrelationId::new_ask(),
             kind: WrappedKind::Question,
-            channel: AskChannel::Workers,
             sender_name: "forge".into(),
             sender_org: "Personal".into(),
             body: "hi".into(),

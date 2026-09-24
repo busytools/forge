@@ -106,7 +106,7 @@ mod tests {
     use super::ParkedForSlot;
     use crate::SessionSlot;
     use crate::mcp::peers::types::{
-        AskChannel, CorrelationId, InflightAsk, PeerFailureReason, WrappedKind, WrappedPrompt,
+        CorrelationId, InflightAsk, PeerFailureReason, WrappedKind, WrappedPrompt,
     };
 
     fn slot(label: Option<&str>) -> SessionSlot {
@@ -117,7 +117,6 @@ mod tests {
         WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
-            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             body: body.to_owned(),
@@ -207,7 +206,6 @@ mod tests {
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: AskChannel::Peers,
                 caller: SessionSlot::from_str_for_test("asker"),
                 target_project: "parked-proj".to_owned(),
                 target_session: None,
