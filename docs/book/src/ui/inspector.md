@@ -57,7 +57,7 @@ A failure row is latched rather than re-derived - the turn is over - and clears 
 
 </div>
 
-Nine sections render in order, each hidden when its content set is empty, separated by dim rules: **GIT** (always), **TASKS** (todos or a verification nudge), **WORKFLOWS** (a live or recently completed Workflow call), **SUBAGENTS** (a dispatch in flight), **SCHEDULES** (a wakeup or cron still valid), **GOTIFY** (a `[gotify]` server configured), **SLACK** (the session owns a Slack subscription, or boot could not load the durable set - the failure row names it rather than hiding), **MCP SERVERS** (at least one server), **PROCESSES** (a living process descendant). The chat scrollback no longer surfaces these tool cards - Workflow paints nothing, the others at most a minimal notice; Monitor renders in chat.
+Nine sections render in order, each hidden when its content set is empty, separated by dim rules: **GIT** (always), **TASKS** (the active project's own task store holds a task in this session's scope), **WORKFLOWS** (a live or recently completed Workflow call), **SUBAGENTS** (a dispatch in flight), **SCHEDULES** (a wakeup or cron still valid), **GOTIFY** (a `[gotify]` server configured), **SLACK** (the session owns a Slack subscription, or boot could not load the durable set - the failure row names it rather than hiding), **MCP SERVERS** (at least one server), **PROCESSES** (a living process descendant). The chat scrollback no longer surfaces these tool cards - Workflow paints nothing, the others at most a minimal notice; Monitor renders in chat.
 
 ## GIT
 
@@ -94,9 +94,12 @@ The focused session's cwd, the branch, an optional `PR #N → closes #M #K` row,
   <span class="dim bold">  TASKS</span>
 
   <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Read the rate-limit code</span>
+       <span class="dim">steward</span>
   <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Add the soft-wording branch</span>
+       <span class="dim">steward · PR #1173</span>
   <span class="accent">  ▸</span> <span class="bold">Adding tests for the</span>
        <span class="bold">near-threshold branch</span>
+       <span class="dim">steward · 1d</span>
   <span class="dim">  ○</span> Run cargo nextest
   <span class="dim">  ○</span> Open PR
 </pre>
@@ -131,9 +134,53 @@ The GIT header carries a `🦉` glyph when any diff layer is populated - click i
 |---|---|---|
 | `✓` | Completed (text dim, crossed out) | green |
 | `▸` | In progress (text white bold; uses the active form when present; **wraps** onto indented continuation lines) | rust orange |
-| `○` | Pending (text gray) | dim |
+| `○` | Blocked or pending (text gray) | dim |
 
-Only the in-progress item wraps. Completed and pending items truncate with `...` at the pane's right edge.
+Only the in-progress item wraps. Completed, blocked and pending items truncate with `...` at the pane's right edge. Rows are ordered running, then blocked, then pending, then completed, and tasks of one status keep the order they were declared in.
+
+Under a row that has them, a dim metadata line carries, in order: the children's rollup (`m/n`), the session holding the task, its artifact and its estimate, separated by `·` and truncating at the same right edge. A row with none of the four gets no line, so a bare task stays one line tall.
+
+The list is the project's own task store, written by every session through the `tasks__*` MCP tools, and it renders in full - there is no cap and no `+N more` tail. A row is removed once its work is over rather than archived, so the section is bounded by what is in flight.
+
+### The two views
+
+One store, two slices, and the difference is which rows are in scope:
+
+- **Lead.** Top-level rows only - the ones no other task parents - each carrying a `· m/n` rollup of how many of its children are done, and the owner, because which session holds what is the lead's job. It is the campaign board.
+- **Worker.** The rows that session owns, and no other worker's, under a one-line dim heading naming the parent task they hang off. A row whose parent has left the store contributes no heading, and a lead's board has no heading at all.
+
+A row with no artifact and no estimate is normal: lead work is often not code.
+
+### The task detail
+
+Clicking a row opens that task's detail over whatever view is behind it - full width, three quarters of the height, centred, so the bands above and below it stay clickable. It carries the subject with its status and estimate, the identity block, the task's own prose, and the list of the tasks under it:
+
+<div class="term">
+
+<pre class="indent">
+<span class="dim">┌ TASK ──────────────────────────────────────────────┐</span>
+<span class="dim">│</span> <span class="accent">▸</span> <span class="bold">Adding tests for the near-threshold branch</span>  <span class="dim">·  in progress</span>
+<span class="dim">│</span>
+<span class="dim">│</span> <span class="dim">owner    </span>steward
+<span class="dim">│</span> <span class="dim">parent   </span>Add the soft-wording branch
+<span class="dim">│</span> <span class="dim">artifact </span>PR #1173
+<span class="dim">│</span> <span class="dim">created  </span>2026-09-24T17:34:29Z
+<span class="dim">│</span> <span class="dim">updated  </span>2026-09-24T18:02:11Z
+<span class="dim">│</span> <span class="dim">status   </span>in progress
+<span class="dim">│</span>
+<span class="dim">│</span> <span class="dim">detail   </span>The cap hid finished work; the store does not need one.
+<span class="dim">│</span>
+<span class="dim">│</span> <span class="dim">subtasks </span>2
+<span class="dim">│</span>   <span class="success">✓</span> Wire the store into the section
+<span class="dim">│</span>   <span class="accent">▸</span> Cover the two views
+<span class="dim">│</span>
+<span class="dim">│</span> <span class="dim">esc close</span>
+<span class="dim">└────────────────────────────────────────────────────┘</span>
+</pre>
+
+</div>
+
+<kbd>Esc</kbd> closes it, and so does a click outside the panel. There is no keyboard selection and no <kbd>Enter</kbd> binding - a row is a pointer target, not a cursor position - and the pane keeps no selection state, so no row's treatment changes to indicate one. A field the task does not have is absent from the identity block rather than blank, and a parent that has left the store renders as absent rather than as a dangling id.
 
 <details>
 <summary>Verification nudge</summary>
@@ -156,7 +203,7 @@ When the CLI flags one, a one-line dim-yellow notice sits between the rule and t
 
 </div>
 
-No todos and a clean default branch:
+No tasks and a clean default branch:
 
 <div class="term">
 
@@ -228,6 +275,7 @@ chat continues here...
 
 - Banner `INSPECTOR` rust orange bold; rules and section headers dim; the NEEDS ATTENTION header dim bold with a dim count; row names white bold, `(role)` and details dim; the band's bottom rule dim.
 - GIT: path, `⎇` glyph and tree connectors dim; branch name dim on the default branch, rust orange on a feature branch, yellow `HEAD` when detached; layer subtitles dim; totals `+A` green / `-R` red; per-file `+N` green / `-M` red; `+N more` dim italic; the `PR` label, `→`, `closes` and issue numbers dim with the `#N` PR number rust orange; the truncation ellipsis dim; the `🦉` dim; the `💬 N` badge in the addressed accent.
+- TASKS: header dim bold with its `· m/n` count dim; a row's metadata line and a worker's parent heading dim; the detail overlay's border and labels dim with its values gray.
 - PROCESSES: the wire-tracked Bash / Monitor `▸` rust orange with a white bold headline; a generic process `▸` dim with gray headline; `○` pending dim; connectors, detail text and memory suffix dim.
 - MCP SERVERS: header dim bold with a dim `▦` affordance at the right edge; server name bold; status glyph `●` green when connected, `◌` blue pending, `✗` red failed; detail and process lines dim.
 - The body scrollbar is one `▐` rust-orange thumb (no track) for the whole body, not per section; the top-bar `▦` is dim when the overlay is closed and rust orange bold when open; the overlay `✕` is dim.
@@ -239,11 +287,15 @@ chat continues here...
 | Key | Action |
 |---|---|
 | <kbd>Cmd+Right</kbd> (<kbd>Ctrl+Right</kbd> off macOS) | Wide / Medium: hide or restore the inline pane (re-derived from the terminal width at each launch); Narrow: toggle the overlay |
-| <kbd>Esc</kbd> | Closes the overlay |
+| <kbd>Esc</kbd> | Closes the overlay, or an open task detail if one is up |
 
 <details>
 <summary>Click targets</summary>
 
-The `🦉` opens the [Diff overlay](./diff.md) (present only when a layer is populated). The MCP SERVERS section is a whole-section click-through: header or any row opens the [Extensions page](./extensions.md) with its Mcps tab selected. Everything else is read-only - file tree, branch line, PR row, TASKS rows, PROCESSES rows. At Narrow tier the `▦` icon toggles the overlay; `✕` dismisses.
+The `🦉` opens the [Diff overlay](./diff.md) (present only when a layer is populated). The MCP SERVERS section is a whole-section click-through: header or any row opens the [Extensions page](./extensions.md) with its Mcps tab selected. A TASKS row opens that task's detail, above. The `TASKS` header is not a target, so clicking it does nothing.
+
+Everything else is read-only - file tree, branch line, PR row, PROCESSES rows. At Narrow tier the `▦` icon toggles the overlay; `✕` dismisses.
+
+While a task detail is open it takes a click anywhere: one inside the panel is consumed, and one outside it dismisses.
 
 </details>
