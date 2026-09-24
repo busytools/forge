@@ -46,6 +46,7 @@ use crate::mcp::review::facade::ReviewFacade;
 use crate::mcp::slack::facade::SlackFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
+pub mod agents;
 pub(crate) mod caller_context;
 pub mod cron;
 pub mod gotify;
