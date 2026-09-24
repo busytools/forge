@@ -383,10 +383,24 @@ impl ProdSlackFacade {
     /// The conversation's display name for the approval prompt, falling
     /// back to the id: a DM is named after its partner, and Slack's own
     /// name for it is empty. A failed lookup is not a reason to refuse the
-    /// action, so it reads as no name known.
-    async fn conversation_label(api: &Arc<dyn SlackApi>, conversation: &str) -> String {
-        let Ok(conversations) = api.list_conversations().await else {
-            return conversation.to_owned();
+    /// action - but it IS why the prompt would show an id, so it says so.
+    async fn conversation_label(
+        api: &Arc<dyn SlackApi>,
+        workspace: &str,
+        conversation: &str,
+    ) -> String {
+        let conversations = match api.list_conversations().await {
+            Ok(conversations) => conversations,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    workspace,
+                    conversation,
+                    %error,
+                    "listing conversations failed; the approval prompt names the id instead",
+                );
+                return conversation.to_owned();
+            }
         };
         conversations
             .iter()
@@ -467,7 +481,8 @@ impl SlackFacade for ProdSlackFacade {
         let label = resolve_label(&ws.slack, request.workspace.as_deref())
             .ok_or(SlackPostError::UnknownWorkspace)?;
         let api = ws.slack.client(&label).ok_or(SlackPostError::UnknownWorkspace)?;
-        let conversation_label = Self::conversation_label(&api, &request.conversation).await;
+        let conversation_label =
+            Self::conversation_label(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
@@ -520,7 +535,8 @@ impl SlackFacade for ProdSlackFacade {
         // a deletion changes what they see on a message attributed to him -
         // and unlike a bad edit it cannot be fixed by editing again. Both
         // go through the same gate a post does.
-        let conversation_label = Self::conversation_label(&api, &request.conversation).await;
+        let conversation_label =
+            Self::conversation_label(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
@@ -570,7 +586,8 @@ impl SlackFacade for ProdSlackFacade {
         // A reaction is authored content in the user's name, so it goes
         // through the same gate a post does.
         let verb = if request.add { "react" } else { "unreact" };
-        let conversation_label = Self::conversation_label(&api, &request.conversation).await;
+        let conversation_label =
+            Self::conversation_label(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
@@ -698,7 +715,8 @@ impl SlackFacade for ProdSlackFacade {
         // will be called. The name is caller-controlled and can look
         // innocuous, so approving it without the local path would be
         // approving something the user has not seen.
-        let conversation_label = Self::conversation_label(&api, &request.conversation).await;
+        let conversation_label =
+            Self::conversation_label(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
@@ -770,6 +788,30 @@ impl SlackFacade for ProdSlackFacade {
         let mut ids = Vec::with_capacity(targets.len());
         let mut mentions_requested = false;
         for target in targets {
+            // A conversation goes through the owner's own record, which hands
+            // back the id it already has rather than adding a second row for
+            // one channel, and updates the mode when the caller asks for a
+            // different one. Mentions and the DM class are deliberately not
+            // deduped - two sessions may each want their own feed.
+            if let SlackSubscriptionTarget::Conversation { id, mode, .. } = &target {
+                // A subscription starts from now rather than from the
+                // channel's history - but only when the conversation has no
+                // cursor yet, since the cursor is shared by every owner
+                // watching it and resetting it would drop their pending
+                // windows.
+                if !ws.slack_has_cursor(&label, id) {
+                    ws.set_slack_watermark(&label, id, &slack_ts_now());
+                }
+                ids.push(ws.watch_slack_conversation(
+                    &label,
+                    &project,
+                    team_role.as_deref(),
+                    id,
+                    *mode,
+                    durable,
+                ));
+                continue;
+            }
             if matches!(target, SlackSubscriptionTarget::Mentions) {
                 mentions_requested = true;
             }
@@ -1805,6 +1847,7 @@ mod tests {
             workspace: label.to_owned(),
             token: "xoxp-test".to_owned(),
             poll_seconds: 30,
+            dm_poll_seconds: 150,
             thread_idle_days: 14,
         }
     }
@@ -1859,6 +1902,45 @@ mod tests {
         facade.subscribe(&caller(), Some("acme"), SlackSubscribeRequest::Mentions).expect("second");
 
         assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2);
+    }
+
+    /// A conversation is deduped where a mention feed is not: a repeat hands
+    /// back the record that exists rather than adding a second Inspector row
+    /// for one channel, and a mode the caller asks for is the mode it gets,
+    /// since there is no other route to change one.
+    #[tokio::test]
+    async fn subscribing_twice_to_a_conversation_yields_one_record() {
+        let (facade, ws, _api, _rx) = facade_with_recording_slack();
+        let watching = |mode| {
+            SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
+                id: "C1".to_owned(),
+                mode,
+            }])
+        };
+
+        let first = facade
+            .subscribe(&caller(), Some("acme"), watching(SlackWatchMode::All))
+            .expect("first");
+        assert_eq!(first.len(), 1, "the first subscribe creates the record");
+
+        let second = facade
+            .subscribe(&caller(), Some("acme"), watching(SlackWatchMode::MentionsOnly))
+            .expect("second");
+        assert_eq!(
+            second, first,
+            "the repeat hands back the id it already has, so the caller can drop it without a lookup",
+        );
+        let stored = ws.slack_subscriptions_for_project("forge");
+        assert_eq!(stored.len(), 1, "one record, so the Inspector renders one row");
+        assert_eq!(
+            stored[0].target,
+            SlackSubscriptionTarget::Conversation {
+                id: "C1".to_owned(),
+                name: None,
+                mode: SlackWatchMode::MentionsOnly,
+            },
+            "and the mode asked for is the mode stored",
+        );
     }
 
     #[tokio::test]

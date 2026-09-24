@@ -398,6 +398,9 @@ pub struct Workspace {
     /// Display names resolved per `(workspace, user id)`, so a message from
     /// a known author costs no `users.info` call.
     pub(crate) slack_user_names: Mutex<std::collections::BTreeMap<(String, String), String>>,
+    /// `(workspace, user id)` pairs whose failed lookup has been reported, so
+    /// a persistent failure says so once rather than on every tick.
+    pub(crate) slack_author_failures: Mutex<std::collections::HashSet<(String, String)>>,
     /// Composed Slack messages held for the user's decision, keyed by
     /// draft id and carrying the session that asked. The sender is what
     /// the blocked `slack__post` handler awaits; removing the entry is
@@ -1137,6 +1140,7 @@ impl Workspace {
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
+            slack_author_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),

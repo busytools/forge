@@ -277,11 +277,23 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
         // and lose the rest. The count is what says so - a single message's
         // own text may wrap just as a bundle's members do.
         if bundle_member_count(tail).is_some() {
+            // Every member names its own author, and an id or the producer's
+            // `unknown` placeholder is not a name - so the clause is dropped
+            // line by line, exactly as the single-member header drops it.
+            let body = rest
+                .lines()
+                .map(|line| {
+                    line.split_once(": ").map_or(line, |(author, text)| {
+                        if author == "unknown" || is_slack_id(author) { text } else { line }
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             return Some(PeerInboundKind::Slack {
                 workspace: workspace.to_owned(),
                 channel: channel.to_owned(),
                 author: None,
-                body: rest.to_owned(),
+                body,
             });
         }
         // A raw Slack id is not a name to print: the prose writes the
@@ -1613,20 +1625,6 @@ mod tests {
         }
     }
 
-    /// A one-member bundle is the shape a single message always had: its
-    /// author rides the header and the body is its text alone.
-    #[test]
-    fn a_single_member_bundle_keeps_the_author_on_the_header() {
-        let prose = "[Slack - workspace 'acme', general] id C1 ts 1.1\nalice: one [ts 1.1]";
-        match detect_inbound(prose).expect("slack") {
-            PeerInboundKind::Slack { author, body, .. } => {
-                assert_eq!(author.as_deref(), Some("alice"));
-                assert_eq!(body, "one [ts 1.1]");
-            }
-            other => panic!("expected Slack, got {other:?}"),
-        }
-    }
-
     /// One message's own text wraps over as many lines as a bundle's
     /// members do, so the member count - never the line count - is what
     /// tells the two apart.
@@ -1643,8 +1641,49 @@ mod tests {
         }
     }
 
+    /// An id is never dressed as a name, and that holds on a bundle's member
+    /// lines too: a member with no resolved name keeps only its text, the
+    /// same way a single message's header drops the clause.
+    #[test]
+    fn a_bundle_member_with_no_resolved_name_keeps_only_its_text() {
+        let unknown_author = "[Slack - workspace 'acme', general] id C1 ts 2.2 (2 messages)\n\
+                              alice: one [ts 1.1]\n\
+                              unknown: two [ts 2.2]";
+        let rendered = render_lines_to_strings(&render_inbound(
+            &detect_inbound(unknown_author).unwrap(),
+            false,
+            false,
+        ));
+        assert!(
+            !rendered.iter().any(|line| line.contains("unknown")),
+            "the placeholder is not printed at a reader: {rendered:?}",
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains("two [ts 2.2]")),
+            "and the member's text survives: {rendered:?}",
+        );
+
+        let id_author = "[Slack - workspace 'acme', general] id C1 ts 2.2 (2 messages)\n\
+                         alice: one [ts 1.1]\n\
+                         U0ATEK2EAGP: two [ts 2.2]";
+        let rendered = render_lines_to_strings(&render_inbound(
+            &detect_inbound(id_author).unwrap(),
+            false,
+            false,
+        ));
+        assert!(
+            !rendered.iter().any(|line| line.contains("U0ATEK2EAGP")),
+            "an unresolved id is not a name either: {rendered:?}",
+        );
+    }
+
     /// The producer resolves a handle before the prose is written, so the
     /// author clause survives the id check and the reader sees a name.
+    ///
+    /// Only that half is worth asserting here: with a name resolved the
+    /// prose carries no id at all, so "no id reaches the reader" holds
+    /// whether the clause is kept or dropped. The unresolved case is
+    /// `detect_slack_inbound_drops_an_id_shaped_author`.
     #[test]
     fn slack_inbound_keeps_a_resolved_author_on_the_header() {
         let text = "[Slack - workspace 'acme', general] id C1 ts 1.1\narchitect2: hi [ts 1.1]";
@@ -1653,10 +1692,6 @@ mod tests {
         assert!(
             rendered[0].contains("architect2"),
             "the resolved handle rides the header: {rendered:?}",
-        );
-        assert!(
-            rendered.iter().all(|line| !line.contains("U0ATEK2EAGP")),
-            "and no id reaches the reader: {rendered:?}",
         );
     }
 

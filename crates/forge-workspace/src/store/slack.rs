@@ -387,6 +387,7 @@ mod tests {
     fn thread_record(cursor: &str, owners: &[(&str, Option<&str>)]) -> SlackThreadRecord {
         SlackThreadRecord {
             cursor: cursor.to_owned(),
+            participating: false,
             owners: owners
                 .iter()
                 .map(|(project, role)| SlackThreadOwner {
@@ -402,13 +403,19 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
 
-        let record =
-            thread_record("1700000000.000100", &[("forge", Some("tester")), ("forge", None)]);
+        let record = SlackThreadRecord {
+            participating: true,
+            ..thread_record("1700000000.000100", &[("forge", Some("tester")), ("forge", None)])
+        };
         set_thread(&db, "acme", "C1", "100.000001", &record).expect("set");
         let back = thread(&db, "acme", "C1", "100.000001").expect("get").expect("present");
         assert_eq!(back.cursor, "1700000000.000100", "the cursor survives verbatim");
         assert_eq!(back.owners.len(), 2, "both owners ride along");
         assert_eq!(back.owners[0].team_role.as_deref(), Some("tester"));
+        assert!(
+            back.participating,
+            "and the verdict survives: losing it would re-read whole threads",
+        );
     }
 
     #[test]

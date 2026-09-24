@@ -35,8 +35,14 @@ A `mentions` subscription is swept by one workspace-wide search per tick rather 
 
 A matched mention starts the conversation it came from being watched by the mention subscription's owner, so the agent can reply back and forth without anyone subscribing to the channel by hand. A message the user authored is never delivered, or an agent answering in Slack would answer itself.
 
+## What the sweep costs
+
+Two clocks, because two things are watched. The conversations a subscription names are a fixed handful, and one history read each per pass; the DM class is every DM in the workspace, so its cost scales with the inbox rather than with what is subscribed to, and it is swept on its own slower clock (`dm_poll_seconds`, 75 seconds by default, beside `poll_seconds` at 5). A DM a subscription also names is read on the conversation clock rather than twice. The mention stream is one search per workspace per pass, which is what makes it affordable at any number of subscriptions.
+
 ## Thread following
 
-Replies never appear in a conversation's history fetch, so a thread is followed on its own, tracked per conversation and parent. A thread is followed when the user is in it: the fetch that brings a parent's replies is where the sweep sees his own reply among them, and a thread he is absent from is left alone - following on delivery instead would follow every thread in the workspace. A mention inside a thread anchors that thread too, since the mention is what brought it in. Each sweep walks every followed thread's replies on the thread's own cursor, and a new reply is delivered to every session that owns the thread, wherever the parent has aged in the channel.
+Replies never appear in a conversation's history fetch, so a thread is tracked on its own, per conversation and parent, and walked by its own cursor rather than by the conversation's. A thread is tracked as soon as the sweep sees its parent report replies, whoever wrote the parent - the sweep reads a window of the conversation's recent page, which is also where it learns from `latest_reply` that a tracked thread has moved: one that has not costs no call at all, and one whose parent has aged out of the window costs its own fetch. A mention inside a thread tracks that thread too, since the mention is what brought it in.
+
+Tracking is not the same as delivering. A new reply is delivered only when the user is in the thread, which the sweep works out by reading the thread's replies and looking for his own user id among them - he replies from the Slack app, so forge has no other way to know. A thread he is absent from is tracked and walked, and delivers nothing. A new reply is delivered to every session that owns the thread, wherever the parent has aged in the channel.
 
 Tracking stays bounded: it ends for a session whose subscription is removed, the thread stops being tracked when its last owner goes, and a thread with nothing new for the workspace's `thread_idle_days` (14 by default) is dropped. The clock runs from the newest reply seen, not from the thread's start, so a weeks-old parent with a live conversation survives.

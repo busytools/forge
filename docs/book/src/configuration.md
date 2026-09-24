@@ -370,7 +370,8 @@ means the Slack connector stays dormant.
 |---|---|---|---|
 | `workspace` | string | none | Label for this workspace, distinct per entry. It addresses the workspace in `slack__list`. |
 | `token` | string | none | User token, `xoxp-...`. |
-| `poll_seconds` | integer | `5` | Sweep interval for this workspace, in seconds. Slack's allowance is per workspace and a `direct_messages` subscription costs one history call per DM it covers, so a large inbox wants a longer interval here. |
+| `poll_seconds` | integer | `5` | Sweep interval for this workspace's conversations, in seconds. |
+| `dm_poll_seconds` | integer | `75` | Sweep interval for the DM class, in seconds. It covers every DM in the workspace rather than a list, so it costs one history call per DM per pass whatever the subscription count, and it is swept on its own slower clock. |
 | `thread_idle_days` | integer | `14` | Drop a followed thread with nothing new for this many days. A thread that quiet is resolved in practice, whatever its parent's age. |
 
 `workspace` and `token` are mandatory once an entry is present. Three
@@ -504,6 +505,7 @@ client_token = "CxxxxxxxxxxxxxxxA"
 workspace = "acme"
 token = "xoxp-xxxxxxxxxxxx"
 poll_seconds = 5
+dm_poll_seconds = 75
 thread_idle_days = 14
 
 [plugins]

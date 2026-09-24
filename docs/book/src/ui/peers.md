@@ -122,7 +122,7 @@ The `[Cron]` wrapper is display-only: it drives the visible block and inherits t
 
 ## Slack notification chat block
 
-One conversation's matched Slack messages are delivered into a subscribed session as a single external-notification block, ahead of the response it triggers: the block holds every message that arrived since that conversation was last swept, one line per message, oldest first, with a thread's replies directly under the parent they answer. A sweep with news in two conversations delivers two blocks. It is an external event, not agent traffic: a Slack source label, the `◇` glyph in place of `▶`, and a header naming the conversation, the workspace and the member count over the members.
+One conversation's matched Slack messages are delivered into a subscribed session as a single external-notification block, ahead of the response it triggers: the block holds every message that arrived since that conversation was last swept, one line per message, oldest first, with a thread's replies directly under the parent they answer. A sweep with news in two conversations delivers two blocks, and the new replies of a followed thread arrive as a block of their own, one per thread. It is an external event, not agent traffic: a Slack source label, the `◇` glyph in place of `▶`, and a header naming the conversation and the workspace over the members. Above one member the prose also carries a member count; the block reads it to tell a bundle from one message whose text wraps, and does not display it.
 
 The header prefixes the conversation with `#` when the label looks like a channel name rather than an id. A DM's label is the partner's user id, and an id is never dressed as a channel - though the test is a shape, so an all-caps channel name loses its `#` too. A block of more than one message names no author in its header - each member line names its own - so the clause is dropped there too.
 
@@ -136,8 +136,8 @@ Slack's mrkdwn is tidied for display: `*bold*` and `_italic_` lose their markers
    <span class="slack bold">Slack</span>
 
      <span class="slack bold">&#x25C7;</span> <span class="bold">#granite-staging-alerts</span> <span class="dim">&#183; Trust Machines &#183; granite-bot</span>
-     <span class="dim">&#x2502;&nbsp;&nbsp;Large STX Transfer [ts 1789182982.499299]</span>
-     <span class="dim">&#x2514;&#x2500; Amount: 233468.293536 STX (~$60434.82 USD)</span>
+     <span class="dim">&#x2502;&nbsp;&nbsp;Large STX Transfer</span>
+     <span class="dim">&#x2514;&#x2500; Amount: 233468.293536 STX (~$60434.82 USD) [ts 1789182982.499299]</span>
 
      <span class="slack bold">&#x25C7;</span> <span class="bold">#ops</span> <span class="dim">&#183; Trust Machines</span>
      <span class="dim">&#x2502;&nbsp;&nbsp;alice: deploy is green [ts 1789183001.000100]</span>

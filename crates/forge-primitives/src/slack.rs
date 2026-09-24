@@ -20,6 +20,12 @@ pub struct SlackConfig {
     /// Sweep interval for this workspace, in seconds.
     #[serde(default = "default_poll_seconds")]
     pub poll_seconds: u64,
+    /// Sweep interval for the DM class, in seconds. It covers every DM in the
+    /// workspace rather than a list, so it costs one history read per DM per
+    /// pass whatever the subscription count - which is why it runs on its own,
+    /// slower clock beside `poll_seconds`.
+    #[serde(default = "default_dm_poll_seconds")]
+    pub dm_poll_seconds: u64,
     /// A followed thread with nothing new for this many days is dropped:
     /// one that quiet is resolved in practice, whatever its parent's age.
     #[serde(default = "default_thread_idle_days")]
@@ -35,8 +41,33 @@ pub const DEFAULT_POLL_SECONDS: u64 = 5;
 /// Idle window a workspace gets when it names none.
 pub const DEFAULT_THREAD_IDLE_DAYS: u64 = 14;
 
+/// DM-class sweep interval a workspace gets when it names none.
+///
+/// The two clocks spend one token's allowance for the same method, so the DM
+/// class has to fit beside the conversation pass rather than alone: at
+/// `poll_seconds` 5 that pass costs about 36 calls a minute (a directory list
+/// plus one history read per named conversation, and thread walks on top),
+/// against a measured 77. The largest inbox measured is 91 DMs, one history
+/// call each, so it needs at least 135 seconds and 150 is that with margin. The
+/// smaller inbox is comfortable either way: 48 DMs lands near 20 calls a minute.
+///
+/// The floor is real rather than tidy: at 77 calls a minute the token was
+/// measured clean - 30 back-to-back `conversations.history` calls, no 429 at
+/// all - and deliberately paced runs at 45 to 57 were comfortable, so 77 is the
+/// highest rate observed rather than a projection.
+pub const DEFAULT_DM_POLL_SECONDS: u64 = 150;
+
+/// The slowest a workspace may set the DM clock to. Below this the class
+/// outruns the allowance it shares with the conversation pass, which is the
+/// overrun the key exists to prevent.
+pub const MIN_DM_POLL_SECONDS: u64 = 10;
+
 fn default_poll_seconds() -> u64 {
     DEFAULT_POLL_SECONDS
+}
+
+fn default_dm_poll_seconds() -> u64 {
+    DEFAULT_DM_POLL_SECONDS
 }
 
 fn default_thread_idle_days() -> u64 {
@@ -51,6 +82,7 @@ impl std::fmt::Debug for SlackConfig {
             .field("workspace", &self.workspace)
             .field("token", &"[redacted]")
             .field("poll_seconds", &self.poll_seconds)
+            .field("dm_poll_seconds", &self.dm_poll_seconds)
             .field("thread_idle_days", &self.thread_idle_days)
             .finish()
     }
@@ -229,13 +261,24 @@ pub struct SlackThreadOwner {
     pub team_role: Option<String>,
 }
 
-/// What the store keeps about one followed thread: the last-seen reply
-/// `ts` as the verbatim string Slack sent, and the sessions whose
-/// subscriptions put the thread on their radar.
+/// What the store keeps about one followed thread: how far its replies have
+/// been read, and the sessions whose subscriptions put the thread on their
+/// radar.
+///
+/// The cursor is usually the string Slack sent, but not always: a thread
+/// forge starts tracking seeds it one microsecond below the reply that
+/// brought the thread in, since the cursor is exclusive. Nothing sends it to
+/// Slack - both thread reads pass no lower bound - so it is only ever
+/// compared, and only as a string.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlackThreadRecord {
     pub cursor: String,
     pub owners: Vec<SlackThreadOwner>,
+    /// Whether the user is in this thread, once that has been read off its
+    /// replies. Kept because a reply cannot un-happen: once true, every walk
+    /// can read past the cursor instead of reading the thread whole.
+    #[serde(default)]
+    pub participating: bool,
 }
 
 /// One followed thread as the pump sees it, minus the cursor it reads
@@ -244,6 +287,8 @@ pub struct SlackThreadRecord {
 pub struct SlackFollowedThread {
     pub parent_ts: String,
     pub owners: Vec<SlackThreadOwner>,
+    /// Whether the user is already known to be in this thread.
+    pub participating: bool,
 }
 
 /// A composed but unsent Slack message. The workspace holds it until the
@@ -304,6 +349,7 @@ mod tests {
             workspace: "acme".to_owned(),
             token: "xoxp-supersecret".to_owned(),
             poll_seconds: 30,
+            dm_poll_seconds: 150,
             thread_idle_days: 14,
         };
         let rendered = format!("{config:?}");

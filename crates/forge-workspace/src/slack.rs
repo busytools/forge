@@ -13,8 +13,9 @@ use std::time::Duration;
 
 use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
-    DEFAULT_POLL_SECONDS, DEFAULT_THREAD_IDLE_DAYS, SlackConfig, SlackDraft, SlackFollowedThread,
-    SlackMessage, SlackSubscription, SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord,
+    DEFAULT_DM_POLL_SECONDS, DEFAULT_POLL_SECONDS, DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS,
+    SlackConfig, SlackDraft, SlackFollowedThread, SlackMessage, SlackSubscription,
+    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -383,10 +384,21 @@ impl Workspace {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
         let mut record = match crate::store::slack::thread(db, workspace, conversation, parent_ts) {
-            Ok(record) => record.unwrap_or_else(|| forge_primitives::slack::SlackThreadRecord {
-                cursor: since.to_owned(),
-                owners: Vec::new(),
-            }),
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                // A thread whose newest reply is already older than the idle
+                // window would be dropped the moment the sweep listed it, and
+                // the sweep anchors every parent it can see on every tick -
+                // so writing the row would rewrite it forever for nothing.
+                if thread_idle_days(since) >= self.slack_thread_idle_days(workspace) {
+                    return;
+                }
+                forge_primitives::slack::SlackThreadRecord {
+                    cursor: since.to_owned(),
+                    owners: Vec::new(),
+                    participating: false,
+                }
+            }
             Err(error) => {
                 tracing::warn!(
                     target: "forge_workspace::slack",
@@ -396,9 +408,40 @@ impl Workspace {
                 return;
             }
         };
-        if !record.owners.contains(&owner) {
-            record.owners.push(owner);
+        if record.owners.contains(&owner) {
+            return;
         }
+        record.owners.push(owner);
+        if let Err(error) =
+            crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &record)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "writing a Slack thread failed",
+            );
+        }
+    }
+
+    /// Record that the user is in a thread, so every later walk reads past the
+    /// cursor rather than the whole thread.
+    pub(crate) fn mark_slack_thread_participating(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+    ) {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        let Ok(Some(mut record)) =
+            crate::store::slack::thread(db, workspace, conversation, parent_ts)
+        else {
+            return;
+        };
+        if record.participating {
+            return;
+        }
+        record.participating = true;
         if let Err(error) =
             crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &record)
         {
@@ -471,7 +514,11 @@ impl Workspace {
                 );
                 continue;
             }
-            out.push(SlackFollowedThread { parent_ts, owners: record.owners });
+            out.push(SlackFollowedThread {
+                parent_ts,
+                owners: record.owners,
+                participating: record.participating,
+            });
         }
         out
     }
@@ -505,6 +552,7 @@ impl Workspace {
             Ok(None) => forge_primitives::slack::SlackThreadRecord {
                 cursor: ts.to_owned(),
                 owners: Vec::new(),
+                participating: false,
             },
             Err(error) => {
                 tracing::warn!(
@@ -518,6 +566,7 @@ impl Workspace {
         let advanced = forge_primitives::slack::SlackThreadRecord {
             cursor: ts.to_owned(),
             owners: record.owners,
+            participating: record.participating,
         };
         if let Err(error) =
             crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &advanced)
@@ -605,6 +654,76 @@ impl Workspace {
     /// One entry per workspace a pump has reported on.
     pub fn slack_connected_workspaces(&self) -> std::collections::BTreeMap<String, bool> {
         self.slack_connected.lock().clone()
+    }
+
+    /// Watch a conversation for this owner, handing back the record that
+    /// already exists when there is one - a second record renders as a second
+    /// Inspector row for one channel. A watch whose mode differs updates that
+    /// record, since the caller asked for something it did not have and there
+    /// is no other route to change a mode. The check and the write share one
+    /// guard, so two subscribes racing cannot both create.
+    pub(crate) fn watch_slack_conversation(
+        &self,
+        workspace: &str,
+        project: &str,
+        team_role: Option<&str>,
+        conversation: &str,
+        mode: SlackWatchMode,
+        durable: bool,
+    ) -> Uuid {
+        let db = self.db.lock();
+        let mut subs = self.slack_subs.lock();
+        if let Some(existing) = subs.iter_mut().find(|sub| {
+            sub.workspace == workspace
+                && sub.project == project
+                && sub.team_role.as_deref() == team_role
+                && matches!(
+                    &sub.target,
+                    SlackSubscriptionTarget::Conversation { id, .. } if id == conversation
+                )
+        }) {
+            if let SlackSubscriptionTarget::Conversation { mode: stored, .. } = &mut existing.target
+            {
+                *stored = mode;
+            }
+            let id = existing.id;
+            if durable
+                && let Some(db) = db.as_ref()
+                && let Err(error) = crate::store::slack::insert(db, existing)
+            {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "persisting a Slack subscription failed",
+                );
+            }
+            return id;
+        }
+        let sub = SlackSubscription {
+            id: Uuid::new_v4(),
+            workspace: workspace.to_owned(),
+            project: project.to_owned(),
+            team_role: team_role.map(str::to_owned),
+            target: SlackSubscriptionTarget::Conversation {
+                id: conversation.to_owned(),
+                name: None,
+                mode,
+            },
+            created_at: std::time::SystemTime::now(),
+        };
+        let id = sub.id;
+        if durable
+            && let Some(db) = db.as_ref()
+            && let Err(error) = crate::store::slack::insert(db, &sub)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "persisting a Slack subscription failed",
+            );
+        }
+        subs.push(sub);
+        id
     }
 
     /// Every Slack subscription owned in `project`, whichever session
@@ -769,7 +888,11 @@ impl Workspace {
                     workspace,
                     &conversation,
                     &parent_ts,
-                    &SlackThreadRecord { cursor: record.cursor, owners: kept },
+                    &SlackThreadRecord {
+                        cursor: record.cursor,
+                        owners: kept,
+                        participating: record.participating,
+                    },
                 );
             }
         }
@@ -879,17 +1002,20 @@ impl Workspace {
             guard.insert(label.clone(), shutdown_tx);
             drop(guard);
 
-            let poll_seconds = self
-                .config
-                .slack
-                .iter()
-                .find(|config| config.workspace.trim() == label.as_str())
-                .map_or(DEFAULT_POLL_SECONDS, |config| config.poll_seconds);
+            let entry =
+                self.config.slack.iter().find(|config| config.workspace.trim() == label.as_str());
+            let poll_seconds = entry.map_or(DEFAULT_POLL_SECONDS, |config| config.poll_seconds);
+            // Clamped because the two clocks share one token's allowance: a
+            // value below the floor is the overrun the key exists to prevent.
+            let dm_poll_seconds = entry
+                .map_or(DEFAULT_DM_POLL_SECONDS, |config| config.dm_poll_seconds)
+                .max(MIN_DM_POLL_SECONDS);
             let host: Arc<dyn SlackHost> = Arc::new(SlackSubsystemHost::new(self));
             tokio::spawn(forge_connectors::slack::run_workspace_pump(
                 host,
                 label,
                 poll_seconds,
+                dm_poll_seconds,
                 shutdown_rx,
             ));
         }
@@ -1017,6 +1143,16 @@ impl SlackHost for SlackSubsystemHost {
         ws.set_slack_thread_watermark(workspace, conversation, parent_ts, ts);
     }
 
+    fn mark_thread_participating(&self, workspace: &str, conversation: &str, parent_ts: &str) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.mark_slack_thread_participating(workspace, conversation, parent_ts);
+    }
+
+    fn first_author_failure(&self, workspace: &str, user: &str) -> bool {
+        let Some(ws) = self.0.upgrade() else { return true };
+        ws.slack_author_failures.lock().insert((workspace.to_owned(), user.to_owned()))
+    }
+
     fn follow_thread(
         &self,
         workspace: &str,
@@ -1075,6 +1211,7 @@ mod tests {
             workspace: workspace.to_owned(),
             token: token.to_owned(),
             poll_seconds: 30,
+            dm_poll_seconds: 150,
             thread_idle_days: 14,
         }
     }
@@ -1607,19 +1744,33 @@ mod tests {
             );
             return;
         };
+        // The sweep's own log is the only place a live failure says why, so
+        // run this test with the log visible: `--no-capture`.
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(std::io::stderr)
+            .try_init();
 
         let http = reqwest::Client::builder().build().expect("an http client");
         let bot = SlackClient::new(http.clone(), bot_token);
         let user = SlackClient::new(http, user_token.clone());
 
-        let conversation_id = bot
+        // Either the id or the name, since Slack hands out the first and a
+        // person reads the second.
+        let channel = bot
             .list_conversations()
             .await
             .expect("the bot reads its own channels")
             .into_iter()
-            .find(|conversation| conversation.name.as_deref() == Some(channel_name.as_str()))
-            .expect("the channel SLACK_TEST_CHANNEL names is one the bot is in")
-            .id;
+            .find(|conversation| {
+                conversation.id == channel_name
+                    || conversation.name.as_deref() == Some(channel_name.as_str())
+            })
+            .expect("the channel SLACK_TEST_CHANNEL names is one the bot is in");
+        let conversation_id = channel.id.clone();
+        // The name the header should carry, which is not the id: asserting
+        // the id would pass on the header's `id` field alone.
+        let channel_label = channel.name.clone().unwrap_or_else(|| conversation_id.clone());
 
         // Everything at or below this is old news, so the sweep's news is
         // exactly what is posted below.
@@ -1648,6 +1799,7 @@ mod tests {
             workspace: LIVE_WORKSPACE.to_owned(),
             token: user_token,
             poll_seconds: 1,
+            dm_poll_seconds: 1,
             thread_idle_days: 14,
         }];
         let (ws, mut update_rx) =
@@ -1663,8 +1815,19 @@ mod tests {
         ws.slack_user_ids.lock().insert(LIVE_WORKSPACE.to_owned(), own_id);
 
         ws.seed_test_project("live", LIVE_PROJECT_PATH);
-        ws.add_slack_subscription(sub_for_conversation("live", None, &conversation_id), true);
+        let mut sub = sub_for_conversation("live", None, &conversation_id);
+        sub.workspace = LIVE_WORKSPACE.to_owned();
+        ws.add_slack_subscription(sub, true);
         ws.set_slack_watermark(LIVE_WORKSPACE, &conversation_id, &watermark);
+        // Checked before the pump starts: a subscription filed under another
+        // workspace leaves the sweep with nothing to do, which it does in
+        // silence and which reads from the outside as a connector that never
+        // delivers.
+        assert_eq!(
+            ws.slack_subscriptions_for_project("live").len(),
+            1,
+            "the subscription has to be in the workspace the pump sweeps",
+        );
 
         // A running lead is where the block lands. The dispatch is
         // intercepted so the test never spawns a child.
@@ -1690,6 +1853,7 @@ mod tests {
             host,
             LIVE_WORKSPACE.to_owned(),
             1,
+            1,
             shutdown_rx,
         ));
 
@@ -1713,7 +1877,12 @@ mod tests {
             prose.contains(&format!("({} messages)", texts.len())),
             "one block holding all three: {prose}",
         );
-        assert!(prose.contains(&channel_name), "the header names the channel: {prose}");
+        assert!(prose.contains(&channel_label), "the header names the channel: {prose}");
+        // The shape, line by line: a collapse that delivered only the newest
+        // message would still carry its own text and ts, so the count is
+        // what says all three arrived.
+        let members = prose.lines().filter(|line| line.contains(" [ts ")).count();
+        assert_eq!(members, texts.len(), "one member line per posted message: {prose}");
         for (index, text) in texts.iter().enumerate() {
             assert!(prose.contains(text.as_str()), "member {index} is in the block: {prose}");
             assert!(
@@ -1721,8 +1890,6 @@ mod tests {
                 "and keeps its own ts, so the agent can answer it alone: {prose}",
             );
         }
-        let distinct: std::collections::HashSet<&String> = posted.iter().collect();
-        assert_eq!(distinct.len(), 3, "three distinct ts, one per posted message: {posted:?}");
     }
 
     /// A thread a delivered message anchors is tracked from the caller's
