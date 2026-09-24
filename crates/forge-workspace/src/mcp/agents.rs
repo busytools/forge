@@ -14,7 +14,11 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 use crate::SessionSlot;
 use crate::mcp::agents::facade::AgentDispatcher;
 use crate::mcp::agents::target::{AgentTarget, LEAD_LABEL, TargetError};
-use crate::mcp::peers::facade::{PeerStatsDelta, WorkspaceFacade};
+use crate::mcp::peers::facade::PeerStatsDelta;
+// Only `build_server` names this, and that is gated on the test features -
+// so an ungated import is unused in the configuration install.sh builds.
+#[cfg(any(test, feature = "testing"))]
+use crate::mcp::peers::facade::WorkspaceFacade;
 use crate::mcp::peers::types::{
     CorrelationId, InflightAsk, PeerStatus, WrappedKind, WrappedPrompt,
 };
