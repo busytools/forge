@@ -16,7 +16,7 @@ use std::time::Instant;
 use super::types::{
     HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
     PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionPoint, SelectionState,
-    SessionUsageState, TodoItem, ToolCallScope, UsageState,
+    SessionUsageState, ToolCallScope, UsageState,
 };
 use super::{ChatMessage, ChatRenderTraceState, ChatViewport, InputFocus};
 use crate::agent::model;
@@ -620,18 +620,6 @@ impl super::App {
     /// Mutable borrow of the active session's MCP state snapshot.
     pub fn mcp_mut(&mut self) -> Option<&mut McpState> {
         self.active_bucket_mut().map(|s| &mut s.mcp)
-    }
-
-    // ---- Todos accessors ----
-
-    /// Borrow the active session's todo list.
-    pub fn todos(&self) -> Option<&[TodoItem]> {
-        self.active_session().map(|s| s.todos.as_slice())
-    }
-
-    /// Mutable borrow of the active session's todo list.
-    pub fn todos_mut(&mut self) -> Option<&mut Vec<TodoItem>> {
-        self.active_bucket_mut().map(|s| &mut s.todos)
     }
 
     /// Borrow the active session's render-cache slot grid.

@@ -532,8 +532,7 @@ mod tests {
     use super::*;
     use crate::app::{
         ActiveView, BlockCache, HelpView, SelectionKind, SelectionPoint, SelectionState,
-        TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot,
-        UsageSourceKind, mention,
+        TextBlockSpacing, ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use forge_primitives::cloud::service_status::ServiceSeverity;
@@ -1562,7 +1561,6 @@ mod tests {
         assert_eq!(app.files_accessed(), 0);
         assert!(app.tools_collapsed);
         assert!(!app.force_redraw);
-        assert!(app.todos().expect("active session").is_empty());
         assert!(app.selection().is_none());
         assert!(app.mention().is_none());
         assert!(!app.cancelled_turn_pending_hint());
@@ -2223,12 +2221,6 @@ mod tests {
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
         app.status = AppStatus::Running;
         app.set_files_accessed(9);
-        app.todos_mut().expect("active session").push(TodoItem {
-            id: "1".to_owned(),
-            content: "Task".into(),
-            status: TodoStatus::InProgress,
-            active_form: String::new(),
-        });
         *app.mention_mut().expect("active session") =
             Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
         app.mcp_mut().expect("active session").servers.push(forge_primitives::McpServerStatus {
@@ -2264,7 +2256,6 @@ mod tests {
         assert_eq!(app.messages().expect("active session").len(), 1);
         assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed(), 0);
-        assert!(app.todos().expect("active session").is_empty());
         assert!(app.mention().is_none());
         assert!(app.mcp().expect("active session").servers.is_empty());
         assert_eq!(app.cwd_raw().as_deref(), Some("/replacement"));

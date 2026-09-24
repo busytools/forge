@@ -40,6 +40,24 @@ pub(crate) fn send_dispatch_turn_error(
     });
 }
 
+/// The `claude` CLI's own task tools. forge owns the task list now - the
+/// `mcp__forge__tasks__*` group over its own store - so a session that
+/// reached for these would write a second list nothing renders and route
+/// to neither honestly.
+const DISALLOWED_CLI_TASK_TOOLS: [&str; 4] = ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"];
+
+/// Those tools as one `--disallowedTools` value.
+fn cli_task_tools_arg() -> String {
+    DISALLOWED_CLI_TASK_TOOLS.join(",")
+}
+
+/// Deny every session - lead, resumed or worker - the CLI's task tools.
+/// Applied wherever a session's launch settings are assembled, beside
+/// [`apply_lead_charter`].
+fn apply_disallowed_task_tools(settings: &mut SessionLaunchSettings) {
+    settings.extra_args.push(("disallowedTools".to_owned(), Some(cli_task_tools_arg())));
+}
+
 /// Build the list of `(flag, value)` extra CLI args specific to a
 /// worker spawn. When the project is a git repo, append
 /// `("worktree", Some(label))` so the spawned `claude` subprocess
@@ -48,8 +66,10 @@ pub(crate) fn send_dispatch_turn_error(
 /// `--disallowedTools EnterWorktree,ExitWorktree` entry: workers are
 /// pinned to their spawn-time location (whether a worktree or the
 /// project cwd) and must not be able to call claude's built-in
-/// worktree-hop tools to escape. Comma-separated value form is
-/// empirically accepted by the CLI's variadic `<tools...>` parser.
+/// worktree-hop tools to escape. The CLI's task tools join that entry -
+/// they are denied to every session, not just a worker. Comma-separated
+/// value form is empirically accepted by the CLI's variadic
+/// `<tools...>` parser.
 ///
 /// Unless `interactive`, `AskUserQuestion` joins that list. A worker's
 /// question renders in its own row, which nobody is usually looking
@@ -71,7 +91,7 @@ fn build_worker_extra_args(
     if is_git_repo {
         args.push(("worktree".to_owned(), Some(label.to_owned())));
     }
-    let mut disallowed = "EnterWorktree,ExitWorktree".to_owned();
+    let mut disallowed = format!("EnterWorktree,ExitWorktree,{}", cli_task_tools_arg());
     if !interactive {
         disallowed.push_str(",AskUserQuestion");
     }
@@ -160,6 +180,7 @@ pub(crate) fn handle_spawn_project(
     };
 
     apply_lead_charter(&mut launch_settings);
+    apply_disallowed_task_tools(&mut launch_settings);
 
     // The id this lead will run under, resolved before the spawn so the
     // bucket announced here is the bucket the child connects under.
@@ -1055,6 +1076,7 @@ pub(crate) fn handle_start_default(
     };
 
     apply_lead_charter(&mut launch_settings);
+    apply_disallowed_task_tools(&mut launch_settings);
 
     let session_key = match workspace.resolve_slot(&target) {
         Ok(key) => key,
@@ -5335,6 +5357,63 @@ provider = "anthropic"
         assert!(
             !args.iter().any(|(flag, _)| flag == "worktree"),
             "expected no worktree entry in {args:?}"
+        );
+    }
+
+    /// The `--disallowedTools` value in `args`, failing loudly when the
+    /// flag is absent.
+    fn disallowed_tools_value(args: &[(String, Option<String>)]) -> String {
+        args.iter()
+            .find(|(flag, _)| flag == "disallowedTools")
+            .and_then(|(_, value)| value.clone())
+            .expect("expected a --disallowedTools entry")
+    }
+
+    /// forge owns the task list now, so no session may reach the CLI's
+    /// own: a call would write a second list nothing renders and route to
+    /// neither honestly. The worker case, which carries the worktree and
+    /// AskUserQuestion denials in the same value.
+    #[test]
+    fn a_worker_is_denied_the_cli_task_tools() {
+        let list = disallowed_tools_value(&build_worker_extra_args(false, "reviewer", false));
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(list.contains(tool), "{tool} must be denied to a worker; got {list:?}");
+        }
+        assert!(
+            !list.contains("ScheduleWakeup"),
+            "forge handles ScheduleWakeup itself; it stays available",
+        );
+        assert!(
+            !list.contains("ReportFindings"),
+            "ReportFindings wants rendering, which is a separate change",
+        );
+        assert!(
+            !list.contains("CronCreate")
+                && !list.contains("CronDelete")
+                && !list.contains("CronList"),
+            "the cron tools are held out of this change; got {list:?}",
+        );
+    }
+
+    /// A lead is denied them too. `--disallowedTools` used to be a
+    /// worker-only flag, so a lead kept the CLI's task tools and the
+    /// claim that forge owns the list would hold for one session kind
+    /// only.
+    #[test]
+    fn a_lead_is_denied_the_cli_task_tools() {
+        let mut settings = SessionLaunchSettings::default();
+        apply_disallowed_task_tools(&mut settings);
+        let list = disallowed_tools_value(&settings.extra_args);
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(list.contains(tool), "{tool} must be denied to a lead; got {list:?}");
+        }
+        assert!(
+            !list.contains("EnterWorktree") && !list.contains("ExitWorktree"),
+            "a lead still hops worktrees; got {list:?}",
+        );
+        assert!(
+            !list.contains("AskUserQuestion"),
+            "a lead is exactly the session that must be able to ask; got {list:?}",
         );
     }
 

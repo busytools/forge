@@ -148,11 +148,12 @@ read "the TUI cannot touch the agent" into it.
 forge exposes one MCP server, named `forge`, to every spawned session.
 It is not a subprocess: it is hosted inside forge and reached over the
 CLI's own MCP transport. Its tools are grouped by submodule and render
-to the model as `mcp__forge__<group>__<tool>`, with six groups today:
-`peers`, `workers`, `review`, `cron`, `gotify` and `slack`.
+to the model as `mcp__forge__<group>__<tool>`, with seven groups today:
+`peers`, `workers`, `review`, `cron`, `tasks`, `gotify` and `slack`.
 
-`review`, `cron`, `gotify` and `slack` are registered for every session. The
-peers-versus-workers split is the part that varies by session kind:
+`review`, `cron`, `tasks`, `gotify` and `slack` are registered for every
+session. The peers-versus-workers split is the part that varies by session
+kind:
 lead sessions get both `peers__*` and `workers__*`, workers get
 `workers__*` but not `peers__*`, so cross-project traffic stays the
 lead's job.

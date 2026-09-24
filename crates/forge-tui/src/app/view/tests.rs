@@ -4,9 +4,7 @@ use crate::app::dialog::DialogState;
 use crate::app::slash::{SlashContext, SlashState};
 use crate::app::state::types::ScrollbarDragState;
 use crate::app::subagent::SubagentState;
-use crate::app::{
-    PasteSessionState, SelectionKind, SelectionPoint, SelectionState, TodoItem, TodoStatus,
-};
+use crate::app::{PasteSessionState, SelectionKind, SelectionPoint, SelectionState};
 
 fn busy_view_test_app() -> App {
     let mut app = App::test_default();
@@ -49,12 +47,6 @@ fn busy_view_test_app() -> App {
         candidates: vec![],
         dialog: DialogState::default(),
     });
-    *app.todos_mut().expect("active session") = vec![TodoItem {
-        id: "1".to_owned(),
-        content: "todo".to_owned(),
-        status: TodoStatus::Pending,
-        active_form: "todo".to_owned(),
-    }];
     app
 }
 

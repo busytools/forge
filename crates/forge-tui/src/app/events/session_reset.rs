@@ -109,9 +109,6 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
         index.clear();
     }
     app.clear_active_session_background_task_registry();
-    if let Some(todos) = app.todos_mut() {
-        todos.clear();
-    }
     app.focus = super::super::FocusManager::default();
     if let Some(commands) = app.available_commands_mut() {
         commands.clear();
@@ -782,33 +779,6 @@ mod tests {
         (capture, app)
     }
 
-    /// A `TaskUpdate` naming an id the replay never saw warns, and the
-    /// warning has to carry the session, the tool call and the task:
-    /// without those it names a failure nobody can trace back.
-    #[test]
-    fn replay_warning_for_an_unknown_task_id_names_its_session_and_call() {
-        let (capture, _app) = capture_replay_of_session(
-            Some("sess-unknown-task"),
-            &[
-                historical_tool_use_named(
-                    "toolu_orphan",
-                    "TaskUpdate",
-                    serde_json::json!({"taskId": "404", "status": "completed"}),
-                ),
-                historical_tool_result_text("toolu_orphan", false, "Task #404 updated"),
-            ],
-        );
-
-        let record = capture
-            .records_named("task_update_unknown_id")
-            .into_iter()
-            .find(|record| record.level == tracing::Level::WARN)
-            .expect("a TaskUpdate against an absent id must warn");
-        assert_eq!(record.field("session_id"), Some("sess-unknown-task"));
-        assert_eq!(record.field("tool_call_id"), Some("toolu_orphan"));
-        assert_eq!(record.field("task_id"), Some("404"));
-    }
-
     /// The replayed shapes a tool call can reach: completed, failed,
     /// refused, plus the `TaskCreate` / `TaskUpdate` pair.
     /// `Killed` is absent because the JSONL parser admits only user,
@@ -900,14 +870,8 @@ mod tests {
     /// Every operational record the gate silences, one per emitting
     /// site. Each also has a live emission, which is what
     /// `live_tool_calls_still_emit_their_operational_records` checks.
-    const SILENCED_ON_REPLAY: [&str; 6] = [
-        "tool_call_received",
-        "command_started",
-        "command_completed",
-        "tool_call_completed",
-        "task_create_applied",
-        "task_update_applied",
-    ];
+    const SILENCED_ON_REPLAY: [&str; 4] =
+        ["tool_call_received", "command_started", "command_completed", "tool_call_completed"];
 
     /// The failures the walk must not re-report, silenced for a
     /// different reason than the operational records above: the live
@@ -957,10 +921,6 @@ mod tests {
         );
         assert!(app.lookup_tool_call("toolu_err").is_some(), "the failed call never landed");
         assert!(app.lookup_tool_call("toolu_refused").is_some(), "the refused call never landed");
-        assert!(
-            !app.todos().expect("active session").is_empty(),
-            "the Task pair never reached the inspector"
-        );
 
         // Closed world rather than a deny-list.
         let mut info = capture.names_at(tracing::Level::INFO);
@@ -1001,18 +961,13 @@ mod tests {
     /// lost tool call is the session's own work, shown in its chat row,
     /// and the log's copy belongs to the moment rather than to every
     /// resume after it. So the tool and command failures are silenced
-    /// here (see NOT_RE_REPORTED_ON_REPLAY), while the two records that
-    /// only the walk can produce - a refusal, and a status this build
-    /// does not recognise - survive, because nothing else reports them.
+    /// here (see NOT_RE_REPORTED_ON_REPLAY), while a refusal - which
+    /// only the walk can produce, because nothing else reports it -
+    /// survives.
     #[test]
     fn replay_walk_still_reports_what_went_wrong() {
         let (capture, _app) = capture_replay_of(&replay_fixture());
 
-        let warnings = capture.names_at(tracing::Level::WARN);
-        assert!(
-            warnings.iter().any(|name| name == "task_update_unknown_status"),
-            "replay lost `task_update_unknown_status`, saw {warnings:?}",
-        );
         let info = capture.names_at(tracing::Level::INFO);
         assert!(
             info.iter().any(|name| name == "tool_call_refused"),
@@ -1314,23 +1269,6 @@ mod tests {
                 "replay and live disagree on the status of `{id}`",
             );
         }
-
-        let todos_of = |app: &App| {
-            app.todos()
-                .expect("active session")
-                .iter()
-                // Destructured so a new `TodoItem` field is a compile
-                // error here rather than a silently uncompared one.
-                .map(|crate::app::TodoItem { id, content, status, active_form }| {
-                    (id.clone(), content.clone(), status.clone(), active_form.clone())
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            todos_of(&replayed),
-            todos_of(&live),
-            "replay and live disagree on the inspector's task list",
-        );
     }
 
     /// The gate has to be OFF everywhere else: a live tool call is an

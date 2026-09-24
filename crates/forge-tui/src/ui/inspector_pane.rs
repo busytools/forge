@@ -18,11 +18,12 @@
 //!   populate so the user sees "all the work this worker has done
 //!   versus main" at a glance. Sourced from
 //!   `UiSession.git_diff_snapshot`.
-//! - `TASKS` - rendered when the active session has at least one
-//!   non-completed item. The live `TaskCreate` / `TaskUpdate`
-//!   snapshot is the sole surface for the task list; the
-//!   chat-stream `Task*` tool-call cards (`TaskCreate`,
-//!   `TaskUpdate`, `TaskList`, `TaskGet`) are suppressed. #268.
+//! - `TASKS` - rendered when the active project's task store holds a
+//!   task in this session's scope. The store - written by every
+//!   session through the `tasks__*` MCP tools - is the sole surface
+//!   for the task list, and every row is clickable to its own detail
+//!   overlay. Sourced from `App.ui_task_rows`, refreshed on the ~1s
+//!   ticker.
 //! - `MCP SERVERS` - rendered when the session's MCP snapshot has at
 //!   least one server. Sourced entirely from the snapshot, so every
 //!   configured server renders: connected (● green) with scope + tool
@@ -591,7 +592,7 @@ fn render_inspector_thumb(
 /// giving the two surfaces a consistent visual weight.
 const INSPECTOR_THUMB_MAX_CELLS: usize = 1;
 
-/// Append the body (GIT section + verification nudge + TASKS
+/// Append the body (GIT section + TASKS
 /// section) to `lines`. Shared between the inline render and the
 /// Narrow overlay render. GIT and TASKS are separated by a DIM
 /// `─` rule mirroring the projects pane's project-list /
@@ -2555,7 +2556,7 @@ fn truncate_or_pass(s: &str, max_chars: usize) -> String {
 ///
 /// Glyphs mirror the TASKS convention but use a kind-distinct
 /// palette for the headline so scanning the section visually
-/// separates "what's running" from "what's queued in the Task* family":
+/// separates "what's running" from "what's queued":
 ///
 /// - `▸` RUST_ORANGE  - `BashBackgrounded` / `Monitor` while in-flight
 /// - `\u{23F0}` (`⏰`) DIM - `Cron` (scheduled, not currently firing)

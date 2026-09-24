@@ -901,17 +901,12 @@ mod tests {
         }
     }
 
-    /// Hidden / chat-suppressed tools (Task* / AskUserQuestion /
-    /// Schedule* / Cron*) render nothing visible in the chat stream;
-    /// they pass through the run so adjacent visible groups merge
-    /// across them.
+    /// Hidden / chat-suppressed tools (AskUserQuestion / Schedule* /
+    /// Cron*) render nothing visible in the chat stream; they pass
+    /// through the run so adjacent visible groups merge across them.
     #[test]
     fn run_breaker_false_for_hidden_chat_suppressed_tools() {
         for n in [
-            "TaskCreate",
-            "TaskUpdate",
-            "TaskList",
-            "TaskGet",
             "TaskOutput",
             "TaskStop",
             "AskUserQuestion",

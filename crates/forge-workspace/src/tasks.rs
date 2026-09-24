@@ -166,6 +166,6 @@ mod tests {
         assert!(ws.remove_task_tree("forge", &TaskId::from("epic")), "the tree is removed");
         let left = ws.tasks_for_project("forge");
         assert!(left.is_empty(), "children and grandchildren go with the parent");
-        assert_eq!(ws.tasks_for_project("elsewhere").len(), 1, "another project is untouched",);
+        assert_eq!(ws.tasks_for_project("elsewhere").len(), 1, "another project is untouched");
     }
 }

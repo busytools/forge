@@ -551,14 +551,9 @@ L1 expansion:
 
 ## Task* and Workflow
 
-<details>
-<summary>Task* semantics</summary>
+`Workflow` renders nothing in chat - live state lives in the [Inspector](./inspector.md)'s `WORKFLOWS` section (Workflow's icon: `◆`). `TaskOutput` and `TaskStop` are suppressed the same way: they are paired with Monitor and Workflow, and their side-effects surface on those tools' own blocks.
 
-CLI 2.1.156 retired the single-call `TodoWrite` in favour of the id-keyed quartet: TaskCreate pushes one item with its id parsed from the result text (`Task #N created successfully:`), TaskUpdate mutates by id (`status=deleted` removes), TaskList and TaskGet read. Every call updates the Inspector pane in place - no chat noise.
-
-</details>
-
-The Task* quartet and `Workflow` render nothing in chat - live state lives in the [Inspector](./inspector.md)'s `TASKS` and `WORKFLOWS` sections (Workflow's icon: `◆`).
+The `claude` CLI's own task tools - `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` - are not offered to any session. forge owns the task list now: sessions declare their work through the `tasks__*` MCP tools over forge's own store, and the [Inspector](./inspector.md)'s `TASKS` section is its only surface. CLI 2.1.156 had already retired the single-call `TodoWrite` forge used to render.
 
 ## Monitor
 

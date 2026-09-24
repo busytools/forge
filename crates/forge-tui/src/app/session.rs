@@ -16,7 +16,7 @@ use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotSt
 use crate::app::state::types::{
     BackgroundTask, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
     MonitorEntry, PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState,
-    SessionTaskCard, SessionUsageState, StopHookSummaryState, TodoItem, ToolCallScope, UsageState,
+    SessionTaskCard, SessionUsageState, StopHookSummaryState, ToolCallScope, UsageState,
     WorkflowEntry,
 };
 use crate::app::state::viewport::ChatViewport;
@@ -268,12 +268,6 @@ pub struct UiSession {
     pub slash: Option<crate::app::slash::SlashState>,
     /// Active subagent autocomplete state (`&name`). Per-session.
     pub subagent: Option<crate::app::subagent::SubagentState>,
-
-    // ---- Tasks ----
-    /// Current task list from Claude's `TaskCreate` / `TaskUpdate`
-    /// tool calls (#268). Rendered by the inspector pane on the
-    /// right side of the chat view.
-    pub todos: Vec<TodoItem>,
 
     /// Estimated thinking tokens accumulated so far in the current
     /// in-flight turn (#273), summed from the `ThinkingTokens` deltas.
@@ -899,7 +893,6 @@ impl UiSession {
             mention: Option::default(),
             slash: Option::default(),
             subagent: Option::default(),
-            todos: Vec::default(),
             latest_thinking_tokens: None,
             last_stop_hook_summary: None,
             stop_hook_summary_expanded: std::collections::HashMap::default(),
