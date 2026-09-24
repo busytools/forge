@@ -91,10 +91,10 @@ pub enum WorkerSpawnError {
     /// in the empty-repo case).
     WorktreeCreationFailed { reason: String },
     /// `resume_session` was set and the label's prior session could not
-    /// be looked up: the transcript directory is there and unreadable,
-    /// or the row that stands in for one could not be read. Nothing was
-    /// spawned. A lookup that found nothing is not this - that one falls
-    /// back to a fresh session and reports it.
+    /// be looked up: the transcript directory, or a transcript in it, is
+    /// there and unreadable. Nothing was spawned. A lookup that found
+    /// nothing is not this - that one falls back to a fresh session and
+    /// reports it.
     ResumeLookupFailed { label: String, message: String },
 }
 
@@ -292,10 +292,10 @@ pub trait WorkerFacade: Send + Sync {
     /// after a forge restart. `interactive` keeps the built-in
     /// `AskUserQuestion` tool, which every other worker is denied.
     /// `resume_session` resumes the label's most recent prior session
-    /// (the same pick a forge restart makes) instead of starting fresh.
-    /// A label with none resolves to `ResumeTarget::None`, which starts
-    /// a fresh session and says so in the reply's
-    /// [`SessionChoice`]; only a lookup that failed is an error.
+    /// instead of starting fresh. A label with none resolves to
+    /// `ResumeTarget::None`, which starts a fresh session and says so in
+    /// the reply's [`SessionChoice`]; only a lookup that failed is an
+    /// error.
     async fn spawn_worker(
         &self,
         caller: &SessionSlot,
@@ -568,20 +568,21 @@ impl WorkerFacade for ProdWorkerFacade {
         // and, on the fallback below, so the fresh session inherits it.
         let mut ensured = None;
         let (resume_existing, session_choice) = if resume_session {
-            let worktree = if is_git_repo_at_spawn {
-                Some(crate::mcp::workers::types::worker_tag_dir(
-                    &view.path,
-                    &label,
-                    is_git_repo_at_spawn,
-                ))
-            } else {
-                None
-            };
-            if let Some(worktree) = worktree.as_ref() {
+            // The directory the label's sessions ran in: its worktree, or
+            // the project root for a worker spawned without one. The
+            // ensure, the tag write and the lookup below all take it from
+            // `worker_tag_dir`, so they cannot disagree about where a
+            // worker lives.
+            let run_dir = crate::mcp::workers::types::worker_tag_dir(
+                &view.path,
+                &label,
+                is_git_repo_at_spawn,
+            );
+            if is_git_repo_at_spawn {
                 match forge_agent::env::worktree::ensure_worker_worktree(
-                    &view.path, &label, worktree,
+                    &view.path, &label, &run_dir,
                 ) {
-                    Ok(outcome) => ensured = Some((worktree.clone(), outcome)),
+                    Ok(outcome) => ensured = Some((run_dir.clone(), outcome)),
                     Err(err) => {
                         return Err(WorkerSpawnError::WorktreeCreationFailed {
                             reason: err.to_string(),
@@ -589,16 +590,7 @@ impl WorkerFacade for ProdWorkerFacade {
                     }
                 }
             }
-            // A worker with a worktree of its own resolves from that
-            // worktree's transcripts; one without runs in the project
-            // root, whose transcript directory holds every session that
-            // ever ran there, so its row is the only label-scoped
-            // pointer it has.
-            let target = match worktree.as_ref() {
-                Some(worktree) => ws.resolve_worker_resume_session(worktree),
-                None => ws.recorded_worker_session(&view.org, &view.name, &label),
-            };
-            match target {
+            match ws.resolve_worker_resume_session(&view.org, &view.name, &run_dir, &label) {
                 Ok(ResumeTarget::Found(session_id)) => (Some(session_id), SessionChoice::Resumed),
                 // Best effort: a label with nothing to resume starts a
                 // new session and the reply says so. The worktree the

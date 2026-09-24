@@ -177,7 +177,7 @@ impl Tool for Spawn {
                 },
                 "resume_session": {
                     "type": "boolean",
-                    "description": "Set true to RESUME this label's most recent prior session instead of starting fresh, so the old conversation arrives as history and the worker continues where it left off. The natural move after despawning a worker whose context you still want: re-spawn the same label with this set. The session is resolved from the label's transcripts; if the label has no prior session, a fresh one starts and the response says which happened. A live worker on the same label is still rejected; despawn or close it first. For a git worker the label's worktree is recreated if despawn removed it, so the resumed session lands back in its run directory.",
+                    "description": "Set true to RESUME this label's most recent prior session instead of starting fresh, so the old conversation arrives as history and the worker continues where it left off. The natural move after despawning a worker whose context you still want: re-spawn the same label with this set. The session is resolved from what the label is registered under, or from its own transcripts by worker tag once that is gone; if there is none to resume, a fresh one starts and the response says which happened. A live worker on the same label is still rejected; despawn or close it first. A git worker's worktree is recreated if despawn removed it, so the resumed session lands back in its run directory.",
                 },
             },
             "required": ["label", "charter"],
@@ -218,7 +218,7 @@ impl Tool for Spawn {
                         SessionChoice::Resumed => "resumed the label's prior session",
                         SessionChoice::Fresh => "started a new session (resume_session was not set)",
                         SessionChoice::FreshWithoutPrior => {
-                            "started a new session: no prior session for this label"
+                            "started a new session: no prior session found for this label"
                         }
                     },
                 });
@@ -1138,6 +1138,30 @@ mod tests {
         assert_eq!(parsed["tag"], "forge:worker:reviewer");
     }
 
+    /// The help a lead reads has to promise what the code does: the flag
+    /// resumes when there is something to resume and falls back to a
+    /// fresh session when there is not. Promising a refusal is what made
+    /// the shipped text false in the first place.
+    #[test]
+    fn resume_session_help_promises_the_fallback_not_a_refusal() {
+        let spawn =
+            Spawn { facade: MockWorkerFacade::new().into_arc(), slot: fake_key("lead-key") };
+        let schema = spawn.input_schema();
+        let help = schema["properties"]["resume_session"]["description"]
+            .as_str()
+            .expect("the flag is documented");
+        assert!(
+            help.contains("a fresh one starts"),
+            "a caller has to be told a fresh session is the fallback: {help}",
+        );
+        for text in [help, spawn.description()] {
+            assert!(
+                !text.to_lowercase().contains("refuse"),
+                "the text must not promise a refusal the code no longer makes: {text}",
+            );
+        }
+    }
+
     /// The response says which session the spawn landed on. A
     /// `resume_session` spawn that found nothing is a fallback the caller
     /// has to be able to see, and a spawn that never asked to resume has
@@ -1170,14 +1194,47 @@ mod tests {
                 })
                 .await;
             assert!(!output.is_error, "{choice:?} is not an error: {:?}", output.blocks);
-            let text = &output.blocks[0].text;
-            assert!(text.contains(expected), "{choice:?} must say `{expected}`: {text}");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+            let session = parsed["session"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{choice:?} reports the session under `session`"));
+            assert!(session.contains(expected), "{choice:?} must say `{expected}`: {session}");
             assert_eq!(
-                text.contains("no prior session"),
+                session.contains("no prior session found"),
                 names_the_fallback,
-                "{choice:?} names the fallback only when there was nothing to resume: {text}",
+                "{choice:?} names the fallback only when there was nothing to resume: {session}",
             );
         }
+    }
+
+    /// The text a lead reads for the third outcome. A lookup that failed
+    /// is a failure and says so, with the reason it carried, so the lead
+    /// can tell it from a label that has nothing to resume.
+    #[tokio::test]
+    async fn spawn_reports_a_failed_lookup_as_a_failure() {
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Err(WorkerSpawnError::ResumeLookupFailed {
+            label: "reviewer".into(),
+            message: "could not read /x/projects/y: permission denied".into(),
+        }));
+        let facade = mock.into_arc();
+        let tool = Spawn { facade, slot: fake_key("lead-key") };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "reviewer",
+                    "charter": "Review every diff before merge.",
+                    "resume_session": true,
+                }),
+            })
+            .await;
+
+        assert!(output.is_error, "a failed lookup is not a success: {:?}", output.blocks);
+        let text = &output.blocks[0].text;
+        assert!(text.contains("permission denied"), "the reason it failed travels: {text}");
+        assert!(text.contains("reviewer"), "the label it failed for is named: {text}");
     }
 
     #[tokio::test]

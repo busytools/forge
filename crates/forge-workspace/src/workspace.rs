@@ -3607,42 +3607,50 @@ impl Workspace {
         *self.unwakeable_crons.lock() = ids;
     }
 
-    /// The session a worker label resumes onto, taken from the label's
-    /// own transcript directory with the newest session winning.
+    /// The session a worker label resumes onto.
     ///
-    /// `Ok(ResumeTarget::None)` is a label with nothing to resume there,
-    /// and `Err` is a directory that is there but could not be read.
-    /// Only the first is a fallback: a caller that started a fresh
-    /// session on the second would be answering a question the lookup
-    /// never answered.
+    /// The row the label is registered under is authoritative while it is
+    /// there: a worker that has one opens as it always has. The
+    /// transcripts are the recovery path for a row that is gone - a
+    /// despawn deleted it, or this install never had it - and there the
+    /// newest transcript in `run_dir`'s directory carrying the label's
+    /// worker tag wins.
+    ///
+    /// `Ok(ResumeTarget::None)` is a label with nothing in either, and
+    /// `Err` is a store, directory or transcript that is there but could
+    /// not be read. Only the first is a fallback: a caller that started a
+    /// fresh session on the second would be answering a question the
+    /// lookup never answered.
     pub(crate) fn resolve_worker_resume_session(
-        &self,
-        worktree: &std::path::Path,
-    ) -> Result<ResumeTarget, anyhow::Error> {
-        let found = forge_agent::userdata::transcripts::newest_session_for_worktree(
-            &self.config_dir,
-            worktree,
-        )?;
-        Ok(match found {
-            Some(session_id) => ResumeTarget::Found(session_id),
-            None => ResumeTarget::None,
-        })
-    }
-
-    /// The session id the store holds for a worker label, if any.
-    ///
-    /// A worker without a worktree of its own runs in the project root,
-    /// whose transcript directory holds every session that ever ran
-    /// there - the lead's included - so newest-by-time does not name the
-    /// worker's session and the row is the only label-scoped pointer it
-    /// has.
-    pub(crate) fn recorded_worker_session(
         &self,
         org: &str,
         project: &str,
+        run_dir: &std::path::Path,
         label: &str,
     ) -> Result<ResumeTarget, anyhow::Error> {
-        Ok(match self.stored_session_id(org, project, label)? {
+        if let Some(session_id) = self.stored_session_id(org, project, label)? {
+            return Ok(ResumeTarget::Found(session_id));
+        }
+        // The tag scan is what the store's cache is for: without it every
+        // candidate transcript is read end to end, and the directory a
+        // worker without a worktree runs in holds every session that ever
+        // ran in its project. A cache that cannot be read or written
+        // costs a re-scan, never an answer.
+        let cache = {
+            let db = self.db.lock();
+            load_session_tag_cache(db.as_ref())
+        };
+        let found = forge_agent::userdata::transcripts::newest_worker_session(
+            &self.config_dir,
+            run_dir,
+            label,
+            Some(&cache),
+        );
+        {
+            let db = self.db.lock();
+            persist_session_tag_cache(db.as_ref(), &cache);
+        }
+        Ok(match found? {
             Some(session_id) => ResumeTarget::Found(session_id),
             None => ResumeTarget::None,
         })
@@ -11566,10 +11574,19 @@ mod worker_respawn_tests {
         );
     }
 
-    /// Boot a real workspace over a one-project forge.toml, persist a
-    /// `steward` row, and write the id the store holds for it, so the
-    /// re-spawn wave has something to resume onto. Returns the workspace
-    /// plus the project's key and path, and that stored id.
+    /// The id the fixture writes into the label's transcript, which is not
+    /// the id its row holds: an assertion on a resolved id says which of
+    /// the two answered.
+    const TRANSCRIPT_ONLY_ID: &str = "660e8400-e29b-41d4-a716-4466554400aa";
+
+    /// Boot a real workspace over a one-project forge.toml and give the
+    /// `steward` label both of the pointers a session can be found by: the
+    /// row, which the boot wave reads and which answers the MCP resume
+    /// while it is there, and a tagged transcript in the project root's
+    /// directory, which the MCP resume falls back to once the row is gone.
+    /// The project is not a git repo, so the worker runs in the project
+    /// root. Returns the workspace plus the project's key and path, and
+    /// the id the row holds.
     ///
     /// Both tempdirs must outlive the caller.
     fn resumable_worker_fixture(
@@ -11618,6 +11635,7 @@ provider = "anthropic"
             false,
         )
         .expect("the row the re-spawn wave resumes onto");
+        write_tagged_transcript(cfg, &view.path, TRANSCRIPT_ONLY_ID, "steward");
         ws.enable_test_dispatch_intercept();
         (ws, view.key.clone(), view.path.clone(), session_id.to_owned())
     }
@@ -11659,6 +11677,28 @@ provider = "anthropic"
             resume_existing.as_deref(),
             Some(session_id.as_str()),
             "the wave resumes the worker onto the id the store holds",
+        );
+    }
+
+    /// A despawn must still stop the revival. The transcript outlives the
+    /// despawn, so a boot wave that went looking for labels on disk would
+    /// bring back a worker the user closed.
+    #[tokio::test]
+    async fn a_despawned_labels_transcript_revives_nothing_at_boot() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, _path, _session_id) = resumable_worker_fixture(&project, &cfg);
+        assert!(
+            ws.delete_worker_row(&key, "steward").expect("delete the row"),
+            "fixture precondition: the despawn took the row",
+        );
+
+        ws.respawn_workers_for_lead(&lead_slot(), key, false);
+
+        let dispatched = await_spawn_worker(&ws).await;
+        assert!(
+            dispatched.iter().all(|c| !matches!(c, Command::SpawnWorker { .. })),
+            "the tagged transcript the despawn left is not a reason to bring the worker back",
         );
     }
 
@@ -11710,9 +11750,9 @@ provider = "anthropic"
 
     /// The MCP resume-spawn resolves the label's prior session and
     /// threads it into `Command::SpawnWorker.resume_existing` - the exact
-    /// argument the boot re-spawn path fills. This worker has no worktree
-    /// of its own, so there is no transcript directory that names the
-    /// label and the row the fixture wrote is what it resumes.
+    /// argument the boot re-spawn path fills. The row answers while it is
+    /// there, so the id it holds is the one that arrives, not the one in
+    /// the label's transcript.
     #[tokio::test]
     async fn mcp_spawn_with_resume_session_threads_the_resolved_session() {
         let project = tempfile::tempdir().expect("project dir");
@@ -11856,11 +11896,36 @@ provider = "anthropic"
             "fixture precondition: the despawn took the row the label used to be found by",
         );
 
-        let found = ws.resolve_worker_resume_session(&worktree).expect("lookup");
+        let found = ws
+            .resolve_worker_resume_session("TestOrg", "demo", &worktree, "steward")
+            .expect("lookup");
         assert_eq!(
             found,
             ResumeTarget::Found("aaaa".to_owned()),
             "the label resolves to its newest transcript, which is what a despawn leaves behind",
+        );
+    }
+
+    /// The row is authoritative while it exists: a worker already
+    /// registered opens from it even where the directory holds a newer
+    /// tagged session. The transcripts are the recovery path for a row
+    /// that is gone, not the primary.
+    #[tokio::test]
+    async fn a_registered_labels_row_wins_over_its_transcripts() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, _key, worktree) = git_worker_fixture(&project, &cfg, "steward");
+        std::fs::create_dir_all(&worktree).expect("worktree dir");
+        write_tagged_transcript(&cfg, &worktree, "aaaa", "steward");
+        let _store = seed_stored_session(&ws, "steward", "bbbb");
+
+        let found = ws
+            .resolve_worker_resume_session("TestOrg", "demo", &worktree, "steward")
+            .expect("lookup");
+        assert_eq!(
+            found,
+            ResumeTarget::Found("bbbb".to_owned()),
+            "the row the label is registered under is what it opens as",
         );
     }
 
@@ -11878,26 +11943,28 @@ provider = "anthropic"
         write_tagged_transcript(&cfg, &worktree, "aaaa", "steward");
         let dir = worker_transcript_dir(&cfg, &worktree);
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).expect("chmod");
-        let found = ws.resolve_worker_resume_session(&worktree);
+        let found = ws.resolve_worker_resume_session("TestOrg", "demo", &worktree, "steward");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod back");
 
+        let error = found.expect_err("a directory that cannot be read is not an absence");
         assert!(
-            found.is_err(),
-            "a directory that cannot be read is a failure, not an absence: {found:?}",
+            error.to_string().contains(&dir.to_string_lossy().to_string()),
+            "the failure names the directory it could not read: {error}",
         );
     }
 
-    /// Write a `forge:worker:<label>` tagged transcript under the
-    /// worktree's storage key, computed while the worktree exists - the
+    /// Write a `forge:worker:<label>` tagged transcript under the storage
+    /// key of `run_dir` - a worktree, or a project root for a worker with
+    /// no worktree of its own - computed while that directory exists, the
     /// way claude names the directory at session time.
     fn write_tagged_transcript(
         cfg: &tempfile::TempDir,
-        worktree: &std::path::Path,
+        run_dir: &std::path::Path,
         session_id: &str,
         label: &str,
     ) {
-        let worktree_str = worktree.to_string_lossy().replace('\\', "/");
-        let jsonl_dir = worker_transcript_dir(cfg, worktree);
+        let worktree_str = run_dir.to_string_lossy().replace('\\', "/");
+        let jsonl_dir = worker_transcript_dir(cfg, run_dir);
         std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
         std::fs::write(
             jsonl_dir.join(format!("{session_id}.jsonl")),
@@ -11909,11 +11976,11 @@ provider = "anthropic"
         .expect("write tagged jsonl");
     }
 
-    /// The config-dir directory claude writes `worktree`'s sessions in.
-    fn worker_transcript_dir(cfg: &tempfile::TempDir, worktree: &std::path::Path) -> PathBuf {
-        let worktree_str = worktree.to_string_lossy().replace('\\', "/");
+    /// The config-dir directory claude writes `run_dir`'s sessions in.
+    fn worker_transcript_dir(cfg: &tempfile::TempDir, run_dir: &std::path::Path) -> PathBuf {
+        let run_dir_str = run_dir.to_string_lossy().replace('\\', "/");
         let storage_key =
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&worktree_str));
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&run_dir_str));
         forge_sdk::projects_dir_for(cfg.path()).join(storage_key)
     }
 
@@ -11944,8 +12011,13 @@ provider = "anthropic"
         ws.enable_test_dispatch_intercept();
         let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
 
-        let err = facade
-            .spawn_worker(
+        // The timeout is the assertion for the other direction: a lookup
+        // failure that dispatched instead of returning would sit here
+        // waiting on a reply nobody sends, which times out the test
+        // rather than failing it with this message.
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            facade.spawn_worker(
                 &lead_slot(),
                 "steward".to_owned(),
                 "charter".to_owned(),
@@ -11953,15 +12025,23 @@ provider = "anthropic"
                 None,
                 false,
                 true,
-            )
-            .await
-            .expect_err("the label's transcript directory cannot be read");
+            ),
+        )
+        .await
+        .expect("a failed lookup returns; it does not dispatch and wait on a reply")
+        .expect_err("the label's transcript directory cannot be read");
         std::fs::set_permissions(&transcripts, std::fs::Permissions::from_mode(0o755))
             .expect("chmod back");
 
         assert!(
             matches!(err, crate::mcp::workers::facade::WorkerSpawnError::ResumeLookupFailed { .. }),
             "an unreadable lookup is reported as a failure, got {err:?}",
+        );
+        assert!(
+            ws.drain_test_dispatch_buffer()
+                .iter()
+                .all(|c| !matches!(c, Command::SpawnWorker { .. })),
+            "a failed lookup spawns nothing",
         );
         assert!(!worktree.exists(), "the attached worktree is rolled back");
         assert!(
@@ -12251,6 +12331,75 @@ provider = "anthropic"
                 )
                 .await
         });
+        let Command::SpawnWorker { resume_existing, return_to, .. } =
+            take_dispatched_spawn_worker(&ws).await
+        else {
+            panic!("expected the resume to dispatch a SpawnWorker");
+        };
+        assert_eq!(
+            resume_existing.as_deref(),
+            Some(session_id),
+            "the label resumes the session its transcript still names",
+        );
+        // Answer the way `handle_spawn_worker` does for a resume; what
+        // the assertion below reads is the facade's own mapping of it,
+        // which reports a fallback for a resume that found nothing.
+        return_to
+            .send(Ok(WorkerSpawnReply {
+                session_id: session_id.to_owned(),
+                tag: forge_primitives::worker_tag("steward"),
+                rate_limited_account: None,
+                durability_warning: None,
+                session_choice: SessionChoice::Resumed,
+            }))
+            .expect("the facade is awaiting its reply");
+        let reply = spawner.await.expect("facade task joins").expect("the resume is not an error");
+
+        assert_eq!(
+            reply.session_choice,
+            SessionChoice::Resumed,
+            "a resume that found its session reports the resume, not a fallback",
+        );
+        assert!(worktree.exists(), "and lands back in the worktree the despawn removed");
+    }
+
+    /// A worker in a project that is not a git repo runs in the project
+    /// root, so its sessions live in the project's own transcript
+    /// directory - the one holding every session that ever ran there.
+    /// The label's tag is what picks its own out of that, once the row a
+    /// despawn deleted is gone.
+    #[tokio::test]
+    async fn a_despawned_non_git_label_spawns_again_onto_its_session() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, project_path, session_id) = resumable_worker_fixture(&project, &cfg);
+        write_tagged_transcript(&cfg, &project_path, &session_id, "steward");
+        // Newer, and not this label's: the directory is shared, so
+        // newest-in-directory would hand the lead's own work to the
+        // worker.
+        write_tagged_transcript(
+            &cfg,
+            &project_path,
+            "550e8400-e29b-41d4-a716-4466554400ff",
+            "lead",
+        );
+        assert!(ws.delete_worker_row(&key, "steward").expect("delete the row"));
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &lead_slot(),
+                    "steward".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                )
+                .await
+        });
         let resumed = poll_spawn_worker_field(&ws, |cmd| match cmd {
             Command::SpawnWorker { label, resume_existing, .. } if label == "steward" => {
                 Some(resume_existing.clone())
@@ -12263,10 +12412,9 @@ provider = "anthropic"
 
         assert_eq!(
             resumed.as_deref(),
-            Some(session_id),
-            "the label resumes the session its transcript still names",
+            Some(session_id.as_str()),
+            "the label resumes its own session, not the newest one in the directory",
         );
-        assert!(worktree.exists(), "and lands back in the worktree the despawn removed");
     }
 
     /// The other half: a resume with nothing to resume starts fresh, and
@@ -12299,9 +12447,10 @@ provider = "anthropic"
             panic!("expected the fallback to dispatch a SpawnWorker");
         };
         assert!(resume_existing.is_none(), "nothing to resume, so the session is fresh");
-        // Answer the way `handle_spawn_worker` does for a fresh spawn.
-        // Whether the caller asked to resume and found nothing is known
-        // only to the facade that resolved it.
+        // Answer the way `handle_spawn_worker` does for a spawn carrying
+        // no `resume_existing`, which is what a fallback dispatches -
+        // whatever flag the caller passed. Whether it asked to resume and
+        // found nothing is known only to the facade, which restates it.
         return_to
             .send(Ok(WorkerSpawnReply {
                 session_id: "fresh-session-uuid".into(),
@@ -12318,6 +12467,54 @@ provider = "anthropic"
             reply.session_choice,
             SessionChoice::FreshWithoutPrior,
             "a resume that found nothing reports the fallback, not a plain fresh spawn",
+        );
+    }
+
+    /// The third outcome, one arm over from the fallback: a spawn that
+    /// never asked to resume reports a plain fresh session, so a lead that
+    /// set no flag is not told a lookup found nothing.
+    #[tokio::test]
+    async fn a_spawn_without_the_flag_reports_a_plain_fresh_session() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, _key, _worktree) = git_worker_fixture(&project, &cfg, "ghost");
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &lead_slot(),
+                    "ghost".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    false,
+                )
+                .await
+        });
+        let Command::SpawnWorker { resume_existing, return_to, .. } =
+            take_dispatched_spawn_worker(&ws).await
+        else {
+            panic!("expected the plain spawn to dispatch a SpawnWorker");
+        };
+        assert!(resume_existing.is_none(), "the flag was not set, so nothing is resumed");
+        return_to
+            .send(Ok(WorkerSpawnReply {
+                session_id: "fresh-session-uuid".into(),
+                tag: forge_primitives::worker_tag("ghost"),
+                rate_limited_account: None,
+                durability_warning: None,
+                session_choice: SessionChoice::Fresh,
+            }))
+            .expect("the facade is awaiting its reply");
+        let reply = spawner.await.expect("facade task joins").expect("the spawn is not an error");
+
+        assert_eq!(
+            reply.session_choice,
+            SessionChoice::Fresh,
+            "a spawn that never asked to resume is not a resume that found nothing",
         );
     }
 
