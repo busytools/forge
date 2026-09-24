@@ -1575,6 +1575,156 @@ mod tests {
         }
     }
 
+    /// The workspace label the live test configures, and the project whose
+    /// running lead receives the block.
+    const LIVE_WORKSPACE: &str = "live-test";
+    const LIVE_PROJECT_PATH: &str = "/tmp/forge-slack-live";
+
+    /// Layer-below integration test: a real Slack workspace, a real sweep,
+    /// and the block the session is handed.
+    ///
+    /// Opt-in, because it needs three things a CI machine has not - a user
+    /// token, a bot token, and a channel the bot can post into. Absent any
+    /// of them it skips, so the suite stays green without them:
+    ///
+    /// ```text
+    /// SLACK_TEST_USER_TOKEN=... SLACK_TEST_BOT_TOKEN=... SLACK_TEST_CHANNEL=... \
+    ///     cargo nextest run -p forge-workspace slack_live_bundle
+    /// ```
+    ///
+    /// The bot posts and the user reads, so the reader never filters the
+    /// poster's own messages out of the sweep.
+    #[tokio::test]
+    async fn slack_live_bundle_delivers_a_conversations_news_as_one_block() {
+        let (Ok(user_token), Ok(bot_token), Ok(channel_name)) = (
+            std::env::var("SLACK_TEST_USER_TOKEN"),
+            std::env::var("SLACK_TEST_BOT_TOKEN"),
+            std::env::var("SLACK_TEST_CHANNEL"),
+        ) else {
+            eprintln!(
+                "skipping slack_live_bundle: set SLACK_TEST_USER_TOKEN, SLACK_TEST_BOT_TOKEN \
+                 and SLACK_TEST_CHANNEL to run it against a real workspace",
+            );
+            return;
+        };
+
+        let http = reqwest::Client::builder().build().expect("an http client");
+        let bot = SlackClient::new(http.clone(), bot_token);
+        let user = SlackClient::new(http, user_token.clone());
+
+        let conversation_id = bot
+            .list_conversations()
+            .await
+            .expect("the bot reads its own channels")
+            .into_iter()
+            .find(|conversation| conversation.name.as_deref() == Some(channel_name.as_str()))
+            .expect("the channel SLACK_TEST_CHANNEL names is one the bot is in")
+            .id;
+
+        // Everything at or below this is old news, so the sweep's news is
+        // exactly what is posted below.
+        let watermark = user
+            .history(&conversation_id, None, 1, None)
+            .await
+            .expect("the user reads the channel")
+            .messages
+            .first()
+            .map_or_else(|| "0".to_owned(), |message| message.ts.clone());
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the clock is past the epoch")
+            .as_secs();
+        let texts: Vec<String> = (1..=3).map(|n| format!("live bundle {n} {stamp}")).collect();
+        let mut posted = Vec::new();
+        for text in &texts {
+            posted
+                .push(bot.post_message(&conversation_id, text, None).await.expect("the bot posts"));
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.slack = vec![SlackConfig {
+            workspace: LIVE_WORKSPACE.to_owned(),
+            token: user_token,
+            poll_seconds: 1,
+            thread_idle_days: 14,
+        }];
+        let (ws, mut update_rx) =
+            Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub config's [[slack]] entries are well-formed");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        // The own id is what boot's auth probe caches; without it the sweep
+        // refuses the tick rather than echo the user's own posts back.
+        let own_id = user.auth_test().await.expect("the user token proves").user_id;
+        ws.slack_user_ids.lock().insert(LIVE_WORKSPACE.to_owned(), own_id);
+
+        ws.seed_test_project("live", LIVE_PROJECT_PATH);
+        ws.add_slack_subscription(sub_for_conversation("live", None, &conversation_id), true);
+        ws.set_slack_watermark(LIVE_WORKSPACE, &conversation_id, &watermark);
+
+        // A running lead is where the block lands. The dispatch is
+        // intercepted so the test never spawns a child.
+        ws.record_connected_session(LIVE_PROJECT_PATH, "live-lead", None);
+        let lead_key = SessionSlot::lead("TestOrg", "live");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::new(handle),
+                account: forge_gateway::AccountKey("test".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "live-lead".to_owned(),
+            },
+        );
+        ws.mark_session_connected_for_test(&lead_key, "live-lead");
+        ws.enable_test_dispatch_intercept();
+
+        let host: Arc<dyn SlackHost> = Arc::new(SlackSubsystemHost::new(&ws));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let pump = tokio::spawn(forge_connectors::slack::run_workspace_pump(
+            host,
+            LIVE_WORKSPACE.to_owned(),
+            1,
+            shutdown_rx,
+        ));
+
+        let mut delivered = None;
+        for _ in 0..600 {
+            while let Ok(update) = update_rx.try_recv() {
+                if let crate::protocol::SessionUpdate::SlackMessageAppended { prose, .. } = update {
+                    delivered = Some(prose);
+                }
+            }
+            if delivered.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let _ = shutdown_tx.send(());
+        let _ = pump.await;
+
+        let prose = delivered.expect("the sweep delivered the block the session is handed");
+        assert!(
+            prose.contains(&format!("({} messages)", texts.len())),
+            "one block holding all three: {prose}",
+        );
+        assert!(prose.contains(&channel_name), "the header names the channel: {prose}");
+        for (index, text) in texts.iter().enumerate() {
+            assert!(prose.contains(text.as_str()), "member {index} is in the block: {prose}");
+            assert!(
+                prose.contains(&posted[index]),
+                "and keeps its own ts, so the agent can answer it alone: {prose}",
+            );
+        }
+        let distinct: std::collections::HashSet<&String> = posted.iter().collect();
+        assert_eq!(distinct.len(), 3, "three distinct ts, one per posted message: {posted:?}");
+    }
+
     /// A thread a delivered message anchors is tracked from the caller's
     /// `since`, owned once per session even when both followed it.
     #[test]
