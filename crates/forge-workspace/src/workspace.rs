@@ -10945,7 +10945,7 @@ mod tag_retry_tests {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod worker_respawn_tests {
     use super::*;
-    use crate::protocol::Command;
+    use crate::protocol::{Command, SessionChoice, WorkerSpawnReply};
 
     /// The `demo` project's lead slot, which the fixtures in this module
     /// boot.
@@ -12213,6 +12213,129 @@ provider = "anthropic"
             "the ensure must follow the row's recorded gitness, not probe the project: \
              this row runs in the project root, so no worktree belongs here",
         );
+    }
+
+    /// The sequence the regression turned on: a worker spawns - the row
+    /// the spawn handler writes and the transcript claude writes in the
+    /// worktree are what it leaves behind - then it is despawned, row
+    /// deleted and worktree gone. The transcript is not the despawn's to
+    /// remove, so the label spawns again onto the session it ran under.
+    #[tokio::test]
+    async fn a_despawned_label_spawns_again_onto_its_session() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, worktree) = git_worker_fixture(&project, &cfg, "steward");
+        let worktree_str = worktree.to_string_lossy().replace('\\', "/");
+        let session_id = "550e8400-e29b-41d4-a716-446655440099";
+        run_git_in(
+            project.path(),
+            &["worktree", "add", "-q", "-b", "worktree-steward", worktree_str.as_str()],
+        );
+        write_tagged_transcript(&cfg, &worktree, session_id, "steward");
+        let _store = seed_stored_session(&ws, "steward", session_id);
+        assert!(ws.delete_worker_row(&key, "steward").expect("delete the row"));
+        run_git_in(project.path(), &["worktree", "remove", "--force", worktree_str.as_str()]);
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &lead_slot(),
+                    "steward".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                )
+                .await
+        });
+        let resumed = poll_spawn_worker_field(&ws, |cmd| match cmd {
+            Command::SpawnWorker { label, resume_existing, .. } if label == "steward" => {
+                Some(resume_existing.clone())
+            }
+            _ => None,
+        })
+        .await
+        .expect("the despawned label spawns again");
+        let _ = spawner.await.expect("facade task joins");
+
+        assert_eq!(
+            resumed.as_deref(),
+            Some(session_id),
+            "the label resumes the session its transcript still names",
+        );
+        assert!(worktree.exists(), "and lands back in the worktree the despawn removed");
+    }
+
+    /// The other half: a resume with nothing to resume starts fresh, and
+    /// the reply the tool renders says which happened - a caller that
+    /// asked for old context is never left believing it got some.
+    #[tokio::test]
+    async fn a_resume_with_nothing_to_resume_reports_a_fresh_session() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, _key, _worktree) = git_worker_fixture(&project, &cfg, "ghost");
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &lead_slot(),
+                    "ghost".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                )
+                .await
+        });
+        let Command::SpawnWorker { resume_existing, return_to, .. } =
+            take_dispatched_spawn_worker(&ws).await
+        else {
+            panic!("expected the fallback to dispatch a SpawnWorker");
+        };
+        assert!(resume_existing.is_none(), "nothing to resume, so the session is fresh");
+        // Answer the way `handle_spawn_worker` does for a fresh spawn.
+        // Whether the caller asked to resume and found nothing is known
+        // only to the facade that resolved it.
+        return_to
+            .send(Ok(WorkerSpawnReply {
+                session_id: "fresh-session-uuid".into(),
+                tag: forge_primitives::worker_tag("ghost"),
+                rate_limited_account: None,
+                durability_warning: None,
+                session_choice: SessionChoice::Fresh,
+            }))
+            .expect("the facade is awaiting its reply");
+        let reply =
+            spawner.await.expect("facade task joins").expect("the fallback is not an error");
+
+        assert_eq!(
+            reply.session_choice,
+            SessionChoice::FreshWithoutPrior,
+            "a resume that found nothing reports the fallback, not a plain fresh spawn",
+        );
+    }
+
+    /// The first `SpawnWorker` a facade dispatched, taken whole so the
+    /// test can answer its reply channel the way the spawn handler would.
+    async fn take_dispatched_spawn_worker(ws: &Arc<Workspace>) -> Command {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(cmd) = ws
+                .drain_test_dispatch_buffer()
+                .into_iter()
+                .find(|c| matches!(c, Command::SpawnWorker { .. }))
+            {
+                return cmd;
+            }
+            assert!(std::time::Instant::now() < deadline, "no SpawnWorker was dispatched");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 
     fn run_git_in(dir: &std::path::Path, args: &[&str]) {
