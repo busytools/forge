@@ -486,22 +486,8 @@ fn read_session_lite(path: &Path, cache: Option<&SessionTagCache>) -> Option<Lit
         String::from_utf8_lossy(&tail_bytes).into_owned()
     };
 
-    // Resume the tag scan from where the last one stopped. A shrunk file
-    // was truncated or replaced, so what was scanned no longer describes
-    // these bytes and the whole thing is read again.
-    let carried = cache
-        .and_then(|c| c.get(path))
-        .filter(|prior| prior.scanned_len <= size)
-        .unwrap_or_default();
-    let resume_at = carried.scanned_len;
-    let tag = match file.seek(SeekFrom::Start(resume_at)) {
-        Ok(_) => {
-            let (tag, state) = scan_tag_from(BufReader::new(&mut file), Some(carried));
-            if let Some(cache) = cache {
-                cache.put(path, state);
-            }
-            tag
-        }
+    let tag = match tag_of(path, &mut file, size, cache) {
+        Ok(tag) => tag,
         Err(e) => {
             tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, path = %path.display(), error = %e, step = "seek_tag_scan", "lite-read tag-scan failed; resume will treat as untagged");
             None
@@ -509,6 +495,32 @@ fn read_session_lite(path: &Path, cache: Option<&SessionTagCache>) -> Option<Lit
     };
 
     Some(LiteSessionFile { mtime, size, head, tail, tag })
+}
+
+/// The last tag `path`'s transcript carries, with the read error
+/// [`read_session_lite`] turns into "untagged" handed back as one: a
+/// caller that has to tell an unreadable transcript from an untagged one
+/// cannot use the lite read.
+///
+/// `size` is the file's length, `file` is positioned by this call, and
+/// `cache` resumes the scan where the previous one stopped - a shrunk
+/// file was truncated or replaced, so the whole thing is read again.
+pub(crate) fn tag_of(
+    path: &Path,
+    file: &mut fs::File,
+    size: u64,
+    cache: Option<&SessionTagCache>,
+) -> std::io::Result<Option<String>> {
+    let carried = cache
+        .and_then(|c| c.get(path))
+        .filter(|prior| prior.scanned_len <= size)
+        .unwrap_or_default();
+    file.seek(SeekFrom::Start(carried.scanned_len))?;
+    let (tag, state) = scan_tag_from(BufReader::new(&mut *file), Some(carried));
+    if let Some(cache) = cache {
+        cache.put(path, state);
+    }
+    Ok(tag)
 }
 
 /// What a tag scan learned about one transcript, and how far into it the

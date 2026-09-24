@@ -50,6 +50,7 @@ async fn worker_spawn_scenario() {
         tag: forge_primitives::worker_tag("reviewer"),
         rate_limited_account: None,
         durability_warning: None,
+        session_choice: forge_workspace::protocol::SessionChoice::Fresh,
     }));
     // Pre-seed the worker pool so a follow-up workers__list call
     // returns the spawned worker without needing the spawn-side
