@@ -2454,15 +2454,21 @@ impl Workspace {
     /// `launch_settings` as overrides, the binding moves to that
     /// segment, and the one it replaces is dropped. The pool entry
     /// records the same id, so `bound_account_for` reads the binding the
-    /// child actually answers to. A no-op when the slot is not pooled or
-    /// carries no registration: the launch then keeps the account env
-    /// the original spawn laid down.
+    /// child actually answers to. The gateway half is a no-op when the
+    /// slot is not pooled or carries no registration: the launch then
+    /// keeps the account env the original spawn laid down.
+    ///
+    /// The CLI's task tools are denied unconditionally, because a
+    /// respawn's settings are built by the TUI and carry no spawn-time
+    /// flags - so `/new` and `/resume` are exactly where those denials
+    /// would otherwise come back.
     pub(crate) fn stamp_respawn_overrides(
         &self,
         slot: &SessionSlot,
         session_id: &str,
         launch_settings: &mut SessionLaunchSettings,
     ) {
+        crate::spawn::apply_disallowed_task_tools(launch_settings);
         let (registration, replaced) = {
             let mut pool = self.pool.lock();
             let Some(entry) = pool.get_mut(slot) else { return };

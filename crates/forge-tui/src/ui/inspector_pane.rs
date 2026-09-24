@@ -192,7 +192,6 @@ fn build_inline_banner(width: u16) -> Vec<Line<'static>> {
 /// Max session rows the pinned band renders before collapsing the
 /// tail into a `+N more` line. Bounds the band's height regardless of
 /// how many sessions are waiting so a burst can't crowd out GIT.
-/// Matches the TASKS section's per-section cap.
 const ATTENTION_MAX_ROWS: usize = 5;
 
 /// Rows the band leaves for the scrollable body when the pane has the
@@ -5628,6 +5627,37 @@ pub(crate) mod tests {
         for n in 0..9 {
             assert!(text.contains(&format!("task {n}")), "task {n} is rendered; got:\n{text}");
         }
+    }
+
+    #[test]
+    fn an_empty_store_renders_no_tasks_header_or_rule() {
+        let mut empty = crate::app::state::tasks::tests::app_with_no_task_rows();
+        let empty_text = render_inspector_to_string(&mut empty, 30, 60);
+        assert!(
+            !empty_text.contains("TASKS"),
+            "an empty store renders no TASKS header:\n{empty_text}",
+        );
+
+        // The header is only half of it: the section's own rule has to go
+        // too, or a project with no tasks shows a rule under nothing.
+        // Rules are compared against the same render one task later, where
+        // exactly one more section is live.
+        let mut one = crate::app::state::tasks::tests::app_with_task_rows(1);
+        let one_text = render_inspector_to_string(&mut one, 30, 60);
+        assert_eq!(
+            rule_lines(&one_text),
+            rule_lines(&empty_text) + 1,
+            "the section adds its rule only when it has a row to show:\n{empty_text}",
+        );
+    }
+
+    /// The dim rules separating inspector sections: a line of dashes
+    /// spanning the pane, counted by the glyph every such rule is drawn
+    /// from.
+    fn rule_lines(text: &str) -> usize {
+        text.lines()
+            .filter(|line| !line.trim().is_empty() && line.trim().chars().all(|c| c == '\u{2500}'))
+            .count()
     }
 
     #[test]

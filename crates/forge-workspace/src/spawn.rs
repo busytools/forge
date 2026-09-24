@@ -54,7 +54,7 @@ fn cli_task_tools_arg() -> String {
 /// Deny every session - lead, resumed or worker - the CLI's task tools.
 /// Applied wherever a session's launch settings are assembled, beside
 /// [`apply_lead_charter`].
-fn apply_disallowed_task_tools(settings: &mut SessionLaunchSettings) {
+pub(crate) fn apply_disallowed_task_tools(settings: &mut SessionLaunchSettings) {
     settings.extra_args.push(("disallowedTools".to_owned(), Some(cli_task_tools_arg())));
 }
 
@@ -5415,6 +5415,22 @@ provider = "anthropic"
             !list.contains("AskUserQuestion"),
             "a lead is exactly the session that must be able to ask; got {list:?}",
         );
+    }
+
+    /// A `/new` or `/resume` replaces the occupant but keeps the slot,
+    /// and the settings for that respawn are built by the TUI, which
+    /// knows nothing of the spawn-time flags. Left unstamped, the four
+    /// names come back and the new occupant gets a second task list.
+    #[test]
+    fn a_respawn_restamps_the_cli_task_tool_denial() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let slot = SessionSlot::lead("TestOrg", "myproj");
+        let mut settings = SessionLaunchSettings::default();
+        ws.stamp_respawn_overrides(&slot, "respawned-id", &mut settings);
+        let list = disallowed_tools_value(&settings.extra_args);
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(list.contains(tool), "{tool} must survive a respawn; got {list:?}");
+        }
     }
 
     /// Workers are pinned to their worktree (when they have one) and

@@ -1661,7 +1661,7 @@ mod tests {
         let blocks = vec![
             tool_call_block("a", "Read"),
             tool_call_block("b", "Read"),
-            hidden_tool_call_block("c", "TaskCreate"),
+            hidden_tool_call_block("c", "TaskStop"),
             tool_call_block("d", "Read"),
             tool_call_block("e", "Read"),
         ];
@@ -1671,7 +1671,7 @@ mod tests {
         assert_eq!(
             groups.len(),
             1,
-            "5 visible Reads separated by one hidden TaskCreate must form a single group; got {} groups",
+            "5 visible Reads separated by one hidden TaskStop must form a single group; got {} groups",
             groups.len(),
         );
     }
@@ -1683,7 +1683,7 @@ mod tests {
         let blocks = vec![
             tool_call_block("a", "Read"),
             tool_call_block("b", "Read"),
-            hidden_tool_call_block("c", "TaskCreate"),
+            hidden_tool_call_block("c", "TaskStop"),
             hidden_tool_call_block("d", "AskUserQuestion"),
             hidden_tool_call_block("e", "CronCreate"),
             tool_call_block("f", "Read"),
@@ -1737,7 +1737,7 @@ mod tests {
     fn lone_hidden_block_renders_nothing_visible() {
         let blocks = vec![
             text_block("before"),
-            hidden_tool_call_block("a", "TaskCreate"),
+            hidden_tool_call_block("a", "TaskStop"),
             text_block("after"),
         ];
         let units = partition_blocks_into_render_units(&blocks);
@@ -1759,7 +1759,7 @@ mod tests {
             tool_call_block("a", "Read"),
             tool_call_block("b", "Read"),
             tool_call_block("c", "Read"),
-            hidden_tool_call_block("d", "TaskCreate"),
+            hidden_tool_call_block("d", "TaskStop"),
         ];
         let units = partition_blocks_into_render_units(&blocks);
         let groups: Vec<_> =

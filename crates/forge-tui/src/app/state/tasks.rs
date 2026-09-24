@@ -87,6 +87,15 @@ impl App {
         // Running, then blocked, then pending, then completed. Stable, so
         // tasks of one status keep the order they were declared in.
         scoped.sort_by_key(|t| status_rank(t.status));
+        // The detail overlay draws whatever the store holds, so an id the
+        // store no longer has - a task another session deleted, or a
+        // project this tab has left - closes it. Left open it would swallow
+        // every key and click over nothing at all.
+        if let Some(open) = self.task_detail.as_ref()
+            && !all.iter().any(|t| t.id == *open)
+        {
+            self.task_detail = None;
+        }
         self.ui_task_rows = scoped.iter().map(|t| build_task_row(t, &all)).collect();
         self.forge_tasks = scoped;
         self.forge_project_tasks = all;
@@ -142,13 +151,22 @@ pub(crate) mod tests {
         Task { parent: parent.map(TaskId::from), ..owned_task(id, id, Some(WORKER)) }
     }
 
-    fn app_with_tasks(tasks: Vec<Task>) -> App {
+    pub(crate) fn app_with_tasks(tasks: Vec<Task>) -> App {
         let app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         ws.seed_test_project(PROJECT, PATH);
         for task in tasks {
             ws.seed_test_task(task);
         }
+        app
+    }
+
+    /// A lead's view of a project whose store holds nothing, refreshed -
+    /// so a render of it is the empty-store case.
+    pub(crate) fn app_with_no_task_rows() -> App {
+        let mut app = app_with_tasks(Vec::new());
+        app.focus_lead_session();
+        app.refresh_tasks();
         app
     }
 
@@ -367,6 +385,27 @@ pub(crate) mod tests {
             "a running row renders the wording it is running as",
         );
         assert_eq!(app.ui_task_rows[0].rollup, Some((1, 1)), "one of one child is done");
+    }
+
+    #[test]
+    fn an_open_detail_closes_when_its_task_leaves_the_store() {
+        let mut app = app_with_task_rows(3);
+        // `t-2` is in the store here; the id stands for a task another
+        // session deletes between ticks.
+        app.task_detail = Some(TaskId::from("t-2"));
+        app.refresh_tasks();
+        assert_eq!(
+            app.task_detail,
+            Some(TaskId::from("t-2")),
+            "a task the store still holds keeps its detail open",
+        );
+
+        app.task_detail = Some(TaskId::from("deleted-elsewhere"));
+        app.refresh_tasks();
+        assert_eq!(
+            app.task_detail, None,
+            "an overlay drawing nothing must not go on swallowing every key and click",
+        );
     }
 
     #[test]
