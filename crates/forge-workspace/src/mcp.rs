@@ -39,6 +39,7 @@ use std::sync::Arc;
 use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 
 use crate::SessionSlot;
+use crate::mcp::agents::facade::AgentDispatcher;
 use crate::mcp::cron::facade::CronFacade;
 use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::WorkspaceFacade;
@@ -105,10 +106,13 @@ pub fn build_forge_server(
     kind: SessionKind,
 ) -> McpServer {
     let mut builder = McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"));
+    let dispatcher =
+        Arc::new(AgentDispatcher::new(workspace_facade.clone(), worker_facade.clone()));
     if matches!(kind, SessionKind::Lead) {
         builder = peers::add_tools(builder, workspace_facade, slot.clone());
     }
     builder = workers::add_tools(builder, worker_facade, slot.clone());
+    builder = agents::add_shared_tools(builder, dispatcher, slot.clone());
     builder = review::add_tools(builder, review_facade, slot.clone());
     builder = cron::add_tools(builder, cron_facade, slot.clone());
     builder = gotify::add_tools(builder, gotify_facade, slot.clone());

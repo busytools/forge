@@ -357,6 +357,21 @@ pub trait WorkerFacade: Send + Sync {
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerDeliverError>;
 
+    /// Dispatch a worker-bound wrapped prompt to a project named by
+    /// its `(org, project)` pair rather than the caller's own. The
+    /// caller lives in another project, so the target cannot be
+    /// resolved from it. Mirrors `deliver_worker_prompt` otherwise:
+    /// an unknown label is an error and a sleeping target is not
+    /// auto-spawned.
+    fn deliver_worker_prompt_to_project(
+        &self,
+        caller: &SessionSlot,
+        org: &str,
+        project: &str,
+        target_label: &str,
+        wrapped: WrappedPrompt,
+    ) -> Result<WorkerTargetStatus, WorkerDeliverError>;
+
     /// Dispatch a wrapped prompt from a worker back to its lead.
     /// Caller MUST be a worker. The target lead is resolved from the
     /// caller's `WorkerEntry::spawned_by_session_id`. Returns
@@ -812,6 +827,44 @@ impl WorkerFacade for ProdWorkerFacade {
         Ok(WorkerTargetStatus::Delivered)
     }
 
+    fn deliver_worker_prompt_to_project(
+        &self,
+        caller: &SessionSlot,
+        org: &str,
+        project: &str,
+        target_label: &str,
+        wrapped: WrappedPrompt,
+    ) -> Result<WorkerTargetStatus, WorkerDeliverError> {
+        let unknown = || WorkerDeliverError::UnknownLabel {
+            project_key: project.into(),
+            label: target_label.into(),
+        };
+        let Some(ws) = self.workspace.upgrade() else {
+            return Err(unknown());
+        };
+        let Some(view) = ws.list_projects().into_iter().find(|v| v.org == org && v.name == project)
+        else {
+            return Err(unknown());
+        };
+        let known = ws.list_live_workers(&view.key).iter().any(|w| w.label == target_label);
+        if !known {
+            return Err(unknown());
+        }
+        if let Err(err) = ws.dispatch(Command::DeliverWorkerPrompt {
+            caller: caller.clone(),
+            project_key: view.key,
+            target_label: target_label.into(),
+            wrapped,
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::mcp::workers",
+                error = ?err,
+                "Command::DeliverWorkerPrompt dispatch failed"
+            );
+        }
+        Ok(WorkerTargetStatus::Delivered)
+    }
+
     fn deliver_prompt_to_lead(
         &self,
         caller: &SessionSlot,
@@ -906,6 +959,18 @@ type RecordedSpawnCall = (SessionSlot, String, String, Option<String>, Option<St
 #[cfg(any(test, feature = "testing"))]
 type RecordedUpdateCall = (SessionSlot, String, Option<String>, Option<String>, Option<String>);
 
+/// One captured `deliver_worker_prompt_to_project` call: the address it
+/// was given, and the prompt it carried.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug)]
+pub struct RecordedProjectDelivery {
+    pub caller: SessionSlot,
+    pub org: String,
+    pub project: String,
+    pub label: String,
+    pub wrapped: WrappedPrompt,
+}
+
 /// Mock for unit-testing the four Tool impls. Captures every
 /// dispatched call into a Vec so tests can assert "tool X
 /// dispatched spawn with these args" without spinning up a real
@@ -933,6 +998,8 @@ pub struct MockWorkerFacade {
     pub update_result: parking_lot::Mutex<Option<Result<(), WorkerUpdateError>>>,
     /// Captured `deliver_worker_prompt` calls.
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionSlot, String, WrappedPrompt)>>,
+    /// Captured `deliver_worker_prompt_to_project` calls.
+    pub deliver_to_project_calls: parking_lot::Mutex<Vec<RecordedProjectDelivery>>,
     /// Captured `deliver_reply_to_caller` calls so tests can assert
     /// the reply's target + kind.
     pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionSlot, WrappedPrompt)>>,
@@ -1105,6 +1172,36 @@ impl WorkerFacade for MockWorkerFacade {
             });
         }
         self.deliver_calls.lock().push((caller.clone(), target_label.into(), wrapped));
+        Ok(WorkerTargetStatus::Delivered)
+    }
+
+    fn deliver_worker_prompt_to_project(
+        &self,
+        caller: &SessionSlot,
+        org: &str,
+        project: &str,
+        target_label: &str,
+        wrapped: WrappedPrompt,
+    ) -> Result<WorkerTargetStatus, WorkerDeliverError> {
+        let unknown = || WorkerDeliverError::UnknownLabel {
+            project_key: project.into(),
+            label: target_label.into(),
+        };
+        let known = self
+            .workers
+            .lock()
+            .get(project)
+            .is_some_and(|ws| ws.iter().any(|w| w.label == target_label));
+        if !known {
+            return Err(unknown());
+        }
+        self.deliver_to_project_calls.lock().push(RecordedProjectDelivery {
+            caller: caller.clone(),
+            org: org.into(),
+            project: project.into(),
+            label: target_label.into(),
+            wrapped,
+        });
         Ok(WorkerTargetStatus::Delivered)
     }
 
