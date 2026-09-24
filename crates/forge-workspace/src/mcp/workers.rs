@@ -125,8 +125,9 @@ impl Tool for Spawn {
          `resume_session` recreates that worktree and brings it back. \
          DESPAWNED A WORKER WHOSE CONTEXT YOU STILL WANT? Re-spawn \
          the same label with `resume_session` set: it resumes the label's \
-         most recent prior session instead of starting fresh, and refuses \
-         when the label has no prior session to resume. \
+         most recent prior session instead of starting fresh. When the \
+         label has no prior session a fresh one starts and the response \
+         says which session it landed on. \
          PASS `resume_kick` FOR A LONG-LIVED WORKER whose restart \
          needs specific steps - re-read a file, catch up a queue, check \
          what was mid-run - rather than that generic continue; it \
@@ -176,7 +177,7 @@ impl Tool for Spawn {
                 },
                 "resume_session": {
                     "type": "boolean",
-                    "description": "Set true to RESUME this label's most recent prior session instead of starting fresh - the same pick a forge restart makes - so the old conversation arrives as history and the worker continues where it left off. The natural move after despawning a worker whose context you still want: re-spawn the same label with this set. Refuses when no prior session tagged forge:worker:<label> exists for this project - spawn without it then. A live worker on the same label is still rejected; despawn or close it first. For a git worker the label's worktree is recreated if despawn removed it, so the resumed session lands back in its run directory.",
+                    "description": "Set true to RESUME this label's most recent prior session instead of starting fresh, so the old conversation arrives as history and the worker continues where it left off. The natural move after despawning a worker whose context you still want: re-spawn the same label with this set. The session is resolved from the label's transcripts; if the label has no prior session, a fresh one starts and the response says which happened. A live worker on the same label is still rejected; despawn or close it first. For a git worker the label's worktree is recreated if despawn removed it, so the resumed session lands back in its run directory.",
                 },
             },
             "required": ["label", "charter"],
@@ -1469,8 +1470,8 @@ mod tests {
     }
 
     /// `resume_session` is the lead's opt into resuming the label's most
-    /// recent prior session (the same pick a forge restart makes) rather
-    /// than starting fresh; the flag must reach the facade verbatim.
+    /// recent prior session rather than starting fresh; the flag must
+    /// reach the facade verbatim.
     #[tokio::test]
     async fn spawn_passes_resume_session_through_to_facade() {
         let mock = Arc::new(MockWorkerFacade::new());

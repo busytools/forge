@@ -11708,10 +11708,11 @@ provider = "anthropic"
         assert!(!from_boot_respawn, "the MCP path is cap-governed, never boot-exempt");
     }
 
-    /// The MCP resume-spawn resolves the label's prior session through
-    /// the same catalog scan a forge restart uses, and threads it into
-    /// `Command::SpawnWorker.resume_existing` - the exact argument the
-    /// boot re-spawn path fills.
+    /// The MCP resume-spawn resolves the label's prior session and
+    /// threads it into `Command::SpawnWorker.resume_existing` - the exact
+    /// argument the boot re-spawn path fills. This worker has no worktree
+    /// of its own, so there is no transcript directory that names the
+    /// label and the row the fixture wrote is what it resumes.
     #[tokio::test]
     async fn mcp_spawn_with_resume_session_threads_the_resolved_session() {
         let project = tempfile::tempdir().expect("project dir");
