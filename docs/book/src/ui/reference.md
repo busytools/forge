@@ -87,7 +87,7 @@ Every character used as chrome - borders, icons, status, separators. Scope is cu
 | `◇` `◆` | Task / Agent; Slack notification block; projects-pane completed-unseen | hollow diamond: delegated subagent, or an inbound Slack message; filled diamond: a completed turn on an inactive tab (green) |
 | `⊕` `⊙` `⇄` | WebFetch / WebSearch; plan-mode and Config; Move and worktree tools | fetch from outside; meta operation; directory and worktree transitions |
 | `◉` `◍` | TaskOutput / Monitor; TaskStop | fisheye observes; the vertical-fill circle terminates |
-| `⏲` `*` | ScheduleWakeup; CronCreate / CronDelete / CronList | timer clock; the cron family |
+| `⏲` | ScheduleWakeup | timer clock |
 | `◈` | Gotify icon; MCP-server line in a group summary | the shared Gotify diamond; marks an external MCP-server call |
 | `⚠` | degraded states, AuthRequired, GOTIFY stream down, Bailed accounts | warning: noticeable but not broken - yellow; one deliberate split: a Bailed **auth** failure renders it red (repair needs an env edit plus restart), a transient failure yellow (the pollers heal it) |
 | `✦` `⌖` | Skill / Advisor; ToolSearch | meta capability; tool search |

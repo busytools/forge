@@ -117,13 +117,6 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "ToolSearch" | "tool_search_tool_regex" | "tool_search_tool_bm25" => {
             ("\u{2316}", "ToolSearch")
         }
-        // Cron* family shares the ASCII `*` glyph (cron-syntax mapping
-        // `* * * * *`); width-1 keeps the kind-icon slot deterministic
-        // across terminals regardless of EAW interpretation. Per-arm
-        // label preserves the originating tool name for log diagnostics.
-        "CronCreate" => ("*", "CronCreate"),
-        "CronDelete" => ("*", "CronDelete"),
-        "CronList" => ("*", "CronList"),
         "PushNotification" => ("\u{25b2}", "PushNotification"),
         "RemoteTrigger" => ("\u{21e8}", "RemoteTrigger"),
         "LSP" => ("\u{2699}", "LSP"),
@@ -172,11 +165,6 @@ mod tests {
         assert_eq!(tool_name_label("ScheduleWakeup"), ("\u{23f2}", "ScheduleWakeup"));
         assert_eq!(tool_name_label("Skill"), ("\u{2726}", "Skill"));
         assert_eq!(tool_name_label("ToolSearch"), ("\u{2316}", "ToolSearch"));
-
-        // Cron family shares the ASCII `*` glyph.
-        assert_eq!(tool_name_label("CronCreate"), ("*", "CronCreate"));
-        assert_eq!(tool_name_label("CronDelete"), ("*", "CronDelete"));
-        assert_eq!(tool_name_label("CronList"), ("*", "CronList"));
 
         assert_eq!(tool_name_label("PushNotification"), ("\u{25b2}", "PushNotification"));
         assert_eq!(tool_name_label("RemoteTrigger"), ("\u{21e8}", "RemoteTrigger"));

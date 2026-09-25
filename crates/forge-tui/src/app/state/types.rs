@@ -191,27 +191,23 @@ impl SessionTaskCard {
 pub enum ScheduleKind {
     /// One-shot `ScheduleWakeup` (the /loop dynamic-pacing mechanism).
     Wakeup,
-    /// `CronCreate` job. `recurring` distinguishes repeat vs one-shot.
+    /// A forge cron (`mcp__forge__cron`). `recurring` distinguishes
+    /// repeat vs one-shot.
     Cron { recurring: bool },
 }
 
 /// A pending time-based schedule surfaced in the Inspector SCHEDULES
-/// section. Wakeups carry a concrete `fire_at`; crons carry the raw
-/// expression in `label` and a `created_at` used for the 7-day
-/// recurring-expiry prune.
+/// section. Wakeups carry a concrete `fire_at`; forge crons carry the
+/// humanized schedule in `schedule`.
 #[derive(Debug, Clone)]
 pub struct ScheduleEntry {
-    /// Stable key. For a wakeup, the `tool_use_id` (one pending wakeup
-    /// per session; replaced each /loop re-arm). For a cron, the
-    /// `tool_use_id` of its `CronCreate` until the job id is stamped.
+    /// Stable key: the `tool_use_id` for a wakeup (one pending wakeup
+    /// per session; replaced each /loop re-arm), the cron id for a
+    /// forge cron.
     pub key: String,
-    /// Cron job id (from the `CronCreate` result), used to match a
-    /// later `CronDelete`. `None` for wakeups and un-stamped crons.
-    pub cron_id: Option<String>,
     pub kind: ScheduleKind,
-    /// Wakeup: the `reason`. Cron: the headline candidate - a forge
-    /// cron's prompt first line, empty for a cloud cron whose only text
-    /// is its expression.
+    /// Wakeup: the `reason`. Cron: the headline candidate - the
+    /// prompt's first line.
     pub label: String,
     /// Cron only: the human "what/why" from `cron__create`, preferred
     /// over `label` as the row headline. `None` for wakeups and crons
@@ -220,31 +216,22 @@ pub struct ScheduleEntry {
     /// Cron only: the humanized schedule (`daily at 09:00`, `today
     /// 14:30`). Empty for wakeups.
     pub schedule: String,
-    /// When it fires: `now + delaySeconds` for a wakeup, the resolved
-    /// next occurrence for a one-shot cron. `None` for a recurring cron
-    /// and for a one-shot whose expression didn't parse.
+    /// When it fires: `now + delaySeconds` for a wakeup, the cron's
+    /// next occurrence for a forge cron.
     pub fire_at: Option<std::time::SystemTime>,
-    /// When the entry was created. Recurring-cron 7-day-expiry
-    /// reference; informational for wakeups.
+    /// When the entry was created; informational for wakeups.
     pub created_at: std::time::SystemTime,
 }
 
 impl ScheduleEntry {
-    /// Recurring crons auto-expire after 7 days (CLI-documented).
-    pub const CRON_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
-
-    /// True when `now` is at/after the entry's validity end: a wakeup or
-    /// one-shot cron whose `fire_at` has passed, or a recurring cron
-    /// older than `CRON_MAX_AGE`. A one-shot with no resolvable fire
-    /// time is retained rather than guessed at.
+    /// True when `now` is at/after the entry's validity end. Only a
+    /// wakeup expires here: a forge cron's lifetime is the store's, and
+    /// its row is refreshed from there each tick rather than pruned
+    /// against this struct.
     pub fn is_expired(&self, now: std::time::SystemTime) -> bool {
         match self.kind {
-            ScheduleKind::Wakeup | ScheduleKind::Cron { recurring: false } => {
-                self.fire_at.is_some_and(|t| now >= t)
-            }
-            ScheduleKind::Cron { recurring: true } => {
-                now.duration_since(self.created_at).is_ok_and(|age| age >= Self::CRON_MAX_AGE)
-            }
+            ScheduleKind::Wakeup => self.fire_at.is_some_and(|t| now >= t),
+            ScheduleKind::Cron { .. } => false,
         }
     }
 }
@@ -572,7 +559,6 @@ mod tests {
         let fire = t0 + std::time::Duration::from_secs(60);
         let e = ScheduleEntry {
             key: "tu1".into(),
-            cron_id: None,
             kind: ScheduleKind::Wakeup,
             label: "poll".into(),
             description: None,
@@ -586,56 +572,21 @@ mod tests {
     }
 
     #[test]
-    fn schedule_entry_recurring_cron_expires_after_7_days() {
+    fn a_forge_cron_row_never_expires_on_this_tick() {
+        // The SCHEDULES row for a forge cron is refreshed from the store
+        // every tick, so nothing here may prune it: its lifetime is the
+        // store's to decide.
         let t0 = std::time::SystemTime::UNIX_EPOCH;
         let e = ScheduleEntry {
-            key: "tu2".into(),
-            cron_id: Some("job1".into()),
-            kind: ScheduleKind::Cron { recurring: true },
-            label: "*/5 * * * *".into(),
-            description: None,
-            schedule: "every 5 minutes".into(),
-            fire_at: None,
-            created_at: t0,
-        };
-        assert!(!e.is_expired(t0 + std::time::Duration::from_secs(60)));
-        assert!(e.is_expired(t0 + ScheduleEntry::CRON_MAX_AGE));
-    }
-
-    #[test]
-    fn schedule_entry_one_shot_cron_expires_at_its_fire_time() {
-        let t0 = std::time::SystemTime::UNIX_EPOCH;
-        let fire = t0 + std::time::Duration::from_secs(3600);
-        let e = ScheduleEntry {
-            key: "tu3".into(),
-            cron_id: Some("job2".into()),
+            key: "cron-1".into(),
             kind: ScheduleKind::Cron { recurring: false },
             label: "0 9 1 1 *".into(),
             description: None,
             schedule: "monthly on the 1st at 09:00".into(),
-            fire_at: Some(fire),
+            fire_at: Some(t0),
             created_at: t0,
         };
-        assert!(!e.is_expired(t0));
-        assert!(e.is_expired(fire), "a one-shot cron fires once, then auto-deletes upstream");
-    }
-
-    #[test]
-    fn schedule_entry_one_shot_cron_without_a_fire_time_is_retained() {
-        // An unparseable expression yields no fire time; retaining the row
-        // beats guessing an expiry the wire never gave us.
-        let t0 = std::time::SystemTime::UNIX_EPOCH;
-        let e = ScheduleEntry {
-            key: "tu4".into(),
-            cron_id: Some("job3".into()),
-            kind: ScheduleKind::Cron { recurring: false },
-            label: "weird".into(),
-            description: None,
-            schedule: "weird".into(),
-            fire_at: None,
-            created_at: t0,
-        };
-        assert!(!e.is_expired(t0 + ScheduleEntry::CRON_MAX_AGE * 2));
+        assert!(!e.is_expired(t0 + std::time::Duration::from_secs(3600)));
     }
 
     #[test]

@@ -44,33 +44,6 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::RenderToolCall) {
         app.upsert_wakeup_from_tool_input(&id_str, reason, fire_at);
     }
 
-    // CronCreate tool_use - upsert a cron entry keyed by tool_use_id.
-    // The CLI's CronCreate result carries the job id (stamped later
-    // via `stamp_cron_id_from_result` in the tool_use_result handler).
-    if sdk_tool_name == "CronCreate"
-        && let Some(input) = tc.raw_input.as_ref()
-    {
-        let expr = input.get("cron").and_then(serde_json::Value::as_str).unwrap_or("");
-        let prompt = input.get("prompt").and_then(serde_json::Value::as_str).unwrap_or("");
-        let recurring = input.get("recurring").and_then(serde_json::Value::as_bool).unwrap_or(true);
-        app.upsert_cron_from_tool_input(
-            &id_str,
-            expr,
-            prompt,
-            recurring,
-            std::time::SystemTime::now(),
-        );
-    }
-
-    // CronDelete tool_use - remove the matching cron entry by job id.
-    // No-op when the job id is missing (malformed input).
-    if sdk_tool_name == "CronDelete"
-        && let Some(input) = tc.raw_input.as_ref()
-        && let Some(job_id) = input.get("id").and_then(serde_json::Value::as_str)
-    {
-        app.remove_cron_by_id(job_id);
-    }
-
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
     if should_jump_on_large_write(&tool_info)
@@ -188,6 +161,10 @@ fn build_tool_info_from_tool_call(
     // `ui::message::render_lifecycle_one_liner` is its only surface,
     // and `append_assistant_tool_block` reaches that render only for a
     // visible tool call.
+    // The cron pair stays listed though no session can call it any
+    // more: a transcript that already carries a `CronCreate` still
+    // replays through this arm, and it rendered nothing before the
+    // block either.
     let is_chat_suppressed = matches!(
         sdk_tool_name.as_str(),
         "TaskOutput"

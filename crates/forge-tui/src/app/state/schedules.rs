@@ -1,7 +1,7 @@
-//! The SCHEDULES + GOTIFY snapshots on `App`: entries built from
-//! tool_use (wakeups, crons), pruned on the ~1s tick, and the
-//! per-session durable snapshots refreshed from the workspace, scoped
-//! to the active session's own project and team role.
+//! The SCHEDULES + GOTIFY snapshots on `App`: entries built from a
+//! `ScheduleWakeup` tool_use plus the durable forge-cron snapshot
+//! refreshed from the workspace, pruned on the ~1s tick and scoped to
+//! the active session's own project and team role.
 
 impl super::App {
     /// Active session's SCHEDULES entries (Inspector SCHEDULES
@@ -36,8 +36,7 @@ impl super::App {
         // `load_resume_history` is an orphan. Skip the push so
         // SCHEDULES doesn't surface phantom wakeups post-resume.
         // Live operation is untouched - the /loop re-arm path is
-        // replay_in_progress=false. Mirrors the cron orphan-
-        // suppression below and #291's monitor pattern at
+        // replay_in_progress=false. Mirrors #291's monitor pattern at
         // `set_monitor_status`.
         if self.replay_in_progress {
             return;
@@ -49,7 +48,6 @@ impl super::App {
         schedules.retain(|e| !matches!(e.kind, crate::app::state::types::ScheduleKind::Wakeup));
         schedules.push(crate::app::state::types::ScheduleEntry {
             key: tool_use_id.to_owned(),
-            cron_id: None,
             kind: crate::app::state::types::ScheduleKind::Wakeup,
             label: if reason.is_empty() { "wakeup".to_owned() } else { reason.to_owned() },
             description: None,
@@ -57,92 +55,6 @@ impl super::App {
             fire_at: Some(fire_at),
             created_at: now,
         });
-    }
-
-    /// Insert/refresh a cron entry from a `CronCreate` tool_use,
-    /// keyed by `tool_use_id` until a job id is stamped via
-    /// [`Self::stamp_cron_id_from_result`]. Idempotent on re-decode.
-    pub fn upsert_cron_from_tool_input(
-        &mut self,
-        tool_use_id: &str,
-        cron_expr: &str,
-        prompt: &str,
-        recurring: bool,
-        created_at: std::time::SystemTime,
-    ) {
-        // #302 redux: a native cron replayed during
-        // `load_resume_history` is an orphan - the CLI reports every
-        // `CronCreate` as "Session-only (not written to disk, dies when
-        // Claude exits)" regardless of the requested `durable`, so no
-        // live counterpart survives the resume and no CronDelete lands
-        // in the transcript. Skip the push so SCHEDULES doesn't surface
-        // a phantom. Mirrors #291's monitor orphan-suppression at
-        // `set_monitor_status` + the wakeup guard above.
-        if self.replay_in_progress {
-            return;
-        }
-        let schedule = if cron_expr.is_empty() {
-            "(unknown schedule)".to_owned()
-        } else {
-            crate::ui::schedule_format::humanize_cron(cron_expr)
-        };
-        // A one-shot fires at the expression's first match after creation,
-        // then the CLI auto-deletes it without emitting a CronDelete. That
-        // instant is the entry's own expiry (and its live countdown), so
-        // resolve it here through the same evaluator the durable crons use.
-        // `None` for an unparseable expression - the row is then retained
-        // rather than expired against a guess.
-        let fire_at = (!recurring)
-            .then(|| {
-                forge_workspace::next_fire_after(
-                    &forge_primitives::cron::CronKind::Recurring(cron_expr.to_owned()),
-                    created_at,
-                )
-            })
-            .flatten();
-        let label = crate::ui::inspector_pane::first_line(prompt);
-        let Some(schedules) = self.schedules_mut() else {
-            return;
-        };
-        if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id) {
-            e.schedule = schedule;
-            e.kind = crate::app::state::types::ScheduleKind::Cron { recurring };
-            e.fire_at = fire_at;
-            e.label = label;
-            return;
-        }
-        schedules.push(crate::app::state::types::ScheduleEntry {
-            key: tool_use_id.to_owned(),
-            cron_id: None,
-            kind: crate::app::state::types::ScheduleKind::Cron { recurring },
-            label,
-            description: None,
-            schedule,
-            fire_at,
-            created_at,
-        });
-    }
-
-    /// Stamp the cron job id (from the `CronCreate` result) onto the
-    /// matching entry so a later `CronDelete` can find it. No-op when
-    /// the entry has already been stamped or doesn't exist.
-    pub fn stamp_cron_id_from_result(&mut self, tool_use_id: &str, job_id: &str) {
-        let Some(schedules) = self.schedules_mut() else {
-            return;
-        };
-        if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id)
-            && e.cron_id.is_none()
-        {
-            e.cron_id = Some(job_id.to_owned());
-        }
-    }
-
-    /// Remove a cron entry whose stamped job id matches `job_id`
-    /// (`CronDelete`). No-op when none matches.
-    pub fn remove_cron_by_id(&mut self, job_id: &str) {
-        if let Some(schedules) = self.schedules_mut() {
-            schedules.retain(|e| e.cron_id.as_deref() != Some(job_id));
-        }
     }
 
     /// Drop schedule entries that are no longer valid at `now`
@@ -282,86 +194,6 @@ mod tests {
         assert_eq!(app.schedules().len(), 1);
         app.prune_expired_schedules(fire); // at fire - dropped
         assert!(app.schedules().is_empty());
-    }
-
-    #[test]
-    fn cron_lifecycle_upsert_stamp_delete() {
-        use crate::app::state::types::ScheduleKind;
-        let mut app = App::test_default();
-        let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_cron_from_tool_input(
-            "tu1",
-            "*/5 * * * *",
-            "Lead heartbeat\nCheck the merge gate.",
-            true,
-            t0,
-        );
-        assert_eq!(app.schedules().len(), 1);
-        assert!(matches!(app.schedules()[0].kind, ScheduleKind::Cron { recurring: true, .. }));
-        assert_eq!(
-            app.schedules()[0].schedule,
-            "every 5 minutes",
-            "a cloud cron humanizes its expression",
-        );
-        assert_eq!(
-            app.schedules()[0].label,
-            "Lead heartbeat",
-            "a native cron headlines on its prompt's first line",
-        );
-        // Stamp the job id discovered from the CronCreate result.
-        app.stamp_cron_id_from_result("tu1", "job-abc");
-        assert_eq!(app.schedules()[0].cron_id.as_deref(), Some("job-abc"));
-        // CronDelete by job id removes it.
-        app.remove_cron_by_id("job-abc");
-        assert!(app.schedules().is_empty());
-    }
-
-    #[test]
-    fn cron_upsert_idempotent_on_retry() {
-        let mut app = App::test_default();
-        let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", "", true, t0);
-        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", "", true, t0);
-        assert_eq!(app.schedules().len(), 1, "re-decoded same tool_use_id stays one entry");
-    }
-
-    #[test]
-    fn one_shot_cron_resolves_a_fire_time_and_then_prunes() {
-        let mut app = App::test_default();
-        let created = std::time::SystemTime::now();
-        // A one-shot pinned to a day-of-month + month, the shape the CLI
-        // emits for "run once at <time>".
-        app.upsert_cron_from_tool_input("tu1", "48 16 24 4 *", "", false, created);
-
-        let fire = app.schedules()[0].fire_at.expect("one-shot resolves its next occurrence");
-        assert!(fire > created, "the fire time is the first match after creation");
-
-        app.prune_expired_schedules(fire - std::time::Duration::from_secs(1));
-        assert_eq!(app.schedules().len(), 1, "retained while pending");
-        app.prune_expired_schedules(fire);
-        assert!(app.schedules().is_empty(), "dropped once its fire time passes");
-    }
-
-    #[test]
-    fn recurring_cron_carries_no_fire_time() {
-        let mut app = App::test_default();
-        app.upsert_cron_from_tool_input("tu1", "0 9 * * *", "", true, std::time::SystemTime::now());
-        assert!(
-            app.schedules()[0].fire_at.is_none(),
-            "a recurring cron badges `recurring`; its schedule already carries the timing",
-        );
-    }
-
-    #[test]
-    fn cron_upsert_empty_expr_shows_unknown_schedule() {
-        let mut app = App::test_default();
-        let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_cron_from_tool_input("tu1", "", "", true, t0);
-        assert_eq!(
-            app.schedules()[0].schedule,
-            "(unknown schedule)",
-            "an empty cloud cron expr renders a placeholder, not a blank schedule",
-        );
     }
 
     /// FIX (4th attempt): the reported bug state is an active web-api
@@ -878,59 +710,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------
-    // #302 redux: replay-orphan Schedule entries (cron + wakeup).
-    // Mirror of the Monitor orphan-suppression pattern above. The
-    // CLI kills session-only crons + all wakeups at session close,
-    // but the persisted ScheduleEntry replays on resume - without
-    // these guards, the SCHEDULES section surfaces phantoms.
+    // #302 redux: replay-orphan Schedule entries. Mirror of the
+    // Monitor orphan-suppression pattern above. The CLI kills
+    // session-only wakeups at session close, but the persisted
+    // ScheduleEntry replays on resume - without this guard, the
+    // SCHEDULES section surfaces phantoms.
     // -----------------------------------------------------------
-
-    #[test]
-    fn upsert_cron_during_replay_skips_recurring_cron() {
-        let mut app = make_test_app();
-        app.replay_in_progress = true;
-        let now = std::time::SystemTime::now();
-
-        app.upsert_cron_from_tool_input("tu-orphan", "*/5 * * * *", "", true, now);
-
-        assert!(
-            app.schedules().is_empty(),
-            "recurring crons replayed during resume must NOT push an entry; got: {:?}",
-            app.schedules()
-        );
-    }
-
-    #[test]
-    fn upsert_cron_during_replay_skips_one_shot_cron() {
-        let mut app = make_test_app();
-        app.replay_in_progress = true;
-        let now = std::time::SystemTime::now();
-
-        app.upsert_cron_from_tool_input("tu-once", "48 16 24 4 *", "", false, now);
-
-        assert!(
-            app.schedules().is_empty(),
-            "a replayed one-shot cron already fired and auto-deleted; got: {:?}",
-            app.schedules()
-        );
-    }
-
-    #[test]
-    fn upsert_cron_outside_replay_pushes_both_kinds() {
-        let mut app = make_test_app();
-        assert!(!app.replay_in_progress, "live default");
-        let now = std::time::SystemTime::now();
-
-        app.upsert_cron_from_tool_input("tu-live-recurring", "* * * * *", "", true, now);
-        app.upsert_cron_from_tool_input("tu-live-once", "48 16 24 4 *", "", false, now);
-
-        assert_eq!(
-            app.schedules().len(),
-            2,
-            "live operation pushes both kinds; got: {:?}",
-            app.schedules()
-        );
-    }
 
     #[test]
     fn upsert_wakeup_during_replay_is_suppressed() {

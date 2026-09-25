@@ -639,10 +639,9 @@ fn append_body(
     }
 
     // SCHEDULES sits between SUBAGENTS and GOTIFY. Pending
-    // wakeups + crons; auto-clears entries on the ~1s prune tick
-    // (passed wakeups, 7-day-expired recurring crons) and on
-    // explicit `CronDelete`. The MONITORS section is gone; Monitor
-    // tool calls now render their live tail directly in chat (see
+    // wakeups + durable forge crons; the wakeups drop on the ~1s prune
+    // tick. The MONITORS section is gone; Monitor tool calls now render
+    // their live tail directly in chat (see
     // `ui::message::render_lifecycle_one_liner`'s `"Monitor"` arm).
     if !app.schedules().is_empty() || !app.forge_schedule_rows.is_empty() {
         lines.push(Line::default());
@@ -1723,15 +1722,14 @@ fn append_tasks_section(
 }
 
 /// Render the Inspector SCHEDULES section: header + one row per pending
-/// `ScheduleWakeup` / `CronCreate` (chat-parsed cloud routines) AND per
-/// durable forge cron (`mcp__forge__cron`, from the cached
-/// `app.forge_crons` snapshot). The section hides entirely when no
-/// entries are present. Header line, blank, per-entry rows with blank
-/// separators.
+/// `ScheduleWakeup` AND per durable forge cron (`mcp__forge__cron`, from
+/// the cached `app.forge_crons` snapshot). The section hides entirely
+/// when no entries are present. Header line, blank, per-entry rows with
+/// blank separators.
 fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    // Two sources share this section: the chat-parsed cloud routines
-    // (`ScheduleWakeup` / `CronCreate`, per-session) and the durable
-    // forge crons (`mcp__forge__cron`). The forge-cron rows are humanized
+    // Two sources share this section: the per-session `ScheduleWakeup`
+    // wakeup and the durable forge crons (`mcp__forge__cron`). The
+    // forge-cron rows are humanized
     // once per ~1s tick into `app.forge_schedule_rows`, so the render
     // does no timezone syscall or humanize allocation per frame; the live
     // countdown still recomputes from each row's `fire_at` below.
@@ -2063,7 +2061,6 @@ pub(crate) fn forge_cron_to_schedule_entry(
     };
     crate::app::ScheduleEntry {
         key: cron.id.as_str().to_owned(),
-        cron_id: Some(cron.id.as_str().to_owned()),
         kind: crate::app::ScheduleKind::Cron { recurring },
         label: first_line(&cron.prompt),
         description: cron.description.clone(),
@@ -2712,7 +2709,7 @@ pub(crate) mod tests {
         assert_eq!(entry.description, None, "no description on this cron");
         assert_eq!(entry.fire_at, Some(next), "next_fire carried for the countdown");
         assert!(matches!(entry.kind, crate::app::ScheduleKind::Cron { recurring: true }));
-        assert_eq!(entry.cron_id.as_deref(), Some("c1"));
+        assert_eq!(entry.key, "c1", "the row keys on the cron id");
     }
 
     #[test]
@@ -2748,7 +2745,6 @@ pub(crate) mod tests {
     ) -> crate::app::ScheduleEntry {
         crate::app::ScheduleEntry {
             key: "c1".to_owned(),
-            cron_id: Some("c1".to_owned()),
             kind: crate::app::ScheduleKind::Cron { recurring },
             label: label.to_owned(),
             description: description.map(str::to_owned),
@@ -2830,7 +2826,6 @@ pub(crate) mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let entry = crate::app::ScheduleEntry {
             key: "w1".to_owned(),
-            cron_id: None,
             kind: crate::app::ScheduleKind::Wakeup,
             label: "watching CI run".to_owned(),
             description: None,
@@ -2848,9 +2843,9 @@ pub(crate) mod tests {
 
     #[test]
     fn headline_less_cloud_cron_renders_one_line_with_schedule() {
-        // A cloud CronCreate carries no description and no prompt, so the
-        // headline is empty and the row collapses to a single line showing
-        // the humanized schedule + badge.
+        // A forge cron created with no description carries no prompt line
+        // either, so the headline is empty and the row collapses to a
+        // single line showing the humanized schedule + badge.
         use std::time::SystemTime;
         let now = SystemTime::UNIX_EPOCH;
         let entry = cron_entry(true, "", None, "every 5 minutes", None);

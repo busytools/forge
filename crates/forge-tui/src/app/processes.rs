@@ -19,9 +19,8 @@
 //! pids its join claims are skipped by the walk so a server's backing
 //! tree renders exactly once.
 //!
-//! `Cron` is the exception: `CronCreate` is a registration, not a
-//! process. We still surface alive Cron rows from the wire alone
-//! since there's nothing to OS-walk for them.
+//! A forge cron is the exception: it is a registration, not a process,
+//! and it lives in the SCHEDULES section rather than here.
 
 use std::collections::{HashMap, HashSet};
 
@@ -95,10 +94,10 @@ pub enum ProcessKind {
     /// OS process with no matching wire tool call (foreground Bash,
     /// grandchildren, anything claude's tool registry doesn't know
     /// about). #273 Task 8: Monitor tool_calls also fall through to
-    /// this variant - their authoritative surface is now the
-    /// dedicated MONITORS Inspector section. CronCreate moved out to
-    /// the dedicated SCHEDULES Inspector section (Inspector SCHEDULES
-    /// plan), so it never lands here either.
+    /// this variant - their authoritative surface is the lifecycle
+    /// block in chat. A forge cron is a registration rather than a
+    /// process and lives in the SCHEDULES section, so it never lands
+    /// here either.
     Process,
     /// Synthetic `+N more` row emitted when a single parent has more
     /// children than [`MAX_CHILDREN_PER_PARENT`] allows. Renders as
@@ -163,8 +162,8 @@ pub fn collect_active_processes(app: &App, claimed_pids: &HashSet<u32>) -> Proce
     // OS-walked entries follow - the source of truth for live work.
     // Bash / Monitor wire entries that didn't match an OS row are
     // intentionally dropped (the OS walk is the truth of what is
-    // RUNNING). CronCreate registrations live in the dedicated
-    // SCHEDULES Inspector section, not here.
+    // RUNNING). A forge cron is a registration and lives in the
+    // SCHEDULES section, not here.
     if let Some(snapshot) = session.process_snapshot.as_ref() {
         rows.extend(rows_from_os_snapshot(snapshot, &wire_alive, claimed_pids));
     }
