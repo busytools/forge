@@ -450,15 +450,12 @@ impl SessionTask {
                         PendingInteractionSlot::Permission(response_tx),
                     );
                 }
-                if self
-                    .update_tx
-                    .send(SessionUpdate::PermissionRequest {
-                        key: self.key.clone(),
-                        tool_id: tool_call_id.clone(),
-                        request: wire_request,
-                    })
-                    .is_ok()
-                {
+                let delivered = self.update_tx.send(SessionUpdate::PermissionRequest {
+                    key: self.key.clone(),
+                    tool_id: tool_call_id.clone(),
+                    request: wire_request,
+                });
+                if delivered {
                     spawn_permission_response_forwarder(
                         Arc::clone(&self.handle),
                         response_rx,
@@ -496,15 +493,12 @@ impl SessionTask {
                         PendingInteractionSlot::Question(response_tx),
                     );
                 }
-                if self
-                    .update_tx
-                    .send(SessionUpdate::QuestionRequest {
-                        key: self.key.clone(),
-                        tool_id: tool_call_id.clone(),
-                        request: wire_request,
-                    })
-                    .is_ok()
-                {
+                let delivered = self.update_tx.send(SessionUpdate::QuestionRequest {
+                    key: self.key.clone(),
+                    tool_id: tool_call_id.clone(),
+                    request: wire_request,
+                });
+                if delivered {
                     spawn_question_response_forwarder(
                         Arc::clone(&self.handle),
                         response_rx,
@@ -801,9 +795,9 @@ impl SessionTask {
         self.domain.lock().session_id.as_ref().map(std::string::ToString::to_string)
     }
 
-    /// Send `update` to the workspace fan-in; log on send failure so a
-    /// closed-channel regression leaves a trail rather than silently
-    /// dropping events.
+    /// Send `update` to the workspace fan-in; log when no subscriber
+    /// took it, so a regression there leaves a trail rather than
+    /// silently dropping events.
     // TODO(ved): gate emits on a per-task session epoch so a superseded
     // task (its slot re-spawned by a resume or an account switch) can't
     // emit a stale update onto its successor during the brief
@@ -811,11 +805,11 @@ impl SessionTask {
     // that window - the successor holds the same slot either way - and
     // the switch stays idle-gated, so it is low-risk today.
     fn emit(&self, update: SessionUpdate) {
-        if self.update_tx.send(update).is_err() {
+        if !self.update_tx.send(update) {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %self.key.display(),
-                "SessionUpdate channel closed; dropping event"
+                "no SessionUpdate subscriber; dropping event"
             );
         }
     }

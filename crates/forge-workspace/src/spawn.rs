@@ -191,18 +191,17 @@ pub(crate) fn stamp_permission_mode(
     }
 }
 
-/// Emit a `SessionUpdate` and log at debug when the receiver is gone
+/// Emit a `SessionUpdate` and log at debug when no subscriber took it
 /// (TUI is shutting down or has crashed). The send is logically
 /// best-effort - no caller can act on the failure - but visibility
-/// in the log distinguishes "TUI dropped the channel" from "the
+/// in the log distinguishes "TUI dropped the subscription" from "the
 /// emit never happened" during diagnosis.
 fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
-    if let Err(err) = workspace.update_tx().send(update) {
+    if !workspace.update_tx().send(update) {
         tracing::debug!(
             target: "forge_workspace::spawn",
             label,
-            error = %err,
-            "SessionUpdate dropped - receiver is gone (likely TUI shutdown)"
+            "SessionUpdate dropped - no subscriber (likely TUI shutdown)"
         );
     }
 }

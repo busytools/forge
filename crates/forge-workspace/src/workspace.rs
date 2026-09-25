@@ -2977,9 +2977,9 @@ impl Workspace {
     /// Subscribe to this workspace's [`SessionUpdate`] stream. Every
     /// caller gets its own stream, so a second view attaches beside the
     /// first rather than being refused. A stream carries what is emitted
-    /// after this call - a view that attaches late is handed no backlog
-    /// - and the workspace drops the matching subscription once its
-    /// receiver goes.
+    /// after this call, so a view that attaches late is handed no
+    /// backlog, and the workspace drops the matching subscription once
+    /// its receiver goes.
     ///
     /// The first caller takes the receiver minted at construction, which
     /// is what holds anything emitted during boot.
@@ -7341,10 +7341,10 @@ provider = "anthropic"
         let mut tui = workspace.subscribe();
         let mut web = workspace.subscribe();
 
-        workspace
-            .update_tx()
-            .send(SessionUpdate::CatalogLoaded)
-            .expect("a subscribed workspace delivers");
+        assert!(
+            workspace.update_tx().send(SessionUpdate::CatalogLoaded),
+            "a subscribed workspace delivers",
+        );
 
         assert!(
             matches!(tui.try_recv(), Ok(SessionUpdate::CatalogLoaded)),

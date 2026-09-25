@@ -980,15 +980,13 @@ async fn forward_take_progress(
         tick.tick().await;
         match progress.try_recv() {
             Ok(step) => {
-                if updates
-                    .send(SessionUpdate::DictateProgress {
-                        key: key.clone(),
-                        generation,
-                        done: step.done,
-                        total: step.total,
-                    })
-                    .is_err()
-                {
+                let delivered = updates.send(SessionUpdate::DictateProgress {
+                    key: key.clone(),
+                    generation,
+                    done: step.done,
+                    total: step.total,
+                });
+                if !delivered {
                     break;
                 }
             }

@@ -27,21 +27,30 @@ impl UpdateFanout {
         rx
     }
 
-    /// Deliver `update` to every subscriber. `Err` when none took it -
-    /// the "no receiver" signal the single-take channel gave, which
-    /// `spawn::try_emit` and `SessionTask::emit` log on.
-    pub(crate) fn send(
-        &self,
-        update: SessionUpdate,
-    ) -> Result<(), mpsc::error::SendError<SessionUpdate>> {
+    /// Deliver `update` to every subscriber, and report whether any took
+    /// it. `false` is the "no receiver" signal the single-take channel
+    /// gave, which `spawn::try_emit` and `SessionTask::emit` log on.
+    ///
+    /// The last subscriber is taken out of the registry to receive
+    /// `update` itself while the rest are sent a copy, so the common
+    /// one-subscriber case clones nothing. It goes back only if it took
+    /// the update, which is also where a dead one leaves.
+    pub(crate) fn send(&self, update: SessionUpdate) -> bool {
         let mut subscribers = self.subscribers.lock();
+        let Some(tail) = subscribers.pop() else {
+            return false;
+        };
         let mut delivered = false;
         subscribers.retain(|tx| {
             let live = tx.send(update.clone()).is_ok();
             delivered |= live;
             live
         });
-        if delivered { Ok(()) } else { Err(mpsc::error::SendError(update)) }
+        if tail.send(update).is_ok() {
+            subscribers.push(tail);
+            return true;
+        }
+        delivered
     }
 }
 
@@ -74,7 +83,7 @@ mod tests {
         let mut first = fanout.subscribe();
         let mut second = fanout.subscribe();
 
-        fanout.send(status("one")).expect("a subscribed fan-out delivers");
+        assert!(fanout.send(status("one")), "a subscribed fan-out delivers");
 
         assert_eq!(next(&mut first, "first"), "one", "the first subscriber sees the update");
         assert_eq!(
@@ -93,7 +102,7 @@ mod tests {
         let dropped = fanout.subscribe();
         drop(dropped);
 
-        fanout.send(status("one")).expect("the live subscriber still receives");
+        assert!(fanout.send(status("one")), "the live subscriber still receives");
 
         assert_eq!(
             fanout.subscribers.lock().len(),
@@ -109,10 +118,10 @@ mod tests {
     fn a_late_subscriber_sees_only_what_follows_it() {
         let fanout = UpdateFanout::default();
         let mut first = fanout.subscribe();
-        fanout.send(status("before")).expect("the first subscriber receives");
+        assert!(fanout.send(status("before")), "the first subscriber receives");
 
         let mut late = fanout.subscribe();
-        fanout.send(status("after")).expect("both subscribers receive");
+        assert!(fanout.send(status("after")), "both subscribers receive");
 
         assert_eq!(
             next(&mut first, "first"),
@@ -137,6 +146,6 @@ mod tests {
     fn send_without_a_subscriber_reports_nothing_delivered() {
         let fanout = UpdateFanout::default();
 
-        assert!(fanout.send(status("one")).is_err(), "an unsubscribed fan-out delivers to nobody");
+        assert!(!fanout.send(status("one")), "an unsubscribed fan-out delivers to nobody");
     }
 }

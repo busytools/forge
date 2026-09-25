@@ -191,11 +191,10 @@ impl Workspace {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let id = draft.id;
         self.slack_drafts.lock().insert(id, (caller.clone(), sender));
-        if self
+        let delivered = self
             .update_sender()
-            .send(crate::protocol::SessionUpdate::SlackPostPending { key: caller.clone(), draft })
-            .is_err()
-        {
+            .send(crate::protocol::SessionUpdate::SlackPostPending { key: caller.clone(), draft });
+        if !delivered {
             // No UI can answer this draft, so holding the caller would
             // park it forever. Drop the draft; the awaiting caller sees
             // the dropped receiver and fails closed.
