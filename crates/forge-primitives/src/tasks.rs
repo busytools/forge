@@ -87,16 +87,25 @@ mod tests {
         assert_eq!(back, task, "every field survives a store round trip");
     }
 
+    /// The spelling each status takes in the store and in the tools'
+    /// `status` enum. Rows are written with no schema on disk, so a renamed
+    /// spelling silently unreads every task already written under the old
+    /// one.
     #[test]
-    fn task_status_covers_the_four_plane_states() {
-        // A status added later must be a compile error here rather than a
-        // silently unrendered row.
-        let all = [
+    fn the_status_spellings_the_store_and_the_tools_share_are_stable() {
+        let spellings: Vec<String> = [
             TaskStatus::Pending,
             TaskStatus::InProgress,
             TaskStatus::Blocked,
             TaskStatus::Completed,
-        ];
-        assert_eq!(all.len(), 4, "four statuses, each with its own glyph");
+        ]
+        .into_iter()
+        .map(|status| serde_json::to_string(&status).expect("serialize"))
+        .collect();
+        assert_eq!(
+            spellings,
+            ["\"pending\"", "\"in_progress\"", "\"blocked\"", "\"completed\""],
+            "the status spellings the tools offer and the store reads back",
+        );
     }
 }
