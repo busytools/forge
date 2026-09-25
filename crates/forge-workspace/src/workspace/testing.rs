@@ -158,6 +158,8 @@ impl Workspace {
             config,
             catalog: Arc::new(Mutex::new(HashMap::new())),
             pool: Mutex::new(HashMap::new()),
+            #[cfg(any(test, feature = "testing"))]
+            test_spawn_handle: Mutex::new(None),
             accounts,
             gateway,
             // A stub workspace pretends the listener is bound: the
@@ -291,6 +293,18 @@ impl Workspace {
     /// Set the gateway listener's ready flag, so a cross-crate test
     /// can render each of the preflight gateway row's states. Test-only.
     #[cfg(any(test, feature = "testing"))]
+    /// Stand in a stub handle for the next cold spawn, so a test can read
+    /// the launch settings the spawn hands its child. Consumed by that
+    /// spawn: a test that asserts on one installs one.
+    pub fn install_test_spawn_handle(&self, handle: forge_agent::AgentHandle) {
+        *self.test_spawn_handle.lock() = Some(handle);
+    }
+
+    /// The installed stand-in, taken so one spawn cannot use it twice.
+    pub(crate) fn take_test_spawn_handle(&self) -> Option<forge_agent::AgentHandle> {
+        self.test_spawn_handle.lock().take()
+    }
+
     pub fn seed_test_gateway_ready(&self, ready: bool) {
         self.gateway_ready.store(ready, std::sync::atomic::Ordering::Release);
     }

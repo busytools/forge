@@ -5417,6 +5417,68 @@ provider = "anthropic"
         );
     }
 
+    /// The cold spawn - the one a project's first lead and every worker go
+    /// through - hands its child the denial. Nothing else observes this
+    /// path: a pooled slot never reaches a launch, and a cold one otherwise
+    /// ends in a real subprocess, so the test stands a stub handle in for
+    /// the one the spawn would create and reads the setting it forwards.
+    #[tokio::test]
+    async fn a_cold_spawn_hands_its_child_the_cli_task_tool_denial() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+
+[[orgs.projects]]
+name = "proj"
+path = "/tmp/spawn-denial"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let ws = std::sync::Arc::new(
+            Workspace::new_for_test(dir.path().to_owned()).expect("boot from the fixture"),
+        );
+        ws.seed_test_ready_account("acct-a");
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        ws.install_test_spawn_handle(handle);
+
+        handle_spawn_project(&ws, "proj", SessionLaunchSettings::default());
+
+        let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
+            agent_rx.try_recv().ok()
+        else {
+            panic!("the cold spawn has to reach a launch for anything here to be observable");
+        };
+        let denied = launch_settings
+            .get("extra_args")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|pairs| {
+                pairs.iter().find(|pair| {
+                    pair.get(0).and_then(serde_json::Value::as_str) == Some("disallowedTools")
+                })
+            })
+            .and_then(|pair| pair.get(1).and_then(serde_json::Value::as_str))
+            .unwrap_or_default()
+            .to_owned();
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(
+                denied.contains(tool),
+                "{tool} must reach a spawned session's launch; got {denied:?}",
+            );
+        }
+    }
+
     /// A lead's settings carry no denial of their own, so the call adds
     /// the flag. `--disallowedTools` used to be a worker-only flag, and a
     /// lead kept the CLI's task tools.

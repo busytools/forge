@@ -200,6 +200,13 @@ pub struct Workspace {
     /// membership for lead-delivery gating without an extra method
     /// wrapper.
     pub(crate) pool: Mutex<HashMap<SessionSlot, PooledAgent>>,
+    /// A stand-in for the handle a cold spawn would create. The settings a
+    /// spawn launches with are otherwise unobservable: a pooled slot never
+    /// reaches the launch, and a cold one ends in a real subprocess. `None`
+    /// in production and in every test that does not install one, so a
+    /// spawn runs always.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_spawn_handle: Mutex<Option<forge_agent::AgentHandle>>,
     /// The account state map, owned by the gateway and reached through
     /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
@@ -1127,6 +1134,8 @@ impl Workspace {
             config,
             catalog,
             pool: Mutex::new(HashMap::new()),
+            #[cfg(any(test, feature = "testing"))]
+            test_spawn_handle: Mutex::new(None),
             accounts,
             gateway,
             gateway_ready: std::sync::atomic::AtomicBool::new(false),
@@ -1671,12 +1680,20 @@ impl Workspace {
             )
         };
 
-        let handle = forge_agent::Agent::spawn(
-            account_dir.clone(),
-            Some(account_key.0.clone()),
-            vec![("forge".to_owned(), forge_server)],
-            session_env,
-        );
+        let spawn_agent = || {
+            forge_agent::Agent::spawn(
+                account_dir.clone(),
+                Some(account_key.0.clone()),
+                vec![("forge".to_owned(), forge_server)],
+                session_env,
+            )
+        };
+        // A test that installed a stand-in reads the settings this spawn
+        // hands its child, which nothing else can observe.
+        #[cfg(any(test, feature = "testing"))]
+        let handle = self.take_test_spawn_handle().unwrap_or_else(spawn_agent);
+        #[cfg(not(any(test, feature = "testing")))]
+        let handle = spawn_agent();
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
         // and fall back to a fresh session in that project's cwd
