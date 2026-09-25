@@ -101,9 +101,8 @@ fn build_active_context(app: &App, max_chars: usize) -> String {
 /// the whole wake window.
 fn active_project_label(app: &App) -> Option<String> {
     let active_key = app.active_session_key.as_ref()?;
-    if let Some(workspace) = app.workspace.as_ref() {
-        let projects = workspace.list_projects();
-        let refs: Vec<&ProjectView> = projects.iter().collect();
+    if let Some(roster) = app.surface().map(|surface| surface.roster()) {
+        let refs: Vec<&ProjectView> = roster.projects.iter().collect();
         if let Some(view) = projects_pane::resolve_active_project_view(active_key, &refs) {
             return Some(view.name.clone());
         }
@@ -125,11 +124,11 @@ fn active_session_label(app: &App) -> Option<String> {
         return Some("waking".to_owned());
     }
     if let Some(active_id) = app.session_id()
-        && let Some(workspace) = app.workspace.as_ref()
+        && let Some(roster) = app.surface().map(|surface| surface.roster())
     {
         // A catalog row is named by the id the CLI wrote it under, so
         // the lookup follows the active bucket's occupant.
-        for project in workspace.list_projects() {
+        for project in roster.projects {
             if let Some(view) = project.sessions.iter().find(|sv| sv.session == active_id)
                 && !view.label.is_empty()
             {

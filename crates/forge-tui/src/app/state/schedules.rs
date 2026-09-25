@@ -76,8 +76,8 @@ impl super::App {
     /// that per frame.
     pub fn refresh_forge_crons(&mut self) {
         let own_role = self.active_session_team_role();
-        let mut crons = match (self.active_project_name(), self.workspace.as_ref()) {
-            (Some(name), Some(ws)) => ws.crons_for_project(&name),
+        let mut crons = match (self.active_project_name(), self.surface()) {
+            (Some(name), Some(surface)) => surface.roster().crons_for_project(&name),
             _ => Vec::new(),
         };
         crons.retain(|c| c.team_role == own_role);
@@ -146,9 +146,8 @@ impl super::App {
     /// catalog - workers are deliberately absent from the catalog, so a
     /// catalog read reports every worker as a lead.
     pub(crate) fn active_session_team_role(&self) -> Option<String> {
-        let ws = self.workspace.as_ref()?;
         let key = self.active_session_key.as_ref()?;
-        ws.worker_lookup_for_session(key).map(|(_, label, _, _)| label)
+        self.surface()?.workers().lookup(key).map(|worker| worker.label)
     }
 }
 

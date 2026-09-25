@@ -48,15 +48,16 @@ forge-test-harness ─→ primitives + sdk + workspace
   `DomainSession` + per-session `SessionTask` actors. Single TUI-facing
   facade.
 - **`forge-sessions`** - what a view needs and nothing about how it
-  renders: the session records as a view sees them, the peer envelope
-  parsing in both directions, the tool family table, and the policy
-  that folds a run of blocks. Sits between `forge-workspace` and the
-  views, so a second view attaches beside the TUI rather than
-  duplicating it. Nothing here may depend on a view. It reaches the
-  workspace for the one thing a session record cannot answer alone -
-  whether a tool's input parses into a lifecycle block - and does that
-  through `forge-workspace` rather than `forge-agent`, so the agent
-  layer stays behind the workspace facade the way it does for the TUI.
+  renders: the read surface a view uses, the session records as a view
+  sees them, the peer envelope parsing in both directions, the tool
+  family table, and the policy that folds a run of blocks. Sits between
+  `forge-workspace` and the views, so a second view attaches beside the
+  TUI rather than duplicating it. Nothing here may depend on a view. It
+  reaches the workspace for the one thing a session record cannot
+  answer alone - whether a tool's input parses into a lifecycle block -
+  and does that through `forge-workspace` rather than `forge-agent`, so
+  the agent layer stays behind the workspace facade the way it does for
+  the TUI.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
@@ -131,16 +132,18 @@ Work top-down; first match wins.
    state in `app/`.
 10. **A wire-conformance scenario?** -> `forge-test-harness`.
 
-**The view surface (designed, not built).** A view is meant to read the
-core through named verbs by subject - `roster`, `session`, `accounts`,
-`plugins`, `reviews`, `workers`, `connectors`, `dictate` - to act
-through `dispatch(Command)`, and to receive changes through
-`subscribe()`. Only the last two exist today: the TUI still calls
-`Workspace` methods directly, so `forge-tui` keeps its `forge-workspace`
-dependency and the arrow below is not yet one-way. A read a second view
+**The view surface (partially built).** A view reads the core through
+named verbs by subject - `roster`, `session`, `accounts`, `plugins`,
+`reviews`, `workers`, `connectors`, `dictate` - acts through
+`dispatch(Command)`, and receives changes through `subscribe()`. Three
+verbs exist today, `roster`, `session` and `workers` in
+`forge-sessions`, and the TUI reads its project roster, session scan
+cwd and worker registry through them. The other five are still direct
+`Workspace` calls, so `forge-tui` keeps its `forge-workspace`
+dependency and the arrow above is not yet one-way. A read a second view
 would want goes on that surface; a read only the TUI makes stays a
-plain method. Routing the direct calls through the surface is its own
-piece of work, not a prerequisite for adding to the crates.
+plain method. Routing the remaining direct calls through the surface is
+its own piece of work, not a prerequisite for adding to the crates.
 
 Legitimate splits are common (a git-diff feature touches agent +
 workspace + tui). Rule of thumb: logic/IO/subprocess -> agent;

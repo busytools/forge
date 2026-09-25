@@ -466,7 +466,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::WorkerStatusChanged { action, status, worktree, .. } => {
             // Workspace owns the authoritative live_workers map; the
-            // projects-pane renderer reads from `workspace.list_live_workers`
+            // projects-pane renderer reads the workers verb
             // each frame so a redraw covers Added / StatusChanged.
             // Removed additionally surfaces a system-message toast in
             // the worker's spawning-lead session (not the focused one,
@@ -895,14 +895,13 @@ fn apply_session_update_spawning(
     // own name is the last resort: it is the name the workspace
     // spawned the session under, not a guess.
     let project = app
-        .workspace
-        .as_ref()
-        .and_then(|ws| {
-            ws.list_projects()
-                .into_iter()
-                .find(|view| view.name == project_name)
-                .map(|view| view.name)
-                .or_else(|| ws.project_name_for_path(cwd))
+        .surface()
+        .and_then(|surface| {
+            let roster = surface.roster();
+            roster
+                .project_named(project_name)
+                .map(|view| view.name.clone())
+                .or_else(|| roster.project_name_for_path(cwd))
         })
         .unwrap_or_else(|| project_name.to_owned());
     let mut bucket = crate::app::session::UiSession::new(key.clone(), project);

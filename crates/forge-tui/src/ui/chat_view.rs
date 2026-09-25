@@ -75,7 +75,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if projects_overlay {
         let _t = app.perf.as_ref().map(|p| p.start("ui::projects_overlay"));
-        let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+        let projects = app.roster_projects();
         projects_pane::render_overlay(frame, areas.body, app, &projects);
     } else if inspector_overlay {
         let _t = app.perf.as_ref().map(|p| p.start("ui::inspector_overlay"));
@@ -85,7 +85,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         // Each pane renderer manages its own hit-target stamping.
         if let Some(pane_area) = areas.pane {
             let _t = app.perf.as_ref().map(|p| p.start("ui::projects_pane"));
-            let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+            let projects = app.roster_projects();
             projects_pane::render(frame, pane_area, app, &projects);
             if let Some(sep_area) = areas.pane_separator {
                 render_pane_separator(frame, sep_area);
