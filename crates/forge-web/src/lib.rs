@@ -1,8 +1,8 @@
-//! The web view: forge's core served as HTML over HTTP.
+//! The web view: an HTTP view beside the TUI, in the same process, so the
+//! cron scheduler and the connectors start once rather than twice.
 //!
-//! A second view beside the TUI, in the same process, so the cron
-//! scheduler and the connectors start once rather than twice. It never
-//! names `forge-workspace`: a read of the core goes through
+//! Nothing here reads the core yet - the served page is a wiring proof.
+//! It never names `forge-workspace`: reads of the core will go through
 //! `forge-sessions`.
 
 mod server;

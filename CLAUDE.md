@@ -58,11 +58,11 @@ forge-test-harness ─→ primitives + sdk + workspace
   whether a tool's input parses into a lifecycle block - and does that
   through `forge-workspace` rather than `forge-agent`, so the agent
   layer stays behind the workspace facade the way it does for the TUI.
-- **`forge-web`** - the web view: the same core served as HTML over
-  HTTP, in the process that already owns the sessions, so a second view
-  costs a listener rather than a second cron scheduler. Server-rendered
-  markup over axum. It never names `forge-workspace`: a read of the
-  core goes through `forge-sessions`.
+- **`forge-web`** - the web view: HTTP served beside the TUI, in the
+  process that already owns the sessions, so a second view costs a
+  listener rather than a second cron scheduler. Server-rendered markup
+  over axum, a wiring-proof page today. It never names
+  `forge-workspace`: reads of the core will go through `forge-sessions`.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
@@ -137,8 +137,9 @@ Work top-down; first match wins.
    state in `app/`.
 10. **A view that is not the TUI?** (an HTTP route, its markup, its own
     per-view state) -> `forge-web`. Sits beside `forge-tui` on the same
-    core: reads through the view surface in `forge-sessions`, never
-    names `forge-workspace`, and starts no subsystem of its own.
+    core: a read of the core goes through the view surface in
+    `forge-sessions`, never `forge-workspace`, and it starts no
+    subsystem of its own.
 11. **A wire-conformance scenario?** -> `forge-test-harness`.
 
 **The view surface (designed, not built).** A view is meant to read the

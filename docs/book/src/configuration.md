@@ -412,14 +412,14 @@ being ignored. Keys an older forge read here (`trusted_marketplaces`,
 
 ## `[web]`
 
-The web view: the same forge core served as HTML over HTTP, from the
-process that already owns the sessions rather than a second one. On by
-default, so a restart leaves it serving.
+The web view: HTTP served from the process that already owns the
+sessions rather than a second one. On by default, so a restart leaves it
+serving.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | boolean | `true` | Whether the server starts with forge. `false` is the opt-out, and the TUI is identical either way. |
-| `port` | integer | `8790` | The port the server binds on `bind`, and a browser is pointed at it by hand. `0` fails the load outright (`WebPortInvalid`), and so does the gateway's own port (`WebPortTakenByGateway`) - two listeners cannot share one. |
+| `port` | integer | `8790` | The port the server binds on `bind`, and a browser is pointed at it by hand. `0` fails the load outright (`WebPortInvalid`), and so does the gateway's own port (`WebPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the view is disabled: a stale port on a section that never binds cannot stop the boot. |
 | `bind` | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching the view from another machine means naming that machine's interface here, usually the WireGuard address, and anything public needs something in front of it. |
 
 The server starts no subsystem of its own - no cron scheduler, no

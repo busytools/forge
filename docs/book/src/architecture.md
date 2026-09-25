@@ -26,7 +26,7 @@ forge-test-harness->  primitives + sdk
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
 | `forge-sessions` | What a view needs and nothing about how it renders: the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, and the policy that folds a run of blocks. Holds no terminal types, so a second view attaches beside the TUI rather than duplicating it. |
-| `forge-web` | The web view: the same core served as HTML over HTTP, from the process that owns the sessions. axum plus server-rendered markup. Never names `forge-workspace`, and starts no subsystem of its own. |
+| `forge-web` | The web view: HTTP served beside the TUI, from the process that owns the sessions, with a wiring-proof page today. axum plus server-rendered markup. Never names `forge-workspace`, and starts no subsystem of its own. |
 | `forge-tui` | The view layer. Rendering, key and mouse handling, per-session presentation state. Ships the `forge` binary. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. Dev tooling, not in the runtime path. |
 
@@ -77,8 +77,8 @@ Work top-down; the first match wins.
    presentation state** goes in `forge-tui`.
 10. **A view that is not the TUI** - its routes, its markup, its own
     per-view state - goes in `forge-web`, which sits beside `forge-tui`
-    on the same core. It reads the core through the view surface in
-    `forge-sessions` and never names `forge-workspace`.
+    on the same core. A read of the core goes through the view surface
+    in `forge-sessions`, never through `forge-workspace`.
 11. **A wire-conformance scenario** goes in `forge-test-harness`.
 
 **The view surface is designed, not built.** A view is meant to read
