@@ -90,7 +90,12 @@ impl UpdateFanout {
     fn deliver(&self, update: SessionUpdate, required: Option<SubscriberRole>) -> bool {
         let mut shared = self.shared.lock();
         let Some(tail) = shared.subscribers.pop() else {
-            if !shared.attached {
+            // Hold what was emitted before anything attached, so a boot
+            // notice is not lost. A role-gated update is not held: the
+            // caller that raised it has already failed it closed, and
+            // handing the first subscriber a prompt whose slot is gone
+            // would offer a reply that reaches nothing.
+            if !shared.attached && required.is_none() {
                 shared.pending.push(update);
             }
             return false;
@@ -216,6 +221,26 @@ mod tests {
             "the first subscriber is handed the boot notice"
         );
         assert!(second.try_recv().is_err(), "the second subscriber is handed no boot backlog");
+    }
+
+    /// Catches holding a role-gated update for the first subscriber. The
+    /// guard that raised it has already failed it closed, so replaying
+    /// it would hand the first view a prompt whose slot is gone and
+    /// offer a reply that reaches nothing.
+    #[test]
+    fn a_role_gated_update_is_not_held_for_the_first_subscriber() {
+        let fanout = UpdateFanout::default();
+        assert!(!fanout.send(status("notice")), "a plain update is held");
+        assert!(!fanout.send_answering(status("prompt")), "nothing can answer it yet");
+
+        let mut first = fanout.subscribe(SubscriberRole::Answering);
+
+        assert_eq!(
+            next(&mut first, "first"),
+            "notice",
+            "the first subscriber is handed the plain update",
+        );
+        assert!(first.try_recv().is_err(), "the failed-closed prompt is not replayed to it",);
     }
 
     /// Catches pointing a guard at `send`, which counts an observer as an
