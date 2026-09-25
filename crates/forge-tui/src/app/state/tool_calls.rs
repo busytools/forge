@@ -375,8 +375,8 @@ impl super::App {
     }
 
     /// Clear the active session's background-task registry (and its
-    /// task-id mirror) on teardown. See
-    /// [`clear_background_task_registry`](crate::app::session::UiSession::clear_background_task_registry).
+    /// task-id mirror) on teardown. See `clear_background_task_registry`
+    /// on [`UiSession`](crate::app::session::UiSession).
     pub(crate) fn clear_active_session_background_task_registry(&mut self) {
         if let Some(bucket) = self.active_bucket_mut() {
             bucket.clear_background_task_registry();

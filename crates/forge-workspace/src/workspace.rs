@@ -4823,11 +4823,11 @@ impl Workspace {
     /// - **Any other failure** (resume against missing JSONL,
     ///   generic dispatch error, claude subprocess exit, etc.):
     ///   keep the `WorkerEntry` and transition it to
-    ///   [`WorkerLiveness::Failed`](forge_primitives::WorkerLiveness::Failed) with the first line of the
-    ///   message as the diagnostic. The Projects pane renders the
-    ///   worker as a red `✕` with a DIM sub-row carrying the
-    ///   diagnostic, so a stuck-Spawning-forever case becomes
-    ///   visible instead of silently disappearing.
+    ///   [`WorkerLiveness::Failed`](forge_primitives::WorkerLiveness::Failed)
+    ///   with the first line of the message as the diagnostic. The Projects
+    ///   pane renders the worker as a red `✕` with a DIM sub-row carrying the
+    ///   diagnostic, so a stuck-Spawning-forever case becomes visible instead
+    ///   of silently disappearing.
     ///
     /// The classifier uses `is_git_repo_at_spawn` + substring match
     /// against the bridge-wrapped message; see
