@@ -146,7 +146,7 @@ The list is the project's own task store, written by every session through the `
 
 One store, two slices, and the difference is which rows are in scope:
 
-- **Lead.** Top-level rows only - the ones no other task parents - each carrying a `· m/n` rollup of how many of its children are done, and the owner, because which session holds what is the lead's job. It is the campaign board.
+- **Lead.** Top-level rows only - the ones no other task parents - each carrying an `m/n` rollup of how many of its children are done, and the owner, because which session holds what is the lead's job. It is the campaign board. The header's own ` · m/n` is a different pair: completed rows of the rows in scope, not a child count.
 - **Worker.** The rows that session owns, and no other worker's, under a one-line dim heading naming the parent task they hang off. A row whose parent has left the store contributes no heading, and a lead's board has no heading at all.
 
 A row with no artifact and no estimate is normal: lead work is often not code.
@@ -180,7 +180,7 @@ Clicking a row opens that task's detail over whatever view is behind it - full w
 
 </div>
 
-<kbd>Esc</kbd> closes it, and so does a click outside the panel. There is no keyboard selection and no <kbd>Enter</kbd> binding - a row is a pointer target, not a cursor position - and the pane keeps no selection state, so no row's treatment changes to indicate one. A field the task does not have is absent from the identity block rather than blank, and a parent that has left the store renders as absent rather than as a dangling id.
+<kbd>Esc</kbd> closes it, and so does a click outside the panel. There is no keyboard selection and no <kbd>Enter</kbd> binding - a row is a pointer target, not a cursor position - and the pane keeps no selection state, so no row's treatment changes to indicate one. A field the task does not carry is left out of the identity block rather than set to a blank value, a parent that has left the store renders as absent rather than as a dangling id, and the owner row always renders, reading `unclaimed` for a task nobody holds.
 
 No tasks and a clean default branch:
 
@@ -241,8 +241,12 @@ chat continues here...
 <span class="dim bold">  TASKS</span> <span class="dim">· 2/5</span>
 
 <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Read the rate-limit code</span>
+      <span class="dim">steward</span>
 <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Add the soft-wording branch</span>
-<span class="accent">  ⠹</span> <span class="bold">Adding tests for the near-threshold branch</span>
+      <span class="dim">steward · PR #1173</span>
+<span class="accent">  ⠹</span> <span class="bold">Adding tests for the</span>
+      <span class="bold">near-threshold branch</span>
+      <span class="dim">steward · 1d</span>
 <span class="dim">  ○</span> Run cargo nextest
 <span class="dim">  ○</span> Open PR
 </pre>
