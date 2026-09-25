@@ -206,6 +206,16 @@ mod tests {
         }
     }
 
+    /// The positive half of the pair: a parent still in the store renders
+    /// its subject. Without this, "omitted because the parent is gone"
+    /// cannot be told from "the parent line is never drawn at all".
+    #[test]
+    fn the_overlay_names_a_parent_that_is_still_in_the_store() {
+        let text = overlay_text("sub-a");
+        assert!(text.contains("parent"), "the identity block carries a parent row:\n{text}");
+        assert!(text.contains("epic"), "and names that parent's subject:\n{text}");
+    }
+
     /// Review Focus 2, in the overlay: deleting a parent leaves children
     /// pointing at an id that is gone, which renders as absent rather than
     /// as a dangling id the reader cannot resolve.
