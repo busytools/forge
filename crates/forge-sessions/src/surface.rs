@@ -5,6 +5,7 @@
 //! `Workspace::subscribe`; this is the read half, so a second view
 //! attaches to the core without reading it.
 
+// The five below carry no verb yet; each lands in a file of its own as it is built.
 pub mod accounts;
 pub mod connectors;
 pub mod dictate;
