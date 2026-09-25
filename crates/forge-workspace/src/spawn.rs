@@ -51,11 +51,24 @@ fn cli_task_tools_arg() -> String {
     DISALLOWED_CLI_TASK_TOOLS.join(",")
 }
 
-/// Deny every session - lead, resumed or worker - the CLI's task tools.
-/// Applied wherever a session's launch settings are assembled, beside
-/// [`apply_lead_charter`].
+/// Deny every session - lead, resumed or worker - the CLI's task tools,
+/// merging into a `--disallowedTools` value already there so a session is
+/// never launched with the flag twice. Called from the one spawn path every
+/// session goes through and from the respawn stamp, so no launch can be
+/// assembled without it.
 pub(crate) fn apply_disallowed_task_tools(settings: &mut SessionLaunchSettings) {
-    settings.extra_args.push(("disallowedTools".to_owned(), Some(cli_task_tools_arg())));
+    let Some((_, Some(existing))) =
+        settings.extra_args.iter_mut().find(|(flag, _)| flag == "disallowedTools")
+    else {
+        settings.extra_args.push(("disallowedTools".to_owned(), Some(cli_task_tools_arg())));
+        return;
+    };
+    for tool in DISALLOWED_CLI_TASK_TOOLS {
+        if !existing.split(',').any(|name| name == tool) {
+            existing.push(',');
+            existing.push_str(tool);
+        }
+    }
 }
 
 /// Build the list of `(flag, value)` extra CLI args specific to a
@@ -180,7 +193,6 @@ pub(crate) fn handle_spawn_project(
     };
 
     apply_lead_charter(&mut launch_settings);
-    apply_disallowed_task_tools(&mut launch_settings);
 
     // The id this lead will run under, resolved before the spawn so the
     // bucket announced here is the bucket the child connects under.
@@ -1076,7 +1088,6 @@ pub(crate) fn handle_start_default(
     };
 
     apply_lead_charter(&mut launch_settings);
-    apply_disallowed_task_tools(&mut launch_settings);
 
     let session_key = match workspace.resolve_slot(&target) {
         Ok(key) => key,
@@ -5394,16 +5405,15 @@ provider = "anthropic"
         );
     }
 
-    /// A lead is denied them too. `--disallowedTools` used to be a
-    /// worker-only flag, so a lead kept the CLI's task tools and the
-    /// claim that forge owns the list would hold for one session kind
-    /// only.
+    /// A lead's settings carry no denial of their own, so the call adds
+    /// the flag. `--disallowedTools` used to be a worker-only flag, and a
+    /// lead kept the CLI's task tools.
     #[test]
-    fn a_lead_is_denied_the_cli_task_tools() {
+    fn the_denial_adds_the_flag_when_there_is_none() {
         let mut settings = SessionLaunchSettings::default();
         apply_disallowed_task_tools(&mut settings);
         let list = disallowed_tools_value(&settings.extra_args);
-        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+        for tool in DISALLOWED_CLI_TASK_TOOLS {
             assert!(list.contains(tool), "{tool} must be denied to a lead; got {list:?}");
         }
         assert!(
@@ -5416,20 +5426,25 @@ provider = "anthropic"
         );
     }
 
-    /// A `/new` or `/resume` replaces the occupant but keeps the slot,
-    /// and the settings for that respawn are built by the TUI, which
-    /// knows nothing of the spawn-time flags. Left unstamped, the four
-    /// names come back and the new occupant gets a second task list.
+    /// A session whose settings already carry denials - a worker's, which
+    /// hold the worktree tools in the same value - gains the task names
+    /// inside that value rather than a second `--disallowedTools` flag for
+    /// the CLI to reconcile.
     #[test]
-    fn a_respawn_restamps_the_cli_task_tool_denial() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let slot = SessionSlot::lead("TestOrg", "myproj");
-        let mut settings = SessionLaunchSettings::default();
-        ws.stamp_respawn_overrides(&slot, "respawned-id", &mut settings);
+    fn the_denial_merges_into_a_list_that_is_already_there() {
+        let mut settings = SessionLaunchSettings {
+            extra_args: build_worker_extra_args(false, "reviewer", false),
+            ..SessionLaunchSettings::default()
+        };
+        apply_disallowed_task_tools(&mut settings);
+        let flags =
+            settings.extra_args.iter().filter(|(flag, _)| flag == "disallowedTools").count();
+        assert_eq!(flags, 1, "one flag, not two; got {:?}", settings.extra_args);
         let list = disallowed_tools_value(&settings.extra_args);
-        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
-            assert!(list.contains(tool), "{tool} must survive a respawn; got {list:?}");
+        for tool in DISALLOWED_CLI_TASK_TOOLS {
+            assert_eq!(list.matches(tool).count(), 1, "{tool} appears once; got {list:?}");
         }
+        assert!(list.contains("EnterWorktree"), "the worker's own denial survives; got {list:?}");
     }
 
     /// Workers are pinned to their worktree (when they have one) and

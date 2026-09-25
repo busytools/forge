@@ -1456,6 +1456,10 @@ impl Workspace {
         resolved_key: Option<SessionSlot>,
         role: &crate::protocol::SpawnRole,
     ) -> Result<Arc<AgentHandle>> {
+        // Every session forge launches passes through here, so the CLI's
+        // task tools are denied at this one point rather than at each
+        // spawn entry - a fourth entry cannot forget them.
+        crate::spawn::apply_disallowed_task_tools(&mut settings);
         // The boot gate is a spawn precondition, not just a launchpad
         // decoration: a child stamped before the listener is bound
         // points at a base URL nothing answers.
@@ -9004,6 +9008,59 @@ provider = "anthropic"
             overrides_empty,
             "a None-registration respawn applies no gateway overrides: {launch_settings}",
         );
+    }
+
+    /// A `/new` or `/resume` replaces the occupant but keeps the slot, and
+    /// the settings for that respawn are built by the TUI, which knows
+    /// nothing of the spawn-time flags. Read off the command the handle
+    /// receives, which is the same value that reaches the child's argv:
+    /// left unstamped, the CLI's task tools come back for the new occupant.
+    #[test]
+    fn a_respawn_carries_the_cli_task_tool_denial() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("respawn-denial-test");
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        workspace.pool.lock().insert(
+            key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("Plain".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-session".to_owned(),
+            },
+        );
+
+        workspace
+            .dispatch(Command::NewSession {
+                key: key.clone(),
+                cwd: "/tmp".to_owned(),
+                launch_settings: SessionLaunchSettings::default(),
+            })
+            .expect("dispatch new");
+
+        let forge_primitives::AgentCommand::NewSession { launch_settings, .. } =
+            agent_rx.try_recv().expect("new session agent command")
+        else {
+            panic!("expected a NewSession agent command");
+        };
+        let denied = launch_settings
+            .get("extra_args")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|pairs| {
+                pairs.iter().find(|pair| {
+                    pair.get(0).and_then(serde_json::Value::as_str) == Some("disallowedTools")
+                })
+            })
+            .and_then(|pair| pair.get(1).and_then(serde_json::Value::as_str))
+            .unwrap_or_default()
+            .to_owned();
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(
+                denied.contains(tool),
+                "{tool} must reach a respawned session's argv; got {denied:?}",
+            );
+        }
     }
 
     // ---- Session-task routing tests ----
