@@ -5707,8 +5707,11 @@ mod lead_charter_tests {
                 "the charter maintains the list through {tool}: {DEFAULT_LEAD_CHARTER}",
             );
         }
+        // Case-insensitively: the CLI spells it lowercase `deleted`, and
+        // that spelling is the regression this guards, not the upper-case
+        // one.
         assert!(
-            !DEFAULT_LEAD_CHARTER.contains("DELETED"),
+            !DEFAULT_LEAD_CHARTER.to_lowercase().contains("deleted"),
             "`deleted` is the CLI's status, not one of forge's four: {DEFAULT_LEAD_CHARTER}",
         );
     }

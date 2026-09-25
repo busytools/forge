@@ -521,8 +521,12 @@ mod tests {
     }
 
     /// An empty list has three causes, and the description names all of
-    /// them: a project with nothing in flight, a caller whose project could
-    /// not be resolved, and a run that could not read the store.
+    /// them. This is load-bearing rather than a prose lock: the caller is a
+    /// model deciding whether to wait, to fix its project, or to give up,
+    /// and an empty array that reads as "nothing in flight" when the store
+    /// could not be read tells it to wait for work that will never appear.
+    /// The cron group's list description carries the same clauses and the
+    /// same test.
     #[test]
     fn the_list_description_owns_up_to_every_empty_result() {
         let desc =
