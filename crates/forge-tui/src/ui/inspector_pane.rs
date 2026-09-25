@@ -5693,7 +5693,13 @@ pub(crate) mod tests {
         let long = "a subject far longer than thirty columns can possibly hold";
         let mut app = crate::app::state::tasks::tests::app_with_task_rows_with_subject(long);
         let text = render_inspector_to_string(&mut app, 30, 60);
-        assert!(text.contains("a subject far longer"), "the running row wraps:\n{text}");
+        // A fragment past the first line's cut, which only a wrapped row can
+        // put on screen: a truncated one ends at the pane edge with an
+        // ellipsis, and a missing row shows nothing.
+        assert!(
+            text.contains("thirty columns"),
+            "the running row wraps onto continuation lines:\n{text}",
+        );
         assert!(!text.contains(long), "no row exceeds the pane width:\n{text}");
         assert!(
             text.matches('\u{2026}').count() >= 2,
