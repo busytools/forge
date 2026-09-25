@@ -215,7 +215,7 @@ mod tests {
             "boot",
             "the first subscriber is handed the boot notice"
         );
-        assert!(second.try_recv().is_err(), "the second subscriber is handed no boot backlog",);
+        assert!(second.try_recv().is_err(), "the second subscriber is handed no boot backlog");
     }
 
     /// Catches pointing a guard at `send`, which counts an observer as an
