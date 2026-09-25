@@ -17,3 +17,8 @@ forge-primitives = { workspace = true }
 forge-workspace = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# The surface's equivalence tests read the same workspace the TUI reads,
+# so they need `Workspace::testing_stub` and the seeding helpers.
+forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
