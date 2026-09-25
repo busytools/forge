@@ -1322,7 +1322,10 @@ mod tests {
             "a draft only an observer can see is dropped, not held forever",
         );
         assert!(
-            matches!(observer.try_recv(), Ok(crate::protocol::SessionUpdate::SlackPostPending { .. })),
+            matches!(
+                observer.try_recv(),
+                Ok(crate::protocol::SessionUpdate::SlackPostPending { .. })
+            ),
             "the observer is still delivered the draft it cannot answer",
         );
         assert!(decision.await.is_err(), "the awaiting caller sees a dead receiver");

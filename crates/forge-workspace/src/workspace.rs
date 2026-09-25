@@ -2998,6 +2998,11 @@ impl Workspace {
     /// takes whatever the workspace emitted beforehand, the boot notice
     /// included. The binary's `start_*` calls all run before the TUI
     /// attaches, so this belongs after them rather than among them.
+    ///
+    /// Nothing calls this yet. The TUI is the only frontend and it
+    /// answers, so the only observer in the tree is a test; this exists
+    /// so a consumer that reads without rendering a prompt can say so
+    /// instead of parking a turn by claiming a capability it lacks.
     pub fn subscribe_observer(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
         self.update_tx.subscribe(SubscriberRole::Observing)
     }
