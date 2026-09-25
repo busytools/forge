@@ -10,7 +10,7 @@ const CONTEXT_USAGE_MIN_SEND_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Used-context tokens at or above which the auto refresh is skipped:
 /// the CLI answers `get_context_usage` inline over the full
-/// transcript, and only a [1m]-class window can reach this size,
+/// transcript, and only a `[1m]`-class window can reach this size,
 /// where that computation alone can exceed the hook timeout.
 const CONTEXT_USAGE_TOKEN_GATE: u64 = 500_000;
 

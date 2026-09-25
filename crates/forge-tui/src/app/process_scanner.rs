@@ -1,4 +1,4 @@
-//! TUI-side consumer of [`forge_agent::env::processes::scan`].
+//! TUI-side consumer of [`forge_workspace::env::processes::scan`].
 //!
 //! Drives the Inspector pane's PROCESSES section by polling the
 //! OS-level descendant tree of the active session's `claude`

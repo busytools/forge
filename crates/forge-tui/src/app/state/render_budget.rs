@@ -104,7 +104,7 @@ impl super::App {
     // O(1) on purpose: this runs from every sync_render_cache_* call,
     // so a walk over the message list here costs the whole session on
     // every rendered message. Block-count changes arrive through
-    // `sync_after_message_blocks_changed`, and each sync entry point
+    // `sync_render_cache_message_tail`, and each sync entry point
     // re-checks its own message's slot count on the way in, so the
     // per-message shape does not need re-deriving here too.
     //
@@ -327,7 +327,7 @@ impl super::App {
     /// Sync the accounting for a message whose TAIL changed: the last
     /// block was extended, or blocks were appended or dropped at the
     /// end. Earlier blocks are assumed untouched, which is what every
-    /// caller of [`Self::sync_after_message_blocks_changed`] does.
+    /// caller of [`Self::sync_render_cache_message_tail`] does.
     ///
     /// Costs O(blocks added or dropped), not O(blocks in the message).
     /// Syncing every slot instead made a run of N appends into one
@@ -562,7 +562,7 @@ impl super::App {
     /// Rebuild if any message's slot row disagrees with its block
     /// count. The shared guard only compares list lengths, so a
     /// block-count change that skipped
-    /// `sync_after_message_blocks_changed` leaves one row stale and the
+    /// `sync_render_cache_message_tail` leaves one row stale and the
     /// byte totals short. Firing means such a change reached us.
     fn repair_render_cache_accounting_drift(&mut self) {
         self.ensure_render_cache_accounting();

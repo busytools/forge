@@ -1316,7 +1316,7 @@ fn render_question_answered_card_with_metas(
     Some(lines)
 }
 
-/// True when [`render_lifecycle_one_liner`] would produce a block for
+/// True when `render_lifecycle_one_liner` would produce a block for
 /// this tool. Keyed on the same parse the renderer gates on, NOT on the
 /// tool name alone: a `Monitor` whose input does not parse falls
 /// through to the standard tool card and must behave like one -
@@ -1704,7 +1704,7 @@ pub(crate) fn render_message_from_offset_internal_with_mode(
     )
 }
 
-/// As [`Self::render_message`], also emitting each row's copy provenance.
+/// As `render_message`, also emitting each row's copy provenance.
 pub(crate) fn render_message_with_copy_rows(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
@@ -1716,7 +1716,7 @@ pub(crate) fn render_message_with_copy_rows(
     render_cached_message_with_copy(cache.segments(), cache.copy_rows(), out, copy_rows);
 }
 
-/// As [`Self::render_message_from_offset_internal_with_mode`], also
+/// As `render_message_from_offset_internal_with_mode`, also
 /// emitting each emitted row's copy provenance, aligned one-to-one with
 /// `out`.
 pub(crate) fn render_message_from_offset_with_copy_rows(
@@ -2708,7 +2708,7 @@ fn preprocess_prose(text: &str) -> String {
 /// Conservative: a `<` is treated as a tag start only when followed
 /// by an ASCII alphabetic character or `/` so `1 < 2` and `<<EOF`
 /// stay literal. Unclosed `<...` (no `>` on the line) is preserved
-/// verbatim. Inline backtick spans (single `\``) pass through
+/// verbatim. Inline backtick spans (single-backtick) pass through
 /// untouched so language generics in `Vec<T>` / `Map<K, V>` / JSX
 /// (`<App />` shown as code) survive intact - the strip would
 /// otherwise mistake them for HTML tags. Caller must already have

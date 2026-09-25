@@ -31,7 +31,8 @@ pub enum LayoutRemeasureReason {
     Global,
 }
 
-/// Priority ordering for [`schedule_remeasure`]'s no-downgrade merge.
+/// Priority ordering for the no-downgrade merge in
+/// [`ChatViewport::schedule_remeasure`].
 /// `Resize` and `Global` are equally convergent (both trigger a full
 /// re-measure pass); `MessagesFrom` is mid-tier (new tail / history
 /// retention); `MessageChanged` is the lowest (single-tool /

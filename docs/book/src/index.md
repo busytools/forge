@@ -49,6 +49,12 @@ One behaviour is worth knowing before you run it:
   guard is best-effort and warns rather than failing if it cannot be
   established.
 
+## API reference
+
+Every crate in the workspace is published as rustdoc at
+[the API reference](./rustdoc/), private items included. It is the place
+to go when you are reading or changing the code rather than running it.
+
 ## Where to go next
 
 - [Install and build](./install.md) to get it running.

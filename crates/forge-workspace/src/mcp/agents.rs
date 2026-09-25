@@ -28,7 +28,8 @@ use crate::mcp::workers::facade::{
 };
 use crate::protocol::SessionChoice;
 
-/// Attach the four any-caller verbs to an existing [`McpServerBuilder`].
+/// Attach the four any-caller verbs to an existing
+/// [`McpServerBuilder`](forge_sdk::mcp::server::McpServerBuilder).
 pub(crate) fn add_shared_tools(
     builder: forge_sdk::mcp::server::McpServerBuilder,
     dispatcher: Arc<AgentDispatcher>,
@@ -656,7 +657,8 @@ pub fn build_server(
     add_lead_tools(builder, workers, slot).build()
 }
 
-/// Attach the four lead-only verbs to an existing [`McpServerBuilder`].
+/// Attach the four lead-only verbs to an existing
+/// [`McpServerBuilder`](forge_sdk::mcp::server::McpServerBuilder).
 /// Each acts on the caller's own project, so a worker has no project to
 /// act on and is not offered the surface.
 pub(crate) fn add_lead_tools(

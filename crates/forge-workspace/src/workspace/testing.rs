@@ -130,7 +130,7 @@ impl Workspace {
         Ok(Self::testing_stub_with_slack(config_dir, config, Arc::new(slack)))
     }
 
-    /// [`Self::testing_stub_with_config`] with the Slack clients supplied
+    /// `Self::testing_stub_with_config` with the Slack clients supplied
     /// by the caller, so a test can drive a real facade against a double
     /// rather than a live workspace.
     #[cfg(any(test, feature = "testing"))]

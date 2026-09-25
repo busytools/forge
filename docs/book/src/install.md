@@ -43,7 +43,8 @@ the file still reads as authoritative.
 Bump it deliberately, in its own change. No crate in the workspace
 opts into an unstable language feature with `#![feature(...)]`, so the
 pin buys reproducibility rather than access to any particular nightly
-feature.
+feature. The published rustdoc is the one exception: it needs
+`-Z unstable-options --enable-index-page`, which is nightly-only.
 
 ## Development is macOS-first
 

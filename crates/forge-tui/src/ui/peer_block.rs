@@ -397,7 +397,7 @@ pub(crate) fn render_inbound(
     render_inbound_with_metas(kind, suppress_header, collapsed, &mut copy_rows)
 }
 
-/// As [`Self::render_inbound`], also emitting each row's copy provenance:
+/// As `render_inbound`, also emitting each row's copy provenance:
 /// the header and collapsed-summary rows are chrome, the tree body rows
 /// carry the 5-column connector prefix as chrome.
 pub(crate) fn render_inbound_with_metas(
@@ -481,7 +481,7 @@ pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<L
     render_outbound_with_metas(kind, collapsed, &mut copy_rows)
 }
 
-/// As [`Self::render_outbound`], also emitting each row's copy provenance.
+/// As `render_outbound`, also emitting each row's copy provenance.
 pub(crate) fn render_outbound_with_metas(
     kind: &PeerOutboundKind,
     collapsed: bool,
