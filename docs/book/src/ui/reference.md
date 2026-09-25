@@ -98,7 +98,7 @@ Every character used as chrome - borders, icons, status, separators. Scope is cu
 | `▁▂▃▄▅▆▇█` | dictate level meter | the composer's 26-cell block ramp |
 | `●` `◌` | recording dot, MCP connected server, in-force value; transcribing dot, MCP pending server | filled circle pulses on a 1.05 s cycle leading the [status row](./input.md), and marks a connected server green / a pending server blue on [MCP SERVERS](./inspector-processes.md); the dotted circle takes the same spots in blue while transcribing or pending |
 | `·` `•` | permission option separator, sleeping project row; plan-approval actions | middle dot; bullet |
-| `▸` | highlight cursor; selection indicator; in-progress task; a worker's parent-task heading | small right triangle |
+| `▸` | highlight cursor; selection indicator; a worker's parent-task heading | small right triangle |
 | `△` `✕` | projects-pane and NEEDS ATTENTION; failed turn or worker; overlay close | waiting on the user (yellow); failed (red); the overlay `✕` dismisses |
 | `▤` | narrow-tier Projects top-bar icon | toggles the Projects overlay |
 | `💬` `✎` `↳` | diff comment cards; the [Inspector GIT header](./inspector.md) and [NEEDS ATTENTION](./inspector.md) band | the card and rail badge, your editable turns, the reply line; outside the overlay the balloon counts worker answers nobody has come back to |

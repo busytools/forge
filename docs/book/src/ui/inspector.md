@@ -133,7 +133,7 @@ The GIT header carries a `🦉` glyph when any diff layer is populated - click i
 | Glyph | Meaning | Color |
 |---|---|---|
 | `✓` | Completed (text dim, crossed out) | green |
-| `▸` | In progress (text white bold; uses the active form when present; **wraps** onto indented continuation lines) | rust orange |
+| `⠋ ⠙ ⠹ ...` | In progress - the live spinner frame, whatever `/spinner` selects (text white bold; uses the active form when present; **wraps** onto indented continuation lines) | rust orange |
 | `○` | Blocked or pending (text gray) | dim |
 
 Only the in-progress item wraps. Completed, blocked and pending items truncate with `...` at the pane's right edge. Rows are ordered running, then blocked, then pending, then completed, and tasks of one status keep the order they were declared in.
@@ -159,7 +159,7 @@ Clicking a row opens that task's detail over whatever view is behind it - full w
 
 <pre class="indent">
 <span class="dim">┌ TASK ──────────────────────────────────────────────┐</span>
-<span class="dim">│</span> <span class="accent">▸</span> <span class="bold">Adding tests for the near-threshold branch</span>  <span class="dim">·  in progress</span>
+<span class="dim">│</span> <span class="accent">⠹</span> <span class="bold">Adding tests for the near-threshold branch</span>  <span class="dim">·  in progress</span>
 <span class="dim">│</span>
 <span class="dim">│</span> <span class="dim">owner    </span>steward
 <span class="dim">│</span> <span class="dim">parent   </span>Add the soft-wording branch
@@ -181,27 +181,6 @@ Clicking a row opens that task's detail over whatever view is behind it - full w
 </div>
 
 <kbd>Esc</kbd> closes it, and so does a click outside the panel. There is no keyboard selection and no <kbd>Enter</kbd> binding - a row is a pointer target, not a cursor position - and the pane keeps no selection state, so no row's treatment changes to indicate one. A field the task does not have is absent from the identity block rather than blank, and a parent that has left the store renders as absent rather than as a dangling id.
-
-<details>
-<summary>Verification nudge</summary>
-
-When the CLI flags one, a one-line dim-yellow notice sits between the rule and the `TASKS` header until the next task update clears it:
-
-</details>
-
-<div class="term">
-
-<pre class="indent">
-  <span class="accent-bold">INSPECTOR</span>
-  <span class="dim">─────────────────────────</span>
-  <span class="warning">  ⚠ verify before declaring complete</span>
-
-  <span class="dim bold">  TASKS</span>
-
-  <span class="accent">  ▸</span> <span class="bold">Open PR</span>
-</pre>
-
-</div>
 
 No tasks and a clean default branch:
 
