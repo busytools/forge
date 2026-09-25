@@ -192,16 +192,16 @@ pub(crate) fn stamp_permission_mode(
 }
 
 /// Emit a `SessionUpdate` and log at debug when no subscriber took it
-/// (TUI is shutting down or has crashed). The send is logically
+/// (the view has not attached yet, or has gone). The send is logically
 /// best-effort - no caller can act on the failure - but visibility
-/// in the log distinguishes "TUI dropped the subscription" from "the
-/// emit never happened" during diagnosis.
+/// in the log distinguishes "no view took it" from "the emit never
+/// happened" during diagnosis.
 fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
     if !workspace.update_tx().send(update) {
         tracing::debug!(
             target: "forge_workspace::spawn",
             label,
-            "SessionUpdate dropped - no subscriber (likely TUI shutdown)"
+            "SessionUpdate not taken - no subscriber attached"
         );
     }
 }

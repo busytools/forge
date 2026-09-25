@@ -798,8 +798,7 @@ impl SessionTask {
     }
 
     /// Send `update` to the workspace fan-in; log when no subscriber
-    /// took it, so a regression there leaves a trail rather than
-    /// silently dropping events.
+    /// took it, so a regression there leaves a trail.
     // TODO(ved): gate emits on a per-task session epoch so a superseded
     // task (its slot re-spawned by a resume or an account switch) can't
     // emit a stale update onto its successor during the brief
@@ -811,7 +810,7 @@ impl SessionTask {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %self.key.display(),
-                "no SessionUpdate subscriber; dropping event"
+                "no SessionUpdate subscriber took the event"
             );
         }
     }
