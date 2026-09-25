@@ -10,7 +10,7 @@ forge-connectors  ->  primitives
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
-forge-sessions    ->  (no forge-* dependency yet)
+forge-sessions    ->  primitives + workspace
 forge-tui         ->  primitives + workspace + sessions
 forge-test-harness->  primitives + sdk
 ```
@@ -24,7 +24,7 @@ forge-test-harness->  primitives + sdk
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
-| `forge-sessions` | What a view needs and nothing about how it renders: the inbound peer envelope parsing today, and the session records and reducers that belong here as they leave the TUI. Holds no terminal types, so a second view attaches beside the TUI rather than duplicating it. |
+| `forge-sessions` | What a view needs and nothing about how it renders: the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, and the policy that folds a run of blocks. Holds no terminal types, so a second view attaches beside the TUI rather than duplicating it. |
 | `forge-tui` | The view layer. Rendering, key and mouse handling, per-session presentation state. Ships the `forge` binary. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. Dev tooling, not in the runtime path. |
 
@@ -64,15 +64,26 @@ Work top-down; the first match wins.
    resolution, environment probes, OAuth, plugins, settings I/O,
    plugin catalog scans) goes in `forge-agent`.
 7. **Orchestration across projects, sessions, accounts, `forge.toml`
-   or the command bus** goes in `forge-workspace`.
+   or the command bus** goes in `forge-workspace`. A read a VIEW needs
+   is a verb on the view surface below, not a bare method.
 8. **A session record as a view sees it, or a decision any view would
    make over one** (the render-ready record, the reducer that derives
-   it, the policy that decides how a run of blocks folds) goes in
-   `forge-sessions`. The test is "does this render?" - if it does, it
-   is the view's.
+   it, the policy that decides how a run of blocks folds, the peer
+   envelope parsing in both directions) goes in `forge-sessions`. The
+   test is "does this render?" - if it does, it is the view's.
 9. **A widget, screen, key binding, mouse handler or per-session
    presentation state** goes in `forge-tui`.
 10. **A wire-conformance scenario** goes in `forge-test-harness`.
+
+**The view surface is designed, not built.** A view is meant to read
+the core through named verbs by subject - `roster`, `session`,
+`accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate` -
+to act through `dispatch(Command)`, and to receive changes through
+`subscribe()`. Only the last two exist today: the TUI still calls
+`Workspace` methods directly, so `forge-tui` keeps its
+`forge-workspace` dependency and the arrow above is not yet one-way. A
+read a second view would want goes on that surface; a read only the
+TUI makes stays a plain method.
 
 Splits across several crates are normal; a git-diff feature naturally
 touches agent, workspace and TUI. The rule of thumb is that logic, I/O

@@ -125,4 +125,7 @@ inbound connector clients and matching go in `forge-connectors`,
 anything speaking stream-json goes in `forge-sdk`, environment and I/O
 go in `forge-agent`, multi-session orchestration goes in
 `forge-workspace`, a session record as a view sees it goes in
-`forge-sessions`, and only what the user sees goes in `forge-tui`.
+`forge-sessions`, and only what the user sees goes in `forge-tui`. The
+architecture page also carries the view surface - the verbs a second
+view would read the core through. It is designed and not yet built, so
+a read only the TUI makes is still a plain `forge-workspace` method.
