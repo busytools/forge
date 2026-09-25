@@ -254,22 +254,23 @@ mod tests {
         }
     }
 
-    /// A `replay-only:` marker exempts the retired tools it NAMES, for the
-    /// block it heads.
+    /// A `replay-only:` marker exempts the retired tools it NAMES, on a
+    /// line ADJACENT to it.
     ///
-    /// Two rules, and both matter. Naming: a marker exempts only the names
-    /// written after it, so an unlisted retired name in the same block
-    /// still fails and the marker cannot be decorative. Block: the
-    /// exemption runs from the marker to the next blank line, which is what
-    /// lets one marker head a whole match arm or array - and what survives
-    /// the formatter moving the comment between the arm's line and its
-    /// body, a position no per-line rule can track.
+    /// Two rules, and each closes a hole the other leaves. Naming: a marker
+    /// exempts only the tools written after it, so an unlisted retired name
+    /// beside it still fails and the marker cannot be decorative.
+    /// Adjacency: the marker must sit on the exempted line, or the line
+    /// directly above or below it - so a marker cannot launder a SECOND use
+    /// of the same name elsewhere in the same comment block, which is a
+    /// stale instruction wearing a replay marker's clothes. Three positions
+    /// rather than one because the formatter moves a trailing comment
+    /// between an arm's own line and its body.
     ///
     /// It exists for text that cites a retired name as history: a reader of
-    /// what a session recorded before the rename, or a passage naming what
-    /// was replaced. Nothing can call a retired tool, so the marker cannot
-    /// be an alias, and writing it is a deliberate act rather than a quietly
-    /// widened exemption.
+    /// what a session recorded before the rename. Nothing can call a retired
+    /// tool, so the marker cannot be an alias, and writing one per
+    /// occurrence is a deliberate act rather than a widened exemption.
     const REPLAY_ONLY: &str = "replay-only:";
 
     /// A line that IS one of `OLD_NAMES`' own entries. The list has to
@@ -284,17 +285,14 @@ mod tests {
             && OLD_NAMES.contains(&entry.trim_matches('"'))
     }
 
-    /// The retired names exempted by the markers in the block containing
-    /// line `at`, up to the blank lines on either side of it.
+    /// The retired names a marker on, above or below line `at` exempts.
     fn exempted_names(lines: &[&str], at: usize) -> Vec<&'static str> {
-        let start =
-            lines[..at].iter().rposition(|line| line.trim().is_empty()).map_or(0, |i| i + 1);
-        let end = lines[at..]
-            .iter()
-            .position(|line| line.trim().is_empty())
-            .map_or(lines.len(), |i| at + i);
+        let adjacent = [at.checked_sub(1), Some(at), at.checked_add(1)]
+            .into_iter()
+            .flatten()
+            .filter_map(|i| lines.get(i));
         let mut out = Vec::new();
-        for line in &lines[start..end] {
+        for line in adjacent {
             let Some((_, named)) = line.split_once(REPLAY_ONLY) else { continue };
             out.extend(OLD_NAMES.iter().copied().filter(|old| named.contains(old)));
         }
@@ -378,8 +376,8 @@ mod tests {
         assert!(
             offenders.is_empty(),
             "a retired tool name survives at: {offenders:?}. If the line cites one as history \
-             rather than calling it, head its block with a `{REPLAY_ONLY}` comment naming that \
-             tool.",
+             rather than calling it, put a `{REPLAY_ONLY}` comment naming that tool on the line \
+             itself or the one next to it.",
         );
     }
 
