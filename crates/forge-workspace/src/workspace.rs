@@ -3428,9 +3428,9 @@ impl Workspace {
                     });
                 }
                 // User-action store writes routed through the command
-                // bus (MVVM: one channel pair). Synchronous inline
-                // handlers - the writes are local redb operations, and
-                // the TUI has already applied its optimistic state.
+                // bus. Synchronous inline handlers - the writes are
+                // local redb operations, and the TUI has already
+                // applied its optimistic state.
                 Command::SaveReviewThreads { project, branch, threads } => {
                     let span = tracing::info_span!(
                         "save_review_threads",
