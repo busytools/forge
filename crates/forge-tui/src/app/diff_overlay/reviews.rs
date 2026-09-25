@@ -9,6 +9,7 @@ use crate::app::App;
 use crate::app::input::InputState;
 use crossterm::event::{KeyCode, KeyEvent};
 use forge_primitives::review::{ReviewStatus, ReviewThread};
+use forge_sessions::surface::ViewSurface;
 
 /// Parse an rfc3339 timestamp into a `SystemTime`, or `None` when it is
 /// empty / malformed.
@@ -101,7 +102,7 @@ pub(super) fn toggle_reviews_list(app: &mut App) {
     let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
     let threads = match (project, branch, workspace) {
         (Some(project), Some(branch), Some(workspace)) => {
-            match workspace.load_review_threads(&project, &branch) {
+            match ViewSurface::new(workspace).reviews(&project, &branch).threads {
                 Ok(threads) => threads,
                 Err(error) => {
                     // Surface the failure via the banner rather than opening
@@ -220,7 +221,9 @@ fn authored_threads(app: &App) -> Vec<ReviewThread> {
         .as_ref()
         .zip(app.active_session().map(|s| s.project.clone()))
         .zip(app.workspace.as_ref())
-        .and_then(|((branch, project), ws)| ws.load_review_threads(&project, branch).ok());
+        .and_then(|((branch, project), ws)| {
+            ViewSurface::new(std::sync::Arc::clone(ws)).reviews(&project, branch).threads.ok()
+        });
     let mut out: Vec<ReviewThread> = Vec::new();
     for card in overlay.comments.iter().filter(|c| c.authored_this_session) {
         if out.iter().any(|t| t.id == card.thread.id) {

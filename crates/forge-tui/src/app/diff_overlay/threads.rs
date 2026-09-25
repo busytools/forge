@@ -6,6 +6,7 @@
 use super::types::{AnchorNote, CommentRef, HunkComment, LineKey, ThreadAction};
 use crate::app::App;
 use forge_primitives::review::{ReviewAuthor, ReviewSide, ReviewStatus, ReviewThread};
+use forge_sessions::surface::ViewSurface;
 use forge_workspace::env::git_diff::hunks::FileHunks;
 use forge_workspace::env::git_diff::resolver::{self, AnchorResolution};
 
@@ -172,7 +173,8 @@ pub(super) fn hydrate_threads(app: &mut App) {
     // chip tags and the `l` list reflect what's on disk. A corrupt reviews
     // row surfaces the same "failed to load" banner as the threads path -
     // the `reviews` table is a separate row, so its failure is independent.
-    match workspace.load_reviews(&project, &branch) {
+    let stored = ViewSurface::new(std::sync::Arc::clone(&workspace)).reviews(&project, &branch);
+    match stored.reviews {
         Ok(reviews) => overlay.reviews = reviews,
         Err(error) => {
             overlay.review_load_error = Some(error);
@@ -183,7 +185,7 @@ pub(super) fn hydrate_threads(app: &mut App) {
 
     // Surface a load failure as a visible notice rather than a silent
     // empty pane; a successful load clears any prior notice.
-    let loaded = match workspace.load_review_threads(&project, &branch) {
+    let loaded = match stored.threads {
         Ok(threads) => {
             overlay.review_load_error = None;
             threads
@@ -379,7 +381,7 @@ pub(super) fn refresh_replies_waiting(app: &mut App) {
     let Some(workspace) = app.workspace.clone() else {
         return;
     };
-    let Ok(threads) = workspace.load_review_threads(&project, &branch) else {
+    let Ok(threads) = ViewSurface::new(workspace).reviews(&project, &branch).threads else {
         return;
     };
     park_replies_waiting(app, &branch, &threads);

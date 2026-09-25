@@ -11,7 +11,7 @@ pub(crate) fn request_refresh_if_needed(app: &mut App) {
     let Some(workspace) = app.workspace.clone() else { return };
     follow_binding(app, &workspace);
     let Some(name) = app.active_account_display_name() else { return };
-    let snapshot = workspace.usage_for(&name);
+    let snapshot = forge_sessions::surface::ViewSurface::new(workspace).accounts().usage_for(&name);
     let Some(slot) = app.usage_mut() else {
         return;
     };

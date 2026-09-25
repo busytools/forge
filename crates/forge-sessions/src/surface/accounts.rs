@@ -2,7 +2,7 @@
 
 use forge_primitives::account::AccountAuth;
 use forge_primitives::usage::UsageSnapshot;
-use forge_workspace::{AccountLoadingRow, GatewayOrgView};
+use forge_workspace::{AccountLoadingRow, GatewayOrgView, UsageFetchStatus};
 
 use super::ViewSurface;
 
@@ -51,6 +51,13 @@ impl AccountsView {
     pub fn auth_for(&self, display_name: &str) -> Option<AccountAuth> {
         self.loading.iter().find(|row| row.display_name == display_name).map(|row| row.auth)
     }
+
+    /// The most recent poll-attempt failure for `display_name`. `None`
+    /// when the last poll succeeded, none has run, or the name is not
+    /// configured.
+    pub fn usage_error_for(&self, display_name: &str) -> Option<UsageFetchStatus> {
+        self.loading.iter().find(|row| row.display_name == display_name)?.last_error
+    }
 }
 
 impl ViewSurface {
@@ -76,6 +83,92 @@ impl ViewSurface {
             },
             usage,
             orgs: workspace.gateway_view_snapshot(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
+
+    use super::*;
+
+    fn usage(utilization: f64) -> UsageSnapshot {
+        UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: std::time::SystemTime::UNIX_EPOCH,
+            five_hour: Some(UsageWindow { utilization, resets_at: None, reset_description: None }),
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            spend: None,
+            balance: None,
+        }
+    }
+
+    /// Catches the verb being rebuilt from a different account source, or
+    /// a field wired to its neighbour's read, which would render a
+    /// different account set than the calls it replaced.
+    #[test]
+    fn accounts_agrees_with_the_calls_it_replaces() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        workspace.seed_test_usage("Granite", usage(11.0));
+
+        let view = ViewSurface::new(Arc::clone(&workspace)).accounts();
+
+        assert_eq!(
+            view.loading,
+            workspace.account_loading_snapshot(),
+            "the loading rows are the call's own",
+        );
+        assert_eq!(
+            view.all_loaded,
+            workspace.all_accounts_loaded(),
+            "settling is the same condition",
+        );
+        assert_eq!(view.gateway.ready, workspace.gateway_ready(), "readiness is the same flag");
+        assert_eq!(view.gateway.port, workspace.gateway_port(), "the port is the listener's");
+        assert_eq!(
+            view.gateway.bind_error,
+            workspace.gateway_bind_error(),
+            "the bind failure is the same string",
+        );
+        assert_eq!(
+            view.orgs.iter().map(|org| org.org.clone()).collect::<Vec<_>>(),
+            workspace.gateway_view_snapshot().iter().map(|org| org.org.clone()).collect::<Vec<_>>(),
+            "the gateway view names every org in the same order",
+        );
+
+        assert_eq!(
+            view.usage_for("Granite"),
+            Some(usage(11.0)),
+            "the seeded account reports the poller's own snapshot",
+        );
+        assert_eq!(
+            view.auth_for("Granite"),
+            Some(AccountAuth::Token),
+            "a configured token account resolves rather than falling to the None branch",
+        );
+
+        for name in ["Granite", "OpenRouter-TM", "nobody"] {
+            assert_eq!(
+                view.usage_for(name),
+                workspace.usage_for(name),
+                "usage_for agrees with the call it replaces for {name}",
+            );
+            assert_eq!(
+                view.usage_error_for(name),
+                workspace.usage_error_for(name),
+                "usage_error_for agrees with the call it replaces for {name}",
+            );
+            assert_eq!(
+                view.auth_for(name),
+                workspace.account_auth_for(name),
+                "auth_for agrees with the call it replaces for {name}",
+            );
         }
     }
 }

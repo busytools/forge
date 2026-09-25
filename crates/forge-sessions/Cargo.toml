@@ -21,5 +21,6 @@ serde_json = { workspace = true }
 [dev-dependencies]
 # Self-dep, so this crate's own `#[cfg(test)]` fixtures resolve
 # `Workspace::new_for_test` and `install_db_for_test`.
-forge-workspace = { path = "../forge-workspace", features = ["testing"] }
+forge-workspace = { path = "../forge-workspace", features = ["testing", "test-helpers"] }
 tempfile = { workspace = true }
+uuid = { workspace = true }

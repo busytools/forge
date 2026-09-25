@@ -13,9 +13,11 @@
 //! Hit-target stamps always carry the *un-truncated* identifier so
 //! click routing keeps working regardless of truncation.
 
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use forge_primitives::PeerInflightStats;
+use forge_sessions::surface::ViewSurface;
 use forge_workspace::ProjectView;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -1431,19 +1433,18 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // looking like a forge bug. Lookup is by active account display
     // name; the workspace returns `None` when the most recent poll
     // succeeded.
-    let usage_error = app
-        .workspace
+    let accounts = app.workspace.as_ref().map(|ws| ViewSurface::new(Arc::clone(ws)).accounts());
+    let usage_error = accounts
         .as_ref()
         .zip(app.active_account_display_name())
-        .and_then(|(ws, name)| ws.usage_error_for(&name));
+        .and_then(|(accounts, name)| accounts.usage_error_for(&name));
 
     // The account class decides what a failed-probe hint tells the
     // reader to do: which env key the credential lives behind.
-    let account_auth = app
-        .workspace
+    let account_auth = accounts
         .as_ref()
         .zip(app.active_account_display_name())
-        .and_then(|(ws, name)| ws.account_auth_for(&name))
+        .and_then(|(accounts, name)| accounts.auth_for(&name))
         .unwrap_or(forge_workspace::AccountAuth::Token);
 
     // 7d cap detection: when the 7d window is at-or-near 100%

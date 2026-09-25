@@ -8,6 +8,7 @@
 //! it was not.
 
 use crossterm::event::{KeyCode, KeyEvent};
+use forge_sessions::surface::ViewSurface;
 
 use super::App;
 use super::view::{ActiveView, set_active_view};
@@ -76,10 +77,13 @@ pub fn quit_after_cancel(app: &mut App) {
     if app.preflight_done || !app.preflight_cancel_drawn {
         return;
     }
-    let cancelled = app
-        .workspace
-        .as_ref()
-        .is_some_and(|ws| ws.dictate_snapshot().failure.is_some_and(|f| f.is_cancelled()));
+    let cancelled = app.workspace.as_ref().is_some_and(|ws| {
+        ViewSurface::new(std::sync::Arc::clone(ws))
+            .dictate()
+            .snapshot
+            .failure
+            .is_some_and(|f| f.is_cancelled())
+    });
     if cancelled {
         app.should_quit = true;
     }

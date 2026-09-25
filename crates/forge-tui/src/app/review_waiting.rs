@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 
 use forge_primitives::review::ReviewThread;
+use forge_sessions::surface::ViewSurface;
 use forge_workspace::SessionSlot;
 
 use crate::app::App;
@@ -178,8 +179,9 @@ pub fn drain_events(app: &mut App) {
         });
         if let Some((branch, project)) = parked
             && let Some(ws) = workspace.as_ref()
-            && ws
-                .load_review_threads(&project, &branch)
+            && ViewSurface::new(std::sync::Arc::clone(ws))
+                .reviews(&project, &branch)
+                .threads
                 .is_ok_and(|threads| !threads.iter().any(ReviewThread::awaits_reviewer))
             && let Some(session) = app.sessions.get_mut(&event.key)
         {

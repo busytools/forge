@@ -3,6 +3,8 @@
 //! refreshed from the workspace, pruned on the ~1s tick and scoped to
 //! the active session's own project and team role.
 
+use forge_sessions::surface::ViewSurface;
+
 impl super::App {
     /// Active session's SCHEDULES entries (Inspector SCHEDULES
     /// section). Pruned by the ~1s timer tick.
@@ -111,9 +113,10 @@ impl super::App {
             self.gotify_connected = false;
             return;
         };
-        self.gotify_connected = ws.gotify_connected();
-        self.gotify_subs =
-            project.map(|name| ws.gotify_subscriptions_for_project(&name)).unwrap_or_default();
+        let gotify =
+            ViewSurface::new(std::sync::Arc::clone(ws)).connectors(project.as_deref()).gotify;
+        self.gotify_connected = gotify.connected;
+        self.gotify_subs = gotify.subscriptions;
         self.gotify_subs.retain(|s| s.team_role == own_role);
     }
 
@@ -130,10 +133,11 @@ impl super::App {
             self.slack_load_failed = false;
             return;
         };
-        self.slack_connected = ws.slack_connected_workspaces();
-        self.slack_load_failed = ws.slack_subscription_load_failed();
-        self.slack_subs =
-            project.map(|name| ws.slack_subscriptions_for_project(&name)).unwrap_or_default();
+        let slack =
+            ViewSurface::new(std::sync::Arc::clone(ws)).connectors(project.as_deref()).slack;
+        self.slack_connected = slack.connected_workspaces;
+        self.slack_load_failed = slack.load_failed;
+        self.slack_subs = slack.subscriptions;
         self.slack_subs.retain(|s| s.team_role == own_role);
     }
 

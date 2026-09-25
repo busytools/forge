@@ -11,9 +11,11 @@
 //! horizontally regardless of terminal width. No tier-specific
 //! variants.
 
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use forge_primitives::SessionLifecycleState;
+use forge_sessions::surface::ViewSurface;
 use forge_workspace::{ProjectView, SessionChipInfo, SessionChipState};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -105,7 +107,7 @@ fn effective_click_intent(
     let Some(workspace) = app.workspace.as_ref() else {
         return click_intent(lifecycle);
     };
-    if !workspace.all_accounts_loaded() {
+    if !ViewSurface::new(Arc::clone(workspace)).accounts().all_loaded {
         return ClickIntent::Block;
     }
     // Resolve the project through the selection walk. The launchpad
@@ -358,7 +360,9 @@ pub(super) fn wordmark_contains(needle: &str) -> bool {
 /// that happens.
 pub(super) fn account_row_visible(app: &App) -> bool {
     app.workspace.as_ref().is_some_and(|ws| {
-        ws.account_loading_snapshot()
+        ViewSurface::new(Arc::clone(ws))
+            .accounts()
+            .loading
             .iter()
             .any(|row| row.state != forge_workspace::LoadingState::Ready)
     })
@@ -416,7 +420,8 @@ fn render_identity_block(frame: &mut Frame, area: Rect, app: &App, y: u16) {
         && account_row_visible(app)
     {
         lines.push(Line::default());
-        lines.push(centered_account_status_line(&workspace.account_loading_snapshot(), area.width));
+        let accounts = ViewSurface::new(Arc::clone(workspace)).accounts();
+        lines.push(centered_account_status_line(&accounts.loading, area.width));
     }
     let block_area =
         Rect { x: area.x, y, width: area.width, height: u16::try_from(lines.len()).unwrap_or(0) };
@@ -549,7 +554,7 @@ fn build_picker_content(
         // `effective_click_intent`'s Block downgrade; the hint names
         // the one to fix.
         if let Some(workspace) = app.workspace.as_ref()
-            && workspace.all_accounts_loaded()
+            && ViewSurface::new(Arc::clone(workspace)).accounts().all_loaded
             && project_view.as_ref().is_some_and(|p| !workspace.project_would_bind(&p.key))
         {
             let reason = match project_view.as_ref() {
@@ -991,11 +996,9 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {
 /// as a permanent failure, and a still-settling pool reads as a
 /// one-off wait.
 fn footer_enter_label(app: &App, selected_row: Option<&PickerRow>) -> String {
-    let gateway_error = app.workspace.as_ref().and_then(|w| w.gateway_bind_error());
-    let loading = app
-        .workspace
-        .as_ref()
-        .is_some_and(|w| w.gateway_bind_error().is_none() && !w.all_accounts_loaded());
+    let accounts = app.workspace.as_ref().map(|w| ViewSurface::new(Arc::clone(w)).accounts());
+    let gateway_error = accounts.as_ref().and_then(|a| a.gateway.bind_error.clone());
+    let loading = accounts.is_some_and(|a| a.gateway.bind_error.is_none() && !a.all_loaded);
     if let Some(error) = gateway_error {
         format!("enter  ⛔ gateway failed: {error}")
     } else if loading {
