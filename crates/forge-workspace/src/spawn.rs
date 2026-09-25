@@ -57,17 +57,21 @@ fn cli_task_tools_arg() -> String {
 /// session goes through and from the respawn stamp, so no launch can be
 /// assembled without it.
 pub(crate) fn apply_disallowed_task_tools(settings: &mut SessionLaunchSettings) {
-    let Some((_, Some(existing))) =
+    let Some((_, value)) =
         settings.extra_args.iter_mut().find(|(flag, _)| flag == "disallowedTools")
     else {
         settings.extra_args.push(("disallowedTools".to_owned(), Some(cli_task_tools_arg())));
         return;
     };
+    let existing = value.get_or_insert_with(String::new);
     for tool in DISALLOWED_CLI_TASK_TOOLS {
-        if !existing.split(',').any(|name| name == tool) {
-            existing.push(',');
-            existing.push_str(tool);
+        if existing.split(',').any(|name| name == tool) {
+            continue;
         }
+        if !existing.is_empty() {
+            existing.push(',');
+        }
+        existing.push_str(tool);
     }
 }
 
@@ -5413,7 +5417,9 @@ provider = "anthropic"
         let mut settings = SessionLaunchSettings::default();
         apply_disallowed_task_tools(&mut settings);
         let list = disallowed_tools_value(&settings.extra_args);
-        for tool in DISALLOWED_CLI_TASK_TOOLS {
+        // The names are written out rather than read off the constant that
+        // produces them, so dropping one from the constant fails here.
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
             assert!(list.contains(tool), "{tool} must be denied to a lead; got {list:?}");
         }
         assert!(
@@ -5441,10 +5447,35 @@ provider = "anthropic"
             settings.extra_args.iter().filter(|(flag, _)| flag == "disallowedTools").count();
         assert_eq!(flags, 1, "one flag, not two; got {:?}", settings.extra_args);
         let list = disallowed_tools_value(&settings.extra_args);
-        for tool in DISALLOWED_CLI_TASK_TOOLS {
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
             assert_eq!(list.matches(tool).count(), 1, "{tool} appears once; got {list:?}");
         }
         assert!(list.contains("EnterWorktree"), "the worker's own denial survives; got {list:?}");
+    }
+
+    /// A `--disallowedTools` entry with no value is still an entry: the
+    /// names go into it rather than a second flag being pushed beside it.
+    #[test]
+    fn the_denial_fills_a_valueless_entry_rather_than_adding_a_second_flag() {
+        let mut settings = SessionLaunchSettings {
+            extra_args: vec![("disallowedTools".to_owned(), None)],
+            ..SessionLaunchSettings::default()
+        };
+        apply_disallowed_task_tools(&mut settings);
+        assert_eq!(
+            settings.extra_args.len(),
+            1,
+            "the entry that is there is filled, not duplicated: {:?}",
+            settings.extra_args,
+        );
+        let list = disallowed_tools_value(&settings.extra_args);
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(list.contains(tool), "{tool} must be denied; got {list:?}");
+        }
+        assert!(
+            !list.starts_with(','),
+            "a filled entry carries no leading separator; got {list:?}"
+        );
     }
 
     /// Workers are pinned to their worktree (when they have one) and
