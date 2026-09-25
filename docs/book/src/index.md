@@ -1,7 +1,7 @@
 # What forge is
 
 forge is a Rust workspace that drives Anthropic's `claude` CLI. It is
-two things sharing a repository:
+three things sharing a repository:
 
 - **A multi-session terminal UI.** One `forge` process holds many
   `claude` sessions across several projects and several accounts, with
@@ -12,6 +12,10 @@ two things sharing a repository:
 - **An SDK for the `claude` CLI.** `forge-sdk` spawns the binary and
   speaks its stream-json protocol over stdio: the codec, the transport,
   control-request dispatch, and an in-process MCP host.
+- **A web view of the same core.** `forge-web` serves the sessions as
+  HTML over HTTP, from the process the TUI runs in and on `127.0.0.1`
+  by default, so reaching it from another machine is a `[web] bind` line
+  rather than a second forge. It serves a wiring-proof page today.
 
 forge never calls the Anthropic API itself. It spawns `claude` and
 talks to it, so the CLI stays the thing that runs the agent loop.
