@@ -9,7 +9,11 @@ use crate::ui::theme;
 use crate::ui::tool_call;
 use crate::ui::wrap;
 
-pub mod grouping;
+/// The grouping policy moved to `forge-sessions`. Re-exported as a module so
+/// every `grouping::…` path in the view keeps resolving.
+pub use forge_sessions::grouping;
+pub use forge_sessions::grouping::renders_as_lifecycle_block;
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
@@ -270,15 +274,32 @@ impl<'a> MessageRenderContext<'a> {
         }
     }
 
-    /// The view-side cache for a block with no identity, keyed by its own
-    /// content. A context with no store builds into a local that cannot
-    /// outlive the call: the caller still renders, it just cannot reuse.
-    fn text_block_cache(&self, signature: u64) -> crate::app::SlotCache<'_> {
-        block_cache_for(self.render_caches, signature, self.options.tools_collapsed)
+    /// The view-side cache for a text block, keyed by the block's id. A
+    /// context with no store builds into a local that cannot outlive the
+    /// call: the caller still renders, it just cannot reuse.
+    fn text_block_cache(
+        &self,
+        id: forge_sessions::model::BlockId,
+        signature: u64,
+        preserve_newlines: bool,
+        gutter: u16,
+    ) -> crate::app::SlotCache<'_> {
+        block_cache_for(
+            self.render_caches,
+            id,
+            signature,
+            self.options.tools_collapsed,
+            preserve_newlines,
+            gutter,
+        )
     }
 
     /// The block's incremental markdown, from the store by the block's id.
-    fn text_block_markdown(&self, id: u64, text: &str) -> crate::app::SlotMarkdown<'_> {
+    fn text_block_markdown(
+        &self,
+        id: forge_sessions::model::BlockId,
+        text: &str,
+    ) -> crate::app::SlotMarkdown<'_> {
         block_markdown_for(self.render_caches, id, text)
     }
 
@@ -906,8 +927,14 @@ fn append_user_block(
                 return;
             }
             let trailing_gap = block.trailing_blank_lines();
-            let mut cache =
-                block_cache_for(render_caches, block.content_signature(), tools_collapsed);
+            let mut cache = block_cache_for(
+                render_caches,
+                block.id,
+                block.content_signature(),
+                tools_collapsed,
+                true,
+                USER_GUTTER,
+            );
             let mut markdown = block_markdown_for(render_caches, block.id, &block.text);
             let rendered = text_block_layout(&mut cache, &mut markdown, width, true, USER_GUTTER);
             layout.push_gutter_lines(
@@ -1126,7 +1153,7 @@ fn append_assistant_block(
     match block {
         MessageBlock::Text(block) => {
             let signature = block.content_signature();
-            let mut cache = render_context.text_block_cache(signature);
+            let mut cache = render_context.text_block_cache(block.id, signature, false, 0);
             let mut markdown = render_context.text_block_markdown(block.id, &block.text);
             append_assistant_text_block(
                 block,
@@ -1139,7 +1166,7 @@ fn append_assistant_block(
         }
         MessageBlock::Notice(notice) => {
             let signature = notice.content_signature();
-            let mut cache = render_context.text_block_cache(signature);
+            let mut cache = render_context.text_block_cache(notice.text.id, signature, false, 0);
             let mut markdown =
                 render_context.text_block_markdown(notice.text.id, &notice.text.text);
             append_assistant_notice_block(
@@ -1409,22 +1436,6 @@ fn render_question_answered_card_with_metas(
     Some(lines)
 }
 
-/// True when `render_lifecycle_one_liner` would produce a block for
-/// this tool. Keyed on the same parse the renderer gates on, NOT on the
-/// tool name alone: a `Monitor` whose input does not parse falls
-/// through to the standard tool card and must behave like one -
-/// collapsible, clickable, carrying its own affordance.
-pub(crate) fn renders_as_lifecycle_block(tc: &crate::app::ToolCallInfo) -> bool {
-    // Name first, then the parse, and never build the lines: this runs
-    // from `pointer_shape_at` on every mouse-move and from the render
-    // and measure paths, so it must not allocate to answer a yes/no.
-    let Some(input) = tc.raw_input.as_ref() else {
-        return false;
-    };
-    tc.sdk_tool_name == "Monitor"
-        && forge_workspace::user_interaction::parse_monitor_input(input).is_some()
-}
-
 /// Cells a Monitor child row spends before its text: 5 of indent, which
 /// hangs the connector three columns right of the header glyph at
 /// column 2, then the 2-cell connector itself.
@@ -1626,8 +1637,14 @@ fn append_system_blocks(
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                let mut cache =
-                    block_cache_for(render_caches, block.content_signature(), tools_collapsed);
+                let mut cache = block_cache_for(
+                    render_caches,
+                    block.id,
+                    block.content_signature(),
+                    tools_collapsed,
+                    false,
+                    0,
+                );
                 let mut markdown = block_markdown_for(render_caches, block.id, &block.text);
                 let mut rendered = text_block_layout(&mut cache, &mut markdown, width, false, 0);
                 tint_lines(&mut rendered.lines, color);
@@ -1638,8 +1655,14 @@ fn append_system_blocks(
             }
             MessageBlock::Notice(notice) => {
                 let trailing_gap = notice.trailing_blank_lines();
-                let mut cache =
-                    block_cache_for(render_caches, notice.content_signature(), tools_collapsed);
+                let mut cache = block_cache_for(
+                    render_caches,
+                    notice.text.id,
+                    notice.content_signature(),
+                    tools_collapsed,
+                    false,
+                    0,
+                );
                 let mut markdown =
                     block_markdown_for(render_caches, notice.text.id, &notice.text.text);
                 let rendered =
@@ -1995,7 +2018,7 @@ fn get_or_build_message_render_cache<'a>(
     refresh_live_turn_elapsed(msg);
     let key = build_message_render_cache_key(msg, spinner, render_context);
     let mut cache = match render_context.render_caches {
-        Some(caches) => caches.message(crate::app::state::messages::message_content_signature(msg)),
+        Some(caches) => caches.message(msg.id),
         // No store: build into a local that cannot outlive this call. The
         // layout still has to be built, or the caller paints nothing.
         None => crate::app::MessageSlot::Uncached(MessageRenderCache::default()),
@@ -2192,16 +2215,21 @@ fn welcome_block_layout(
     RenderedBlockLayout { lines, height, wrapped_lines, copy_rows }
 }
 
-/// The view-side cache for a block with no identity, keyed by its content.
-/// A caller with no store builds into a local: it still renders, it just
-/// cannot reuse or store.
+/// The view-side cache for a text block, keyed by the block's id. A caller
+/// with no store builds into a local: it still renders, it just cannot
+/// reuse or store.
 fn block_cache_for(
     render_caches: Option<&crate::app::RenderCacheStore>,
+    id: forge_sessions::model::BlockId,
     signature: u64,
     tools_collapsed: bool,
+    preserve_newlines: bool,
+    gutter: u16,
 ) -> crate::app::SlotCache<'_> {
     match render_caches {
-        Some(caches) => caches.text_block(signature, tools_collapsed),
+        Some(caches) => {
+            caches.text_block(id, signature, tools_collapsed, preserve_newlines, gutter)
+        }
         None => crate::app::SlotCache::Uncached(crate::app::BlockCache::default()),
     }
 }
@@ -2210,7 +2238,7 @@ fn block_cache_for(
 /// extends the entry instead of starting a new one.
 fn block_markdown_for<'a>(
     render_caches: Option<&'a crate::app::RenderCacheStore>,
-    id: u64,
+    id: forge_sessions::model::BlockId,
     text: &str,
 ) -> crate::app::SlotMarkdown<'a> {
     match render_caches {

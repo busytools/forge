@@ -1207,6 +1207,7 @@ name = "forge-sessions"
 version = "1.0.86"
 dependencies = [
  "forge-primitives",
+ "forge-workspace",
  "serde",
  "serde_json",
 ]

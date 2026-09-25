@@ -24,9 +24,11 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::agent::model::ToolCallStatus;
 use crate::ui::chat_tree;
-use crate::ui::message::grouping::{KindSummary, READ_GLYPH};
 use crate::ui::theme;
+use crate::ui::theme::kind_row_glyph;
 use crate::ui::tool_call::status_icon;
+use forge_sessions::family::ToolFamily;
+use forge_sessions::grouping::{KindRow, KindSummary};
 
 /// Trailing affordance on the parent count row.
 const EXPAND_HINT: &str = "   ctrl+x to expand";
@@ -107,7 +109,7 @@ pub fn render_group_summary_line(
 
         // Read relativizes each path against the project root; every
         // other kind takes its target verbatim.
-        let is_read = line.glyph == READ_GLYPH;
+        let is_read = line.row == KindRow::Family(ToolFamily::Read);
         let kind_style = if line.warn { bold.fg(theme::STATUS_WARNING) } else { bold };
         let targets: Vec<String> = if is_read {
             line.targets.iter().map(|t| relativize(t, project_root)).collect()
@@ -122,7 +124,7 @@ pub fn render_group_summary_line(
             let mut row = vec![
                 Span::raw("  ".to_owned()),
                 Span::styled(connector.to_owned(), mark),
-                Span::styled(format!("{} ", line.glyph), kind_style),
+                Span::styled(format!("{} ", kind_row_glyph(line.row)), kind_style),
             ];
             if mult.is_empty() {
                 // Bare label carries no trailing pad/space.
@@ -138,7 +140,7 @@ pub fn render_group_summary_line(
         lines.push(Line::from(vec![
             Span::raw("  ".to_owned()),
             Span::styled(connector.to_owned(), mark),
-            Span::styled(format!("{} ", line.glyph), kind_style),
+            Span::styled(format!("{} ", kind_row_glyph(line.row)), kind_style),
             Span::styled(line.label.clone(), kind_style),
         ]));
         // Children nest one level deeper: base(2) + spine(1) + gap(2) +
@@ -258,12 +260,12 @@ pub(crate) fn clip_to_width(s: &str, budget: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::message::grouping::KindLine;
+    use forge_sessions::grouping::KindLine;
 
-    fn kl(glyph: &'static str, label: &str, count: usize, targets: &[&str]) -> KindLine {
+    fn kl(row: KindRow, label: &str, count: usize, targets: &[&str]) -> KindLine {
         KindLine {
             warn: false,
-            glyph,
+            row,
             label: label.to_owned(),
             count,
             targets: targets.iter().map(|s| (*s).to_owned()).collect(),
@@ -297,7 +299,8 @@ mod tests {
     /// `+1` overflow, no `=` / box anywhere.
     #[test]
     fn single_kind_renders_one_child_tree() {
-        let s = summary(vec![kl("\u{2315}", "search", 3, &["FooBar", "Baz"])]);
+        let s =
+            summary(vec![kl(KindRow::Family(ToolFamily::Search), "search", 3, &["FooBar", "Baz"])]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert_eq!(lines.len(), 4, "parent + bare search row + 2 children; got {text:?}");
@@ -321,7 +324,12 @@ mod tests {
     /// as the sole (`└─`) kind and one child per file.
     #[test]
     fn pure_read_run_nests() {
-        let s = summary(vec![kl("\u{2b1a}", "read", 3, &["a.rs", "b.rs", "c.rs"])]);
+        let s = summary(vec![kl(
+            KindRow::Family(ToolFamily::Read),
+            "read",
+            3,
+            &["a.rs", "b.rs", "c.rs"],
+        )]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert!(!text.iter().any(|t| t.contains("= ")), "pure-read must NOT use `=`: {text:?}");
@@ -335,7 +343,7 @@ mod tests {
     /// other kind, so the file column never depends on the call count.
     #[test]
     fn single_read_one_file_nests() {
-        let s = summary(vec![kl("\u{2b1a}", "read", 1, &["src/main.rs"])]);
+        let s = summary(vec![kl(KindRow::Family(ToolFamily::Read), "read", 1, &["src/main.rs"])]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert_eq!(lines.len(), 3, "parent + bare read row + one child; got {text:?}");
@@ -351,9 +359,9 @@ mod tests {
     #[test]
     fn multi_kind_renders_tree() {
         let s = summary(vec![
-            kl("\u{2b1a}", "read", 2, &["a.rs", "b.rs"]),
-            kl("\u{25b6}", "bash", 1, &["cargo check"]),
-            kl("\u{2295}", "web", 1, &["docs.rs/tokio"]),
+            kl(KindRow::Family(ToolFamily::Read), "read", 2, &["a.rs", "b.rs"]),
+            kl(KindRow::Family(ToolFamily::Bash), "bash", 1, &["cargo check"]),
+            kl(KindRow::Family(ToolFamily::Web), "web", 1, &["docs.rs/tokio"]),
         ]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
@@ -386,8 +394,8 @@ mod tests {
     #[test]
     fn read_last_kind_children_have_blank_spine() {
         let s = summary(vec![
-            kl("\u{25b6}", "bash", 1, &["cargo check"]),
-            kl("\u{2b1a}", "read", 2, &["a.rs", "b.rs"]),
+            kl(KindRow::Family(ToolFamily::Bash), "bash", 1, &["cargo check"]),
+            kl(KindRow::Family(ToolFamily::Read), "read", 2, &["a.rs", "b.rs"]),
         ]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
@@ -409,12 +417,12 @@ mod tests {
     fn read_paths_relativize_against_project_root() {
         let s = summary(vec![
             kl(
-                "\u{2b1a}",
+                KindRow::Family(ToolFamily::Read),
                 "read",
                 2,
                 &["/repo/crates/forge-tui/src/ui/message.rs", "/repo/docs/book/src/ui/chat.md"],
             ),
-            kl("\u{25b6}", "bash", 1, &["cargo check"]),
+            kl(KindRow::Family(ToolFamily::Bash), "bash", 1, &["cargo check"]),
         ]);
         let lines = render_rooted(&s, ToolCallStatus::Completed, 90, "/repo");
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
@@ -449,9 +457,14 @@ mod tests {
     #[test]
     fn tree_connectors_and_spine_align() {
         let s = summary(vec![
-            kl("\u{2b1a}", "read", 1, &["a.rs"]),
-            kl("\u{25b6}", "bash", 3, &["cargo check", "cargo build", "cargo test"]),
-            kl("\u{2295}", "web", 1, &["docs.rs/tokio"]),
+            kl(KindRow::Family(ToolFamily::Read), "read", 1, &["a.rs"]),
+            kl(
+                KindRow::Family(ToolFamily::Bash),
+                "bash",
+                3,
+                &["cargo check", "cargo build", "cargo test"],
+            ),
+            kl(KindRow::Family(ToolFamily::Web), "web", 1, &["docs.rs/tokio"]),
         ]);
         let lines = render(&s, ToolCallStatus::Completed, 48);
         let col = |glyph: char, text: &str| text.chars().position(|c| c == glyph);
@@ -479,8 +492,8 @@ mod tests {
     #[test]
     fn mcp_lines_render_server_glyph_and_name() {
         let s = summary(vec![
-            kl("\u{2b1a}", "read", 1, &["x.rs"]),
-            kl("\u{25c8}", "context7", 2, &["query-docs", "resolve-library-id"]),
+            kl(KindRow::Family(ToolFamily::Read), "read", 1, &["x.rs"]),
+            kl(KindRow::Mcp, "context7", 2, &["query-docs", "resolve-library-id"]),
         ]);
         let lines = render(&s, ToolCallStatus::Completed, 90);
         let mcp_parent = lines
@@ -503,7 +516,7 @@ mod tests {
     fn single_kind_bash_nests_clipped() {
         let long = "run the full workspace gate including fmt, the unicode-punct lint, \
                     clippy pedantic, nextest and the doc checks";
-        let s = summary(vec![kl("\u{25b6}", "bash", 1, &[long])]);
+        let s = summary(vec![kl(KindRow::Family(ToolFamily::Bash), "bash", 1, &[long])]);
         let lines = render(&s, ToolCallStatus::Completed, 56);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert_eq!(lines.len(), 3, "parent + bare bash row + one child, no wrap: {text:?}");
@@ -524,9 +537,9 @@ mod tests {
     #[test]
     fn read_path_middle_ellipsis_on_narrow_pane() {
         let s = summary(vec![
-            kl("\u{25b6}", "bash", 1, &["cargo check"]),
+            kl(KindRow::Family(ToolFamily::Bash), "bash", 1, &["cargo check"]),
             kl(
-                "\u{2b1a}",
+                KindRow::Family(ToolFamily::Read),
                 "read",
                 2,
                 &[
@@ -600,15 +613,25 @@ mod tests {
     #[test]
     fn narrow_width_keeps_every_kind_and_fits_width() {
         let s = summary(vec![
-            kl("\u{2b1a}", "read", 8, &["very_long_filename_one.rs", "very_long_filename_two.rs"]),
-            kl("\u{2315}", "search", 3, &["some_extremely_long_search_pattern_string_here"]),
             kl(
-                "\u{25b6}",
+                KindRow::Family(ToolFamily::Read),
+                "read",
+                8,
+                &["very_long_filename_one.rs", "very_long_filename_two.rs"],
+            ),
+            kl(
+                KindRow::Family(ToolFamily::Search),
+                "search",
+                3,
+                &["some_extremely_long_search_pattern_string_here"],
+            ),
+            kl(
+                KindRow::Family(ToolFamily::Bash),
                 "bash",
                 2,
                 &["cargo build --release --all-features", "cargo nextest run"],
             ),
-            kl("\u{2295}", "web", 1, &["docs.rs/some/really/long/path/here"]),
+            kl(KindRow::Family(ToolFamily::Web), "web", 1, &["docs.rs/some/really/long/path/here"]),
         ]);
         let lines = render(&s, ToolCallStatus::Completed, 40);
         for line in &lines {
@@ -638,7 +661,7 @@ mod tests {
         let long =
             "cargo build --release --all-features --workspace with a long trailing tail here";
         let s = summary(vec![kl(
-            "\u{25b6}",
+            KindRow::Family(ToolFamily::Bash),
             "bash",
             4,
             &[long, "npm run test-suite", "git status --short", "grep -rn needle"],
@@ -670,10 +693,15 @@ mod tests {
     #[test]
     fn no_line_has_trailing_whitespace_pad() {
         let s = summary(vec![
-            kl("\u{2b1a}", "read", 2, &["a.rs", "b.rs"]),
-            kl("\u{25b6}", "bash", 3, &["cargo check", "cargo build", "cargo test"]),
-            kl("\u{2699}", "lsp", 1, &[]),
-            kl("\u{2295}", "web", 1, &["docs.rs/tokio"]),
+            kl(KindRow::Family(ToolFamily::Read), "read", 2, &["a.rs", "b.rs"]),
+            kl(
+                KindRow::Family(ToolFamily::Bash),
+                "bash",
+                3,
+                &["cargo check", "cargo build", "cargo test"],
+            ),
+            kl(KindRow::Family(ToolFamily::Lsp), "lsp", 1, &[]),
+            kl(KindRow::Family(ToolFamily::Web), "web", 1, &["docs.rs/tokio"]),
         ]);
         for status in [ToolCallStatus::Completed, ToolCallStatus::InProgress] {
             for line in render(&s, status, 80) {
@@ -681,7 +709,7 @@ mod tests {
                 assert!(!text.ends_with(' '), "trailing pad on {text:?}");
             }
         }
-        let single = summary(vec![kl("\u{2b1a}", "read", 1, &["a.rs"])]);
+        let single = summary(vec![kl(KindRow::Family(ToolFamily::Read), "read", 1, &["a.rs"])]);
         let text = line_text(&render(&single, ToolCallStatus::Completed, 80)[0]);
         assert!(!text.ends_with(' '), "single-kind trailing pad on {text:?}");
     }
@@ -689,8 +717,8 @@ mod tests {
     #[test]
     fn header_status_icon_tracks_aggregate_status() {
         let s = summary(vec![
-            kl("\u{2b1a}", "read", 1, &["a.rs"]),
-            kl("\u{25b6}", "bash", 1, &["cargo check"]),
+            kl(KindRow::Family(ToolFamily::Read), "read", 1, &["a.rs"]),
+            kl(KindRow::Family(ToolFamily::Bash), "bash", 1, &["cargo check"]),
         ]);
         let done = line_text(&render(&s, ToolCallStatus::Completed, 80)[0]);
         assert!(done.contains(theme::ICON_COMPLETED), "completed icon: {done:?}");
@@ -709,12 +737,12 @@ mod tests {
     /// lone target-less call shows just glyph + label.
     #[test]
     fn target_less_kind_shows_multiplier_or_bare_label() {
-        let multi = summary(vec![kl("\u{2699}", "lsp", 3, &[])]);
+        let multi = summary(vec![kl(KindRow::Family(ToolFamily::Lsp), "lsp", 3, &[])]);
         let lines = render(&multi, ToolCallStatus::Completed, 80);
         let child = line_text(lines.last().unwrap());
         assert!(child.contains("\u{d7}3"), "expected ×3 on the child row: {child:?}");
 
-        let one = summary(vec![kl("\u{25cb}", "tool", 1, &[])]);
+        let one = summary(vec![kl(KindRow::Family(ToolFamily::Tool), "tool", 1, &[])]);
         let lines = render(&one, ToolCallStatus::Completed, 80);
         let child = line_text(lines.last().unwrap());
         assert!(child.contains("tool"), "bare label expected: {child:?}");
@@ -735,10 +763,10 @@ mod tests {
             let idx = row.find('\u{d7}').expect("the multiplier");
             cells(&row[..idx])
         };
-        let alone = summary(vec![kl("\u{2699}", "lsp", 3, &[])]);
+        let alone = summary(vec![kl(KindRow::Family(ToolFamily::Lsp), "lsp", 3, &[])]);
         let mixed = summary(vec![
-            kl("\u{25c8}", "context7", 1, &["query-docs"]),
-            kl("\u{2699}", "lsp", 3, &[]),
+            kl(KindRow::Mcp, "context7", 1, &["query-docs"]),
+            kl(KindRow::Family(ToolFamily::Lsp), "lsp", 3, &[]),
         ]);
         assert_eq!(
             column_of_multiplier(&mixed),
@@ -760,11 +788,14 @@ mod tests {
                 .map(|t| cells(&t[..t.find('\u{d7}').expect("the multiplier")]))
                 .collect()
         };
-        let paired = summary(vec![kl("\u{2699}", "lsp", 3, &[]), kl("\u{25cb}", "tool", 2, &[])]);
+        let paired = summary(vec![
+            kl(KindRow::Family(ToolFamily::Lsp), "lsp", 3, &[]),
+            kl(KindRow::Family(ToolFamily::Tool), "tool", 2, &[]),
+        ]);
         let with_silent = summary(vec![
-            kl("\u{2699}", "lsp", 3, &[]),
-            kl("\u{2316}", "toolsearch", 1, &[]),
-            kl("\u{25cb}", "tool", 2, &[]),
+            kl(KindRow::Family(ToolFamily::Lsp), "lsp", 3, &[]),
+            kl(KindRow::Family(ToolFamily::ToolSearch), "toolsearch", 1, &[]),
+            kl(KindRow::Family(ToolFamily::Tool), "tool", 2, &[]),
         ]);
         let paired_columns = columns(&paired);
         assert_eq!(paired_columns.len(), 2, "both kinds carry a ×N");
@@ -782,7 +813,7 @@ mod tests {
     #[test]
     fn lone_web_nests_clipped() {
         let long = "docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html#method.block_on";
-        let s = summary(vec![kl("\u{2295}", "web", 1, &[long])]);
+        let s = summary(vec![kl(KindRow::Family(ToolFamily::Web), "web", 1, &[long])]);
         let lines = render(&s, ToolCallStatus::Completed, 44);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert_eq!(lines.len(), 3, "parent + bare web row + one child: {text:?}");
@@ -800,7 +831,12 @@ mod tests {
     /// produced is gone, with no click needed to see which skill ran.
     #[test]
     fn lone_skill_nests_the_invoked_skill() {
-        let s = summary(vec![kl("\u{2726}", "skill", 1, &["pr-review-loop 661"])]);
+        let s = summary(vec![kl(
+            KindRow::Family(ToolFamily::Skill),
+            "skill",
+            1,
+            &["pr-review-loop 661"],
+        )]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert_eq!(lines.len(), 3, "parent + bare skill row + one child: {text:?}");
@@ -813,7 +849,7 @@ mod tests {
     /// under the server row, like a server with several calls.
     #[test]
     fn lone_mcp_nests() {
-        let s = summary(vec![kl("\u{25c8}", "context7", 1, &["query-docs"])]);
+        let s = summary(vec![kl(KindRow::Mcp, "context7", 1, &["query-docs"])]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert_eq!(lines.len(), 3, "parent + bare server row + one child: {text:?}");
@@ -828,8 +864,8 @@ mod tests {
     #[test]
     fn multi_web_and_mcp_nest_one_child_per_instance() {
         let s = summary(vec![
-            kl("\u{2295}", "web", 2, &["docs.rs/tokio", "example.com/foo"]),
-            kl("\u{25c8}", "context7", 3, &["query-docs", "resolve-library-id", "get-docs"]),
+            kl(KindRow::Family(ToolFamily::Web), "web", 2, &["docs.rs/tokio", "example.com/foo"]),
+            kl(KindRow::Mcp, "context7", 3, &["query-docs", "resolve-library-id", "get-docs"]),
         ]);
         let lines = render(&s, ToolCallStatus::Completed, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();

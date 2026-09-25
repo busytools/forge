@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "What a view needs and nothing about how it renders: the inbound peer envelope parsing today."
+description = "What a view needs and nothing about how it renders."
 publish = false
 
 [lints]
@@ -14,5 +14,6 @@ workspace = true
 
 [dependencies]
 forge-primitives = { workspace = true }
+forge-workspace = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

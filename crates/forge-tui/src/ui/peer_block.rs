@@ -27,21 +27,12 @@
 //!
 //! Visual reference: `docs/book/src/ui/agents.md`.
 
-use crate::app::ToolCallInfo;
 use crate::ui::chat_tree;
-use crate::ui::theme;
+use crate::ui::theme::{self, INBOUND_GLYPH, OUTBOUND_GLYPH};
 use forge_sessions::envelope::{PeerInboundKind, is_slack_id, tidy_mrkdwn};
+pub(crate) use forge_sessions::peer_outbound::{PeerOutboundKind, detect_outbound};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-
-/// One outbound agent block parsed from a `mcp__forge__agents__ask` or
-/// `mcp__forge__agents__tell` tool_use card. Both render with the same
-/// `▶ Verb name` shape; `target` is the addressed seat.
-#[derive(Debug)]
-pub(crate) enum PeerOutboundKind {
-    Ask { target: String, body: String },
-    Tell { target: String, body: String },
-}
 
 /// Modifier suffix surfaced inline after the `Verb name` header when
 /// the envelope is a notice variant. Renders as ` - ⚠ <label>` in
@@ -56,71 +47,6 @@ impl NoticeModifier {
         match self {
             Self::Undeliverable => "undeliverable",
         }
-    }
-}
-
-/// Detect an agent outbound tool_use card. Returns `None` for every
-/// other tool - the chat renderer falls through to the default
-/// tool-card rendering - including `agents__spawn`, `agents__despawn`,
-/// `agents__update`, `agents__capacity` and `agents__list`: those are
-/// lifecycle and roster calls that render as standard tool cards
-/// rather than as agent comms.
-pub(crate) fn detect_outbound(tc: &ToolCallInfo) -> Option<PeerOutboundKind> {
-    let raw = tc.raw_input.as_ref()?;
-    match tc.sdk_tool_name.as_str() {
-        "mcp__forge__agents__ask" => {
-            let target = address(raw)?;
-            let body = raw.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Ask { target, body })
-        }
-        "mcp__forge__agents__tell" => {
-            let target = address(raw)?;
-            let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Tell { target, body })
-        }
-        // The four arms below read transcripts, not calls. A session
-        // recorded before the agents family replaced the two it used to
-        // have still holds these cards, and resuming feeds that history
-        // through this same walker - so matching them keeps those rows
-        // rendering as agent blocks instead of degrading to generic tool
-        // cards. Nothing can call them; they are registered nowhere.
-        // replay-only: peers__ask_agent
-        "mcp__forge__peers__ask_agent" => {
-            let target = raw.get("target")?.as_str()?.to_owned();
-            let body = raw.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Ask { target, body })
-        }
-        // replay-only: workers__ask
-        "mcp__forge__workers__ask" => {
-            let target = raw.get("label")?.as_str()?.to_owned();
-            let body = raw.get("question").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Ask { target, body })
-        }
-        // replay-only: peers__tell_agent
-        "mcp__forge__peers__tell_agent" => {
-            let target = raw.get("target")?.as_str()?.to_owned();
-            let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Tell { target, body })
-        }
-        // replay-only: workers__tell
-        "mcp__forge__workers__tell" => {
-            let target = raw.get("label")?.as_str()?.to_owned();
-            let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Tell { target, body })
-        }
-        _ => None,
-    }
-}
-
-/// The `${project}` / `${project}/${label}` a header shows for a
-/// call's target. `None` when the call carries no target at all, which
-/// is a reply: it goes to whoever asked, and the header says so by
-/// falling through to the default tool card.
-fn address(raw: &serde_json::Value) -> Option<String> {
-    let project = raw.get("project")?.as_str()?;
-    match raw.get("label").and_then(|v| v.as_str()) {
-        Some(label) if label != forge_workspace::LEAD_LABEL => Some(format!("{project}/{label}")),
-        _ => Some(project.to_owned()),
     }
 }
 
@@ -244,15 +170,6 @@ pub(crate) fn render_outbound_with_metas(
 /// standard tool-card glyphs (`✓` / `⚠` / `✗`) to read as "this is a
 /// peer / worker row, not a tool call".
 const ROW_GLYPH: &str = "\u{25B6}"; // ▶
-
-/// Directional kind-icon for outbound rows (Ask / Tell). U+2934
-/// CURVED ARROW POINTING RIGHTWARDS AND CURVING UPWARDS.
-const OUTBOUND_GLYPH: &str = "\u{2934}";
-
-/// Directional kind-icon for inbound rows (Question / Message /
-/// Reply / DeliveryFailure). U+2935 CURVED ARROW POINTING RIGHTWARDS
-/// AND CURVING DOWNWARDS.
-const INBOUND_GLYPH: &str = "\u{2935}";
 
 /// Kind-icon for an inbound Gotify notification. U+25C8 - the shared
 /// gotify glyph (also the Inspector GOTIFY status line), so gotify reads
@@ -481,60 +398,6 @@ fn render_slack_notification(
         push_tree_body_lines(&mut lines, copy_rows, &body);
     }
     lines
-}
-
-/// Tree row data for one envelope: the direction glyph, the kind label,
-/// and whether the kind is a failure (styled as a warning).
-///
-/// The KIND is the envelope kind, not the direction - a per-message group
-/// is always single-direction, so direction would never discriminate.
-pub(crate) fn inbound_kind_row(
-    kind: &PeerInboundKind,
-) -> Option<(&'static str, &'static str, bool)> {
-    let row = match kind {
-        PeerInboundKind::Message { .. } => (INBOUND_GLYPH, "message", false),
-        PeerInboundKind::Question { .. } => (INBOUND_GLYPH, "question", false),
-        PeerInboundKind::Reply { .. } => (INBOUND_GLYPH, "reply", false),
-        PeerInboundKind::DeliveryFailure { .. } => (INBOUND_GLYPH, "failed", true),
-        PeerInboundKind::WorkerSpawnFailed { .. } => (INBOUND_GLYPH, "spawn failed", true),
-        // External events, never agent traffic - excluded from grouping.
-        PeerInboundKind::Gotify { .. }
-        | PeerInboundKind::Cron { .. }
-        | PeerInboundKind::Slack { .. } => return None,
-    };
-    Some(row)
-}
-
-/// Sibling of [`inbound_kind_row`] for outbound calls.
-pub(crate) fn outbound_kind_row(kind: &PeerOutboundKind) -> (&'static str, &'static str) {
-    match kind {
-        PeerOutboundKind::Ask { .. } => (OUTBOUND_GLYPH, "ask"),
-        PeerOutboundKind::Tell { .. } => (OUTBOUND_GLYPH, "tell"),
-    }
-}
-
-/// The body text a leaf row previews, per envelope kind. The external-event
-/// arms - `Gotify`, `Cron` and `Slack` - are unreachable: `inbound_kind_row`
-/// returns `None` for all three, so none ever becomes a leaf.
-pub(crate) fn inbound_body(kind: &PeerInboundKind) -> &str {
-    match kind {
-        PeerInboundKind::Message { body, .. }
-        | PeerInboundKind::Question { body, .. }
-        | PeerInboundKind::Reply { body, .. }
-        | PeerInboundKind::Slack { body, .. } => body,
-        PeerInboundKind::DeliveryFailure { reason, .. }
-        | PeerInboundKind::WorkerSpawnFailed { reason, .. } => reason,
-        PeerInboundKind::Gotify { message, .. } => message,
-        PeerInboundKind::Cron { prompt } => prompt,
-    }
-}
-
-/// A leaf row's content: `<peer> · <first non-blank body line>`. The
-/// renderer clips this to a computed budget, so no fixed length here -
-/// end-ellipsis keeps the peer name, which is at the head.
-pub(crate) fn kind_row_target(peer: &str, body: &str) -> String {
-    let head = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-    if head.is_empty() { peer.to_owned() } else { format!("{peer} \u{b7} {head}") }
 }
 
 /// One-line collapsed summary shape: `  └─ <first line of body, truncated>  click or ctrl+x to expand`.
@@ -1103,143 +966,6 @@ mod tests {
             !s.iter().any(|l| l.contains("All volumes done")),
             "message hidden collapsed: {s:?}"
         );
-    }
-
-    fn make_tc(sdk_tool_name: &str, raw_input: serde_json::Value) -> crate::app::ToolCallInfo {
-        crate::app::ToolCallInfo {
-            id: "tc-1".into(),
-            title: "tc-1".into(),
-            sdk_tool_name: sdk_tool_name.into(),
-            raw_input: Some(raw_input),
-            raw_input_bytes: 0,
-            output_metadata: None,
-            task_metadata: None,
-            status: crate::agent::model::ToolCallStatus::InProgress,
-            content: vec![],
-            hidden: false,
-            terminal_output: None,
-            monitor_output_tail: Vec::default(),
-            monitor_status: None,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
-            last_measured_tools_collapsed: false,
-            collapsed_override: None,
-            last_measured_y_in_msg: 0,
-            answered_questions: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn detect_outbound_recognises_an_agents_ask_at_another_projects_agent() {
-        let tc = make_tc(
-            "mcp__forge__agents__ask",
-            serde_json::json!({ "org": "Gateway", "project": "gateway-backend", "prompt": "?" }),
-        );
-        match detect_outbound(&tc) {
-            Some(PeerOutboundKind::Ask { target, body }) => {
-                assert_eq!(target, "gateway-backend");
-                assert_eq!(body, "?");
-            }
-            other => panic!("expected Ask, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn detect_outbound_shows_a_worker_target_as_a_seat_in_its_project() {
-        let tc = make_tc(
-            "mcp__forge__agents__ask",
-            serde_json::json!({
-                "org": "Personal",
-                "project": "forge",
-                "label": "planner",
-                "prompt": "ready?",
-            }),
-        );
-        match detect_outbound(&tc) {
-            Some(PeerOutboundKind::Ask { target, body }) => {
-                assert_eq!(target, "forge/planner");
-                assert_eq!(body, "ready?");
-            }
-            other => panic!("expected Ask, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn detect_outbound_recognises_an_agents_tell() {
-        let tc = make_tc(
-            "mcp__forge__agents__tell",
-            serde_json::json!({
-                "org": "Personal",
-                "project": "forge",
-                "label": "implementer",
-                "message": "PR #199 ready",
-            }),
-        );
-        match detect_outbound(&tc) {
-            Some(PeerOutboundKind::Tell { target, body }) => {
-                assert_eq!(target, "forge/implementer");
-                assert_eq!(body, "PR #199 ready");
-            }
-            other => panic!("expected Tell, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn detect_outbound_ignores_the_lifecycle_verbs_and_a_reply() {
-        for name in ["mcp__forge__agents__spawn", "mcp__forge__agents__list"] {
-            let tc = make_tc(name, serde_json::json!({ "label": "planner", "charter": "..." }));
-            assert!(detect_outbound(&tc).is_none(), "{name} falls through to a standard tool card");
-        }
-
-        // A reply names no target: it is routed to whoever asked, so
-        // there is no seat for the header to show.
-        let reply = make_tc(
-            "mcp__forge__agents__tell",
-            serde_json::json!({ "message": "answer", "in_reply_to": "q-7f3a92e0" }),
-        );
-        assert!(detect_outbound(&reply).is_none(), "a reply falls through to a standard tool card");
-    }
-
-    #[test]
-    fn detect_outbound_still_reads_a_card_a_transcript_recorded_before_the_rename() {
-        // Resume feeds recorded history through this same walker, so a
-        // pre-rename card has to keep rendering as an agent block rather
-        // than degrade to a generic tool card.
-        let peer = make_tc(
-            // replay-only: peers__tell_agent
-            "mcp__forge__peers__tell_agent",
-            serde_json::json!({ "target": "gateway-backend", "message": "landed" }),
-        );
-        match detect_outbound(&peer) {
-            Some(PeerOutboundKind::Tell { target, body }) => {
-                assert_eq!(target, "gateway-backend");
-                assert_eq!(body, "landed");
-            }
-            other => panic!("a pre-rename tell card must still read as a Tell, got {other:?}"),
-        }
-
-        let worker = make_tc(
-            // replay-only: workers__ask
-            "mcp__forge__workers__ask",
-            serde_json::json!({ "label": "planner", "question": "ready?" }),
-        );
-        match detect_outbound(&worker) {
-            Some(PeerOutboundKind::Ask { target, body }) => {
-                assert_eq!(target, "planner");
-                assert_eq!(body, "ready?");
-            }
-            other => panic!("a pre-rename ask card must still read as an Ask, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn detect_outbound_ignores_other_tools() {
-        let tc = make_tc("Bash", serde_json::json!({ "command": "ls" }));
-        assert!(detect_outbound(&tc).is_none());
     }
 
     fn segment_of(
