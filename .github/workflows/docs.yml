@@ -71,6 +71,10 @@ jobs:
           mkdir -p target/site/rustdoc
           cp -R target/book/. target/site/
           cp -R target/doc/. target/site/rustdoc/
+          # An `--enable-index-page` that stops producing an index leaves
+          # this build green and publishes a book whose link to it 404s.
+          test -f target/site/index.html
+          test -f target/site/rustdoc/index.html
 
       # Reads the repo's Pages config, so it fails until Pages is
       # enabled by hand: Settings, Pages, Source = GitHub Actions.
