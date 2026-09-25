@@ -494,7 +494,7 @@ The L2 summary is the same tree the tool groups draw: a bare count parent (no ta
 <details>
 <summary>Run boundaries and levels</summary>
 
-A run never continues past its message: the assistant's reply is the next turn and renders as its own card; a plain user turn between two runs breaks them apart. Click a group's summary row to cycle L2 → L1 (per-message title rows, each with its direction glyph and target label) → L0 (the standard [peer-block render](./peers.md), each row re-collapsible); ctrl+x is the same global binary toggle.
+A run never continues past its message: the assistant's reply is the next turn and renders as its own card; a plain user turn between two runs breaks them apart. Click a group's summary row to cycle L2 → L1 (per-message title rows, each with its direction glyph and target label) → L0 (the standard [agent-block render](./agents.md), each row re-collapsible); ctrl+x is the same global binary toggle.
 
 </details>
 

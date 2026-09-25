@@ -26,9 +26,7 @@ use std::sync::{Arc, Weak};
 
 use forge_primitives::PeerInflightStats;
 
-use crate::mcp::peers::types::{
-    CorrelationId, InflightAsk, PeerLiveness, PeerStatus, WrappedPrompt,
-};
+use crate::mcp::peers::types::{PeerLiveness, PeerStatus, WrappedPrompt};
 use tracing::warn;
 
 use crate::SessionSlot;
@@ -74,7 +72,7 @@ pub enum ReplyDeliverError {
 
 impl ReplyDeliverError {
     /// LLM-facing sentence explaining why the reply could not land.
-    /// Shared by the peers + workers tell handlers.
+    /// The agents tell handler's reply path renders it.
     pub(crate) fn user_message(&self) -> String {
         match self {
             ReplyDeliverError::CallerSessionGone => {
@@ -132,33 +130,6 @@ pub trait WorkspaceFacade: Send + Sync {
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError>;
-
-    /// Deliver a Reply straight to the asker's session (identified
-    /// from the resolved `InflightAsk`), bypassing name/label
-    /// resolution. The asker may be a worker with no addressable
-    /// project name, so by-session delivery is load-bearing. Returns
-    /// `Err` only when the caller session closed.
-    fn deliver_reply_to_caller(
-        &self,
-        caller: &SessionSlot,
-        reply: &WrappedPrompt,
-    ) -> Result<(), ReplyDeliverError>;
-
-    /// Register an outgoing ask in the workspace's `inflight_asks`
-    /// map. Expired only when the target session is lost
-    /// (`expire_target_inflight`) or the reply lands.
-    fn register_inflight_ask(&self, ask: InflightAsk);
-
-    /// Look up an `InflightAsk` by correlation_id. Used by `tell_agent`
-    /// to classify replies (found → Reply, not-found → Message).
-    /// Read-only - does NOT remove the ask from the inflight map.
-    fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk>;
-
-    /// Remove an `InflightAsk` from the inflight map. Called by
-    /// `tell_agent` after a successful Reply dispatch. Returns the
-    /// removed ask so the caller can inspect status / caller / etc.,
-    /// or `None` when the entry was already gone.
-    fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk>;
 
     /// Apply a delta to `peer_stats[key]` and emit
     /// `SessionUpdate::PeerInflightStatsChanged` so the TUI reducer
@@ -289,40 +260,6 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         Ok(target_status)
     }
 
-    fn deliver_reply_to_caller(
-        &self,
-        caller: &SessionSlot,
-        reply: &WrappedPrompt,
-    ) -> Result<(), ReplyDeliverError> {
-        let Some(ws) = self.0.upgrade() else {
-            return Err(ReplyDeliverError::CallerSessionGone);
-        };
-        ws.deliver_reply_to_caller(caller, reply)
-    }
-
-    fn register_inflight_ask(&self, ask: InflightAsk) {
-        let Some(ws) = self.0.upgrade() else { return };
-        let id = ask.correlation_id.clone();
-        let prev = ws.inflight_asks.lock().insert(id.clone(), ask);
-        if prev.is_some() {
-            tracing::warn!(
-                target: "forge_workspace::mcp::peers::facade",
-                correlation_id = %id,
-                "register_inflight_ask: collision on correlation id - prior ask overwritten",
-            );
-        }
-    }
-
-    fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        let ws = self.0.upgrade()?;
-        ws.inflight_asks.lock().get(id).cloned()
-    }
-
-    fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        let ws = self.0.upgrade()?;
-        ws.inflight_asks.lock().remove(id)
-    }
-
     fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
         let Some(ws) = self.0.upgrade() else { return };
         let stats_snapshot = {
@@ -368,35 +305,22 @@ fn apply_delta(stats: &mut PeerInflightStats, delta: PeerStatsDelta) {
 /// call into a Vec so tests can assert "tool X dispatched
 /// register_inflight_ask with these args" without spinning up a real
 /// Workspace.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 #[derive(Default)]
 pub struct MockWorkspaceFacade {
     /// Pre-loaded peer status snapshot returned by `list_peers`.
     pub peers: parking_lot::Mutex<Vec<PeerStatus>>,
     /// Captured calls to `deliver_peer_prompt`.
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionSlot, String, WrappedPrompt)>>,
-    /// Captured calls to `deliver_reply_to_caller` (by-session reply
-    /// delivery) so tests can assert the reply's target + kind.
-    pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionSlot, WrappedPrompt)>>,
-    /// Captured calls to `register_inflight_ask`.
-    pub register_calls: parking_lot::Mutex<Vec<InflightAsk>>,
-    /// Captured calls to `complete_inflight_ask`.
-    pub complete_calls: parking_lot::Mutex<Vec<CorrelationId>>,
     /// Captured calls to `bump_inflight_stats`.
     pub bump_calls: parking_lot::Mutex<Vec<(SessionSlot, PeerStatsDelta)>>,
-    /// Pre-loaded `InflightAsk`s that `resolve_correlation` may return.
-    pub inflight: parking_lot::Mutex<std::collections::HashMap<CorrelationId, InflightAsk>>,
     /// If set, `deliver_peer_prompt` returns this error instead of
     /// running the normal lookup path. Lets tests force-test the
     /// failure surface.
     pub force_deliver_error: parking_lot::Mutex<Option<DeliverError>>,
-    /// If set, `deliver_reply_to_caller` returns this error instead of
-    /// recording + Ok, so tests can exercise the failed-reply path
-    /// (the ask must stay open and no counters decrement).
-    pub force_reply_error: parking_lot::Mutex<Option<ReplyDeliverError>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 impl MockWorkspaceFacade {
     /// New empty mock; tests pre-load the fields they care about.
     pub fn new() -> Self {
@@ -409,7 +333,7 @@ impl MockWorkspaceFacade {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 impl WorkspaceFacade for MockWorkspaceFacade {
     fn list_peers(&self) -> Vec<PeerStatus> {
         self.peers.lock().clone()
@@ -448,32 +372,6 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         Ok(target_status)
     }
 
-    fn deliver_reply_to_caller(
-        &self,
-        caller: &SessionSlot,
-        reply: &WrappedPrompt,
-    ) -> Result<(), ReplyDeliverError> {
-        if let Some(err) = self.force_reply_error.lock().clone() {
-            return Err(err);
-        }
-        self.reply_to_caller_calls.lock().push((caller.clone(), reply.clone()));
-        Ok(())
-    }
-
-    fn register_inflight_ask(&self, ask: InflightAsk) {
-        self.inflight.lock().insert(ask.correlation_id.clone(), ask.clone());
-        self.register_calls.lock().push(ask);
-    }
-
-    fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        self.inflight.lock().get(id).cloned()
-    }
-
-    fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        self.complete_calls.lock().push(id.clone());
-        self.inflight.lock().remove(id)
-    }
-
     fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
         self.bump_calls.lock().push((key.clone(), delta));
     }
@@ -482,7 +380,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::peers::types::{AskChannel, WrappedKind};
+    use crate::mcp::peers::types::{CorrelationId, WrappedKind};
     use std::path::PathBuf;
 
     fn fake_key(s: &str) -> SessionSlot {
@@ -508,7 +406,6 @@ mod tests {
         WrappedPrompt {
             correlation_id: CorrelationId::new_ask(),
             kind: WrappedKind::Question,
-            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             body: "hi".to_owned(),
@@ -553,28 +450,6 @@ mod tests {
         let caller = fake_key("alpha");
         let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped());
         assert_eq!(result, Ok(TargetStatus::QueuedForSpawn));
-    }
-
-    #[test]
-    fn mock_register_and_resolve_correlation_round_trips() {
-        let mock = MockWorkspaceFacade::new();
-        let ask = InflightAsk {
-            correlation_id: CorrelationId("q-deadbeef".to_owned()),
-            channel: AskChannel::Peers,
-            caller: fake_key("alpha"),
-            target_project: "beta".to_owned(),
-            target_session: None,
-        };
-        mock.register_inflight_ask(ask.clone());
-        let back = mock.resolve_correlation(&ask.correlation_id);
-        assert!(back.is_some());
-        assert_eq!(back.unwrap().target_project, "beta");
-    }
-
-    #[test]
-    fn mock_resolve_correlation_returns_none_for_unknown_id() {
-        let mock = MockWorkspaceFacade::new();
-        assert!(mock.resolve_correlation(&CorrelationId("q-00000000".to_owned())).is_none());
     }
 
     #[test]
@@ -635,7 +510,7 @@ mod tests {
 #[cfg(all(test, feature = "test-helpers"))]
 mod lead_resolution_tests {
     use super::{DeliverError, ProdWorkspaceFacade, lead_for};
-    use crate::mcp::peers::types::{AskChannel, WrappedKind};
+    use crate::mcp::peers::types::WrappedKind;
     use crate::target::ProjectKey;
     use crate::views::{ProjectView, SessionView};
     use crate::workspace::Workspace;
@@ -703,7 +578,6 @@ mod lead_resolution_tests {
         WrappedPrompt {
             correlation_id: CorrelationId::new_ask(),
             kind: WrappedKind::Question,
-            channel: AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             body: "hi".to_owned(),
@@ -731,7 +605,7 @@ mod lead_resolution_tests {
         assert!(facade.whoami(&SessionSlot::from_str_for_test("nobody")).is_none());
     }
 
-    /// #298 Cause 1: workers can call `peers__whoami` and see their
+    /// #298 Cause 1: workers can call `agents__whoami` and see their
     /// project's peer identity. Pre-fix, the impl required the caller
     /// to be the lead session, which returned None for any worker.
     #[test]

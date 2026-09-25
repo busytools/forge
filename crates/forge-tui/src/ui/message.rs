@@ -1158,10 +1158,10 @@ fn append_assistant_tool_block(
         state.prev_was_tool = true;
         return;
     }
-    // Peer-coordination outbound (#114) - replace the default
-    // tool_use card for `mcp__forge__peers__ask_agent` /
-    // `peers__tell_agent` with a styled peer block in the same
-    // tool-card shape (status icon + kind label + tree body).
+    // Agent outbound (#114) - replace the default tool_use card for
+    // `mcp__forge__agents__ask` / `agents__tell` with a styled agent
+    // block in the same tool-card shape (status icon + kind label +
+    // tree body).
     // Collapse state follows the standard tool-call rule: per-tc
     // `collapsed_override` wins, otherwise the global default.
     // Click-to-toggle on peer rows currently piggybacks on the
@@ -1191,7 +1191,7 @@ fn append_assistant_tool_block(
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
-        // Outbound peer-tool blocks (peers__* / workers__*) follow
+        // Outbound agent-tool blocks (agents__ask / agents__tell) follow
         // the global collapse directive via the unified
         // `resolve_collapsed_bool`. Per-block click override wins;
         // absent falls through to `tools_collapsed`. The invariant:
@@ -3499,12 +3499,12 @@ mod tests {
     fn peer_run_across_user_and_assistant() -> Vec<ChatMessage> {
         let mut outbound = make_tool_call_info(
             "toolu_tell_steward",
-            "mcp__forge__peers__tell_agent",
+            "mcp__forge__agents__tell",
             crate::agent::model::ToolCallStatus::Completed,
             "",
         );
         outbound.raw_input = Some(serde_json::json!({
-            "target": "steward",
+            "project": "steward",
             "message": "IT IMPORTED. The window is lost.",
         }));
         vec![
@@ -3669,11 +3669,11 @@ mod tests {
         let outbound = |id: &str, target: &str| {
             let mut tc = make_tool_call_info(
                 id,
-                "mcp__forge__peers__tell_agent",
+                "mcp__forge__agents__tell",
                 crate::agent::model::ToolCallStatus::Completed,
                 "",
             );
-            tc.raw_input = Some(serde_json::json!({ "target": target, "message": "body" }));
+            tc.raw_input = Some(serde_json::json!({ "project": target, "message": "body" }));
             MessageBlock::ToolCall(Box::new(tc))
         };
         let mut messages = vec![ChatMessage::new(
@@ -3714,11 +3714,11 @@ mod tests {
         let outbound = |id: &str, target: &str| {
             let mut tc = make_tool_call_info(
                 id,
-                "mcp__forge__peers__tell_agent",
+                "mcp__forge__agents__tell",
                 crate::agent::model::ToolCallStatus::Completed,
                 "",
             );
-            tc.raw_input = Some(serde_json::json!({ "target": target, "message": "body" }));
+            tc.raw_input = Some(serde_json::json!({ "project": target, "message": "body" }));
             // Geometry left over from an earlier expanded render.
             tc.last_measured_y_in_msg = 4;
             tc.last_measured_height = 3;
@@ -4916,14 +4916,14 @@ mod tests {
 
     #[test]
     fn envelope_streak_first_envelope_is_start() {
-        let blocks = vec![envelope_block("planner", "worker in forge", "first")];
+        let blocks = vec![envelope_block("planner", "Personal", "first")];
         assert_eq!(envelope_streak_positions(&blocks), vec![Some(EnvelopeStreakPosition::Start)]);
     }
 
     #[test]
     fn envelope_streak_after_non_envelope_is_start() {
         let blocks =
-            vec![plain_block("plain user text"), envelope_block("planner", "worker in forge", "e")];
+            vec![plain_block("plain user text"), envelope_block("planner", "Personal", "e")];
         assert_eq!(
             envelope_streak_positions(&blocks),
             vec![None, Some(EnvelopeStreakPosition::Start)],
@@ -4933,8 +4933,8 @@ mod tests {
     #[test]
     fn envelope_streak_different_worker_same_project_is_follower_new_worker() {
         let blocks = vec![
-            envelope_block("planner", "worker in forge", "first"),
-            envelope_block("implementer", "worker in forge", "second"),
+            envelope_block("planner", "Personal", "first"),
+            envelope_block("implementer", "Personal", "second"),
         ];
         assert_eq!(
             envelope_streak_positions(&blocks)[1],
@@ -4945,8 +4945,8 @@ mod tests {
     #[test]
     fn envelope_streak_same_worker_is_follower_same_worker() {
         let blocks = vec![
-            envelope_block("planner", "worker in forge", "first"),
-            envelope_block("planner", "worker in forge", "second"),
+            envelope_block("planner", "Personal", "first"),
+            envelope_block("planner", "Personal", "second"),
         ];
         assert_eq!(
             envelope_streak_positions(&blocks)[1],
@@ -4974,9 +4974,9 @@ mod tests {
     #[test]
     fn envelope_streak_resets_across_a_non_envelope_block() {
         let blocks = vec![
-            envelope_block("planner", "worker in forge", "first"),
+            envelope_block("planner", "Personal", "first"),
             plain_block("something else"),
-            envelope_block("planner", "worker in forge", "second"),
+            envelope_block("planner", "Personal", "second"),
         ];
         assert_eq!(envelope_streak_positions(&blocks)[2], Some(EnvelopeStreakPosition::Start));
     }

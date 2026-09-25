@@ -103,12 +103,12 @@ pub use views::{
 };
 pub use workspace::{SessionChipInfo, SessionChipState, Workspace};
 
-// MCP (peers / workers) public surface. The `mcp` module itself is
-// crate-private now; these flat re-exports expose only the types
-// production consumers (forge-tui) need to read off `SessionUpdate`
-// payloads. The `testing`-feature block below adds the extra surface
-// the `forge-test-harness` integration tests need (MCP server
-// builders, mock facades, the caller-key resolver).
+// MCP (agents / peers / workers) public surface. The `mcp` module
+// itself is crate-private now; these flat re-exports expose only the
+// types production consumers (forge-tui) need to read off
+// `SessionUpdate` payloads. The `testing`-feature block below adds the
+// extra surface the `forge-test-harness` integration tests need (MCP
+// server builders, mock facades, the caller-key resolver).
 pub use mcp::cron::schedule::next_fire_after;
 pub use mcp::gotify::types::GotifyNotification;
 pub use mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
@@ -197,7 +197,11 @@ pub use forge_agent::AgentEvent;
 // visible cross-crate. Gating on `testing` keeps them out of
 // production builds.
 #[cfg(feature = "testing")]
-pub use mcp::workers::build_server as build_workers_server;
+pub use mcp::agents::build_server as build_agents_server;
+#[cfg(feature = "testing")]
+pub use mcp::peers::facade::MockWorkspaceFacade;
+#[cfg(feature = "testing")]
+pub use mcp::peers::types::{PeerLiveness, PeerStatus};
+pub use mcp::workers::facade::LEAD_LABEL;
 #[cfg(feature = "testing")]
 pub use mcp::workers::facade::{CallerProject, MockWorkerFacade, WorkerFacade};
-pub use mcp::workers::facade::{LEAD_LABEL, PERSONAL_ORG};

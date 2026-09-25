@@ -2174,8 +2174,8 @@ mod tests {
             MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: id.to_owned(),
                 title: "Tell steward".to_owned(),
-                sdk_tool_name: "mcp__forge__peers__tell_agent".to_owned(),
-                raw_input: Some(serde_json::json!({ "target": "steward", "message": "body" })),
+                sdk_tool_name: "mcp__forge__agents__tell".to_owned(),
+                raw_input: Some(serde_json::json!({ "project": "steward", "message": "body" })),
                 raw_input_bytes: 0,
                 output_metadata: None,
                 task_metadata: None,
@@ -2338,8 +2338,8 @@ mod tests {
         let peer_tool = |id: &str, target: &str, y: usize, h: usize| ToolCallInfo {
             id: id.to_owned(),
             title: format!("Tell {target}"),
-            sdk_tool_name: "mcp__forge__peers__tell_agent".to_owned(),
-            raw_input: Some(serde_json::json!({ "target": target, "message": "body" })),
+            sdk_tool_name: "mcp__forge__agents__tell".to_owned(),
+            raw_input: Some(serde_json::json!({ "project": target, "message": "body" })),
             raw_input_bytes: 0,
             output_metadata: None,
             task_metadata: None,

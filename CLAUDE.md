@@ -368,16 +368,16 @@ inspected.
 
     **Divergence counts, not just absence - and a divergence can be the
     correct state.** The despawn trigger is the worked example. The
-    two-case structure now lives in `workers__spawn`, the
-    `workers__despawn` description and the charter's despawn step, while
+    two-case structure now lives in `agents__spawn`, the
+    `agents__despawn` description and the charter's despawn step, while
     `LEAD_DELEGATION_PREAMBLE` stops at "truly done"; the charter
     separately says "once they have delivered". The preamble's softness
     is #717's: it removed "once its work is merged" because that
     exempted every worker whose output was not a PR, and cited
     `LEAD_DELEGATION_PREAMBLE`'s softer wording without adopting it,
-    leaving the preamble untouched, while `workers__spawn`'s old clause
+    leaving the preamble untouched, while `agents__spawn`'s old clause
     was text #717 never decided - #750 settled it, and #820 carried the
-    same structure into `workers__despawn`. An odd phrasing is not
+    same structure into `agents__despawn`. An odd phrasing is not
     evidence it was overlooked; check each site's history rather than
     its wording.
 
