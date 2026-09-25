@@ -205,6 +205,20 @@ pub(crate) mod tests {
         app
     }
 
+    /// A parent with one child, plus a task whose parent is gone - the two
+    /// shapes the detail overlay renders differently. A lead's view holds
+    /// only the parent, but the overlay reads the whole project set.
+    pub(crate) fn app_with_task_tree() -> App {
+        let mut app = app_with_tasks(vec![
+            task_with_parent("epic", None),
+            task_with_parent("sub-a", Some("epic")),
+            task_with_parent("orphan", Some("deleted-parent")),
+        ]);
+        app.focus_lead_session();
+        app.refresh_tasks();
+        app
+    }
+
     /// A worker's view of a parent task and one row under it, so the
     /// section renders its one dim parent line.
     pub(crate) fn app_with_task_rows_with_parent() -> App {

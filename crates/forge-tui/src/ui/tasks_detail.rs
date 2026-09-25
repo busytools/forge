@@ -174,3 +174,48 @@ fn rfc3339(t: SystemTime) -> String {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "unknown".to_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_primitives::tasks::TaskId;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// The overlay's text for the task `id`, drawn over a bare frame.
+    fn overlay_text(id: &str) -> String {
+        let mut app = crate::app::state::tasks::tests::app_with_task_tree();
+        app.task_detail = Some(TaskId::from(id));
+        let mut terminal = Terminal::new(TestBackend::new(60, 24)).expect("terminal");
+        terminal.draw(|f| render(f, f.area(), &app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_overlay_renders_the_identity_block_and_the_subtask_list() {
+        let text = overlay_text("epic");
+        for expected in ["epic", "owner", "status", "created", "updated", "subtasks", "sub-a"] {
+            assert!(text.contains(expected), "the overlay carries {expected}:\n{text}");
+        }
+    }
+
+    /// Review Focus 2, in the overlay: deleting a parent leaves children
+    /// pointing at an id that is gone, which renders as absent rather than
+    /// as a dangling id the reader cannot resolve.
+    #[test]
+    fn the_overlay_omits_a_parent_that_has_left_the_store() {
+        let text = overlay_text("orphan");
+        assert!(text.contains("orphan"), "the orphan still renders:\n{text}");
+        assert!(
+            !text.contains("deleted-parent"),
+            "a gone parent renders as absent, not as its id:\n{text}",
+        );
+    }
+}
