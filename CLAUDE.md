@@ -432,9 +432,11 @@ inspected.
     deploy beside it. Those pages are never out of date with the
     repo, and they can be confidently wrong about the code. The
     rustdoc is generated from the tree, so it tracks the code rather
-    than lagging it; the obligation it carries is that every doc
-    comment on a compiled, non-hidden item, private items included,
-    is published to a public URL.
+    than lagging it; the obligation it carries is that the docs build
+    publishes every crate's rustdoc, private items included, and the
+    raw source of every file it documents, so a doc comment in a
+    documented file reaches a public URL whether or not rustdoc
+    renders an item for it.
 
     The pages, and the usual way each goes false:
 
