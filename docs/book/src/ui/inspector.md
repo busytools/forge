@@ -91,15 +91,15 @@ The focused session's cwd, the branch, an optional `PR #N → closes #M #K` row,
 
   <span class="dim">─────────────────────────</span>
 
-  <span class="dim bold">  TASKS</span>
+  <span class="dim bold">  TASKS</span> <span class="dim">· 2/5</span>
 
   <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Read the rate-limit code</span>
-       <span class="dim">steward</span>
+      <span class="dim">steward</span>
   <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Add the soft-wording branch</span>
-       <span class="dim">steward · PR #1173</span>
+      <span class="dim">steward · PR #1173</span>
   <span class="accent">  ▸</span> <span class="bold">Adding tests for the</span>
-       <span class="bold">near-threshold branch</span>
-       <span class="dim">steward · 1d</span>
+      <span class="bold">near-threshold branch</span>
+      <span class="dim">steward · 1d</span>
   <span class="dim">  ○</span> Run cargo nextest
   <span class="dim">  ○</span> Open PR
 </pre>
@@ -159,22 +159,22 @@ Clicking a row opens that task's detail over whatever view is behind it - full w
 
 <pre class="indent">
 <span class="dim">┌ TASK ──────────────────────────────────────────────┐</span>
-<span class="dim">│</span> <span class="accent">⠹</span> <span class="bold">Adding tests for the near-threshold branch</span>  <span class="dim">·  in progress</span>
+<span class="dim">│</span><span class="accent">⠹</span> <span class="bold">Adding tests for the near-threshold branch</span>  <span class="dim">·  in progress  ·  1d</span>
 <span class="dim">│</span>
-<span class="dim">│</span> <span class="dim">owner    </span>steward
-<span class="dim">│</span> <span class="dim">parent   </span>Add the soft-wording branch
-<span class="dim">│</span> <span class="dim">artifact </span>PR #1173
-<span class="dim">│</span> <span class="dim">created  </span>2026-09-24T17:34:29Z
-<span class="dim">│</span> <span class="dim">updated  </span>2026-09-24T18:02:11Z
-<span class="dim">│</span> <span class="dim">status   </span>in progress
+<span class="dim">│</span><span class="dim">owner    </span>steward
+<span class="dim">│</span><span class="dim">parent   </span>Add the soft-wording branch
+<span class="dim">│</span><span class="dim">artifact </span>PR #1173
+<span class="dim">│</span><span class="dim">created  </span>2026-09-24T17:34:29Z
+<span class="dim">│</span><span class="dim">updated  </span>2026-09-24T18:02:11Z
+<span class="dim">│</span><span class="dim">status   </span>in progress
 <span class="dim">│</span>
-<span class="dim">│</span> <span class="dim">detail   </span>The cap hid finished work; the store does not need one.
+<span class="dim">│</span><span class="dim">detail   </span>The cap hid finished work; the store does not need one.
 <span class="dim">│</span>
-<span class="dim">│</span> <span class="dim">subtasks </span>2
-<span class="dim">│</span>   <span class="success">✓</span> Wire the store into the section
-<span class="dim">│</span>   <span class="accent">▸</span> Cover the two views
+<span class="dim">│</span><span class="dim">subtasks </span>2
+<span class="dim">│</span>  <span class="success">✓</span> Wire the store into the section
+<span class="dim">│</span>  <span class="accent">⠙</span> Cover the two views
 <span class="dim">│</span>
-<span class="dim">│</span> <span class="dim">esc close</span>
+<span class="dim">│</span><span class="dim">esc close</span>
 <span class="dim">└────────────────────────────────────────────────────┘</span>
 </pre>
 
@@ -238,11 +238,11 @@ chat continues here...
 
 <span class="dim">─────────────────────────────────────────────────</span>
 
-<span class="dim bold">  TASKS</span>
+<span class="dim bold">  TASKS</span> <span class="dim">· 2/5</span>
 
 <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Read the rate-limit code</span>
 <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Add the soft-wording branch</span>
-<span class="accent">  ▸</span> <span class="bold">Adding tests for the near-threshold branch</span>
+<span class="accent">  ⠹</span> <span class="bold">Adding tests for the near-threshold branch</span>
 <span class="dim">  ○</span> Run cargo nextest
 <span class="dim">  ○</span> Open PR
 </pre>

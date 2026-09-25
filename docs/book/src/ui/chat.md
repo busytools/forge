@@ -323,7 +323,6 @@ Server-side tool variants (ToolSearch, web_search, web_fetch, advisor, plus the 
 | WebFetch / WebSearch | `⊕` |
 | Move / EnterWorktree | `⇄` |
 | ExitPlanMode / Config | `⊙` |
-| TodoWrite | `◌` |
 | Task / Agent (labelled "Subagent") | `◇` |
 | ToolSearch | `⌖` |
 | Skill / Advisor | `✦` |
