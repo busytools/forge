@@ -278,8 +278,9 @@ impl Tool for List {
         "List the live tasks of YOUR project as whole records (id, subject, status, owner, \
          parent, detail, artifact, estimate, timestamps). Optionally narrow with `owner` (a \
          session label) or `parent` (a task id), so one task's detail or one session's rows are \
-         a filter away. An empty array means the project has no tasks in flight. Any session in \
-         the project may call this."
+         a filter away. An empty array means your project has no tasks in flight, or that your \
+         project could not be resolved, or that this run could not read its stored tasks. Any \
+         session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -446,6 +447,22 @@ mod tests {
         assert_eq!(patch.artifact.as_deref(), Some("x"));
         assert_eq!(patch.subject, None, "an unstated field is left alone");
         assert_eq!(patch.owner, None, "an unstated field is left alone");
+    }
+
+    /// An empty list has three causes, and the description names all of
+    /// them: a project with nothing in flight, a caller whose project could
+    /// not be resolved, and a run that could not read the store.
+    #[test]
+    fn the_list_description_owns_up_to_every_empty_result() {
+        let desc =
+            List { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() }.description();
+        for clause in [
+            "An empty array means your project has no tasks in flight",
+            "or that your project could not be resolved",
+            "or that this run could not read its stored tasks",
+        ] {
+            assert!(desc.contains(clause), "the list description owes {clause:?}: {desc}");
+        }
     }
 
     #[tokio::test]

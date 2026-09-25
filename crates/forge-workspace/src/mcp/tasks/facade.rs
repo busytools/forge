@@ -201,6 +201,12 @@ impl TasksFacade for ProdTasksFacade {
     fn delete_task(&self, caller: &SessionSlot, id: &TaskId) -> Result<bool, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        // The named task itself has to be there. The cascade also collects
+        // orphans pointing at the id, so "something was removed" would be
+        // true for an id that never existed.
+        if !ws.tasks_for_project(&cx.project_name).iter().any(|t| t.id == *id) {
+            return Ok(false);
+        }
         Ok(ws.remove_task_tree(&cx.project_name, id))
     }
 }
@@ -373,6 +379,28 @@ mod prod_facade_tests {
             facade.list_tasks(&worker, Some("reviewer"), None).len(),
             1,
             "a worker's list is the same project's set",
+        );
+    }
+
+    /// A task whose parent is gone leaves an orphan pointing at an id that
+    /// is not in the store. Deleting that id must report nothing removed,
+    /// not succeed on the orphan's back - and must not collect the orphan
+    /// on the way, which would destroy work under a name nothing owns.
+    #[test]
+    fn delete_reports_nothing_removed_for_an_id_that_was_never_there() {
+        let (_ws, facade, lead, _worker) = fixture();
+        facade
+            .create_task(&lead, draft("orphan", None, Some("ghost")))
+            .expect("a child pointing at a parent that never existed");
+        assert!(
+            !facade.delete_task(&lead, &TaskId::from("ghost")).expect("delete"),
+            "an id that was never there is not a successful delete, even with orphans pointing \
+             at it",
+        );
+        assert_eq!(
+            facade.list_tasks(&lead, None, None).len(),
+            1,
+            "the orphan is not collected under a name nothing owns",
         );
     }
 
