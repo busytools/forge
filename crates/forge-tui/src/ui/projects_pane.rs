@@ -320,9 +320,8 @@ fn projects_by_org(
 pub(crate) fn live_worker_keys(
     app: &App,
 ) -> std::collections::HashSet<forge_workspace::SessionSlot> {
-    app.workspace
-        .as_ref()
-        .map(|ws| ws.all_live_worker_session_keys().into_iter().collect())
+    app.surface()
+        .map(|surface| surface.workers().all_keys().into_iter().collect())
         .unwrap_or_default()
 }
 
@@ -378,8 +377,8 @@ pub(crate) fn drawn_session_rows(
         for project in bucket {
             let project_path = project.path.to_string_lossy();
             rows.extend(live_lead_key(app, project, &project_path, &worker_keys));
-            if let Some(ws) = app.workspace.as_ref() {
-                rows.extend(ws.list_live_workers(&project.key).into_iter().map(|w| w.slot));
+            if let Some(workers) = app.surface().map(|surface| surface.workers()) {
+                rows.extend(workers.for_project(&project.key).into_iter().map(|w| w.slot));
             }
         }
     }
@@ -652,7 +651,7 @@ fn append_org_project_row(
 /// targets get stamped for both the label area (switches focus to
 /// the worker's chat) and the `×` (dispatches `Command::CloseWorker`).
 ///
-/// Source of truth is `workspace.list_live_workers(project_key)`;
+/// Source of truth is the workers verb's per-project list;
 /// the TUI never caches this so the snapshot stays fresh between
 /// `SessionUpdate::WorkerStatusChanged` events.
 ///
@@ -666,10 +665,10 @@ fn append_worker_tree_children(
     parent_is_last: bool,
     spinner_glyph: char,
 ) {
-    let Some(workspace) = app.workspace.as_ref() else {
+    let Some(workers) = app.surface().map(|surface| surface.workers()) else {
         return;
     };
-    let workers = workspace.list_live_workers(&project.key);
+    let workers = workers.for_project(&project.key);
     if workers.is_empty() {
         return;
     }
@@ -2651,7 +2650,7 @@ mod tests {
 
     /// A project with no live workers must produce zero tree-child
     /// rows and stamp no hit targets. Renders are driven directly
-    /// from `workspace.list_live_workers`; the renderer's job is to
+    /// from the workers verb; the renderer's job is to
     /// branch cleanly on `is_empty`.
     #[test]
     fn worker_tree_children_render_no_rows_when_zero_workers() {

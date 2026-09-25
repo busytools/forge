@@ -1350,10 +1350,7 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 fn switch_to_project_lead(app: &mut App, project_key: &str) {
     // Resolve the project view up-front; it carries the name and the path
     // every branch below reads.
-    let view = app
-        .workspace
-        .as_ref()
-        .and_then(|w| w.list_projects().into_iter().find(|p| p.key.as_str() == project_key));
+    let view = app.roster_projects().into_iter().find(|p| p.key.as_str() == project_key);
     let resolved_name = match view.as_ref() {
         Some(view) => view.name.clone(),
         None => project_key.to_owned(),

@@ -43,7 +43,7 @@ fn skip_operational_log_during_replay(app: &App) -> bool {
 /// gone its row is no longer in the list, and there is nothing left
 /// for the replacement focus to be adjacent to.
 pub(crate) fn drawn_session_order(app: &App) -> Vec<forge_workspace::SessionSlot> {
-    let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+    let projects = app.roster_projects();
     crate::ui::projects_pane::drawn_session_rows(app, &projects)
 }
 

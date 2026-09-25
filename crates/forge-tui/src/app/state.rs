@@ -739,15 +739,28 @@ pub struct App {
 }
 
 impl App {
+    /// The read surface over the workspace, `None` exactly when
+    /// [`Self::workspace`] is.
+    pub(crate) fn surface(&self) -> Option<forge_sessions::surface::ViewSurface> {
+        self.workspace
+            .as_ref()
+            .map(|workspace| forge_sessions::surface::ViewSurface::new(Arc::clone(workspace)))
+    }
+
+    /// Every project and its catalog sessions; empty when there is no
+    /// workspace.
+    pub(crate) fn roster_projects(&self) -> Vec<forge_workspace::ProjectView> {
+        self.surface().map(|surface| surface.roster().projects).unwrap_or_default()
+    }
+
     /// `true` when the active session has a registered agent handle
     /// in the workspace's `DomainSession`. Production code consults
     /// this rather than holding an `Arc<AgentHandle>` directly -
     /// outbound traffic flows through `Workspace::dispatch` /
     /// `Workspace::refresh_*` calls.
     pub fn has_active_agent(&self) -> bool {
-        let Some(workspace) = self.workspace.as_ref() else { return false };
         let Some(key) = self.active_session_key.as_ref() else { return false };
-        workspace.has_agent_for(key)
+        self.surface().is_some_and(|surface| surface.roster().has_agent(key))
     }
 
     /// Dispatch a workspace [`forge_workspace::Command`] for the
