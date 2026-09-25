@@ -104,7 +104,7 @@ impl super::App {
     // O(1) on purpose: this runs from every sync_render_cache_* call,
     // so a walk over the message list here costs the whole session on
     // every rendered message. Block-count changes arrive through
-    // `sync_after_message_blocks_changed`, and each sync entry point
+    // `sync_render_cache_message_tail`, and each sync entry point
     // re-checks its own message's slot count on the way in, so the
     // per-message shape does not need re-deriving here too.
     //
