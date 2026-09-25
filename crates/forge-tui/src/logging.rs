@@ -113,6 +113,7 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.command=debug,\
     app.tool=debug,\
     app.input=debug,\
+    app.lifecycle=debug,\
     bridge.lifecycle=debug,\
     agent.env_git=debug,\
     tui_markdown=error,\
@@ -422,6 +423,10 @@ mod tests {
         // miss entirely, which is the state the levels moved away from.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.tool=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
+        // The web view's `enabled = false` record is a `debug` on
+        // `app.lifecycle` because a config choice is not a problem, so
+        // the target needs the directive or that record never lands.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.lifecycle=debug"));
         // tui_markdown emits per-frame WARN events for every HTML
         // tag + unknown code-block language during streaming markdown
         // rendering. Pinning to `error` rejects them at the filter
