@@ -117,6 +117,35 @@ mod tests {
         }
     }
 
+    fn workspace_with_a_bound_project() -> (tempfile::TempDir, Arc<Workspace>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge_dir = dir.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        (dir, workspace)
+    }
+
     fn sample_cron(id: &str, project: &str) -> CronEntry {
         CronEntry {
             id: CronId::from(id),
@@ -234,13 +263,43 @@ mod tests {
         );
     }
 
-    /// Catches task or cron rows that come from anywhere but the
-    /// project's own store slice, and a chip or binding answer that
-    /// stops forwarding to the walk.
+    /// Catches a `chip_for` or `would_bind` that stops forwarding to the
+    /// walk, or that answers from a snapshot taken when the roster was
+    /// collected rather than from the core as it is now.
     ///
-    /// The seeded project declares no model, so the chip and the
-    /// binding answer are the same on both paths by construction; the
-    /// walk's own branches are covered where it lives.
+    /// The account is seeded after the roster is collected, so an
+    /// eagerly-filled roster fails the first assertion.
+    #[test]
+    fn roster_chip_and_binding_forward_the_walk() {
+        let (_dir, workspace) = workspace_with_a_bound_project();
+        let roster = ViewSurface::new(Arc::clone(&workspace)).roster();
+        let project = roster.project_named("forge").expect("configured project").key.clone();
+
+        workspace.seed_test_ready_account("Stargate");
+
+        assert!(
+            roster.would_bind(&project),
+            "a ready account declaring the project's model is what a spawn lands on"
+        );
+        assert_eq!(
+            roster.would_bind(&project),
+            workspace.project_would_bind(&project),
+            "the binding answer must be the workspace's own"
+        );
+        assert_eq!(
+            roster.chip_for(&project).map(|chip| chip.account_name),
+            workspace.session_chip_for(&project).map(|chip| chip.account_name),
+            "the chip must be the workspace's own answer"
+        );
+        assert_eq!(
+            roster.chip_for(&project).map(|chip| chip.account_name),
+            Some("Stargate".to_owned()),
+            "the chip must name the account the walk would pick"
+        );
+    }
+
+    /// Catches task or cron rows that come from anywhere but the
+    /// project's own store slice.
     #[test]
     fn roster_rows_come_from_the_project_stores_as_the_workspace_reports_them() {
         let workspace = stub_workspace();

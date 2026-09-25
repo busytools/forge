@@ -20,5 +20,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 # The surface's equivalence tests read the same workspace the TUI reads,
-# so they need `Workspace::testing_stub` and the seeding helpers.
+# so they need `Workspace::testing_stub`, its seeding helpers, and the
+# `forge.toml` fixture `Workspace::new_for_test` builds from a tempdir.
 forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
+tempfile = { workspace = true }
