@@ -84,17 +84,17 @@ Every character used as chrome - borders, icons, status, separators. Scope is cu
 | `╭ ╮ ╰ ╯` `─` `│` `├` `└` | panes, separators, borders, tool body, file trees | corners, lines, tree connectors (`└─` marks the last child or final body row) |
 | `⬚` `▣` | Read; Write / Edit family | open square: read-only; filled square: mutation |
 | `⌕` `▶` | Glob / Grep / LS; Bash | magnifier; execute |
-| `◇` `◆` | Task / Agent; Slack notification block; Workflow, WORKFLOWS header, projects-pane completed-unseen | hollow diamond: delegated subagent, or an inbound Slack message; filled diamond: script flow, or a completed turn on an inactive tab (green) |
+| `◇` `◆` | Task / Agent; Slack notification block; projects-pane completed-unseen | hollow diamond: delegated subagent, or an inbound Slack message; filled diamond: a completed turn on an inactive tab (green) |
 | `⊕` `⊙` `⇄` | WebFetch / WebSearch; plan-mode and Config; Move and worktree tools | fetch from outside; meta operation; directory and worktree transitions |
 | `◉` `◍` | TaskOutput / Monitor; TaskStop | fisheye observes; the vertical-fill circle terminates |
-| `⏲` `*` | ScheduleWakeup; CronCreate / CronDelete / CronList | timer clock; the cron family |
+| `⏲` | ScheduleWakeup | timer clock |
 | `◈` | Gotify icon; MCP-server line in a group summary | the shared Gotify diamond; marks an external MCP-server call |
 | `⚠` | degraded states, AuthRequired, GOTIFY stream down, Bailed accounts | warning: noticeable but not broken - yellow; one deliberate split: a Bailed **auth** failure renders it red (repair needs an env edit plus restart), a transient failure yellow (the pollers heal it) |
 | `✦` `⌖` | Skill / Advisor; ToolSearch | meta capability; tool search |
-| `▲` `⇨` `⚙` | PushNotification; RemoteTrigger; LSP | outbound signal; remote trigger; tooling integration |
+| `▲` `⚙` | PushNotification; LSP | outbound signal; tooling integration |
 | `○` | fallback tool icon; pending or blocked task; unfocused permission option; sleeping project row | open circle, reused |
 | `✓` `✗` | completed / Allow; failed / Reject | completed and failed |
-| `➤` | input prompt; SendMessage | prompt char |
+| `➤` | input prompt | prompt char |
 | `▁▂▃▄▅▆▇█` | dictate level meter | the composer's 26-cell block ramp |
 | `●` `◌` | recording dot, MCP connected server, in-force value; transcribing dot, MCP pending server | filled circle pulses on a 1.05 s cycle leading the [status row](./input.md), and marks a connected server green / a pending server blue on [MCP SERVERS](./inspector-processes.md); the dotted circle takes the same spots in blue while transcribing or pending |
 | `·` `•` | permission option separator, sleeping project row; plan-approval actions | middle dot; bullet |

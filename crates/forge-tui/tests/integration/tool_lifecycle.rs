@@ -9,8 +9,8 @@
 use forge_tui::agent::model;
 use forge_tui::app::session::UiSession;
 use forge_tui::app::{
-    App, AppStatus, BackgroundTask, BlockCache, ChatMessage, MessageBlock, MessageRole,
-    SessionTaskCard, ToolCallInfo, ToolCallScope,
+    App, AppStatus, BackgroundTask, ChatMessage, MessageBlock, MessageRole, SessionTaskCard,
+    ToolCallInfo, ToolCallScope,
 };
 use pretty_assertions::assert_eq;
 
@@ -1182,7 +1182,6 @@ fn backgrounded_bash_card(id: &str) -> ToolCallInfo {
         last_measured_layout_epoch: 0,
         last_measured_layout_generation: 0,
         last_measured_tools_collapsed: false,
-        cache: BlockCache::default(),
         collapsed_override: None,
         last_measured_y_in_msg: 0,
         answered_questions: Vec::new(),

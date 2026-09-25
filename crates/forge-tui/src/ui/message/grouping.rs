@@ -801,7 +801,7 @@ fn update_aggregate(
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::app::{BlockCache, TextBlock, ToolCallInfo};
+    use crate::app::{TextBlock, ToolCallInfo};
 
     fn tool_call_block(id: &str, sdk_tool_name: &str) -> MessageBlock {
         MessageBlock::ToolCall(Box::new(ToolCallInfo {
@@ -825,7 +825,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -906,19 +905,12 @@ mod tests {
         }
     }
 
-    /// Hidden / chat-suppressed tools (AskUserQuestion / Schedule* /
-    /// Cron*) render nothing visible in the chat stream; they pass
-    /// through the run so adjacent visible groups merge across them.
+    /// Hidden / chat-suppressed tools (AskUserQuestion / Schedule*) render
+    /// nothing visible in the chat stream; they pass through the run so
+    /// adjacent visible groups merge across them.
     #[test]
     fn run_breaker_false_for_hidden_chat_suppressed_tools() {
-        for n in [
-            "TaskOutput",
-            "TaskStop",
-            "AskUserQuestion",
-            "ScheduleWakeup",
-            "CronCreate",
-            "CronDelete",
-        ] {
+        for n in ["TaskOutput", "TaskStop", "AskUserQuestion", "ScheduleWakeup"] {
             assert!(
                 !is_run_breaker(&hidden_tool_call_block("x", n)),
                 "{n} is chat-suppressed and must pass through the run",

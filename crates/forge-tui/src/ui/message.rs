@@ -1,8 +1,7 @@
 use crate::app::{
     BlockCache, CachedMessageSegment, ChatMessage, IncrementalMarkdown, MarkdownRenderKey,
     MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
-    StopHookEntry, SystemSeverity, TextBlock, TurnInfo, WelcomeBlock, hash_text_block_content,
-    hash_welcome_block_content,
+    StopHookEntry, SystemSeverity, TextBlock, TurnInfo, WelcomeBlock,
 };
 use crate::ui::fence;
 use crate::ui::peer_block;
@@ -237,9 +236,58 @@ pub(crate) struct MessageRenderContext<'a> {
     /// read-kind file paths in the chat tool-group L2 tree. `None`
     /// (default / empty cwd) renders read paths as-is (absolute).
     project_root: Option<&'a str>,
+    /// The view's render caches, carried by [`Self::with_caches`]. Absent
+    /// renders identical lines and cannot reuse or store them; only the
+    /// test constructor builds that shape, so the compiler is what stops
+    /// a production entry point from losing its cache.
+    /// `crate::ui::chat::tests::a_cached_render_populates_the_store` covers
+    /// what the compiler cannot: an entry point that attaches a fresh
+    /// store rather than the app's.
+    render_caches: Option<&'a crate::app::RenderCacheStore>,
 }
 
 impl<'a> MessageRenderContext<'a> {
+    /// The production constructor: a render context always carries the
+    /// view's render caches, so an entry point cannot silently lose
+    /// caching by forgetting to attach them - it would not compile.
+    pub(crate) fn with_caches(
+        current_mode_id: Option<&'a str>,
+        width: u16,
+        layout_generation: u64,
+        options: MessageRenderOptions,
+        render_caches: &'a crate::app::RenderCacheStore,
+    ) -> Self {
+        Self {
+            tool_render_context: tool_call::ToolCallRenderContext { current_mode_id },
+            width,
+            layout_generation,
+            options,
+            stop_hook_summary_hooks: &[],
+            group_collapse_levels: None,
+            messaging_group_collapse_levels: None,
+            project_root: None,
+            render_caches: Some(render_caches),
+        }
+    }
+
+    /// The view-side cache for a block with no identity, keyed by its own
+    /// content. A context with no store builds into a local that cannot
+    /// outlive the call: the caller still renders, it just cannot reuse.
+    fn text_block_cache(&self, signature: u64) -> crate::app::SlotCache<'_> {
+        block_cache_for(self.render_caches, signature, self.options.tools_collapsed)
+    }
+
+    /// The block's incremental markdown, from the store by the block's id.
+    fn text_block_markdown(&self, id: u64, text: &str) -> crate::app::SlotMarkdown<'_> {
+        block_markdown_for(self.render_caches, id, text)
+    }
+
+    /// The test constructor: no store, so every block renders fresh. The
+    /// lines are identical to a cached render and nothing is reused or
+    /// stored, which is what a test asserting rendered output wants. It is
+    /// gated like the test helpers around it, so the install build cannot
+    /// reach it and production has no way to build this shape.
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn new(
         current_mode_id: Option<&'a str>,
         width: u16,
@@ -255,6 +303,7 @@ impl<'a> MessageRenderContext<'a> {
             group_collapse_levels: None,
             messaging_group_collapse_levels: None,
             project_root: None,
+            render_caches: None,
         }
     }
 
@@ -385,7 +434,12 @@ fn build_message_layout(
     }
 
     match msg.role {
-        MessageRole::Welcome => append_welcome_blocks(msg, render_context.width, &mut layout),
+        MessageRole::Welcome => append_welcome_blocks(
+            msg,
+            render_context.width,
+            render_context.render_caches,
+            &mut layout,
+        ),
         MessageRole::User => append_user_blocks(msg, spinner, render_context, &mut layout),
         MessageRole::Assistant => {
             append_assistant_blocks(msg, spinner, render_context, &mut layout);
@@ -412,7 +466,13 @@ fn build_message_layout(
             msg.turn_info_height = row_h;
             msg.turn_info_width = render_context.width;
         }
-        MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut layout),
+        MessageRole::System(_) => append_system_blocks(
+            msg,
+            render_context.width,
+            render_context.options.tools_collapsed,
+            render_context.render_caches,
+            &mut layout,
+        ),
     }
 
     if render_context.options.include_trailing_separator {
@@ -445,22 +505,6 @@ fn refresh_live_turn_elapsed(msg: &mut ChatMessage) {
 /// the key on a second boundary rather than every frame - which is not
 /// the same as the message rebuilding once a second, since the glyph
 /// folded alongside it turns over far quicker.
-fn hash_turn_info(info: &TurnInfo, hasher: &mut impl std::hash::Hasher) {
-    use std::hash::Hash;
-    info.elapsed_secs.hash(hasher);
-    info.duration_ms.hash(hasher);
-    info.api_ms.hash(hasher);
-    info.ended_at_local.hash(hasher);
-    info.model.hash(hasher);
-    info.thinking_tokens.hash(hasher);
-    info.input_tokens.hash(hasher);
-    info.output_tokens.hash(hasher);
-    info.cache_read_tokens.hash(hasher);
-    info.cache_written_tokens.hash(hasher);
-    info.session_cost_usd.map(f64::to_bits).hash(hasher);
-    info.expanded.hash(hasher);
-}
-
 /// Append the turn-info row as the message's last row, plus its
 /// expanded body when open. Returns the clickable row's offset and
 /// height, excluding that body, for the caller's hit rect.
@@ -713,10 +757,20 @@ fn append_stop_hook_summary(
     (chip_y, chip_height)
 }
 
-fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
+fn append_welcome_blocks(
+    msg: &mut ChatMessage,
+    width: u16,
+    render_caches: Option<&crate::app::RenderCacheStore>,
+    layout: &mut MessageLayout,
+) {
     for block in &mut msg.blocks {
         if let MessageBlock::Welcome(welcome) = block {
-            let rendered = welcome_block_layout(welcome, width);
+            let signature = crate::app::hash_welcome_block_content(welcome);
+            let mut cache = match render_caches {
+                Some(caches) => caches.welcome(signature),
+                None => crate::app::SlotCache::Uncached(crate::app::BlockCache::default()),
+            };
+            let rendered = welcome_block_layout(welcome, &mut cache, width);
             layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
         }
     }
@@ -755,6 +809,7 @@ fn append_user_blocks(
                                 &mut msg.blocks[idx],
                                 width,
                                 collapsed,
+                                render_context.render_caches,
                                 streaks[idx],
                                 layout,
                             );
@@ -766,6 +821,7 @@ fn append_user_blocks(
                 &mut msg.blocks[idx],
                 width,
                 render_context.options.tools_collapsed,
+                render_context.render_caches,
                 streaks[idx],
                 layout,
             ),
@@ -775,6 +831,7 @@ fn append_user_blocks(
                         &mut msg.blocks[idx],
                         width,
                         render_context.options.tools_collapsed,
+                        render_context.render_caches,
                         streaks[idx],
                         layout,
                     );
@@ -788,6 +845,7 @@ fn append_user_block(
     block: &mut MessageBlock,
     width: u16,
     tools_collapsed: bool,
+    render_caches: Option<&crate::app::RenderCacheStore>,
     envelope_streak_position: Option<EnvelopeStreakPosition>,
     layout: &mut MessageLayout,
 ) {
@@ -848,7 +906,10 @@ fn append_user_block(
                 return;
             }
             let trailing_gap = block.trailing_blank_lines();
-            let rendered = text_block_layout(block, width, true, USER_GUTTER);
+            let mut cache =
+                block_cache_for(render_caches, block.content_signature(), tools_collapsed);
+            let mut markdown = block_markdown_for(render_caches, block.id, &block.text);
+            let rendered = text_block_layout(&mut cache, &mut markdown, width, true, USER_GUTTER);
             layout.push_gutter_lines(
                 rendered.lines,
                 rendered.copy_rows,
@@ -1064,10 +1125,31 @@ fn append_assistant_block(
 ) {
     match block {
         MessageBlock::Text(block) => {
-            append_assistant_text_block(block, render_context.width, layout, state);
+            let signature = block.content_signature();
+            let mut cache = render_context.text_block_cache(signature);
+            let mut markdown = render_context.text_block_markdown(block.id, &block.text);
+            append_assistant_text_block(
+                block,
+                &mut cache,
+                &mut markdown,
+                render_context.width,
+                layout,
+                state,
+            );
         }
         MessageBlock::Notice(notice) => {
-            append_assistant_notice_block(notice, render_context.width, layout, state);
+            let signature = notice.content_signature();
+            let mut cache = render_context.text_block_cache(signature);
+            let mut markdown =
+                render_context.text_block_markdown(notice.text.id, &notice.text.text);
+            append_assistant_notice_block(
+                notice,
+                &mut cache,
+                &mut markdown,
+                render_context.width,
+                layout,
+                state,
+            );
         }
         MessageBlock::ToolCall(tc) => {
             append_assistant_tool_block(tc.as_mut(), spinner, render_context, layout, state);
@@ -1078,6 +1160,8 @@ fn append_assistant_block(
 
 fn append_assistant_text_block(
     block: &mut TextBlock,
+    cache: &mut BlockCache,
+    markdown: &mut IncrementalMarkdown,
     width: u16,
     layout: &mut MessageLayout,
     state: &mut AssistantLayoutState,
@@ -1085,7 +1169,7 @@ fn append_assistant_text_block(
     if state.prev_was_tool {
         layout.push_blank();
     }
-    let rendered = assistant_text_block_layout(block, width, !state.has_visible_content);
+    let rendered = assistant_text_block_layout(cache, markdown, width, !state.has_visible_content);
     let trailing_gap = trailing_gap_for_text_like_block(
         state.has_visible_content,
         rendered.height,
@@ -1104,6 +1188,8 @@ fn append_assistant_text_block(
 
 fn append_assistant_notice_block(
     notice: &mut crate::app::NoticeBlock,
+    cache: &mut BlockCache,
+    markdown: &mut IncrementalMarkdown,
     width: u16,
     layout: &mut MessageLayout,
     state: &mut AssistantLayoutState,
@@ -1111,7 +1197,8 @@ fn append_assistant_notice_block(
     if state.prev_was_tool {
         layout.push_blank();
     }
-    let rendered = notice_block_layout(notice, width, !state.has_visible_content, notice.severity);
+    let rendered =
+        notice_block_layout(cache, markdown, width, !state.has_visible_content, notice.severity);
     let trailing_gap = trailing_gap_for_text_like_block(
         state.has_visible_content,
         rendered.height,
@@ -1225,8 +1312,13 @@ fn append_assistant_tool_block(
         layout.push_blank();
     }
     let mut lines = Vec::new();
+    let mut cache = match render_context.render_caches {
+        Some(caches) => caches.tool_call(&tc.id, tc.render_epoch),
+        None => crate::app::SlotCache::Uncached(crate::app::BlockCache::default()),
+    };
     let tool_copy_rows = tool_call::render_tool_call_cached_with_tools_collapsed(
         tc,
+        &mut cache,
         render_context.tool_render_context,
         render_context.width,
         spinner.glyph,
@@ -1235,6 +1327,7 @@ fn append_assistant_tool_block(
     );
     let (height, wrapped_lines) = tool_call::measure_tool_call_height_cached_with_tools_collapsed(
         tc,
+        &mut cache,
         render_context.tool_render_context,
         render_context.width,
         spinner.glyph,
@@ -1521,70 +1614,22 @@ fn render_lifecycle_one_liner_with_metas(
     }
 }
 
-/// Extract the `name` field from a workflow `script`'s
-/// `export const meta = { name: '...' }` block. Falls back to the
-/// literal `"Workflow"` label when the block isn't present or
-/// doesn't carry a name. Conservative substring-based parser
-/// matches both single-quoted and double-quoted strings.
-pub(crate) fn workflow_meta_name(script: &str) -> String {
-    extract_meta_field(script, "name").unwrap_or_else(|| "Workflow".to_owned())
-}
-
-/// Extract both the `name` and `description` fields
-/// from a workflow `script`'s meta block. Returns
-/// `(name, description)` where `name` falls back to `"Workflow"`
-/// when missing; `description` is `None` when the meta block lacks
-/// it.
-pub fn workflow_meta_fields(script: &str) -> (String, Option<String>) {
-    let name = workflow_meta_name(script);
-    let description = extract_meta_field(script, "description");
-    (name, description)
-}
-
-/// Internal helper: find `<field>: '<value>'` or `<field>: "<value>"`
-/// substring in the script body and return the unquoted value.
-fn extract_meta_field(script: &str, field: &str) -> Option<String> {
-    for prefix in [format!("{field}:"), format!("{field} :")] {
-        let mut search_from = 0;
-        while let Some(rel) = script[search_from..].find(&prefix) {
-            let start = search_from + rel;
-            // Reject matches that aren't at the start of a token
-            // (e.g. `lastTooLname:` would match `name:` if we
-            // didn't check). Token start = preceding char is
-            // whitespace / `,` / `{` / newline / nothing.
-            let preceding = script[..start].chars().next_back();
-            let token_start =
-                preceding.is_none_or(|c| c.is_whitespace() || c == ',' || c == '{' || c == ';');
-            if !token_start {
-                search_from = start + prefix.len();
-                continue;
-            }
-            let after = &script[start + prefix.len()..];
-            let trimmed = after.trim_start();
-            let quote = trimmed.chars().next()?;
-            if quote != '\'' && quote != '"' {
-                search_from = start + prefix.len();
-                continue;
-            }
-            let body = &trimmed[quote.len_utf8()..];
-            let end = body.find(quote)?;
-            let value = body[..end].trim();
-            if !value.is_empty() {
-                return Some(value.to_owned());
-            }
-            search_from = start + prefix.len();
-        }
-    }
-    None
-}
-
-fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
+fn append_system_blocks(
+    msg: &mut ChatMessage,
+    width: u16,
+    tools_collapsed: bool,
+    render_caches: Option<&crate::app::RenderCacheStore>,
+    layout: &mut MessageLayout,
+) {
     let color = system_severity_color(system_severity_from_role(&msg.role));
     for block in &mut msg.blocks {
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                let mut rendered = text_block_layout(block, width, false, 0);
+                let mut cache =
+                    block_cache_for(render_caches, block.content_signature(), tools_collapsed);
+                let mut markdown = block_markdown_for(render_caches, block.id, &block.text);
+                let mut rendered = text_block_layout(&mut cache, &mut markdown, width, false, 0);
                 tint_lines(&mut rendered.lines, color);
                 layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
                 for _ in 0..trailing_gap {
@@ -1593,7 +1638,12 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageL
             }
             MessageBlock::Notice(notice) => {
                 let trailing_gap = notice.trailing_blank_lines();
-                let rendered = notice_block_layout(notice, width, false, notice.severity);
+                let mut cache =
+                    block_cache_for(render_caches, notice.content_signature(), tools_collapsed);
+                let mut markdown =
+                    block_markdown_for(render_caches, notice.text.id, &notice.text.text);
+                let rendered =
+                    notice_block_layout(&mut cache, &mut markdown, width, false, notice.severity);
                 layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
                 for _ in 0..trailing_gap {
                     layout.push_blank();
@@ -1938,13 +1988,19 @@ pub(crate) struct MessageRenderOptions {
 }
 
 fn get_or_build_message_render_cache<'a>(
-    msg: &'a mut ChatMessage,
+    msg: &mut ChatMessage,
     spinner: &SpinnerState,
-    render_context: MessageRenderContext<'_>,
-) -> &'a MessageRenderCache {
+    render_context: MessageRenderContext<'a>,
+) -> crate::app::MessageSlot<'a> {
     refresh_live_turn_elapsed(msg);
     let key = build_message_render_cache_key(msg, spinner, render_context);
-    if !msg.render_cache.matches(&key) {
+    let mut cache = match render_context.render_caches {
+        Some(caches) => caches.message(crate::app::state::messages::message_content_signature(msg)),
+        // No store: build into a local that cannot outlive this call. The
+        // layout still has to be built, or the caller paints nothing.
+        None => crate::app::MessageSlot::Uncached(MessageRenderCache::default()),
+    };
+    if !cache.matches(&key) {
         let layout = build_message_layout(msg, spinner, render_context);
         let height = layout.height;
         let wrapped_lines = layout.wrapped_lines;
@@ -1952,9 +2008,9 @@ fn get_or_build_message_render_cache<'a>(
             layout.segments.iter().cloned().map(MessageLayoutSegment::into_cached).collect();
         let gutter_rows = layout.gutter_rows;
         let copy_rows = layout.copy_rows;
-        msg.render_cache.store(key, segments, height, wrapped_lines, gutter_rows, copy_rows);
+        cache.store(key, segments, height, wrapped_lines, gutter_rows, copy_rows);
     }
-    &msg.render_cache
+    cache
 }
 
 fn build_message_render_cache_key(
@@ -1990,7 +2046,7 @@ fn build_message_render_signature(
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     msg.role.hash(&mut hasher);
-    hash_turn_info(&msg.turn_info, &mut hasher);
+    crate::app::state::messages::hash_turn_info(&msg.turn_info, &mut hasher);
     spinner.show_empty_thinking.hash(&mut hasher);
     spinner.show_thinking.hash(&mut hasher);
     spinner.show_compacting.hash(&mut hasher);
@@ -2048,19 +2104,10 @@ fn build_message_render_signature(
     MessageRenderSignature(hasher.finish())
 }
 
-/// Discriminant tags used while folding `MessageBlock` variants into
-/// the message-level signature hash. Stable values matter: changing
-/// any tag invalidates every previously-cached render, but order
-/// independence between variants is what stops a Text-with-N bytes
-/// from ever colliding with a Notice with the same N bytes.
-mod block_tag {
-    pub const TEXT: u8 = 0;
-    pub const NOTICE: u8 = 1;
-    pub const TOOL_CALL: u8 = 2;
-    pub const WELCOME: u8 = 3;
-    pub const IMAGE_ATTACHMENT: u8 = 4;
-}
-
+/// Fold one block into the message signature: its content first, then the
+/// view's own inputs for it. The content fields live in the model, so the
+/// content key the render cache is stored under and this signature list
+/// them once.
 fn hash_message_block_into<H: std::hash::Hasher>(
     hasher: &mut H,
     block: &MessageBlock,
@@ -2068,46 +2115,11 @@ fn hash_message_block_into<H: std::hash::Hasher>(
     tool_render_context: tool_call::ToolCallRenderContext<'_>,
 ) {
     use std::hash::Hash;
-    match block {
-        MessageBlock::Text(block) => {
-            block_tag::TEXT.hash(hasher);
-            hash_text_block_content(&block.text, block.trailing_spacing).hash(hasher);
-            block.trailing_spacing.hash(hasher);
-            // Peer-block collapse state (#114). Without this in the
-            // signature, flipping `peer_collapsed_override` from a
-            // click handler is a no-op visually because the message
-            // render cache reuses the previous layout.
-            block.peer_collapsed_override.hash(hasher);
-        }
-        MessageBlock::Notice(block) => {
-            block_tag::NOTICE.hash(hasher);
-            block.severity.hash(hasher);
-            hash_text_block_content(&block.text.text, block.text.trailing_spacing).hash(hasher);
-            block.text.trailing_spacing.hash(hasher);
-        }
-        MessageBlock::ToolCall(tc) => {
-            block_tag::TOOL_CALL.hash(hasher);
-            tc.render_epoch.hash(hasher);
-            tc.layout_epoch.hash(hasher);
-            tc.hidden.hash(hasher);
-            tc.status.hash(hasher);
-            tc.sdk_tool_name.hash(hasher);
-            tool_render_context.current_mode_id.hash(hasher);
-            // Per-tool collapse override flips the rendered shape, so it
-            // has to be folded into the signature alongside the global
-            // tools_collapsed bit (which lives on MessageRenderCacheKey).
-            tc.collapsed_override.hash(hasher);
-            let frame = tool_call_needs_spinner_frame(tc).then_some(spinner.glyph);
-            frame.hash(hasher);
-        }
-        MessageBlock::Welcome(block) => {
-            block_tag::WELCOME.hash(hasher);
-            hash_welcome_block_content(block).hash(hasher);
-        }
-        MessageBlock::ImageAttachment(block) => {
-            block_tag::IMAGE_ATTACHMENT.hash(hasher);
-            block.count.hash(hasher);
-        }
+    crate::app::state::messages::hash_message_block_content_into(hasher, block);
+    if let MessageBlock::ToolCall(tc) = block {
+        tool_render_context.current_mode_id.hash(hasher);
+        let frame = tool_call_needs_spinner_frame(tc).then_some(spinner.glyph);
+        frame.hash(hasher);
     }
 }
 
@@ -2161,13 +2173,17 @@ fn split_line_on_newlines(line: &Line<'static>) -> Vec<Line<'static>> {
     lines
 }
 
-fn welcome_block_layout(block: &mut WelcomeBlock, width: u16) -> RenderedBlockLayout {
-    let had_height = block.cache.height_at(width).is_some();
+fn welcome_block_layout(
+    block: &mut WelcomeBlock,
+    cache: &mut BlockCache,
+    width: u16,
+) -> RenderedBlockLayout {
+    let had_height = cache.height_at(width).is_some();
     let mut lines = Vec::new();
-    render_welcome_cached(block, width, &mut lines);
-    let height = block.cache.height_at(width).unwrap_or_else(|| {
+    render_welcome_cached(block, cache, width, &mut lines);
+    let height = cache.height_at(width).unwrap_or_else(|| {
         let height = rendered_lines_height(&lines, width);
-        block.cache.set_height(height, width);
+        cache.set_height(height, width);
         height
     });
     let wrapped_lines = if had_height { 0 } else { lines.len() };
@@ -2176,19 +2192,57 @@ fn welcome_block_layout(block: &mut WelcomeBlock, width: u16) -> RenderedBlockLa
     RenderedBlockLayout { lines, height, wrapped_lines, copy_rows }
 }
 
+/// The view-side cache for a block with no identity, keyed by its content.
+/// A caller with no store builds into a local: it still renders, it just
+/// cannot reuse or store.
+fn block_cache_for(
+    render_caches: Option<&crate::app::RenderCacheStore>,
+    signature: u64,
+    tools_collapsed: bool,
+) -> crate::app::SlotCache<'_> {
+    match render_caches {
+        Some(caches) => caches.text_block(signature, tools_collapsed),
+        None => crate::app::SlotCache::Uncached(crate::app::BlockCache::default()),
+    }
+}
+
+/// A block's incremental markdown, keyed by the block's id so an append
+/// extends the entry instead of starting a new one.
+fn block_markdown_for<'a>(
+    render_caches: Option<&'a crate::app::RenderCacheStore>,
+    id: u64,
+    text: &str,
+) -> crate::app::SlotMarkdown<'a> {
+    match render_caches {
+        Some(caches) => caches.markdown(id, text),
+        None => {
+            crate::app::SlotMarkdown::Uncached(crate::app::IncrementalMarkdown::from_complete(text))
+        }
+    }
+}
+
 fn text_block_layout(
-    block: &mut TextBlock,
+    cache: &mut BlockCache,
+    markdown: &mut IncrementalMarkdown,
     width: u16,
     preserve_newlines: bool,
     gutter: u16,
 ) -> RenderedBlockLayout {
-    let had_height = block.cache.height_at(width).is_some();
+    let had_height = cache.height_at(width).is_some();
     let mut lines = Vec::new();
     let mut copy_rows = Vec::new();
-    render_text_block_cached(block, width, preserve_newlines, gutter, &mut lines, &mut copy_rows);
-    let height = block.cache.height_at(width).unwrap_or_else(|| {
+    render_text_block_cached(
+        cache,
+        markdown,
+        width,
+        preserve_newlines,
+        gutter,
+        &mut lines,
+        &mut copy_rows,
+    );
+    let height = cache.height_at(width).unwrap_or_else(|| {
         let height = rendered_lines_height(&lines, width);
-        block.cache.set_height(height, width);
+        cache.set_height(height, width);
         height
     });
     let wrapped_lines = if had_height { 0 } else { lines.len() };
@@ -2196,11 +2250,12 @@ fn text_block_layout(
 }
 
 fn assistant_text_block_layout(
-    block: &mut TextBlock,
+    cache: &mut BlockCache,
+    markdown: &mut IncrementalMarkdown,
     width: u16,
     trim_leading_blank_lines: bool,
 ) -> RenderedBlockLayout {
-    let mut rendered = text_block_layout(block, width, false, 0);
+    let mut rendered = text_block_layout(cache, markdown, width, false, 0);
 
     if trim_leading_blank_lines {
         let leading_blank_lines = count_leading_blank_lines(&rendered.lines);
@@ -2216,13 +2271,14 @@ fn assistant_text_block_layout(
 }
 
 fn notice_block_layout(
-    block: &mut crate::app::NoticeBlock,
+    cache: &mut BlockCache,
+    markdown: &mut IncrementalMarkdown,
     width: u16,
     trim_leading_blank_lines: bool,
     severity: SystemSeverity,
 ) -> RenderedBlockLayout {
     let mut rendered =
-        assistant_text_block_layout(&mut block.text, width, trim_leading_blank_lines);
+        assistant_text_block_layout(cache, markdown, width, trim_leading_blank_lines);
     tint_lines(&mut rendered.lines, system_severity_color(severity));
     rendered
 }
@@ -2529,8 +2585,13 @@ fn selected_welcome_tip(block: &WelcomeBlock) -> &'static str {
     WELCOME_TIPS.get(idx).copied().unwrap_or(first_tip)
 }
 
-fn render_welcome_cached(block: &mut WelcomeBlock, width: u16, out: &mut Vec<Line<'static>>) {
-    if let Some(cached_lines) = block.cache.get() {
+fn render_welcome_cached(
+    block: &mut WelcomeBlock,
+    cache: &mut BlockCache,
+    width: u16,
+    out: &mut Vec<Line<'static>>,
+) {
+    if let Some(cached_lines) = cache.get() {
         out.extend_from_slice(cached_lines);
         return;
     }
@@ -2540,9 +2601,9 @@ fn render_welcome_cached(block: &mut WelcomeBlock, width: u16, out: &mut Vec<Lin
         let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.len());
         Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
     };
-    block.cache.store(fresh);
-    block.cache.set_height(h, width);
-    if let Some(stored) = block.cache.get() {
+    cache.store(fresh);
+    cache.set_height(h, width);
+    if let Some(stored) = cache.get() {
         out.extend_from_slice(stored);
     }
 }
@@ -2875,22 +2936,15 @@ pub(super) fn render_text_cached(
 }
 
 fn render_text_block_cached(
-    block: &mut TextBlock,
+    cache: &mut BlockCache,
+    markdown: &mut IncrementalMarkdown,
     width: u16,
     preserve_newlines: bool,
     gutter: u16,
     out: &mut Vec<Line<'static>>,
     copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) {
-    render_text_cached(
-        &mut block.cache,
-        &mut block.markdown,
-        width,
-        preserve_newlines,
-        gutter,
-        out,
-        copy_rows,
-    );
+    render_text_cached(cache, markdown, width, preserve_newlines, gutter, out, copy_rows);
 }
 
 /// Convert single line breaks into hard breaks so user-entered newlines persist.
@@ -3370,15 +3424,25 @@ mod tests {
 
     #[test]
     fn a_fenced_block_keeps_html_looking_code() {
-        let mut block = TextBlock::from_complete("```rust\nlet v: Vec<String> = vec![];\n```\n");
-        let rendered = assistant_text_block_layout(&mut block, 80, false);
+        let block = TextBlock::from_complete("```rust\nlet v: Vec<String> = vec![];\n```\n");
+        let rendered = assistant_text_block_layout(
+            &mut BlockCache::default(),
+            &mut IncrementalMarkdown::from_complete(&block.text),
+            80,
+            false,
+        );
         assert_rows(&rendered.lines, &["  rust", "  let v: Vec<String> = vec![];"], "assistant");
     }
 
     #[test]
     fn a_panel_is_separated_from_the_prose_above_it() {
-        let mut block = TextBlock::from_complete("intro\n```rust\nfn main() {}\n```");
-        let rendered = assistant_text_block_layout(&mut block, 80, false);
+        let block = TextBlock::from_complete("intro\n```rust\nfn main() {}\n```");
+        let rendered = assistant_text_block_layout(
+            &mut BlockCache::default(),
+            &mut IncrementalMarkdown::from_complete(&block.text),
+            80,
+            false,
+        );
         assert_rows(&rendered.lines, &["intro", "", "  rust", "  fn main() {}"], "assistant");
     }
 
@@ -3480,7 +3544,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -6278,40 +6341,6 @@ mod tests {
         );
         tc.raw_input = Some(serde_json::json!({ "description": "x" }));
         assert!(render_lifecycle_one_liner(&tc, 80).is_none());
-    }
-
-    #[test]
-    fn workflow_meta_name_extracts_from_script_block() {
-        let script = "export const meta = {\n  name: 'minimal-ping',\n  description: 'sanity'\n}\n\nphase('Ping')";
-        assert_eq!(workflow_meta_name(script), "minimal-ping");
-    }
-
-    #[test]
-    fn workflow_meta_name_handles_double_quoted_name() {
-        let script = "export const meta = { name: \"snapshot-runner\" }";
-        assert_eq!(workflow_meta_name(script), "snapshot-runner");
-    }
-
-    #[test]
-    fn workflow_meta_name_falls_back_when_block_absent() {
-        let script = "await agent('do thing')";
-        assert_eq!(workflow_meta_name(script), "Workflow");
-    }
-
-    #[test]
-    fn workflow_meta_fields_extracts_name_and_description() {
-        let script = "export const meta = {\n  name: 'minimal-ping',\n  description: 'sanity'\n}";
-        let (name, desc) = workflow_meta_fields(script);
-        assert_eq!(name, "minimal-ping");
-        assert_eq!(desc.as_deref(), Some("sanity"));
-    }
-
-    #[test]
-    fn workflow_meta_fields_returns_none_description_when_absent() {
-        let script = "export const meta = { name: 'short' }";
-        let (name, desc) = workflow_meta_fields(script);
-        assert_eq!(name, "short");
-        assert!(desc.is_none());
     }
 
     #[test]

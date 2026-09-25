@@ -490,11 +490,16 @@ fn measure_message_height_at(
     // then take the mutable message borrow for the measure call. Ground
     // truth: same context the render pass builds, so heights can't
     // diverge from what paints.
-    let render_context = message::MessageRenderContext::new(
+    // Cloned out of `App` before the message borrow below: the context
+    // holds it for the whole render, and `active_messages_mut` borrows
+    // all of `App`.
+    let render_caches = std::rc::Rc::clone(&app.render_caches);
+    let render_context = message::MessageRenderContext::with_caches(
         invariants.mode_id,
         width,
         invariants.layout_generation,
         options,
+        &render_caches,
     )
     .with_stop_hook_hooks(stop_hook_snapshot.hooks.as_slice())
     .with_group_collapse_levels(&group_collapse_levels)
@@ -1088,11 +1093,18 @@ fn render_message_range(
             stop_hook_summary_actions: stop_hook.actions,
             stop_hook_summary_expanded: stop_hook.expanded,
         };
-        let ctx = message::MessageRenderContext::new(mode_id, width, layout_generation, options)
-            .with_stop_hook_hooks(stop_hook.hooks.as_slice())
-            .with_group_collapse_levels(&group_collapse_levels)
-            .with_messaging_group_collapse_levels(&messaging_group_collapse_levels)
-            .with_project_root(&cwd_raw);
+        let render_caches = std::rc::Rc::clone(&app.render_caches);
+        let ctx = message::MessageRenderContext::with_caches(
+            mode_id,
+            width,
+            layout_generation,
+            options,
+            &render_caches,
+        )
+        .with_stop_hook_hooks(stop_hook.hooks.as_slice())
+        .with_group_collapse_levels(&group_collapse_levels)
+        .with_messaging_group_collapse_levels(&messaging_group_collapse_levels)
+        .with_project_root(&cwd_raw);
         if structural_skip > 0 {
             let mut msg_copy_rows = Vec::new();
             let Some(msg_mut) = app.active_messages_mut().and_then(|messages| messages.get_mut(i))
@@ -1108,10 +1120,13 @@ fn render_message_range(
                 &mut msg_copy_rows,
             );
             let structural_rows_skipped = structural_skip.saturating_sub(remaining_skip);
-            let gutter: &[std::ops::Range<usize>] = app
+            let caches = std::rc::Rc::clone(&app.render_caches);
+            let gutter_guard = app
                 .messages()
                 .and_then(|messages| messages.get(i))
-                .map_or(&[], |message| message.render_cache.gutter_rows());
+                .map(|message| caches.peek_message(message.id));
+            let gutter: &[std::ops::Range<usize>] =
+                gutter_guard.as_deref().map_or(&[], crate::app::MessageRenderCache::gutter_rows);
             record_gutter_rows(&mut gutter_rows, gutter, rendered_rows, structural_rows_skipped);
             record_copy_rows(&mut copy_rows, &msg_copy_rows);
             rendered_rows = rendered_rows
@@ -1125,10 +1140,13 @@ fn render_message_range(
                 break;
             };
             message::render_message_with_copy_rows(msg_mut, &sp, ctx, out, &mut msg_copy_rows);
-            let gutter: &[std::ops::Range<usize>] = app
+            let caches = std::rc::Rc::clone(&app.render_caches);
+            let gutter_guard = app
                 .messages()
                 .and_then(|messages| messages.get(i))
-                .map_or(&[], |message| message.render_cache.gutter_rows());
+                .map(|message| caches.peek_message(message.id));
+            let gutter: &[std::ops::Range<usize>] =
+                gutter_guard.as_deref().map_or(&[], crate::app::MessageRenderCache::gutter_rows);
             record_gutter_rows(&mut gutter_rows, gutter, rendered_rows, 0);
             record_copy_rows(&mut copy_rows, &msg_copy_rows);
             rendered_rows = rendered_rows.saturating_add(message_height);
@@ -1375,7 +1393,8 @@ fn enforce_and_emit_cache_metrics(app: &mut App) {
     }
 
     if should_log {
-        let entry_count = count_populated_cache_slots(app.messages().unwrap_or_default());
+        let entry_count =
+            count_populated_cache_slots(app.messages().unwrap_or_default(), &app.render_caches);
         let snap = match (
             app.history_retention(),
             app.history_retention_stats(),
@@ -1414,16 +1433,27 @@ fn enforce_and_emit_cache_metrics(app: &mut App) {
 /// Count cache slots with non-zero cached bytes across all message blocks.
 ///
 /// Only called on log cadence (~every 60 frames), not per-frame.
-fn count_populated_cache_slots(messages: &[crate::app::ChatMessage]) -> usize {
+fn count_populated_cache_slots(
+    messages: &[crate::app::ChatMessage],
+    caches: &crate::app::RenderCacheStore,
+) -> usize {
     messages
         .iter()
         .flat_map(|m| m.blocks.iter())
         .filter(|block| match block {
-            MessageBlock::Text(block) => block.cache.cached_bytes() > 0,
-            MessageBlock::Notice(block) => block.text.cache.cached_bytes() > 0,
-            MessageBlock::Welcome(w) => w.cache.cached_bytes() > 0,
-            MessageBlock::ToolCall(tc) => tc.cache.cached_bytes() > 0,
-            MessageBlock::ImageAttachment(img) => img.cache.cached_bytes() > 0,
+            MessageBlock::ToolCall(tc) => {
+                caches.peek_tool_call(&tc.id, tc.render_epoch).cached_bytes() > 0
+            }
+            MessageBlock::Text(block) => caches.peek_block(block.id).cached_bytes() > 0,
+            MessageBlock::Notice(block) => caches.peek_block(block.text.id).cached_bytes() > 0,
+            MessageBlock::Welcome(w) => {
+                caches
+                    .peek_welcome(crate::app::state::messages::hash_welcome_block_content(w))
+                    .cached_bytes()
+                    > 0
+            }
+            // An image-attachment block caches no rows.
+            MessageBlock::ImageAttachment(_) => false,
         })
         .count()
 }
@@ -1690,6 +1720,113 @@ mod tests {
                 "every ruled row is one of the turn's prose rows: {text:?}"
             );
         }
+    }
+
+    /// The same text in a user turn and an assistant turn does not render
+    /// the same: the user turn is indented by the gutter and wraps to a
+    /// narrower width. Both blocks' rows are cached, so a cache keyed on the
+    /// text lets one serve the other - and the assistant turn lays out first,
+    /// tail-first, so it is the USER's turn that loses its gutter and wrap.
+    /// The block's id is the key so neither can be handed the other's rows.
+    #[test]
+    fn identical_text_in_two_roles_does_not_share_cached_rows() {
+        // 39 cells: one row at the assistant's 40, two at the user's 38.
+        let text = "wwww xxxx yyyy zzzz aaaa bbbb cccc dddd\n";
+        let mut app = App::test_default();
+        *app.active_messages_mut().expect("active session") =
+            vec![user_message(text), assistant_text_message(text)];
+        let rows = draw_chat_rows(&mut app, 40, 40);
+
+        let heads: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.0.contains("wwww"))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(heads.len(), 2, "one row per role carries the text: {rows:?}");
+        assert!(
+            rule_row(&rows[heads[0]]),
+            "the user turn's row carries the gutter rule: {:?}",
+            rows[heads[0]].0
+        );
+        assert!(
+            !rule_row(&rows[heads[1]]),
+            "the assistant turn's row does not: {:?}",
+            rows[heads[1]].0
+        );
+        let user_text = rows[heads[0]].0.trim_start_matches('\u{258f}').trim_start();
+        let assistant_text = rows[heads[1]].0.trim_start();
+        assert!(
+            assistant_text.len() > user_text.len(),
+            "the user turn wraps to the narrower content width, so its first row carries \
+             less of the text: user {user_text:?} assistant {assistant_text:?}"
+        );
+    }
+
+    /// A live turn's `elapsed_secs` moves the message's content once a
+    /// second, through the real render path. The store keeps ONE entry
+    /// across those ticks rather than one per tick - keyed on content it
+    /// would grow with the frames, and nothing can evict the superseded
+    /// entries because the budget walk resolves a slot's current key.
+    #[test]
+    fn a_ticking_turn_keeps_one_message_cache_entry() {
+        use crate::app::state::render_cache_store::testing::message_entry_count;
+
+        let mut app = App::test_default();
+        *app.active_messages_mut().expect("active session") =
+            vec![assistant_text_message("a reply")];
+
+        for elapsed in 0..5 {
+            app.active_messages_mut().expect("active session")[0].turn_info.elapsed_secs = elapsed;
+            let _ = draw_chat_rows(&mut app, 40, 40);
+            assert_eq!(
+                message_entry_count(&app),
+                1,
+                "one message entry after {elapsed} ticks of the same turn"
+            );
+        }
+    }
+
+    /// A message whose role class changes after it was rendered re-renders
+    /// at the new role's width rather than reusing the old role's rows.
+    ///
+    /// Nothing in production flips a role today, which is exactly why this
+    /// exists: the stamp's `preserve_newlines` and `gutter` are a guard
+    /// against a block's rows outliving the role they were built for, and
+    /// "these two look redundant" is a change someone would plausibly make.
+    #[test]
+    fn a_role_flip_re_renders_at_the_new_roles_width() {
+        // 39 cells: one row at the assistant's 40, two at the user's 38.
+        let text = "wwww xxxx yyyy zzzz aaaa bbbb cccc dddd\n";
+        let mut app = App::test_default();
+        *app.active_messages_mut().expect("active session") = vec![user_message(text)];
+
+        let as_user = draw_chat_rows(&mut app, 40, 40);
+        let user_idx = as_user
+            .iter()
+            .position(|row| row.0.contains("wwww"))
+            .expect("the user turn renders the text");
+        assert!(rule_row(&as_user[user_idx]), "it is a user turn first: {:?}", as_user[user_idx].0);
+
+        app.active_messages_mut().expect("active session")[0].role = MessageRole::Assistant;
+        let as_assistant = draw_chat_rows(&mut app, 40, 40);
+        let assistant_idx = as_assistant
+            .iter()
+            .position(|row| row.0.contains("wwww"))
+            .expect("the flipped turn renders the text");
+
+        assert!(
+            !rule_row(&as_assistant[assistant_idx]),
+            "the flipped turn must not keep the user gutter: {:?}",
+            as_assistant[assistant_idx].0
+        );
+        let user_text = as_user[user_idx].0.trim_start_matches('\u{258f}').trim_start();
+        let assistant_text = as_assistant[assistant_idx].0.trim_start();
+        assert!(
+            assistant_text.len() > user_text.len(),
+            "and must re-render at the wider content width: user {user_text:?} \
+             assistant {assistant_text:?}"
+        );
     }
 
     /// The rule's row arithmetic, directly: the ranges are in paragraph
@@ -2002,7 +2139,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: crate::app::BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -2392,6 +2528,61 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         let content_height = sync_chat_layout(app, area, &spinner);
         build_scrolled_render_data(app, &spinner, width, content_height, usize::from(height))
+    }
+
+    /// An assistant turn holding one tool call with body content, so a
+    /// render reaches the cached body path rather than the title-only
+    /// early return.
+    fn tool_call_message(id: &str) -> ChatMessage {
+        ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(crate::app::ToolCallInfo {
+                id: id.to_owned(),
+                title: format!("tool {id}"),
+                sdk_tool_name: "Read".to_owned(),
+                raw_input: None,
+                raw_input_bytes: 0,
+                output_metadata: None,
+                task_metadata: None,
+                status: crate::agent::model::ToolCallStatus::Completed,
+                content: vec![crate::agent::model::RenderToolCallContent::from("alpha")],
+                hidden: false,
+                terminal_output: None,
+                monitor_output_tail: Vec::default(),
+                monitor_status: None,
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_width: 0,
+                last_measured_height: 0,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                last_measured_tools_collapsed: false,
+                collapsed_override: None,
+                last_measured_y_in_msg: 0,
+                answered_questions: Vec::new(),
+            }))],
+        )
+    }
+
+    /// A production entry point has to hand the view's render caches to
+    /// the renderers. The constructor makes omitting it uncompilable in
+    /// production, so this asserts the entry points that exist actually
+    /// pass it through: a store that stays empty means every render is
+    /// cold, and nothing else would say so.
+    #[test]
+    fn a_cached_render_populates_the_store() {
+        let mut app = App::test_default();
+        app.tools_collapsed = false;
+        app.active_messages_mut()
+            .expect("active session")
+            .push(tool_call_message("tc-store-guard"));
+
+        first_frame_render(&mut app, 80, 24);
+
+        assert!(
+            app.render_caches.peek_tool_call("tc-store-guard", 0).get().is_some(),
+            "the public render path must hand the store to the renderers",
+        );
     }
 
     /// Render EVERY message, then return the visible rows after scrolling the
@@ -3173,6 +3364,7 @@ mod tests {
         let base_h = app.active_viewport_mut().expect("active session").message_height(0);
         assert!(base_h > 0);
 
+        let render_caches = std::rc::Rc::clone(&app.render_caches);
         if let Some(MessageBlock::Text(block)) = app
             .active_messages_mut()
             .expect("active session")
@@ -3181,8 +3373,7 @@ mod tests {
         {
             let extra = " this now wraps across multiple lines";
             block.text.push_str(extra);
-            block.markdown.append(extra);
-            block.cache.invalidate();
+            render_caches.markdown(block.id, &block.text).append(extra);
         }
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 

@@ -7,7 +7,7 @@ protocol over stdio.
 forge never calls the Anthropic API directly. It spawns `claude` and
 talks to it, so the CLI stays the thing that runs the agent loop.
 
-**[Documentation](https://busytools.github.io/forge/)**
+**[Documentation](https://busytools.github.io/forge/)** - **[API reference](https://busytools.github.io/forge/rustdoc/)**
 
 ## Not a port of the Python SDK
 

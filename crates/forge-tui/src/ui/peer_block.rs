@@ -1127,7 +1127,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: crate::app::BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),

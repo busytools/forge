@@ -293,7 +293,7 @@ Single line: 2-space indent, status icon in its status color, kind icon and kind
   <span class="success">✓</span> <span class="bold">⌕</span> <span class="bold">Glob</span> crates/**/Cargo.toml
   <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Bash</span> cargo nextest run -p forge-tui
   <span class="success">✓</span> <span class="bold">⊕</span> <span class="bold">WebFetch</span> https://docs.rs/ratatui/latest/ratatui/
-  <span class="success">✓</span> <span class="bold">⌖</span> <span class="bold">ToolSearch</span> select:CronList
+  <span class="success">✓</span> <span class="bold">⌖</span> <span class="bold">ToolSearch</span> select:TaskStop
   <span class="success">✓</span> <span class="bold">⊕</span> <span class="bold">WebSearch</span> rust async runtime comparison
   <span class="success">✓</span> <span class="bold">✦</span> <span class="bold">Advisor</span> how to handle a stuck migration
   <span class="error">✗</span> <span class="bold">⬚</span> <span class="bold">Read</span> /path/to/missing.rs</pre>
@@ -362,7 +362,7 @@ Click a group's summary row to cycle it L2 (summary) → L1 (title rows) → L0 
 <summary>Row content and clipping</summary>
 
 - Nothing wraps: each row is a single line, and the nested target rows are the only ones that clip. Read relativizes each path against the project root and clips with a middle-ellipsis so the filename stays visible; every other kind clips end-first with `...`, keeping the head. The parent count row is never clipped and often the widest; the target budget floors at 8 cells, so below a render width of 16 a child row overflows, and the outer layout char-wraps without the tree gutter, so an overflowing row shears the tree.
-- Per-kind content: bash shows the human-readable description, web the URL (scheme stripped) or query, toolsearch the query, skill the invoked skill name (plus its args), SendMessage the recipient and summary (falling back to the full message), Delete / Move their paths, LSP the operation and file, PushNotification the message.
+- Per-kind content: bash shows the human-readable description, web the URL (scheme stripped) or query, toolsearch the query, skill the invoked skill name (plus its args), glob and grep the pattern, Delete / Move their paths, LSP the operation and file, PushNotification the message.
 - Kinds render in first-appearance order; the spine holds `│` while a later kind follows, blank on the last.
 
 </details>
@@ -440,10 +440,10 @@ A single-kind run is a one-child tree:
 
   <pre class="indent">
   <span class="success">✓</span> <span class="bold">3 tool calls</span>   <span class="dim">ctrl+x to expand</span>
-  <span class="dim">└─ </span><span class="bold">➤ SendMessage</span>
-  <span class="dim">&nbsp;&nbsp;&nbsp;├─ to aa32ac1c4e464f26d: Add record-ordering check to roun...</span>
-  <span class="dim">&nbsp;&nbsp;&nbsp;├─ to planner: Resume. The account limit has lifted.</span>
-  <span class="dim">&nbsp;&nbsp;&nbsp;└─ to steward: STOP AND CHECK YOUR SHA BEFORE GOING FURTHE...</span></pre>
+  <span class="dim">└─ </span><span class="bold">⌕ glob</span>
+  <span class="dim">&nbsp;&nbsp;&nbsp;├─ Glob **/*.snap</span>
+  <span class="dim">&nbsp;&nbsp;&nbsp;├─ Glob **/lead_charter.md</span>
+  <span class="dim">&nbsp;&nbsp;&nbsp;└─ Glob **/theme.rs</span></pre>
 
 </div>
 
@@ -550,9 +550,11 @@ L1 expansion:
 
 ## Task* and Workflow
 
-`Workflow` renders nothing in chat - live state lives in the [Inspector](./inspector.md)'s `WORKFLOWS` section (Workflow's icon: `◆`). `TaskOutput` and `TaskStop` are suppressed the same way: they are paired with Monitor and Workflow, and their side-effects surface on those tools' own blocks.
+`TaskOutput` and `TaskStop` render nothing in chat: they are paired with Monitor, and their side-effects surface on that tool's own block.
 
 The `claude` CLI's own task tools - `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` - are not offered to any session. forge owns the task list now: sessions declare their work through the `tasks__*` MCP tools over forge's own store, and the [Inspector](./inspector.md)'s `TASKS` section is its only surface. CLI 2.1.156 had already retired the single-call `TodoWrite` forge used to render.
+
+`Workflow` is likewise not offered to any session, and forge carries no surface for it: a `Workflow` tool call in an existing transcript renders as an ordinary tool row, with the generic glyph.
 
 ## Monitor
 

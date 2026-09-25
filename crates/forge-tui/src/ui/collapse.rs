@@ -62,7 +62,6 @@ pub fn is_carved_out_from_global_directive(tc: &ToolCallInfo) -> bool {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::app::BlockCache;
 
     fn make_tc(name: &str) -> ToolCallInfo {
         ToolCallInfo {
@@ -86,7 +85,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),

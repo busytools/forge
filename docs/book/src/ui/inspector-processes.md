@@ -18,7 +18,7 @@ Currently-running work in the active session: the OS process tree under claude i
 <details>
 <summary>Row order, memory, adoption</summary>
 
-Registry-fed `local_bash` rows the OS scan missed lead the section; the OS-walked rows follow in tree order from claude's direct children, siblings sorted into tiers - matched work, then generic processes - with memory descending within each tier and PID as the tie-break. A 50-row cap applies but the pane scrolls (the scrollbar IS the overflow indicator). Memory renders from 36 pane columns up and drops at Medium. The scan also adopts a backgrounded `local_bash` sitting outside claude's descendant tree - `setsid`-detached, or orphaned once its session's claude exits - so it renders with full RAM and process tree like any other process. Backgrounded agents render in SUBAGENTS and workflows in WORKFLOWS - there is no standalone background section.
+Registry-fed `local_bash` rows the OS scan missed lead the section; the OS-walked rows follow in tree order from claude's direct children, siblings sorted into tiers - matched work, then generic processes - with memory descending within each tier and PID as the tie-break. A 50-row cap applies but the pane scrolls (the scrollbar IS the overflow indicator). Memory renders from 36 pane columns up and drops at Medium. The scan also adopts a backgrounded `local_bash` sitting outside claude's descendant tree - `setsid`-detached, or orphaned once its session's claude exits - so it renders with full RAM and process tree like any other process. Backgrounded agents render in SUBAGENTS - there is no standalone background section.
 
 </details>
 
@@ -78,35 +78,6 @@ Each snapshot server matches at most one OS process by configured launch command
 
 </details>
 
-## WORKFLOWS
-
-The active session's in-flight Workflow tool calls, each a `◆ <name>` header over its per-phase tree - spinner while a phase runs, `✓` completed, `○` pending, `log()` lines dim under the active phase. A completed entry collapses to a one-line summary (click to re-expand) and persists only while another entry runs; when none remain the section drops out. A resumed session shows no WORKFLOWS section.
-
-<div class="term">
-
-<pre class="indent">
-  <span class="accent-bold">INSPECTOR</span>
-  <span class="dim">─────────────────────────</span>
-
-  <span class="dim bold">  WORKFLOWS</span>
-
-  <span class="bold">  ◆</span> <span class="bold">minimal-ping</span>
-  <span class="dim">  ├ </span><span class="success">✓</span> Ping <span class="dim">· done</span>
-  <span class="dim">  │   └ log: "dispatching single structured agent"</span>
-  <span class="dim">  └ </span><span class="dim">⠋</span> Synthesize <span class="dim">· in progress</span>
-  <span class="dim">      └ log: "schema validated, awaiting model"</span>
-
-  <span class="success">  ✓</span> <span class="dim">◆ big-fan-out · done</span> <span class="dim">[▶ expand]</span>
-</pre>
-
-</div>
-
-<details>
-<summary>Workflow fallback</summary>
-
-If the script's `meta` block fails to parse (malformed script, missing `export const meta`), the entry renders as a single static "`◆ Workflow · <status>`" line without a phase tree.
-
-</details>
 
 ## MONITORS
 
@@ -145,7 +116,7 @@ The durable signal is the session-scoped roster - the CLI's background-task regi
 
 ## SCHEDULES
 
-The session's pending time-based schedules: `ScheduleWakeup` wakeups (the /loop re-arm), `CronCreate` jobs, and durable forge crons. A wakeup stays one line: `⏰`, reason, a live `in <countdown>`. A cron takes two lines: a bold headline (the description, else the prompt's first line) over a dim sub-line with the humanized schedule plus a right-justified badge.
+The session's pending time-based schedules: `ScheduleWakeup` wakeups (the /loop re-arm) and durable forge crons. A wakeup stays one line: `⏰`, reason, a live `in <countdown>`. A cron takes two lines: a bold headline (the description, else the prompt's first line) over a dim sub-line with the humanized schedule plus a right-justified badge.
 
 <div class="term">
 
@@ -167,11 +138,9 @@ The session's pending time-based schedules: `ScheduleWakeup` wakeups (the /loop 
 <details>
 <summary>Schedules details</summary>
 
-- The schedule is plain English (`0 9 * * *` → `daily at 09:00`, `*/5 * * * *` → `every 5 minutes`, `0 9 * * 1-5` → `weekdays at 09:00`, `0 0 1 * *` → `monthly on the 1st`); a run-once cron shows local wall-clock time (`today 14:30`, `tomorrow 09:00`, `Jul 25 09:00`); an unrecognised expression falls back to the raw expr, never a bare `* * * * *`. The badge is `recurring` for a repeating cron (its schedule carries the timing, so no countdown) or a live `in <countdown>` for a run-once; the static `one-shot` badge is the last resort when no fire time could be resolved. Only a cron with neither a description nor a prompt collapses to a single line.
-- A session sees only the forge crons it created itself: a lead sees its own entries, a worker labelled `steward` only its own - never the lead's or a sibling's (matching what `cron__list` returns and `cron__delete` acts on). The native sources are per-session by construction. The section hides only when both sources are empty.
-- Auto-prune: anything past its fire time - a wakeup or one-shot cron - plus 7-day-expired recurring crons drop on the next ~1 s tick. A one-shot resolves its fire time at decode because the CLI auto-deletes a fired one-shot without emitting a `CronDelete` - waiting for that event would strand the row; the result's job id is stamped onto the entry so a later `CronDelete` by job id finds it. One whose expression does not parse is retained rather than expired against a guess. Wakeups re-arm on each /loop turn - a new `ScheduleWakeup` replaces the prior, so at most one wakeup survives per session.
-- Resume replay: every native cron replayed by a resume is skipped - the CLI reports every `CronCreate` as session-only whatever the `durable` flag says, so no replayed native cron has a live counterpart. Only forge crons genuinely survive a restart, and those come from the store.
-- Native and forge crons render identically - deliberately; the source is not shown (deferred as its own issue) even though the cancel paths differ (`CronDelete` vs the forge MCP delete).
+- The schedule is plain English (`0 9 * * *` → `daily at 09:00`, `*/5 * * * *` → `every 5 minutes`, `0 9 * * 1-5` → `weekdays at 09:00`, `0 0 1 * *` → `monthly on the 1st`); a run-once cron shows local wall-clock time (`today 14:30`, `tomorrow 09:00`, `Jul 25 09:00`); an unrecognised expression falls back to the raw expr, never a bare `* * * * *`. The badge is `recurring` for a repeating cron (its schedule carries the timing, so no countdown) or a live `in <countdown>` for a run-once; the static `one-shot` badge is the last resort when a run-once carries no resolvable fire time. Only a cron with neither a description nor a prompt collapses to a single line.
+- A session sees only the forge crons it created itself: a lead sees its own entries, a worker labelled `steward` only its own - never the lead's or a sibling's (matching what `cron__list` returns and `cron__delete` acts on). The section hides when both sources are empty.
+- Auto-prune: a wakeup past its fire time drops on the next ~1 s tick. Wakeups re-arm on each /loop turn - a new `ScheduleWakeup` replaces the prior, so at most one wakeup survives per session. Forge crons are the store's own list, refreshed from it each tick.
 - Colors: header dim bold; `⏰` and `◴` rust orange; headlines white bold; the sub-line and badges dim.
 
 </details>

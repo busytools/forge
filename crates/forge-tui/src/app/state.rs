@@ -3,42 +3,42 @@ pub mod block_cache;
 pub mod cache_metrics;
 pub(crate) mod focus;
 mod history_retention;
-pub mod messages;
 pub mod monitors;
 pub(crate) mod render_budget;
+pub(crate) mod render_cache_store;
 pub mod schedules;
 pub mod sessions;
 pub mod tasks;
-pub mod tool_call_info;
 pub mod tool_calls;
 pub(crate) mod turn;
 pub mod types;
 pub mod viewport;
 pub(crate) mod welcome;
-pub mod workflows;
 
 // Re-export all public types so external `use crate::app::state::X` paths still work.
 pub use block_cache::BlockCache;
 pub use cache_metrics::CacheMetrics;
-pub use messages::{
-    CachedMessageSegment, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRenderCache,
-    MessageRenderCacheKey, MessageRenderSignature, MessageRole, NoticeBlock, NoticeDedupKey,
-    RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, TurnInfo, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content,
+/// The message model moved to `forge-sessions`. Re-exported as a module so
+/// every `state::messages::…` and `state::tool_call_info::…` path in the
+/// view keeps resolving.
+pub use forge_sessions::model::{messages, tool_call_info};
+
+pub use forge_sessions::model::{
+    AnsweredQuestion, ChatMessage, MessageBlock, MessageRenderSignature, MessageRole, NoticeBlock,
+    NoticeDedupKey, RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing,
+    ToolCallInfo, TurnInfo, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
+    is_execute_tool_name, is_monitor_tool_name,
 };
-pub(crate) use messages::{MarkdownRenderKey, RenderedChunk};
-pub use tool_call_info::{
-    AnsweredQuestion, ToolCallInfo, is_execute_tool_name, is_monitor_tool_name,
-};
+pub use render_cache_store::{CachedMessageSegment, MessageRenderCache, MessageRenderCacheKey};
+pub(crate) use render_cache_store::{MarkdownRenderKey, RenderedChunk};
 pub use types::{
     AppStatus, AttentionEntry, AttentionKind, BackgroundTask, ExtraUsage, FailedTurn, HelpView,
     HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeInfo, ModeState,
-    MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus,
-    RecentSessionInfo, RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry,
-    ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
-    SessionTaskCard, SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState,
-    SubagentChildEntry, SubagentEntry, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState,
-    UsageWindow, WorkflowEntry, WorkflowStatus,
+    MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, RecentSessionInfo,
+    RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind,
+    ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState, SessionTaskCard,
+    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
+    SubagentEntry, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState, UsageWindow,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -702,6 +702,13 @@ pub struct App {
     pub perf: Option<crate::perf::PerfLogger>,
     /// Global in-memory budget for rendered block and message caches.
     pub render_cache_budget: RenderCacheBudget,
+    /// The rendered lines themselves, keyed by the block they belong to.
+    /// Held here rather than on the block types so those carry no
+    /// `ratatui` dependency. An `Rc` because the render path hits it while
+    /// holding a `&mut` borrow of the messages, which a `&self` field
+    /// would not allow; the TUI runs on a `LocalSet`, so nothing here has
+    /// to be `Send`.
+    pub(crate) render_caches: std::rc::Rc<super::state::render_cache_store::RenderCacheStore>,
     /// Smoothed frames-per-second (EMA of presented frame cadence).
     pub fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
@@ -824,11 +831,6 @@ impl App {
     }
 
     pub(crate) fn sync_after_message_tail_changed(&mut self, msg_idx: usize) {
-        if let Some(message) =
-            self.active_messages_mut().and_then(|messages| messages.get_mut(msg_idx))
-        {
-            message.invalidate_render_cache();
-        }
         self.sync_render_cache_message_tail(msg_idx);
         self.recompute_message_retained_bytes(msg_idx);
         self.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
@@ -1091,6 +1093,9 @@ impl App {
             notifications: super::notify::NotificationManager::new(),
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
+            render_caches: std::rc::Rc::new(
+                super::state::render_cache_store::RenderCacheStore::default(),
+            ),
             fps_ema: None,
             last_frame_at: None,
             connection_started: false,
@@ -1157,7 +1162,6 @@ mod tests {
                 last_measured_layout_epoch: 0,
                 last_measured_layout_generation: 0,
                 last_measured_tools_collapsed: false,
-                cache: BlockCache::default(),
                 collapsed_override: None,
                 last_measured_y_in_msg: 0,
                 answered_questions: Vec::new(),
@@ -1165,7 +1169,7 @@ mod tests {
         )
     }
 
-    pub(super) fn assistant_bash_tool_message(
+    pub(crate) fn assistant_bash_tool_message(
         id: &str,
         status: model::ToolCallStatus,
     ) -> ChatMessage {
@@ -1192,7 +1196,6 @@ mod tests {
                 last_measured_layout_epoch: 0,
                 last_measured_layout_generation: 0,
                 last_measured_tools_collapsed: false,
-                cache: BlockCache::default(),
                 collapsed_override: None,
                 last_measured_y_in_msg: 0,
                 answered_questions: Vec::new(),

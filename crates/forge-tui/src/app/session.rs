@@ -17,7 +17,6 @@ use crate::app::state::types::{
     BackgroundTask, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
     MonitorEntry, PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState,
     SessionTaskCard, SessionUsageState, StopHookSummaryState, ToolCallScope, UsageState,
-    WorkflowEntry,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TurnNoticeRef};
@@ -306,8 +305,8 @@ pub struct UiSession {
     pub monitors: Vec<MonitorEntry>,
 
     /// CLI-authoritative background-task snapshot. `local_bash` entries
-    /// feed the Inspector PROCESSES section (agents / workflows surface
-    /// in SUBAGENTS / WORKFLOWS). Replaced wholesale on each
+    /// feed the Inspector PROCESSES section; agent kinds surface in
+    /// SUBAGENTS. Replaced wholesale on each
     /// `background_tasks_changed` event. Session-scoped because
     /// background tasks outlive the turn that spawned them.
     pub background_tasks: Vec<BackgroundTask>,
@@ -341,18 +340,11 @@ pub struct UiSession {
     /// error, or a card transition.
     pub backgrounded_roots: HashSet<String>,
 
-    /// Pending time-based schedules (`ScheduleWakeup` + `CronCreate`)
-    /// surfaced in the Inspector SCHEDULES section. Pruned by the
-    /// ~1s timer tick via `App::prune_expired_schedules`.
+    /// Pending time-based schedules (`ScheduleWakeup` wakeups and
+    /// durable forge crons) surfaced in the Inspector SCHEDULES
+    /// section. Pruned by the ~1s timer tick via
+    /// `App::prune_expired_schedules`.
     pub schedules: Vec<crate::app::state::types::ScheduleEntry>,
-
-    /// In-flight Workflow entries surfaced as the
-    /// Inspector WORKFLOWS section + the chat one-liner notice.
-    /// Populated when a `Workflow` tool_use enters the assistant
-    /// stream; per-phase state mutated from each `task_progress`
-    /// event carrying a `workflow_progress` snapshot. Auto-clears
-    /// once every entry transitions out of `InProgress`.
-    pub workflows: Vec<WorkflowEntry>,
 
     // ---- Git diff snapshot (Inspector GIT section) ----
     /// Latest poll result. `None` until the first scan completes
@@ -547,8 +539,8 @@ impl UiSession {
         self.dictate_notice.as_ref().filter(|_| self.input.content_version == stamped)
     }
 
-    /// True while the session has a live backgrounded task (bash / agent /
-    /// workflow) that the Inspector will paint a row for. The CLI keeps
+    /// True while the session has a live backgrounded task (bash / agent)
+    /// that the Inspector will paint a row for. The CLI keeps
     /// `background_tasks` to the currently-live set, replacing it wholesale
     /// on each `background_tasks_changed`; `inspector_draws_row` narrows
     /// that to the roster entries that reach a section, so the spinner can
@@ -556,11 +548,7 @@ impl UiSession {
     /// activity spinner alongside the turn-driven lifecycle state.
     pub fn has_live_background_work(&self) -> bool {
         self.background_tasks.iter().any(|task| {
-            crate::app::processes::inspector_draws_row(
-                task,
-                &self.session_task_tool_use_ids,
-                &self.workflows,
-            )
+            crate::app::processes::inspector_draws_row(task, &self.session_task_tool_use_ids)
         })
     }
 
@@ -732,7 +720,7 @@ impl UiSession {
                     )
                 {
                     tc.status = model::ToolCallStatus::Completed;
-                    tc.mark_tool_call_layout_dirty();
+                    crate::app::state::tool_calls::request_tool_call_layout_dirty(tc);
                     settled.push((msg_idx, block_idx));
                 }
             }
@@ -902,7 +890,6 @@ impl UiSession {
             background_tasks: Vec::default(),
             session_task_tool_use_ids: std::collections::HashMap::default(),
             schedules: Vec::default(),
-            workflows: Vec::default(),
             group_collapse_levels: std::collections::HashMap::default(),
             messaging_group_collapse_levels: std::collections::HashMap::default(),
             git_diff_snapshot: None,

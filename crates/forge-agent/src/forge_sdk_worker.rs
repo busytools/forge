@@ -2579,6 +2579,37 @@ mod tests {
         );
     }
 
+    /// This block reaches every session whether or not it ever touches a
+    /// cron or a task, and every name in it is a tool the session has. A
+    /// name here that forge blocks sends the session to a tool it cannot
+    /// call, and the failure is silent until someone tries.
+    #[test]
+    fn the_always_on_block_advertises_only_forge_owned_tools() {
+        let prompt = build_forge_system_prompt(true, Some("CATALOG"), Some("CHARTER"));
+        for tool in [
+            "CronCreate",
+            "CronDelete",
+            "CronList",
+            "TaskCreate",
+            "TaskGet",
+            "TaskList",
+            "TaskUpdate",
+            "SendMessage",
+            "ListAgents",
+            "Workflow",
+            "RemoteTrigger",
+        ] {
+            assert!(
+                !prompt.contains(tool),
+                "the always-on block must not advertise the blocked CLI tool {tool}",
+            );
+        }
+        assert!(
+            prompt.contains("cron__create"),
+            "it names forge's own cron surface instead: {prompt}",
+        );
+    }
+
     #[test]
     fn system_prompt_orders_trust_cron_catalog_charter() {
         let out = build_forge_system_prompt(true, Some("CATALOG"), Some("CHARTER"));

@@ -39,10 +39,10 @@ mod usage_overlay;
 pub(crate) mod worker_status;
 mod wrap;
 
+pub use message::SpinnerState;
 pub use message::grouping;
 #[cfg(any(test, feature = "testing"))]
 pub use message::measure_message_height_cached;
-pub use message::{SpinnerState, workflow_meta_fields};
 
 use crate::app::ActiveView;
 use crate::app::App;

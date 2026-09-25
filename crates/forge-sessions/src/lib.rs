@@ -5,3 +5,4 @@
 //! leave the TUI.
 
 pub mod envelope;
+pub mod model;

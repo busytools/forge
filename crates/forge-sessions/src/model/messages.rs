@@ -1,16 +1,43 @@
-use super::block_cache::BlockCache;
 use super::tool_call_info::ToolCallInfo;
-use ratatui::text::Line;
-use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// A text block's identity, monotonic per process and never reused, so a
+/// cache keyed on one cannot be handed another block's entry.
+///
+/// A newtype rather than a `u64` because its two neighbours in the store
+/// are also `u64`s - the content fold and the message id - and a caller
+/// passing the wrong one is otherwise a silent wrong render rather than a
+/// build failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockId(pub u64);
+
+/// A message's identity, with [`BlockId`]'s guarantee and for the same
+/// reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MessageId(pub u64);
+
+static NEXT_TEXT_BLOCK_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_text_block_id() -> BlockId {
+    BlockId(NEXT_TEXT_BLOCK_ID.fetch_add(1, Ordering::Relaxed))
+}
+
+static NEXT_MESSAGE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_message_id() -> MessageId {
+    MessageId(NEXT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed))
+}
 
 pub struct ChatMessage {
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
-    pub render_cache: MessageRenderCache,
+    /// Stable for the life of the message, and the key the message's
+    /// rendered rows are cached under - see [`TextBlock::id`] for why the
+    /// key is an identity rather than the content fold.
+    pub id: MessageId,
     /// #143 item 2: cached peer-envelope flag stamped once at push
     /// time (the `PeerEnvelopeAppended` reducer + similar entry
     /// points) so the chat renderer doesn't walk text blocks every
@@ -194,7 +221,7 @@ impl ChatMessage {
         Self {
             role,
             blocks,
-            render_cache: MessageRenderCache::default(),
+            id: next_message_id(),
             is_peer_envelope: false,
             is_gotify_envelope: false,
             is_cron_envelope: false,
@@ -217,7 +244,7 @@ impl ChatMessage {
         Self {
             role,
             blocks,
-            render_cache: MessageRenderCache::default(),
+            id: next_message_id(),
             is_peer_envelope: true,
             is_gotify_envelope: false,
             is_cron_envelope: false,
@@ -238,7 +265,7 @@ impl ChatMessage {
         Self {
             role,
             blocks,
-            render_cache: MessageRenderCache::default(),
+            id: next_message_id(),
             is_peer_envelope: false,
             is_gotify_envelope: true,
             is_cron_envelope: false,
@@ -259,7 +286,7 @@ impl ChatMessage {
         Self {
             role,
             blocks,
-            render_cache: MessageRenderCache::default(),
+            id: next_message_id(),
             is_peer_envelope: false,
             is_gotify_envelope: false,
             is_cron_envelope: true,
@@ -281,7 +308,7 @@ impl ChatMessage {
         Self {
             role,
             blocks,
-            render_cache: MessageRenderCache::default(),
+            id: next_message_id(),
             is_peer_envelope: false,
             is_gotify_envelope: false,
             is_cron_envelope: false,
@@ -305,33 +332,9 @@ impl ChatMessage {
                 cwd: cwd.to_owned(),
                 session_id: session_id.to_owned(),
                 tip_seed: random_welcome_tip_seed(),
-                cache: BlockCache::default(),
             })],
         )
     }
-
-    pub fn invalidate_render_cache(&mut self) {
-        self.render_cache.invalidate();
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MessageRenderCacheKey {
-    pub width: u16,
-    pub layout_generation: u64,
-    pub tools_collapsed: bool,
-    pub include_trailing_separator: bool,
-    /// #273: Action count from the `Message::StopHookSummary` bound
-    /// to this message (`0` when no summary applies). Folded into the
-    /// cache key so a fresh summary event reliably invalidates the
-    /// prior render even when the underlying assistant blocks didn't
-    /// change.
-    pub stop_hook_summary_actions: u32,
-    /// #273: Toggle for the stop-hook-summary expanded body. Folded
-    /// into the cache key so click-to-expand flips re-render without
-    /// extra coordination.
-    pub stop_hook_summary_expanded: bool,
-    pub render_signature: MessageRenderSignature,
 }
 
 /// Compact cache-key proxy for a [`ChatMessage`] + render context.
@@ -349,119 +352,6 @@ pub struct MessageRenderCacheKey {
 /// the next genuine state change invalidates everything anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageRenderSignature(pub u64);
-
-#[derive(Default)]
-pub struct MessageRenderCache {
-    key: Option<MessageRenderCacheKey>,
-    segments: Vec<CachedMessageSegment>,
-    cached_bytes: usize,
-    height: usize,
-    wrapped_lines: usize,
-    /// Wrapped-row ranges, from the message's first row, that the
-    /// user-turn gutter covers. Empty for every other role.
-    gutter_rows: Vec<Range<usize>>,
-    /// Copy provenance, one entry per rendered row, from the message's
-    /// first row. Parallel to the flattened segment rows.
-    copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
-    last_access_tick: Cell<u64>,
-}
-
-#[derive(Clone)]
-pub enum CachedMessageSegment {
-    Blank,
-    Lines { lines: Vec<Line<'static>>, height: usize },
-}
-
-impl MessageRenderCache {
-    fn touch(&self) {
-        self.last_access_tick.set(super::block_cache::next_cache_access_tick());
-    }
-
-    pub fn matches(&self, key: &MessageRenderCacheKey) -> bool {
-        self.key.as_ref() == Some(key)
-    }
-
-    pub fn segments(&self) -> &[CachedMessageSegment] {
-        self.touch();
-        &self.segments
-    }
-
-    pub fn height(&self) -> usize {
-        self.touch();
-        self.height
-    }
-
-    pub fn wrapped_lines(&self) -> usize {
-        self.touch();
-        self.wrapped_lines
-    }
-
-    pub fn gutter_rows(&self) -> &[Range<usize>] {
-        self.touch();
-        &self.gutter_rows
-    }
-
-    pub(crate) fn copy_rows(&self) -> &[crate::ui::copy::CopyRowMeta] {
-        self.touch();
-        &self.copy_rows
-    }
-
-    pub fn cached_bytes(&self) -> usize {
-        self.cached_bytes
-    }
-
-    pub fn last_access_tick(&self) -> u64 {
-        self.last_access_tick.get()
-    }
-
-    pub(crate) fn store(
-        &mut self,
-        key: MessageRenderCacheKey,
-        segments: Vec<CachedMessageSegment>,
-        height: usize,
-        wrapped_lines: usize,
-        gutter_rows: Vec<Range<usize>>,
-        copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
-    ) {
-        let cached_bytes = segments.iter().map(CachedMessageSegment::cached_bytes).sum();
-        self.key = Some(key);
-        self.segments = segments;
-        self.cached_bytes = cached_bytes;
-        self.height = height;
-        self.wrapped_lines = wrapped_lines;
-        self.gutter_rows = gutter_rows;
-        self.copy_rows = copy_rows;
-        self.touch();
-    }
-
-    pub fn invalidate(&mut self) {
-        self.key = None;
-        self.segments.clear();
-        self.cached_bytes = 0;
-        self.height = 0;
-        self.wrapped_lines = 0;
-        self.gutter_rows.clear();
-        self.copy_rows.clear();
-    }
-
-    pub fn evict_cached_render(&mut self) -> usize {
-        let removed = self.cached_bytes;
-        if removed == 0 {
-            return 0;
-        }
-        self.invalidate();
-        removed
-    }
-}
-
-impl CachedMessageSegment {
-    fn cached_bytes(&self) -> usize {
-        match self {
-            Self::Blank => 1,
-            Self::Lines { lines, .. } => lines.iter().map(line_utf8_bytes).sum(),
-        }
-    }
-}
 
 pub fn hash_text_block_content(text: &str, trailing_spacing: TextBlockSpacing) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -481,194 +371,82 @@ pub fn hash_welcome_block_content(block: &WelcomeBlock) -> u64 {
     hasher.finish()
 }
 
+/// Discriminant tags folded into a block's content hash. Stable values
+/// matter: changing one invalidates every previously-cached render, and
+/// the distinct values are what stop a Text of N bytes colliding with a
+/// Notice of the same length.
+pub mod block_tag {
+    pub const TEXT: u8 = 0;
+    pub const NOTICE: u8 = 1;
+    pub const TOOL_CALL: u8 = 2;
+    pub const WELCOME: u8 = 3;
+    pub const IMAGE_ATTACHMENT: u8 = 4;
+}
+
+/// Fold a turn's figures. Several invalidations mutate `turn_info` and
+/// nothing else, so both the render signature and the content key fold it
+/// here rather than twice.
+///
+/// `started_at` is deliberately not folded: it reaches the key as
+/// `elapsed_secs`, which the render path refreshes immediately before
+/// building the key.
+pub fn hash_turn_info(info: &TurnInfo, hasher: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    info.elapsed_secs.hash(hasher);
+    info.duration_ms.hash(hasher);
+    info.api_ms.hash(hasher);
+    info.ended_at_local.hash(hasher);
+    info.model.hash(hasher);
+    info.thinking_tokens.hash(hasher);
+    info.input_tokens.hash(hasher);
+    info.output_tokens.hash(hasher);
+    info.cache_read_tokens.hash(hasher);
+    info.cache_written_tokens.hash(hasher);
+    info.session_cost_usd.map(f64::to_bits).hash(hasher);
+    info.expanded.hash(hasher);
+}
+
+/// Fold everything about `block` that the message itself owns, with none
+/// of the view's inputs. The render signature folds this and then the
+/// view's own frame and mode, so the content fields are listed once.
+pub fn hash_message_block_content_into<H: std::hash::Hasher>(hasher: &mut H, block: &MessageBlock) {
+    use std::hash::Hash;
+    match block {
+        MessageBlock::Text(block) => {
+            block_tag::TEXT.hash(hasher);
+            block.content_signature().hash(hasher);
+        }
+        MessageBlock::Notice(block) => {
+            block_tag::NOTICE.hash(hasher);
+            block.content_signature().hash(hasher);
+        }
+        MessageBlock::ToolCall(tc) => {
+            block_tag::TOOL_CALL.hash(hasher);
+            tc.render_epoch.hash(hasher);
+            tc.layout_epoch.hash(hasher);
+            tc.hidden.hash(hasher);
+            tc.status.hash(hasher);
+            tc.sdk_tool_name.hash(hasher);
+            // Per-tool collapse override flips the rendered shape, so it
+            // has to be folded in alongside the global `tools_collapsed`
+            // bit (which lives on `MessageRenderCacheKey`).
+            tc.collapsed_override.hash(hasher);
+        }
+        MessageBlock::Welcome(block) => {
+            block_tag::WELCOME.hash(hasher);
+            hash_welcome_block_content(block).hash(hasher);
+        }
+        MessageBlock::ImageAttachment(block) => {
+            block_tag::IMAGE_ATTACHMENT.hash(hasher);
+            block.count.hash(hasher);
+        }
+    }
+}
+
 fn random_welcome_tip_seed() -> u64 {
     let mut hasher = DefaultHasher::new();
     SystemTime::now().duration_since(UNIX_EPOCH).ok().hash(&mut hasher);
     hasher.finish()
-}
-
-fn line_utf8_bytes(line: &Line<'static>) -> usize {
-    let span_bytes =
-        line.spans.iter().fold(0usize, |acc, span| acc.saturating_add(span.content.len()));
-    span_bytes.saturating_add(1)
-}
-
-/// Text holder for a single message block's markdown source.
-///
-/// Block splitting for streaming text is handled at the message construction
-/// level. Within a block, this type keeps stable paragraph-sized prefixes cached
-/// so only the active tail needs to be re-rendered while streaming continues.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MarkdownRenderKey {
-    pub width: u16,
-    /// Blank columns the caller reserves at the left of every emitted row
-    /// for the user turn's gutter. Zero for every other role.
-    pub gutter: u16,
-    pub preserve_newlines: bool,
-}
-
-struct MarkdownChunk {
-    range: Range<usize>,
-    rendered: Option<RenderedChunk>,
-    render_key: Option<MarkdownRenderKey>,
-    dirty: bool,
-}
-
-/// One chunk's render: the lines plus the copy provenance the row builders
-/// produced alongside them.
-pub(crate) struct RenderedChunk {
-    pub(crate) lines: Vec<Line<'static>>,
-    pub(crate) copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
-}
-
-impl MarkdownChunk {
-    fn new(range: Range<usize>) -> Self {
-        Self { range, rendered: None, render_key: None, dirty: true }
-    }
-}
-
-#[derive(Default)]
-pub struct IncrementalMarkdown {
-    text: String,
-    chunks: Vec<MarkdownChunk>,
-}
-
-impl IncrementalMarkdown {
-    /// Create from existing full text (e.g. user messages, connection errors).
-    /// Treats the entire text as one block source.
-    pub fn from_complete(text: &str) -> Self {
-        let mut markdown = Self::default();
-        markdown.append(text);
-        markdown
-    }
-
-    /// Append a streaming text chunk.
-    pub fn append(&mut self, chunk: &str) {
-        if chunk.is_empty() {
-            return;
-        }
-        self.text.push_str(chunk);
-        if let Some(last) = self.chunks.last_mut() {
-            last.range.end = self.text.len();
-            last.dirty = true;
-            last.rendered = None;
-            last.render_key = None;
-        } else {
-            self.chunks.push(MarkdownChunk::new(0..self.text.len()));
-        }
-        self.split_tail_chunks();
-    }
-
-    /// Get the full source text.
-    pub fn full_text(&self) -> String {
-        self.text.clone()
-    }
-
-    /// Allocated capacity of the internal text buffer in bytes.
-    pub fn text_capacity(&self) -> usize {
-        self.text.capacity()
-    }
-
-    /// Render this block source via the provided markdown renderer.
-    /// `render_fn` converts a markdown source string into `Vec<Line>`.
-    pub(crate) fn lines(
-        &mut self,
-        render_key: MarkdownRenderKey,
-        render_fn: &impl Fn(&str) -> RenderedChunk,
-    ) -> RenderedChunk {
-        self.ensure_rendered(render_key, render_fn);
-
-        let mut rendered = RenderedChunk { lines: Vec::new(), copy_rows: Vec::new() };
-        for chunk in &self.chunks {
-            if let Some(chunk_rendered) = &chunk.rendered {
-                rendered.lines.extend(chunk_rendered.lines.iter().cloned());
-                rendered.copy_rows.extend(chunk_rendered.copy_rows.iter().cloned());
-            }
-        }
-        rendered
-    }
-
-    pub(crate) fn ensure_rendered(
-        &mut self,
-        render_key: MarkdownRenderKey,
-        render_fn: &impl Fn(&str) -> RenderedChunk,
-    ) {
-        for idx in 0..self.chunks.len() {
-            let needs_render = {
-                let chunk = &self.chunks[idx];
-                chunk.dirty || chunk.rendered.is_none() || chunk.render_key != Some(render_key)
-            };
-            if !needs_render {
-                continue;
-            }
-
-            let range = self.chunks[idx].range.clone();
-            let rendered = render_fn(&self.text[range]);
-            let chunk = &mut self.chunks[idx];
-            chunk.rendered = Some(rendered);
-            chunk.render_key = Some(render_key);
-            chunk.dirty = false;
-        }
-    }
-
-    fn split_tail_chunks(&mut self) {
-        #[allow(clippy::while_let_loop)] // multiple early-break conditions inside
-        loop {
-            let Some(last_idx) = self.chunks.len().checked_sub(1) else {
-                break;
-            };
-            let range = self.chunks[last_idx].range.clone();
-            let Some(split_at_rel) = find_first_stable_split(&self.text[range.clone()]) else {
-                break;
-            };
-            let split_at = range.start + split_at_rel;
-            if split_at <= range.start || split_at >= range.end {
-                break;
-            }
-
-            self.chunks[last_idx] = MarkdownChunk::new(range.start..split_at);
-            self.chunks.push(MarkdownChunk::new(split_at..range.end));
-        }
-    }
-}
-
-fn find_first_stable_split(text: &str) -> Option<usize> {
-    let code = crate::ui::fence::code_ranges(text);
-    let mut saw_nonblank = false;
-    let mut blank_run_end = None;
-    let mut offset = 0usize;
-    // The ranges are in source order, so one cursor walks them with the
-    // line offsets instead of re-checking every range per line.
-    let mut next_range = 0usize;
-
-    for line in text.split_inclusive('\n') {
-        while code.get(next_range).is_some_and(|range| range.end <= offset) {
-            next_range += 1;
-        }
-        let in_fenced_code = code.get(next_range).is_some_and(|range| range.contains(&offset));
-        offset += line.len();
-        let trimmed = line.trim_end_matches('\n').trim();
-
-        let is_blank = trimmed.is_empty();
-        if !in_fenced_code && is_blank {
-            if saw_nonblank {
-                blank_run_end = Some(offset);
-            }
-            continue;
-        }
-
-        if let Some(boundary) = blank_run_end.take()
-            && boundary < text.len()
-        {
-            return Some(boundary);
-        }
-
-        if !is_blank {
-            saw_nonblank = true;
-        }
-    }
-
-    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -688,9 +466,12 @@ impl TextBlockSpacing {
 }
 
 pub struct TextBlock {
+    /// Stable for the life of the block, and the key both of this block's
+    /// caches use: a content key changes on every chunk, so a streaming
+    /// block would get one entry per append, and two blocks carrying the
+    /// same text in different roles would share a single entry.
+    pub id: BlockId,
     pub text: String,
-    pub cache: BlockCache,
-    pub markdown: IncrementalMarkdown,
     /// Explicit visual spacing after this block.
     ///
     /// This is used when streaming splits one logical assistant message into
@@ -731,9 +512,8 @@ impl TextBlock {
 
     pub fn new(text: String) -> Self {
         Self {
-            markdown: IncrementalMarkdown::from_complete(&text),
+            id: next_text_block_id(),
             text,
-            cache: BlockCache::default(),
             trailing_spacing: TextBlockSpacing::None,
             peer_collapsed_override: None,
             peer_last_measured_y_in_msg: 0,
@@ -753,6 +533,20 @@ impl TextBlock {
 
     pub fn trailing_blank_lines(&self) -> usize {
         self.trailing_spacing.blank_lines()
+    }
+
+    /// This block's own content, folded. The stamp carries it so a change to
+    /// the text replaces the block's cached rows; the rows themselves are
+    /// keyed by [`Self::id`].
+    pub fn content_signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        hash_text_block_content(&self.text, self.trailing_spacing).hash(&mut hasher);
+        self.trailing_spacing.hash(&mut hasher);
+        // Peer-block collapse state (#114). Without this in the signature,
+        // flipping `peer_collapsed_override` from a click handler is a
+        // no-op visually because the cached layout is reused.
+        self.peer_collapsed_override.hash(&mut hasher);
+        hasher.finish()
     }
 }
 
@@ -795,6 +589,16 @@ impl NoticeBlock {
     pub fn trailing_blank_lines(&self) -> usize {
         self.text.trailing_blank_lines()
     }
+
+    /// This notice's own content, folded for the cache key. Keyed on the
+    /// TEXT it wraps rather than on the notice, because the notice adds only
+    /// the severity tint - and the text is what the rows are built from.
+    pub fn content_signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.severity.hash(&mut hasher);
+        self.text.content_signature().hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 /// Ordered content block - text and tool calls interleaved as they arrive.
@@ -807,17 +611,15 @@ pub enum MessageBlock {
     ImageAttachment(ImageAttachmentBlock),
 }
 
-/// Lightweight block for image attachment indicators. Carries a [`BlockCache`]
-/// to satisfy the render-budget invariant that every [`MessageBlock`] variant
-/// has a cache, even though the cached content is trivially small.
+/// Lightweight block for image attachment indicators: a count and nothing
+/// else, because it renders one trivial row and caches no rows of its own.
 pub struct ImageAttachmentBlock {
     pub count: usize,
-    pub cache: BlockCache,
 }
 
 impl ImageAttachmentBlock {
     pub fn new(count: usize) -> Self {
-        Self { count, cache: BlockCache::default() }
+        Self { count }
     }
 }
 
@@ -846,153 +648,4 @@ pub struct WelcomeBlock {
     pub cwd: String,
     pub session_id: String,
     pub tip_seed: u64,
-    pub cache: BlockCache,
-}
-
-#[cfg(test)]
-mod tests {
-    use ratatui::text::Line;
-
-    use super::{IncrementalMarkdown, MarkdownRenderKey, RenderedChunk};
-    use pretty_assertions::assert_eq;
-
-    /// Simple render function for tests: wraps each line in a `Line`.
-    fn test_render(src: &str) -> RenderedChunk {
-        RenderedChunk {
-            lines: src.lines().map(|l| Line::from(l.to_owned())).collect(),
-            copy_rows: Vec::new(),
-        }
-    }
-
-    fn test_render_key() -> MarkdownRenderKey {
-        MarkdownRenderKey { width: 80, gutter: 0, preserve_newlines: false }
-    }
-
-    #[test]
-    fn incr_default_empty() {
-        let incr = IncrementalMarkdown::default();
-        assert!(incr.full_text().is_empty());
-    }
-
-    #[test]
-    fn incr_from_complete() {
-        let incr = IncrementalMarkdown::from_complete("hello world");
-        assert_eq!(incr.full_text(), "hello world");
-    }
-
-    #[test]
-    fn incr_append_single_chunk() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("hello");
-        assert_eq!(incr.full_text(), "hello");
-    }
-
-    #[test]
-    fn incr_append_accumulates_chunks() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("line1");
-        incr.append("\nline2");
-        incr.append("\nline3");
-        assert_eq!(incr.full_text(), "line1\nline2\nline3");
-    }
-
-    #[test]
-    fn incr_append_preserves_paragraph_delimiters() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("para1\n\npara2");
-        assert_eq!(incr.full_text(), "para1\n\npara2");
-    }
-
-    #[test]
-    fn incr_full_text_reconstruction() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("p1\n\np2\n\np3");
-        assert_eq!(incr.full_text(), "p1\n\np2\n\np3");
-    }
-
-    #[test]
-    fn incr_lines_renders_all() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("line1\n\nline2\n\nline3");
-        let lines = incr.lines(test_render_key(), &test_render);
-        // test_render maps each source line to one output line
-        assert_eq!(lines.lines.len(), 5);
-    }
-
-    #[test]
-    fn incr_ensure_rendered_preserves_text() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("p1\n\np2\n\ntail");
-        incr.ensure_rendered(test_render_key(), &test_render);
-        assert_eq!(incr.full_text(), "p1\n\np2\n\ntail");
-    }
-
-    #[test]
-    fn incr_reuses_rendered_prefix_chunks() {
-        use std::cell::Cell;
-
-        let calls = Cell::new(0usize);
-        let render = |src: &str| -> RenderedChunk {
-            calls.set(calls.get() + 1);
-            test_render(src)
-        };
-
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("p1\n\np2");
-        let _ = incr.lines(test_render_key(), &render);
-        assert_eq!(calls.get(), 2);
-
-        incr.append(" tail");
-        let _ = incr.lines(test_render_key(), &render);
-        assert_eq!(calls.get(), 3);
-    }
-
-    #[test]
-    fn incr_does_not_split_inside_fenced_code_blocks() {
-        let sources = std::cell::RefCell::new(Vec::new());
-        let render = |src: &str| -> RenderedChunk {
-            sources.borrow_mut().push(src.to_owned());
-            test_render(src)
-        };
-
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("```rust\nfn main() {\n\nprintln!(\"hi\");\n}\n```\n\nafter");
-        let _ = incr.lines(test_render_key(), &render);
-
-        assert_eq!(
-            sources.borrow().as_slice(),
-            ["```rust\nfn main() {\n\nprintln!(\"hi\");\n}\n```\n\n", "after"],
-            "the split lands on the blank line after the fence, not the one inside it"
-        );
-    }
-
-    #[test]
-    fn incr_does_not_split_inside_a_four_backtick_fence() {
-        let sources = std::cell::RefCell::new(Vec::new());
-        let render = |src: &str| -> RenderedChunk {
-            sources.borrow_mut().push(src.to_owned());
-            test_render(src)
-        };
-
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("````\n```\nfirst\n\nsecond\n```\n````\n\nafter");
-        let _ = incr.lines(test_render_key(), &render);
-
-        assert_eq!(
-            sources.borrow().as_slice(),
-            ["````\n```\nfirst\n\nsecond\n```\n````\n\n", "after"],
-            "the inner fence is content, so the blank line inside stays with it"
-        );
-    }
-
-    #[test]
-    fn incr_streaming_simulation() {
-        // Simulate a realistic streaming scenario
-        let mut incr = IncrementalMarkdown::default();
-        let chunks = ["Here is ", "some text.\n", "\nNext para", "graph here.\n\n", "Final."];
-        for chunk in chunks {
-            incr.append(chunk);
-        }
-        assert_eq!(incr.full_text(), "Here is some text.\n\nNext paragraph here.\n\nFinal.");
-    }
 }

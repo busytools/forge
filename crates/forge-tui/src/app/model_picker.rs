@@ -215,7 +215,7 @@ mod tests {
             .blocks
             .iter()
             .filter_map(|b| match b {
-                crate::app::MessageBlock::Text(t) => Some(t.markdown.full_text()),
+                crate::app::MessageBlock::Text(t) => Some(t.text.clone()),
                 _ => None,
             })
             .collect();
@@ -369,7 +369,7 @@ mod tests {
             .blocks
             .iter()
             .filter_map(|b| match b {
-                crate::app::MessageBlock::Text(t) => Some(t.markdown.full_text()),
+                crate::app::MessageBlock::Text(t) => Some(t.text.clone()),
                 _ => None,
             })
             .collect();

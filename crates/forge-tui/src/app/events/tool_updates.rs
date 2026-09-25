@@ -191,7 +191,7 @@ fn apply_tool_call_update_to_indexed_block(
             // A body-preserving change still has to re-measure (the title
             // is rendered live), but it must not cost a body rebuild.
             if body_changed {
-                tc.mark_tool_call_layout_dirty();
+                crate::app::state::tool_calls::request_tool_call_layout_dirty(tc);
             } else {
                 tc.mark_tool_call_layout_dirty_only();
             }
@@ -762,7 +762,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -791,7 +790,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -799,10 +797,11 @@ mod tests {
     }
 
     /// Populate the body cache through the cached render path.
-    fn warm_body_cache(tc: &mut ToolCallInfo) {
+    fn warm_body_cache(tc: &mut ToolCallInfo, cache: &mut BlockCache) {
         let mut out = Vec::new();
         crate::ui::tool_call::render_tool_call_cached_with_tools_collapsed(
             tc,
+            cache,
             crate::ui::tool_call::ToolCallRenderContext::default(),
             80,
             '\u{280B}',
@@ -815,8 +814,8 @@ mod tests {
     ///
     /// Compares `Line`s rather than flattened text so a style-only change
     /// still counts as a difference.
-    fn cached_body(tc: &ToolCallInfo) -> Vec<ratatui::text::Line<'static>> {
-        tc.cache.get().cloned().unwrap_or_default()
+    fn cached_body(cache: &BlockCache) -> Vec<ratatui::text::Line<'static>> {
+        cache.get().cloned().unwrap_or_default()
     }
 
     /// Which tool the per-field cases run against. `render_tool_content`
@@ -1019,14 +1018,17 @@ mod tests {
                 }
                 let mut app = app_with_tool(id, fixture, model::ToolCallStatus::InProgress);
                 let layout_generation = 7;
+                let caches = std::rc::Rc::clone(&app.render_caches);
 
                 let (before_body, epoch_before, layout_before) = {
                     let tc = tool_call_block(&mut app);
-                    warm_body_cache(tc);
+                    let mut cache = caches.tool_call(&tc.id, tc.render_epoch);
+                    warm_body_cache(tc, &mut cache);
                     // Warm the measured-height key so its invalidation below is
                     // an observation rather than an artefact of never measuring.
                     measure_tool_call_height_cached_with_tools_collapsed(
                         tc,
+                        &mut cache,
                         crate::ui::tool_call::ToolCallRenderContext::default(),
                         80,
                         '\u{280B}',
@@ -1038,7 +1040,7 @@ mod tests {
                         "{}: precondition, the measurement key must be warm",
                         case.field
                     );
-                    let body = cached_body(tc);
+                    let body = cached_body(&cache);
                     assert!(
                         !body.is_empty(),
                         "{}: precondition, there must be a cached body to lose",
@@ -1076,7 +1078,7 @@ mod tests {
                         case.field
                     );
                     assert!(
-                        tc.cache.get().is_some(),
+                        caches.peek_tool_call(&tc.id, tc.render_epoch).get().is_some(),
                         "{}: the rendered body must survive",
                         case.field
                     );
@@ -1090,11 +1092,14 @@ mod tests {
                     );
                     // Independent proof that reusing the body was safe, rather
                     // than a comparison of the cache against itself: rebuild from
-                    // scratch and compare against the pre-update render.
-                    tc.cache.invalidate();
-                    warm_body_cache(tc);
+                    // scratch and compare against the pre-update render. The
+                    // render epoch is the store's staleness input, so moving it
+                    // discards the lines exactly as the old invalidate did.
+                    crate::app::state::tool_calls::request_tool_call_render_dirty(tc);
+                    let mut cache = caches.tool_call(&tc.id, tc.render_epoch);
+                    warm_body_cache(tc, &mut cache);
                     assert_eq!(
-                        cached_body(tc),
+                        cached_body(&cache),
                         before_body,
                         "{}: this field must not reach the body, so a fresh render must match",
                         case.field
@@ -1106,7 +1111,7 @@ mod tests {
                         case.field
                     );
                     assert!(
-                        tc.cache.get().is_none(),
+                        caches.peek_tool_call(&tc.id, tc.render_epoch).get().is_none(),
                         "{}: the cached body must be discarded",
                         case.field
                     );

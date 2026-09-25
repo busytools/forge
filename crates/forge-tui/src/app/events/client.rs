@@ -3723,7 +3723,7 @@ mod tests {
         msg.blocks
             .iter()
             .map(|b| match b {
-                crate::app::MessageBlock::Text(t) => t.markdown.full_text(),
+                crate::app::MessageBlock::Text(t) => t.text.clone(),
                 _ => String::new(),
             })
             .collect::<String>()

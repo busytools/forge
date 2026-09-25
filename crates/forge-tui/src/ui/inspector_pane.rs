@@ -627,21 +627,9 @@ fn append_body(
         append_tasks_section(lines, app, width)
     };
 
-    // WORKFLOWS section sits between TASKS and
-    // MONITORS. Auto-clears once every workflow has reached
-    // `Completed`.
-    if !app.workflows().is_empty() {
-        lines.push(Line::default());
-        push_section_rule(lines, width);
-        lines.push(Line::default());
-        let _t = crate::perf::start("ui::inspector_pane::workflows_section");
-        append_workflows_section(lines, app, width);
-    }
-
-    // SUBAGENTS sits between WORKFLOWS and SCHEDULES. Mirrors the
-    // WORKFLOWS all-terminal-drain trigger: the slice empties once every
-    // visible Task/Agent root in the session has reached a terminal
-    // status, so the entire section disappears.
+    // SUBAGENTS sits below TASKS. The slice empties once every visible
+    // Task/Agent root in the session has reached a terminal status, so the
+    // entire section disappears.
     if !subagents.is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
@@ -650,11 +638,10 @@ fn append_body(
         append_subagents_section(lines, app, width, subagents);
     }
 
-    // SCHEDULES sits between SUBAGENTS and PROCESSES. Pending
-    // wakeups + crons; auto-clears entries on the ~1s prune tick
-    // (passed wakeups, 7-day-expired recurring crons) and on
-    // explicit `CronDelete`. The MONITORS section is gone; Monitor
-    // tool calls now render their live tail directly in chat (see
+    // SCHEDULES sits between SUBAGENTS and GOTIFY. Pending
+    // wakeups + durable forge crons; the wakeups drop on the ~1s prune
+    // tick. The MONITORS section is gone; Monitor tool calls now render
+    // their live tail directly in chat (see
     // `ui::message::render_lifecycle_one_liner`'s `"Monitor"` arm).
     if !app.schedules().is_empty() || !app.forge_schedule_rows.is_empty() {
         lines.push(Line::default());
@@ -709,10 +696,9 @@ fn append_body(
 
     // PROCESSES is the single activity lens below MCP SERVERS:
     // the OS process tree plus the CLI's authoritative backgrounded
-    // `local_bash` registry (agents render in SUBAGENTS, workflows in
-    // WORKFLOWS; MCP servers render in MCP SERVERS above). The join ran
-    // once above; its claimed pids hand off here. Auto-hidden when
-    // nothing is active.
+    // `local_bash` registry (agents render in SUBAGENTS; MCP servers
+    // render in MCP SERVERS above). The join ran once above; its claimed
+    // pids hand off here. Auto-hidden when nothing is active.
     let processes = {
         let _t = crate::perf::start("ui::inspector_pane::collect_active_processes");
         collect_active_processes(app, &mcp_section.claimed_pids)
@@ -1736,15 +1722,14 @@ fn append_tasks_section(
 }
 
 /// Render the Inspector SCHEDULES section: header + one row per pending
-/// `ScheduleWakeup` / `CronCreate` (chat-parsed cloud routines) AND per
-/// durable forge cron (`mcp__forge__cron`, from the cached
-/// `app.forge_crons` snapshot). The section hides entirely when no
-/// entries are present. Header line, blank, per-entry rows with blank
-/// separators.
+/// `ScheduleWakeup` AND per durable forge cron (`mcp__forge__cron`, from
+/// the cached `app.forge_crons` snapshot). The section hides entirely
+/// when no entries are present. Header line, blank, per-entry rows with
+/// blank separators.
 fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    // Two sources share this section: the chat-parsed cloud routines
-    // (`ScheduleWakeup` / `CronCreate`, per-session) and the durable
-    // forge crons (`mcp__forge__cron`). The forge-cron rows are humanized
+    // Two sources share this section: the per-session `ScheduleWakeup`
+    // wakeup and the durable forge crons (`mcp__forge__cron`). The
+    // forge-cron rows are humanized
     // once per ~1s tick into `app.forge_schedule_rows`, so the render
     // does no timezone syscall or humanize allocation per frame; the live
     // countdown still recomputes from each row's `fire_at` below.
@@ -2075,8 +2060,6 @@ pub(crate) fn forge_cron_to_schedule_entry(
         CronKind::Once(at) => (false, humanize_once(*at, now, tz)),
     };
     crate::app::ScheduleEntry {
-        key: cron.id.as_str().to_owned(),
-        cron_id: Some(cron.id.as_str().to_owned()),
         kind: crate::app::ScheduleKind::Cron { recurring },
         label: first_line(&cron.prompt),
         description: cron.description.clone(),
@@ -2228,8 +2211,7 @@ fn fmt_countdown(d: std::time::Duration) -> String {
 /// tool calls under that root. Terminal entries collapse their tail
 /// to a `· N tools` summary on the header line. The whole section
 /// disappears when every visible root reaches a terminal status - the
-/// slice is empty in that case (mirroring
-/// `clear_workflows_if_all_terminal`).
+/// slice is empty in that case.
 fn append_subagents_section(
     lines: &mut Vec<Line<'static>>,
     app: &App,
@@ -2279,8 +2261,8 @@ fn append_subagent_row(
         ToolCallStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
     };
     // Terminal roots get a `  · N tools` summary right-justified on
-    // the header (matches MONITORS / WORKFLOWS / SCHEDULES'
-    // pad-spacer pattern). In-progress roots have no summary on the
+    // the header (matches SCHEDULES' pad-spacer pattern). In-progress
+    // roots have no summary on the
     // header line; their tail rows render the live activity below.
     let trailing = if in_progress {
         String::new()
@@ -2343,166 +2325,10 @@ fn append_subagent_row(
     }
 }
 
-/// Append the WORKFLOWS Inspector section. Header +
-/// one row per workflow entry with the meta name + status, then
-/// (when running or expanded) a per-phase tree showing status
-/// glyph + title + log tail. Section is hidden when
-/// `UiSession.workflows` is empty (auto-clears once every entry
-/// transitions to `Completed`).
-fn append_workflows_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    let workflows = app.workflows();
-    if workflows.is_empty() {
-        return;
-    }
-
-    lines.push(Line::from(Span::styled(
-        " WORKFLOWS".to_owned(),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::default());
-
-    let inner_width = usize::from(width);
-    let last_idx = workflows.len().saturating_sub(1);
-    for (idx, workflow) in workflows.iter().enumerate() {
-        append_workflow_row(lines, workflow, inner_width, app.active_spinner_glyph());
-        // blank between entries (matches the MONITORS
-        // section's inter-entry spacing).
-        if idx < last_idx {
-            lines.push(Line::default());
-        }
-    }
-}
-
-/// Render one Workflow entry into the Inspector body. Layout:
-/// header (glyph + meta_name + status badge), optional description
-/// subtitle, then a tree of phases with logs as continuation rows.
-fn append_workflow_row(
-    lines: &mut Vec<Line<'static>>,
-    workflow: &crate::app::WorkflowEntry,
-    inner_width: usize,
-    active_glyph: char,
-) {
-    use crate::app::{PhaseStatus, WorkflowStatus};
-
-    let (status_label, status_color) = match workflow.status {
-        WorkflowStatus::InProgress => ("in progress", theme::RUST_ORANGE),
-        WorkflowStatus::Completed => ("done", Color::Green),
-    };
-    let glyph =
-        if workflow.is_in_progress() { active_glyph.to_string() } else { "\u{25c6}".to_owned() };
-    let glyph_color = if workflow.is_in_progress() { theme::RUST_ORANGE } else { Color::Green };
-
-    // same shape as MONITORS header. Badge follows
-    // truncated text; count it in chrome up-front.
-    let header_chrome = usize::from(PANE_PAD)
-        + 1   // glyph
-        + 1   // space
-        + 3   // " · "
-        + status_label.chars().count()
-        + usize::from(PANE_PAD);
-    let header_budget = row_text_budget(inner_width, header_chrome);
-    let header_text = truncate_or_pass(&workflow.meta_name, header_budget);
-    // #281: same pad-spacer shape as MONITORS - see comment there.
-    let pad = header_budget.saturating_sub(header_text.chars().count());
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(usize::from(PANE_PAD))),
-        Span::styled(glyph, Style::default().fg(glyph_color)),
-        Span::raw(" ".to_owned()),
-        Span::styled(header_text, Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
-        Span::styled(status_label.to_owned(), Style::default().fg(status_color)),
-    ]));
-
-    // Description subtitle: 4-col indent + 1-col right gutter.
-    let desc_chrome = 4 + usize::from(PANE_PAD);
-    let desc_budget = row_text_budget(inner_width, desc_chrome);
-    if let Some(desc) = workflow.meta_description.as_deref().filter(|d| !d.is_empty()) {
-        let row = truncate_or_pass(desc, desc_budget);
-        lines.push(Line::from(vec![
-            Span::raw("    ".to_owned()),
-            Span::styled(row, Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC)),
-        ]));
-    }
-
-    // Show the phase tree when the workflow is running OR the user
-    // expanded it explicitly. A completed-and-collapsed workflow
-    // shows just the header + (optional) final_result_summary.
-    let show_tree = workflow.is_in_progress() || workflow.expanded_in_inspector;
-    if show_tree {
-        // Phase-row chrome: 1-col indent + connector glyph + space
-        // + phase glyph + space + 1-col right gutter.
-        let phase_chrome = usize::from(PANE_PAD)
-            + 1   // connector (└ or ├)
-            + 1   // space
-            + 1   // phase glyph
-            + 1   // space
-            + usize::from(PANE_PAD);
-        let phase_budget = row_text_budget(inner_width, phase_chrome);
-        // Log-row chrome: 1-col indent + box-drawing column + 3-col
-        // pad + 1-col gutter. Uses the same total chrome the
-        // continuation indent emits (`"  │   "` or six spaces).
-        let log_chrome = usize::from(PANE_PAD)
-            + 1   // column glyph (│) or space
-            + 3   // padding before text
-            + usize::from(PANE_PAD);
-        let log_budget = row_text_budget(inner_width, log_chrome);
-        let phase_count = workflow.phases.len();
-        for (i, phase) in workflow.phases.iter().enumerate() {
-            let is_last = i + 1 == phase_count;
-            let connector_glyph = if is_last { "\u{2514}" } else { "\u{251c}" };
-            let (phase_glyph, phase_color) = match phase.status {
-                PhaseStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
-                PhaseStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
-                PhaseStatus::Pending => ("\u{25CB}".to_owned(), theme::DIM),
-            };
-            let row = truncate_or_pass(&phase.title, phase_budget);
-            lines.push(Line::from(vec![
-                Span::raw(" ".repeat(usize::from(PANE_PAD))),
-                Span::styled(connector_glyph.to_owned(), Style::default().fg(theme::DIM)),
-                Span::raw(" ".to_owned()),
-                Span::styled(phase_glyph, Style::default().fg(phase_color)),
-                Span::raw(" ".to_owned()),
-                Span::styled(row, Style::default().fg(theme::DIM)),
-            ]));
-            // Continuation indent: 1-col left + column-glyph (│ or
-            // ' ') + 3-col pad = 5 cols before the log text. The
-            // chrome accounting above matches this exactly.
-            let column_glyph = if is_last { ' ' } else { '\u{2502}' };
-            let logs_indent = format!("{}{column_glyph}   ", " ".repeat(usize::from(PANE_PAD)));
-            for log in &phase.logs {
-                let log_row = truncate_or_pass(log, log_budget);
-                lines.push(Line::from(vec![
-                    Span::styled(logs_indent.clone(), Style::default().fg(theme::DIM)),
-                    Span::styled(log_row, Style::default().fg(theme::DIM)),
-                ]));
-            }
-        }
-    }
-
-    if let Some(summary) = workflow.final_result_summary.as_deref().filter(|s| !s.is_empty()) {
-        // Summary row chrome: 1-col indent + connector + space + 2-col `✓ `
-        // prefix + 1-col right gutter.
-        let summary_chrome = usize::from(PANE_PAD)
-            + 1   // └
-            + 1   // space
-            + 2   // ✓ + space
-            + usize::from(PANE_PAD);
-        let summary_budget = row_text_budget(inner_width, summary_chrome);
-        let row = truncate_or_pass(summary, summary_budget);
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(usize::from(PANE_PAD))),
-            Span::styled("\u{2514} ".to_owned(), Style::default().fg(theme::DIM)),
-            Span::styled("\u{2713} ".to_owned(), Style::default().fg(Color::Green)),
-            Span::styled(row, Style::default().fg(theme::DIM)),
-        ]));
-    }
-}
-
 /// Single source of truth for inspector-row
 /// width budgeting. Every row variant (TASKS / PROCESSES /
-/// MONITORS header / MONITORS tail / WORKFLOWS header / WORKFLOWS
-/// phase / WORKFLOWS log / final-result summary) feeds its actual
+/// MONITORS header / MONITORS tail / SUBAGENTS header / SUBAGENTS
+/// tail) feeds its actual
 /// chrome glyph count into this helper so all sections observe
 /// the same 1-col right gutter (TASKS' convention) and no variant
 /// silently reintroduces divergence.
@@ -2700,7 +2526,7 @@ fn append_process_row(
     let suffix_chars = suffix_text.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
     // every inspector row routes its chrome
     // budget through `row_text_budget` so PROCESSES + TASKS +
-    // MONITORS + WORKFLOWS observe the same right-gutter contract.
+    // SUBAGENTS observe the same right-gutter contract.
     let chrome_chars = usize::from(PANE_PAD)
         + tree_chrome_cols
         + glyph_cols
@@ -2882,7 +2708,6 @@ pub(crate) mod tests {
         assert_eq!(entry.description, None, "no description on this cron");
         assert_eq!(entry.fire_at, Some(next), "next_fire carried for the countdown");
         assert!(matches!(entry.kind, crate::app::ScheduleKind::Cron { recurring: true }));
-        assert_eq!(entry.cron_id.as_deref(), Some("c1"));
     }
 
     #[test]
@@ -2917,8 +2742,6 @@ pub(crate) mod tests {
         fire_at: Option<std::time::SystemTime>,
     ) -> crate::app::ScheduleEntry {
         crate::app::ScheduleEntry {
-            key: "c1".to_owned(),
-            cron_id: Some("c1".to_owned()),
             kind: crate::app::ScheduleKind::Cron { recurring },
             label: label.to_owned(),
             description: description.map(str::to_owned),
@@ -2999,8 +2822,6 @@ pub(crate) mod tests {
         use std::time::{Duration, SystemTime};
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let entry = crate::app::ScheduleEntry {
-            key: "w1".to_owned(),
-            cron_id: None,
             kind: crate::app::ScheduleKind::Wakeup,
             label: "watching CI run".to_owned(),
             description: None,
@@ -3018,9 +2839,9 @@ pub(crate) mod tests {
 
     #[test]
     fn headline_less_cloud_cron_renders_one_line_with_schedule() {
-        // A cloud CronCreate carries no description and no prompt, so the
-        // headline is empty and the row collapses to a single line showing
-        // the humanized schedule + badge.
+        // A forge cron created with no description carries no prompt line
+        // either, so the headline is empty and the row collapses to a
+        // single line showing the humanized schedule + badge.
         use std::time::SystemTime;
         let now = SystemTime::UNIX_EPOCH;
         let entry = cron_entry(true, "", None, "every 5 minutes", None);
@@ -3134,7 +2955,6 @@ pub(crate) mod tests {
 
         let mut app = App::test_default();
         app.upsert_wakeup_from_tool_input(
-            "tu1",
             "watching CI",
             SystemTime::now() + Duration::from_secs(600),
         );
@@ -3261,30 +3081,6 @@ pub(crate) mod tests {
         let coll = crate::app::processes::collect_active_processes(&app, &HashSet::default());
         let count = coll.rows.iter().filter(|row| row.headline == "Run unit tests").count();
         assert_eq!(count, 1, "backgrounded bash renders exactly once; rows: {:?}", coll.rows);
-    }
-
-    #[test]
-    fn append_body_routes_backgrounded_workflow_to_workflows_not_processes() {
-        // A backgrounded local_workflow surfaces in WORKFLOWS (driven by
-        // its session-scoped WorkflowEntry), never as a flat PROCESSES row.
-        use crate::app::BackgroundTask;
-        let mut app = App::test_default();
-        app.upsert_workflow_from_tool_input("tu-wf", "nightly-audit".to_owned(), None);
-        *app.background_tasks_mut().expect("active session") = vec![BackgroundTask {
-            task_id: "wf1".to_owned(),
-            task_type: "local_workflow".to_owned(),
-            description: "nightly-audit run".to_owned(),
-        }];
-        let mut lines = Vec::new();
-        append_body(&mut lines, &app, 60, &app.subagents_view());
-        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("WORKFLOWS"), "workflow renders in WORKFLOWS: {text}");
-        assert!(text.contains("nightly-audit"), "workflow name shows in WORKFLOWS: {text}");
-        assert!(!text.contains("BACKGROUND"), "no BACKGROUND section: {text}");
-        assert!(
-            !text.contains("nightly-audit run"),
-            "registry description not surfaced as a flat PROCESSES row: {text}"
-        );
     }
 
     #[test]
@@ -3753,103 +3549,6 @@ pub(crate) mod tests {
         assert!(!row_text.contains("MB"), "expected no memory suffix on Medium tier: {row_text:?}");
     }
 
-    // ---------------------------------------------------------
-    // WORKFLOWS Inspector section.
-    // ---------------------------------------------------------
-
-    fn make_workflow_entry(
-        tool_use_id: &str,
-        meta_name: &str,
-        status: crate::app::WorkflowStatus,
-    ) -> crate::app::WorkflowEntry {
-        crate::app::WorkflowEntry {
-            tool_use_id: tool_use_id.to_owned(),
-            task_id: Some("task_1".to_owned()),
-            meta_name: meta_name.to_owned(),
-            meta_description: None,
-            phases: Vec::new(),
-            status,
-            final_result_summary: None,
-            expanded_in_inspector: false,
-        }
-    }
-
-    #[test]
-    fn workflows_section_renders_in_progress_header_with_phase_tree() {
-        let mut workflow =
-            make_workflow_entry("tu", "minimal-ping", crate::app::WorkflowStatus::InProgress);
-        workflow.phases = vec![crate::app::PhaseEntry {
-            index: 1,
-            title: "Ping".to_owned(),
-            status: crate::app::PhaseStatus::InProgress,
-            logs: std::collections::VecDeque::from(["running StructuredOutput".to_owned()]),
-        }];
-        let mut lines = Vec::new();
-        append_workflow_row(&mut lines, &workflow, 60, '\u{280B}');
-        assert!(lines.iter().any(|l| line_text(l).contains("minimal-ping")));
-        assert!(
-            lines
-                .iter()
-                .any(|l| line_text(l).contains("Ping") && line_text(l).contains("\u{251c}")
-                    || line_text(l).contains("Ping") && line_text(l).contains("\u{2514}")),
-            "expected phase row glyph; got {:?}",
-            lines.iter().map(line_text).collect::<Vec<_>>(),
-        );
-        assert!(lines.iter().any(|l| line_text(l).contains("running StructuredOutput")));
-    }
-
-    #[test]
-    fn workflows_section_collapses_completed_to_header_only_with_summary() {
-        let mut workflow = make_workflow_entry("tu", "ping", crate::app::WorkflowStatus::Completed);
-        workflow.phases = vec![crate::app::PhaseEntry {
-            index: 1,
-            title: "Ping".to_owned(),
-            status: crate::app::PhaseStatus::Completed,
-            logs: std::collections::VecDeque::new(),
-        }];
-        workflow.final_result_summary = Some("{\"answer\":\"pong\"}".to_owned());
-        let mut lines = Vec::new();
-        append_workflow_row(&mut lines, &workflow, 60, '\u{280B}');
-        // Collapsed completed entry: header + summary line only;
-        // phase tree suppressed because `expanded_in_inspector =
-        // false` and `is_in_progress() = false`.
-        assert_eq!(lines.len(), 2);
-        assert!(line_text(&lines[0]).contains("ping") && line_text(&lines[0]).contains("done"));
-        assert!(line_text(&lines[1]).contains("{\"answer\":\"pong\"}"));
-    }
-
-    #[test]
-    fn workflows_section_shows_phase_tree_when_expanded_after_completion() {
-        let mut workflow = make_workflow_entry("tu", "ping", crate::app::WorkflowStatus::Completed);
-        workflow.phases = vec![crate::app::PhaseEntry {
-            index: 1,
-            title: "Ping".to_owned(),
-            status: crate::app::PhaseStatus::Completed,
-            logs: std::collections::VecDeque::new(),
-        }];
-        workflow.expanded_in_inspector = true;
-        let mut lines = Vec::new();
-        append_workflow_row(&mut lines, &workflow, 60, '\u{280B}');
-        // Expanded → header + phase tree row.
-        assert!(
-            lines
-                .iter()
-                .any(|l| line_text(l).contains("Ping") && line_text(l).contains("\u{2514}")),
-            "expected phase row in expanded view; got {:?}",
-            lines.iter().map(line_text).collect::<Vec<_>>(),
-        );
-    }
-
-    #[test]
-    fn workflows_section_renders_meta_description_as_dim_subtitle() {
-        let mut workflow =
-            make_workflow_entry("tu", "minimal-ping", crate::app::WorkflowStatus::InProgress);
-        workflow.meta_description = Some("sanity".to_owned());
-        let mut lines = Vec::new();
-        append_workflow_row(&mut lines, &workflow, 60, '\u{280B}');
-        assert!(lines.iter().any(|l| line_text(l).contains("sanity")));
-    }
-
     #[test]
     fn truncate_or_pass_returns_input_when_under_budget() {
         assert_eq!(truncate_or_pass("abc", 10), "abc");
@@ -3929,29 +3628,6 @@ pub(crate) mod tests {
         let inner_width: usize = 60;
         let mut all_rows: Vec<Line<'static>> = Vec::new();
 
-        // WORKFLOWS header + phase rows.
-        let mut workflow = make_workflow_entry(
-            "wf",
-            "minimal-ping-with-a-rather-long-name-for-overflow-coverage",
-            crate::app::WorkflowStatus::InProgress,
-        );
-        workflow.meta_description = Some(
-            "An overlong description that should be truncated cleanly against the inner_width budget"
-                .to_owned(),
-        );
-        workflow.phases = vec![crate::app::PhaseEntry {
-            index: 1,
-            title: "A phase with a long title that would otherwise overflow".to_owned(),
-            status: crate::app::PhaseStatus::InProgress,
-            logs: std::collections::VecDeque::from([
-                "an extra-long log line that should also stay within the gutter contract"
-                    .to_owned(),
-            ]),
-        }];
-        let mut wf_lines = Vec::new();
-        append_workflow_row(&mut wf_lines, &workflow, inner_width, '\u{280B}');
-        all_rows.extend(wf_lines);
-
         // GOTIFY subscription: a long app set forcing the comma-joined
         // list to wrap, each wrapped line within the gutter budget.
         let mut gotify_lines = Vec::new();
@@ -3988,43 +3664,6 @@ pub(crate) mod tests {
                 line_text(line),
             );
         }
-    }
-
-    // ---------------------------------------------------------
-    // #281: WORKFLOWS status-badge right-justify.
-    // Trailing badge end column locks at `inner_width - PANE_PAD`
-    // regardless of headline length. Mirrors GIT's
-    // `diff_subtitle_line` pad-spacer pattern. (MONITORS variants
-    // retired with the section's removal; the badge math itself
-    // is exercised by the WORKFLOWS test below.)
-    // ---------------------------------------------------------
-
-    #[test]
-    fn workflow_row_status_badge_right_justified_across_title_lengths() {
-        let inner_width: usize = 38;
-        let short = make_workflow_entry("wf_a", "ping", crate::app::WorkflowStatus::InProgress);
-        let long = make_workflow_entry(
-            "wf_b",
-            "a-rather-long-workflow-name-that-needs-truncation",
-            crate::app::WorkflowStatus::InProgress,
-        );
-
-        let mut short_lines = Vec::new();
-        append_workflow_row(&mut short_lines, &short, inner_width, '\u{280B}');
-        let mut long_lines = Vec::new();
-        append_workflow_row(&mut long_lines, &long, inner_width, '\u{280B}');
-
-        let short_w = rendered_width(&short_lines[0]);
-        let long_w = rendered_width(&long_lines[0]);
-        let target = inner_width.saturating_sub(usize::from(PANE_PAD));
-        assert_eq!(
-            short_w, target,
-            "short WORKFLOWS row should pad out to inner_width - PANE_PAD; got {short_w}, want {target}",
-        );
-        assert_eq!(
-            long_w, target,
-            "long WORKFLOWS row should also end at inner_width - PANE_PAD; got {long_w}, want {target}",
-        );
     }
 
     // ---------------------------------------------------------
@@ -4086,7 +3725,7 @@ pub(crate) mod tests {
         description: &str,
     ) -> crate::app::ToolCallInfo {
         use crate::agent::model::ToolCallStatus;
-        use crate::app::{BlockCache, ToolCallInfo};
+        use crate::app::ToolCallInfo;
         ToolCallInfo {
             id: id.to_owned(),
             title: "Task".to_owned(),
@@ -4112,7 +3751,6 @@ pub(crate) mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -4125,7 +3763,7 @@ pub(crate) mod tests {
         title: &str,
     ) -> crate::app::ToolCallInfo {
         use crate::agent::model::ToolCallStatus;
-        use crate::app::{BlockCache, ToolCallInfo};
+        use crate::app::ToolCallInfo;
         ToolCallInfo {
             id: id.to_owned(),
             title: title.to_owned(),
@@ -4147,7 +3785,6 @@ pub(crate) mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -4646,44 +4283,6 @@ pub(crate) mod tests {
             line_text(detail_line).starts_with("     \u{251C}\u{2500} "),
             "children nest two columns inside their block's indented name",
         );
-    }
-
-    // ---------------------------------------------------------
-    // blank-line spacing between WORKFLOWS entries.
-    // ---------------------------------------------------------
-
-    fn build_session_with_workflows(workflows: Vec<crate::app::WorkflowEntry>) -> App {
-        let mut app = App::test_default();
-        *app.workflows_mut().expect("active session") = workflows;
-        app
-    }
-
-    #[test]
-    fn workflows_section_inserts_blank_line_between_entries() {
-        let entries = vec![
-            make_workflow_entry("wf_a", "first-workflow", crate::app::WorkflowStatus::InProgress),
-            make_workflow_entry("wf_b", "second-workflow", crate::app::WorkflowStatus::InProgress),
-        ];
-        let app = build_session_with_workflows(entries);
-        let mut lines = Vec::new();
-        append_workflows_section(&mut lines, &app, 60);
-        // Layout shape: header + blank + row + blank-between + row.
-        // Find the two workflow rows; assert there's a blank between them.
-        let first_idx = lines
-            .iter()
-            .position(|l| line_text(l).contains("first-workflow"))
-            .expect("first workflow row");
-        let second_idx = lines
-            .iter()
-            .position(|l| line_text(l).contains("second-workflow"))
-            .expect("second workflow row");
-        assert!(second_idx > first_idx, "second comes after first");
-        assert_eq!(
-            second_idx,
-            first_idx + 2,
-            "Bug 6: exactly one blank line separates the two workflow rows",
-        );
-        assert!(line_text(&lines[first_idx + 1]).is_empty(), "Bug 6: blank between entries");
     }
 
     // ---------------------------------------------------------

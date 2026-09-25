@@ -5,8 +5,7 @@ use std::mem::{size_of, size_of_val};
 use super::LayoutInvalidation as InvalidationLevel;
 use super::LayoutRemeasureReason;
 use super::messages::{
-    ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, NoticeDedupKey, TextBlock,
-    WelcomeBlock,
+    ChatMessage, MessageBlock, MessageRole, NoticeDedupKey, TextBlock, WelcomeBlock,
 };
 use super::tool_call_info::ToolCallInfo;
 use super::types::HistoryRetentionStats;
@@ -151,25 +150,47 @@ impl super::App {
         total
     }
 
+    /// Bytes a block's incremental markdown holds. That cache lives in the
+    /// view store keyed by the block's id, so it is not on the block, and a
+    /// block that has not been painted has no entry yet. The fallback is
+    /// the text's own capacity - what the entry costs once it exists - so
+    /// the estimate does not move when a paint creates it. Reading the
+    /// store alone would under-count every unpainted block, and retention
+    /// would keep materially more than its cap.
+    fn markdown_capacity(
+        caches: &crate::app::RenderCacheStore,
+        id: forge_sessions::model::BlockId,
+        text_capacity: usize,
+    ) -> usize {
+        caches.peek_markdown(id).map_or(text_capacity, |markdown| markdown.text_capacity())
+    }
+
     /// Measure the approximate in-memory byte footprint of a single message.
     ///
     /// Uses `String::capacity()` and `std::mem::size_of` for actual heap
     /// allocation sizes rather than content-length heuristics.
-    pub fn measure_message_bytes(msg: &ChatMessage) -> usize {
+    pub(crate) fn measure_message_bytes(
+        caches: &crate::app::RenderCacheStore,
+        msg: &ChatMessage,
+    ) -> usize {
         let mut total = size_of::<ChatMessage>()
             .saturating_add(msg.blocks.capacity().saturating_mul(size_of::<MessageBlock>()));
         for block in &msg.blocks {
             match block {
                 MessageBlock::Text(block) => {
-                    total = total
-                        .saturating_add(block.text.capacity())
-                        .saturating_add(block.markdown.text_capacity());
+                    total = total.saturating_add(block.text.capacity()).saturating_add(
+                        Self::markdown_capacity(caches, block.id, block.text.capacity()),
+                    );
                 }
                 MessageBlock::Notice(block) => {
                     total = total
                         .saturating_add(size_of_val(block))
                         .saturating_add(block.text.text.capacity())
-                        .saturating_add(block.text.markdown.text_capacity());
+                        .saturating_add(Self::markdown_capacity(
+                            caches,
+                            block.text.id,
+                            block.text.text.capacity(),
+                        ));
                     if let Some(dedup_key) = &block.dedup_key {
                         total = total.saturating_add(size_of_val(dedup_key));
                         total = total.saturating_add(match dedup_key {
@@ -202,7 +223,11 @@ impl super::App {
 
     /// Measure the total in-memory byte footprint of all retained messages.
     pub fn measure_history_bytes(&self) -> usize {
-        self.messages().unwrap_or_default().iter().map(Self::measure_message_bytes).sum()
+        self.messages()
+            .unwrap_or_default()
+            .iter()
+            .map(|msg| Self::measure_message_bytes(&self.render_caches, msg))
+            .sum()
     }
 
     pub(crate) fn rebuild_history_retention_accounting(&mut self) {
@@ -212,7 +237,7 @@ impl super::App {
         let mut total: usize = 0;
         let mut bytes_per_msg: Vec<usize> = Vec::with_capacity(messages.len());
         for msg in messages {
-            let bytes = Self::measure_message_bytes(msg);
+            let bytes = Self::measure_message_bytes(&self.render_caches, msg);
             bytes_per_msg.push(bytes);
             total = total.saturating_add(bytes);
         }
@@ -233,7 +258,7 @@ impl super::App {
     }
 
     pub(crate) fn push_message_tracked(&mut self, msg: ChatMessage) {
-        let bytes = Self::measure_message_bytes(&msg);
+        let bytes = Self::measure_message_bytes(&self.render_caches, &msg);
         let previous_tail = self.messages().map_or(0, <[ChatMessage]>::len).checked_sub(1);
         let Some(messages) = self.active_messages_mut() else {
             return;
@@ -264,7 +289,7 @@ impl super::App {
             self.shift_turn_notice_refs_for_insert(insert_idx);
             self.shift_stop_hook_summary_for_insert(insert_idx);
         }
-        let bytes = Self::measure_message_bytes(&msg);
+        let bytes = Self::measure_message_bytes(&self.render_caches, &msg);
         if let Some(messages) = self.active_messages_mut() {
             messages.insert(insert_idx, msg);
         }
@@ -310,6 +335,7 @@ impl super::App {
         self.shift_turn_notice_refs_for_remove(idx);
         self.shift_stop_hook_summary_for_remove(idx);
         let removed = self.active_messages_mut()?.remove(idx);
+        self.evict_render_caches_for_message(&removed);
         let removed_bytes = self.message_retained_bytes_mut()?.remove(idx);
         if let Some(total) = self.retained_history_bytes_mut() {
             *total = total.saturating_sub(removed_bytes);
@@ -328,7 +354,45 @@ impl super::App {
         Some(removed)
     }
 
+    /// Drop every store entry a message owns.
+    ///
+    /// The store keys by id and its only other callers are the budget walk,
+    /// which is driven off live slots - so without this, a message that
+    /// leaves the model leaves its rows behind with no way to reach them.
+    /// On main the cache lived on the message and died with it; this is what
+    /// keeps the store equivalent.
+    fn evict_render_caches_for_message(&self, msg: &ChatMessage) {
+        self.render_caches.evict_message(msg.id);
+        for block in &msg.blocks {
+            match block {
+                MessageBlock::Text(block) => {
+                    self.render_caches.evict_block(block.id);
+                    self.render_caches.evict_markdown(block.id);
+                }
+                MessageBlock::Notice(block) => {
+                    self.render_caches.evict_block(block.text.id);
+                    self.render_caches.evict_markdown(block.text.id);
+                }
+                MessageBlock::Welcome(welcome) => {
+                    self.render_caches
+                        .evict_welcome(super::messages::hash_welcome_block_content(welcome));
+                }
+                MessageBlock::ToolCall(tc) => {
+                    self.render_caches.evict_tool_call(&tc.id);
+                }
+                MessageBlock::ImageAttachment(_) => {}
+            }
+        }
+    }
+
     pub(crate) fn clear_messages_tracked(&mut self) {
+        let count = self.messages().map_or(0, <[ChatMessage]>::len);
+        for idx in 0..count {
+            let Some(msg) = self.messages().and_then(|messages| messages.get(idx)) else {
+                continue;
+            };
+            self.evict_render_caches_for_message(msg);
+        }
         if let Some(messages) = self.active_messages_mut() {
             messages.clear();
         }
@@ -354,7 +418,7 @@ impl super::App {
         let Some(msg) = self.messages().and_then(|messages| messages.get(idx)) else {
             return;
         };
-        let new_bytes = Self::measure_message_bytes(msg);
+        let new_bytes = Self::measure_message_bytes(&self.render_caches, msg);
         let Some(old_bytes_value) =
             self.message_retained_bytes().and_then(|bytes| bytes.get(idx)).copied()
         else {
@@ -492,8 +556,6 @@ impl super::App {
                 && block.text != marker_text
             {
                 block.text.clone_from(&marker_text);
-                block.markdown = IncrementalMarkdown::from_complete(&marker_text);
-                block.cache.invalidate();
                 self.sync_render_cache_slot(idx, 0);
                 self.recompute_message_retained_bytes(idx);
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
@@ -690,13 +752,80 @@ impl super::App {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, ToolCallScope};
+    use super::super::{
+        App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, ToolCallScope,
+    };
     use crate::agent::model;
     use crate::app::state::tests::{
         assistant_bash_tool_message, assistant_text_block, assistant_tool_message, make_test_app,
         user_text_message,
     };
     use pretty_assertions::assert_eq;
+
+    /// A message dropped from the model takes its store entries with it.
+    /// The store keys by id and its only other callers are the budget walk,
+    /// which is driven off live slots - so without this, the dropped
+    /// message's rows stay behind under an id nothing refers to. On main the
+    /// cache lived on the message and died with it, and the store has to be
+    /// equivalent.
+    #[test]
+    fn dropping_a_message_evicts_its_cache_entries() {
+        use crate::app::state::render_cache_store::testing::{
+            block_entry_count, message_entry_count,
+        };
+        use ratatui::text::Line;
+
+        let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
+        *app.active_messages_mut().expect("active session") = (0..3)
+            .map(|i| {
+                ChatMessage::new(
+                    MessageRole::Assistant,
+                    vec![assistant_text_block(&format!("{}{i}", "x".repeat(4000)))],
+                )
+            })
+            .collect();
+
+        for msg in app.messages().expect("active session") {
+            let MessageBlock::Text(block) = &msg.blocks[0] else {
+                panic!("expected a text block");
+            };
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("y".repeat(4000))]);
+            let _ = caches.message(msg.id);
+        }
+        assert_eq!(block_entry_count(&app), 3, "three messages cached");
+        assert_eq!(message_entry_count(&app), 3, "three message entries");
+
+        app.remove_message_tracked(0).expect("removed");
+
+        assert_eq!(block_entry_count(&app), 2, "the dropped message's block entry went with it");
+        assert_eq!(message_entry_count(&app), 2, "and its message entry");
+    }
+
+    /// The estimate is a property of the message, not of what has been
+    /// painted. A block's markdown cache lives in the view store, so it
+    /// exists only after a render - reading the store alone under-counted
+    /// every unpainted block, and retention then kept materially more than
+    /// its cap.
+    #[test]
+    fn the_estimate_does_not_move_when_a_block_is_painted() {
+        let app = make_test_app();
+        let text = "prose that a render will turn into markdown chunks".repeat(4);
+        let msg =
+            ChatMessage::new(MessageRole::User, vec![MessageBlock::Text(TextBlock::new(text))]);
+
+        let before = App::measure_message_bytes(&app.render_caches, &msg);
+        // What a render does: create the block's incremental markdown.
+        if let MessageBlock::Text(block) = &msg.blocks[0] {
+            let _ = app.render_caches.markdown(block.id, &block.text);
+        }
+        let after = App::measure_message_bytes(&app.render_caches, &msg);
+
+        assert_eq!(before, after, "a paint must not move the retained-bytes estimate");
+        assert!(before > 0, "the estimate counts the message");
+    }
 
     #[test]
     fn enforce_history_retention_noop_under_budget() {
@@ -883,8 +1012,10 @@ mod tests {
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming reply")]),
         ];
         app.bind_active_turn_assistant(1);
-        app.history_retention_mut().expect("active session").max_bytes =
-            App::measure_message_bytes(&app.messages().expect("active session")[1]);
+        app.history_retention_mut().expect("active session").max_bytes = App::measure_message_bytes(
+            &app.render_caches,
+            &app.messages().expect("active session")[1],
+        );
 
         let stats = app.enforce_history_retention();
 
@@ -943,6 +1074,7 @@ mod tests {
         app.active_viewport_mut().expect("active session").scroll_pos = 9.0;
         app.history_retention_mut().expect("active session").max_bytes =
             app.measure_history_bytes().saturating_sub(App::measure_message_bytes(
+                &app.render_caches,
                 &app.messages().expect("active session")[1],
             ));
 

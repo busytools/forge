@@ -53,13 +53,41 @@ impl super::App {
             .or_else(|| self.messages().map_or(0, <[super::ChatMessage]>::len).checked_sub(1))
     }
 
-    fn block_cache(block: &MessageBlock) -> &super::BlockCache {
+    /// The message-level cache's bytes and last-access tick, by the
+    /// message's own id. This walk holds no view inputs, and a key it
+    /// cannot recompute is one it could never find - which reads as zero
+    /// bytes and never evicts.
+    fn message_cache_state(&self, msg: &super::ChatMessage) -> (usize, u64) {
+        let cache = self.render_caches.peek_message(msg.id);
+        (cache.cached_bytes(), cache.last_access_tick())
+    }
+
+    /// One block's cached bytes and last-access tick. Every kind is
+    /// resolved by its own identity: a tool call's id and render epoch, a
+    /// text block's id, a welcome card's content.
+    fn block_cache_state(&self, block: &MessageBlock) -> (usize, u64) {
         match block {
-            MessageBlock::Text(block) => &block.cache,
-            MessageBlock::Notice(block) => &block.text.cache,
-            MessageBlock::Welcome(welcome) => &welcome.cache,
-            MessageBlock::ToolCall(tc) => &tc.cache,
-            MessageBlock::ImageAttachment(img) => &img.cache,
+            MessageBlock::ToolCall(tc) => {
+                let cache = self.render_caches.peek_tool_call(&tc.id, tc.render_epoch);
+                (cache.cached_bytes(), cache.last_access_tick())
+            }
+            MessageBlock::Text(block) => {
+                let cache = self.render_caches.peek_block(block.id);
+                (cache.cached_bytes(), cache.last_access_tick())
+            }
+            MessageBlock::Notice(block) => {
+                let cache = self.render_caches.peek_block(block.text.id);
+                (cache.cached_bytes(), cache.last_access_tick())
+            }
+            MessageBlock::Welcome(welcome) => {
+                let cache = self
+                    .render_caches
+                    .peek_welcome(super::messages::hash_welcome_block_content(welcome));
+                (cache.cached_bytes(), cache.last_access_tick())
+            }
+            // An image-attachment block holds only a count and renders no
+            // cached rows, so it carries no bytes.
+            MessageBlock::ImageAttachment(_) => (0, 0),
         }
     }
 
@@ -141,14 +169,9 @@ impl super::App {
             let mut slots = Vec::with_capacity(Self::render_cache_slot_count_for_message(msg));
             let tail_protected = protected_tail == Some(msg_idx);
             for (block_idx, block) in msg.blocks.iter().enumerate() {
-                let cache = Self::block_cache(block);
-                let cached_bytes = cache.cached_bytes();
+                let (cached_bytes, last_access_tick) = self.block_cache_state(block);
                 let protected = Self::block_is_render_cache_protected(tail_protected, Some(block));
-                let slot = RenderCacheSlotState {
-                    cached_bytes,
-                    last_access_tick: cache.last_access_tick(),
-                    protected,
-                };
+                let slot = RenderCacheSlotState { cached_bytes, last_access_tick, protected };
                 total_bytes = total_bytes.saturating_add(cached_bytes);
                 if protected {
                     protected_bytes = protected_bytes.saturating_add(cached_bytes);
@@ -157,9 +180,10 @@ impl super::App {
                 }
                 slots.push(slot);
             }
+            let (cached_bytes, last_access_tick) = self.message_cache_state(msg);
             let message_slot = RenderCacheSlotState {
-                cached_bytes: msg.render_cache.cached_bytes(),
-                last_access_tick: msg.render_cache.last_access_tick(),
+                cached_bytes,
+                last_access_tick,
                 protected: self.is_render_cache_message_protected(msg_idx),
             };
             total_bytes = total_bytes.saturating_add(message_slot.cached_bytes);
@@ -427,9 +451,10 @@ impl super::App {
                 self.rebuild_render_cache_accounting();
                 return;
             };
+            let (cached_bytes, last_access_tick) = self.message_cache_state(msg);
             RenderCacheSlotState {
-                cached_bytes: msg.render_cache.cached_bytes(),
-                last_access_tick: msg.render_cache.last_access_tick(),
+                cached_bytes,
+                last_access_tick,
                 protected: self.is_render_cache_message_protected(msg_idx),
             }
         } else {
@@ -441,10 +466,10 @@ impl super::App {
                 self.rebuild_render_cache_accounting();
                 return;
             };
-            let cache = Self::block_cache(block);
+            let (cached_bytes, last_access_tick) = self.block_cache_state(block);
             RenderCacheSlotState {
-                cached_bytes: cache.cached_bytes(),
-                last_access_tick: cache.last_access_tick(),
+                cached_bytes,
+                last_access_tick,
                 protected: self.is_render_cache_block_protected(msg_idx, block_idx),
             }
         };
@@ -620,19 +645,16 @@ impl super::App {
         }
         for (msg_idx, msg) in self.messages().unwrap_or_default().iter().enumerate() {
             for (block_idx, block) in msg.blocks.iter().enumerate() {
-                let cache = Self::block_cache(block);
+                let (cached_bytes, last_access_tick) = self.block_cache_state(block);
                 let protected = block_protections[msg_idx][block_idx];
-                let slot = RenderCacheSlotState {
-                    cached_bytes: cache.cached_bytes(),
-                    last_access_tick: cache.last_access_tick(),
-                    protected,
-                };
+                let slot = RenderCacheSlotState { cached_bytes, last_access_tick, protected };
                 updates.push(SlotUpdate { msg_idx, block_idx, slot });
             }
             let message_slot_idx = msg.blocks.len();
+            let (cached_bytes, last_access_tick) = self.message_cache_state(msg);
             let slot = RenderCacheSlotState {
-                cached_bytes: msg.render_cache.cached_bytes(),
-                last_access_tick: msg.render_cache.last_access_tick(),
+                cached_bytes,
+                last_access_tick,
                 protected: message_protections[msg_idx],
             };
             updates.push(SlotUpdate { msg_idx, block_idx: message_slot_idx, slot });
@@ -725,7 +747,10 @@ impl super::App {
             return 0;
         };
         if block_idx == msg.blocks.len() {
-            let removed = msg.render_cache.evict_cached_render();
+            // The key is copied out before the store is touched: the
+            // message borrow and the store borrow are both `&mut self`.
+            let message_id = msg.id;
+            let removed = self.render_caches.evict_message(message_id);
             if removed > 0 {
                 self.sync_render_cache_slot(msg_idx, block_idx);
             }
@@ -734,17 +759,52 @@ impl super::App {
         let Some(block) = msg.blocks.get_mut(block_idx) else {
             return 0;
         };
-        let removed = match block {
-            MessageBlock::Text(block) => block.cache.evict_cached_render(),
-            MessageBlock::Notice(block) => block.text.cache.evict_cached_render(),
-            MessageBlock::Welcome(welcome) => welcome.cache.evict_cached_render(),
-            MessageBlock::ToolCall(tc) => tc.cache.evict_cached_render(),
-            MessageBlock::ImageAttachment(img) => img.cache.evict_cached_render(),
-        };
-        if removed > 0 {
-            self.sync_render_cache_slot(msg_idx, block_idx);
+        // A tool call's cache is in the view store, and reaching it needs
+        // `&mut self` while the message borrow above is live, so the id is
+        // copied out and the message borrow ends here.
+        if let MessageBlock::ToolCall(tc) = block {
+            let id = tc.id.clone();
+            let removed = self.render_caches.evict_tool_call(&id);
+            if removed > 0 {
+                self.sync_render_cache_slot(msg_idx, block_idx);
+            }
+            return removed;
         }
-        removed
+        // The id is copied out before the store is touched: the message
+        // borrow and the store borrow are both `&mut self`.
+        let block_id = match block {
+            MessageBlock::Text(block) => Some(block.id),
+            MessageBlock::Notice(block) => Some(block.text.id),
+            _ => None,
+        };
+        if let Some(id) = block_id {
+            let recorded = self
+                .render_cache_slots()
+                .and_then(|slots| slots.get(msg_idx))
+                .and_then(|slots| slots.get(block_idx))
+                .map_or(0, |slot| slot.cached_bytes);
+            self.render_caches.evict_block(id);
+            // The markdown cache rides with the block's rows: they are the
+            // same render, and one without the other frees half a block.
+            self.render_caches.evict_markdown(id);
+            self.sync_render_cache_slot(msg_idx, block_idx);
+            return recorded;
+        }
+        // Same copy-out as above: the welcome card is keyed by its content
+        // and the store borrow cannot overlap the message borrow.
+        if let MessageBlock::Welcome(welcome) = block {
+            let signature = super::messages::hash_welcome_block_content(welcome);
+            let recorded = self
+                .render_cache_slots()
+                .and_then(|slots| slots.get(msg_idx))
+                .and_then(|slots| slots.get(block_idx))
+                .map_or(0, |slot| slot.cached_bytes);
+            self.render_caches.evict_welcome(signature);
+            self.sync_render_cache_slot(msg_idx, block_idx);
+            return recorded;
+        }
+        // An image-attachment block caches no rows.
+        0
     }
 }
 
@@ -762,9 +822,41 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
 
+    /// A block that streams keeps ONE store entry across every version of its
+    /// text, not one per append. Keyed on content it would grow with the
+    /// frames instead of with the session, and nothing could evict the
+    /// superseded entries - the budget accounting resolves a slot's current
+    /// key, so it would subtract bytes the store still holds.
+    ///
+    /// This pins the STORE's side. The caller's side is the type: `text_block`
+    /// takes a `BlockId`, so a content signature cannot be passed for one.
+    #[test]
+    fn a_streaming_block_keeps_one_cache_entry() {
+        use crate::app::state::render_cache_store::testing::block_entry_count;
+
+        let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
+        *app.active_messages_mut().expect("active session") =
+            vec![ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("a")])];
+
+        for chunk in ["a", "ab", "abc", "abcd", "abcde"] {
+            let MessageBlock::Text(block) =
+                &mut app.active_messages_mut().expect("active session")[0].blocks[0]
+            else {
+                panic!("expected a text block");
+            };
+            block.text = chunk.to_owned();
+            let signature = block.content_signature();
+            let id = block.id;
+            caches.text_block(id, signature, false, false, 0).store(vec![Line::from(chunk)]);
+            assert_eq!(block_entry_count(&app), 1, "one block entry after {chunk:?}");
+        }
+    }
+
     #[test]
     fn enforce_render_cache_budget_evicts_lru_block() {
         let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
         *app.active_messages_mut().expect("active session") = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("a")]),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("b")]),
@@ -773,17 +865,21 @@ mod tests {
         let bytes_a = if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[0].blocks[0]
         {
-            block.cache.store(vec![Line::from("x".repeat(2200))]);
-            block.cache.cached_bytes()
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("x".repeat(2200))]);
+            caches.peek_block(block.id).cached_bytes()
         } else {
             0
         };
         let bytes_b = if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[1].blocks[0]
         {
-            block.cache.store(vec![Line::from("y".repeat(2200))]);
-            let _ = block.cache.get();
-            block.cache.cached_bytes()
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("y".repeat(2200))]);
+            let _ = caches.peek_block(block.id).get();
+            caches.peek_block(block.id).cached_bytes()
         } else {
             0
         };
@@ -796,12 +892,12 @@ mod tests {
         assert_eq!(stats.protected_bytes, 0);
 
         if let MessageBlock::Text(block) = &app.messages().expect("active session")[0].blocks[0] {
-            assert_eq!(block.cache.cached_bytes(), 0);
+            assert_eq!(caches.peek_block(block.id).cached_bytes(), 0);
         } else {
             panic!("expected text block");
         }
         if let MessageBlock::Text(block) = &app.messages().expect("active session")[1].blocks[0] {
-            assert_eq!(block.cache.cached_bytes(), bytes_b);
+            assert_eq!(caches.peek_block(block.id).cached_bytes(), bytes_b);
         } else {
             panic!("expected text block");
         }
@@ -810,6 +906,7 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_protects_streaming_tail_message() {
         let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
         app.status = AppStatus::Thinking;
         *app.active_messages_mut().expect("active session") = vec![ChatMessage::new(
             MessageRole::Assistant,
@@ -819,8 +916,10 @@ mod tests {
         let before = if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[0].blocks[0]
         {
-            block.cache.store(vec![Line::from("z".repeat(4096))]);
-            block.cache.cached_bytes()
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("z".repeat(4096))]);
+            caches.peek_block(block.id).cached_bytes()
         } else {
             0
         };
@@ -831,7 +930,7 @@ mod tests {
         assert_eq!(stats.protected_bytes, before);
 
         if let MessageBlock::Text(block) = &app.messages().expect("active session")[0].blocks[0] {
-            assert_eq!(block.cache.cached_bytes(), before);
+            assert_eq!(caches.peek_block(block.id).cached_bytes(), before);
         } else {
             panic!("expected text block");
         }
@@ -840,6 +939,7 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_excludes_protected_from_budget() {
         let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
         app.status = AppStatus::Running;
         *app.active_messages_mut().expect("active session") = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old message")]),
@@ -849,16 +949,20 @@ mod tests {
         let bytes_a = if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[0].blocks[0]
         {
-            block.cache.store(vec![Line::from("x".repeat(2200))]);
-            block.cache.cached_bytes()
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("x".repeat(2200))]);
+            caches.peek_block(block.id).cached_bytes()
         } else {
             0
         };
         let bytes_b = if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[1].blocks[0]
         {
-            block.cache.store(vec![Line::from("y".repeat(5000))]);
-            block.cache.cached_bytes()
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("y".repeat(5000))]);
+            caches.peek_block(block.id).cached_bytes()
         } else {
             0
         };
@@ -876,7 +980,7 @@ mod tests {
         assert_eq!(stats.evicted_bytes, 0);
         // Old message cache intact.
         if let MessageBlock::Text(block) = &app.messages().expect("active session")[0].blocks[0] {
-            assert_eq!(block.cache.cached_bytes(), bytes_a);
+            assert_eq!(caches.peek_block(block.id).cached_bytes(), bytes_a);
         } else {
             panic!("expected text block");
         }
@@ -885,6 +989,7 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_protects_active_streaming_owner_not_physical_tail() {
         let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
         app.status = AppStatus::Running;
         *app.active_messages_mut().expect("active session") = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old message")]),
@@ -902,20 +1007,26 @@ mod tests {
         if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[0].blocks[0]
         {
-            block.cache.store(vec![Line::from("x".repeat(2000))]);
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("x".repeat(2000))]);
         }
         let protected_bytes = if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[1].blocks[0]
         {
-            block.cache.store(vec![Line::from("y".repeat(4000))]);
-            block.cache.cached_bytes()
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("y".repeat(4000))]);
+            caches.peek_block(block.id).cached_bytes()
         } else {
             0
         };
         if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[2].blocks[0]
         {
-            block.cache.store(vec![Line::from("z".repeat(5000))]);
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("z".repeat(5000))]);
         }
 
         app.render_cache_budget.max_bytes = 64;
@@ -927,6 +1038,7 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_evicts_when_budgeted_over_limit() {
         let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
         app.status = AppStatus::Running;
         *app.active_messages_mut().expect("active session") = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-a")]),
@@ -938,22 +1050,28 @@ mod tests {
         if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[0].blocks[0]
         {
-            block.cache.store(vec![Line::from("x".repeat(3000))]);
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("x".repeat(3000))]);
         }
         let bytes_b = if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[1].blocks[0]
         {
-            block.cache.store(vec![Line::from("y".repeat(3000))]);
-            let _ = block.cache.get(); // touch to make more recently accessed
-            block.cache.cached_bytes()
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("y".repeat(3000))]);
+            let _ = caches.peek_block(block.id).get(); // touch to make more recently accessed
+            caches.peek_block(block.id).cached_bytes()
         } else {
             0
         };
         let bytes_c = if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[2].blocks[0]
         {
-            block.cache.store(vec![Line::from("z".repeat(5000))]);
-            block.cache.cached_bytes()
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("z".repeat(5000))]);
+            caches.peek_block(block.id).cached_bytes()
         } else {
             0
         };
@@ -967,7 +1085,7 @@ mod tests {
         assert!(stats.evicted_blocks >= 1); // message A evicted (older access)
         // Message B should survive (more recent access).
         if let MessageBlock::Text(block) = &app.messages().expect("active session")[1].blocks[0] {
-            assert_eq!(block.cache.cached_bytes(), bytes_b);
+            assert_eq!(caches.peek_block(block.id).cached_bytes(), bytes_b);
         } else {
             panic!("expected text block");
         }
@@ -976,6 +1094,7 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_protected_bytes_zero_when_not_streaming() {
         let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
         app.status = AppStatus::Ready;
         *app.active_messages_mut().expect("active session") =
             vec![ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("done")])];
@@ -983,7 +1102,9 @@ mod tests {
         if let MessageBlock::Text(block) =
             &mut app.active_messages_mut().expect("active session")[0].blocks[0]
         {
-            block.cache.store(vec![Line::from("x".repeat(2000))]);
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("x".repeat(2000))]);
         }
         app.render_cache_budget.max_bytes = usize::MAX;
 
@@ -994,35 +1115,19 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_accounts_for_message_render_cache() {
         let mut app = make_test_app();
-        *app.active_messages_mut().expect("active session") = vec![
-            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block(&"a".repeat(4000))]),
-            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block(&"b".repeat(4000))]),
-        ];
+        let msg_a =
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block(&"a".repeat(4000))]);
+        let msg_b =
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block(&"b".repeat(4000))]);
+        // Seeded rather than rendered: the message-level cache lives in the
+        // view's store now, and the measure helper builds its layout into a
+        // local store-less cache, so a render would leave these at zero.
+        store_message_render_cache(&app, &msg_a, 4096);
+        store_message_render_cache(&app, &msg_b, 4096);
+        *app.active_messages_mut().expect("active session") = vec![msg_a, msg_b];
 
-        let spinner = crate::ui::SpinnerState {
-            glyph: '\u{280B}',
-            is_active_turn_assistant: false,
-            show_empty_thinking: false,
-            show_thinking: false,
-            show_compacting: false,
-            live_turn_running: false,
-        };
-
-        let _ = crate::ui::measure_message_height_cached(
-            &mut app.active_messages_mut().expect("active session")[0],
-            &spinner,
-            80,
-            1,
-        );
-        let _ = crate::ui::measure_message_height_cached(
-            &mut app.active_messages_mut().expect("active session")[1],
-            &spinner,
-            80,
-            1,
-        );
-
-        let bytes_a = app.messages().expect("active session")[0].render_cache.cached_bytes();
-        let bytes_b = app.messages().expect("active session")[1].render_cache.cached_bytes();
+        let bytes_a = message_cache_bytes(&app, 0);
+        let bytes_b = message_cache_bytes(&app, 1);
         assert!(bytes_a > 0);
         assert!(bytes_b > 0);
 
@@ -1031,22 +1136,20 @@ mod tests {
         let stats = app.enforce_render_cache_budget();
 
         assert!(stats.evicted_bytes >= bytes_a);
-        assert!(
-            app.messages().expect("active session")[0].render_cache.cached_bytes() == 0
-                || app.messages().expect("active session")[1].render_cache.cached_bytes() == 0
-        );
+        assert!(message_cache_bytes(&app, 0) == 0 || message_cache_bytes(&app, 1) == 0);
     }
 
     #[test]
     fn push_path_defers_render_cache_rebuild_until_read() {
         let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
         app.status = AppStatus::Ready;
 
         for i in 0..8 {
             let mut msg =
                 assistant_bash_tool_message(&format!("t{i}"), model::ToolCallStatus::Completed);
             if let MessageBlock::ToolCall(tc) = &mut msg.blocks[0] {
-                tc.cache.store(vec![Line::from("x".repeat(2048))]);
+                caches.tool_call(&tc.id, tc.render_epoch).store(vec![Line::from("x".repeat(2048))]);
             }
             app.push_message_tracked(msg);
         }
@@ -1066,6 +1169,7 @@ mod tests {
     #[test]
     fn push_path_accounting_matches_full_rebuild() {
         let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
         app.status = AppStatus::Running;
 
         for i in 0..3 {
@@ -1074,9 +1178,11 @@ mod tests {
                 vec![assistant_text_block(&format!("row {i}"))],
             );
             if let MessageBlock::Text(block) = &mut text.blocks[0] {
-                block.cache.store(vec![Line::from("t".repeat(1500 + i * 200))]);
+                caches
+                    .text_block(block.id, block.content_signature(), false, false, 0)
+                    .store(vec![Line::from("t".repeat(1500 + i * 200))]);
                 if i % 2 == 0 {
-                    let _ = block.cache.get();
+                    let _ = caches.peek_block(block.id).get();
                 }
             }
             app.push_message_tracked(text);
@@ -1084,14 +1190,16 @@ mod tests {
             let mut tool =
                 assistant_bash_tool_message(&format!("done{i}"), model::ToolCallStatus::Completed);
             if let MessageBlock::ToolCall(tc) = &mut tool.blocks[0] {
-                tc.cache.store(vec![Line::from("o".repeat(2200 + i * 100))]);
+                caches
+                    .tool_call(&tc.id, tc.render_epoch)
+                    .store(vec![Line::from("o".repeat(2200 + i * 100))]);
             }
             app.push_message_tracked(tool);
         }
 
         let mut trailing = assistant_tool_message("live", model::ToolCallStatus::InProgress);
         if let MessageBlock::ToolCall(tc) = &mut trailing.blocks[0] {
-            tc.cache.store(vec![Line::from("p".repeat(3000))]);
+            caches.tool_call(&tc.id, tc.render_epoch).store(vec![Line::from("p".repeat(3000))]);
         }
         app.push_message_tracked(trailing);
 
@@ -1124,12 +1232,14 @@ mod tests {
                 vec![assistant_text_block(&"x".repeat(400))],
             );
             if let MessageBlock::Text(block) = &mut msg.blocks[0] {
-                block.cache.store(vec![Line::from("y".repeat(256))]);
+                app.render_caches
+                    .text_block(block.id, block.content_signature(), false, false, 0)
+                    .store(vec![Line::from("y".repeat(256))]);
             }
             // Message slots must carry bytes too. With them at zero, any
             // assertion about a message slot compares zero against zero
             // and cannot see a mutation that drops or zeroes one.
-            store_message_render_cache(&mut msg, 64);
+            store_message_render_cache(&app, &msg, 64);
             app.push_message_tracked(msg);
         }
         // Appends land mid-turn, which is also what makes the tail the
@@ -1147,8 +1257,9 @@ mod tests {
     /// Seed a message-level render cache so the message slot carries
     /// bytes; a zero-byte message slot makes protected-byte drift
     /// invisible.
-    fn store_message_render_cache(msg: &mut ChatMessage, bytes: usize) {
-        msg.render_cache.store(
+    fn store_message_render_cache(app: &App, msg: &ChatMessage, bytes: usize) {
+        let mut cache = app.render_caches.message(msg.id);
+        cache.store(
             MessageRenderCacheKey {
                 width: 80,
                 layout_generation: 0,
@@ -1169,6 +1280,14 @@ mod tests {
         );
     }
 
+    /// The message-level bytes the budget would read for `idx`.
+    fn message_cache_bytes(app: &App, idx: usize) -> usize {
+        let Some(msg) = app.messages().and_then(|messages| messages.get(idx)) else {
+            return 0;
+        };
+        app.message_cache_state(msg).0
+    }
+
     /// Budget enforcement re-derives both byte totals while it walks
     /// every slot, so accumulated drift cannot outlive one enforcement.
     /// It writes back only flags otherwise, and the byte counts are what
@@ -1176,11 +1295,12 @@ mod tests {
     #[test]
     fn budget_enforcement_rederives_protected_bytes_from_the_slots_it_walks() {
         let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
         let mut owner = assistant_tool_message("toolu_bg", model::ToolCallStatus::InProgress);
         if let MessageBlock::ToolCall(tc) = &mut owner.blocks[0] {
-            tc.cache.store(vec![Line::from("t".repeat(2048))]);
+            caches.tool_call(&tc.id, tc.render_epoch).store(vec![Line::from("t".repeat(2048))]);
         }
-        store_message_render_cache(&mut owner, 2048);
+        store_message_render_cache(&app, &owner, 2048);
         app.push_message_tracked(owner);
         // Plenty of UNPROTECTED bytes, so the injected drift cannot by
         // itself push the budget comparison under the limit. A drift big
@@ -1188,7 +1308,9 @@ mod tests {
         // user impact rather than this function's contract.
         let mut bulk = ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("bulk")]);
         if let MessageBlock::Text(block) = &mut bulk.blocks[0] {
-            block.cache.store(vec![Line::from("b".repeat(60_000))]);
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("b".repeat(60_000))]);
         }
         app.push_message_tracked(bulk);
         app.ensure_render_cache_accounting();
@@ -1222,7 +1344,9 @@ mod tests {
         // Grow a NON-target message without announcing it.
         let mut stowaway = assistant_text_block("grown out of band");
         if let MessageBlock::Text(block) = &mut stowaway {
-            block.cache.store(vec![Line::from("g".repeat(8192))]);
+            app.render_caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("g".repeat(8192))]);
         }
         app.active_messages_mut().expect("active session")[1].blocks.push(stowaway);
 
@@ -1264,7 +1388,9 @@ mod tests {
         );
         for block in &mut owner.blocks {
             if let MessageBlock::Text(b) = block {
-                b.cache.store(vec![Line::from("p".repeat(1024))]);
+                app.render_caches
+                    .text_block(b.id, b.content_signature(), false, false, 0)
+                    .store(vec![Line::from("p".repeat(1024))]);
             }
         }
         app.push_message_tracked(owner);
@@ -1300,6 +1426,7 @@ mod tests {
     #[test]
     fn append_after_the_protected_tail_moved_falls_back_to_a_full_rebuild() {
         let mut app = app_with_backlog(4);
+        let caches = std::rc::Rc::clone(&app.render_caches);
         let tail = app.messages().expect("active session").len() - 1;
         // Enough blocks that the tail sync leaves earlier slots alone:
         // with one block every slot gets re-synced and any stale
@@ -1307,7 +1434,9 @@ mod tests {
         for i in 1..12 {
             let mut b = assistant_text_block(&format!("block {i}"));
             if let MessageBlock::Text(block) = &mut b {
-                block.cache.store(vec![Line::from("p".repeat(512))]);
+                caches
+                    .text_block(block.id, block.content_signature(), false, false, 0)
+                    .store(vec![Line::from("p".repeat(512))]);
             }
             app.active_messages_mut().expect("active session")[tail].blocks.push(b);
         }
@@ -1349,6 +1478,7 @@ mod tests {
     #[test]
     fn growing_an_unprotected_message_moves_its_message_slot_key() {
         let mut app = app_with_backlog(6);
+        let caches = std::rc::Rc::clone(&app.render_caches);
         let target = 1usize; // not the tail, so its slots are evictable
         assert!(
             app.render_cache_slots().expect("active session")[target].iter().all(|s| !s.protected),
@@ -1363,7 +1493,9 @@ mod tests {
 
         let mut extra = assistant_text_block("appended to a non-tail message");
         if let MessageBlock::Text(block) = &mut extra {
-            block.cache.store(vec![Line::from("k".repeat(1500))]);
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("k".repeat(1500))]);
         }
         app.active_messages_mut().expect("active session")[target].blocks.push(extra);
         app.sync_after_message_tail_changed(target);
@@ -1401,11 +1533,14 @@ mod tests {
     #[test]
     fn shrinking_an_unprotected_message_drops_its_block_slot_keys() {
         let mut app = app_with_backlog(6);
+        let caches = std::rc::Rc::clone(&app.render_caches);
         let target = 1usize;
         for i in 0..3 {
             let mut extra = assistant_text_block(&format!("doomed {i}"));
             if let MessageBlock::Text(block) = &mut extra {
-                block.cache.store(vec![Line::from("d".repeat(900 + i * 100))]);
+                caches
+                    .text_block(block.id, block.content_signature(), false, false, 0)
+                    .store(vec![Line::from("d".repeat(900 + i * 100))]);
             }
             app.active_messages_mut().expect("active session")[target].blocks.push(extra);
         }
@@ -1463,13 +1598,14 @@ mod tests {
     #[test]
     fn clearing_a_tool_calls_protection_releases_the_messages_protected_bytes() {
         let mut app = make_test_app();
+        let caches = std::rc::Rc::clone(&app.render_caches);
         // A settled message with an in-flight tool call, then a later
         // message so the streaming-tail rule does not apply to it.
         let mut owner = assistant_tool_message("toolu_bg", model::ToolCallStatus::InProgress);
         if let MessageBlock::ToolCall(tc) = &mut owner.blocks[0] {
-            tc.cache.store(vec![Line::from("t".repeat(600))]);
+            caches.tool_call(&tc.id, tc.render_epoch).store(vec![Line::from("t".repeat(600))]);
         }
-        store_message_render_cache(&mut owner, 400);
+        store_message_render_cache(&app, &owner, 400);
         app.push_message_tracked(owner);
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
@@ -1516,11 +1652,14 @@ mod tests {
     #[test]
     fn appending_resyncs_only_the_tail_slots() {
         let mut app = app_with_backlog(6);
+        let caches = std::rc::Rc::clone(&app.render_caches);
         let tail = app.messages().expect("active session").len() - 1;
         for i in 1..8 {
             let mut b = assistant_text_block(&format!("block {i}"));
             if let MessageBlock::Text(block) = &mut b {
-                block.cache.store(vec![Line::from("z".repeat(256))]);
+                caches
+                    .text_block(block.id, block.content_signature(), false, false, 0)
+                    .store(vec![Line::from("z".repeat(256))]);
             }
             app.active_messages_mut().expect("active session")[tail].blocks.push(b);
         }
@@ -1565,11 +1704,14 @@ mod tests {
     #[test]
     fn appending_a_block_leaves_accounting_matching_a_full_rebuild() {
         let mut app = app_with_backlog(6);
+        let caches = std::rc::Rc::clone(&app.render_caches);
         let tail = app.messages().expect("active session").len() - 1;
 
         let mut extra = assistant_text_block("appended chunk");
         if let MessageBlock::Text(block) = &mut extra {
-            block.cache.store(vec![Line::from("z".repeat(1024))]);
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("z".repeat(1024))]);
         }
         app.active_messages_mut().expect("active session")[tail].blocks.push(extra);
         app.sync_after_message_tail_changed(tail);
@@ -1614,10 +1756,13 @@ mod tests {
     #[test]
     fn removing_a_block_leaves_accounting_matching_a_full_rebuild() {
         let mut app = app_with_backlog(6);
+        let caches = std::rc::Rc::clone(&app.render_caches);
         let tail = app.messages().expect("active session").len() - 1;
         let mut extra = assistant_text_block("doomed");
         if let MessageBlock::Text(block) = &mut extra {
-            block.cache.store(vec![Line::from("q".repeat(2048))]);
+            caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("q".repeat(2048))]);
         }
         app.active_messages_mut().expect("active session")[tail].blocks.push(extra);
         app.sync_after_message_tail_changed(tail);
@@ -1710,7 +1855,9 @@ mod tests {
                 vec![assistant_text_block(&format!("row {i}"))],
             );
             if let MessageBlock::Text(block) = &mut msg.blocks[0] {
-                block.cache.store(vec![Line::from("x".repeat(1024))]);
+                app.render_caches
+                    .text_block(block.id, block.content_signature(), false, false, 0)
+                    .store(vec![Line::from("x".repeat(1024))]);
             }
             app.push_message_tracked(msg);
         }
@@ -1724,7 +1871,9 @@ mod tests {
     fn append_block_out_of_band(app: &mut App, msg_idx: usize) {
         let mut extra = assistant_text_block("appended out of band");
         if let MessageBlock::Text(block) = &mut extra {
-            block.cache.store(vec![Line::from("y".repeat(4096))]);
+            app.render_caches
+                .text_block(block.id, block.content_signature(), false, false, 0)
+                .store(vec![Line::from("y".repeat(4096))]);
         }
         app.active_messages_mut().expect("active session")[msg_idx].blocks.push(extra);
     }
@@ -1829,9 +1978,10 @@ mod tests {
     #[test]
     fn budget_enforcement_repairs_protected_drift_before_reading_totals() {
         let mut app = app_with_cached_messages(2);
+        let caches = std::rc::Rc::clone(&app.render_caches);
         let mut tool = assistant_tool_message("drifting", model::ToolCallStatus::InProgress);
         if let MessageBlock::ToolCall(tc) = &mut tool.blocks[0] {
-            tc.cache.store(vec![Line::from("t".repeat(8192))]);
+            caches.tool_call(&tc.id, tc.render_epoch).store(vec![Line::from("t".repeat(8192))]);
         }
         app.push_message_tracked(tool);
         app.rebuild_render_cache_accounting();
