@@ -84,9 +84,10 @@ pull request.** Those pages are the visual record of every surface
 must never describe something the code does not ship.
 
 **A change that makes a page under `docs/book/` false updates it in the
-same pull request.** That directory is the published documentation, and
-it deploys on every push to `main`, so a page left behind is
-republished wrong within minutes of the merge.
+same pull request.** That directory is the published documentation, along
+with the workspace rustdoc published beside it, and both deploy on every
+push to `main`, so a page left behind is republished wrong within minutes
+of the merge.
 
 ## Commits
 
