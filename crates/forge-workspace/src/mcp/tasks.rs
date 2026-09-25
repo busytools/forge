@@ -468,8 +468,42 @@ mod tests {
         }
     }
 
+    /// The spelling a caller reads in a result and the spelling it must
+    /// send back are the same four. Both `input_schema`s write them out by
+    /// hand rather than deriving them from the enum, so nothing else pins
+    /// them to it.
+    #[test]
+    fn the_status_spellings_agree_across_the_output_and_both_schemas() {
+        for (status, spelling) in [
+            (TaskStatus::Pending, "pending"),
+            (TaskStatus::InProgress, "in_progress"),
+            (TaskStatus::Blocked, "blocked"),
+            (TaskStatus::Completed, "completed"),
+        ] {
+            assert_eq!(status_str(status), spelling, "a result reads {status:?} as {spelling}");
+        }
+        for schema in [
+            Create { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() }.input_schema(),
+            Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() }.input_schema(),
+        ] {
+            let spelled: Vec<&str> = schema["properties"]["status"]["enum"]
+                .as_array()
+                .expect("the status property carries an enum")
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect();
+            assert_eq!(
+                spelled,
+                ["pending", "in_progress", "blocked", "completed"],
+                "a caller must be able to send back what it read",
+            );
+        }
+    }
+
     /// Every field the list description promises is in the block the model
-    /// reads, spelled the way the description spells it.
+    /// reads, spelled the way the description spells it, carrying the value
+    /// its own field holds - the optional entries are one shared tuple, so
+    /// a crossed pair of sources would otherwise read as correct.
     #[test]
     fn a_task_block_carries_the_named_fields() {
         let task = Task {
@@ -497,6 +531,24 @@ mod tests {
             "updated_at",
         ] {
             assert!(json.get(key).is_some(), "the task block carries {key}: {json}");
+        }
+        for (key, value) in [
+            ("id", "t-1"),
+            ("project", "myproj"),
+            ("subject", "Merge peers and workers"),
+            ("status", "pending"),
+            ("active_form", "Merging"),
+            ("detail", "why"),
+            ("artifact", "PR #9"),
+            ("estimate", "1d"),
+            ("parent", "epic"),
+            ("owner", "lead"),
+        ] {
+            assert_eq!(
+                json.get(key).and_then(serde_json::Value::as_str),
+                Some(value),
+                "the block's {key} is the task's own {key}: {json}",
+            );
         }
     }
 
