@@ -240,7 +240,7 @@ mod tests {
             "notice",
             "the first subscriber is handed the plain update",
         );
-        assert!(first.try_recv().is_err(), "the failed-closed prompt is not replayed to it",);
+        assert!(first.try_recv().is_err(), "the failed-closed prompt is not replayed to it");
     }
 
     /// Catches pointing a guard at `send`, which counts an observer as an
