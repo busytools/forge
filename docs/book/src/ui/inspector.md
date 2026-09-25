@@ -97,7 +97,7 @@ The focused session's cwd, the branch, an optional `PR #N → closes #M #K` row,
       <span class="dim">steward</span>
   <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Add the soft-wording branch</span>
       <span class="dim">steward · PR #1173</span>
-  <span class="accent">  ▸</span> <span class="bold">Adding tests for the</span>
+  <span class="accent">  ⠹</span> <span class="bold">Adding tests for the</span>
       <span class="bold">near-threshold branch</span>
       <span class="dim">steward · 1d</span>
   <span class="dim">  ○</span> Run cargo nextest
