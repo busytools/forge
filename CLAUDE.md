@@ -433,8 +433,8 @@ inspected.
     repo, and they can be confidently wrong about the code. The
     rustdoc is generated from the tree, so it tracks the code rather
     than lagging it; the obligation it carries is that every doc
-    comment in the workspace, private items included, is published
-    to a public URL.
+    comment on a compiled, non-hidden item, private items included,
+    is published to a public URL.
 
     The pages, and the usual way each goes false:
 
