@@ -384,7 +384,8 @@ impl super::App {
     }
 
     /// Mark a tool-use id as a backgrounded agent root on the active
-    /// session. See `UiSession::backgrounded_roots`.
+    /// session. See
+    /// [`backgrounded_roots`](crate::app::session::UiSession::backgrounded_roots).
     pub(crate) fn mark_backgrounded_root(&mut self, tool_use_id: String) {
         if let Some(bucket) = self.active_bucket_mut() {
             bucket.backgrounded_roots.insert(tool_use_id);
