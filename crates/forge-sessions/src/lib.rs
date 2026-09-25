@@ -10,3 +10,4 @@ pub mod family;
 pub mod grouping;
 pub mod model;
 pub mod peer_outbound;
+pub mod surface;

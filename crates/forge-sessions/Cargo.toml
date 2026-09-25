@@ -17,3 +17,9 @@ forge-primitives = { workspace = true }
 forge-workspace = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# Self-dep, so this crate's own `#[cfg(test)]` fixtures resolve
+# `Workspace::new_for_test` and `install_db_for_test`.
+forge-workspace = { path = "../forge-workspace", features = ["testing"] }
+tempfile = { workspace = true }
