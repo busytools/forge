@@ -371,6 +371,17 @@ fn flush_pointer_shape(app: &mut App) {
 // TUI event loop
 // ---------------------------------------------------------------------------
 
+/// Next queued `SessionUpdate`, workspace stream first. Both feeds end
+/// at the same reducer, so the order only decides which of two already
+/// queued updates lands first - and the workspace's is the one carrying
+/// session state the TUI's own events annotate.
+fn next_queued_update(app: &mut App) -> Option<forge_workspace::SessionUpdate> {
+    app.workspace_rx
+        .try_recv()
+        .ok()
+        .or_else(|| app.update_rx.try_recv().ok())
+}
+
 pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
@@ -412,6 +423,11 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                 events::handle_terminal_event(app, event);
                 input_ms = crate::perf::phase_ms(input_start);
             }
+            Some(update) = app.workspace_rx.recv() => {
+                let update_start = crate::perf::phase_start();
+                events::apply_session_update(app, update);
+                updates_ms = crate::perf::phase_ms(update_start);
+            }
             Some(update) = app.update_rx.recv() => {
                 let update_start = crate::perf::phase_start();
                 events::apply_session_update(app, update);
@@ -432,12 +448,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             () = tokio::time::sleep(time_to_next) => {}
         }
 
-        // Drain queued session updates without blocking. Terminal
-        // events stay on the select arm: polling the crossterm stream
-        // here supplies a noop waker, which strands its wake thread on
-        // the internal reader lock and stalls this loop for tens of ms.
+        // Drain queued session updates without blocking, both feeds in
+        // turn: the workspace's stream first, then the TUI's own.
+        // Terminal events stay on the select arm: polling the crossterm
+        // stream here supplies a noop waker, which strands its wake
+        // thread on the internal reader lock and stalls this loop for
+        // tens of ms.
         let drain_start = crate::perf::phase_start();
-        while let Ok(update) = app.update_rx.try_recv() {
+        while let Some(update) = next_queued_update(app) {
             let update_start = crate::perf::phase_start();
             events::apply_session_update(app, update);
             updates_ms += crate::perf::phase_ms(update_start);
