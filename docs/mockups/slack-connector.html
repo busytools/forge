@@ -1,0 +1,111 @@
+<div style="background:#04050a;padding:26px;border-radius:12px;">
+<style>
+  .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
+  .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --slack:#2eb67d;
+    display:flex; gap:24px; align-items:flex-start; color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .fg-col { display:flex; flex-direction:column; }
+  .fg-cap { font-size:11.5px; color:var(--dim); margin-bottom:10px; }
+  .fg-pane { border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    background:linear-gradient(180deg,rgba(20,25,38,.75),rgba(13,17,26,.96)); box-shadow:0 30px 80px rgba(0,0,0,.6); }
+  .fg-ph { padding:11px 15px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; }
+  .fg-ph b { font-size:10px; letter-spacing:.19em; color:var(--accent); }
+  .fg-ph i { font-style:normal; margin-left:auto; font-size:10.5px; color:var(--dim); }
+  .fg-pb { padding:12px 15px 15px; }
+
+  .fg-ws { display:flex; align-items:baseline; gap:8px; padding:5px 0 3px; font-size:12.5px; }
+  .fg-ws .nm { font-weight:700; }
+  .fg-ws .pump { color:var(--accent); } .fg-ws .down { color:var(--warn); }
+  .fg-sub { font-size:11.5px; color:var(--dim); padding:2px 0 2px 16px; font-family:ui-monospace,Menlo,monospace; }
+  .fg-sub.deep { padding-left:30px; }
+  .fg-note { font-size:11.5px; color:var(--dim); line-height:1.65; padding-top:12px; }
+
+  .fg-chat { padding:14px 15px 4px; }
+  .fg-src { font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; color:var(--slack); padding-bottom:7px; }
+  .fg-bh { display:flex; align-items:baseline; gap:7px; font-size:13px; }
+  .fg-bh .mk { color:var(--slack); font-weight:700; }
+  .fg-bh .v { font-weight:700; }
+  .fg-bh .meta { color:var(--dim); font-size:12px; }
+  .fg-bb { font-size:12.5px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; line-height:1.6; padding-top:2px; white-space:pre-wrap; }
+  .fg-mini { font-size:11.5px; color:var(--dim); line-height:1.6; padding-top:12px; border-top:1px solid var(--line); margin-top:14px; }
+  .fg-mini b { color:var(--muted); font-weight:400; }
+
+  .fg-dock { width:452px; border:2px solid var(--accent); border-radius:12px; background:rgba(4,5,10,.9); overflow:hidden; }
+  .fg-dock .hd { padding:12px 14px; font-size:12.5px; }
+  .fg-dock .hd b { font-weight:700; }
+  .fg-dock .hd .ws { color:var(--dim); }
+  .fg-dock .bd { padding:0 14px 8px; font-size:12.5px; color:var(--muted); line-height:1.6; }
+  .fg-dock .bd span { color:var(--text); }
+  .fg-opts { padding:2px 14px 6px; }
+  .fg-opt { display:flex; align-items:baseline; gap:9px; padding:4px 0; font-size:12.5px; color:var(--muted); }
+  .fg-opt .ptr { width:13px; flex:0 0 13px; color:var(--accent); font-weight:700; }
+  .fg-opt .g { width:13px; flex:0 0 13px; }
+  .fg-opt.focus { color:var(--text); font-weight:700; }
+  .fg-opt .d { color:var(--dim); font-weight:400; }
+  .fg-dock .ft { padding:9px 14px 11px; font-size:10.5px; color:var(--dim); display:flex; gap:14px; }
+  .fg-dock .ft .cur { color:var(--accent); }
+</style>
+
+<div class="fg">
+
+  <div class="fg-col" style="width:452px;">
+    <div class="fg-cap">The SLACK section of the Inspector: owned subscriptions, grouped by workspace, with the pump's liveness on the heading.</div>
+    <div class="fg-pane">
+      <div class="fg-ph"><b>SLACK</b><i>2 workspaces</i></div>
+      <div class="fg-pb">
+        <div class="fg-ws"><span class="nm">Trust Machines</span><span class="pump">&#9672;</span></div>
+        <div class="fg-sub">direct messages</div>
+        <div class="fg-sub">mentions anywhere</div>
+        <div class="fg-sub">#granite-prod-aeusdc-alerts</div>
+        <div class="fg-sub deep">every message</div>
+        <div class="fg-sub">#granite-prod-usdcx-alerts</div>
+        <div class="fg-sub deep">every message</div>
+        <div class="fg-sub">#ved-test</div>
+        <div class="fg-sub deep">mentions only</div>
+        <div class="fg-ws" style="padding-top:12px;"><span class="nm">Acme</span><span class="down">&#9888;&#65038;</span></div>
+        <div class="fg-sub">C0C0T5E6RM1</div>
+        <div class="fg-sub deep">every message</div>
+        <div class="fg-note">The section keys on the subscriptions alone, never on the pumps: a workspace whose pump drops keeps its rows and swaps the glyph. A conversation whose name was never captured renders its raw id unprefixed, because an id is not a name and a `#` would invent a channel.</div>
+      </div>
+    </div>
+
+    <div class="fg-cap" style="margin-top:22px;line-height:1.75;">What a mention subscription reaches, measured against a real workspace: a mention in a <b style="color:var(--muted);">public</b> channel the user has not joined is reachable; a <b style="color:var(--muted);">private</b> channel the user is not in is not, matching the user's own view. Search indexing lags about 16 seconds, so a mention is not instantaneous, and a message the user authored is never delivered, or an agent answering in Slack would answer itself.</div>
+  </div>
+
+  <div class="fg-col">
+    <div class="fg-cap">A delivered message, as the session's chat renders it: one block per conversation sweep, oldest first, with a thread's replies under their parent.</div>
+    <div class="fg-pane">
+      <div class="fg-chat">
+        <div class="fg-src">Slack</div>
+        <div class="fg-bh"><span class="mk">&#9671;</span><span class="v">#granite-staging-alerts</span><span class="meta">&#183; Trust Machines &#183; granite-bot</span></div>
+        <div class="fg-bb">&#9474;  Large STX Transfer
+&#9492;&#9472; Amount: 233468.293536 STX (~$60434.82 USD) [ts 1789182982.499299]</div>
+        <div class="fg-bh" style="padding-top:12px;"><span class="mk">&#9671;</span><span class="v">#ops</span><span class="meta">&#183; Trust Machines</span></div>
+        <div class="fg-bb">&#9474;  alice: deploy is green [ts 1789183001.000100]
+&#9474;  bob: shipping the indexer now [ts 1789183042.000200]
+&#9492;&#9472; carol: agreed, watching the queue [ts 1789183079.000300]</div>
+        <div class="fg-bh" style="padding-top:12px;"><span class="mk">&#9671;</span><span class="v">C0C0T5E6RM1</span><span class="meta">&#183; Acme</span></div>
+        <div class="fg-bb">&#9492;&#9472; dana: the migration is staged</div>
+        <div class="fg-mini">
+          The header drops the author clause once a block carries more than one message, since each member line names its own. <b style="color:var(--muted);">*bold*</b> and <b style="color:var(--muted);">_italic_</b> lose their markers and <b style="color:var(--muted);">&lt;url|label&gt;</b> reads as the label, then the url.
+        </div>
+      </div>
+    </div>
+
+    <div class="fg-cap" style="margin-top:22px;">An outbound call is held: the composer morphs into the approval dock, and only the approving option sends anything.</div>
+    <div class="fg-dock">
+      <div class="hd"><b>slack__post</b> <span class="ws">Trust Machines &middot; #granite-staging-alerts &middot; in thread</span></div>
+      <div class="bd"><span>Large STX Transfer: 233468.29 STX, about $60,434.82. Watching the next block.</span></div>
+      <div class="fg-opts">
+        <div class="fg-opt focus"><span class="ptr">&#9654;</span><span class="g" style="color:var(--ok);">&#10003;</span><span>Post</span></div>
+        <div class="fg-opt"><span class="ptr"></span><span class="g" style="color:var(--bad);">&#10007;</span><span class="d">Deny</span></div>
+        <div class="fg-opt"><span class="ptr"></span><span class="g" style="color:var(--dim);">...</span><span class="d">Tell Claude something else</span></div>
+      </div>
+      <div class="ft"><span>&#8593;&#8595; select</span><span>&#9166; confirm</span><span>esc reject</span></div>
+    </div>
+  </div>
+
+</div>
+</div>

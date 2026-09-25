@@ -1,0 +1,336 @@
+<div style="background:#04050a;padding:26px;border-radius:12px;">
+<style>
+  .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
+  .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --addressed:#61a0e0; --slash:#e0a0e8;
+    position:relative; background:#04050a; color:var(--text); border-radius:14px; overflow:hidden;
+    border:1px solid var(--line); font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    box-shadow:0 40px 110px rgba(0,0,0,.8); }
+  .fg::after { content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(880px 400px at 12% -10%, rgba(244,118,0,.10), transparent 62%),
+               radial-gradient(700px 380px at 94% 110%, rgba(91,156,248,.07), transparent 60%); }
+  .fg-radio { display:none; }
+  .fg-chrome { display:flex; align-items:center; gap:7px; padding:10px 14px; background:rgba(8,10,16,.92); border-bottom:1px solid var(--line); }
+  .fg-dot { width:11px; height:11px; border-radius:50%; }
+  .fg-url { margin-left:12px; font-size:11px; color:var(--dim); background:var(--s2); border:1px solid var(--line); border-radius:7px; padding:4px 12px; }
+  .fg-body { display:flex; height:540px; position:relative; z-index:1; }
+  .fg-left { width:238px; border-right:1px solid var(--line); background:linear-gradient(180deg,rgba(20,25,38,.8),rgba(13,17,26,.96)); padding:13px 14px; }
+  .fg-org { font-size:10px; letter-spacing:.17em; color:var(--dim); text-transform:uppercase; margin-bottom:8px; }
+  .fg-p { display:flex; align-items:center; gap:9px; padding:7px 0; font-size:13px; }
+  .fg-p .c { margin-left:auto; font-size:10px; color:var(--dim); background:var(--s3); border-radius:99px; padding:1px 8px; }
+  .fg-s { display:flex; align-items:center; gap:9px; padding:5px 0 5px 18px; font-size:12px; color:var(--muted); }
+  .fg-live { width:6px; height:6px; border-radius:50%; background:var(--ok); box-shadow:0 0 10px var(--ok); animation:fgp 1.8s ease-in-out infinite; }
+  .fg-idle { width:6px; height:6px; border-radius:50%; background:#2a3346; }
+  @keyframes fgp { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.3;transform:scale(.75)} }
+  .fg-mid { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .fg-mh { padding:12px 18px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; font-size:14px; font-weight:600; }
+  .fg-chip { font-size:10.5px; color:var(--muted); background:var(--s2); border:1px solid var(--line); border-radius:99px; padding:3px 11px; font-weight:400; }
+  .fg-scroll { flex:1; padding:18px; }
+  .fg-tx { font-size:13.5px; line-height:1.7; color:var(--muted); }
+  .fg-comp { border-top:1px solid var(--line); padding:13px 18px 15px; background:rgba(13,17,26,.6); }
+  .fg-box { border:1px solid var(--line); background:rgba(4,5,10,.85); border-radius:12px; padding:11px 14px; display:flex; align-items:center; gap:11px; font-size:13px; color:var(--dim); }
+  .fg-send { margin-left:auto; width:27px; height:27px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#ff9a3c); color:#140b02; display:flex; align-items:center; justify-content:center; }
+  .fg-hints { display:flex; gap:15px; font-size:10px; color:var(--dim); margin-top:9px; }
+  .fg-right { width:280px; border-left:1px solid var(--line); background:linear-gradient(180deg,rgba(20,25,38,.75),rgba(13,17,26,.96)); padding:13px 15px; }
+  .fg-sec h4 { font-size:10px; letter-spacing:.15em; color:var(--dim); text-transform:uppercase; margin-bottom:8px; font-weight:600; }
+  .fg-r { display:flex; align-items:center; gap:9px; font-size:12px; padding:4px 0; color:var(--muted); }
+  .fg-r .k { color:var(--text); } .fg-r .v { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--dim); }
+  .fg-sub { font-size:11.5px; color:var(--dim); padding:2px 0; }
+
+  /* the review affordance: one chip per overlay, above the frame's chrome */
+  .fg-launch { display:flex; flex-wrap:wrap; gap:7px; align-items:center; padding:11px 14px; border-bottom:1px solid var(--line); background:rgba(8,10,16,.6); }
+  .fg-launch span { font-size:10.5px; color:var(--dim); margin-right:3px; }
+  .fg-lchip { font-size:11px; color:var(--muted); background:var(--s2); border:1px solid var(--line); border-radius:99px; padding:4px 12px; cursor:pointer; user-select:none; }
+  .fg-lchip:hover { color:var(--text); border-color:#2e3850; }
+  #pk-spinner:checked ~ .fg .fg-lchip[for=pk-spinner],
+  #pk-model:checked ~ .fg .fg-lchip[for=pk-model],
+  #pk-sessions:checked ~ .fg .fg-lchip[for=pk-sessions],
+  #pk-commands:checked ~ .fg .fg-lchip[for=pk-commands],
+  #pk-gateway:checked ~ .fg .fg-lchip[for=pk-gateway],
+  #pk-dictate:checked ~ .fg .fg-lchip[for=pk-dictate],
+  #pk-projects:checked ~ .fg .fg-lchip[for=pk-projects],
+  #pk-inspector:checked ~ .fg .fg-lchip[for=pk-inspector] { color:var(--accent); border-color:rgba(244,118,0,.5); background:rgba(244,118,0,.1); }
+
+  .fg-floatwrap { position:absolute; inset:0; z-index:6; background:rgba(4,5,10,.55); backdrop-filter:blur(9px) saturate(.8); display:none; align-items:center; justify-content:center; }
+  #pk-spinner:checked ~ .fg .fw-spinner,
+  #pk-model:checked ~ .fg .fw-model,
+  #pk-sessions:checked ~ .fg .fw-sessions,
+  #pk-commands:checked ~ .fg .fw-commands,
+  #pk-gateway:checked ~ .fg .fw-gateway,
+  #pk-dictate:checked ~ .fg .fw-dictate,
+  #pk-projects:checked ~ .fg .fw-projects,
+  #pk-inspector:checked ~ .fg .fw-inspector { display:flex; }
+  .fg-backdrop { position:absolute; inset:0; cursor:pointer; }
+  .fg-float { position:relative; z-index:1; border:1px solid #2b3448; border-radius:14px; overflow:hidden;
+    background:linear-gradient(180deg,rgba(28,34,48,.97),rgba(16,20,30,.99));
+    box-shadow:0 50px 120px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.05); }
+  .fg-fh { display:flex; align-items:baseline; gap:10px; padding:13px 16px; border-bottom:1px solid var(--line); }
+  .fg-fh b { font-size:12.5px; color:var(--accent); }
+  .fg-fh i { font-style:normal; font-size:10.5px; color:var(--dim); }
+  .fg-fh .cls { margin-left:auto; font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:6px; padding:2px 7px; cursor:pointer; }
+  .fg-fb { padding:11px 16px 13px; }
+  .fg-frow { display:flex; align-items:baseline; gap:10px; font-size:12.5px; padding:4.5px 0; color:var(--dim); }
+  .fg-frow .sel { width:12px; flex:0 0 12px; color:var(--accent); font-weight:700; }
+  .fg-frow .nm { color:var(--muted); }
+  .fg-frow.on .nm { color:var(--accent); font-weight:700; }
+  .fg-frow .dot { color:var(--accent); }
+  .fg-frow .d { margin-left:auto; font-size:11px; }
+  .fg-ffoot { padding:10px 16px; border-top:1px solid var(--line); font-size:10.5px; color:var(--dim); display:flex; gap:14px; }
+  .fg-ffoot b { color:var(--accent); font-weight:700; }
+  .fg-note { font-size:11.5px; color:var(--dim); line-height:1.6; }
+  .fg-grp { font-size:10px; letter-spacing:.15em; color:var(--dim); text-transform:uppercase; font-weight:600; margin:9px 0 4px; }
+  .fg-acct { display:flex; align-items:baseline; gap:9px; font-size:12.5px; padding:2.5px 0; color:var(--muted); font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+  .fg-acct .nm { color:var(--text); font-weight:600; font-family:system-ui,sans-serif; font-size:12.5px; width:118px; }
+  .fg-acct .st { margin-left:auto; font-family:system-ui,sans-serif; font-size:11.5px; }
+  .fg-ok { color:var(--ok); } .fg-err { color:var(--bad); }
+  .fg-pin { font-size:12px; color:var(--dim); padding:1px 0; }
+  .fg-pin .nm { color:var(--text); }
+  .fg-filter { border:1px solid rgba(244,118,0,.45); border-radius:10px; padding:9px 12px; font-size:12.5px; color:var(--text); margin-bottom:11px; display:flex; gap:8px; }
+  .fg-filter span { color:var(--dim); }
+  .fg-filter .cur { display:inline-block; width:2px; height:14px; background:var(--accent); animation:blink 1.05s step-end infinite; vertical-align:-2px; }
+  @keyframes blink { 50%{opacity:0} }
+  .fg-cmd { display:flex; align-items:baseline; gap:10px; font-size:12.5px; padding:4.5px 0; }
+  .fg-cmd .nm { color:var(--slash); }
+  .fg-cmd.on .nm { font-weight:700; }
+  .fg-cmd.on .nm::before { content:"\25B8 "; color:var(--accent); }
+  .fg-cmd .d { margin-left:auto; font-size:11px; color:var(--dim); }
+  .fg-kv { display:flex; gap:10px; font-size:12px; padding:3px 0; }
+  .fg-kv .k { width:96px; color:var(--dim); }
+  .fg-bar { display:flex; gap:2px; align-items:center; }
+  .fg-bar i { width:7px; height:9px; border-radius:1px; background:#242c3d; }
+  .fg-bar i.f { background:var(--ok); }
+  .fg-bar i.w { background:var(--warn); }
+  .fg-bar i.a { background:var(--accent); }
+  .fg-bar i.b { background:var(--bad); }
+</style>
+
+<input class="fg-radio" type="radio" name="pk" id="pk-none" checked>
+<input class="fg-radio" type="radio" name="pk" id="pk-spinner">
+<input class="fg-radio" type="radio" name="pk" id="pk-model">
+<input class="fg-radio" type="radio" name="pk" id="pk-sessions">
+<input class="fg-radio" type="radio" name="pk" id="pk-commands">
+<input class="fg-radio" type="radio" name="pk" id="pk-gateway">
+<input class="fg-radio" type="radio" name="pk" id="pk-dictate">
+<input class="fg-radio" type="radio" name="pk" id="pk-projects">
+<input class="fg-radio" type="radio" name="pk" id="pk-inspector">
+
+<div class="fg">
+
+  <div class="fg-launch">
+    <span>Open an overlay:</span>
+    <label class="fg-lchip" for="pk-model">/model</label>
+    <label class="fg-lchip" for="pk-sessions">/resume</label>
+    <label class="fg-lchip" for="pk-commands">&#8984;K commands</label>
+    <label class="fg-lchip" for="pk-spinner">/spinner</label>
+    <label class="fg-lchip" for="pk-gateway">/gateway</label>
+    <label class="fg-lchip" for="pk-dictate">/dictate</label>
+    <label class="fg-lchip" for="pk-projects">Projects overlay</label>
+    <label class="fg-lchip" for="pk-inspector">Inspector overlay</label>
+  </div>
+
+  <div class="fg-chrome">
+    <span class="fg-dot" style="background:#ff5f57;"></span>
+    <span class="fg-dot" style="background:#febc2e;"></span>
+    <span class="fg-dot" style="background:#28c840;"></span>
+    <span class="fg-url">localhost:7777 &nbsp;&middot;&nbsp; forge</span>
+  </div>
+
+  <div class="fg-body">
+    <div class="fg-left">
+      <div class="fg-org">Busytools</div>
+      <div class="fg-p">forge<span class="c">4</span></div>
+      <div class="fg-s"><span class="fg-live"></span>claude-tui</div>
+      <div class="fg-s"><span class="fg-idle"></span>tool-family</div>
+      <div class="fg-p">busymail<span class="c">2</span></div>
+      <div class="fg-p">hdp<span class="c">1</span></div>
+    </div>
+    <div class="fg-mid">
+      <div class="fg-mh">claude-tui<span class="fg-chip">opus-5-5</span><span class="fg-chip" style="margin-left:auto;">38% context</span></div>
+      <div class="fg-scroll">
+        <div class="fg-tx"><b style="color:var(--text);">Ved</b> &middot; 12:04<br>did the inspector tabs land?</div>
+        <div class="fg-tx" style="margin-top:14px;"><b style="color:var(--text);">Assistant</b> &middot; 12:04<br>Yes. The pane keeps one section up at a time now, and the attention band stays pinned above it whichever tab is showing.</div>
+      </div>
+      <div class="fg-comp">
+        <div class="fg-box"><span>&#10148;</span><span style="font-style:italic;">Type a message...</span><span class="fg-send">&#8593;</span></div>
+        <div class="fg-hints"><span>&#8984;K commands</span><span>&#8679;&#8629; newline</span><span>&#8984;&#8629; send</span></div>
+      </div>
+    </div>
+    <div class="fg-right">
+      <div class="fg-sec">
+        <h4>Git</h4>
+        <div class="fg-sub">~/Projects/forge/.claude/worktrees/mockups</div>
+        <div class="fg-sub">&#9095; worktree/web-mockups</div>
+        <div class="fg-r"><span class="k">uncommitted</span><span class="v"><span style="color:var(--ok);">+3</span> <span style="color:var(--bad);">-1</span></span></div>
+      </div>
+      <div class="fg-sec" style="margin-top:14px;">
+        <h4>Tasks &middot; 1/3</h4>
+        <div class="fg-r"><span class="k" style="color:var(--accent);">&#10361;</span><span style="font-size:11.5px;">Mock the picker overlays</span></div>
+        <div class="fg-r"><span style="color:var(--dim);">&#9675;</span><span style="font-size:11.5px;color:var(--dim);">Review the set</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="fg-floatwrap fw-spinner">
+    <label class="fg-backdrop" for="pk-none"></label>
+    <div class="fg-float" style="width:400px;">
+      <div class="fg-fh"><b>spinner</b><i>live preview across the whole UI</i><label class="cls" for="pk-none">esc</label></div>
+      <div class="fg-fb">
+        <div class="fg-frow on"><span class="sel">&#9654;</span><span class="nm">&#10361; braille</span><span class="d">32ms</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">&#9680;</span><span class="nm">&nbsp;phase_of_moon</span><span class="d">90ms</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">&#10022;</span><span class="nm">&nbsp;ember</span><span class="d">160ms</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">&#9606;</span><span class="nm">&nbsp;bars_v</span><span class="d">70ms</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">&#10041;</span><span class="nm">&nbsp;star</span><span class="d">130ms</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">&#10023;</span><span class="nm">&nbsp;sparkle</span><span class="d">160ms</span></div>
+      </div>
+      <div class="fg-ffoot"><span><b>&#8593;&#8595;</b> preview</span><span><b>enter</b> apply</span><span><b>esc</b> cancel</span></div>
+    </div>
+  </div>
+
+  <div class="fg-floatwrap fw-model">
+    <label class="fg-backdrop" for="pk-none"></label>
+    <div class="fg-float" style="width:460px;">
+      <div class="fg-fh"><b>model</b><i>this org's declared models</i><label class="cls" for="pk-none">esc</label></div>
+      <div class="fg-fb">
+        <div class="fg-frow"><span class="sel">&#9654;</span><span class="nm">glm-5.3</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">deepseek-v4-pro-0813</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">kimi-k3</span></div>
+        <div class="fg-frow on"><span class="sel"></span><span class="dot">&#9679;</span><span class="nm">glm-5.3-flash</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">deepseek-v4.1-flash</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm" style="color:var(--dim);">&#8230;</span></div>
+      </div>
+      <div class="fg-ffoot"><span><b>&#8593;&#8595;</b> move</span><span><b>enter</b> switch</span><span><b>esc</b> cancel</span><span style="margin-left:auto;"><b>&#9679;</b> current</span></div>
+    </div>
+  </div>
+
+  <div class="fg-floatwrap fw-sessions">
+    <label class="fg-backdrop" for="pk-none"></label>
+    <div class="fg-float" style="width:560px;">
+      <div class="fg-fh"><b>resume</b><i>this project's sessions, newest first</i><label class="cls" for="pk-none">esc</label></div>
+      <div class="fg-fb">
+        <div class="fg-filter"><span>/</span><span>claude-tui</span><span class="cur"></span></div>
+        <div class="fg-frow on"><span class="sel">&#9654;</span><span class="nm">claude-tui</span><span class="nm" style="color:var(--dim);">&nbsp;&middot;&nbsp;9f21c4ab</span><span class="d">live now &middot; 38% context</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">implementer</span><span class="nm" style="color:var(--dim);">&nbsp;&middot;&nbsp;b70e3312</span><span class="d">2h &middot; worker</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">reviewer</span><span class="nm" style="color:var(--dim);">&nbsp;&middot;&nbsp;4c8d0f77</span><span class="d">4h &middot; worker</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">task-list</span><span class="nm" style="color:var(--dim);">&nbsp;&middot;&nbsp;1ae9b6c0</span><span class="d">1d</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">disable-cleanup</span><span class="nm" style="color:var(--dim);">&nbsp;&middot;&nbsp;77f1a2de</span><span class="d">3d</span></div>
+      </div>
+      <div class="fg-ffoot"><span><b>&#8593;&#8595;</b> move</span><span><b>enter</b> resume</span><span><b>esc</b> cancel</span></div>
+    </div>
+  </div>
+
+  <div class="fg-floatwrap fw-commands">
+    <label class="fg-backdrop" for="pk-none"></label>
+    <div class="fg-float" style="width:560px;">
+      <div class="fg-fh"><b>commands</b><i>every slash command a session can run</i><label class="cls" for="pk-none">esc</label></div>
+      <div class="fg-fb">
+        <div class="fg-filter"><span>/</span><span>di</span><span class="cur"></span></div>
+        <div class="fg-cmd on"><span class="nm">/diff</span><span class="d">review the branch's diff, leave comments</span></div>
+        <div class="fg-cmd"><span class="nm">/dictate</span><span class="d">voice, structure and destination axes</span></div>
+        <div class="fg-cmd"><span class="nm">/config</span><span class="d">forge.toml keys, read-only view</span></div>
+        <div class="fg-cmd"><span class="nm">/model</span><span class="d">switch the session's model</span></div>
+        <div class="fg-cmd"><span class="nm">/usage</span><span class="d">tokens and notional cost by project or model</span></div>
+        <div class="fg-cmd"><span class="nm">/extensions</span><span class="d">plugins, components, MCP servers, marketplaces</span></div>
+        <div class="fg-cmd"><span class="nm">/gateway</span><span class="d">what the account pool holds</span></div>
+        <div class="fg-cmd"><span class="nm">/launchpad</span><span class="d">back to the project picker</span></div>
+      </div>
+      <div class="fg-ffoot"><span><b>&#8593;&#8595;</b> move</span><span><b>enter</b> run</span><span><b>esc</b> cancel</span><span style="margin-left:auto;">&#8984;K</span></div>
+    </div>
+  </div>
+
+  <div class="fg-floatwrap fw-gateway">
+    <label class="fg-backdrop" for="pk-none"></label>
+    <div class="fg-float" style="width:520px;">
+      <div class="fg-fh"><b>Gateway &middot; 2 orgs</b><i>read-only</i><label class="cls" for="pk-none">esc</label></div>
+      <div class="fg-fb">
+        <div class="fg-grp" style="margin-top:0;">Busytools</div>
+        <div class="fg-pin"><span class="nm">primary</span>&nbsp; Zai, Personal</div>
+        <div class="fg-pin"><span class="nm">fallback</span>&nbsp; OpenRouter</div>
+        <div class="fg-acct"><span class="nm">Zai</span><span>zai &nbsp; 5h 100% &nbsp; 7d 63%</span><span class="st fg-err">limit hit</span></div>
+        <div class="fg-acct"><span class="nm">Personal</span><span>anthropic &nbsp; 5h 34% &nbsp; 7d 22%</span><span class="st fg-ok">usable</span></div>
+        <div class="fg-acct"><span class="nm">OpenRouter-TM</span><span>openrouter &nbsp; $20.30 m</span><span class="st fg-err">limit hit</span></div>
+        <div class="fg-acct"><span class="nm">OpenRouter</span><span>fallback &nbsp; openrouter</span><span class="st fg-err">auth failed or expired</span></div>
+        <div class="fg-grp">Subspace</div>
+        <div class="fg-pin"><span class="nm">primary</span>&nbsp; Subspace</div>
+        <div class="fg-pin"><span class="nm">fallback</span>&nbsp; -</div>
+        <div class="fg-acct"><span class="nm">Subspace</span><span>anthropic &nbsp; 5h 12% &nbsp; 7d 9%</span><span class="st fg-ok">usable</span></div>
+      </div>
+      <div class="fg-ffoot"><span><b>esc</b> close</span><span style="margin-left:auto;">read-only: the spawn pick decides every account</span></div>
+    </div>
+  </div>
+
+  <div class="fg-floatwrap fw-dictate">
+    <label class="fg-backdrop" for="pk-none"></label>
+    <div class="fg-float" style="width:560px;">
+      <div class="fg-fh"><b>Dictate</b><i>axes this session &middot; device until restart</i><label class="cls" for="pk-none">esc</label></div>
+      <div class="fg-fb">
+        <div class="fg-grp" style="margin-top:0;">Voice</div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">casual</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">semi-casual</span></div>
+        <div class="fg-frow on"><span class="sel"></span><span class="dot">&#9679;</span><span class="nm">&#9656; semi-formal</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">formal</span></div>
+        <div class="fg-grp">Structure</div>
+        <div class="fg-frow"><span class="sel"></span><span class="dot">&#9679;</span><span class="nm">prose</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="nm">may bullet a list</span></div>
+        <div class="fg-grp">Destination</div>
+        <div class="fg-frow"><span class="sel"></span><span class="dot">&#9679;</span><span class="nm">plain text</span></div>
+        <div class="fg-frow"><span class="sel"></span><span class="dot">&#9679;</span><span class="nm">email layout</span><span class="d">this session</span></div>
+        <div class="fg-grp">Input device</div>
+        <div class="fg-frow on"><span class="sel"></span><span class="nm">Device: Focusrite Scarlett 2i2</span><span class="d" style="color:var(--accent);">active until restart</span></div>
+        <div class="fg-frow" style="padding-top:8px;"><span class="sel"></span><span class="nm">Reset all to defaults</span></div>
+        <div class="fg-note" style="margin-top:10px;">These let the cleanup model do something. They do not promise it will: text that comes back unchanged means it declined, not that the setting failed.</div>
+      </div>
+      <div class="fg-ffoot"><span><b>&#8593;&#8595;</b> move</span><span><b>enter</b> set</span><span><b>esc</b> close</span><span style="margin-left:auto;"><b>&#9679;</b> in force</span></div>
+    </div>
+  </div>
+
+  <div class="fg-floatwrap fw-projects">
+    <label class="fg-backdrop" for="pk-none"></label>
+    <div class="fg-float" style="width:620px;">
+      <div class="fg-fh"><b>&#9636; PROJECTS</b><i>narrow tier, full-screen</i><label class="cls" for="pk-none">&#10005;</label></div>
+      <div class="fg-fb">
+        <div class="fg-grp" style="margin-top:0;">Gateway</div>
+        <div class="fg-p" style="font-size:12.5px;"><span style="color:var(--accent);">&#10307;</span><span style="color:var(--accent);font-weight:700;">gateway-backend</span><span style="margin-left:auto;font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:5px;"> x </span></div>
+        <div class="fg-s" style="font-size:12px;"><span style="color:var(--ok);">&#9679;</span>reviewer<span style="margin-left:auto;font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:5px;"> x </span></div>
+        <div class="fg-p" style="font-size:12.5px;"><span style="color:var(--dim);">&#9675;</span><span style="color:var(--dim);">data-modules</span><span style="margin-left:auto;font-size:11px;color:var(--dim);">2h</span></div>
+        <div class="fg-grp">Personal</div>
+        <div class="fg-p" style="font-size:12.5px;"><span style="color:var(--dim);">&#9675;</span><span style="color:var(--dim);">dotfiles</span><span style="margin-left:auto;font-size:11px;color:var(--dim);">4h</span></div>
+        <div class="fg-p" style="font-size:12.5px;"><span style="color:var(--ok);">&#9670;</span><span style="font-weight:700;">playground</span><span style="margin-left:auto;font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:5px;"> x </span></div>
+        <div style="border-top:1px solid var(--line);margin:14px 0 10px;"></div>
+        <div class="fg-kv"><span class="k">Profile</span><span>Stargate</span></div>
+        <div class="fg-kv"><span class="k">Org</span><span>Gateway</span></div>
+        <div class="fg-kv"><span class="k">ID</span><span style="color:var(--dim);">550e8400</span><span style="margin-left:auto;color:var(--dim);">&#10697;</span></div>
+        <div class="fg-kv"><span class="k">Mode</span><span style="color:var(--warn);">[Auto]</span></div>
+        <div class="fg-kv"><span class="k">Model</span><span>claude-opus-5</span></div>
+        <div class="fg-kv"><span class="k">Effort</span><span>Max</span></div>
+        <div class="fg-kv" style="padding-top:8px;"><span class="k">Ctx</span><span class="fg-bar"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="w"></i><i class="w"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span style="margin-left:auto;">39%</span></div>
+        <div class="fg-note" style="padding-left:96px;">5 compactions &middot; 1M</div>
+        <div class="fg-kv" style="padding-top:6px;"><span class="k">5h</span><span class="fg-bar"><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span style="margin-left:auto;">15% &middot; 1h 48m</span></div>
+        <div class="fg-kv" style="padding-top:6px;"><span class="k">7d</span><span class="fg-bar"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i></i><i></i></span><span style="margin-left:auto;">89% &middot; 4d 4h</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="fg-floatwrap fw-inspector">
+    <label class="fg-backdrop" for="pk-none"></label>
+    <div class="fg-float" style="width:620px;">
+      <div class="fg-fh"><b>INSPECTOR &#9638;</b><i>narrow tier, full-screen</i><label class="cls" for="pk-none">&#10005;</label></div>
+      <div class="fg-fb">
+        <h4 style="font-size:10px;letter-spacing:.15em;color:var(--dim);text-transform:uppercase;font-weight:600;margin:0 0 8px;">Git <span style="margin-left:8px;color:var(--addressed);">&#128172; 2</span> <span style="color:var(--dim);">&#129417;</span></h4>
+        <div class="fg-sub" style="font-family:ui-monospace,Menlo,monospace;">~/Projects/forge/.claude/worktrees/implementer</div>
+        <div class="fg-sub" style="font-family:ui-monospace,Menlo,monospace;"><span style="color:var(--dim);">&#9095;</span> <span style="color:var(--accent);">implementer/issue-9408-inspector-tabs</span></div>
+        <div class="fg-sub" style="font-family:ui-monospace,Menlo,monospace;"><span style="color:var(--dim);">PR </span><span style="color:var(--accent);">#9412</span><span style="color:var(--dim);"> &rarr; closes #9408</span></div>
+        <div class="fg-r" style="font-size:11.5px;"><span class="k">uncommitted</span><span class="v"><span style="color:var(--ok);">+42</span> <span style="color:var(--bad);">-8</span></span></div>
+        <div class="fg-sub" style="font-family:ui-monospace,Menlo,monospace;padding-left:8px;">&#9492;&#9472; inspector_pane.rs <span style="color:var(--ok);">+42</span> <span style="color:var(--bad);">-8</span></div>
+        <div style="border-top:1px solid var(--line);margin:14px 0 12px;"></div>
+        <h4 style="font-size:10px;letter-spacing:.15em;color:var(--dim);text-transform:uppercase;font-weight:600;margin:0 0 8px;">Tasks <span style="letter-spacing:0;font-weight:400;">&middot; 2/5</span></h4>
+        <div class="fg-r" style="font-size:11.5px;"><span style="color:var(--ok);">&#10003;</span><span style="color:var(--dim);text-decoration:line-through;">Read the rate-limit code</span></div>
+        <div class="fg-r" style="font-size:11.5px;"><span style="color:var(--accent);">&#10361;</span><span class="k" style="font-weight:600;">Adding tests for the near-threshold branch</span></div>
+        <div class="fg-r" style="font-size:11.5px;"><span style="color:var(--dim);">&#9675;</span><span style="color:var(--dim);">Run cargo nextest</span></div>
+      </div>
+      <div class="fg-ffoot"><span><b>esc</b> close</span><span style="margin-left:auto;">Projects and Inspector overlays are mutually exclusive</span></div>
+    </div>
+  </div>
+
+</div>
+</div>

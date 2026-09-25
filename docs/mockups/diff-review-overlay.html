@@ -1,0 +1,284 @@
+<div style="background:#04050a;padding:26px;border-radius:12px;">
+<style>
+  .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
+  .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --addressed:#61a0e0; --cyan:#4ec9b0;
+    position:relative; background:#04050a; color:var(--text); border-radius:14px; overflow:hidden;
+    border:1px solid var(--line); font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    box-shadow:0 40px 110px rgba(0,0,0,.8); }
+  .fg::after { content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(880px 400px at 12% -10%, rgba(244,118,0,.10), transparent 62%),
+               radial-gradient(700px 380px at 94% 110%, rgba(91,156,248,.07), transparent 60%); }
+  .fg-chrome { display:flex; align-items:center; gap:7px; padding:10px 14px; background:rgba(8,10,16,.92); border-bottom:1px solid var(--line); }
+  .fg-dot { width:11px; height:11px; border-radius:50%; }
+  .fg-url { margin-left:12px; font-size:11px; color:var(--dim); background:var(--s2); border:1px solid var(--line); border-radius:7px; padding:4px 12px; }
+  .fg-x-close { margin-left:auto; font-size:13px; color:var(--dim); cursor:pointer; padding:2px 7px; border-radius:7px; border:1px solid var(--line); }
+  .fg-x-close:hover { color:var(--text); }
+
+  .fg-wrap { display:flex; height:742px; position:relative; z-index:1; }
+  .fg-rail { width:18%; min-width:240px; border-right:1px solid var(--line); background:linear-gradient(180deg,rgba(20,25,38,.7),rgba(13,17,26,.95)); display:flex; flex-direction:column; }
+  .fg-rhead { padding:13px 15px 11px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; }
+  .fg-rhead b { font-size:10px; letter-spacing:.19em; color:var(--accent); }
+  .fg-rhead span { margin-left:auto; font-size:10px; color:var(--dim); }
+  .fg-rtree { padding:11px 12px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+  .fg-row { display:flex; align-items:center; gap:6px; padding:3.5px 6px; border-radius:6px; color:var(--muted); cursor:pointer; white-space:nowrap; }
+  .fg-row:hover { background:rgba(40,48,66,.45); color:var(--text); }
+  .fg-row .conn { color:var(--dim); }
+  .fg-row .st { width:10px; font-weight:700; }
+  .fg-row .nm { overflow:hidden; text-overflow:ellipsis; }
+  .fg-row .cb { margin-left:auto; color:var(--accent); font-size:10px; }
+  .fg-dirrow { padding:3.5px 6px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+  .fg-mark { width:9px; color:var(--accent); }
+  .st-M, .st-R, .st-C, .st-T { color:var(--accent); }
+  .st-A { color:var(--ok); } .st-D { color:var(--bad); } .st-U { color:var(--warn); } .st-B { color:var(--bad); }
+  .fg-untracked { padding:8px 6px 0; font-size:10.5px; color:var(--warn); }
+  .fg-railfoot { margin-top:auto; padding:11px 13px; border-top:1px solid var(--line); font-size:10.5px; color:var(--dim); line-height:1.5; }
+
+  .fg-doc { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .fg-docscroll { flex:1; overflow-y:auto; }
+  .fg-docscroll::-webkit-scrollbar { width:8px; }
+  .fg-docscroll::-webkit-scrollbar-thumb { background:#222a3c; border-radius:99px; }
+  .fg-band { position:sticky; top:0; z-index:2; display:flex; align-items:baseline; gap:9px; padding:9px 16px;
+    background:#1b2130; border-bottom:1px solid var(--line); font-size:12.5px; }
+  .fg-band .caret { color:var(--dim); }
+  .fg-band b { font-weight:700; }
+  .fg-band .badge { font-size:10.5px; color:var(--accent); }
+  .fg-band .badge.del { color:var(--bad); }
+  .fg-band .tot { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:11px; }
+  .fg-add { color:var(--ok); } .fg-del { color:var(--bad); }
+  .fg-expander { display:block; padding:6px 16px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; font-size:11px; cursor:pointer; }
+  .fg-expander:hover { color:var(--muted); background:rgba(40,48,66,.3); }
+  .fg-code { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; line-height:1.65; }
+  .fg-l { display:flex; gap:12px; padding:1px 16px; white-space:pre; }
+  .fg-l .ln { width:34px; flex:0 0 34px; text-align:right; color:#4a5266; user-select:none; }
+  .fg-l .sign { width:8px; flex:0 0 8px; color:var(--dim); }
+  .fg-l.a { background:rgba(3,58,22,.72); }
+  .fg-l.a .sign { color:var(--ok); }
+  .fg-l.d { background:rgba(103,6,12,.62); }
+  .fg-l.d .sign { color:var(--bad); }
+  .fg-l.hunk { color:var(--cyan); background:rgba(78,201,176,.05); }
+  .fg-cap { padding:11px 16px 4px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; font-size:11px; }
+  .fg-end { padding:14px 16px 22px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; font-size:11px; }
+  .fg-emptyline { height:16px; }
+
+  .fg-card { margin:8px 16px 12px 62px; border:1px solid #2b3448; border-radius:10px; background:rgba(13,17,26,.9); max-width:640px; }
+  .fg-ch { display:flex; align-items:center; gap:8px; padding:9px 12px; border-bottom:1px solid var(--line); font-size:11.5px; }
+  .fg-ch b { font-weight:700; }
+  .fg-ch .tag { color:var(--dim); }
+  .fg-ch .state { margin-left:auto; font-size:10px; letter-spacing:.09em; color:var(--accent); }
+  .fg-ch .state.warn { color:var(--warn); }
+  .fg-turns { padding:8px 12px 4px; }
+  .fg-turn { display:flex; gap:8px; padding:3px 0; font-size:12px; color:var(--muted); }
+  .fg-turn .who { color:var(--addressed); font-size:11px; white-space:nowrap; }
+  .fg-turn.me .who { color:var(--accent); }
+  .fg-turn .pencil { color:var(--dim); font-size:10px; cursor:pointer; }
+  .fg-note { padding:2px 12px 0; font-size:10.5px; color:var(--dim); }
+  .fg-cacts { display:flex; gap:16px; padding:10px 12px 11px; font-size:11.5px; }
+  .fg-resolve { color:var(--ok); font-weight:700; cursor:pointer; }
+  .fg-reopen { color:var(--dim); cursor:pointer; }
+  .fg-resolved { margin:6px 16px 12px 62px; font-size:11.5px; color:var(--ok); cursor:pointer; }
+  .fg-resolved span { color:var(--dim); }
+  .fg-editor { margin:6px 16px 12px 62px; border:1px solid rgba(244,118,0,.55); border-radius:10px; background:rgba(4,5,10,.9); max-width:640px; }
+  .fg-eh { padding:7px 12px; font-size:10.5px; color:var(--muted); border-bottom:1px solid var(--line); }
+  .fg-eb { padding:9px 12px; font-size:12px; color:var(--dim); }
+  .fg-ef { padding:7px 12px; font-size:10px; color:var(--dim); border-top:1px solid var(--line); }
+
+  .fg-hints { display:flex; align-items:center; gap:14px; padding:10px 16px; border-top:1px solid var(--line); background:rgba(13,17,26,.85); font-size:10.5px; color:var(--dim); }
+  .fg-hints b { color:var(--accent); font-weight:700; cursor:pointer; }
+  .fg-hints .pending { color:var(--muted); }
+  .fg-hints .mode { margin-left:auto; color:var(--accent); font-weight:700; }
+  .fg-hints .m-split { display:none; }
+  #fgsplit:checked ~ .fg-wrap .fg-hints .m-unified { display:none; }
+  #fgsplit:checked ~ .fg-wrap .fg-hints .m-split { display:inline; }
+  .fg-unified { display:block; } .fg-split { display:none; }
+  #fgsplit:checked ~ .fg-wrap .fg-unified { display:none; }
+  #fgsplit:checked ~ .fg-wrap .fg-split { display:block; }
+  .fg-srow { display:flex; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; padding:1px 0; }
+  .fg-srow .half { display:flex; gap:10px; width:50%; padding:0 12px; white-space:pre; overflow:hidden; }
+  .fg-srow .half .ln { width:30px; flex:0 0 30px; text-align:right; color:#4a5266; }
+  .fg-srow .half .sign { width:8px; flex:0 0 8px; color:var(--dim); }
+  .fg-srow .half.a { background:rgba(3,58,22,.6); }
+  .fg-srow .half.d { background:rgba(103,6,12,.55); }
+  .fg-srow .half.fill { background:rgba(27,33,48,.5); }
+  .fg-div { border-left:1px solid var(--line); }
+
+  .fg-radio { display:none; }
+  .fg-floatwrap { position:absolute; inset:0; z-index:6; background:rgba(4,5,10,.55); backdrop-filter:blur(9px) saturate(.8); display:none; align-items:center; justify-content:center; }
+  #fgfinish:checked ~ .fg-floatwrap { display:flex; }
+  .fg-backdrop { position:absolute; inset:0; cursor:pointer; }
+  .fg-modal { position:relative; z-index:1; width:640px; border:1px solid #2b3448; border-radius:14px; overflow:hidden;
+    background:linear-gradient(180deg,rgba(28,34,48,.97),rgba(16,20,30,.99));
+    box-shadow:0 50px 120px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.05); }
+  .fg-mh { display:flex; align-items:baseline; padding:13px 16px; border-bottom:1px solid var(--line); }
+  .fg-mh b { font-size:12.5px; color:var(--accent); }
+  .fg-mh span { margin-left:auto; font-size:10.5px; color:var(--dim); }
+  .fg-mb { padding:12px 16px 4px; }
+  .fg-cm { display:flex; gap:10px; font-size:11.5px; color:var(--muted); padding:3.5px 0; }
+  .fg-cm .loc { color:var(--dim); font-family:ui-monospace,Menlo,monospace; width:150px; flex:0 0 150px; overflow:hidden; text-overflow:ellipsis; }
+  .fg-over { margin-top:12px; border:1px solid rgba(244,118,0,.45); border-radius:10px; padding:10px 12px; font-size:12px; color:var(--dim); }
+  .fg-over .p { color:var(--accent); }
+  .fg-mf { display:flex; align-items:center; gap:14px; padding:12px 16px; border-top:1px solid var(--line); }
+  .fg-submit { font-size:12px; font-weight:700; color:var(--accent); }
+  .fg-mf span { font-size:10.5px; color:var(--dim); }
+</style>
+
+<div class="fg">
+  <input class="fg-radio" type="checkbox" id="fgsplit">
+  <input class="fg-radio" type="checkbox" id="fgfinish">
+
+  <div class="fg-chrome">
+    <span class="fg-dot" style="background:#ff5f57;"></span>
+    <span class="fg-dot" style="background:#febc2e;"></span>
+    <span class="fg-dot" style="background:#28c840;"></span>
+    <span class="fg-url">localhost:7777 &nbsp;&middot;&nbsp; forge &nbsp;&middot;&nbsp; /diff</span>
+    <label class="fg-x-close" for="fgfinish" title="finish review">&#10005;</label>
+  </div>
+
+  <div class="fg-wrap">
+    <div class="fg-rail">
+      <div class="fg-rhead"><b>FILES</b><span>4</span></div>
+      <div class="fg-rtree">
+        <div class="fg-dirrow">crates/forge-tui/</div>
+        <div class="fg-row"><span class="conn">&#9500;&#9472;</span><span class="mark">&#9656;</span><span class="st st-M">M</span><span class="nm">app/diff_overlay.rs</span><span class="cb">&#128172;1</span></div>
+        <div class="fg-row"><span class="conn">&#9500;&#9472;</span><span class="mark"></span><span class="st st-M">M</span><span class="nm">ui/diff_overlay.rs</span></div>
+        <div class="fg-row"><span class="conn">&#9492;&#9472;</span><span class="mark"></span><span class="st st-A">A</span><span class="nm">env/git_diff/hunks.rs</span></div>
+        <div class="fg-dirrow" style="padding-top:8px;">crates/forge-tui/src/ui/diff/</div>
+        <div class="fg-row"><span class="conn">&#9492;&#9472;</span><span class="mark"></span><span class="st st-D">D</span><span class="nm">old_split.rs</span></div>
+        <div class="fg-dirrow" style="padding-top:8px;">notes/</div>
+        <div class="fg-row"><span class="conn">&#9492;&#9472;</span><span class="mark"></span><span class="st st-U">U</span><span class="nm">scratch.md</span></div>
+        <div class="fg-untracked">+2 untracked suppressed (cap 4)</div>
+      </div>
+    </div>
+
+    <div class="fg-doc">
+      <div class="fg-docscroll">
+        <div class="fg-band">
+          <span class="caret">&#9662;</span>
+          <b>crates/forge-tui/src/app/diff_overlay.rs</b>
+          <span class="badge">modified</span>
+          <span class="tot"><span class="fg-add">+42</span> <span class="fg-del">-18</span></span>
+        </div>
+
+        <div class="fg-unified">
+          <div class="fg-expander">&#9472;&#9472;&#9472;&#9472; &#8593; 12 lines &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</div>
+          <div class="fg-code">
+            <div class="fg-l hunk"><span class="ln"></span><span class="sign"></span><span>@@ -470,7 +470,9 @@</span></div>
+            <div class="fg-l"><span class="ln">470</span><span class="sign"></span><span>    pub current_file_idx: usize,</span></div>
+            <div class="fg-l d"><span class="ln">471</span><span class="sign">-</span><span>    pub body_scroll: u16,</span></div>
+            <div class="fg-l a"><span class="ln"></span><span class="sign">+</span><span>    /// Scroll across the whole diff doc.</span></div>
+            <div class="fg-l a"><span class="ln">472</span><span class="sign">+</span><span>    pub doc_scroll: u32,</span></div>
+            <div class="fg-l"><span class="ln">473</span><span class="sign"></span><span>    pub comments: Vec&lt;HunkComment&gt;,</span></div>
+          </div>
+
+          <div class="fg-card">
+            <div class="fg-ch">
+              <span class="fg-run" style="color:var(--accent);">&#128172;</span>
+              <b>line 472</b>
+              <span class="tag">&middot; unfiled</span>
+              <span class="state">OPEN</span>
+            </div>
+            <div class="fg-turns">
+              <div class="fg-turn me"><span class="who">&#9679; you</span><span class="pencil">&#9998;</span><span>doc_scroll is the only scroll now?</span></div>
+            </div>
+            <div class="fg-note">matched 2 locations, not relocating</div>
+            <div class="fg-cacts"><span class="fg-resolve">&#10003; Resolve</span><span class="fg-reopen">&#8634; Reopen</span></div>
+          </div>
+
+          <div class="fg-expander">&#9472;&#9472;&#9472;&#9472; &#8597; 5 lines &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</div>
+            <div class="fg-code">
+            <div class="fg-l"><span class="ln">373</span><span class="sign"></span><span>    fn hunk_rows(&amp;self, hunk: &amp;Hunk) -&gt; Vec&lt;Row&gt; {</span></div>
+            <div class="fg-l a"><span class="ln"></span><span class="sign">+</span><span>        // one scroll for the whole document, not per file</span></div>
+            <div class="fg-l a"><span class="ln">374</span><span class="sign">+</span><span>        let top = self.doc_scroll as usize;</span></div>
+            <div class="fg-l"><span class="ln">375</span><span class="sign"></span><span>        let rows = hunk.rows();</span></div>
+          </div>
+
+          <div class="fg-card" style="border-color:#2b3448;">
+            <div class="fg-ch">
+              <span style="color:var(--accent);">&#128172;</span>
+              <b>line 374</b>
+              <span class="tag">&middot; R2</span>
+              <span class="state">OPEN</span>
+            </div>
+            <div class="fg-turns">
+              <div class="fg-turn me"><span class="who">&#9679; you</span><span class="pencil">&#9998;</span><span>does this survive a resize mid-scroll?</span></div>
+              <div class="fg-turn"><span class="who">&#9679; implementer</span><span></span><span>yes - the offset is in rows, so a rewrap re-clamps it.</span></div>
+              <div class="fg-turn me"><span class="who">&#9679; you</span><span class="pencil">&#9998;</span><span>then the clamp needs a test.</span></div>
+            </div>
+            <div class="fg-note">moved from line 363</div>
+            <div class="fg-cacts"><span class="fg-resolve">&#10003; Resolve</span><span class="fg-reopen">&#8634; Reopen</span></div>
+          </div>
+
+          <div class="fg-resolved">&#9560; &#10003; line 88 resolved <span>&middot; rename tok &rarr; token</span></div>
+          <div class="fg-end">&#9492;&#9472; end crates/forge-tui/src/app/diff_overlay.rs &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</div>
+        </div>
+
+        <div class="fg-split">
+          <div class="fg-code">
+            <div class="fg-l hunk"><span class="ln"></span><span class="sign"></span><span>@@ -470,7 +470,9 @@</span></div>
+            <div class="fg-srow"><span class="half"><span class="ln">470</span><span class="sign"></span><span>pub current_file_idx: usize,</span></span><span class="half div"><span class="ln">470</span><span class="sign"></span><span>pub current_file_idx: usize,</span></span></div>
+            <div class="fg-srow"><span class="half d"><span class="ln">471</span><span class="sign">-</span><span>pub body_scroll: u16,</span></span><span class="half a"><span class="ln">471</span><span class="sign">+</span><span>/// Scroll across the whole diff doc.</span></span></div>
+            <div class="fg-srow"><span class="half fill"><span class="ln"></span><span class="sign"></span><span> </span></span><span class="half a div"><span class="ln">472</span><span class="sign">+</span><span>pub doc_scroll: u32,</span></span></div>
+            <div class="fg-srow"><span class="half"><span class="ln">473</span><span class="sign"></span><span>pub comments: Vec&lt;HunkComment&gt;,</span></span><span class="half div"><span class="ln">473</span><span class="sign"></span><span>pub comments: Vec&lt;HunkComment&gt;,</span></span></div>
+            <div class="fg-srow"><span class="half"><span class="ln">474</span><span class="sign"></span><span>pub open_editor: Option&lt;Editor&gt;,</span></span><span class="half div"><span class="ln">474</span><span class="sign"></span><span>pub open_editor: Option&lt;Editor&gt;,</span></span></div>
+          </div>
+          <div class="fg-card" style="margin-top:14px;">
+            <div class="fg-ch">
+              <span style="color:var(--accent);">&#128172;</span>
+              <b>line 471 new</b>
+              <span class="tag">&middot; unfiled</span>
+              <span class="state">OPEN</span>
+            </div>
+            <div class="fg-turns">
+              <div class="fg-turn me"><span class="who">&#9679; you</span><span class="pencil">&#9998;</span><span>the doc comment is worth keeping on the field.</span></div>
+            </div>
+            <div class="fg-cacts"><span class="fg-resolve">&#10003; Resolve</span><span class="fg-reopen">&#8634; Reopen</span></div>
+          </div>
+          <div class="fg-end">&#9492;&#9472; end crates/forge-tui/src/app/diff_overlay.rs &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</div>
+        </div>
+
+        <div class="fg-band" style="border-top:1px solid var(--line); border-bottom:none;">
+          <span class="caret">&#9656;</span>
+          <b>crates/forge-tui/src/ui/diff/old_split.rs</b>
+          <span class="badge del">deleted</span>
+          <span class="tot"><span class="fg-add">+0</span> <span class="fg-del">-120</span></span>
+        </div>
+        <div class="fg-code"><div class="fg-l"><span class="ln"></span><span class="sign"></span><span style="color:var(--dim);font-style:italic;">File deleted - 120 lines removed</span></div></div>
+        <div class="fg-end" style="padding-top:18px;">&#9492;&#9472; end crates/forge-tui/src/ui/diff/old_split.rs &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</div>
+      </div>
+
+      <div class="fg-hints">
+        <span class="pending">2 comments pending</span>
+        <span><b>&#8593;&#8595;</b> scroll</span>
+        <span><b>PgUp/Dn</b> page</span>
+        <label for="fgsplit" style="cursor:pointer;"><b>t</b> split/unified</label>
+        <span><b>click line</b> comment</span>
+        <span><b>click file</b> jump</span>
+        <label for="fgfinish" style="cursor:pointer;"><b>Esc</b> finish review</label>
+        <span class="mode m-unified">unified</span>
+        <span class="mode m-split">split</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="fg-floatwrap">
+    <label class="fg-backdrop" for="fgfinish"></label>
+    <div class="fg-modal">
+      <div class="fg-mh">
+        <b>Finish review &middot; 3 comments</b>
+        <span>click outside to close</span>
+      </div>
+      <div class="fg-mb">
+        <div class="fg-cm"><span class="loc">error.rs:88</span><span>swallows the decode error, no signal</span></div>
+        <div class="fg-cm"><span class="loc">retry.rs:212</span><span>is the backoff actually capped?</span></div>
+        <div class="fg-cm"><span class="loc">diff_overlay.rs:374</span><span>the clamp needs a test</span></div>
+        <div class="fg-over"><span class="p">&#10148;</span> Solid overall. Two nits on error handling and one question on the retry path.</div>
+      </div>
+      <div class="fg-mf">
+        <span class="fg-submit">[ Submit review ]</span>
+        <span>Ctrl+Enter submit &middot; Esc back</span>
+      </div>
+    </div>
+  </div>
+</div>
+</div>

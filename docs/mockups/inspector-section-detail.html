@@ -1,0 +1,179 @@
+<div style="background:#04050a;padding:26px;border-radius:12px;">
+<style>
+  .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
+  .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --addressed:#61a0e0;
+    --k-read:#5b9cf8; --k-search:#4ec9b0; --k-bash:#f47600; --k-edit:#b48ce0; --k-mcp:#4ec9c9;
+    display:flex; gap:28px; align-items:flex-start; color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .fg-cap { font-size:11.5px; color:var(--dim); letter-spacing:.02em; margin-bottom:9px; }
+  .fg-col { display:flex; flex-direction:column; }
+  .fg-pane { width:392px; border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    background:linear-gradient(180deg,rgba(20,25,38,.75),rgba(13,17,26,.96));
+    box-shadow:0 30px 80px rgba(0,0,0,.6); }
+  .fg-banner { display:flex; align-items:center; padding:12px 15px 11px; border-bottom:1px solid var(--line); }
+  .fg-banner span { font-size:10px; letter-spacing:.19em; color:var(--accent); font-weight:700; }
+  .fg-scroll { overflow-y:auto; }
+  .fg-scroll::-webkit-scrollbar { width:8px; }
+  .fg-scroll::-webkit-scrollbar-thumb { background:#222a3c; border-radius:99px; }
+  .fg-sec { padding:13px 15px 15px; border-bottom:1px solid var(--line); }
+  .fg-sec:last-child { border-bottom:none; }
+  .fg-sec h4 { display:flex; align-items:baseline; font-size:10px; letter-spacing:.15em; color:var(--dim); text-transform:uppercase; margin-bottom:9px; font-weight:600; }
+  .fg-sec h4 .rt { margin-left:auto; letter-spacing:0; display:flex; gap:7px; align-items:baseline; text-transform:none; font-weight:400; }
+  .fg-r { display:flex; align-items:center; gap:9px; font-size:12px; padding:4px 0; color:var(--muted); }
+  .fg-r .k { color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .fg-r .v { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--dim); white-space:nowrap; }
+  .fg-sub { font-size:11.5px; color:var(--dim); padding:2.5px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .fg-mono { font-family:ui-monospace,Menlo,monospace; }
+  .fg-run { color:var(--accent); }
+  .fg-b { color:var(--text); font-weight:600; }
+  .fg-head { color:var(--text); font-weight:600; font-size:12.5px; }
+  .fg-g { display:flex; align-items:flex-start; gap:9px; font-size:12px; padding:5px 0; }
+  .fg-g .body { min-width:0; flex:1; }
+  .fg-idle { color:var(--dim); } .fg-ok { color:var(--ok); } .fg-err { color:var(--bad); } .fg-pend { color:var(--k-read); }
+  .fg-muted { color:var(--muted); }
+  .fg-t { font-variant-emoji:text; }
+</style>
+
+<div class="fg">
+
+  <div class="fg-col">
+    <div class="fg-cap">The pane's own column, at a width that fits its rows. Six sections, the book's order.</div>
+    <div class="fg-pane">
+      <div class="fg-banner"><span>INSPECTOR</span></div>
+      <div class="fg-scroll">
+
+        <div class="fg-sec">
+          <h4>Processes</h4>
+          <div class="fg-g">
+            <span class="fg-run">&#9656;</span>
+            <span class="body"><span class="fg-head">Print marker in background</span></span>
+            <span class="fg-sub fg-mono" style="padding:3px 0;">local_bash</span>
+          </div>
+          <div class="fg-g" style="padding-top:9px;">
+            <span class="fg-run">&#9656;</span>
+            <span class="body">
+              <span class="fg-head">Run unit tests</span>
+              <div class="fg-sub fg-mono" style="padding-top:4px;">&#9500;&#9472; cargo nextest run &middot; 256 MB</div>
+              <div class="fg-sub fg-mono">&#9492;&#9472; rustc --crate-name forge_tui &middot; 512 MB</div>
+            </span>
+            <span class="fg-sub fg-mono" style="padding:3px 0;">1.2 GB</span>
+          </div>
+          <div class="fg-g" style="padding-top:9px;">
+            <span class="fg-idle">&#9656;</span>
+            <span class="body"><span class="fg-mono" style="font-size:12px;">npm run build</span></span>
+            <span class="fg-sub fg-mono" style="padding:3px 0;">88 MB</span>
+          </div>
+          <div class="fg-g" style="padding-top:9px;">
+            <span class="fg-idle">&#9675;</span>
+            <span class="body"><span class="fg-mono" style="font-size:12px;">cargo nextest run -p forge-workspace</span></span>
+          </div>
+        </div>
+
+        <div class="fg-sec">
+          <h4>MCP servers<span class="rt"><span class="fg-idle" style="font-size:12px;">&#9638;</span></span></h4>
+          <div class="fg-r"><span class="k">forge</span><span class="fg-ok">&#9679;</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492;&#9472; sdk &middot; 18 tools</div>
+          <div class="fg-r" style="padding-top:8px;"><span class="k">context7</span><span class="fg-ok">&#9679;</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:6px;">&#9500;&#9472; dynamic &middot; 2 tools</div>
+          <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492;&#9472; npm exec @upstash/&#8230; &middot; 46 MB &middot; 47881</div>
+          <div class="fg-r" style="padding-top:8px;"><span class="k">notion</span><span class="fg-ok">&#9679;</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492;&#9472; user &middot; no tools</div>
+          <div class="fg-r" style="padding-top:8px;"><span class="k">playwright</span><span class="fg-pend">&#9672;</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492;&#9472; user &middot; pending</div>
+          <div class="fg-r" style="padding-top:8px;"><span class="k">granite-ops</span><span class="fg-err">&#10007;</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492;&#9472; user &middot; connect refused</div>
+        </div>
+
+        <div class="fg-sec">
+          <h4>Subagents</h4>
+          <div class="fg-g" style="padding-bottom:3px;">
+            <span class="fg-run">&#10307;</span>
+            <span class="body">
+              <span class="fg-head">&#9671; Explore &middot; map hidden tool calls</span>
+              <div class="fg-sub" style="padding-top:5px;"><span class="fg-mono">&#8981;</span> <b>Grep</b> &nbsp;<span class="fg-mono">SubagentChild</span></div>
+              <div class="fg-sub"><span class="fg-mono">&#11034;</span> <b>Read</b> &nbsp;<span class="fg-mono">inspector_pane.rs</span></div>
+              <div class="fg-sub"><span class="fg-mono">&#9654;</span> <b>Bash</b> &nbsp;<span class="fg-mono">git log --oneline -3</span></div>
+            </span>
+          </div>
+          <div class="fg-r" style="padding-top:11px;">
+            <span class="fg-ok">&#10003;</span><span class="k">&#9671; code-reviewer &middot; review the diff</span><span class="v">&middot; 12 tools</span>
+          </div>
+          <div class="fg-r" style="padding-top:9px;">
+            <span class="fg-err">&#10007;</span><span class="k">&#9671; debugger &middot; reproduce the stall</span><span class="v">&middot; 4 tools</span>
+          </div>
+        </div>
+
+        <div class="fg-sec">
+          <h4>Schedules</h4>
+          <div class="fg-r"><span class="fg-run fg-t">&#9719;</span><span class="k">watching CI run</span><span class="v">&middot; in 8m</span></div>
+          <div class="fg-r" style="align-items:flex-start;padding-bottom:0;padding-top:8px;"><span class="fg-run fg-t">&#9780;</span><span class="k">Morning summary</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:14px;">daily at 09:00 &nbsp;&middot;&nbsp; recurring</div>
+          <div class="fg-r" style="align-items:flex-start;padding-bottom:0;padding-top:10px;"><span class="fg-run fg-t">&#9780;</span><span class="k">Staging deploy</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:14px;">today 14:30 &nbsp;&middot;&nbsp; in 2h10m</div>
+        </div>
+
+        <div class="fg-sec">
+          <h4>Gotify<span class="rt"><span class="fg-run">&#9672;</span><span class="fg-sub" style="padding:0;">connected</span></span></h4>
+          <div class="fg-r"><span class="k" style="font-size:12px;">Beszel, Host, Backups, Security, Media</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:14px;">priority &gt;=5</div>
+          <div class="fg-r" style="padding-top:8px;"><span class="k" style="font-size:12px;">Alerts, Deploys</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:14px;">priority any</div>
+        </div>
+
+        <div class="fg-sec">
+          <h4>Slack</h4>
+          <div class="fg-r"><span class="k" style="font-size:12px;">Trust Machines</span><span class="fg-run" style="margin-left:8px;">&#9672;</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:14px;">#ved-test</div>
+          <div class="fg-sub fg-mono" style="padding-left:26px;">mentions only</div>
+          <div class="fg-r" style="padding-top:10px;"><span class="k" style="font-size:12px;">Acme</span><span class="fg-t" style="color:var(--warn);margin-left:8px;">&#9888;&#65038;</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:14px;">C0C0T5E6RM1</div>
+          <div class="fg-sub fg-mono" style="padding-left:26px;">every message</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="fg-col">
+    <div class="fg-cap">The same section with the stream down: visibility keys on the subscription, so the section stays and only the status word changes.</div>
+    <div class="fg-pane" style="width:392px;">
+      <div class="fg-banner"><span>INSPECTOR</span></div>
+      <div class="fg-scroll" style="max-height:none;">
+
+        <div class="fg-sec">
+          <h4>Gotify<span class="rt"><span class="fg-t" style="color:var(--warn);font-size:12px;">&#9888;&#65038;</span><span class="fg-sub" style="padding:0;">disconnected</span></span></h4>
+          <div class="fg-r"><span class="k" style="font-size:12px;">Beszel, Host, Backups, Security, Media</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:14px;">priority &gt;=5</div>
+          <div class="fg-r" style="padding-top:8px;"><span class="k" style="font-size:12px;">Alerts, Deploys</span></div>
+          <div class="fg-sub fg-mono" style="padding-left:14px;">priority any</div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="fg-cap" style="margin-top:24px;">Monitor has no section of its own: its live tail and summary render in the chat scrollback, and the pane carries only its state.</div>
+    <div class="fg-pane" style="width:392px;">
+      <div class="fg-banner"><span style="color:var(--dim);">CHAT</span></div>
+      <div class="fg-scroll" style="max-height:none;padding:14px 15px 16px;">
+        <div class="fg-r" style="align-items:flex-start;padding:0;">
+          <span class="fg-run" style="font-weight:700;">&#9673;</span>
+          <span class="k" style="font-size:12.5px;">Monitor</span>
+          <span class="fg-sub fg-mono" style="padding:0;">&middot; ci-watch &middot; persistent</span>
+        </div>
+        <div class="fg-sub fg-mono" style="padding-left:6px;padding-top:6px;">&#9474; $ gh run watch 18234567</div>
+        <div class="fg-sub fg-mono" style="padding-left:6px;">&#9474; * build &nbsp;&middot; in_progress</div>
+        <div class="fg-sub fg-mono" style="padding-left:6px;">&#9474; <span style="color:var(--ok);">&#10003;</span> lint &nbsp;&middot; success</div>
+        <div class="fg-sub fg-mono" style="padding-left:6px;">&#9474; * deploy &middot; queued</div>
+        <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492; * notify &middot; queued</div>
+        <div class="fg-r" style="align-items:flex-start;padding:16px 0 0;">
+          <span class="fg-ok">&#10003;</span>
+          <span class="fg-sub fg-mono" style="padding:0;">Monitor &middot; ci-watch &middot; completed</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>

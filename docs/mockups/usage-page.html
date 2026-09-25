@@ -1,0 +1,222 @@
+<div style="background:#04050a;padding:26px;border-radius:12px;">
+<style>
+  .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
+  .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --experimental:#c9a13b;
+    color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .fg-radio { display:none; }
+  .fg-cap { font-size:11.5px; color:var(--dim); margin-bottom:10px; }
+  .fg-page { border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    background:linear-gradient(180deg,rgba(20,25,38,.72),rgba(13,17,26,.96));
+    box-shadow:0 40px 110px rgba(0,0,0,.8); }
+  .fg-ttl { display:flex; align-items:baseline; gap:10px; padding:13px 18px 12px; border-bottom:1px solid var(--line); }
+  .fg-ttl b { font-size:10px; letter-spacing:.19em; color:var(--accent); }
+  .fg-ttl .rs { margin-left:auto; font-size:10.5px; color:var(--dim); }
+  .fg-sum { padding:16px 18px 2px; }
+  .fg-life { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  .fg-life .lb { font-size:11px; letter-spacing:.15em; color:var(--muted); font-weight:700; }
+  .fg-life .tk { font-size:19px; font-weight:700; }
+  .fg-life .u { font-size:12.5px; color:var(--dim); }
+  .fg-life .cost { font-size:19px; font-weight:700; color:var(--accent); }
+  .fg-life .approx { color:var(--accent); font-size:13px; }
+  .fg-life .ctx { margin-left:auto; font-size:11.5px; color:var(--dim); }
+  .fg-quick { display:flex; gap:26px; padding:14px 0 2px; font-size:12.5px; }
+  .fg-quick .q { color:var(--dim); }
+  .fg-quick .q b { color:var(--text); font-weight:500; font-family:ui-monospace,Menlo,monospace; }
+  .fg-quick .q i { font-style:normal; color:var(--accent); font-family:ui-monospace,Menlo,monospace; }
+  .fg-split { display:flex; gap:22px; padding:13px 0 15px; font-size:12.5px; }
+  .fg-split .s { color:var(--dim); }
+  .fg-split .s b { font-family:ui-monospace,Menlo,monospace; font-weight:500; color:var(--text); }
+  .fg-split .w { color:var(--warn); } .fg-split .r { color:var(--ok); } .fg-split .o { color:var(--text); }
+  .fg-rule { border-top:1px solid var(--line); }
+  .fg-sel { display:flex; align-items:baseline; gap:14px; padding:11px 18px; font-size:12px; color:var(--dim); }
+  .fg-sel .grp { color:var(--dim); }
+  .fg-sel label { cursor:pointer; padding:2px 4px; border-radius:5px; }
+  .fg-sel label:hover { color:var(--muted); }
+  .fg-sel .mid { color:var(--dim); padding:0 4px; }
+  .fg-sel .on { color:var(--accent); font-weight:700; }
+  .fg-sel .sp { margin-left:auto; }
+  .fg-tbl { padding:14px 18px 4px; }
+  .fg-tr { display:flex; align-items:baseline; font-size:12.5px; padding:5px 0; font-family:ui-monospace,Menlo,monospace; }
+  .fg-tr.head { font-size:10px; letter-spacing:.13em; color:var(--dim); padding-bottom:8px; }
+  .fg-tr.head span { font-family:system-ui,sans-serif; }
+  .fg-tr.total { border-top:1px solid var(--line); margin-top:6px; padding-top:11px; }
+  .fg-c1 { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:system-ui,sans-serif; font-size:13px; }
+  .fg-c2, .fg-c3, .fg-c4, .fg-c5, .fg-c6, .fg-c7 { flex:0 0 96px; text-align:right; }
+  .fg-tr.head .fg-c2, .fg-tr.head .fg-c3, .fg-tr.head .fg-c4, .fg-tr.head .fg-c5, .fg-tr.head .fg-c6, .fg-tr.head .fg-c7 { font-family:system-ui,sans-serif; }
+  .fg-c1 .nm { font-weight:700; }
+  .fg-c1 .nm.dim { color:var(--dim); font-weight:400; }
+  .fg-c3 { color:var(--warn); } .fg-c4 { color:var(--ok); }
+  .fg-c6 { font-weight:700; }
+  .fg-c7 { color:var(--accent); }
+  .fg-c7.exp { color:var(--experimental); }
+  .fg-c7.none { color:var(--dim); }
+  .fg-c2.none, .fg-c3.none, .fg-c4.none { color:var(--dim); }
+  .fg-tr.total .fg-c1 { font-size:11px; letter-spacing:.15em; color:var(--accent); font-weight:700; font-family:system-ui,sans-serif; }
+  .fg-tr.total .fg-c7 { font-weight:700; }
+  .fg-hints { display:flex; align-items:center; gap:14px; padding:12px 18px; border-top:1px solid var(--line); font-size:10.5px; color:var(--dim); }
+  .fg-hints b { color:var(--accent); font-weight:700; cursor:pointer; }
+  .fg-hints .lbl { color:var(--dim); }
+  .fg-variant { display:none; }
+  #ug-byproject:checked ~ .fg .fg-page .v-project { display:block; }
+  #ug-bymodel:checked ~ .fg .fg-page .v-model { display:block; }
+  #ug-byproject:checked ~ .fg .fg-page label[for=ug-byproject],
+  #ug-bymodel:checked ~ .fg .fg-page label[for=ug-bymodel] { color:var(--accent); font-weight:700; }
+  #ug-byproject:checked ~ .fg .fg-page .fg-ttl b::after { content:" \00b7 by project"; }
+  #ug-bymodel:checked ~ .fg .fg-page .fg-ttl b::after { content:" \00b7 by model"; }
+
+  .fg-cols { display:flex; gap:22px; align-items:flex-start; margin-top:26px; }
+  .fg-pane { width:352px; border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    background:linear-gradient(180deg,rgba(20,25,38,.75),rgba(13,17,26,.96)); box-shadow:0 30px 80px rgba(0,0,0,.6); }
+  .fg-ph { padding:12px 15px; border-bottom:1px solid var(--line); font-size:10px; letter-spacing:.19em; color:var(--accent); font-weight:700; }
+  .fg-pb { padding:13px 15px 16px; }
+  .fg-kv { display:flex; align-items:center; gap:10px; font-size:12px; padding:3.5px 0; }
+  .fg-kv .k { width:64px; color:var(--dim); }
+  .fg-kv .v { color:var(--text); }
+  .fg-kv .v.warn { color:var(--warn); }
+  .fg-kv .v.mono { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+  .fg-bar { display:flex; gap:2px; align-items:center; }
+  .fg-bar i { width:7px; height:9px; border-radius:1px; background:#242c3d; }
+  .fg-bar i.f { background:var(--ok); } .fg-bar i.w { background:var(--warn); }
+  .fg-bar i.a { background:var(--accent); } .fg-bar i.b { background:var(--bad); }
+  .fg-brow { display:flex; align-items:center; gap:10px; padding:4.5px 0; font-size:12px; }
+  .fg-brow .k { width:64px; color:var(--dim); }
+  .fg-brow .pct { margin-left:auto; color:var(--text); font-variant-numeric:tabular-nums; }
+  .fg-bnote { font-size:11px; color:var(--dim); padding-left:74px; }
+  .fg-spend { display:flex; justify-content:space-between; font-size:12px; padding:2.5px 0; color:var(--dim); }
+  .fg-spend b { color:var(--ok); font-weight:700; font-family:ui-monospace,Menlo,monospace; }
+  .fg-spend .no { color:var(--dim); font-weight:400; }
+  .fg-vers { display:flex; justify-content:space-between; font-size:11.5px; color:var(--dim); padding:3px 0; }
+  .fg-vers .up { color:var(--warn); }
+  .fg-sep { border-top:1px solid var(--line); margin:12px 0 10px; }
+</style>
+
+<input class="fg-radio" type="radio" name="ug" id="ug-byproject" checked>
+<input class="fg-radio" type="radio" name="ug" id="ug-bymodel">
+
+<div class="fg">
+
+  <div class="fg-cap">The usage page, full-frame. <b>g</b> flips the grouping; the second table is one click below.</div>
+  <div class="fg-page">
+    <div class="fg-ttl"><b>USAGE</b><span class="rs">notional &middot; at API pricing &middot; not a bill</span></div>
+
+    <div class="fg-sum">
+      <div class="fg-life">
+        <span class="lb">LIFETIME</span>
+        <span class="tk">680.5M</span><span class="u">tokens &middot;</span>
+        <span class="cost">$320.00</span><span class="approx">&#8776;</span>
+        <span class="ctx">17 projects &middot; 4 models</span>
+      </div>
+      <div class="fg-quick">
+        <span class="q">this month <b>142.0M</b> <i>$71.00</i></span>
+        <span class="q">this week <b>38.0M</b> <i>$19.00</i></span>
+        <span class="q">today <b>8.2M</b> <i>$4.10</i></span>
+      </div>
+      <div class="fg-split">
+        <span class="s">split &nbsp; input <b>3.9M</b></span>
+        <span class="s w">cache-write <b>26.6M</b></span>
+        <span class="s r">cache-read <b>648.0M</b> (95%)</span>
+        <span class="s o">output <b>1.9M</b></span>
+      </div>
+    </div>
+
+    <div class="fg-rule"></div>
+    <div class="fg-sel">
+      <span class="grp">group:</span>
+      <label for="ug-bymodel">by model</label><span class="mid">&middot;</span><label for="ug-byproject">by project</label>
+      <span class="sp">window: today &middot; week &middot; month &middot; <span class="on">lifetime</span></span>
+    </div>
+    <div class="fg-rule"></div>
+
+    <div class="fg-tbl">
+      <div class="fg-tr head"><span class="fg-c1">PROJECT</span><span class="fg-c2">INPUT</span><span class="fg-c3">CACHE&middot;WR</span><span class="fg-c4">CACHE&middot;RD</span><span class="fg-c5">OUTPUT</span><span class="fg-c6">TOKENS</span><span class="fg-c7">COST&#8776;</span></div>
+      <div class="fg-tr"><span class="fg-c1"><span class="nm">forge</span></span><span class="fg-c2">1.8M</span><span class="fg-c3">12.0M</span><span class="fg-c4">228.0M</span><span class="fg-c5">0.90M</span><span class="fg-c6">242.7M</span><span class="fg-c7">$115.00</span></div>
+      <div class="fg-tr"><span class="fg-c1"><span class="nm">web-api</span></span><span class="fg-c2">0.6M</span><span class="fg-c3">4.2M</span><span class="fg-c4">108.0M</span><span class="fg-c5">0.40M</span><span class="fg-c6">113.2M</span><span class="fg-c7">$55.00</span></div>
+      <div class="fg-tr"><span class="fg-c1"><span class="nm">stargate</span></span><span class="fg-c2">0.4M</span><span class="fg-c3">3.0M</span><span class="fg-c4">82.0M</span><span class="fg-c5">0.28M</span><span class="fg-c6">85.7M</span><span class="fg-c7">$42.00</span></div>
+      <div class="fg-tr"><span class="fg-c1"><span class="nm dim">scratch</span></span><span class="fg-c2">0.30M</span><span class="fg-c3">1.9M</span><span class="fg-c4">52.0M</span><span class="fg-c5">0.30M</span><span class="fg-c6">54.5M</span><span class="fg-c7">$26.00</span></div>
+      <div class="fg-tr"><span class="fg-c1"><span class="nm">data-modules</span></span><span class="fg-c2">0.12M</span><span class="fg-c3">0.9M</span><span class="fg-c4">22.0M</span><span class="fg-c5">0.09M</span><span class="fg-c6">23.1M</span><span class="fg-c7">$11.00</span></div>
+      <div class="fg-tr total"><span class="fg-c1">TOTAL</span><span class="fg-c2">3.9M</span><span class="fg-c3">26.6M</span><span class="fg-c4">648.0M</span><span class="fg-c5">1.90M</span><span class="fg-c6">680.5M</span><span class="fg-c7">$320.00</span></div>
+    </div>
+
+    <div class="fg-variant v-project"></div>
+
+    <div class="fg-variant v-model">
+      <div class="fg-tbl">
+        <div class="fg-tr head"><span class="fg-c1">MODEL</span><span class="fg-c2">INPUT</span><span class="fg-c3">CACHE&middot;WR</span><span class="fg-c4">CACHE&middot;RD</span><span class="fg-c5">OUTPUT</span><span class="fg-c6">TOKENS</span><span class="fg-c7">COST&#8776;</span></div>
+        <div class="fg-tr"><span class="fg-c1"><span class="nm">claude-opus-4-8</span></span><span class="fg-c2">2.1M</span><span class="fg-c3">18.0M</span><span class="fg-c4">430.0M</span><span class="fg-c5">1.10M</span><span class="fg-c6">451.2M</span><span class="fg-c7">$240.00</span></div>
+        <div class="fg-tr"><span class="fg-c1"><span class="nm">claude-sonnet-4-5</span></span><span class="fg-c2">0.8M</span><span class="fg-c3">5.4M</span><span class="fg-c4">120.0M</span><span class="fg-c5">0.40M</span><span class="fg-c6">126.6M</span><span class="fg-c7">$58.00</span></div>
+        <div class="fg-tr"><span class="fg-c1"><span class="nm">gpt-5-codex</span> <span style="color:var(--dim);font-size:11px;">(GPT approx)</span></span><span class="fg-c2">0.4M</span><span class="fg-c3 none">-</span><span class="fg-c4 none">-</span><span class="fg-c5">0.20M</span><span class="fg-c6">0.6M</span><span class="fg-c7 exp">$3.60</span></div>
+        <div class="fg-tr"><span class="fg-c1"><span class="nm dim">&lt;synthetic&gt;</span></span><span class="fg-c2">0.1M</span><span class="fg-c3 none">-</span><span class="fg-c4">6.0M</span><span class="fg-c5">0.05M</span><span class="fg-c6">6.2M</span><span class="fg-c7 none">-</span></div>
+        <div class="fg-tr total"><span class="fg-c1">TOTAL</span><span class="fg-c2">3.9M</span><span class="fg-c3">26.6M</span><span class="fg-c4">648.0M</span><span class="fg-c5">1.90M</span><span class="fg-c6">680.5M</span><span class="fg-c7">$320.00</span></div>
+      </div>
+    </div>
+
+    <div class="fg-hints">
+      <span><b>&#8593;&#8595;</b> <span class="lbl">scroll</span></span>
+      <span><b>g</b> <span class="lbl">group</span></span>
+      <span><b>w</b> <span class="lbl">window</span></span>
+      <span><b>Esc</b> <span class="lbl">close</span></span>
+    </div>
+  </div>
+
+  <div class="fg-cols">
+    <div>
+      <div class="fg-cap">The Projects pane's account panel: window-billed, so 5h and 7d carry the remaining time.</div>
+      <div class="fg-pane">
+        <div class="fg-ph">ACCOUNT</div>
+        <div class="fg-pb">
+          <div class="fg-kv"><span class="k">Profile</span><span class="v">Stargate</span></div>
+          <div class="fg-kv"><span class="k">Org</span><span class="v">Gateway</span></div>
+          <div class="fg-kv"><span class="k">ID</span><span class="v mono">550e8400</span></div>
+          <div class="fg-kv"><span class="k">Mode</span><span class="v warn">[Auto]</span></div>
+          <div class="fg-kv"><span class="k">Model</span><span class="v">claude-opus-5</span></div>
+          <div class="fg-kv"><span class="k">Effort</span><span class="v">Max</span></div>
+          <div class="fg-sep"></div>
+          <div class="fg-brow"><span class="k">Ctx</span><span class="fg-bar"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="w"></i><i class="w"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="pct">39%</span></div>
+          <div class="fg-bnote">5 compactions &middot; 1M</div>
+          <div class="fg-brow" style="padding-top:9px;"><span class="k">5h</span><span class="fg-bar"><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="pct">15%</span></div>
+          <div class="fg-bnote" style="text-align:right;padding-left:0;">1h 48m</div>
+          <div class="fg-brow" style="padding-top:9px;"><span class="k">7d</span><span class="fg-bar"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="b"></i><i class="b"></i><i></i><i></i></span><span class="pct">89%</span></div>
+          <div class="fg-bnote" style="text-align:right;padding-left:0;">4d 4h</div>
+          <div class="fg-sep"></div>
+          <div class="fg-vers"><span>forge</span><span>v1.0.86+3cda0dee</span></div>
+          <div class="fg-vers"><span>claude</span><span>v2.1.263 <span class="up">&#8593; v2.1.266</span></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="fg-cap">API-billed: the same six rows become the spend group; the bars are the cap, not the window.</div>
+      <div class="fg-pane">
+        <div class="fg-ph">ACCOUNT</div>
+        <div class="fg-pb">
+          <div class="fg-brow"><span class="k">Ctx</span><span class="fg-bar"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="w"></i><i class="w"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="pct">39%</span></div>
+          <div class="fg-bnote">5 compactions &middot; 1M</div>
+          <div class="fg-sep"></div>
+          <div class="fg-spend"><span>day</span><b>$0.56</b></div>
+          <div class="fg-spend"><span>week</span><b>$4.10</b></div>
+          <div class="fg-spend"><span>month</span><b>$12.40</b></div>
+          <div class="fg-spend"><span>balance</span><b>$64.40</b></div>
+          <div class="fg-brow" style="padding-top:8px;"><span class="k">cap</span><span class="fg-bar"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="a"></i><i class="a"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="pct">62%</span></div>
+          <div class="fg-bnote" style="text-align:right;padding-left:0;">$7.60 left &middot; monthly</div>
+          <div class="fg-sep"></div>
+          <div class="fg-vers"><span>forge</span><span>v1.0.86+3cda0dee</span></div>
+        </div>
+      </div>
+      <div class="fg-cap" style="margin-top:14px;">An uncapped key drops the bar and says so, and money with no reading renders <span style="font-family:ui-monospace,Menlo,monospace;">$-</span>, never $0.00.</div>
+      <div class="fg-pane">
+        <div class="fg-pb" style="padding-top:14px;">
+          <div class="fg-spend"><span>day</span><b>$0.56</b></div>
+          <div class="fg-spend"><span>week</span><b>$4.10</b></div>
+          <div class="fg-spend"><span>month</span><b>$20.30</b></div>
+          <div class="fg-spend"><span>balance</span><b>$64.40</b></div>
+          <div class="fg-spend"><span>cap</span><span class="no">not set</span></div>
+          <div class="fg-bnote" style="text-align:right;padding-left:0;">no limit set</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
