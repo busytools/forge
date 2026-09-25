@@ -123,7 +123,15 @@ forge-tui  <-  SessionUpdate via subscribe()  --  forge-workspace
 attaches beside the TUI rather than being refused the one receiver. A
 stream carries what the workspace emits after that call, so a view that
 attaches late is handed no backlog, and a view that drops its
-subscription leaves the fan-out.
+subscription leaves the fan-out. The first caller to attach is handed
+what was emitted before it as well, which is how a notice raised during
+boot reaches a view.
+
+A subscriber declares whether it can answer the workspace's prompts.
+The TUI does, so a permission or question request delivered to it keeps
+its turn alive; a consumer that only reads takes `subscribe_observer()`
+instead, and a request that reaches no answering subscriber is resolved
+`Cancelled` rather than parked on a reply nobody will send.
 
 That is the whole contract. There are no callback hooks and no shared
 mutable state. Nothing under

@@ -178,8 +178,10 @@ The TUI to workspace contract is **one entry point in each direction**:
   entry point, every user-driven action.
 - **workspace -> TUI:** `SessionUpdate` via `Workspace::subscribe()`,
   consumed by `App.workspace_rx`. Every caller gets a stream of its
-  own, so a second view attaches beside the TUI; a stream carries only
-  what the workspace emits after that call.
+  own, so a second view attaches beside the TUI; a stream carries what
+  the workspace emits after that call, and the first caller to attach
+  is handed what was emitted before it as well, so a notice raised
+  during boot is not lost.
 
 That is the whole contract: no callback hooks, no shared mutable state.
 TUI holds no `Arc<AgentHandle>`; query-style
