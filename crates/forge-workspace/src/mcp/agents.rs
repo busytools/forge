@@ -1879,6 +1879,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_refuses_a_label_that_is_empty_after_trim() {
+        // On the facade this tool runs against, `update_worker` checks no
+        // label and defaults to `Ok(())`, so without this guard a blank
+        // label would be reported as a successful revision.
+        let host = host();
+        let tool =
+            Update { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({ "label": "   ", "charter": "c" }) })
+            .await;
+        assert!(output.is_error, "a blank label is refused, not accepted as a revision");
+        assert!(
+            output.blocks[0].text.contains("label must be non-empty after trim"),
+            "the refusal names the label: {}",
+            output.blocks[0].text,
+        );
+        assert!(host.workers.update_calls.lock().is_empty(), "refused before touching the store");
+    }
+
+    #[tokio::test]
     async fn update_is_lead_only() {
         let host = host();
         let tool = Update {
