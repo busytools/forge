@@ -156,6 +156,15 @@ mod tests {
 
     /// Deleting is durable, not just in-memory: the tree has to leave the
     /// store too, or the next boot reads it back.
+    ///
+    /// The two cross-project tasks are what pin the cascade's project
+    /// guards, and nothing else reaches them: a same-project task outside
+    /// the tree is never a cascade candidate, and its id is never doomed.
+    /// One shares the doomed id, so the `retain` would take it without its
+    /// own project check; the other is a cross-project child of a doomed id
+    /// whose id collides with a task that has to survive here, so the
+    /// collection would carry that collision into this project and the
+    /// retain would then take the survivor.
     #[test]
     fn deleting_a_task_takes_its_children() {
         let dir = tempdir().expect("tempdir");
@@ -168,8 +177,8 @@ mod tests {
         // A task in the SAME project but outside the tree: the cascade must
         // take the descendants and nothing else.
         ws.push_task(sample_task("sibling", "forge"));
-        let unrelated = sample_task("other-project", "elsewhere");
-        ws.push_task(unrelated);
+        ws.push_task(sample_task("epic", "elsewhere"));
+        ws.push_task(sample_task_with_parent("sibling", Some("epic"), "elsewhere"));
         assert!(ws.remove_task_tree("forge", &TaskId::from("epic")), "the tree is removed");
         let left = ws.tasks_for_project("forge");
         assert_eq!(
@@ -183,6 +192,10 @@ mod tests {
             stored.iter().all(|t| t.project_name != "forge" || t.id == TaskId::from("sibling")),
             "the deletion reached the store, not only the in-memory set: {stored:?}",
         );
-        assert_eq!(ws.tasks_for_project("elsewhere").len(), 1, "another project is untouched");
+        assert_eq!(
+            ws.tasks_for_project("elsewhere").len(),
+            2,
+            "another project keeps both of its tasks, one of them sharing a doomed id",
+        );
     }
 }
