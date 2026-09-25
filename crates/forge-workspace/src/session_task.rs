@@ -21,13 +21,14 @@ use tracing::Instrument;
 use crate::SessionSlot;
 use crate::domain_session::DomainSession;
 use crate::protocol::{Command, PendingInteractionSlot, SessionUpdate};
+use crate::update_fanout::UpdateFanout;
 
 pub(crate) struct SessionTask {
     pub(crate) key: SessionSlot,
     pub(crate) handle: Arc<AgentHandle>,
     pub(crate) command_rx: mpsc::UnboundedReceiver<Command>,
     pub(crate) domain: Arc<Mutex<DomainSession>>,
-    pub(crate) update_tx: mpsc::UnboundedSender<SessionUpdate>,
+    pub(crate) update_tx: UpdateFanout,
     /// Tracks whether the first `Connected` has been emitted. The
     /// second-and-beyond Connected on the same task drives
     /// `SessionUpdate::SessionReplaced` instead (covers `/new`,
@@ -1634,7 +1635,8 @@ mod tests {
         let (handle, _cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
-        let (update_tx, update_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let update_rx = update_tx.subscribe();
         let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(handle.clone()))));
         let task = SessionTask {
             key: key.clone(),
@@ -1658,7 +1660,8 @@ mod tests {
         let (handle, cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
-        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let _update_rx = update_tx.subscribe();
         let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(handle.clone()))));
         let task = SessionTask {
             key: key.clone(),
@@ -2331,7 +2334,8 @@ mod tests {
         let (handle, _cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let (cmd_tx, command_rx) = mpsc::unbounded_channel();
-        let (update_tx, mut update_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let mut update_rx = update_tx.subscribe();
         workspace.pool.lock().insert(
             key.clone(),
             crate::workspace::PooledAgent {
@@ -2385,7 +2389,8 @@ mod tests {
         let (handle, _cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let (cmd_tx, command_rx) = mpsc::unbounded_channel();
-        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let _update_rx = update_tx.subscribe();
         workspace.pool.lock().insert(
             key.clone(),
             crate::workspace::PooledAgent {
@@ -2435,7 +2440,8 @@ mod tests {
         let (handle, _cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let (cmd_tx, command_rx) = mpsc::unbounded_channel();
-        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let _update_rx = update_tx.subscribe();
         workspace.pool.lock().insert(
             key.clone(),
             crate::workspace::PooledAgent {
@@ -2482,7 +2488,8 @@ mod tests {
         let handle = Arc::new(handle);
         let key = SessionSlot::from_str_for_test("perm");
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
-        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let _update_rx = update_tx.subscribe();
         let mut task = SessionTask {
             key: key.clone(),
             handle: Arc::clone(&handle),
@@ -2540,7 +2547,8 @@ mod tests {
         let handle = Arc::new(handle);
         let key = SessionSlot::from_str_for_test("xkind");
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
-        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let _update_rx = update_tx.subscribe();
         let mut task = SessionTask {
             key: key.clone(),
             handle: Arc::clone(&handle),
@@ -2865,7 +2873,8 @@ provider = "anthropic"
         let (handle, _commands_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let (update_tx, _update_rx) = tokio::sync::mpsc::unbounded_channel::<SessionUpdate>();
+        let update_tx = UpdateFanout::default();
+        let _update_rx = update_tx.subscribe();
         let domain = Arc::new(parking_lot::Mutex::new(empty_domain()));
         let (response_tx, mut response_rx) =
             oneshot::channel::<forge_primitives::PermissionOutcome>();

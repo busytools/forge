@@ -72,6 +72,7 @@ pub mod protocol;
 mod provider_probe;
 mod review;
 mod session_task;
+mod update_fanout;
 mod single_instance;
 mod slack;
 mod spawn;

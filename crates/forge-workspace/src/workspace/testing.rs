@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use crate::config::LoadedConfig;
 use crate::protocol::SessionUpdate;
 use crate::target::{ProjectKey, SessionSlot};
+use crate::update_fanout::UpdateFanout;
 use crate::workspace::{KickRequest, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
 
@@ -79,9 +80,10 @@ impl Workspace {
     /// session via [`Self::register_domain_session`] before
     /// exercising any code path that needs one.
     ///
-    /// Returns the workspace alongside the `SessionUpdate` receiver.
-    /// The workspace's `subscribe()` slot is `None` - callers that
-    /// need the receiver get it directly from this constructor.
+    /// Returns the workspace alongside the `SessionUpdate` receiver
+    /// this constructor subscribed. The workspace's `subscribe()` slot
+    /// is `None`, so a later `subscribe()` mints a stream of its own
+    /// rather than handing back this one.
     pub fn testing_stub() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
         Self::testing_stub_with_config_dir(PathBuf::from("/tmp/forge-testing-stub"))
     }
@@ -142,7 +144,8 @@ impl Workspace {
         // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
         // that exercise the cron / state stores expect `forge/` present.
         let _ = crate::config::ensure_forge_data_dir(&config_dir);
-        let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
+        let update_tx = UpdateFanout::default();
+        let update_rx = update_tx.subscribe();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
         let accounts = std::sync::Arc::new(forge_gateway::AccountPool::empty_for_test());
