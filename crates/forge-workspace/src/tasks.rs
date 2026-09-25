@@ -154,10 +154,14 @@ mod tests {
         assert_eq!(stored.len(), 1, "the in-memory set and the store never diverge");
     }
 
+    /// Deleting is durable, not just in-memory: the tree has to leave the
+    /// store too, or the next boot reads it back.
     #[test]
     fn deleting_a_task_takes_its_children() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        ws.install_db_for_test(db);
         ws.push_task(sample_task_with_parent("epic", None, "forge"));
         ws.push_task(sample_task_with_parent("sub-a", Some("epic"), "forge"));
         ws.push_task(sample_task_with_parent("sub-b", Some("sub-a"), "forge"));
@@ -166,6 +170,12 @@ mod tests {
         assert!(ws.remove_task_tree("forge", &TaskId::from("epic")), "the tree is removed");
         let left = ws.tasks_for_project("forge");
         assert!(left.is_empty(), "children and grandchildren go with the parent");
+        let stored =
+            crate::store::tasks::list(ws.db.lock().as_ref().expect("db installed")).expect("list");
+        assert!(
+            stored.iter().all(|t| t.project_name != "forge"),
+            "the deletion reached the store, not only the in-memory set: {stored:?}",
+        );
         assert_eq!(ws.tasks_for_project("elsewhere").len(), 1, "another project is untouched");
     }
 }

@@ -123,6 +123,21 @@ mod tests {
         assert_eq!(read.len(), 2, "one project's row cannot overwrite another's on a shared id");
     }
 
+    /// A second write replaces the set rather than merging into it. The
+    /// row the new set omits is the row a delete or a cascade just removed,
+    /// and leaving it in redb brings that task back on the next boot.
+    #[test]
+    fn a_second_write_drops_the_rows_it_omits() {
+        let dir = tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        replace_all(&db, &[sample_task("t-1", "forge"), sample_task("t-2", "forge")])
+            .expect("seed");
+        replace_all(&db, &[sample_task("t-2", "forge")]).expect("replace");
+        let read = list(&db).expect("list");
+        assert_eq!(read.len(), 1, "the omitted task is gone from the store, not just from memory");
+        assert_eq!(read[0].id, TaskId::from("t-2"), "the surviving task is the one written");
+    }
+
     #[test]
     fn an_absent_table_reads_as_empty_not_an_error() {
         let dir = tempdir().expect("tempdir");
