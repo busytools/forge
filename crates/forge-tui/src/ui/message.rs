@@ -1521,63 +1521,6 @@ fn render_lifecycle_one_liner_with_metas(
     }
 }
 
-/// Extract the `name` field from a workflow `script`'s
-/// `export const meta = { name: '...' }` block. Falls back to the
-/// literal `"Workflow"` label when the block isn't present or
-/// doesn't carry a name. Conservative substring-based parser
-/// matches both single-quoted and double-quoted strings.
-pub(crate) fn workflow_meta_name(script: &str) -> String {
-    extract_meta_field(script, "name").unwrap_or_else(|| "Workflow".to_owned())
-}
-
-/// Extract both the `name` and `description` fields
-/// from a workflow `script`'s meta block. Returns
-/// `(name, description)` where `name` falls back to `"Workflow"`
-/// when missing; `description` is `None` when the meta block lacks
-/// it.
-pub fn workflow_meta_fields(script: &str) -> (String, Option<String>) {
-    let name = workflow_meta_name(script);
-    let description = extract_meta_field(script, "description");
-    (name, description)
-}
-
-/// Internal helper: find `<field>: '<value>'` or `<field>: "<value>"`
-/// substring in the script body and return the unquoted value.
-fn extract_meta_field(script: &str, field: &str) -> Option<String> {
-    for prefix in [format!("{field}:"), format!("{field} :")] {
-        let mut search_from = 0;
-        while let Some(rel) = script[search_from..].find(&prefix) {
-            let start = search_from + rel;
-            // Reject matches that aren't at the start of a token
-            // (e.g. `lastTooLname:` would match `name:` if we
-            // didn't check). Token start = preceding char is
-            // whitespace / `,` / `{` / newline / nothing.
-            let preceding = script[..start].chars().next_back();
-            let token_start =
-                preceding.is_none_or(|c| c.is_whitespace() || c == ',' || c == '{' || c == ';');
-            if !token_start {
-                search_from = start + prefix.len();
-                continue;
-            }
-            let after = &script[start + prefix.len()..];
-            let trimmed = after.trim_start();
-            let quote = trimmed.chars().next()?;
-            if quote != '\'' && quote != '"' {
-                search_from = start + prefix.len();
-                continue;
-            }
-            let body = &trimmed[quote.len_utf8()..];
-            let end = body.find(quote)?;
-            let value = body[..end].trim();
-            if !value.is_empty() {
-                return Some(value.to_owned());
-            }
-            search_from = start + prefix.len();
-        }
-    }
-    None
-}
-
 fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
     let color = system_severity_color(system_severity_from_role(&msg.role));
     for block in &mut msg.blocks {
@@ -6278,40 +6221,6 @@ mod tests {
         );
         tc.raw_input = Some(serde_json::json!({ "description": "x" }));
         assert!(render_lifecycle_one_liner(&tc, 80).is_none());
-    }
-
-    #[test]
-    fn workflow_meta_name_extracts_from_script_block() {
-        let script = "export const meta = {\n  name: 'minimal-ping',\n  description: 'sanity'\n}\n\nphase('Ping')";
-        assert_eq!(workflow_meta_name(script), "minimal-ping");
-    }
-
-    #[test]
-    fn workflow_meta_name_handles_double_quoted_name() {
-        let script = "export const meta = { name: \"snapshot-runner\" }";
-        assert_eq!(workflow_meta_name(script), "snapshot-runner");
-    }
-
-    #[test]
-    fn workflow_meta_name_falls_back_when_block_absent() {
-        let script = "await agent('do thing')";
-        assert_eq!(workflow_meta_name(script), "Workflow");
-    }
-
-    #[test]
-    fn workflow_meta_fields_extracts_name_and_description() {
-        let script = "export const meta = {\n  name: 'minimal-ping',\n  description: 'sanity'\n}";
-        let (name, desc) = workflow_meta_fields(script);
-        assert_eq!(name, "minimal-ping");
-        assert_eq!(desc.as_deref(), Some("sanity"));
-    }
-
-    #[test]
-    fn workflow_meta_fields_returns_none_description_when_absent() {
-        let script = "export const meta = { name: 'short' }";
-        let (name, desc) = workflow_meta_fields(script);
-        assert_eq!(name, "short");
-        assert!(desc.is_none());
     }
 
     #[test]

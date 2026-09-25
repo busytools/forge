@@ -84,7 +84,7 @@ Every character used as chrome - borders, icons, status, separators. Scope is cu
 | `╭ ╮ ╰ ╯` `─` `│` `├` `└` | panes, separators, borders, tool body, file trees | corners, lines, tree connectors (`└─` marks the last child or final body row) |
 | `⬚` `▣` | Read; Write / Edit family | open square: read-only; filled square: mutation |
 | `⌕` `▶` | Glob / Grep / LS; Bash | magnifier; execute |
-| `◇` `◆` | Task / Agent; Slack notification block; Workflow, WORKFLOWS header, projects-pane completed-unseen | hollow diamond: delegated subagent, or an inbound Slack message; filled diamond: script flow, or a completed turn on an inactive tab (green) |
+| `◇` `◆` | Task / Agent; Slack notification block; projects-pane completed-unseen | hollow diamond: delegated subagent, or an inbound Slack message; filled diamond: a completed turn on an inactive tab (green) |
 | `⊕` `⊙` `⇄` | WebFetch / WebSearch; plan-mode and Config; Move and worktree tools | fetch from outside; meta operation; directory and worktree transitions |
 | `◉` `◍` | TaskOutput / Monitor; TaskStop | fisheye observes; the vertical-fill circle terminates |
 | `⏲` `*` | ScheduleWakeup; CronCreate / CronDelete / CronList | timer clock; the cron family |

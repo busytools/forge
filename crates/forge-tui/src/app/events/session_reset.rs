@@ -539,7 +539,6 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
     // -> section disappears; mixed -> stays visible with the in-flight
     // entries.
     app.clear_monitors_if_all_terminal();
-    app.clear_workflows_if_all_terminal();
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     report_unterminated_tool_calls(app, history_messages);
     app.clear_active_turn_assistant();
@@ -1946,15 +1945,13 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // resume-replay drains all-terminal MONITORS +
-    // WORKFLOWS sections post-replay (mirrors the live wire path's
-    // `clear_*_if_all_terminal` calls). Mixed-state sections stay
-    // visible with the in-flight entries.
+    // resume-replay drains the all-terminal MONITORS section
+    // post-replay (mirrors the live wire path's
+    // `clear_monitors_if_all_terminal` call). A mixed-state section
+    // stays visible with the in-flight entries.
     // ---------------------------------------------------------------
 
-    use crate::app::state::types::{
-        MonitorEntry, MonitorStatus, SessionTaskCard, WorkflowEntry, WorkflowStatus,
-    };
+    use crate::app::state::types::{MonitorEntry, MonitorStatus, SessionTaskCard};
 
     fn stub_monitor(id: &str, status: MonitorStatus) -> MonitorEntry {
         MonitorEntry {
@@ -1967,19 +1964,6 @@ mod tests {
             status,
             output_file: None,
             output_tail: std::collections::VecDeque::new(),
-            expanded_in_inspector: false,
-        }
-    }
-
-    fn stub_workflow(id: &str, status: WorkflowStatus) -> WorkflowEntry {
-        WorkflowEntry {
-            tool_use_id: id.to_owned(),
-            task_id: Some(format!("task_{id}")),
-            meta_name: format!("wf_{id}"),
-            meta_description: None,
-            phases: Vec::new(),
-            status,
-            final_result_summary: None,
             expanded_in_inspector: false,
         }
     }
@@ -2005,20 +1989,6 @@ mod tests {
     }
 
     #[test]
-    fn resume_replay_clears_all_terminal_workflows() {
-        let mut app = App::test_default();
-        *app.workflows_mut().expect("active session") = vec![
-            stub_workflow("a", WorkflowStatus::Completed),
-            stub_workflow("b", WorkflowStatus::Completed),
-        ];
-        assert_eq!(app.workflows().len(), 2);
-
-        load_resume_history(&mut app, &[]);
-
-        assert!(app.workflows().is_empty(), "all-terminal WORKFLOWS must drain post-replay");
-    }
-
-    #[test]
     fn resume_replay_keeps_monitors_section_when_some_still_running() {
         let mut app = App::test_default();
         *app.monitors_mut().expect("active session") = vec![
@@ -2033,64 +2003,6 @@ mod tests {
             2,
             "mixed-state MONITORS must survive: clear_if_all_terminal only fires when \
              every entry is terminal",
-        );
-    }
-
-    #[test]
-    fn resume_replay_keeps_workflows_section_when_some_still_in_progress() {
-        let mut app = App::test_default();
-        *app.workflows_mut().expect("active session") = vec![
-            stub_workflow("in_progress", WorkflowStatus::InProgress),
-            stub_workflow("done", WorkflowStatus::Completed),
-        ];
-
-        load_resume_history(&mut app, &[]);
-
-        assert_eq!(app.workflows().len(), 2, "mixed-state WORKFLOWS must survive");
-    }
-
-    /// The tests above seed the entries directly, so none of them
-    /// exercises the walk that actually builds one. A historical
-    /// `Workflow` tool_use reaches `upsert_workflow_from_tool_input`,
-    /// and no terminal event can follow it - the resume walk is fed by
-    /// `synthesize_replay_messages`, which emits only User / Assistant
-    /// envelopes, so no `TaskUpdated` / `TaskProgress` exists during
-    /// replay. Seeded in-progress it would linger forever AND hold the
-    /// section open for its completed siblings.
-    #[test]
-    fn resume_replay_drains_a_replayed_workflow_and_its_completed_sibling() {
-        let mut app = App::test_default();
-        *app.workflows_mut().expect("active session") =
-            vec![stub_workflow("sibling", WorkflowStatus::Completed)];
-        let history = vec![historical_tool_use_named(
-            "toolu_wf",
-            "Workflow",
-            serde_json::json!({"script": "export const meta = { name: 'nightly-sweep' }"}),
-        )];
-
-        load_resume_history(&mut app, &history);
-
-        assert!(
-            app.workflows().is_empty(),
-            "a replayed Workflow must restore terminal so the WORKFLOWS section drains \
-             instead of showing it as in progress forever and blocking the clear for its \
-             completed siblings; got: {:?}",
-            app.workflows().iter().map(|w| (&w.meta_name, w.status)).collect::<Vec<_>>(),
-        );
-
-        // Drained is also what an entry that was never BUILT looks like,
-        // so hold the sibling non-terminal and check the replayed entry
-        // is really there and really terminal.
-        let mut app = App::test_default();
-        *app.workflows_mut().expect("active session") =
-            vec![stub_workflow("sibling", WorkflowStatus::InProgress)];
-        load_resume_history(&mut app, &history);
-
-        assert_eq!(
-            app.workflows().iter().find(|w| w.meta_name == "nightly-sweep").map(|w| w.status),
-            Some(WorkflowStatus::Completed),
-            "the walk builds the replayed entry and seeds it terminal; got: {:?}",
-            app.workflows().iter().map(|w| (&w.meta_name, w.status)).collect::<Vec<_>>(),
         );
     }
 

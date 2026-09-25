@@ -1358,28 +1358,17 @@ fn handle_task_started(app: &mut App, msg: Message) {
         // stamp the wire-level task_id on the matching
         // MonitorEntry so subsequent `task_notification` / `task_updated`
         // events (keyed by task_id) can route to the right row.
-        app.stamp_monitor_task_id(id, task_id.clone());
-        // same shape for WorkflowEntry - both surfaces
-        // share the task_id↔tool_use_id routing key.
-        app.stamp_workflow_task_id(id, task_id);
+        app.stamp_monitor_task_id(id, task_id);
     }
 }
 
 fn handle_task_progress(app: &mut App, msg: Message) {
-    let Message::TaskProgress { tool_use_id, task_id, workflow_progress, .. } = msg else {
+    let Message::TaskProgress { tool_use_id, task_id, .. } = msg else {
         return;
     };
     let id = tool_use_id.as_deref().unwrap_or("");
     if !id.is_empty() {
         apply_tool_progress_update(app, id, "Task");
-    }
-    // Workflow's per-event state arrives ridden in
-    // `workflow_progress` on the same system/task_progress envelope.
-    // Drop into the matching WorkflowEntry's per-phase tree; the
-    // all-completed clear fires when the final `state: done`
-    // transitions the entry to Completed.
-    if !workflow_progress.is_empty() && !task_id.is_empty() {
-        app.apply_workflow_progress_by_task_id(&task_id, &workflow_progress);
     }
     // refresh the matching Monitor's output_tail from
     // disk on each progress event so the file's growth is reflected
@@ -1419,7 +1408,7 @@ fn handle_task_updated(app: &mut App, msg: Message) {
     };
     let is_terminal = matches!(wire_status, "completed" | "failed" | "killed" | "stopped");
 
-    // Monitor + Workflow status transitions are keyed
+    // Monitor status transitions are keyed
     // by `task_id` directly (not `tool_use_id`), so they run
     // BEFORE the `task_tool_use_ids` lookup. The lookup is gated
     // on TurnState, which `default()`-resets at every turn
@@ -1444,11 +1433,6 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         if let Some(status) = monitor_status {
             app.set_monitor_status_by_task_id(&task_id, status);
         }
-        // same shape for WorkflowEntry - any terminal
-        // status (completed | failed | killed | stopped) collapses
-        // the workflow row to its summarised one-liner. Idempotent
-        // when the entry is already Completed.
-        app.set_workflow_completed_by_task_id(&task_id);
         // A terminal patch is one of the two events that may clear the
         // sticky backgrounded marker. The turn-scoped lookup below
         // resets every turn, so resolve through the session map.
@@ -1719,13 +1703,9 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
         );
     }
     // Drift breadcrumb: every kind must route to a section
-    // (local_bash -> PROCESSES; agent/local_agent -> SUBAGENTS;
-    // local_workflow/workflow -> WORKFLOWS via the tool-call-driven
-    // WorkflowEntry, which - unlike bash/agents - only goes terminal on
-    // workflow_progress `done` / terminal task_updated, never the
-    // backgrounding sentinel, so a registered workflow can't false-terminal
-    // and needs no registry backstop). An unrecognised kind renders
-    // nowhere - warn so a renamed CLI kind is caught rather than silent.
+    // (local_bash -> PROCESSES; agent/local_agent -> SUBAGENTS). An
+    // unrecognised kind renders nowhere - warn so a renamed CLI kind is
+    // caught rather than silent.
     for task in &parsed {
         if !task.routes_to_inspector_section() {
             tracing::warn!(
@@ -3033,9 +3013,7 @@ mod monitor_output_file_wiring_tests {
     use super::{handle_task_notification, handle_task_progress};
     use crate::app::App;
     use crate::app::state::types::{MonitorEntry, MonitorStatus};
-    use forge_primitives::{
-        Message, TaskNotificationStatus, TaskUsage, messages::WorkflowProgressEvent,
-    };
+    use forge_primitives::{Message, TaskNotificationStatus, TaskUsage};
     use std::io::Write;
 
     fn push_monitor(app: &mut App, task_id: &str) {
@@ -3161,7 +3139,7 @@ mod monitor_output_file_wiring_tests {
         f.write_all(b"d\ne\n").expect("write");
         drop(f);
 
-        // task_progress (no workflow_progress; pure refresh trigger).
+        // task_progress as a pure refresh trigger.
         let progress = Message::TaskProgress {
             task_id: "task_grow".to_owned(),
             description: String::new(),
@@ -3170,7 +3148,7 @@ mod monitor_output_file_wiring_tests {
             session_id: String::new(),
             tool_use_id: None,
             last_tool_name: None,
-            workflow_progress: Vec::<WorkflowProgressEvent>::new(),
+            workflow_progress: Vec::new(),
         };
         handle_task_progress(&mut app, progress);
         let tail_after: Vec<String> = app.monitors()[0].output_tail.iter().cloned().collect();
@@ -3478,6 +3456,25 @@ mod inbound_message_surfacing_tests {
                 && !slack[0].is_peer_envelope,
             "stamped Slack and nothing else",
         );
+    }
+
+    /// Forge's own crons fire into a session as this envelope - the CLI's
+    /// `CronCreate` never produced it, so removing the CLI-cron support
+    /// must leave this path rendering. It stays green through the cleanup.
+    #[test]
+    fn a_forge_cron_still_renders_after_the_cleanup() {
+        const CRON: &str = "[Cron]\n\nmorning summary";
+
+        let mut app = App::test_default();
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(CRON)]);
+        assert_eq!(
+            app.messages().expect("active session").iter().filter(|m| m.is_cron_envelope).count(),
+            1,
+            "a fired forge cron lands as a cron envelope",
+        );
+        let rendered = crate::app::replay::ReplayHarness::from_app(app).snapshot_chat(100, 40);
+        assert!(rendered.contains("Cron"), "a fired forge cron still renders in chat:\n{rendered}");
+        assert!(rendered.contains("morning summary"), "and its prompt is the body:\n{rendered}");
     }
 
     /// `of_message` is the inverse of `of_inbound` and the merge guard reads

@@ -99,7 +99,7 @@ pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
 }
 
 pub(super) fn tool_call_effectively_collapsed(tc: &ToolCallInfo, tools_collapsed: bool) -> bool {
-    // Carve-out kinds (Execute / Diff content / Monitor / Workflow)
+    // Carve-out kinds (Execute / Diff content / Monitor)
     // render expanded regardless of the global directive. Their chat
     // paths (Execute live-streaming, diff view, render_lifecycle_one_liner)
     // bypass this function by construction; the helper here is the

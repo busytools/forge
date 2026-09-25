@@ -15,7 +15,6 @@ pub(crate) mod turn;
 pub mod types;
 pub mod viewport;
 pub(crate) mod welcome;
-pub mod workflows;
 
 // Re-export all public types so external `use crate::app::state::X` paths still work.
 pub use block_cache::BlockCache;
@@ -33,12 +32,11 @@ pub use tool_call_info::{
 pub use types::{
     AppStatus, AttentionEntry, AttentionKind, BackgroundTask, ExtraUsage, FailedTurn, HelpView,
     HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeInfo, ModeState,
-    MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus,
-    RecentSessionInfo, RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry,
-    ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
-    SessionTaskCard, SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState,
-    SubagentChildEntry, SubagentEntry, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState,
-    UsageWindow, WorkflowEntry, WorkflowStatus,
+    MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, RecentSessionInfo,
+    RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind,
+    ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState, SessionTaskCard,
+    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
+    SubagentEntry, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState, UsageWindow,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,

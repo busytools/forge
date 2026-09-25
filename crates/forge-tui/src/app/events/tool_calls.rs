@@ -32,20 +32,6 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::RenderToolCall) {
         );
     }
 
-    // Workflow tool_use → push a UiSession.workflows
-    // entry. `meta_name` / `meta_description` are extracted from
-    // the script's `export const meta = {...}` block via the
-    // substring parser; malformed scripts still get an entry with
-    // the literal "Workflow" fallback so the Inspector row always
-    // renders.
-    if sdk_tool_name == "Workflow"
-        && let Some(input) = tc.raw_input.as_ref()
-        && let Some(parsed) = forge_workspace::user_interaction::parse_workflow_input(input)
-    {
-        let (meta_name, meta_description) = crate::ui::workflow_meta_fields(&parsed.script);
-        app.upsert_workflow_from_tool_input(&id_str, meta_name, meta_description);
-    }
-
     // ScheduleWakeup tool_use - one pending wakeup per session
     // (the /loop dynamic-pacing re-arm). fire_at = now + delaySeconds;
     // `reason` is the headline shown in the SCHEDULES section.
@@ -198,10 +184,6 @@ fn build_tool_info_from_tool_call(
     //   side-effects surface on those tools' own blocks.
     // - AskUserQuestion - dock-morph widget renders instead of a card.
     //
-    // - Workflow - the Inspector WORKFLOWS section is the surface. A
-    //   chat block was tried and reverted; keeping the Inspector as the
-    //   only surface is the standing choice, not pending work.
-    //
     // Monitor is NOT here: the lifecycle block in
     // `ui::message::render_lifecycle_one_liner` is its only surface,
     // and `append_assistant_tool_block` reaches that render only for a
@@ -211,7 +193,6 @@ fn build_tool_info_from_tool_call(
         "TaskOutput"
             | "TaskStop"
             | "AskUserQuestion"
-            | "Workflow"
             | "ScheduleWakeup"
             | "CronCreate"
             | "CronDelete",
@@ -796,27 +777,6 @@ mod tests {
         assert!(
             rendered.contains("ci-watch"),
             "Monitor lifecycle block missing from the chat render; got:\n{rendered}",
-        );
-    }
-
-    /// Workflow is chat-suppressed: the Inspector WORKFLOWS section is
-    /// its surface.
-    #[test]
-    fn workflow_stays_chat_suppressed() {
-        let app = App::test_default();
-        let tc = model::RenderToolCall::new("toolu_wf", "Workflow")
-            .raw_input(serde_json::json!({"script": "export const meta = { name: 'x' }"}));
-        let info = build_tool_info_from_tool_call(
-            &app,
-            tc,
-            "Workflow".to_owned(),
-            &ToolCallScope::MainAgent,
-        );
-        assert!(info.hidden, "Workflow renders in the Inspector, not the chat stream");
-        let rendered = render_assistant_block(MessageBlock::ToolCall(Box::new(info)));
-        assert!(
-            !rendered.contains("Workflow"),
-            "a suppressed Workflow paints no block of its own; got:\n{rendered}",
         );
     }
 

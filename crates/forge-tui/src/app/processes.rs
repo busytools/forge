@@ -36,7 +36,7 @@ use crate::agent::model::ToolCallStatus;
 use crate::app::MessageBlock;
 use crate::app::MessageRole;
 use crate::app::state::tool_call_info::{ToolCallInfo, is_execute_tool_name, is_monitor_tool_name};
-use crate::app::state::types::{BackgroundTask, SessionTaskCard, WorkflowEntry, WorkflowStatus};
+use crate::app::state::types::{BackgroundTask, SessionTaskCard};
 
 /// Soft cap on the rendered PROCESSES section: a sanity bound so a
 /// runaway process tree doesn't blow up the body line count. Rows past
@@ -276,19 +276,16 @@ pub(crate) fn live_local_bash_commands(session: &crate::app::session::UiSession)
 
 /// Whether the Inspector paints a row for one rostered background task, judged
 /// per the source each kind's section actually paints from: the PROCESSES feed
-/// builds a bash row from its wire command, SUBAGENTS lists a root card, and
-/// WORKFLOWS lists its own in-flight entry without reading the messages at all.
-/// A rostered entry whose card forge never saw keeps the spinner still for the
-/// two kinds that need one - the fact the row glyph used to get wrong.
+/// builds a bash row from its wire command, SUBAGENTS lists a root card. A
+/// rostered entry whose card forge never saw keeps the spinner still for the
+/// kind that needs one - the fact the row glyph used to get wrong.
 ///
 /// One predicate for the PROCESSES feed, the Projects-pane row glyph and the
 /// frame-tick gate, so a spinner can never outrun a drawable row. Reads
-/// recorded facts and the workflow list only, so the gate can ask it on every
-/// tick.
+/// recorded facts only, so the gate can ask it on every tick.
 pub(crate) fn inspector_draws_row(
     task: &BackgroundTask,
     cards: &HashMap<String, SessionTaskCard>,
-    workflows: &[WorkflowEntry],
 ) -> bool {
     if !task.routes_to_inspector_section() {
         return false;
@@ -297,11 +294,6 @@ pub(crate) fn inspector_draws_row(
     match task.task_type.as_str() {
         "local_bash" => card.is_some_and(|card| card.command.is_some()),
         "agent" | "local_agent" => card.is_some_and(|card| card.card_seen),
-        "local_workflow" | "workflow" => card.is_some_and(|card| {
-            workflows.iter().any(|entry| {
-                entry.tool_use_id == card.tool_use_id && entry.status == WorkflowStatus::InProgress
-            })
-        }),
         _ => false,
     }
 }
@@ -312,7 +304,7 @@ pub(crate) fn inspector_draws_row(
 /// recorded command at all. `command_by_task_id` is
 /// [`session_command_by_task_id`]'s projection of the recorded card facts, so
 /// this gate is the same `local_bash` arm [`inspector_draws_row`] reads for
-/// the row glyph; non-`local_bash` kinds route to SUBAGENTS / WORKFLOWS.
+/// the row glyph; non-`local_bash` kinds route to SUBAGENTS.
 fn background_bash_rows(
     background_tasks: &[BackgroundTask],
     command_by_task_id: &HashMap<String, String>,
@@ -1449,8 +1441,8 @@ mod tests {
 
     #[test]
     fn background_bash_rows_ignores_non_bash_task_types() {
-        // Agents route to SUBAGENTS, workflows to WORKFLOWS - only
-        // local_bash is fed to PROCESSES.
+        // Agents route to SUBAGENTS - only local_bash is fed to
+        // PROCESSES.
         let tasks = vec![
             bg_task("a", "local_agent", "Audit history"),
             bg_task("w", "local_workflow", "Run workflow"),
@@ -1543,70 +1535,6 @@ mod tests {
         assert!(
             session.has_live_background_work(),
             "a roster entry the feed draws must keep the project row spinning",
-        );
-    }
-
-    fn workflow_entry(
-        tool_use_id: &str,
-        task_id: Option<&str>,
-        status: WorkflowStatus,
-    ) -> WorkflowEntry {
-        WorkflowEntry {
-            tool_use_id: tool_use_id.to_owned(),
-            task_id: task_id.map(str::to_owned),
-            meta_name: "Workflow".to_owned(),
-            meta_description: None,
-            phases: Vec::new(),
-            status,
-            final_result_summary: None,
-            expanded_in_inspector: false,
-        }
-    }
-
-    /// A card record for a task whose card carried no command - the shape the
-    /// capture produces for an agent or a workflow dispatch.
-    fn recorded_card(task_id: &str, tool_use_id: &str) -> (String, SessionTaskCard) {
-        (
-            task_id.to_owned(),
-            SessionTaskCard { tool_use_id: tool_use_id.to_owned(), card_seen: true, command: None },
-        )
-    }
-
-    /// A rostered workflow counts while its own entry is in flight, which is
-    /// what the WORKFLOWS section paints from. `task_id` and `tool_use_id` are
-    /// both on the entry and only the latter is the row's identity, so the
-    /// fixture keeps them distinct.
-    #[test]
-    fn rostered_workflow_counts_while_its_entry_is_in_flight() {
-        let task = bg_task("task-wf", "local_workflow", "audit the repo");
-        let cards: HashMap<String, SessionTaskCard> =
-            [recorded_card("task-wf", "tu-wf")].into_iter().collect();
-        let in_flight = workflow_entry("tu-wf", Some("task-wf"), WorkflowStatus::InProgress);
-
-        assert!(
-            inspector_draws_row(&task, &cards, std::slice::from_ref(&in_flight)),
-            "an in-flight entry is the row the WORKFLOWS section paints",
-        );
-        assert!(
-            !inspector_draws_row(
-                &task,
-                &cards,
-                &[workflow_entry("tu-wf", Some("task-wf"), WorkflowStatus::Completed)],
-            ),
-            "a completed entry paints nothing, so the spinner must stop",
-        );
-        assert!(!inspector_draws_row(&task, &cards, &[]), "no entry at all means no row");
-        assert!(
-            !inspector_draws_row(
-                &task,
-                &cards,
-                &[workflow_entry("tu-other", None, WorkflowStatus::InProgress)],
-            ),
-            "another task's entry paints its own row, not this one",
-        );
-        assert!(
-            !inspector_draws_row(&task, &HashMap::new(), std::slice::from_ref(&in_flight)),
-            "with no mapping there is no identity to match the entry against",
         );
     }
 

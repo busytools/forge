@@ -550,9 +550,11 @@ L1 expansion:
 
 ## Task* and Workflow
 
-`Workflow` renders nothing in chat - live state lives in the [Inspector](./inspector.md)'s `WORKFLOWS` section (Workflow's icon: `◆`). `TaskOutput` and `TaskStop` are suppressed the same way: they are paired with Monitor and Workflow, and their side-effects surface on those tools' own blocks.
+`TaskOutput` and `TaskStop` render nothing in chat: they are paired with Monitor, and their side-effects surface on that tool's own block.
 
 The `claude` CLI's own task tools - `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` - are not offered to any session. forge owns the task list now: sessions declare their work through the `tasks__*` MCP tools over forge's own store, and the [Inspector](./inspector.md)'s `TASKS` section is its only surface. CLI 2.1.156 had already retired the single-call `TodoWrite` forge used to render.
+
+`Workflow` is likewise not offered to any session, and forge carries no surface for it: a `◆ Workflow` tool call in an existing transcript renders as an ordinary tool row.
 
 ## Monitor
 

@@ -17,7 +17,7 @@
 //!   the final App state.
 //! - [`ReplayHarness::default_session`] exposes the active session's
 //!   `UiSession` for direct assertions on its fields (`monitors`,
-//!   `workflows`, `messages`, etc.). Future helpers covering
+//!   `messages`, etc.). Future helpers covering
 //!   multi-session baselines can add a per-key accessor; until then,
 //!   one bucket is sufficient.
 //! - [`ReplayHarness::snapshot_inspector`] and
@@ -271,6 +271,22 @@ mod tests {
         assert!(
             !harness.app.sessions.is_empty(),
             "replay must populate at least one session bucket"
+        );
+    }
+
+    /// Review Focus 5: blocking a tool must not make a transcript that
+    /// already carries its call unreadable. The baseline holds a real
+    /// `Workflow` tool_use, so replaying it proves the frames still decode
+    /// and that the call still reaches the chat - the WORKFLOWS section it
+    /// used to surface in is gone, and a call that renders nowhere would be
+    /// a silent hole in an old session.
+    #[test]
+    fn a_transcript_carrying_a_disabled_tools_event_still_replays() {
+        let mut harness = replay_baseline("workflow");
+        let rendered = harness.snapshot_chat(100, 60);
+        assert!(
+            rendered.contains("Workflow"),
+            "a replayed Workflow call still renders with the section gone:\n{rendered}",
         );
     }
 

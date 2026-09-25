@@ -111,8 +111,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
                 _ => "EnterWorktree",
             },
         ),
-        // CLI 2.1.156 tool surface (#273). 13 new tool name glyphs +
-        // Workflow's distinct filled-diamond marker.
+        // CLI 2.1.156 tool surface (#273).
         "ScheduleWakeup" => ("\u{23f2}", "ScheduleWakeup"),
         "Skill" => ("\u{2726}", "Skill"),
         "ToolSearch" | "tool_search_tool_regex" | "tool_search_tool_bm25" => {
@@ -130,9 +129,6 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "LSP" => ("\u{2699}", "LSP"),
         "TaskOutput" => ("\u{25c9}", "TaskOutput"),
         "TaskStop" => ("\u{25cd}", "TaskStop"),
-        // Filled diamond ◆ - agent-script flow, distinct from
-        // Task/Agent's hollow ◇ subagent-dispatch glyph.
-        "Workflow" => ("\u{25c6}", "Workflow"),
         // `advisor` is the upstream server-tool wire name for the
         // model-side advisor call. Borrows the Skill sparkle (✦) since
         // both surface model-side counsel without a local handler. The
@@ -187,10 +183,6 @@ mod tests {
         assert_eq!(tool_name_label("LSP"), ("\u{2699}", "LSP"));
         assert_eq!(tool_name_label("TaskOutput"), ("\u{25c9}", "TaskOutput"));
         assert_eq!(tool_name_label("TaskStop"), ("\u{25cd}", "TaskStop"));
-
-        // Workflow is the filled diamond ◆, distinct from Task/Agent's
-        // hollow ◇ - agent-script flow vs subagent dispatch.
-        assert_eq!(tool_name_label("Workflow"), ("\u{25c6}", "Workflow"));
     }
 
     /// Server-side tool wire names land here too (e.g. ToolSearch

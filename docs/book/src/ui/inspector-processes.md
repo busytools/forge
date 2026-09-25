@@ -18,7 +18,7 @@ Currently-running work in the active session: the OS process tree under claude i
 <details>
 <summary>Row order, memory, adoption</summary>
 
-Registry-fed `local_bash` rows the OS scan missed lead the section; the OS-walked rows follow in tree order from claude's direct children, siblings sorted into tiers - matched work, then generic processes - with memory descending within each tier and PID as the tie-break. A 50-row cap applies but the pane scrolls (the scrollbar IS the overflow indicator). Memory renders from 36 pane columns up and drops at Medium. The scan also adopts a backgrounded `local_bash` sitting outside claude's descendant tree - `setsid`-detached, or orphaned once its session's claude exits - so it renders with full RAM and process tree like any other process. Backgrounded agents render in SUBAGENTS and workflows in WORKFLOWS - there is no standalone background section.
+Registry-fed `local_bash` rows the OS scan missed lead the section; the OS-walked rows follow in tree order from claude's direct children, siblings sorted into tiers - matched work, then generic processes - with memory descending within each tier and PID as the tie-break. A 50-row cap applies but the pane scrolls (the scrollbar IS the overflow indicator). Memory renders from 36 pane columns up and drops at Medium. The scan also adopts a backgrounded `local_bash` sitting outside claude's descendant tree - `setsid`-detached, or orphaned once its session's claude exits - so it renders with full RAM and process tree like any other process. Backgrounded agents render in SUBAGENTS - there is no standalone background section.
 
 </details>
 
@@ -78,35 +78,6 @@ Each snapshot server matches at most one OS process by configured launch command
 
 </details>
 
-## WORKFLOWS
-
-The active session's in-flight Workflow tool calls, each a `◆ <name>` header over its per-phase tree - spinner while a phase runs, `✓` completed, `○` pending, `log()` lines dim under the active phase. A completed entry collapses to a one-line summary (click to re-expand) and persists only while another entry runs; when none remain the section drops out. A resumed session shows no WORKFLOWS section.
-
-<div class="term">
-
-<pre class="indent">
-  <span class="accent-bold">INSPECTOR</span>
-  <span class="dim">─────────────────────────</span>
-
-  <span class="dim bold">  WORKFLOWS</span>
-
-  <span class="bold">  ◆</span> <span class="bold">minimal-ping</span>
-  <span class="dim">  ├ </span><span class="success">✓</span> Ping <span class="dim">· done</span>
-  <span class="dim">  │   └ log: "dispatching single structured agent"</span>
-  <span class="dim">  └ </span><span class="dim">⠋</span> Synthesize <span class="dim">· in progress</span>
-  <span class="dim">      └ log: "schema validated, awaiting model"</span>
-
-  <span class="success">  ✓</span> <span class="dim">◆ big-fan-out · done</span> <span class="dim">[▶ expand]</span>
-</pre>
-
-</div>
-
-<details>
-<summary>Workflow fallback</summary>
-
-If the script's `meta` block fails to parse (malformed script, missing `export const meta`), the entry renders as a single static "`◆ Workflow · <status>`" line without a phase tree.
-
-</details>
 
 ## MONITORS
 
