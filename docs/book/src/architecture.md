@@ -167,7 +167,7 @@ knowing before you change it:
 few modules (plugin inventory and update runs, slash command executors,
 the service-status check, the input-submit cancel path) emit their
 presentation events through it rather than making a command round-trip.
-Both feeds reach the same reducer, and neither is part of what a
+Both feeds reach the same reducer, and that pair is not part of what a
 frontend has to reproduce: that is `dispatch()` and `subscribe()`.
 
 **`forge-workspace` is a thin facade, not strong isolation.** The

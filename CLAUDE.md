@@ -211,9 +211,9 @@ the slot is still their address.
   (`app/extensions.rs`, `app/slash/executors.rs`,
   `app/service_status_check.rs`, `app/input_submit.rs`) emit their
   presentation events through it instead of a Command round-trip. The
-  event loop drains both feeds into the same reducer, and neither is
-  part of what a non-TUI frontend reproduces: that is `dispatch()` and
-  `subscribe()`.
+  event loop drains both feeds into the same reducer, and that pair is
+  not part of what a non-TUI frontend reproduces: that is `dispatch()`
+  and `subscribe()`.
 - `forge-workspace` is a **thin facade, not strong isolation**. The
   boundary is enforced at the dependency graph (forge-tui has no
   forge-agent dep), not by visibility: workspace wildcard-re-exports
