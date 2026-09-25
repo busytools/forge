@@ -161,18 +161,9 @@ fn build_tool_info_from_tool_call(
     // `ui::message::render_lifecycle_one_liner` is its only surface,
     // and `append_assistant_tool_block` reaches that render only for a
     // visible tool call.
-    // The cron pair stays listed though no session can call it any
-    // more: a transcript that already carries a `CronCreate` still
-    // replays through this arm, and it rendered nothing before the
-    // block either.
     let is_chat_suppressed = matches!(
         sdk_tool_name.as_str(),
-        "TaskOutput"
-            | "TaskStop"
-            | "AskUserQuestion"
-            | "ScheduleWakeup"
-            | "CronCreate"
-            | "CronDelete",
+        "TaskOutput" | "TaskStop" | "AskUserQuestion" | "ScheduleWakeup",
     );
     let monitor_status = app.monitor_status_for_tool_use(&tc.tool_call_id);
     let mut tool_info = ToolCallInfo {

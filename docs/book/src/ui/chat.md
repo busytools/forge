@@ -362,7 +362,7 @@ Click a group's summary row to cycle it L2 (summary) → L1 (title rows) → L0 
 <summary>Row content and clipping</summary>
 
 - Nothing wraps: each row is a single line, and the nested target rows are the only ones that clip. Read relativizes each path against the project root and clips with a middle-ellipsis so the filename stays visible; every other kind clips end-first with `...`, keeping the head. The parent count row is never clipped and often the widest; the target budget floors at 8 cells, so below a render width of 16 a child row overflows, and the outer layout char-wraps without the tree gutter, so an overflowing row shears the tree.
-- Per-kind content: bash shows the human-readable description, web the URL (scheme stripped) or query, toolsearch the query, skill the invoked skill name (plus its args), SendMessage the recipient and summary (falling back to the full message), Delete / Move their paths, LSP the operation and file, PushNotification the message.
+- Per-kind content: bash shows the human-readable description, web the URL (scheme stripped) or query, toolsearch the query, skill the invoked skill name (plus its args), glob and grep the pattern, Delete / Move their paths, LSP the operation and file, PushNotification the message.
 - Kinds render in first-appearance order; the spine holds `│` while a later kind follows, blank on the last.
 
 </details>
@@ -440,10 +440,10 @@ A single-kind run is a one-child tree:
 
   <pre class="indent">
   <span class="success">✓</span> <span class="bold">3 tool calls</span>   <span class="dim">ctrl+x to expand</span>
-  <span class="dim">└─ </span><span class="bold">➤ SendMessage</span>
-  <span class="dim">&nbsp;&nbsp;&nbsp;├─ to aa32ac1c4e464f26d: Add record-ordering check to roun...</span>
-  <span class="dim">&nbsp;&nbsp;&nbsp;├─ to planner: Resume. The account limit has lifted.</span>
-  <span class="dim">&nbsp;&nbsp;&nbsp;└─ to steward: STOP AND CHECK YOUR SHA BEFORE GOING FURTHE...</span></pre>
+  <span class="dim">└─ </span><span class="bold">⌕ glob</span>
+  <span class="dim">&nbsp;&nbsp;&nbsp;├─ Glob **/*.snap</span>
+  <span class="dim">&nbsp;&nbsp;&nbsp;├─ Glob **/lead_charter.md</span>
+  <span class="dim">&nbsp;&nbsp;&nbsp;└─ Glob **/theme.rs</span></pre>
 
 </div>
 

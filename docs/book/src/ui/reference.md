@@ -91,7 +91,7 @@ Every character used as chrome - borders, icons, status, separators. Scope is cu
 | `◈` | Gotify icon; MCP-server line in a group summary | the shared Gotify diamond; marks an external MCP-server call |
 | `⚠` | degraded states, AuthRequired, GOTIFY stream down, Bailed accounts | warning: noticeable but not broken - yellow; one deliberate split: a Bailed **auth** failure renders it red (repair needs an env edit plus restart), a transient failure yellow (the pollers heal it) |
 | `✦` `⌖` | Skill / Advisor; ToolSearch | meta capability; tool search |
-| `▲` `⇨` `⚙` | PushNotification; RemoteTrigger; LSP | outbound signal; remote trigger; tooling integration |
+| `▲` `⚙` | PushNotification; LSP | outbound signal; tooling integration |
 | `○` | fallback tool icon; pending or blocked task; unfocused permission option; sleeping project row | open circle, reused |
 | `✓` `✗` | completed / Allow; failed / Reject | completed and failed |
 | `➤` | input prompt; SendMessage | prompt char |

@@ -118,7 +118,6 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
             ("\u{2316}", "ToolSearch")
         }
         "PushNotification" => ("\u{25b2}", "PushNotification"),
-        "RemoteTrigger" => ("\u{21e8}", "RemoteTrigger"),
         "LSP" => ("\u{2699}", "LSP"),
         "TaskOutput" => ("\u{25c9}", "TaskOutput"),
         "TaskStop" => ("\u{25cd}", "TaskStop"),
@@ -134,7 +133,6 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         // CLI 2.1.204 tool surface (new names in the init tool list).
         "DesignSync" => ("\u{21bb}", "DesignSync"),
         "ReportFindings" => ("\u{25a4}", "ReportFindings"),
-        "SendMessage" => ("\u{27a4}", "SendMessage"),
         "ShareOnboardingGuide" => ("\u{29c9}", "ShareOnboardingGuide"),
         _ => ("\u{25cb}", "Tool"),
     }
@@ -167,7 +165,6 @@ mod tests {
         assert_eq!(tool_name_label("ToolSearch"), ("\u{2316}", "ToolSearch"));
 
         assert_eq!(tool_name_label("PushNotification"), ("\u{25b2}", "PushNotification"));
-        assert_eq!(tool_name_label("RemoteTrigger"), ("\u{21e8}", "RemoteTrigger"));
         assert_eq!(tool_name_label("LSP"), ("\u{2699}", "LSP"));
         assert_eq!(tool_name_label("TaskOutput"), ("\u{25c9}", "TaskOutput"));
         assert_eq!(tool_name_label("TaskStop"), ("\u{25cd}", "TaskStop"));
@@ -195,7 +192,6 @@ mod tests {
     fn cli_2_1_204_tool_glyphs_match_picks() {
         assert_eq!(tool_name_label("DesignSync"), ("\u{21bb}", "DesignSync"));
         assert_eq!(tool_name_label("ReportFindings"), ("\u{25a4}", "ReportFindings"));
-        assert_eq!(tool_name_label("SendMessage"), ("\u{27a4}", "SendMessage"));
         assert_eq!(tool_name_label("ShareOnboardingGuide"), ("\u{29c9}", "ShareOnboardingGuide"));
     }
 }
