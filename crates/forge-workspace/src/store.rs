@@ -37,6 +37,7 @@ pub mod session_tags;
 pub mod sessions;
 pub mod slack;
 pub mod state;
+pub mod tasks;
 pub mod token_usage;
 
 /// Handle to the machine-local redb database.

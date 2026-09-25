@@ -5,10 +5,6 @@ use super::tool_calls::{
     tool_scope_name,
 };
 use crate::agent::model;
-use crate::app::todos::{
-    TaskCreateInput, TaskUpdateInput, apply_task_create, apply_task_update,
-    parse_task_create_input, parse_task_create_result_id, parse_task_update_input,
-};
 
 pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::RenderToolCallUpdate) {
     let id_str = tcu.tool_call_id.clone();
@@ -61,63 +57,6 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::Render
         &update_outcome,
     );
     log_command_update_applied(app, &id_str, previous_status);
-    // #268: TaskCreate / TaskUpdate apply directly to `app.todos_mut()`
-    // - they're append / mutate / remove deltas, not full-list
-    // replacements, so they bypass any "all-completed clears" cascade.
-    if let Some(delta) = update_outcome.pending_task_delta {
-        let quiet = super::skip_operational_log_during_replay(app);
-        match delta {
-            TaskDelta::Create { input, id } => {
-                if !quiet {
-                    let session_id = current_session_id(app);
-                    tracing::info!(
-                        target: crate::logging::targets::APP_TOOL,
-                        event_name = "task_create_applied",
-                        message = "TaskCreate item added to inspector list",
-                        outcome = "success",
-                        session_id = %session_id,
-                        tool_call_id = %id_str,
-                        task_id = %id,
-                        tool_name = "TaskCreate",
-                    );
-                }
-                apply_task_create(app, input, id);
-            }
-            TaskDelta::Update(update) => {
-                if !quiet {
-                    let session_id = current_session_id(app);
-                    tracing::info!(
-                        target: crate::logging::targets::APP_TOOL,
-                        event_name = "task_update_applied",
-                        message = "TaskUpdate applied to inspector list",
-                        outcome = "success",
-                        session_id = %session_id,
-                        tool_call_id = %id_str,
-                        task_id = %update.task_id,
-                        tool_name = "TaskUpdate",
-                    );
-                }
-                if let Some(unknown) = update.unknown_status.as_deref() {
-                    // Reported here rather than in the parser: the two
-                    // records that used to carry this one's session and
-                    // tool call are silenced during a replay, and a
-                    // warning nothing can be attributed to is close to
-                    // no warning at all.
-                    tracing::warn!(
-                        target: crate::logging::targets::APP_TOOL,
-                        event_name = "task_update_unknown_status",
-                        message = "TaskUpdate carried an unrecognised status value; no status mutation applied",
-                        outcome = "skipped",
-                        session_id = %current_session_id(app),
-                        tool_call_id = %id_str,
-                        task_id = %update.task_id,
-                        status = %unknown,
-                    );
-                }
-                apply_task_update(app, update, &id_str);
-            }
-        }
-    }
     if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
         app.status = AppStatus::Thinking;
     }
@@ -150,28 +89,6 @@ fn apply_tool_scope_status_update(
 struct ToolCallUpdateApplyOutcome {
     changed: bool,
     layout_dirty_idx: Option<usize>,
-    /// `Some(delta)` when this update completed a `TaskCreate` or
-    /// applied a `TaskUpdate` (#268). The outer handler dispatches
-    /// to `apply_task_create` / `apply_task_update` because both
-    /// reducers mutate `app.todos_mut()` and the inner block's
-    /// mutable borrow of `app.active_messages_mut()` would conflict.
-    /// `None` for every other tool call.
-    pending_task_delta: Option<TaskDelta>,
-}
-
-/// #268: Per-call mutation extracted from a `TaskCreate` /
-/// `TaskUpdate` tool call result. Carried out of
-/// `apply_tool_call_update_to_indexed_block` (which holds a mut
-/// borrow on `active_messages_mut`) so the outer handler can apply
-/// it via the `app.todos_mut()` reducer free of borrow conflicts.
-enum TaskDelta {
-    /// `TaskCreate` completed with a parseable `Task #N created
-    /// successfully:` result text. The reducer appends a TodoItem
-    /// keyed by `id`.
-    Create { input: TaskCreateInput, id: String },
-    /// `TaskUpdate` carried a valid `taskId`. The reducer mutates
-    /// the matching item or removes it (status == "deleted").
-    Update(TaskUpdateInput),
 }
 
 /// One row per field update the reducer folds. The array below is typed with
@@ -208,11 +125,7 @@ fn apply_tool_call_update_to_indexed_block(
     bi: usize,
     tcu: &model::RenderToolCallUpdate,
 ) -> ToolCallUpdateApplyOutcome {
-    let mut out = ToolCallUpdateApplyOutcome {
-        changed: false,
-        layout_dirty_idx: None,
-        pending_task_delta: None,
-    };
+    let mut out = ToolCallUpdateApplyOutcome { changed: false, layout_dirty_idx: None };
     // Snapshot upfront so the per-tool mutable-borrow of `app.active_messages_mut()`
     // doesn't conflict with `&app.cwd_raw`.
     let cwd_raw = app.cwd_raw().unwrap_or_default();
@@ -271,13 +184,6 @@ fn apply_tool_call_update_to_indexed_block(
 
         let body_changed = updates.iter().any(|u| u.body && u.changed);
         let changed = updates.iter().any(|u| u.changed);
-        // #268: Task* family delta. Read post-apply so `tc.status`
-        // reflects the fields just merged from this update; the
-        // delta fires exactly once per tool_call when the call
-        // reaches `Completed` AND its raw_input + (for TaskCreate)
-        // raw_output are present. TaskGet / TaskList carry no
-        // delta - they're chat-suppressed but produce no state.
-        out.pending_task_delta = extract_task_delta_from_tool_call_update(tc);
 
         if changed {
             out.changed = true;
@@ -458,59 +364,6 @@ fn apply_tool_call_hidden_update(tc: &mut ToolCallInfo, meta: Option<&serde_json
     }
     tc.hidden = true;
     true
-}
-
-/// #268: Extract a `TaskDelta` for the `TaskCreate` / `TaskUpdate`
-/// family. `TaskList` and `TaskGet` have no state delta; they share
-/// the gate but always return `None` here (they're chat-suppressed
-/// at the tool_call construction site).
-///
-/// `TaskCreate` requires a parseable `id` from the tool's result
-/// text; if the tool hasn't completed or the result text doesn't
-/// match `^Task #N created successfully:`, returns `None`. The
-/// caller is idempotent against `None`, so repeat updates that
-/// arrive before the result lands cost nothing.
-///
-/// `TaskUpdate` requires a parseable `taskId` in `raw_input`; if
-/// the input is missing or malformed (no taskId field, non-string),
-/// returns `None`.
-fn extract_task_delta_from_tool_call_update(tc: &ToolCallInfo) -> Option<TaskDelta> {
-    match tc.sdk_tool_name.as_str() {
-        "TaskCreate" => {
-            if tc.status != model::ToolCallStatus::Completed {
-                // Wait for completion - the id only appears in the
-                // result text the CLI emits at completion time.
-                return None;
-            }
-            let raw_input = tc.raw_input.as_ref()?;
-            let input = parse_task_create_input(raw_input)?;
-            let result_text = tool_call_text_output(tc)?;
-            let id = parse_task_create_result_id(&result_text)?;
-            Some(TaskDelta::Create { input, id })
-        }
-        "TaskUpdate" => {
-            let raw_input = tc.raw_input.as_ref()?;
-            let update = parse_task_update_input(raw_input)?;
-            Some(TaskDelta::Update(update))
-        }
-        _ => None,
-    }
-}
-
-/// Concatenate every `RenderToolCallContent::Content(Text)` block on the
-/// tool call into a single `String`. Non-text blocks (diff, terminal,
-/// mcp resource, image) are skipped - `TaskCreate`'s assigned id
-/// always lives in a Text block per core-v1's wire capture.
-fn tool_call_text_output(tc: &ToolCallInfo) -> Option<String> {
-    let mut parts: Vec<&str> = Vec::new();
-    for content in &tc.content {
-        if let model::RenderToolCallContent::Content(inner) = content
-            && let model::RenderContentBlock::Text(text) = &inner.content
-        {
-            parts.push(text.text.as_str());
-        }
-    }
-    if parts.is_empty() { None } else { Some(parts.join("\n")) }
 }
 
 pub(super) fn raw_output_to_terminal_text(raw_output: &serde_json::Value) -> Option<String> {

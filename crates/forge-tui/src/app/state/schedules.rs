@@ -241,7 +241,7 @@ impl super::App {
     /// Resolved from the live-worker registry, never the sessions
     /// catalog - workers are deliberately absent from the catalog, so a
     /// catalog read reports every worker as a lead.
-    fn active_session_team_role(&self) -> Option<String> {
+    pub(crate) fn active_session_team_role(&self) -> Option<String> {
         let ws = self.workspace.as_ref()?;
         let key = self.active_session_key.as_ref()?;
         ws.worker_lookup_for_session(key).map(|(_, label, _, _)| label)

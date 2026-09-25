@@ -8,6 +8,7 @@ pub mod monitors;
 pub(crate) mod render_budget;
 pub mod schedules;
 pub mod sessions;
+pub mod tasks;
 pub mod tool_call_info;
 pub mod tool_calls;
 pub(crate) mod turn;
@@ -36,8 +37,8 @@ pub use types::{
     RecentSessionInfo, RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry,
     ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
     SessionTaskCard, SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState,
-    SubagentChildEntry, SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot,
-    UsageSourceKind, UsageState, UsageWindow, WorkflowEntry, WorkflowStatus,
+    SubagentChildEntry, SubagentEntry, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState,
+    UsageWindow, WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -187,6 +188,18 @@ pub enum PaneHitTarget {
     /// handler doesn't have to look it up again (and so a session
     /// switch between render and click can't write the wrong id).
     CopySessionId { session_id: String, y: u16, height: u16, x_start: u16, x_end: u16 },
+    /// Click on a row of the Inspector's `TASKS` section → open that
+    /// task's detail overlay. One target per row, covering the row's
+    /// full height (a wrapped running row spans several lines) and the
+    /// pane's full width. The section header stamps nothing, so a click
+    /// on it is a miss.
+    InspectorTaskRow {
+        task_id: forge_primitives::tasks::TaskId,
+        y: u16,
+        height: u16,
+        x_start: u16,
+        x_end: u16,
+    },
     /// [`ROW_CLOSE_BUTTON`] on a worker tree-child row. Click
     /// dispatches `Command::CloseWorker { project_key, label }`.
     CloseWorker {
@@ -229,6 +242,7 @@ impl PaneHitTarget {
             | Self::InspectorMcpOpenStatus { y, height, .. }
             | Self::InspectorAttentionRow { y, height, .. }
             | Self::CopySessionId { y, height, .. }
+            | Self::InspectorTaskRow { y, height, .. }
             | Self::CloseWorker { y, height, .. }
             | Self::WorkerRow { y, height, .. } => (*y, *height),
         };
@@ -255,6 +269,7 @@ impl PaneHitTarget {
             | Self::InspectorMcpOpenStatus { x_start, x_end, .. }
             | Self::InspectorAttentionRow { x_start, x_end, .. }
             | Self::CopySessionId { x_start, x_end, .. }
+            | Self::InspectorTaskRow { x_start, x_end, .. }
             | Self::CloseWorker { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
         }
     }
@@ -391,6 +406,21 @@ pub struct App {
     /// the local timezone + humanizing per frame; the live countdown
     /// still recomputes from each row's `fire_at` at render time.
     pub forge_schedule_rows: Vec<crate::app::state::types::ScheduleEntry>,
+    /// The Inspector TASKS section's rows, resolved once per ~1s tick by
+    /// [`App::refresh_tasks`] and narrowed by session kind: a lead holds
+    /// the top-level rows, a worker the rows it owns. The render reads
+    /// these instead of hitting the workspace per frame, so the rollup,
+    /// the owner label and the breadcrumb are paid for once. Empty when
+    /// there's no active project or the project has no tasks in flight.
+    pub ui_task_rows: Vec<crate::app::state::tasks::TaskRow>,
+    /// Every task in the active project, unscoped. The TASKS detail
+    /// overlay reads it for the task's own record and its children, which
+    /// `ui_task_rows` (resolved rows only) does not carry.
+    pub forge_project_tasks: Vec<forge_primitives::tasks::Task>,
+    /// The task whose detail overlay is open, if any. Set by a click on a
+    /// TASKS row; cleared by `Esc` or a click outside the panel. The pane
+    /// keeps no selection state, so nothing else tracks it.
+    pub task_detail: Option<forge_primitives::tasks::TaskId>,
     /// The Gotify subscriptions the active session itself created, plus
     /// the stream connection status. Refreshed on the ~1s tick by
     /// [`App::refresh_gotify`] and scoped by own `team_role`; the
@@ -982,6 +1012,9 @@ impl App {
             pending_spawn_focus: None,
             forge_crons: Vec::new(),
             forge_schedule_rows: Vec::new(),
+            ui_task_rows: Vec::new(),
+            forge_project_tasks: Vec::new(),
+            task_detail: None,
             gotify_subs: Vec::new(),
             gotify_connected: false,
             slack_subs: Vec::new(),

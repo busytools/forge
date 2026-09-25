@@ -40,6 +40,43 @@ pub(crate) fn send_dispatch_turn_error(
     });
 }
 
+/// The `claude` CLI's own task tools. forge owns the task list now - the
+/// `mcp__forge__tasks__*` group over its own store - so a session that
+/// reached for these would write a second list nothing renders and route
+/// to neither honestly.
+const DISALLOWED_CLI_TASK_TOOLS: [&str; 4] = ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"];
+
+/// Those tools as one `--disallowedTools` value.
+fn cli_task_tools_arg() -> String {
+    DISALLOWED_CLI_TASK_TOOLS.join(",")
+}
+
+/// Deny every session - lead, resumed or worker - the CLI's task tools,
+/// merging into a `--disallowedTools` value already there, so the flag is
+/// emitted once with every name in it rather than twice. A worker's spawn
+/// is the case that carries one: its worktree and question denials already
+/// hold that entry. Called from the one spawn path every session goes
+/// through and from the respawn stamp, so no launch can be assembled
+/// without it.
+pub(crate) fn apply_disallowed_task_tools(settings: &mut SessionLaunchSettings) {
+    let Some((_, value)) =
+        settings.extra_args.iter_mut().find(|(flag, _)| flag == "disallowedTools")
+    else {
+        settings.extra_args.push(("disallowedTools".to_owned(), Some(cli_task_tools_arg())));
+        return;
+    };
+    let existing = value.get_or_insert_with(String::new);
+    for tool in DISALLOWED_CLI_TASK_TOOLS {
+        if existing.split(',').any(|name| name == tool) {
+            continue;
+        }
+        if !existing.is_empty() {
+            existing.push(',');
+        }
+        existing.push_str(tool);
+    }
+}
+
 /// Build the list of `(flag, value)` extra CLI args specific to a
 /// worker spawn. When the project is a git repo, append
 /// `("worktree", Some(label))` so the spawned `claude` subprocess
@@ -48,7 +85,9 @@ pub(crate) fn send_dispatch_turn_error(
 /// `--disallowedTools EnterWorktree,ExitWorktree` entry: workers are
 /// pinned to their spawn-time location (whether a worktree or the
 /// project cwd) and must not be able to call claude's built-in
-/// worktree-hop tools to escape. Comma-separated value form is
+/// worktree-hop tools to escape. The CLI's task tools are NOT listed
+/// here - every spawn is denied those at the one spawn path, which
+/// merges them into this same entry. Comma-separated value form is
 /// empirically accepted by the CLI's variadic `<tools...>` parser.
 ///
 /// Unless `interactive`, `AskUserQuestion` joins that list. A worker's
@@ -5337,6 +5376,178 @@ provider = "anthropic"
         );
     }
 
+    /// The `--disallowedTools` value in `args`, failing loudly when the
+    /// flag is absent.
+    fn disallowed_tools_value(args: &[(String, Option<String>)]) -> String {
+        args.iter()
+            .find(|(flag, _)| flag == "disallowedTools")
+            .and_then(|(_, value)| value.clone())
+            .expect("expected a --disallowedTools entry")
+    }
+
+    /// A worker's own denials, which are the worktree tools and the
+    /// question it must not ask. The CLI's task tools are deliberately
+    /// absent: the spawn path owns those, and listing them here as well
+    /// would leave two places claiming the same names.
+    #[test]
+    fn a_worker_carries_its_own_denials_and_leaves_the_task_tools_to_the_spawn_path() {
+        let list = disallowed_tools_value(&build_worker_extra_args(false, "reviewer", false));
+        for tool in ["EnterWorktree", "ExitWorktree", "AskUserQuestion"] {
+            assert!(list.contains(tool), "{tool} must be denied to a worker; got {list:?}");
+        }
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(
+                !list.contains(tool),
+                "{tool} comes from the spawn path, not from here; got {list:?}",
+            );
+        }
+        assert!(
+            !list.contains("ScheduleWakeup"),
+            "forge handles ScheduleWakeup itself; it stays available",
+        );
+        assert!(
+            !list.contains("ReportFindings"),
+            "ReportFindings wants rendering, which is a separate change",
+        );
+        assert!(
+            !list.contains("CronCreate")
+                && !list.contains("CronDelete")
+                && !list.contains("CronList"),
+            "the cron tools are held out of this change; got {list:?}",
+        );
+    }
+
+    /// The cold spawn - the one a project's first lead and every worker go
+    /// through - hands its child the denial. Nothing else observes this
+    /// path: a pooled slot never reaches a launch, and a cold one otherwise
+    /// ends in a real subprocess, so the test stands a stub handle in for
+    /// the one the spawn would create and reads the setting it forwards.
+    #[tokio::test]
+    async fn a_cold_spawn_hands_its_child_the_cli_task_tool_denial() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+
+[[orgs.projects]]
+name = "proj"
+path = "/tmp/spawn-denial"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let ws = std::sync::Arc::new(
+            Workspace::new_for_test(dir.path().to_owned()).expect("boot from the fixture"),
+        );
+        ws.seed_test_ready_account("acct-a");
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        ws.install_test_spawn_handle(handle);
+
+        handle_spawn_project(&ws, "proj", SessionLaunchSettings::default());
+
+        let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
+            agent_rx.try_recv().ok()
+        else {
+            panic!("the cold spawn has to reach a launch for anything here to be observable");
+        };
+        let denied = launch_settings
+            .get("extra_args")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|pairs| {
+                pairs.iter().find(|pair| {
+                    pair.get(0).and_then(serde_json::Value::as_str) == Some("disallowedTools")
+                })
+            })
+            .and_then(|pair| pair.get(1).and_then(serde_json::Value::as_str))
+            .unwrap_or_default()
+            .to_owned();
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(
+                denied.contains(tool),
+                "{tool} must reach a spawned session's launch; got {denied:?}",
+            );
+        }
+    }
+
+    /// A lead's settings carry no denial of their own, so the call adds
+    /// the flag. `--disallowedTools` used to be a worker-only flag, and a
+    /// lead kept the CLI's task tools.
+    #[test]
+    fn the_denial_adds_the_flag_when_there_is_none() {
+        let mut settings = SessionLaunchSettings::default();
+        apply_disallowed_task_tools(&mut settings);
+        let list = disallowed_tools_value(&settings.extra_args);
+        // The names are written out rather than read off the constant that
+        // produces them, so dropping one from the constant fails here.
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(list.contains(tool), "{tool} must be denied to a lead; got {list:?}");
+        }
+        assert!(
+            !list.contains("EnterWorktree") && !list.contains("ExitWorktree"),
+            "a lead still hops worktrees; got {list:?}",
+        );
+        assert!(
+            !list.contains("AskUserQuestion"),
+            "a lead is exactly the session that must be able to ask; got {list:?}",
+        );
+    }
+
+    /// A session whose settings already carry denials - a worker's, which
+    /// hold the worktree tools in the same value - gains the task names
+    /// inside that value rather than a second `--disallowedTools` flag for
+    /// the CLI to reconcile.
+    #[test]
+    fn the_denial_merges_into_a_list_that_is_already_there() {
+        let mut settings = SessionLaunchSettings {
+            extra_args: build_worker_extra_args(false, "reviewer", false),
+            ..SessionLaunchSettings::default()
+        };
+        apply_disallowed_task_tools(&mut settings);
+        let flags =
+            settings.extra_args.iter().filter(|(flag, _)| flag == "disallowedTools").count();
+        assert_eq!(flags, 1, "one flag, not two; got {:?}", settings.extra_args);
+        let list = disallowed_tools_value(&settings.extra_args);
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert_eq!(list.matches(tool).count(), 1, "{tool} appears once; got {list:?}");
+        }
+        assert!(list.contains("EnterWorktree"), "the worker's own denial survives; got {list:?}");
+    }
+
+    /// A `--disallowedTools` entry with no value is still an entry: the
+    /// names go into it rather than a second flag being pushed beside it.
+    #[test]
+    fn the_denial_fills_a_valueless_entry_rather_than_adding_a_second_flag() {
+        let mut settings = SessionLaunchSettings {
+            extra_args: vec![("disallowedTools".to_owned(), None)],
+            ..SessionLaunchSettings::default()
+        };
+        apply_disallowed_task_tools(&mut settings);
+        assert_eq!(
+            settings.extra_args.len(),
+            1,
+            "the entry that is there is filled, not duplicated: {:?}",
+            settings.extra_args,
+        );
+        let list = disallowed_tools_value(&settings.extra_args);
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(list.contains(tool), "{tool} must be denied; got {list:?}");
+        }
+        assert!(
+            !list.starts_with(','),
+            "a filled entry carries no leading separator; got {list:?}"
+        );
+    }
+
     /// Workers are pinned to their worktree (when they have one) and
     /// must not be able to call claude's built-in `EnterWorktree` /
     /// `ExitWorktree` tools to hop elsewhere. `build_worker_extra_args`
@@ -5550,6 +5761,28 @@ mod lead_charter_tests {
         assert!(
             DEFAULT_LEAD_CHARTER.contains("only when the next stage needs the context back"),
             "chain despawn closes at absorption; re-spawn waits for the next stage: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
+
+    /// The charter is the only shipped text telling a lead how to maintain
+    /// the task list, and the only task surface forge ships is `tasks__*`
+    /// over forge's own store. Guidance written against the CLI's tools
+    /// names fields no tool offers, and sends every lead to a tool its
+    /// session is denied.
+    #[test]
+    fn lead_charter_maintains_the_task_list_through_forge_s_own_tools() {
+        for tool in ["tasks__create", "tasks__update", "tasks__delete"] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(tool),
+                "the charter maintains the list through {tool}: {DEFAULT_LEAD_CHARTER}",
+            );
+        }
+        // Case-insensitively: the CLI spells it lowercase `deleted`, and
+        // that spelling is the regression this guards, not the upper-case
+        // one.
+        assert!(
+            !DEFAULT_LEAD_CHARTER.to_lowercase().contains("deleted"),
+            "`deleted` is the CLI's status, not one of forge's four: {DEFAULT_LEAD_CHARTER}",
         );
     }
 }

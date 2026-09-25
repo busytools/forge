@@ -51,5 +51,5 @@ The chat view stacks, top to bottom:
 | Help | 0 when inactive, else a 14-row overlay |
 
 - `/config` swaps the entire frame to the config view - chat, input and both side panes disappear until it closes.
-- Mode / Model / Effort and the 5h + 7d usage bars render in the [Projects pane](./projects-pane.md)'s bottom panel; cwd, branch and per-file diff stats render in the [Inspector pane](./inspector.md)'s `GIT` section; todos render as the Inspector's `TASKS`.
+- Mode / Model / Effort and the 5h + 7d usage bars render in the [Projects pane](./projects-pane.md)'s bottom panel; cwd, branch and per-file diff stats render in the [Inspector pane](./inspector.md)'s `GIT` section; tasks render as the Inspector's `TASKS`.
 - The [Projects pane](./projects-pane.md) is the in-process coordinator view: every project, its live workers, and the session currently in the chat frame all belong to that one process.

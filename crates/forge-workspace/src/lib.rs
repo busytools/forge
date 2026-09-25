@@ -77,6 +77,7 @@ mod slack;
 mod spawn;
 pub mod store;
 mod target;
+mod tasks;
 pub mod ui;
 mod views;
 mod workspace;

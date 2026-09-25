@@ -40,10 +40,9 @@ pub mod session;
 mod session_runtime;
 pub(crate) mod slash;
 pub(crate) mod spinner_picker;
-mod state;
+pub(crate) mod state;
 pub(crate) mod subagent;
 mod tab_title;
-mod todos;
 pub(crate) mod usage;
 pub(crate) mod usage_overlay;
 pub(crate) mod view;
@@ -77,11 +76,11 @@ pub use state::{
     RecentSessionInfo, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind,
     ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionTaskCard,
     SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
-    SubagentEntry, SystemSeverity, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
-    ToolCallScope, TurnInfo, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind,
-    UsageState, UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus,
-    compute_scrollbar_geometry, control_gutter_start, hash_text_block_content,
-    hash_welcome_block_content, is_execute_tool_name, is_monitor_tool_name,
+    SubagentEntry, SystemSeverity, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
+    TurnInfo, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageState,
+    UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus, compute_scrollbar_geometry,
+    control_gutter_start, hash_text_block_content, hash_welcome_block_content,
+    is_execute_tool_name, is_monitor_tool_name,
 };
 pub(crate) use state::{MarkdownRenderKey, RenderedChunk};
 pub use usage_overlay::UsageOverlayState;

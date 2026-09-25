@@ -193,9 +193,7 @@ fn build_tool_info_from_tool_call(
         None
     };
 
-    // CLI 2.1.156 chat-suppressed tools (#268 + #273):
-    // - Task* family (TaskCreate / TaskUpdate / TaskList / TaskGet) -
-    //   Inspector TASKS section is the authoritative surface.
+    // CLI 2.1.156 chat-suppressed tools (#273):
     // - TaskOutput / TaskStop - paired with Monitor / Workflow; their
     //   side-effects surface on those tools' own blocks.
     // - AskUserQuestion - dock-morph widget renders instead of a card.
@@ -210,11 +208,7 @@ fn build_tool_info_from_tool_call(
     // visible tool call.
     let is_chat_suppressed = matches!(
         sdk_tool_name.as_str(),
-        "TaskCreate"
-            | "TaskUpdate"
-            | "TaskList"
-            | "TaskGet"
-            | "TaskOutput"
+        "TaskOutput"
             | "TaskStop"
             | "AskUserQuestion"
             | "Workflow"

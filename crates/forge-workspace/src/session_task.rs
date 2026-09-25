@@ -1747,6 +1747,22 @@ mod tests {
                 .map(str::to_owned)
         };
         let listener_base = format!("http://127.0.0.1:{}", workspace.gateway_port());
+        // A respawn's settings are built by the TUI, which knows nothing of
+        // the spawn-time flags, so the CLI's task tools have to be re-denied
+        // here or the new occupant gets a second list back.
+        let denied = |launch_settings: &serde_json::Value| -> String {
+            launch_settings
+                .get("extra_args")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|pairs| {
+                    pairs.iter().find(|pair| {
+                        pair.get(0).and_then(serde_json::Value::as_str) == Some("disallowedTools")
+                    })
+                })
+                .and_then(|pair| pair.get(1).and_then(serde_json::Value::as_str))
+                .unwrap_or_default()
+                .to_owned()
+        };
 
         task.execute_command(Command::NewSession {
             key: slot.clone(),
@@ -1771,6 +1787,13 @@ mod tests {
             Some(account.clone()),
             "the account read for the slot follows the child that is running",
         );
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(
+                denied(&launch_settings).contains(tool),
+                "{tool} must reach a respawned session's launch; got {:?}",
+                denied(&launch_settings),
+            );
+        }
         assert_eq!(
             workspace.gateway.bindings.binding_for("Busytools", "forge", "spawn-id"),
             None,

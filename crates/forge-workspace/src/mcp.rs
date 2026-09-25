@@ -10,6 +10,7 @@
 //! - `review` - the review-conversation loop (list / get / reply /
 //!   resolve). Tools render as `mcp__forge__review__<name>`.
 //! - `cron` - the caller's own durable crons.
+//! - `tasks` - the caller's own project's live task list.
 //! - `gotify` - the caller's own Gotify subscriptions.
 //! - `slack` - the caller's own Slack subscriptions, reads and held
 //!   outbound actions.
@@ -40,6 +41,7 @@ use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::WorkspaceFacade;
 use crate::mcp::review::facade::ReviewFacade;
 use crate::mcp::slack::facade::SlackFacade;
+use crate::mcp::tasks::facade::TasksFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub mod agents;
@@ -49,6 +51,7 @@ pub mod gotify;
 pub mod peers;
 pub mod review;
 pub mod slack;
+pub mod tasks;
 pub mod workers;
 
 /// Identifies which kind of session the MCP server is being built
@@ -67,16 +70,17 @@ pub enum SessionKind {
 /// `forge` carrying the coordination tool groups appropriate for the
 /// calling session's [`SessionKind`]:
 ///
-/// - [`SessionKind::Lead`] → agents (all eight) + review + cron + gotify + slack.
-/// - [`SessionKind::Worker`] → agents (the shared four) + review + cron +
+/// - [`SessionKind::Lead`] → agents (all eight) + review + cron + tasks +
 ///   gotify + slack.
+/// - [`SessionKind::Worker`] → agents (the shared four) + review + cron +
+///   tasks + gotify + slack.
 ///
-/// `review`, `cron`, `gotify` and `slack` are any-caller, so they register
-/// for both kinds - unlike the four lead-only `agents__*` verbs. What each
-/// acts on is scoped rather than gated on session kind: a review conversation
-/// belongs to a project and branch, crons and subscriptions to the caller that
-/// made them. A worker is exactly the session a review nudge lands on, so it
-/// needs `review__*`.
+/// `review`, `cron`, `tasks`, `gotify` and `slack` are any-caller, so they
+/// register for both kinds - unlike the four lead-only `agents__*` verbs. What
+/// each acts on is scoped rather than gated on session kind: a review
+/// conversation belongs to a project and branch, crons and subscriptions to
+/// the caller that made them, and tasks to the caller's project. A worker is
+/// exactly the session a review nudge lands on, so it needs `review__*`.
 ///
 /// All submodules share the server name so the LLM sees a single
 /// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
@@ -99,6 +103,7 @@ pub fn build_forge_server(
     cron_facade: Arc<dyn CronFacade>,
     gotify_facade: Arc<dyn GotifyFacade>,
     slack_facade: Arc<dyn SlackFacade>,
+    tasks_facade: Arc<dyn TasksFacade>,
     slot: SessionSlot,
     kind: SessionKind,
 ) -> McpServer {
@@ -111,6 +116,7 @@ pub fn build_forge_server(
     builder = review::add_tools(builder, review_facade, slot.clone());
     builder = cron::add_tools(builder, cron_facade, slot.clone());
     builder = gotify::add_tools(builder, gotify_facade, slot.clone());
+    builder = tasks::add_tools(builder, tasks_facade, slot.clone());
     builder = slack::add_tools(builder, slack_facade, slot);
     builder.build()
 }
@@ -123,6 +129,7 @@ mod tests {
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::review::facade::MockReviewFacade;
     use crate::mcp::slack::facade::MockSlackFacade;
+    use crate::mcp::tasks::facade::MockTasksFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
 
     fn fake_key(s: &str) -> SessionSlot {
@@ -137,6 +144,7 @@ mod tests {
             MockCronFacade::new().into_arc(),
             MockGotifyFacade::new().into_arc(),
             MockSlackFacade::new().into_arc(),
+            MockTasksFacade::new().into_arc(),
             fake_key("test"),
             kind,
         )
@@ -177,8 +185,8 @@ mod tests {
     ];
 
     /// Every group that is any-caller: both session kinds manage their
-    /// own project's reviews, crons and subscriptions.
-    const ANY_CALLER_TOOLS: [&str; 23] = [
+    /// own project's reviews, crons, tasks and subscriptions.
+    const ANY_CALLER_TOOLS: [&str; 27] = [
         "review__list",
         "review__get",
         "review__reply",
@@ -186,6 +194,10 @@ mod tests {
         "cron__create",
         "cron__list",
         "cron__delete",
+        "tasks__create",
+        "tasks__update",
+        "tasks__list",
+        "tasks__delete",
         "gotify__subscribe",
         "gotify__list",
         "gotify__unsubscribe",

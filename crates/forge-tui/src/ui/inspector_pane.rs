@@ -18,11 +18,12 @@
 //!   populate so the user sees "all the work this worker has done
 //!   versus main" at a glance. Sourced from
 //!   `UiSession.git_diff_snapshot`.
-//! - `TASKS` - rendered when the active session has at least one
-//!   non-completed item. The live `TaskCreate` / `TaskUpdate`
-//!   snapshot is the sole surface for the task list; the
-//!   chat-stream `Task*` tool-call cards (`TaskCreate`,
-//!   `TaskUpdate`, `TaskList`, `TaskGet`) are suppressed. #268.
+//! - `TASKS` - rendered when the active project's task store holds a
+//!   task in this session's scope. The store - written by every
+//!   session through the `tasks__*` MCP tools - is the sole surface
+//!   for the task list, and every row is clickable to its own detail
+//!   overlay. Sourced from `App.ui_task_rows`, refreshed on the ~1s
+//!   ticker.
 //! - `MCP SERVERS` - rendered when the session's MCP snapshot has at
 //!   least one server. Sourced entirely from the snapshot, so every
 //!   configured server renders: connected (● green) with scope + tool
@@ -41,20 +42,24 @@
 //!   `crate::app::processes::collect_active_processes`, which skips
 //!   the pids the MCP SERVERS join claims).
 //!
-//! Reads from per-session state on `UiSession.todos` and
-//! `UiSession.git_diff_snapshot`.
+//! Reads from per-session state on `UiSession.git_diff_snapshot`, and from
+//! the task snapshot on `App` (`ui_task_rows`, `forge_project_tasks`).
 //!
 //! TASKS item rendering:
 //! - `✓` green glyph + DIM crossed-out text for `Completed`
-//! - `▸` RUST_ORANGE glyph + white bold text for `InProgress`
-//!   (wraps onto continuation lines indented under the glyph;
-//!   uses `active_form` when present, else `content`)
-//! - `○` DIM glyph + gray text for `Pending` (truncates with `...`)
+//! - the active spinner glyph, RUST_ORANGE, + white bold text for
+//!   `InProgress` (wraps onto continuation lines indented under the glyph;
+//!   uses `active_form` when present and non-empty, else the subject)
+//! - `○` DIM glyph + gray text for `Blocked` and `Pending` (truncate with
+//!   `...`)
+//! - a dim metadata line under any row that has a rollup, an owner, an
+//!   artifact or an estimate
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
     GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, RepoGate,
 };
+use forge_primitives::tasks::TaskStatus;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -67,7 +72,6 @@ use crate::app::App;
 use crate::app::AttentionEntry;
 use crate::app::AttentionKind;
 use crate::app::PaneHitTarget;
-use crate::app::TodoStatus;
 use crate::app::processes::{
     ProcessCollection, ProcessKind, ProcessRow, collect_active_processes, format_memory_short,
 };
@@ -191,7 +195,6 @@ fn build_inline_banner(width: u16) -> Vec<Line<'static>> {
 /// Max session rows the pinned band renders before collapsing the
 /// tail into a `+N more` line. Bounds the band's height regardless of
 /// how many sessions are waiting so a burst can't crowd out GIT.
-/// Matches the TASKS section's per-section cap.
 const ATTENTION_MAX_ROWS: usize = 5;
 
 /// Rows the band leaves for the scrollable body when the pane has the
@@ -499,6 +502,27 @@ fn render_scrollable_body(
         }
     }
 
+    // One click target per TASKS row, covering the row's own height (a
+    // wrapped running row spans several lines) and the pane's full
+    // width. Clipped to the visible rows like the MCP band, so a row
+    // scrolled half off stamps only its visible part and a row fully off
+    // stamps nothing.
+    let off = usize::from(offset);
+    for (start, len, task_id) in hit_ranges.task_rows {
+        let vis_top = start.saturating_sub(off);
+        let vis_bottom =
+            start.saturating_add(len).saturating_sub(off).min(usize::from(body_area.height));
+        if vis_bottom > vis_top {
+            app.pane_hit_targets.push(PaneHitTarget::InspectorTaskRow {
+                task_id,
+                y: body_area.y.saturating_add(u16::try_from(vis_top).unwrap_or(u16::MAX)),
+                height: u16::try_from(vis_bottom - vis_top).unwrap_or(u16::MAX),
+                x_start: body_area.x,
+                x_end: body_area.x.saturating_add(body_area.width),
+            });
+        }
+    }
+
     render_inspector_thumb(frame, body_area, total, visible, offset);
 }
 
@@ -570,7 +594,7 @@ fn render_inspector_thumb(
 /// giving the two surfaces a consistent visual weight.
 const INSPECTOR_THUMB_MAX_CELLS: usize = 1;
 
-/// Append the body (GIT section + verification nudge + TASKS
+/// Append the body (GIT section + TASKS
 /// section) to `lines`. Shared between the inline render and the
 /// Narrow overlay render. GIT and TASKS are separated by a DIM
 /// `─` rule mirroring the projects pane's project-list /
@@ -591,17 +615,17 @@ fn append_body(
         append_git_section(lines, app, width)
     };
 
-    let todos = app.todos().unwrap_or_default();
-    // Section visibility gates on PENDING/IN-PROGRESS tasks
-    // (completed are hidden by the renderer anyway).
-    let has_live_tasks = todos.iter().any(|t| t.status != TodoStatus::Completed);
-    if has_live_tasks {
+    // The section renders the store's rows, so an empty store suppresses
+    // the header and the rule with it, like every other section.
+    let task_rows = if app.ui_task_rows.is_empty() {
+        Vec::new()
+    } else {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
         let _t = crate::perf::start("ui::inspector_pane::tasks_section");
-        append_tasks_section(lines, app, width);
-    }
+        append_tasks_section(lines, app, width)
+    };
 
     // WORKFLOWS section sits between TASKS and
     // MONITORS. Auto-clears once every workflow has reached
@@ -701,16 +725,18 @@ fn append_body(
         append_processes_section(lines, &processes, width, app.active_spinner_glyph());
     }
 
-    BodyHitRanges { mcp: mcp_range, git_pr: git_pr_range }
+    BodyHitRanges { mcp: mcp_range, git_pr: git_pr_range, task_rows }
 }
 
 /// The line ranges `append_body` produces for click-through hit
 /// bands, consumed by `render_scrollable_body`'s stamping. `mcp`
 /// covers the MCP SERVERS section; `git_pr` is the GIT section's
-/// single PR row carrying its url.
+/// single PR row carrying its url; `task_rows` is one
+/// `(start line, height, task)` per TASKS row.
 struct BodyHitRanges {
     mcp: Option<(usize, usize)>,
     git_pr: Option<(usize, String)>,
+    task_rows: Vec<(usize, usize, forge_primitives::tasks::TaskId)>,
 }
 
 /// Width threshold above which the PROCESSES section appends `· 12 MB`
@@ -1541,19 +1567,48 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
     out
 }
 
-fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    let todos = app.todos().unwrap_or_default();
+/// Append the Inspector TASKS section: header + one row per live task in
+/// the active project, every one of them rendered. Returns each row's
+/// `(start line, height, task id)` within `lines`, which is what
+/// `render_scrollable_body` stamps a click target from.
+fn append_tasks_section(
+    lines: &mut Vec<Line<'static>>,
+    app: &App,
+    width: u16,
+) -> Vec<(usize, usize, forge_primitives::tasks::TaskId)> {
+    let rows = &app.ui_task_rows;
     let active_glyph = app.active_spinner_glyph();
 
-    if todos.is_empty() {
-        return;
+    if rows.is_empty() {
+        return Vec::new();
     }
+    let mut hit_rows: Vec<(usize, usize, forge_primitives::tasks::TaskId)> = Vec::new();
 
     // Done / total counter for the header - m is completed, n is the
-    // full todo list (including hidden completed and visible
-    // pending/in-progress). Reads at a glance as a progress meter.
-    let total = todos.len();
-    let done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+    // full row set. Reads at a glance as a progress meter.
+    let total = rows.len();
+    let done = rows.iter().filter(|r| r.status == TaskStatus::Completed).count();
+
+    // A worker's rows hang off a parent task, and one dim line above the
+    // section names it so the worker knows why it is doing this. A lead's
+    // board has no such parent, and a row whose parent has left the store
+    // contributes nothing, so the line is absent rather than blank.
+    let parents: Vec<&str> = {
+        let mut seen: Vec<&str> = Vec::new();
+        for parent in rows.iter().filter_map(|r| r.breadcrumb.as_deref()) {
+            if !seen.contains(&parent) {
+                seen.push(parent);
+            }
+        }
+        seen
+    };
+    if !parents.is_empty() {
+        let text = truncate_with_ellipsis(
+            &format!("\u{25B8} {}", parents.join(", ")),
+            row_text_budget(usize::from(width), usize::from(PANE_PAD) + 1),
+        );
+        lines.push(Line::from(Span::styled(format!(" {text}"), Style::default().fg(theme::DIM))));
+    }
 
     // TASKS section header - DIM bold, 2-col indent (matches the
     // left pane's `ACTIVE` / `INACTIVE` section headers). Trailing
@@ -1582,75 +1637,34 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let chrome_chars = usize::from(glyph_indent) + usize::from(PANE_PAD);
     let text_budget = row_text_budget(usize::from(width), chrome_chars);
 
-    // Visibility tiering: show as much as fits within TASKS_MAX (5).
-    //
-    // 1. **Everything fits** (total <= cap): show ALL tasks in their
-    //    original order, completed included. So a 3-task list with
-    //    1 done + 1 in-progress + 1 pending renders all three -
-    //    you can see what's behind you AND what's ahead, not just
-    //    the current step.
-    // 2. **Total exceeds cap but non-completed fits**: hide
-    //    completed entirely, show non-completed. The `m/n` count in
-    //    the section header still surfaces the done count so they
-    //    aren't lost from the eye.
-    // 3. **Non-completed itself overflows cap**: truncate at
-    //    TASKS_MAX-1 and emit `+N more` for the remainder
-    //    (completed counted as hidden too).
-    let total_count = todos.len();
-    let non_completed: Vec<&_> =
-        todos.iter().filter(|t| t.status != TodoStatus::Completed).collect();
-    let visible_todos: Vec<&_>;
-    let hidden: usize;
-    if total_count <= TASKS_MAX {
-        // Tier 1 - original order, all included.
-        visible_todos = todos.iter().collect();
-        hidden = 0;
-    } else if non_completed.len() <= TASKS_MAX {
-        // Tier 2 - completed silently hidden; m/n header conveys
-        // the missing count.
-        visible_todos = non_completed;
-        hidden = 0;
-    } else {
-        // Tier 3 - non-completed itself exceeds the cap. Top
-        // TASKS_MAX-1 non-completed + `+N more` overflow row.
-        let cap = TASKS_MAX.saturating_sub(1);
-        visible_todos = non_completed.iter().copied().take(cap).collect();
-        hidden = total_count - cap;
-    }
-
-    let shown_iter = visible_todos.iter().copied();
-    let shown_count = visible_todos.len();
-    for (idx, todo) in shown_iter.enumerate() {
+    // Every row in the store renders. The pane's body scrolls, so a
+    // long list is navigated the way the rest of the pane is.
+    let shown_count = rows.len();
+    for (idx, row) in rows.iter().enumerate() {
+        let row_start = lines.len();
         // Glyph language matches PROCESSES + Projects pane:
-        // ○ DIM for pending, RUST_ORANGE braille spinner for the
-        // currently-running task, ✓ green for completed (hidden in
-        // practice - the visible_todos filter strips them).
-        let (glyph, glyph_color) = match todo.status {
-            TodoStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
-            TodoStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
-            TodoStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
+        // ○ DIM for pending and blocked, RUST_ORANGE braille spinner
+        // for the currently-running task, ✓ green for completed.
+        let (glyph, glyph_color) = match row.status {
+            TaskStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
+            TaskStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
+            TaskStatus::Blocked | TaskStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
         };
-        let text_style = match todo.status {
-            TodoStatus::Completed => {
+        let text_style = match row.status {
+            TaskStatus::Completed => {
                 Style::default().fg(theme::DIM).add_modifier(Modifier::CROSSED_OUT)
             }
-            TodoStatus::InProgress => {
+            TaskStatus::InProgress => {
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
             }
-            TodoStatus::Pending => Style::default().fg(Color::Gray),
-        };
-        let display_text = if todo.status == TodoStatus::InProgress && !todo.active_form.is_empty()
-        {
-            todo.active_form.clone()
-        } else {
-            todo.content.clone()
+            TaskStatus::Blocked | TaskStatus::Pending => Style::default().fg(Color::Gray),
         };
 
-        if todo.status == TodoStatus::InProgress {
+        if row.status == TaskStatus::InProgress {
             // Wrap onto continuation lines, indented under the text
             // column so the glyph stays visually associated with the
             // first wrapped row.
-            let wrapped = wrap_text(&display_text, text_budget);
+            let wrapped = wrap_text(&row.display, text_budget);
             let mut iter = wrapped.into_iter();
             if let Some(first) = iter.next() {
                 lines.push(Line::from(vec![
@@ -1660,7 +1674,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                     Span::styled(first, text_style),
                 ]));
             } else {
-                // Empty `display_text` - still render the glyph row
+                // Empty `display` - still render the glyph row
                 // so the pane shape stays consistent.
                 lines.push(Line::from(vec![
                     Span::raw(" "),
@@ -1675,7 +1689,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
             }
         } else {
             // Truncate with `...` at the right edge.
-            let truncated = truncate_with_ellipsis(&display_text, text_budget);
+            let truncated = truncate_with_ellipsis(&row.display, text_budget);
             lines.push(Line::from(vec![
                 Span::raw(" "),
                 Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
@@ -1683,30 +1697,43 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                 Span::styled(truncated, text_style),
             ]));
         }
+        // A dim metadata line under the subject carrying whatever this
+        // row has: its children's rollup, the session holding it, the
+        // artifact it produced, its estimate. A row with none of them
+        // gets no line, so a bare task stays one line tall.
+        let mut meta: Vec<String> = Vec::new();
+        if let Some((done, total)) = row.rollup {
+            meta.push(format!("{done}/{total}"));
+        }
+        if let Some(owner) = &row.owner_label {
+            meta.push(owner.clone());
+        }
+        if let Some(artifact) = &row.artifact {
+            meta.push(artifact.clone());
+        }
+        if let Some(estimate) = &row.estimate {
+            meta.push(estimate.clone());
+        }
+        if !meta.is_empty() {
+            let text = truncate_with_ellipsis(&meta.join(" \u{00B7} "), text_budget);
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(usize::from(glyph_indent))),
+                Span::styled(text, Style::default().fg(theme::DIM)),
+            ]));
+        }
+        // The row's own height, taken before the separator below it, so a
+        // click on the blank gap is a miss rather than a second band
+        // overlapping the next row's.
+        hit_rows.push((row_start, lines.len() - row_start, row.id.clone()));
         // Blank between tasks for breathing room. Skipped after the
         // last item so we don't leave a trailing blank at the end of
         // the TASKS section.
-        if idx + 1 < shown_count || hidden > 0 {
+        if idx + 1 < shown_count {
             lines.push(Line::default());
         }
     }
-
-    if hidden > 0 {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                format!("+{hidden} more"),
-                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-    }
+    hit_rows
 }
-
-/// Per-section cap on TASKS rows. Completed tasks are filtered out
-/// before counting; beyond `TASKS_MAX - 1` remaining items the tail
-/// collapses to a single `+N more` row. Matches the PROCESSES
-/// per-parent cap so both surfaces feel consistent.
-const TASKS_MAX: usize = 5;
 
 /// Render the Inspector SCHEDULES section: header + one row per pending
 /// `ScheduleWakeup` / `CronCreate` (chat-parsed cloud routines) AND per
@@ -2531,7 +2558,7 @@ fn truncate_or_pass(s: &str, max_chars: usize) -> String {
 ///
 /// Glyphs mirror the TASKS convention but use a kind-distinct
 /// palette for the headline so scanning the section visually
-/// separates "what's running" from "what's queued in the Task* family":
+/// separates "what's running" from "what's queued":
 ///
 /// - `▸` RUST_ORANGE  - `BashBackgrounded` / `Monitor` while in-flight
 /// - `\u{23F0}` (`⏰`) DIM - `Cron` (scheduled, not currently firing)
@@ -2792,7 +2819,7 @@ fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::HashSet;
 
@@ -5465,6 +5492,222 @@ mod tests {
         session.prompt_queue.push_back(prompt);
         app.sessions.insert(key, session);
         app
+    }
+
+    /// One stamped TASKS row target, projected so a test names its task
+    /// without matching the enum.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct TaskTarget {
+        pub(crate) task_id: forge_primitives::tasks::TaskId,
+        pub(crate) y: u16,
+        pub(crate) height: u16,
+        pub(crate) x_start: u16,
+        pub(crate) x_end: u16,
+    }
+
+    /// Draw the inline Inspector into a `width` x `height` buffer and
+    /// return its text. The caller owns `pane_hit_targets`, so this clears
+    /// first the way the full render path does.
+    fn draw_inspector(app: &mut App, width: u16, height: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        app.pane_hit_targets.clear();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal.draw(|f| render(f, Rect::new(0, 0, width, height), app, &[])).expect("draw");
+        buffer_text(terminal.backend().buffer())
+    }
+
+    /// Draw the inline Inspector into a `width` x `height` buffer and
+    /// return its text.
+    pub(crate) fn render_inspector_to_string(app: &mut App, width: u16, height: u16) -> String {
+        draw_inspector(app, width, height)
+    }
+
+    /// The TASKS row targets the last draw stamped, in row order.
+    pub(crate) fn render_inspector_and_collect_hit_targets(
+        app: &mut App,
+        width: u16,
+        height: u16,
+    ) -> Vec<TaskTarget> {
+        draw_inspector(app, width, height);
+        app.pane_hit_targets
+            .iter()
+            .filter_map(|t| match t {
+                PaneHitTarget::InspectorTaskRow { task_id, y, height, x_start, x_end } => {
+                    Some(TaskTarget {
+                        task_id: task_id.clone(),
+                        y: *y,
+                        height: *height,
+                        x_start: *x_start,
+                        x_end: *x_end,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Deliver a left click at `(column, row)` through the real event
+    /// path, so the test exercises the handler rather than the geometry.
+    pub(crate) fn click_at(app: &mut App, column: u16, row: u16) {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        crate::app::handle_terminal_event(
+            app,
+            crossterm::event::Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+    }
+
+    /// Click the `n`th rendered TASKS row of a 30x60 Inspector.
+    pub(crate) fn click_task_row(app: &mut App, n: usize) {
+        let targets = render_inspector_and_collect_hit_targets(app, 30, 60);
+        let target = targets
+            .get(n)
+            .unwrap_or_else(|| panic!("no TASKS row {n}; the pane stamped {} rows", targets.len()));
+        click_at(app, target.x_start, target.y);
+    }
+
+    /// Click the TASKS section header, which carries no target of its own.
+    pub(crate) fn click_tasks_header(app: &mut App) {
+        let text = render_inspector_to_string(app, 30, 60);
+        let row =
+            text.lines().position(|line| line.contains("TASKS")).expect("the TASKS header renders");
+        click_at(app, 2, u16::try_from(row).unwrap_or(u16::MAX));
+    }
+
+    /// Deliver a bare `Esc` through the real event path.
+    pub(crate) fn press_escape(app: &mut App) {
+        crate::app::handle_terminal_event(
+            app,
+            crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        );
+    }
+
+    #[test]
+    fn only_a_workers_view_carries_the_parent_line() {
+        let mut worker = crate::app::state::tasks::tests::app_with_task_rows_with_parent();
+        let text = render_inspector_to_string(&mut worker, 30, 60);
+        assert!(
+            text.contains("\u{25B8} epic"),
+            "a worker's section names the parent it works under:\n{text}",
+        );
+
+        let mut lead = crate::app::state::tasks::tests::app_with_task_rows(2);
+        let lead_text = render_inspector_to_string(&mut lead, 30, 60);
+        assert!(
+            !lead_text.contains('\u{25B8}'),
+            "a lead's own board has no parent task above it:\n{lead_text}",
+        );
+    }
+
+    #[test]
+    fn each_task_row_stamps_one_hit_target_carrying_its_id() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(3);
+        let targets = render_inspector_and_collect_hit_targets(&mut app, 30, 60);
+        assert_eq!(targets.len(), 3, "one click target per rendered row");
+        assert_eq!(
+            targets[1].task_id,
+            forge_primitives::tasks::TaskId::from("t-2"),
+            "the target names its task",
+        );
+    }
+
+    /// A row is taller than one line - a subject and the dim metadata line
+    /// under it - and the target has to cover both, or a click on the line
+    /// carrying the owner, artifact and estimate falls through to nothing.
+    #[test]
+    fn a_click_on_a_rows_metadata_line_opens_that_task() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(1);
+        let targets = render_inspector_and_collect_hit_targets(&mut app, 30, 60);
+        let target = targets.first().expect("the row stamped a target").clone();
+        assert!(
+            target.height >= 2,
+            "the target owns the subject line and the metadata line under it; got {}",
+            target.height,
+        );
+
+        click_at(&mut app, target.x_start, target.y + target.height - 1);
+        assert_eq!(
+            app.task_detail,
+            Some(target.task_id),
+            "a click on the row's last line opens its task",
+        );
+    }
+
+    #[test]
+    fn every_live_task_renders_with_no_overflow_tail() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(9);
+        let text = render_inspector_to_string(&mut app, 30, 60);
+        assert!(!text.contains("more"), "no `+N more` tail at any length; rendered:\n{text}");
+        for n in 0..9 {
+            assert!(text.contains(&format!("task {n}")), "task {n} is rendered; got:\n{text}");
+        }
+    }
+
+    #[test]
+    fn an_empty_store_renders_no_tasks_header_or_rule() {
+        let mut empty = crate::app::state::tasks::tests::app_with_no_task_rows();
+        let empty_text = render_inspector_to_string(&mut empty, 30, 60);
+        assert!(
+            !empty_text.contains("TASKS"),
+            "an empty store renders no TASKS header:\n{empty_text}",
+        );
+
+        // The header is only half of it: the section's own rule has to go
+        // too, or a project with no tasks shows a rule under nothing.
+        // Rules are compared against the same render one task later, where
+        // exactly one more section is live.
+        let mut one = crate::app::state::tasks::tests::app_with_task_rows(1);
+        let one_text = render_inspector_to_string(&mut one, 30, 60);
+        assert_eq!(
+            rule_lines(&one_text),
+            rule_lines(&empty_text) + 1,
+            "the section adds its rule only when it has a row to show:\n{empty_text}",
+        );
+    }
+
+    /// The dim rules separating inspector sections: a line of dashes
+    /// spanning the pane, counted by the glyph every such rule is drawn
+    /// from.
+    fn rule_lines(text: &str) -> usize {
+        text.lines()
+            .filter(|line| !line.trim().is_empty() && line.trim().chars().all(|c| c == '\u{2500}'))
+            .count()
+    }
+
+    #[test]
+    fn completed_rows_render_rather_than_being_filtered_out() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows_mixed_status();
+        let text = render_inspector_to_string(&mut app, 30, 60);
+        assert!(text.contains("the finished one"), "a completed row is still shown:\n{text}");
+    }
+
+    #[test]
+    fn a_long_subject_wraps_when_running_and_truncates_when_not() {
+        let long = "a subject far longer than thirty columns can possibly hold";
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows_with_subject(long);
+        let text = render_inspector_to_string(&mut app, 30, 60);
+        // A fragment past the first line's cut, which only a wrapped row can
+        // put on screen: a truncated one ends at the pane edge with an
+        // ellipsis, and a missing row shows nothing.
+        assert!(
+            text.contains("thirty columns"),
+            "the running row wraps onto continuation lines:\n{text}",
+        );
+        assert!(!text.contains(long), "no row exceeds the pane width:\n{text}");
+        assert!(
+            text.matches('\u{2026}').count() >= 2,
+            "completed and pending rows truncate with an ellipsis:\n{text}",
+        );
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {

@@ -200,6 +200,13 @@ pub struct Workspace {
     /// membership for lead-delivery gating without an extra method
     /// wrapper.
     pub(crate) pool: Mutex<HashMap<SessionSlot, PooledAgent>>,
+    /// A stand-in for the handle a cold spawn would create. The settings a
+    /// spawn launches with are otherwise unobservable: a pooled slot never
+    /// reaches the launch, and a cold one ends in a real subprocess. `None`
+    /// in production and in every test that does not install one, so a
+    /// spawn runs always.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_spawn_handle: Mutex<Option<forge_agent::AgentHandle>>,
     /// The account state map, owned by the gateway and reached through
     /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
@@ -331,6 +338,12 @@ pub struct Workspace {
     /// serialises writes.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) crons: Mutex<Vec<forge_primitives::CronEntry>>,
+    /// The live task list (`mcp__forge__tasks`). In-memory working set,
+    /// loaded from the machine-local store at boot and persisted back
+    /// after every mutation through the one [`Workspace::with_tasks_mut`]
+    /// path. `pub(crate)` so the impl block in [`crate::tasks`] can reach
+    /// it.
+    pub(crate) tasks: Mutex<Vec<forge_primitives::tasks::Task>>,
     /// Payloads addressed to a slot that had no live session when they
     /// arrived - a peer prompt, a fired cron, a Gotify notification, a
     /// Slack message - keyed by `(org, project, label)` (`None` = lead),
@@ -677,15 +690,15 @@ fn persist_session_tag_cache(
 /// Open the machine-local redb store at `<app_support>/db.redb`,
 /// creating the app-support dir first. Returns `None` (with a warn) when
 /// the dir can't be created or the DB can't open - forge then runs
-/// without durable crons, subscriptions or dynamic workers this session
-/// (hard rule #14: no cwd fallback).
+/// without durable crons, subscriptions, tasks or dynamic workers this
+/// session (hard rule #14: no cwd fallback).
 fn open_db(app_support: &Path) -> Option<crate::store::Db> {
     if let Err(error) = std::fs::create_dir_all(app_support) {
         tracing::warn!(
             target: "forge_workspace::workspace",
             %error,
             path = %app_support.display(),
-            "creating the app-support dir failed; durable crons, subscriptions and dynamic workers will not persist",
+            "creating the app-support dir failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
         );
         return None;
     }
@@ -695,7 +708,7 @@ fn open_db(app_support: &Path) -> Option<crate::store::Db> {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 %error,
-                "opening the redb store failed; durable crons, subscriptions and dynamic workers will not persist",
+                "opening the redb store failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
             );
             None
         }
@@ -891,6 +904,17 @@ impl Workspace {
                     target: "forge_workspace::workspace",
                     %error,
                     "loading durable crons failed; starting with none this run",
+                );
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
+        let tasks = match &db {
+            Some(db) => crate::store::tasks::list(db).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "loading durable tasks failed; starting with none this run",
                 );
                 Vec::new()
             }),
@@ -1110,6 +1134,8 @@ impl Workspace {
             config,
             catalog,
             pool: Mutex::new(HashMap::new()),
+            #[cfg(any(test, feature = "testing"))]
+            test_spawn_handle: Mutex::new(None),
             accounts,
             gateway,
             gateway_ready: std::sync::atomic::AtomicBool::new(false),
@@ -1134,6 +1160,7 @@ impl Workspace {
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
+            tasks: Mutex::new(tasks),
             parked_by_slot: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(gotify_subs),
             db,
@@ -1168,7 +1195,7 @@ impl Workspace {
             // otherwise fire per-op into the log only.
             let _ = workspace.update_tx.send(SessionUpdate::ServiceStatus {
                 severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-                message: "Machine-local store unavailable this run; crons, Gotify and Slack subscriptions and the spinner override will not persist".to_owned(),
+                message: "Machine-local store unavailable this run; crons, tasks, Gotify and Slack subscriptions and the spinner override will not persist".to_owned(),
             });
         }
         Ok(workspace)
@@ -1438,6 +1465,10 @@ impl Workspace {
         resolved_key: Option<SessionSlot>,
         role: &crate::protocol::SpawnRole,
     ) -> Result<Arc<AgentHandle>> {
+        // Every session forge launches passes through here, so the CLI's
+        // task tools are denied at this one point rather than at each
+        // spawn entry - a fourth entry cannot forget them.
+        crate::spawn::apply_disallowed_task_tools(&mut settings);
         // The boot gate is a spawn precondition, not just a launchpad
         // decoration: a child stamped before the listener is bound
         // points at a base URL nothing answers.
@@ -1635,6 +1666,7 @@ impl Workspace {
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let slack_facade = crate::mcp::slack::facade::ProdSlackFacade::from_arc(self);
+            let tasks_facade = crate::mcp::tasks::facade::ProdTasksFacade::from_arc(self);
             crate::mcp::build_forge_server(
                 workspace_facade,
                 worker_facade,
@@ -1642,17 +1674,26 @@ impl Workspace {
                 cron_facade,
                 gotify_facade,
                 slack_facade,
+                tasks_facade,
                 session_slot.clone(),
                 session_kind,
             )
         };
 
-        let handle = forge_agent::Agent::spawn(
-            account_dir.clone(),
-            Some(account_key.0.clone()),
-            vec![("forge".to_owned(), forge_server)],
-            session_env,
-        );
+        let spawn_agent = || {
+            forge_agent::Agent::spawn(
+                account_dir.clone(),
+                Some(account_key.0.clone()),
+                vec![("forge".to_owned(), forge_server)],
+                session_env,
+            )
+        };
+        // A test that installed a stand-in reads the settings this spawn
+        // hands its child, which nothing else can observe.
+        #[cfg(any(test, feature = "testing"))]
+        let handle = self.take_test_spawn_handle().unwrap_or_else(spawn_agent);
+        #[cfg(not(any(test, feature = "testing")))]
+        let handle = spawn_agent();
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
         // and fall back to a fresh session in that project's cwd
@@ -2434,15 +2475,21 @@ impl Workspace {
     /// `launch_settings` as overrides, the binding moves to that
     /// segment, and the one it replaces is dropped. The pool entry
     /// records the same id, so `bound_account_for` reads the binding the
-    /// child actually answers to. A no-op when the slot is not pooled or
-    /// carries no registration: the launch then keeps the account env
-    /// the original spawn laid down.
+    /// child actually answers to. The gateway half is a no-op when the
+    /// slot is not pooled or carries no registration: the launch then
+    /// keeps the account env the original spawn laid down.
+    ///
+    /// The CLI's task tools are denied unconditionally, because a
+    /// respawn's settings are built by the TUI and carry no spawn-time
+    /// flags - so `/new` and `/resume` are exactly where those denials
+    /// would otherwise come back.
     pub(crate) fn stamp_respawn_overrides(
         &self,
         slot: &SessionSlot,
         session_id: &str,
         launch_settings: &mut SessionLaunchSettings,
     ) {
+        crate::spawn::apply_disallowed_task_tools(launch_settings);
         let (registration, replaced) = {
             let mut pool = self.pool.lock();
             let Some(entry) = pool.get_mut(slot) else { return };
@@ -10990,6 +11037,7 @@ mod worker_respawn_tests {
             crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
             crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
             crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
+            crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
             SessionSlot::from_str_for_test("caller"),
             kind,
         );
