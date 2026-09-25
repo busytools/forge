@@ -1465,10 +1465,16 @@ impl Workspace {
         resolved_key: Option<SessionSlot>,
         role: &crate::protocol::SpawnRole,
     ) -> Result<Arc<AgentHandle>> {
-        // Every session forge launches passes through here, so the CLI's
-        // task tools are denied at this one point rather than at each
-        // spawn entry - a fourth entry cannot forget them.
-        crate::spawn::apply_disallowed_task_tools(&mut settings);
+        // Every session forge launches passes through here, so the tools
+        // forge has replaced are denied at this one point rather than at
+        // each spawn entry - a fourth entry cannot forget them. The role
+        // states the kind, and the slot it is checked against below cannot
+        // disagree with it.
+        let spawn_kind = match role {
+            crate::protocol::SpawnRole::Lead => crate::mcp::SessionKind::Lead,
+            crate::protocol::SpawnRole::Worker { .. } => crate::mcp::SessionKind::Worker,
+        };
+        crate::spawn::apply_blocked_tools(&mut settings, spawn_kind);
         // The boot gate is a spawn precondition, not just a launchpad
         // decoration: a child stamped before the listener is bound
         // points at a base URL nothing answers.
@@ -2479,7 +2485,7 @@ impl Workspace {
     /// slot is not pooled or carries no registration: the launch then
     /// keeps the account env the original spawn laid down.
     ///
-    /// The CLI's task tools are denied unconditionally, because a
+    /// The tools forge has replaced are denied unconditionally, because a
     /// respawn's settings are built by the TUI and carry no spawn-time
     /// flags - so `/new` and `/resume` are exactly where those denials
     /// would otherwise come back.
@@ -2489,7 +2495,12 @@ impl Workspace {
         session_id: &str,
         launch_settings: &mut SessionLaunchSettings,
     ) {
-        crate::spawn::apply_disallowed_task_tools(launch_settings);
+        let kind = if slot.is_lead() {
+            crate::mcp::SessionKind::Lead
+        } else {
+            crate::mcp::SessionKind::Worker
+        };
+        crate::spawn::apply_blocked_tools(launch_settings, kind);
         let (registration, replaced) = {
             let mut pool = self.pool.lock();
             let Some(entry) = pool.get_mut(slot) else { return };
