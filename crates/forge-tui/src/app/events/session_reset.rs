@@ -158,7 +158,7 @@ fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
 /// rather than as its own turn.
 fn tail_renders_as_envelope_card(msg: &ChatMessage) -> bool {
     matches!(msg.blocks.last(), Some(MessageBlock::Text(block))
-        if crate::ui::peer_block::detect_inbound(&block.text).is_some())
+        if forge_sessions::envelope::detect_inbound(&block.text).is_some())
 }
 
 /// Append one replayed user text chunk. `continues_previous` carries
@@ -516,7 +516,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                         rendered_user_text = true;
                     }
                     // The dispatcher below paints an inbound envelope stamped.
-                    if crate::ui::peer_block::detect_inbound(text).is_some() {
+                    if forge_sessions::envelope::detect_inbound(text).is_some() {
                         continue;
                     }
                     let chunk = model::ContentChunk::new(model::RenderContentBlock::Text(

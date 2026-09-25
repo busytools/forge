@@ -113,7 +113,7 @@ is smaller and slightly incomplete.
 
 ## Where code goes
 
-The workspace is nine crates with a strictly acyclic dependency graph,
+The workspace is ten crates with a strictly acyclic dependency graph,
 and putting something in the wrong one is the most common structural
 review comment. The
 [architecture page](https://busytools.github.io/forge/architecture.html)
@@ -124,4 +124,5 @@ health go in `forge-gateway`,
 inbound connector clients and matching go in `forge-connectors`,
 anything speaking stream-json goes in `forge-sdk`, environment and I/O
 go in `forge-agent`, multi-session orchestration goes in
-`forge-workspace`, and only what the user sees goes in `forge-tui`.
+`forge-workspace`, a session record as a view sees it goes in
+`forge-sessions`, and only what the user sees goes in `forge-tui`.

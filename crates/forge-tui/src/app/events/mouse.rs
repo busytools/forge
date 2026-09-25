@@ -744,7 +744,7 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
 /// Peer-block (#114) inbound twin of [`try_toggle_tool_call_at_click`].
 /// Inbound peer envelopes are user-message TextBlocks (the workspace's
 /// synthetic Message::User echo, pattern-matched at render time by
-/// `peer_block::detect_inbound`). They don't have a `ToolCallInfo`
+/// `forge_sessions::envelope::detect_inbound`). They don't have a `ToolCallInfo`
 /// to hang collapse state off of, so the relevant flag lives on
 /// `TextBlock::peer_collapsed_override` and the renderer stamps the
 /// same `peer_last_measured_y/height/width` triple a tool call gets.

@@ -801,7 +801,7 @@ fn append_user_block(
             // directive via `resolve_collapsed_bool`. Per-block
             // click override wins; absent falls through to
             // `tools_collapsed`.
-            if let Some(kind) = peer_block::detect_inbound(&block.text) {
+            if let Some(kind) = forge_sessions::envelope::detect_inbound(&block.text) {
                 let trailing_gap = block.trailing_blank_lines();
                 let collapsed = crate::ui::collapse::resolve_collapsed_bool(
                     block.peer_collapsed_override,
@@ -2368,7 +2368,7 @@ pub(crate) enum EnvelopeStreakPosition {
 /// anything that is not peer/worker traffic. Gotify, cron and Slack return
 /// `None` from `peer_sender_identity`, so they never join a streak.
 fn block_envelope_identity(block: &MessageBlock) -> Option<(String, String)> {
-    use crate::ui::peer_block::{PeerInboundKind, detect_inbound};
+    use forge_sessions::envelope::{PeerInboundKind, detect_inbound};
     let MessageBlock::Text(text) = block else {
         return None;
     };

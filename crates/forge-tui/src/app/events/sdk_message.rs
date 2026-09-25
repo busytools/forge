@@ -418,18 +418,18 @@ enum EnvelopeKind {
 }
 
 impl EnvelopeKind {
-    fn of_inbound(kind: &crate::ui::peer_block::PeerInboundKind) -> Self {
+    fn of_inbound(kind: &forge_sessions::envelope::PeerInboundKind) -> Self {
         match kind {
-            crate::ui::peer_block::PeerInboundKind::Gotify { .. } => Self::Gotify,
-            crate::ui::peer_block::PeerInboundKind::Cron { .. } => Self::Cron,
-            crate::ui::peer_block::PeerInboundKind::Slack { .. } => Self::Slack,
+            forge_sessions::envelope::PeerInboundKind::Gotify { .. } => Self::Gotify,
+            forge_sessions::envelope::PeerInboundKind::Cron { .. } => Self::Cron,
+            forge_sessions::envelope::PeerInboundKind::Slack { .. } => Self::Slack,
             // Spelled out, not `_`: a new inbound kind must not silently
             // inherit peer traffic's unlabelled treatment and merge into it.
-            crate::ui::peer_block::PeerInboundKind::Message { .. }
-            | crate::ui::peer_block::PeerInboundKind::Question { .. }
-            | crate::ui::peer_block::PeerInboundKind::Reply { .. }
-            | crate::ui::peer_block::PeerInboundKind::DeliveryFailure { .. }
-            | crate::ui::peer_block::PeerInboundKind::WorkerSpawnFailed { .. } => Self::Peer,
+            forge_sessions::envelope::PeerInboundKind::Message { .. }
+            | forge_sessions::envelope::PeerInboundKind::Question { .. }
+            | forge_sessions::envelope::PeerInboundKind::Reply { .. }
+            | forge_sessions::envelope::PeerInboundKind::DeliveryFailure { .. }
+            | forge_sessions::envelope::PeerInboundKind::WorkerSpawnFailed { .. } => Self::Peer,
         }
     }
 
@@ -494,7 +494,7 @@ fn append_or_push_envelope(app: &mut App, kind: EnvelopeKind, text: &str) {
 /// constructors when it is an inbound envelope. Returns false for
 /// plain text so the caller falls through to its own rendering.
 pub(super) fn append_resume_envelope_if_present(app: &mut App, text: &str) -> bool {
-    let Some(kind) = crate::ui::peer_block::detect_inbound(text) else {
+    let Some(kind) = forge_sessions::envelope::detect_inbound(text) else {
         return false;
     };
     append_or_push_envelope(app, EnvelopeKind::of_inbound(&kind), text);
@@ -510,7 +510,7 @@ pub(super) fn append_resume_envelope_if_present(app: &mut App, text: &str) -> bo
 
 /// Push a peer-wrapper-prefixed user turn into the chat buffer.
 ///
-/// The detection key is `peer_block::detect_inbound` - same matcher
+/// The detection key is `forge_sessions::envelope::detect_inbound` - same matcher
 /// the renderer uses, so any envelope shape recognised at render time
 /// is also pushed here. Falls through silently for plain user echoes
 /// (the dominant case) so we don't double-push the locally-pushed
@@ -525,7 +525,7 @@ fn push_peer_envelope_user_turn_if_present(
         let ContentBlock::Text { text } = block else {
             continue;
         };
-        let Some(kind) = crate::ui::peer_block::detect_inbound(text) else {
+        let Some(kind) = forge_sessions::envelope::detect_inbound(text) else {
             continue;
         };
         let envelope_kind = EnvelopeKind::of_inbound(&kind);

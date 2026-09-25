@@ -22,6 +22,7 @@ path = "src/main.rs"
 # Workspace-shared deps. Versions + features come from the workspace
 # unless overridden here.
 forge-primitives = { workspace = true }
+forge-sessions = { workspace = true }
 forge-workspace = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

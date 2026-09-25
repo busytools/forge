@@ -556,7 +556,7 @@ fn is_messaging_block(block: &MessageBlock) -> bool {
     use crate::ui::peer_block;
     match block {
         MessageBlock::ToolCall(tc) if !tc.hidden => peer_block::detect_outbound(tc).is_some(),
-        MessageBlock::Text(text) => peer_block::detect_inbound(&text.text)
+        MessageBlock::Text(text) => forge_sessions::envelope::detect_inbound(&text.text)
             .is_some_and(|k| k.peer_sender_identity().is_some()),
         _ => false,
     }
@@ -571,7 +571,8 @@ fn is_messaging_block(block: &MessageBlock) -> bool {
 /// messaging run - nearly all of them - hands `tool_units` straight
 /// back rather than copying every unit into a fresh vector.
 fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) -> Vec<RenderUnit> {
-    use crate::ui::peer_block::{self, PeerInboundKind, PeerOutboundKind};
+    use crate::ui::peer_block::{self, PeerOutboundKind};
+    use forge_sessions::envelope::PeerInboundKind;
     // Unit ranges that fold, ascending and non-overlapping, each with
     // the MessagingGroup replacing it.
     let mut merged: Vec<(Range<usize>, RenderUnit)> = Vec::new();
@@ -634,7 +635,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) 
                     }
                 }
                 MessageBlock::Text(text) => {
-                    let kind = peer_block::detect_inbound(&text.text);
+                    let kind = forge_sessions::envelope::detect_inbound(&text.text);
                     if let Some(from) =
                         kind.as_ref().and_then(PeerInboundKind::peer_sender_identity)
                     {
@@ -662,7 +663,8 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) 
                         // index: an index repeats in every message and
                         // would share one collapse level across them.
                         if leader_id.is_none()
-                            && let Some(id) = peer_block::inbound_envelope_id(&text.text)
+                            && let Some(id) =
+                                forge_sessions::envelope::inbound_envelope_id(&text.text)
                         {
                             leader_id = Some(GroupId::from_leader_id(format!("inbound-{id}")));
                         }
@@ -1826,7 +1828,7 @@ mod tests {
 
     fn inbound_peer_block(from: &str, kind: &str) -> MessageBlock {
         // `kind` is "Question" | "Message" | "Reply". Use the
-        // wrapper-prose shape `peer_block::detect_inbound` matches.
+        // wrapper-prose shape `forge_sessions::envelope::detect_inbound` matches.
         let id = next_fixture_id("t");
         let header = match kind {
             "Question" => format!("[Question id={id} from agent '{from}' (org 'forge')]"),

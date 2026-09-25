@@ -516,7 +516,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // here and the TUI builds the synthetic chat-side
             // user-turn from real fields. The prose is the same
             // string the recipient's LLM sees via Command::Prompt,
-            // so the existing `peer_block::detect_inbound` matcher
+            // so the existing `forge_sessions::envelope::detect_inbound` matcher
             // in the SDK-message reducer still recognises it.
             let synthetic = forge_primitives::Message::User {
                 message: forge_primitives::UserEnvelope {
@@ -539,7 +539,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::GotifyNotificationAppended { key, notification } => {
             // Mirror the peer-envelope path: forge a synthetic user turn
             // from the notification's prose (the same text the session's
-            // LLM sees via Command::Prompt), so `peer_block::detect_inbound`
+            // LLM sees via Command::Prompt), so `forge_sessions::envelope::detect_inbound`
             // recognises the `[Gotify ...]` prefix and renders the distinct
             // notification block.
             let synthetic = forge_primitives::Message::User {
@@ -562,7 +562,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::SlackMessageAppended { key, prose } => {
             // Mirror the gotify path: the workspace hands over the same prose
-            // the session's LLM receives, so `peer_block::detect_inbound`
+            // the session's LLM receives, so `forge_sessions::envelope::detect_inbound`
             // recognises the `[Slack ...]` header and renders the block.
             let synthetic = forge_primitives::Message::User {
                 message: forge_primitives::UserEnvelope {
@@ -584,7 +584,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::CronPromptAppended { key, text } => {
             // Mirror the gotify path: forge a synthetic user turn wrapping
             // the fired prompt in a display-only `[Cron]` prefix so
-            // `peer_block::detect_inbound` recognises it and renders the
+            // `forge_sessions::envelope::detect_inbound` recognises it and renders the
             // distinct cron block (+ inherits the #383 delivered-turn
             // spinner). The subprocess receives the raw prompt via a
             // separate Command::Prompt, so the bracket never reaches the LLM.
@@ -1269,7 +1269,7 @@ fn apply_mcp_snapshot_presentation(
 /// test spans the round trip; this is the assertion that catches a
 /// prose-format drift at runtime.
 fn assert_envelope_parses(prose: &str, source: &'static str) {
-    if crate::ui::peer_block::detect_inbound(prose).is_none() {
+    if forge_sessions::envelope::detect_inbound(prose).is_none() {
         let head: String = prose.chars().take(120).collect();
         tracing::error!(
             target: crate::logging::targets::APP_SESSION,
