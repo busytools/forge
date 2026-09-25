@@ -75,15 +75,16 @@ Work top-down; the first match wins.
    presentation state** goes in `forge-tui`.
 10. **A wire-conformance scenario** goes in `forge-test-harness`.
 
-**The view surface is designed, not built.** A view is meant to read
-the core through named verbs by subject - `roster`, `session`,
-`accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate` -
-to act through `dispatch(Command)`, and to receive changes through
-`subscribe()`. Only the last two exist today: the TUI still calls
-`Workspace` methods directly, so `forge-tui` keeps its
-`forge-workspace` dependency and the arrow above is not yet one-way. A
-read a second view would want goes on that surface; a read only the
-TUI makes stays a plain method.
+**The view surface is partially built.** A view reads the core through
+named verbs by subject - `roster`, `session`, `accounts`, `plugins`,
+`reviews`, `workers`, `connectors`, `dictate` - acts through
+`dispatch(Command)`, and receives changes through `subscribe()`. Three
+verbs exist today, `roster`, `session` and `workers` in
+`forge-sessions`, and the TUI reads its projects, sessions and workers
+through them. The other five are still direct `Workspace` calls, so
+`forge-tui` keeps its `forge-workspace` dependency and the arrow above
+is not yet one-way. A read a second view would want goes on that
+surface; a read only the TUI makes stays a plain method.
 
 Splits across several crates are normal; a git-diff feature naturally
 touches agent, workspace and TUI. The rule of thumb is that logic, I/O
