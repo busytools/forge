@@ -1,0 +1,258 @@
+<div style="background:#04050a;padding:24px;border-radius:12px;">
+<style>
+  .b *, .b *::before, .b *::after { box-sizing:border-box; margin:0; }
+  .b { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c; --line2:#2b3448;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --addressed:#61a0e0; --read:#5b9cf8; --mcp:#4ec9c9; --edit:#b48ce0;
+    position:relative; width:100%; max-width:1440px; margin:0 auto; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px;
+    box-shadow:0 40px 120px rgba(0,0,0,.85); }
+  .b::after { content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(900px 420px at 8% -8%, rgba(244,118,0,.10), transparent 62%),
+               radial-gradient(760px 420px at 97% 110%, rgba(91,156,248,.07), transparent 60%); }
+  .b-chrome { display:flex; align-items:center; gap:8px; padding:11px 16px; background:rgba(8,10,16,.94); border-bottom:1px solid var(--line); position:relative; z-index:1; }
+  .b-dot { width:11px; height:11px; border-radius:50%; }
+  .b-url { margin-left:14px; font-size:11.5px; color:var(--dim); background:var(--s2); border:1px solid var(--line); border-radius:8px; padding:5px 14px; font-family:ui-monospace,Menlo,monospace; }
+  .b-bar { display:flex; align-items:center; gap:12px; padding:14px 22px; border-bottom:1px solid var(--line); position:relative; z-index:1; background:rgba(13,17,26,.4); }
+  .b-mark { font-size:13.5px; font-weight:700; letter-spacing:-.01em; }
+  .b-mark span { color:var(--accent); }
+  .b-cmd { margin-left:auto; display:flex; align-items:center; gap:9px; width:420px; border:1px solid var(--line2); border-radius:10px; padding:9px 12px; background:rgba(4,5,10,.7); font-size:12.5px; color:var(--dim); }
+  .b-cmd kbd { font-family:ui-monospace,Menlo,monospace; font-size:10.5px; background:var(--s2); border:1px solid var(--line); border-radius:5px; padding:1px 5px; color:var(--muted); }
+
+  .b-grid { position:relative; z-index:1; display:grid; grid-template-columns:repeat(12, 1fr); gap:16px; padding:18px 22px 22px; }
+  .b-tile { grid-column:span 2; border:1px solid var(--line); border-radius:13px; padding:14px;
+    background:linear-gradient(180deg,rgba(28,34,48,.42),rgba(13,17,26,.62)); }
+  .b-tile .lab { font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); font-weight:600; }
+  .b-tile .big { font-size:24px; font-weight:650; letter-spacing:-.02em; padding-top:7px; display:flex; align-items:baseline; gap:8px; }
+  .b-tile .big small { font-size:11.5px; font-weight:400; color:var(--dim); letter-spacing:0; }
+  .b-tile .foot { font-size:11.5px; color:var(--dim); padding-top:6px; display:flex; align-items:center; gap:7px; }
+  .b-tile.acct { grid-column:span 4; }
+  .b-tile.acct .who { display:flex; align-items:center; gap:10px; padding-top:6px; }
+  .b-av { width:32px; height:32px; border-radius:11px; background:conic-gradient(from 210deg,#f47600,#ff9a3c,#b48ce0,#f47600); display:flex; align-items:center; justify-content:center; font-weight:800; font-size:13px; color:#140b02; }
+  .b-chipmode { margin-left:auto; font-size:10.5px; color:var(--warn); background:rgba(201,161,59,.13); border:1px solid rgba(201,161,59,.3); border-radius:99px; padding:2px 9px; }
+  .b-cross { display:flex; gap:9px; padding-top:11px; }
+  .b-cc { flex:1; font-size:11.5px; color:var(--dim); }
+  .b-cc b { display:block; color:var(--text); font-size:13px; font-weight:600; padding-top:3px; font-family:ui-monospace,Menlo,monospace; }
+
+  .b-ring { width:56px; height:56px; border-radius:50%; display:grid; place-items:center; }
+  .b-ring i { width:42px; height:42px; border-radius:50%; background:#0b0f18; display:grid; place-items:center; font-size:12.5px; font-weight:650; font-style:normal; }
+  .b-ring.c { background:conic-gradient(var(--read) 0 38%, #1c2333 38% 100%); }
+  .b-ring.h { background:conic-gradient(var(--ok) 0 15%, #1c2333 15% 100%); }
+  .b-ring.d { background:conic-gradient(var(--ok) 0 45%, var(--warn) 45% 72%, var(--accent) 72% 89%, var(--bad) 89% 100%); }
+
+  .b-live { width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 10px var(--ok); animation:bpulse 1.8s ease-in-out infinite; }
+  @keyframes bpulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.35;transform:scale(.8)} }
+  .b-spin { width:13px; height:13px; border-radius:50%; border:2px solid rgba(244,118,0,.22); border-top-color:var(--accent); animation:bspin 1s linear infinite; }
+  @keyframes bspin { to { transform:rotate(360deg); } }
+
+  .b-card { border:1px solid var(--line); border-radius:14px; background:linear-gradient(180deg,rgba(20,25,38,.55),rgba(13,17,26,.72)); }
+  .b-card > h3 { display:flex; align-items:center; gap:9px; padding:15px 17px 0; font-size:12px; font-weight:650; letter-spacing:-.01em; }
+  .b-card > h3 .rt { margin-left:auto; font-size:11px; color:var(--dim); font-weight:400; display:flex; align-items:center; gap:8px; }
+  .b-convo { grid-column:span 8; display:flex; flex-direction:column; height:560px; }
+  .b-thread { flex:1; overflow-y:auto; padding:16px 17px 6px; }
+  .b-thread::-webkit-scrollbar { width:9px; } .b-thread::-webkit-scrollbar-thumb { background:#222a3c; border-radius:99px; }
+  .b-msg { margin-bottom:20px; }
+  .b-msg .hd { display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--dim); padding-bottom:7px; }
+  .b-msg .hd b { color:var(--muted); font-weight:600; }
+  .b-msg .bd { font-size:14px; line-height:1.7; }
+  .b-msg.mine .bd { background:linear-gradient(180deg,rgba(40,44,52,.5),rgba(40,44,52,.28)); border:1px solid var(--line); border-radius:11px; padding:12px 14px; }
+  .b-msg .bd code { font-family:ui-monospace,Menlo,monospace; font-size:13px; background:var(--s2); border:1px solid var(--line); border-radius:6px; padding:2px 7px; color:#9fc6ff; }
+  .b-cur { display:inline-block; width:2px; height:16px; background:var(--accent); vertical-align:-3px; margin-left:3px; animation:bcursor 1.05s step-end infinite; }
+  @keyframes bcursor { 50%{opacity:0} }
+
+  .b-run { margin-top:12px; border:1px solid var(--line2); border-radius:12px; overflow:hidden; background:rgba(4,5,10,.5); }
+  .b-run .rh { display:flex; align-items:center; gap:10px; padding:11px 13px; font-size:12.5px; }
+  .b-run .rh b { font-weight:650; }
+  .b-run .rh span { color:var(--dim); font-size:11.5px; }
+  .b-run .seg { margin-left:auto; display:flex; gap:2px; background:rgba(4,5,10,.7); border:1px solid var(--line); border-radius:8px; padding:2px; }
+  .b-run .seg i { font-style:normal; font-size:10.5px; color:var(--dim); padding:3px 9px; border-radius:6px; }
+  .b-run .seg i.on { background:rgba(244,118,0,.16); color:var(--accent); }
+  .b-steps { padding:0 13px 12px; }
+  .b-step { display:flex; align-items:center; gap:10px; padding:6px 8px; border-radius:8px; font-size:12.5px; }
+  .b-step:hover { background:rgba(40,48,66,.35); }
+  .b-step .ic { width:15px; height:15px; }
+  .b-step .tag { margin-left:auto; font-size:10.5px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; }
+  .b-step.read .ic { color:var(--read); } .b-step.edit .ic { color:var(--edit); }
+  .b-step.bash .ic { color:var(--accent); } .b-step.mcp .ic { color:var(--mcp); }
+
+  .b-comp { border-top:1px solid var(--line); padding:13px 17px 15px; background:rgba(13,17,26,.5); border-radius:0 0 14px 14px; }
+  .b-box { border:1px solid var(--line2); background:rgba(4,5,10,.8); border-radius:12px; padding:12px 14px; display:flex; align-items:center; gap:11px; }
+  .b-box.hot { border-color:rgba(244,118,0,.5); box-shadow:0 0 0 4px rgba(244,118,0,.07); }
+  .b-box .ph { color:var(--dim); font-size:13.5px; }
+  .b-send { margin-left:auto; width:30px; height:30px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#ff9a3c); color:#140b02; display:flex; align-items:center; justify-content:center; }
+  .b-hints { display:flex; gap:14px; font-size:11px; color:var(--dim); padding-top:9px; }
+  .b-hints kbd { font-family:ui-monospace,Menlo,monospace; font-size:10.5px; background:var(--s2); border:1px solid var(--line); border-radius:5px; padding:1px 5px; color:var(--muted); }
+
+  .b-side { grid-column:span 4; display:flex; flex-direction:column; gap:16px; }
+  .b-rows { padding:11px 17px 15px; }
+  .b-row { display:flex; align-items:center; gap:10px; font-size:12.5px; color:var(--muted); padding:5.5px 0; }
+  .b-row .k { color:var(--text); } .b-row .v { margin-left:auto; font-size:11.5px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; }
+  .b-att { border-color:rgba(224,104,62,.32); }
+  .b-att .r { display:flex; align-items:baseline; gap:9px; padding:4px 0; font-size:12.5px; }
+  .b-att .r .g { width:14px; flex:0 0 14px; font-size:11px; }
+  .b-att .r .nm { font-weight:700; } .b-att .r .dt { margin-left:auto; color:var(--dim); font-size:11px; }
+  .b-pr { display:flex; gap:8px; align-items:center; font-size:12.5px; color:var(--muted); padding:4px 0; }
+  .b-pr .num { color:var(--accent); font-weight:600; font-family:ui-monospace,Menlo,monospace; }
+  .b-task { display:flex; gap:9px; font-size:12.5px; color:var(--muted); padding:6px 0; }
+  .b-task .nm { }
+  .b-task.run .nm { color:var(--text); font-weight:600; }
+  .b-task.done .nm { color:var(--dim); text-decoration:line-through; }
+  .b-bar { height:4px; border-radius:99px; background:var(--s3); overflow:hidden; margin-top:6px; }
+  .b-bar i { display:block; height:100%; width:40%; background:linear-gradient(90deg,var(--ok),#a9dd93); }
+</style>
+
+<div class="b">
+  <div class="b-chrome">
+    <span class="b-dot" style="background:#ff5f57;"></span>
+    <span class="b-dot" style="background:#febc2e;"></span>
+    <span class="b-dot" style="background:#28c840;"></span>
+    <span class="b-url">forge.local</span>
+  </div>
+
+  <div class="b-bar">
+    <div class="b-mark">forge<span>.</span></div>
+    <div class="b-cmd"><kbd>&#8984;K</kbd><span>Search sessions, run a command, or ask anything</span></div>
+  </div>
+
+  <div class="b-grid">
+
+    <div class="b-tile acct">
+      <div class="lab">Account</div>
+      <div class="who">
+        <div class="b-av">S</div>
+        <div>
+          <div style="font-size:14px;font-weight:650;">subspace</div>
+          <div style="font-size:11.5px;color:var(--dim);">Busytools &middot; anthropic</div>
+        </div>
+        <span class="b-chipmode">auto</span>
+      </div>
+      <div class="b-cross">
+        <div class="b-cc">Model<b>opus-5-5</b></div>
+        <div class="b-cc">Effort<b>high</b></div>
+        <div class="b-cc">Session<b>9f21c4ab</b></div>
+      </div>
+    </div>
+
+    <div class="b-tile">
+      <div class="lab">Context</div>
+      <div style="display:flex;align-items:center;gap:12px;padding-top:8px;">
+        <div class="b-ring c"><i>38%</i></div>
+        <div style="font-size:11.5px;color:var(--dim);line-height:1.5;">of 1M<br>5 compactions</div>
+      </div>
+    </div>
+
+    <div class="b-tile">
+      <div class="lab">5 hour window</div>
+      <div style="display:flex;align-items:center;gap:12px;padding-top:8px;">
+        <div class="b-ring h"><i>15%</i></div>
+        <div style="font-size:11.5px;color:var(--dim);line-height:1.5;">resets in<br>4h 12m</div>
+      </div>
+    </div>
+
+    <div class="b-tile">
+      <div class="lab">7 day window</div>
+      <div style="display:flex;align-items:center;gap:12px;padding-top:8px;">
+        <div class="b-ring d"><i>89%</i></div>
+        <div style="font-size:11.5px;color:var(--dim);line-height:1.5;">resets in<br>2d 6h</div>
+      </div>
+    </div>
+
+    <div class="b-tile">
+      <div class="lab">Workers</div>
+      <div class="big">4 <small>live</small></div>
+      <div class="foot"><span class="b-spin"></span>sessions-extract building</div>
+    </div>
+
+    <div class="b-card b-convo">
+      <h3>
+        claude-tui
+        <span class="rt"><span class="b-live"></span>running &middot; main &middot; 4 workers</span>
+      </h3>
+      <div class="b-thread">
+        <div class="b-msg mine">
+          <div class="hd"><b>Ved</b> &middot; 12:04</div>
+          <div class="bd">Would the inspector's sections survive being tabs instead of one long scroll?</div>
+        </div>
+        <div class="b-msg">
+          <div class="hd"><b>Assistant</b> &middot; 12:04</div>
+          <div class="bd">Yes. The sections already own their own state, so a tab is only a different way of showing one at a time. The attention band stays outside them, since it is about other sessions.<span class="b-cur"></span></div>
+          <div class="b-run">
+            <div class="rh"><span class="b-spin"></span><b>12 tool calls</b><span>&middot; 1 running</span>
+              <span class="seg"><i class="on">L2</i><i>L1</i><i>L0</i></span>
+            </div>
+            <div class="b-steps">
+              <div class="b-step read">
+                <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1.5"/><path d="M3 6.5h10"/></svg>
+                <span>Read&nbsp; <span style="color:var(--dim);">inspector_pane.rs</span></span><span class="tag">2</span>
+              </div>
+              <div class="b-step edit">
+                <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1.5"/><path d="M6 8h4M8 6v4"/></svg>
+                <span>Edit&nbsp; <span style="color:var(--dim);">inspector_pane.rs (+42, -8)</span></span><span class="tag">2</span>
+              </div>
+              <div class="b-step bash">
+                <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 3l8 5-8 5z"/></svg>
+                <span>Bash&nbsp; <span style="color:var(--dim);">just check</span></span><span class="tag">8.7s</span>
+              </div>
+              <div class="b-step mcp">
+                <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2.5l5.5 5.5L8 13.5 2.5 8z"/></svg>
+                <span>workers&nbsp; <span style="color:var(--dim);">spawn sessions-extract</span></span><span class="tag">4</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="b-comp">
+        <div class="b-box hot"><span class="ph">Ask anything, or type / for a command</span><span class="b-send">&#8593;</span></div>
+        <div class="b-hints"><span><kbd>&#8984;K</kbd> commands</span><span><kbd>&#8679;&#8629;</kbd> newline</span><span><kbd>&#8984;&#8629;</kbd> send</span><span style="margin-left:auto;">2806 tests green</span></div>
+      </div>
+    </div>
+
+    <div class="b-side">
+
+      <div class="b-card b-att">
+        <h3>Needs attention <span class="rt">4 waiting</span></h3>
+        <div class="b-rows">
+          <div class="r"><span class="g" style="color:var(--bad);">&#10005;</span><span class="nm">gateway-backend</span><span class="dt">failed &middot; HTTP 529 &middot; 3m</span></div>
+          <div class="r"><span class="g" style="color:var(--warn);">&#9651;</span><span class="nm">stargate</span><span class="dt">question &middot; 20s</span></div>
+          <div class="r"><span class="g" style="color:var(--warn);">&#9651;</span><span class="nm">core-v1</span><span class="dt">permission &middot; Bash</span></div>
+          <div class="r"><span class="g" style="color:var(--addressed);">&#9679;</span><span class="nm">forge</span><span class="dt">review replies &middot; 2</span></div>
+        </div>
+      </div>
+
+      <div class="b-card">
+        <h3>Git <span class="rt"><span style="color:var(--addressed);">2 unresolved</span><span class="a-openbtn" style="font-size:10.5px;color:var(--text);background:var(--s3);border:1px solid var(--line2);border-radius:7px;padding:3px 9px;cursor:pointer;">Open diff</span></span></h3>
+        <div class="b-rows">
+          <div class="b-row"><span class="k">&#9095; implementer/issue-185-inspector-tabs</span></div>
+          <div class="b-pr"><span class="num">PR #188</span><span>&#8594; closes #185</span></div>
+          <div class="b-row"><span class="k">uncommitted</span><span class="v"><span style="color:var(--ok);">+42</span> <span style="color:var(--bad);">-8</span></span></div>
+          <div class="b-row"><span class="k">3 commits vs origin/main</span><span class="v"><span style="color:var(--ok);">+1667</span> <span style="color:var(--bad);">-1139</span></span></div>
+          <div class="b-row" style="color:var(--dim);font-size:11.5px;">crates/forge-tui/src/ui/inspector_pane.rs</div>
+          <div class="b-row" style="color:var(--dim);font-size:11.5px;">crates/forge-agent/src/env/git_diff.rs</div>
+          <div class="b-row" style="color:var(--dim);font-size:11.5px;">+22 more files</div>
+        </div>
+      </div>
+
+      <div class="b-card">
+        <h3>Processes <span class="rt">3 running</span></h3>
+        <div class="b-rows">
+          <div class="b-row"><span style="color:var(--accent);">&#9656;</span><span class="k">Run unit tests</span><span class="v">1.2 GB</span></div>
+          <div class="b-row" style="padding-left:20px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;">cargo nextest run &middot; 256 MB</div>
+          <div class="b-row" style="padding-left:20px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;">rustc --crate-name forge_tui &middot; 512 MB</div>
+          <div class="b-row"><span style="color:var(--dim);">&#9656;</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:12px;">npm run build</span><span class="v">88 MB</span></div>
+        </div>
+      </div>
+
+      <div class="b-card">
+        <h3>Tasks <span class="rt">2 of 5</span></h3>
+        <div class="b-rows">
+          <div class="b-task done"><span style="color:var(--ok);">&#10003;</span><span class="nm">Read the rate-limit code</span></div>
+          <div class="b-task run"><span class="a-run" style="color:var(--accent);">&#10361;</span><span><span class="nm">Adding tests for the near-threshold branch</span><div class="b-bar"><i></i></div></span></div>
+          <div class="b-task"><span style="color:var(--dim);">&#9675;</span><span class="nm">Run cargo nextest</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</div>

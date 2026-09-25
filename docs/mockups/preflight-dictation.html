@@ -1,0 +1,162 @@
+<div style="background:#04050a;padding:26px;border-radius:12px;">
+<style>
+  .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
+  .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b;
+    display:flex; gap:24px; align-items:flex-start; color:var(--text);
+    font-family:ui-monospace,Menlo,monospace; }
+  .fg-col { display:flex; flex-direction:column; }
+  .fg-cap { font-size:11.5px; color:var(--dim); margin-bottom:10px; font-family:system-ui,sans-serif; }
+  .fg-frame { border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    background:linear-gradient(180deg,rgba(20,25,38,.72),rgba(13,17,26,.96));
+    box-shadow:0 40px 110px rgba(0,0,0,.8); }
+  .fg-chrome { display:flex; align-items:center; gap:7px; padding:10px 14px; background:rgba(8,10,16,.92); border-bottom:1px solid var(--line); }
+  .fg-dot { width:11px; height:11px; border-radius:50%; }
+  .fg-url { margin-left:12px; font-size:11px; color:var(--dim); background:var(--s2); border:1px solid var(--line); border-radius:7px; padding:4px 12px; font-family:system-ui,sans-serif; }
+  .fg-screen { padding:22px 0 18px; display:flex; flex-direction:column; align-items:center; }
+  .fg-mark { color:var(--accent); font-size:8px; line-height:1.05; white-space:pre; text-shadow:0 0 22px rgba(244,118,0,.3); }
+  .fg-vers { text-align:center; color:var(--dim); font-size:11px; padding-top:10px; line-height:1.6; }
+  .fg-panel { width:470px; margin-top:18px; border-top:1px solid var(--line); padding:14px 0 6px; }
+  .fg-panel.last { border-bottom:1px solid var(--line); padding-bottom:14px; }
+  .fg-h4 { font-size:11.5px; font-weight:700; color:var(--dim); padding:0 0 7px 6px; }
+  .fg-r { display:flex; align-items:baseline; gap:9px; padding:3.5px 6px; font-size:12.5px; }
+  .fg-r .g { width:14px; flex:0 0 14px; }
+  .fg-r .nm { color:var(--muted); }
+  .fg-r .st { margin-left:auto; font-size:12px; color:var(--dim); }
+  .fg-r.ready .g { color:var(--ok); } .fg-r.ready .nm { color:var(--muted); }
+  .fg-r.work .g { color:var(--accent); } .fg-r.work .nm { color:var(--muted); }
+  .fg-r.bad .nm { color:var(--text); font-weight:700; }
+  .fg-r.bad .g, .fg-r.bad .st { color:var(--bad); }
+  .fg-cont { padding:1px 6px 4px 29px; font-size:11.5px; color:var(--dim); }
+  .fg-barline { padding:4px 6px 2px 29px; display:flex; align-items:center; gap:10px; }
+  .fg-bar { display:flex; gap:2px; }
+  .fg-bar i { width:7px; height:9px; border-radius:1px; background:#242c3d; }
+  .fg-bar i.f { background:var(--accent); }
+  .fg-bytes { font-size:11px; color:var(--dim); }
+  .fg-warnrow { padding:9px 6px 2px 6px; font-size:11.5px; color:var(--warn); }
+  .fg-note { padding:12px 6px 2px; font-size:11.5px; color:var(--dim); line-height:1.65; }
+  .fg-note b { color:var(--muted); font-weight:400; }
+  .fg-fix { padding:8px 6px 0; font-size:11.5px; }
+  .fg-fix .h { color:var(--text); font-weight:700; }
+  .fg-fix .l { color:var(--muted); padding:3px 0 0 16px; }
+  .fg-fix .d { color:var(--dim); padding:2px 0 0 16px; }
+  .fg-foot { padding:14px 0 2px; text-align:center; font-size:11.5px; color:var(--dim); }
+  .fg-foot b { color:var(--muted); font-weight:400; }
+  .fg-err { color:var(--bad); }
+  .fg-dev { width:470px; padding:0; }
+  .fg-devrow { display:flex; align-items:baseline; gap:9px; padding:4.5px 16px; font-size:12.5px; color:var(--dim); }
+  .fg-devrow .sel { width:13px; flex:0 0 13px; color:var(--accent); font-weight:700; }
+  .fg-devrow .nm { color:var(--muted); }
+  .fg-devrow.on .nm { color:var(--text); font-weight:700; }
+  .fg-devrow .d { margin-left:auto; font-size:11px; }
+  .fg-devrow .dot { color:var(--accent); }
+  .fg-devnote { padding:11px 16px 4px; font-size:11.5px; color:var(--dim); line-height:1.65; }
+  .fg-devfoot { padding:12px 16px; margin-top:10px; border-top:1px solid var(--line); font-size:11.5px; color:var(--dim); display:flex; gap:14px; }
+  .fg-devfoot b { color:var(--accent); font-weight:700; }
+</style>
+
+<div class="fg">
+
+  <div class="fg-col">
+    <div class="fg-cap">Preflight, mid-fetch: the models keep loading alongside the session, so only the accounts hold the screen.</div>
+    <div class="fg-frame">
+      <div class="fg-chrome">
+        <span class="fg-dot" style="background:#ff5f57;"></span>
+        <span class="fg-dot" style="background:#febc2e;"></span>
+        <span class="fg-dot" style="background:#28c840;"></span>
+        <span class="fg-url">localhost:7777 &nbsp;&middot;&nbsp; forge</span>
+      </div>
+      <div class="fg-screen">
+        <div class="fg-mark">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9559; &#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9559; &#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9559;  &#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9559; &#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9559;
+&#9608;&#9608;&#9556;&#9552;&#9552;&#9552;&#9552;&#9565;&#9608;&#9608;&#9556;&#9552;&#9552;&#9552;&#9608;&#9608;&#9559;&#9608;&#9608;&#9556;&#9552;&#9552;&#9608;&#9608;&#9559;&#9608;&#9608;&#9556;&#9552;&#9552;&#9552;&#9552;&#9565; &#9608;&#9608;&#9556;&#9552;&#9552;&#9552;&#9552;&#9565;
+&#9608;&#9608;&#9608;&#9608;&#9608;&#9559;  &#9608;&#9608;&#9553;   &#9608;&#9608;&#9553;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9556;&#9565;&#9608;&#9608;&#9553;  &#9608;&#9608;&#9608;&#9559;&#9608;&#9608;&#9608;&#9608;&#9608;&#9559;
+&#9608;&#9608;&#9556;&#9552;&#9552;&#9565;  &#9608;&#9608;&#9553;   &#9608;&#9608;&#9553;&#9608;&#9608;&#9556;&#9552;&#9552;&#9608;&#9608;&#9559;&#9608;&#9608;&#9553;   &#9608;&#9608;&#9553;&#9608;&#9608;&#9556;&#9552;&#9552;&#9565;
+&#9608;&#9608;&#9553;     &#9562;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9556;&#9565;&#9608;&#9608;&#9553;  &#9608;&#9608;&#9553;&#9562;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9556;&#9565;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9559;
+&#9562;&#9552;&#9565;      &#9562;&#9552;&#9552;&#9552;&#9552;&#9552;&#9565; &#9562;&#9552;&#9565;  &#9562;&#9552;&#9565; &#9562;&#9552;&#9552;&#9552;&#9552;&#9552;&#9565; &#9562;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9565;</div>
+        <div class="fg-vers">v1.0.86+3cda0dee<br>claude 2.1.263</div>
+
+        <div class="fg-panel">
+          <div class="fg-h4">Accounts</div>
+          <div class="fg-r ready"><span class="g">&#9679;</span><span class="nm">Subspace</span><span class="st">ready</span></div>
+          <div class="fg-r ready"><span class="g">&#9679;</span><span class="nm">Granite</span><span class="st">ready</span></div>
+          <div class="fg-r work"><span class="g">&#9675;</span><span class="nm">Granite1</span><span class="st">resolving</span></div>
+          <div class="fg-r work"><span class="g">&#9675;</span><span class="nm">Personal</span><span class="st">resolving</span></div>
+          <div class="fg-r work"><span class="g">&#9675;</span><span class="nm">Codex</span><span class="st">resolving</span></div>
+        </div>
+
+        <div class="fg-panel">
+          <div class="fg-h4">Dictation</div>
+          <div class="fg-r work"><span class="g">&#10361;</span><span class="nm">transcribing model</span><span class="st">downloading</span></div>
+          <div class="fg-cont">(cohere-transcribe-03-2026-Q4_K_M)</div>
+          <div class="fg-barline">
+            <span class="fg-bar"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="fg-bytes">14% &nbsp; 218 MB / 1.56 GB</span>
+          </div>
+          <div class="fg-r work" style="padding-top:8px;"><span class="g">&#10361;</span><span class="nm">normalization model</span><span class="st">downloading</span></div>
+          <div class="fg-cont">(s1-mini-f16)</div>
+          <div class="fg-barline">
+            <span class="fg-bar"><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="fg-bytes">11% &nbsp; 166 MB / 1.51 GB</span>
+          </div>
+          <div class="fg-warnrow">this terminal dropped the keyboard flags &#183; the push-to-talk key will not arrive</div>
+        </div>
+
+        <div class="fg-panel last">
+          <div class="fg-h4">Gateway</div>
+          <div class="fg-r ready"><span class="g">&#9679;</span><span class="nm">inference listener</span><span class="st">bound :8787</span></div>
+        </div>
+
+        <div class="fg-note">First run fetches 3.07 GB once. Quitting keeps what has landed, in ~/Library/Caches/forge-dictate.</div>
+        <div class="fg-foot"><b>esc</b> cancel and quit &nbsp;&nbsp;&nbsp;&nbsp; <b>ctrl+q</b> quit</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="fg-col">
+    <div class="fg-cap">The same rows once they settle, and when one will not verify.</div>
+    <div class="fg-frame">
+      <div class="fg-screen" style="padding:16px 0 14px;">
+        <div class="fg-panel" style="margin-top:0;">
+          <div class="fg-h4">Dictation</div>
+          <div class="fg-r ready"><span class="g">&#9679;</span><span class="nm">transcribing model</span><span class="st">ready</span></div>
+          <div class="fg-cont">(cohere-transcribe-03-2026-Q4_K_M)</div>
+          <div class="fg-r bad" style="padding-top:8px;"><span class="g">&#9888;&#65038;</span><span class="nm">normalization model</span><span class="st">bad hash</span></div>
+          <div class="fg-cont">(s1-mini-f16)</div>
+          <div class="fg-fix">
+            <div class="h">s1-mini-f16.gguf hashes to</div>
+            <div class="d fg-err" style="font-weight:700;color:var(--text);">4f2b9c1a77e0</div>
+            <div class="h">expected</div>
+            <div style="font-weight:700;color:var(--text);padding-left:16px;">0370da4f1bae</div>
+          </div>
+          <div class="fg-note">It is the right length, so this is corruption and not a half-finished download. forge reports it rather than deleting it: throwing away a 1.51 GB file you put there is not forge's call.</div>
+          <div class="fg-fix">
+            <div class="h">Delete it and forge fetches it again</div>
+            <div class="l">rm ~/Library/Caches/forge-dictate/</div>
+            <div class="l">&nbsp;&nbsp;&nbsp;s1-mini-f16.gguf</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fg-cap" style="margin-top:22px;">The device pick, from <span style="color:var(--muted);">/dictate</span>: workspace-scoped, reverts on restart, and the pin stays in forge.toml.</div>
+    <div class="fg-frame">
+      <div class="fg-dev">
+        <div class="fg-chrome" style="border-bottom:1px solid var(--line);">
+          <span style="font-size:12.5px;color:var(--accent);font-weight:700;font-family:system-ui,sans-serif;">Input device</span>
+          <span style="margin-left:auto;font-size:10.5px;color:var(--dim);font-family:system-ui,sans-serif;">reverts on restart</span>
+        </div>
+        <div style="padding:10px 0 6px;">
+          <div class="fg-devrow on"><span class="sel">&#9654;</span><span class="nm">System default</span><span class="d">no pin &#183; now: MacBook Pro Microphone</span></div>
+          <div class="fg-devrow"><span class="sel"></span><span class="nm">MacBook Pro Microphone</span><span class="d">system default input</span></div>
+          <div class="fg-devrow"><span class="sel"></span><span class="dot">&#9679;</span><span class="nm">Focusrite Scarlett 2i2</span></div>
+          <div class="fg-devrow"><span class="sel"></span><span class="nm">Shure SM7B</span></div>
+        </div>
+        <div class="fg-devnote">A pin follows the device id: unplugging it fails the take instead of quietly recording on another input. A pick lasts until restart; forge.toml keeps the default.</div>
+        <div class="fg-devfoot"><span><b>&#8593;&#8595;</b> move</span><span><b>enter</b> select</span><span><b>esc</b> back</span><span style="margin-left:auto;"><b>&#9679;</b> in force</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>

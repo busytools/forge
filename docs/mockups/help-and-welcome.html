@@ -1,0 +1,224 @@
+<div style="background:#04050a;padding:26px;border-radius:12px;">
+<style>
+  .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
+  .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --slash:#e0a0e8;
+    position:relative; background:#04050a; color:var(--text); border-radius:14px; overflow:hidden;
+    border:1px solid var(--line); font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    box-shadow:0 40px 110px rgba(0,0,0,.8); }
+  .fg::after { content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(880px 400px at 12% -10%, rgba(244,118,0,.10), transparent 62%),
+               radial-gradient(700px 380px at 94% 110%, rgba(91,156,248,.07), transparent 60%); }
+  .fg-radio { display:none; }
+  .fg-chrome { display:flex; align-items:center; gap:7px; padding:10px 14px; background:rgba(8,10,16,.92); border-bottom:1px solid var(--line); }
+  .fg-dot { width:11px; height:11px; border-radius:50%; }
+  .fg-url { margin-left:12px; font-size:11px; color:var(--dim); background:var(--s2); border:1px solid var(--line); border-radius:7px; padding:4px 12px; }
+  .fg-strip { display:flex; align-items:center; gap:8px; padding:9px 14px; border-bottom:1px solid var(--line); background:rgba(8,10,16,.55); }
+  .fg-strip .lbl { font-size:10.5px; color:var(--dim); }
+  .fg-strip label { font-size:11px; color:var(--muted); background:var(--s2); border:1px solid var(--line); border-radius:99px; padding:4px 12px; cursor:pointer; }
+  .fg-strip label:hover { color:var(--text); border-color:#2e3850; }
+  #hw-help:checked ~ .fg .fg-strip label { color:var(--accent); border-color:rgba(244,118,0,.5); background:rgba(244,118,0,.1); }
+
+  .fg-body { display:flex; height:596px; position:relative; z-index:1; }
+  .fg-left { width:238px; border-right:1px solid var(--line); background:linear-gradient(180deg,rgba(20,25,38,.8),rgba(13,17,26,.96)); padding:13px 14px; }
+  .fg-org { font-size:10px; letter-spacing:.17em; color:var(--dim); text-transform:uppercase; margin-bottom:8px; }
+  .fg-p { display:flex; align-items:center; gap:9px; padding:7px 0; font-size:13px; }
+  .fg-p .c { margin-left:auto; font-size:10px; color:var(--dim); background:var(--s3); border-radius:99px; padding:1px 8px; }
+  .fg-s { display:flex; align-items:center; gap:9px; padding:5px 0 5px 18px; font-size:12px; color:var(--muted); }
+  .fg-live { width:6px; height:6px; border-radius:50%; background:var(--ok); box-shadow:0 0 10px var(--ok); animation:fgp 1.8s ease-in-out infinite; }
+  @keyframes fgp { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.3;transform:scale(.75)} }
+  .fg-idle { width:6px; height:6px; border-radius:50%; background:#2a3346; }
+
+  .fg-mid { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .fg-mh { padding:12px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; font-size:14px; font-weight:600; }
+  .fg-chip { font-size:10.5px; color:var(--muted); background:var(--s2); border:1px solid var(--line); border-radius:99px; padding:3px 11px; font-weight:400; }
+
+  .fg-scroll { flex:1; overflow-y:auto; padding:20px 22px 8px; }
+  .fg-over { color:var(--accent); font-size:11px; letter-spacing:.16em; font-weight:700; text-transform:uppercase; margin-bottom:12px; }
+  .fg-ferris { color:var(--accent); font-family:ui-monospace,Menlo,monospace; font-size:11.5px; line-height:1.35; white-space:pre; }
+  .fg-meta { padding-top:16px; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.85; }
+  .fg-meta .k { color:var(--dim); display:inline-block; width:96px; }
+  .fg-meta .v { color:var(--dim); }
+  .fg-meta .acct { color:var(--accent); font-weight:700; }
+  .fg-tip { padding-top:14px; font-size:12.5px; color:var(--dim); }
+  .fg-tip b { color:var(--dim); font-weight:400; }
+
+  .fg-comp { border-top:1px solid var(--line); padding:0 22px 16px; background:rgba(13,17,26,.6); }
+  .fg-box { border:1px solid var(--line); background:rgba(4,5,10,.85); border-radius:12px; padding:11px 14px; display:flex; align-items:center; gap:11px; font-size:13px; }
+  .fg-ph { color:var(--dim); font-style:italic; }
+  .fg-send { margin-left:auto; width:27px; height:27px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#ff9a3c); color:#140b02; display:flex; align-items:center; justify-content:center; }
+  .fg-hints { display:flex; gap:15px; font-size:10px; color:var(--dim); margin-top:9px; }
+
+  /* the help panel: a rounded panel above the input area, 14 rows, up to 10 content rows */
+  .fg-help { display:none; margin:0 22px; border:1px solid #2b3448; border-radius:12px 12px 0 0; border-bottom:none;
+    background:linear-gradient(180deg,rgba(28,34,48,.9),rgba(16,20,30,.95)); padding:11px 15px 8px; }
+  #hw-help:checked ~ .fg .fg-help { display:block; }
+  .fg-hh { display:flex; align-items:baseline; gap:3px; font-size:12px; }
+  .fg-hh .t { color:var(--accent); font-weight:700; margin-right:6px; }
+  .fg-hh .br { color:var(--dim); }
+  .fg-hh label { color:var(--dim); padding:0 3px; cursor:pointer; }
+  .fg-hh label:hover { color:var(--muted); }
+  .fg-hh .hint { margin-left:auto; color:var(--dim); font-size:10.5px; }
+  #hw-keys:checked ~ .fg .fg-hh label[for=hw-keys],
+  #hw-slash:checked ~ .fg .fg-hh label[for=hw-slash],
+  #hw-sub:checked ~ .fg .fg-hh label[for=hw-sub] { color:var(--accent); font-weight:700; }
+  .fg-hb { padding-top:11px; }
+  .fg-hview { display:none; }
+  #hw-keys:checked ~ .fg .v-keys, #hw-slash:checked ~ .fg .v-slash, #hw-sub:checked ~ .fg .v-sub { display:block; }
+  .fg-cols { display:flex; }
+  .fg-hcol { flex:1; min-width:0; padding-right:12px; }
+  .fg-item { font-size:12px; padding:3.5px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .fg-item b { color:var(--text); font-weight:700; }
+  .fg-item .c { color:var(--dim); }
+  .fg-item .d { color:var(--muted); }
+  .fg-item .s { color:var(--slash); }
+  .fg-hintline { font-size:10.5px; color:var(--dim); padding-top:10px; }
+
+  .fg-right { width:270px; border-left:1px solid var(--line); background:linear-gradient(180deg,rgba(20,25,38,.75),rgba(13,17,26,.96)); padding:13px 15px; }
+  .fg-sec h4 { font-size:10px; letter-spacing:.15em; color:var(--dim); text-transform:uppercase; margin-bottom:8px; font-weight:600; }
+  .fg-r { display:flex; align-items:center; gap:9px; font-size:12px; padding:4px 0; color:var(--muted); }
+  .fg-r .k { color:var(--text); } .fg-r .v { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--dim); }
+  .fg-sub { font-size:11.5px; color:var(--dim); padding:2px 0; font-family:ui-monospace,Menlo,monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+</style>
+
+<input class="fg-radio" type="checkbox" id="hw-help">
+<input class="fg-radio" type="radio" name="hv" id="hw-keys" checked>
+<input class="fg-radio" type="radio" name="hv" id="hw-slash">
+<input class="fg-radio" type="radio" name="hv" id="hw-sub">
+
+<div class="fg">
+  <div class="fg-chrome">
+    <span class="fg-dot" style="background:#ff5f57;"></span>
+    <span class="fg-dot" style="background:#febc2e;"></span>
+    <span class="fg-dot" style="background:#28c840;"></span>
+    <span class="fg-url">localhost:7777 &nbsp;&middot;&nbsp; forge</span>
+  </div>
+
+  <div class="fg-strip">
+    <span class="lbl">toggle the overlay, then switch its tab:</span>
+    <label for="hw-help">? help</label>
+  </div>
+
+  <div class="fg-body">
+    <div class="fg-left">
+      <div class="fg-org">Busytools</div>
+      <div class="fg-p">forge<span class="c">2</span></div>
+      <div class="fg-s"><span class="fg-live"></span>claude-tui</div>
+      <div class="fg-p">busymail<span class="c">1</span></div>
+      <div class="fg-p">hdp<span class="c">1</span></div>
+    </div>
+
+    <div class="fg-mid">
+      <div class="fg-mh">claude-tui<span class="fg-chip">opus-5-5</span><span class="fg-chip" style="margin-left:auto;">38% context</span></div>
+
+      <div class="fg-scroll">
+        <div class="fg-over">Overview</div>
+        <div class="fg-ferris">---------------------------------
+&lt; Welcome back to Claude, in Rust! &gt;
+---------------------------------
+        \
+         \
+            _~^~^~_
+        \) /  o o  \ (/
+          '_ - _'
+          / '-----' \</div>
+        <div class="fg-meta">
+          <div><span class="k">Version:</span><span class="v">1.0.86 &middot; 3cda0dee</span></div>
+          <div><span class="k">Account:</span><span class="acct">Stargate</span></div>
+          <div><span class="k">cwd:</span><span class="v">~/Projects/forge</span></div>
+          <div><span class="k">Session ID:</span><span class="v">550e8400-e29b-41d4-a716-446655440000</span></div>
+        </div>
+        <div class="fg-tip"><b>Tips:</b> Use /mode plan before larger changes, then switch back to code once the plan is clear</div>
+      </div>
+
+      <div class="fg-help">
+        <div class="fg-hh">
+          <span class="t">Help</span>
+          <span class="br">[</span><label for="hw-keys">Keys</label><span class="br"> | </span><label for="hw-slash">Slash</label><span class="br"> | </span><label for="hw-sub">Subagents</label><span class="br">]</span>
+          <span class="hint">(&lt; &gt; switch tabs)</span>
+        </div>
+        <div class="fg-hb">
+          <div class="fg-hview v-keys">
+            <div class="fg-cols">
+              <div class="fg-hcol">
+                <div class="fg-item"><b>&#8593; / &#8595;</b><span class="c"> : </span><span class="d">Scroll chat</span></div>
+                <div class="fg-item"><b>PgUp / PgDn</b><span class="c"> : </span><span class="d">Page</span></div>
+                <div class="fg-item"><b>Ctrl+X</b><span class="c"> : </span><span class="d">Expand tool</span></div>
+                <div class="fg-item"><b>&#8984;K</b><span class="c"> : </span><span class="d">Commands</span></div>
+                <div class="fg-item"><b>&#8679;&#8629;</b><span class="c"> : </span><span class="d">Newline</span></div>
+              </div>
+              <div class="fg-hcol">
+                <div class="fg-item"><b>Esc</b><span class="c"> : </span><span class="d">Cancel current action</span></div>
+                <div class="fg-item"><b>Ctrl+C</b><span class="c"> : </span><span class="d">Quit</span></div>
+                <div class="fg-item"><b>?</b><span class="c"> : </span><span class="d">Toggle help</span></div>
+                <div class="fg-item"><b>&#8984;&#8592; / &#8594;</b><span class="c"> : </span><span class="d">Panes</span></div>
+                <div class="fg-item"><b>Right &#8984;</b><span class="c"> : </span><span class="d">Dictate</span></div>
+              </div>
+            </div>
+            <div class="fg-hintline">&#8629; send &middot; &#8679;&#8629; newline &middot; &#8984;&#8629; send from anywhere in the box</div>
+          </div>
+
+          <div class="fg-hview v-slash">
+            <div class="fg-cols">
+              <div class="fg-hcol">
+                <div class="fg-item"><span class="s">/config</span><span class="c"> : </span><span class="d">forge.toml keys</span></div>
+                <div class="fg-item"><span class="s">/effort</span><span class="c"> : </span><span class="d">reasoning effort</span></div>
+                <div class="fg-item"><span class="s">/extensions</span><span class="c"> : </span><span class="d">plugins and MCP servers</span></div>
+                <div class="fg-item"><span class="s">/model</span><span class="c"> : </span><span class="d">switch the model</span></div>
+                <div class="fg-item"><span class="s">/diff</span><span class="c"> : </span><span class="d">review the branch</span></div>
+              </div>
+              <div class="fg-hcol">
+                <div class="fg-item"><span class="s">/usage</span><span class="c"> : </span><span class="d">tokens and cost</span></div>
+                <div class="fg-item"><span class="s">/gateway</span><span class="c"> : </span><span class="d">the account pool</span></div>
+                <div class="fg-item"><span class="s">/launchpad</span><span class="c"> : </span><span class="d">project picker</span></div>
+                <div class="fg-item"><span class="s">/spinner</span><span class="c"> : </span><span class="d">spinner style</span></div>
+                <div class="fg-item"><span class="s">/quit</span><span class="c"> : </span><span class="d">exit forge</span></div>
+              </div>
+            </div>
+            <div class="fg-hintline">&#8593;&#8595; scroll &middot; 24 commands from this session's plugins</div>
+          </div>
+
+          <div class="fg-hview v-sub">
+            <div class="fg-cols">
+              <div class="fg-hcol">
+                <div class="fg-item"><b>code-reviewer</b><span class="c"> : </span><span class="d">pr-review-toolkit</span></div>
+                <div class="fg-item"><b>silent-failure-hunter</b><span class="c"> : </span><span class="d">pr-review-toolkit</span></div>
+                <div class="fg-item"><b>rust-review-worker</b><span class="c"> : </span><span class="d">rust-review</span></div>
+                <div class="fg-item"><b>code-explorer</b><span class="c"> : </span><span class="d">feature-dev</span></div>
+              </div>
+              <div class="fg-hcol">
+                <div class="fg-item"><b>Explore</b><span class="c"> : </span><span class="d">built in</span></div>
+                <div class="fg-item"><b>Plan</b><span class="c"> : </span><span class="d">built in</span></div>
+                <div class="fg-item"><b>legacy-analyst</b><span class="c"> : </span><span class="d">code-modernization</span></div>
+                <div class="fg-item"><b>code-architect</b><span class="c"> : </span><span class="d">feature-dev</span></div>
+              </div>
+            </div>
+            <div class="fg-hintline">&#8593;&#8595; scroll &middot; 12 subagents installed</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="fg-comp">
+        <div class="fg-box">
+          <span>&#10148;</span><span class="fg-ph">Type a message...</span><span class="fg-send">&#8593;</span>
+        </div>
+        <div class="fg-hints"><span>&#8984;K commands</span><span>&#8679;&#8629; newline</span><span>&#8984;&#8629; send</span></div>
+      </div>
+    </div>
+
+    <div class="fg-right">
+      <div class="fg-sec">
+        <h4>Git</h4>
+        <div class="fg-sub">~/Projects/forge</div>
+        <div class="fg-sub">&#9095; main</div>
+      </div>
+      <div class="fg-sec" style="margin-top:14px;">
+        <h4>Tasks</h4>
+        <div class="fg-r"><span class="k" style="font-size:11.5px;">Nothing queued</span></div>
+        <div class="fg-sub" style="font-family:system-ui,sans-serif;padding-top:4px;white-space:normal;">The list is empty until a plan runs.</div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>

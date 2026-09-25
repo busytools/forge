@@ -1,0 +1,384 @@
+<div style="background:#04050a;padding:26px;border-radius:12px;">
+<style>
+  .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
+  .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --avail:#5b9cf8;
+    position:relative; background:#04050a; color:var(--text); border-radius:14px; overflow:hidden;
+    border:1px solid var(--line); font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    box-shadow:0 40px 110px rgba(0,0,0,.8); }
+  .fg::after { content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(880px 400px at 12% -10%, rgba(244,118,0,.10), transparent 62%),
+               radial-gradient(700px 380px at 94% 110%, rgba(91,156,248,.07), transparent 60%); }
+  .fg-radio { display:none; }
+  .fg-chrome { display:flex; align-items:center; gap:7px; padding:10px 14px; background:rgba(8,10,16,.92); border-bottom:1px solid var(--line); }
+  .fg-dot { width:11px; height:11px; border-radius:50%; }
+  .fg-url { margin-left:12px; font-size:11px; color:var(--dim); background:var(--s2); border:1px solid var(--line); border-radius:7px; padding:4px 12px; }
+  .fg-x { margin-left:auto; font-size:13px; color:var(--dim); cursor:pointer; padding:2px 7px; border-radius:7px; border:1px solid var(--line); }
+
+  .fg-body { position:relative; z-index:1; }
+  .fg-tabs { display:flex; gap:4px; padding:12px 14px; border-bottom:1px solid var(--line); background:rgba(8,10,16,.5); }
+  .fg-tab { font-size:11.5px; color:var(--text); font-weight:700; padding:6px 12px; border-radius:8px; cursor:pointer; user-select:none; }
+  .fg-tab:hover { background:var(--s2); }
+  .fg-tab .n { font-size:10px; color:var(--dim); margin-left:6px; font-weight:500; font-variant-numeric:tabular-nums; }
+  #ex-installed:checked ~ .fg .fg-body .fg-tab[for=ex-installed],
+  #ex-skills:checked ~ .fg .fg-body .fg-tab[for=ex-skills],
+  #ex-agents:checked ~ .fg .fg-body .fg-tab[for=ex-agents],
+  #ex-commands:checked ~ .fg .fg-body .fg-tab[for=ex-commands],
+  #ex-hooks:checked ~ .fg .fg-body .fg-tab[for=ex-hooks],
+  #ex-lsp:checked ~ .fg .fg-body .fg-tab[for=ex-lsp],
+  #ex-mcps:checked ~ .fg .fg-body .fg-tab[for=ex-mcps],
+  #ex-market:checked ~ .fg .fg-body .fg-tab[for=ex-market] { background:var(--accent); color:#140b02; }
+  #ex-installed:checked ~ .fg .fg-body .fg-tab[for=ex-installed] .n,
+  #ex-skills:checked ~ .fg .fg-body .fg-tab[for=ex-skills] .n,
+  #ex-agents:checked ~ .fg .fg-body .fg-tab[for=ex-agents] .n,
+  #ex-commands:checked ~ .fg .fg-body .fg-tab[for=ex-commands] .n,
+  #ex-hooks:checked ~ .fg .fg-body .fg-tab[for=ex-hooks] .n,
+  #ex-lsp:checked ~ .fg .fg-body .fg-tab[for=ex-lsp] .n,
+  #ex-mcps:checked ~ .fg .fg-body .fg-tab[for=ex-mcps] .n,
+  #ex-market:checked ~ .fg .fg-body .fg-tab[for=ex-market] .n { color:rgba(20,11,2,.7); }
+
+  .fg-pane { display:none; }
+  #ex-installed:checked ~ .fg .fg-body #p-installed,
+  #ex-skills:checked ~ .fg .fg-body #p-skills,
+  #ex-agents:checked ~ .fg .fg-body #p-agents,
+  #ex-commands:checked ~ .fg .fg-body #p-commands,
+  #ex-hooks:checked ~ .fg .fg-body #p-hooks,
+  #ex-lsp:checked ~ .fg .fg-body #p-lsp,
+  #ex-mcps:checked ~ .fg .fg-body #p-mcps,
+  #ex-market:checked ~ .fg .fg-body #p-market { display:block; }
+
+  .fg-actrow { display:flex; align-items:center; gap:18px; padding:10px 16px; border-bottom:1px solid var(--line); font-size:11.5px; color:var(--muted); }
+  .fg-actrow .u { color:var(--text); cursor:pointer; }
+  .fg-actrow .u b { color:var(--accent); }
+  .fg-actrow .a { color:var(--dim); cursor:pointer; }
+  .fg-actrow .a b { color:var(--accent); }
+  .fg-actrow .rt { margin-left:auto; color:var(--dim); font-size:10.5px; }
+
+  .fg-list { padding:6px 8px 10px; }
+  .fg-row { display:flex; align-items:baseline; gap:12px; padding:7px 8px 7px 4px; border-radius:8px; font-size:12.5px; }
+  .fg-row:hover { background:rgba(40,48,66,.28); }
+  .fg-row .gut { width:14px; flex:0 0 14px; text-align:center; }
+  .fg-row .nm { width:34%; flex:0 0 34%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; }
+  .fg-row .src { width:20%; flex:0 0 20%; color:var(--dim); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fg-row .st { width:22%; flex:0 0 22%; color:var(--dim); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fg-row .badge { font-size:10px; color:var(--warn); }
+  .fg-row .tag { font-size:10px; color:var(--avail); border:1px solid rgba(91,156,248,.4); border-radius:5px; padding:1px 6px; }
+  .fg-row .act { margin-left:auto; font-size:11.5px; color:var(--accent); cursor:pointer; }
+  .fg-row .cost { margin-left:auto; font-size:11px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; }
+  .fg-row.avail .nm { font-weight:400; color:var(--muted); }
+  .fg-row.avail .st { color:var(--avail); }
+  .fg-row.sel { background:rgba(244,118,0,.07); }
+  .fg-row.sel .gut::before { content:"\203A"; color:var(--accent); }
+  .g-ok { color:var(--ok); } .g-warn { color:var(--warn); } .g-no { color:var(--avail); } .g-bad { color:var(--bad); } .g-dim { color:var(--dim); }
+  .fg-sep { margin:8px 8px 4px; border-top:1px solid var(--line); }
+  .fg-caprow { padding:8px 8px 2px; font-size:10px; letter-spacing:.15em; color:var(--dim); text-transform:uppercase; font-weight:600; }
+  .fg-trunc { font-size:11.5px; color:var(--dim); }
+  .fg-hints { display:flex; align-items:center; gap:16px; padding:11px 16px; border-top:1px solid var(--line); font-size:10.5px; color:var(--dim); background:rgba(13,17,26,.7); }
+  .fg-hints b { color:var(--accent); font-weight:700; cursor:pointer; }
+
+  .fg-floatwrap { position:absolute; inset:0; z-index:6; background:rgba(4,5,10,.55); backdrop-filter:blur(9px) saturate(.8); display:none; align-items:center; justify-content:center; }
+  #ex-plugin:checked ~ .fg .fg-body .fw-plugin,
+  #ex-server:checked ~ .fg .fg-body .fw-server { display:flex; }
+  .fg-backdrop { position:absolute; inset:0; cursor:pointer; }
+  .fg-float { position:relative; z-index:1; width:600px; border:1px solid #2b3448; border-radius:14px; overflow:hidden;
+    background:linear-gradient(180deg,rgba(28,34,48,.97),rgba(16,20,30,.99));
+    box-shadow:0 50px 120px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.05); }
+  .fg-fh { display:flex; align-items:baseline; gap:10px; padding:13px 16px; border-bottom:1px solid var(--line); }
+  .fg-fh b { font-size:12.5px; color:var(--accent); }
+  .fg-fh i { font-style:normal; font-size:10.5px; color:var(--dim); }
+  .fg-fh .cls { margin-left:auto; font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:6px; padding:2px 7px; cursor:pointer; }
+  .fg-fb { padding:11px 16px 13px; }
+  .fg-op { display:flex; align-items:baseline; gap:10px; font-size:12.5px; padding:5px 0; color:var(--muted); }
+  .fg-op .g { width:12px; flex:0 0 12px; color:var(--dim); }
+  .fg-op.on { color:var(--text); }
+  .fg-kv { display:flex; gap:12px; font-size:12px; padding:3.5px 0; }
+  .fg-kv .k { width:104px; color:var(--dim); }
+  .fg-kv .v { color:var(--muted); }
+  .fg-note { font-size:11.5px; color:var(--dim); line-height:1.6; padding-top:6px; }
+  .fg-ffoot { display:flex; gap:14px; padding:10px 16px; border-top:1px solid var(--line); font-size:10.5px; color:var(--dim); }
+  .fg-ffoot b { color:var(--accent); font-weight:700; cursor:pointer; }
+</style>
+
+<input class="fg-radio" type="radio" name="ex" id="ex-installed" checked>
+<input class="fg-radio" type="radio" name="ex" id="ex-skills">
+<input class="fg-radio" type="radio" name="ex" id="ex-agents">
+<input class="fg-radio" type="radio" name="ex" id="ex-commands">
+<input class="fg-radio" type="radio" name="ex" id="ex-hooks">
+<input class="fg-radio" type="radio" name="ex" id="ex-lsp">
+<input class="fg-radio" type="radio" name="ex" id="ex-mcps">
+<input class="fg-radio" type="radio" name="ex" id="ex-market">
+<input class="fg-radio" type="checkbox" id="ex-plugin">
+<input class="fg-radio" type="checkbox" id="ex-server">
+
+<div class="fg">
+  <div class="fg-chrome">
+    <span class="fg-dot" style="background:#ff5f57;"></span>
+    <span class="fg-dot" style="background:#febc2e;"></span>
+    <span class="fg-dot" style="background:#28c840;"></span>
+    <span class="fg-url">localhost:7777 &nbsp;&middot;&nbsp; forge &nbsp;&middot;&nbsp; /extensions</span>
+    <span class="fg-x">&#10005;</span>
+  </div>
+
+  <div class="fg-body">
+    <div class="fg-tabs">
+      <label class="fg-tab" for="ex-installed">Installed<span class="n">19</span></label>
+      <label class="fg-tab" for="ex-skills">Skills<span class="n">74</span></label>
+      <label class="fg-tab" for="ex-agents">Agents<span class="n">12</span></label>
+      <label class="fg-tab" for="ex-commands">Commands<span class="n">31</span></label>
+      <label class="fg-tab" for="ex-hooks">Hooks<span class="n">6</span></label>
+      <label class="fg-tab" for="ex-lsp">LSP<span class="n">3</span></label>
+      <label class="fg-tab" for="ex-mcps">MCPs<span class="n">5</span></label>
+      <label class="fg-tab" for="ex-market">Marketplaces<span class="n">3</span></label>
+    </div>
+
+    <div class="fg-actrow">
+      <span class="u">Update all (u) <b>(4)</b></span>
+      <span class="a">Available (a) <b>+27</b></span>
+      <span class="rt">c check &middot; r refresh</span>
+    </div>
+
+    <div class="fg-pane" id="p-installed">
+      <div class="fg-list">
+        <div class="fg-row sel">
+          <span class="gut"></span>
+          <span class="nm">superpowers</span>
+          <span class="src">busytools-plugins</span>
+          <span class="st">installed</span>
+          <label class="act" for="ex-plugin">Update</label>
+        </div>
+        <div class="fg-row">
+          <span class="gut g-warn">&#9888;&#65038;</span>
+          <span class="nm">rust-review</span>
+          <span class="src">busytools-plugins</span>
+          <span class="st">1.4.0 &rarr; 1.6.2 available</span>
+          <span class="tag">[restart required]</span>
+          <label class="act" for="ex-plugin">Update</label>
+        </div>
+        <div class="fg-row">
+          <span class="gut g-ok">&#10003;</span>
+          <span class="nm">feature-dev</span>
+          <span class="src">busytools-plugins</span>
+          <span class="st">installed</span>
+          <span class="cost">2.4k tokens always-on</span>
+        </div>
+        <div class="fg-row">
+          <span class="gut g-ok">&#10003;</span>
+          <span class="nm">pensive</span>
+          <span class="src">busytools-plugins</span>
+          <span class="st">installed</span>
+          <label class="act" for="ex-plugin">Update</label>
+        </div>
+        <div class="fg-row">
+          <span class="gut g-dim">&#10003;</span>
+          <span class="nm" style="color:var(--dim);font-weight:400;">leyline</span>
+          <span class="src">busytools-plugins</span>
+          <span class="st">installed</span>
+          <span class="badge">[auto-installed]</span>
+        </div>
+        <div class="fg-row">
+          <span class="gut g-bad">&#10007;</span>
+          <span class="nm">night-market</span>
+          <span class="src">busytools-plugins</span>
+          <span class="st">disabled</span>
+          <label class="act" for="ex-plugin">Enable</label>
+        </div>
+        <div class="fg-row">
+          <span class="gut g-bad">&#10007;</span>
+          <span class="nm">docs-tools</span>
+          <span class="src">local-dev</span>
+          <span class="st">cannot load: install directory is gone</span>
+          <label class="act" for="ex-plugin">Uninstall</label>
+        </div>
+        <div class="fg-sep"></div>
+        <div class="fg-caprow">Marketplace catalog</div>
+        <div class="fg-row avail">
+          <span class="gut g-no">-</span>
+          <span class="nm">claude-md-management</span>
+          <span class="src">busytools-plugins</span>
+          <span class="st">available</span>
+          <label class="act" for="ex-plugin">Install</label>
+        </div>
+        <div class="fg-row avail">
+          <span class="gut g-no">-</span>
+          <span class="nm">code-modernization</span>
+          <span class="src">busytools-plugins</span>
+          <span class="st">available</span>
+          <label class="act" for="ex-plugin">Install</label>
+        </div>
+        <div class="fg-row avail">
+          <span class="gut g-no">-</span>
+          <span class="nm">obsidian</span>
+          <span class="src">night-market</span>
+          <span class="st">available</span>
+          <label class="act" for="ex-plugin">Install</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="fg-pane" id="p-skills">
+      <div class="fg-list">
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">brainstorming</span><span class="src">superpowers</span><span class="st">installed</span><label class="act" for="ex-plugin">Update</label></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">writing-plans</span><span class="src">superpowers</span><span class="st">installed</span></div>
+        <div class="fg-row"><span class="gut g-warn">&#9888;&#65038;</span><span class="nm">unslop</span><span class="src">busytools-plugins</span><span class="st">1.1.0 &rarr; 1.2.0 available</span><label class="act" for="ex-plugin">Update</label></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">handoff</span><span class="src">busytools-plugins</span><span class="st">installed</span></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">rust-review</span><span class="src">rust-review</span><span class="st">installed</span></div>
+        <div class="fg-row"><span class="gut g-dim">&#10003;</span><span class="nm" style="color:var(--dim);font-weight:400;">git-platform</span><span class="src">leyline</span><span class="st">installed</span><span class="badge">[auto-installed]</span></div>
+        <div class="fg-sep"></div>
+        <div class="fg-row avail"><span class="gut g-no">-</span><span class="nm">modernize-assess</span><span class="src">code-modernization</span><span class="st">available</span><label class="act" for="ex-plugin">Install</label></div>
+        <div class="fg-row avail"><span class="gut g-no">-</span><span class="nm">obsidian-bases</span><span class="src">obsidian</span><span class="st">available</span><label class="act" for="ex-plugin">Install</label></div>
+      </div>
+    </div>
+
+    <div class="fg-pane" id="p-agents">
+      <div class="fg-list">
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">code-reviewer</span><span class="src">pr-review-toolkit</span><span class="st">installed</span></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">rust-review-worker</span><span class="src">rust-review</span><span class="st">installed</span></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">silent-failure-hunter</span><span class="src">pr-review-toolkit</span><span class="st">installed</span></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">code-explorer</span><span class="src">feature-dev</span><span class="st">installed</span></div>
+        <div class="fg-sep"></div>
+        <div class="fg-row avail"><span class="gut g-no">-</span><span class="nm">legacy-analyst</span><span class="src">code-modernization</span><span class="st">available</span><label class="act" for="ex-plugin">Install</label></div>
+      </div>
+    </div>
+
+    <div class="fg-pane" id="p-commands">
+      <div class="fg-list">
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">/loop</span><span class="src">busytools-plugins</span><span class="st">installed</span></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">/audit-claude</span><span class="src">busytools-plugins</span><span class="st">installed</span></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">/triage</span><span class="src">busytools-plugins</span><span class="st">installed</span></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">/unslop</span><span class="src">busytools-plugins</span><span class="st">installed</span></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">/rust-review</span><span class="src">rust-review</span><span class="st">installed</span></div>
+        <div class="fg-sep"></div>
+        <div class="fg-row avail"><span class="gut g-no">-</span><span class="nm">/modernize-map</span><span class="src">code-modernization</span><span class="st">available</span><label class="act" for="ex-plugin">Install</label></div>
+      </div>
+    </div>
+
+    <div class="fg-pane" id="p-hooks">
+      <div class="fg-list">
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">session-start</span><span class="src">busytools-plugins</span><span class="st">SessionStart, PreToolUse</span></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">guard-bash</span><span class="src">busytools-plugins</span><span class="st">PreToolUse</span></div>
+        <div class="fg-row"><span class="gut g-warn">&#9888;&#65038;</span><span class="nm">auto-format</span><span class="src">rust-review</span><span class="st">PostToolUse &middot; update available</span><label class="act" for="ex-plugin">Update</label></div>
+        <div class="fg-sep"></div>
+        <div class="fg-row avail"><span class="gut g-no">-</span><span class="nm">hook-eval</span><span class="src">abstract</span><span class="st">available</span><label class="act" for="ex-plugin">Install</label></div>
+      </div>
+    </div>
+
+    <div class="fg-pane" id="p-lsp">
+      <div class="fg-list">
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">rust-analyzer</span><span class="src">rust-review</span><span class="st">on PATH</span></div>
+        <div class="fg-row"><span class="gut g-bad">&#10007;</span><span class="nm">gopls</span><span class="src">busytools-plugins</span><span class="st">missing</span></div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">typescript-language-server</span><span class="src">feature-dev</span><span class="st">on PATH</span></div>
+        <div class="fg-sep"></div>
+        <div class="fg-row avail"><span class="gut g-no">-</span><span class="nm">pyright</span><span class="src">abstract</span><span class="st">available</span><label class="act" for="ex-plugin">Install</label></div>
+      </div>
+    </div>
+
+    <div class="fg-pane" id="p-mcps">
+      <div class="fg-list">
+        <div class="fg-row">
+          <span class="gut g-ok">&#9679;</span>
+          <span class="nm">forge</span>
+          <span class="src">sdk</span>
+          <span class="st">connected</span>
+          <label class="act" for="ex-server">details</label>
+        </div>
+        <div class="fg-trunc" style="padding:0 0 4px 26px;">18 tools &middot; in-process &middot; no version reported</div>
+        <div class="fg-row">
+          <span class="gut g-ok">&#9679;</span>
+          <span class="nm">context7</span>
+          <span class="src">dynamic</span>
+          <span class="st">connected</span>
+          <span class="tag">[stdio]</span>
+          <label class="act" for="ex-server">details</label>
+        </div>
+        <div class="fg-trunc" style="padding:0 0 4px 26px;">2 tools &middot; npm exec @upstash/context7-mcp</div>
+        <div class="fg-row">
+          <span class="gut g-ok">&#9679;</span>
+          <span class="nm">playwright-local</span>
+          <span class="src">user</span>
+          <span class="st">connected</span>
+          <span class="tag">[stdio]</span>
+          <label class="act" for="ex-server">details</label>
+        </div>
+        <div class="fg-trunc" style="padding:0 0 4px 26px;">24 tools &middot; npx @playwright/mcp@latest --extension</div>
+        <div class="fg-row">
+          <span class="gut g-no">&#9672;</span>
+          <span class="nm">playwright</span>
+          <span class="src">user</span>
+          <span class="st">pending</span>
+          <span class="tag">[stdio]</span>
+          <label class="act" for="ex-server">details</label>
+        </div>
+        <div class="fg-trunc" style="padding:0 0 4px 26px;">npx @playwright/mcp@latest</div>
+        <div class="fg-row">
+          <span class="gut g-bad">&#10007;</span>
+          <span class="nm">granite-ops</span>
+          <span class="src">project</span>
+          <span class="st">failed</span>
+          <span class="tag">[http]</span>
+          <label class="act" for="ex-server">details</label>
+        </div>
+        <div class="fg-trunc" style="padding:0 0 4px 26px;">connect refused &middot; https://ops.internal/mcp</div>
+      </div>
+    </div>
+
+    <div class="fg-pane" id="p-market">
+      <div class="fg-list">
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">busytools-plugins</span><span class="src">github</span><span class="st">healthy - 19 plugins</span></div>
+        <div class="fg-trunc" style="padding:0 0 4px 26px;">github.com/busytools/plugins</div>
+        <div class="fg-row"><span class="gut g-ok">&#10003;</span><span class="nm">rust-review</span><span class="src">github</span><span class="st">healthy - 1 plugin</span></div>
+        <div class="fg-trunc" style="padding:0 0 4px 26px;">github.com/busytools/rust-review-marketplace</div>
+        <div class="fg-row"><span class="gut g-warn">&#9888;&#65038;</span><span class="nm">local-dev</span><span class="src">directory</span><span class="st">registry drift - installLocation outside the config dir</span><label class="act" for="ex-plugin">Repair</label></div>
+        <div class="fg-trunc" style="padding:0 0 4px 26px;">~/Projects/local-plugins</div>
+        <div class="fg-row" style="color:var(--dim);cursor:pointer;"><span class="gut">+</span><span class="nm" style="color:var(--dim);font-weight:400;">Add marketplace</span></div>
+      </div>
+    </div>
+
+    <div class="fg-hints">
+      <span><b>&#8593;&#8595;</b> move</span>
+      <span><b>Enter</b> actions</span>
+      <span><b>a</b> available</span>
+      <span><b>u</b> update all</span>
+      <span><b>c</b> check</span>
+      <span><b>r</b> refresh</span>
+      <span style="margin-left:auto;">Esc close</span>
+    </div>
+
+    <div class="fg-floatwrap fw-plugin">
+      <label class="fg-backdrop" for="ex-plugin"></label>
+      <div class="fg-float">
+        <div class="fg-fh"><b>superpowers</b><i>1.7.2 &middot; busytools-plugins</i><label class="cls" for="ex-plugin">esc</label></div>
+        <div class="fg-fb">
+          <div class="fg-op"><span class="g"></span>Update</div>
+          <div class="fg-op"><span class="g"></span>Roll back to previous version</div>
+          <div class="fg-op on"><span class="g"></span>Disable</div>
+          <div class="fg-op"><span class="g"></span>Install in current project</div>
+          <div class="fg-op"><span class="g"></span>Uninstall</div>
+          <div class="fg-note">Removes superpowers and its 14 skills. Every component goes with the plugin; the CLI cannot remove one alone.</div>
+        </div>
+        <div class="fg-ffoot"><span><b>&#8593;&#8595;</b> move</span><span><b>Enter</b> run</span><span><b>Esc</b> close</span></div>
+      </div>
+    </div>
+
+    <div class="fg-floatwrap fw-server">
+      <label class="fg-backdrop" for="ex-server"></label>
+      <div class="fg-float">
+        <div class="fg-fh"><b>granite-ops</b><i>failed</i><label class="cls" for="ex-server">esc</label></div>
+        <div class="fg-fb">
+          <div class="fg-kv"><span class="k">status</span><span class="v" style="color:var(--bad);">failed &middot; connect refused</span></div>
+          <div class="fg-kv"><span class="k">enabled</span><span class="v">yes</span></div>
+          <div class="fg-kv"><span class="k">scope</span><span class="v">project</span></div>
+          <div class="fg-kv"><span class="k">transport</span><span class="v">http</span></div>
+          <div class="fg-kv"><span class="k">tools</span><span class="v">unknown - the server never answered</span></div>
+          <div class="fg-kv" style="align-items:flex-start;"><span class="k">config</span><span class="v" style="font-family:ui-monospace,Menlo,monospace;font-size:11.5px;">{ "type": "http",<br>&nbsp;&nbsp;"url": "https://ops.internal/mcp" }</span></div>
+          <div class="fg-op" style="padding-top:10px;"><span class="g"></span>Refresh</div>
+          <div class="fg-op"><span class="g"></span>Reconnect</div>
+          <div class="fg-op"><span class="g"></span>Disable</div>
+        </div>
+        <div class="fg-ffoot"><span><b>&#8593;&#8595;</b> move</span><span><b>Enter</b> run</span><span><b>Esc</b> close</span></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</div>

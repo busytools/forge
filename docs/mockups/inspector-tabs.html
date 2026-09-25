@@ -1,0 +1,417 @@
+<div style="background:#04050a;padding:22px;border-radius:12px;">
+<style>
+  .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
+  .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --addressed:#61a0e0;
+    --k-read:#5b9cf8; --k-search:#4ec9b0; --k-bash:#f47600; --k-edit:#b48ce0; --k-mcp:#4ec9c9;
+    position:relative; background:#04050a; color:var(--text); border-radius:14px; overflow:hidden;
+    border:1px solid var(--line); font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    box-shadow:0 40px 110px rgba(0,0,0,.8); }
+  .fg::after { content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(880px 400px at 12% -10%, rgba(244,118,0,.11), transparent 62%),
+               radial-gradient(700px 380px at 94% 110%, rgba(91,156,248,.07), transparent 60%); }
+  .fg-chrome { display:flex; align-items:center; gap:7px; padding:10px 14px; background:rgba(8,10,16,.92); border-bottom:1px solid var(--line); }
+  .fg-dot { width:11px; height:11px; border-radius:50%; }
+  .fg-url { margin-left:12px; font-size:11px; color:var(--dim); background:var(--s2); border:1px solid var(--line); border-radius:7px; padding:4px 12px; }
+  .fg-body { display:flex; height:636px; position:relative; z-index:1; }
+
+  .fg-left { width:252px; background:linear-gradient(180deg,rgba(20,25,38,.8),rgba(13,17,26,.96)); border-right:1px solid var(--line); display:flex; flex-direction:column; }
+  .fg-org { padding:14px 15px 7px; font-size:10px; letter-spacing:.17em; color:var(--dim); text-transform:uppercase; }
+  .fg-p { padding:9px 15px; display:flex; align-items:center; gap:10px; position:relative; }
+  .fg-p.on { background:linear-gradient(90deg,rgba(244,118,0,.15),transparent 85%); }
+  .fg-p.on::before { content:""; position:absolute; left:0; top:6px; bottom:6px; width:2px; border-radius:0 3px 3px 0; background:var(--accent); box-shadow:0 0 16px rgba(244,118,0,.85); animation:breathe 2.6s ease-in-out infinite; }
+  @keyframes breathe { 0%,100%{opacity:.7} 50%{opacity:1} }
+  .fg-pn { font-size:13px; }
+  .fg-pc { margin-left:auto; font-size:10px; color:var(--dim); background:var(--s3); border-radius:99px; padding:1px 8px; font-variant-numeric:tabular-nums; }
+  .fg-s { padding:6.5px 15px 6.5px 34px; font-size:12px; color:var(--muted); display:flex; align-items:center; gap:9px; }
+  .fg-s.live { color:var(--text); }
+  .fg-dot2 { width:6px; height:6px; border-radius:50%; background:var(--ok); box-shadow:0 0 10px var(--ok); animation:fgp 1.8s ease-in-out infinite; flex:0 0 6px; }
+  @keyframes fgp { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.3;transform:scale(.75)} }
+  .fg-idle { width:6px; height:6px; border-radius:50%; background:#2a3346; flex:0 0 6px; }
+  .fg-prof { margin-top:auto; border-top:1px solid var(--line); padding:13px 15px 15px; background:linear-gradient(180deg,transparent,rgba(244,118,0,.05)); }
+  .fg-acct { display:flex; align-items:center; gap:9px; margin-bottom:11px; }
+  .fg-av { width:23px; height:23px; border-radius:8px; background:conic-gradient(from 210deg,#f47600,#ff9a3c,#b48ce0,#f47600); display:flex; align-items:center; justify-content:center; font-size:11px; color:#140b02; font-weight:700; }
+  .fg-an { font-size:12px; } .fg-ao { font-size:10px; color:var(--dim); }
+  .fg-meta { display:flex; flex-direction:column; gap:5px; margin-bottom:12px; }
+  .fg-mr { display:flex; align-items:center; font-size:11.5px; color:var(--dim); }
+  .fg-mr b { color:var(--text); font-weight:500; margin-left:auto; }
+  .fg-pill { margin-left:auto; font-size:10px; padding:1.5px 9px; border-radius:99px; background:rgba(201,161,59,.14); color:var(--warn); border:1px solid rgba(201,161,59,.32); }
+  .fg-gauge { margin-bottom:10px; }
+  .fg-gl { display:flex; font-size:10px; color:var(--dim); margin-bottom:4.5px; letter-spacing:.05em; }
+  .fg-gl span:last-child { margin-left:auto; font-variant-numeric:tabular-nums; }
+  .fg-g { height:5px; border-radius:99px; background:var(--s3); overflow:hidden; }
+  .fg-g i { display:block; height:100%; border-radius:99px; }
+  .fg-c i { width:38%; background:linear-gradient(90deg,var(--k-read),#8fc0ff); }
+  .fg-h i { width:15%; background:linear-gradient(90deg,var(--ok),#a9dd93); }
+  .fg-d i { width:89%; background:linear-gradient(90deg,var(--ok),#c9a13b 45%,var(--bad) 75%,#c94b4b); }
+
+  .fg-mid { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .fg-mh { padding:13px 22px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:11px; background:rgba(13,17,26,.5); }
+  .fg-t { font-size:14.5px; font-weight:600; }
+  .fg-tag { font-size:10.5px; padding:2.5px 10px; border-radius:99px; border:1px solid rgba(244,118,0,.38); background:rgba(244,118,0,.1); color:var(--accent); }
+  .fg-meta2 { margin-left:auto; display:flex; gap:7px; }
+  .fg-chip { font-size:10.5px; color:var(--muted); background:var(--s2); border:1px solid var(--line); border-radius:99px; padding:3px 11px; }
+  .fg-scroll { flex:1; overflow-y:auto; padding:22px; }
+  .fg-scroll::-webkit-scrollbar, .fg-iscroll::-webkit-scrollbar { width:8px; }
+  .fg-scroll::-webkit-scrollbar-thumb, .fg-iscroll::-webkit-scrollbar-thumb { background:#222a3c; border-radius:99px; }
+  .fg-m { display:flex; gap:12px; margin-bottom:22px; }
+  .fg-av2 { width:26px; height:26px; border-radius:9px; flex:0 0 26px; display:flex; align-items:center; justify-content:center; font-size:11px; }
+  .fg-av2.a { background:conic-gradient(from 210deg,#f47600,#ff9a3c,#b48ce0,#f47600); color:#140b02; font-weight:700; }
+  .fg-av2.u { background:var(--s3); color:var(--muted); border:1px solid var(--line); }
+  .fg-w { font-size:10.5px; color:var(--dim); margin-bottom:6px; letter-spacing:.03em; }
+  .fg-tx { font-size:13.5px; line-height:1.7; }
+  .fg-tx code { font-family:ui-monospace,Menlo,monospace; font-size:12px; background:var(--s2); border:1px solid var(--line); border-radius:5px; padding:1.5px 6px; color:#9fc6ff; }
+  .fg-comp { border-top:1px solid var(--line); padding:14px 22px 16px; background:rgba(13,17,26,.6); }
+  .fg-box { border:1px solid var(--line); background:rgba(4,5,10,.85); border-radius:12px; padding:11px 14px; display:flex; align-items:center; gap:11px; }
+  .fg-ph { font-size:13px; color:var(--dim); }
+  .fg-send { margin-left:auto; width:27px; height:27px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#ff9a3c); color:#140b02; display:flex; align-items:center; justify-content:center; }
+
+  /* the inspector pane, now carrying its full section set as tabs */
+  .fg-right { width:292px; background:linear-gradient(180deg,rgba(20,25,38,.75),rgba(13,17,26,.96)); border-left:1px solid var(--line); display:flex; flex-direction:column; }
+  .fg-tabs { display:flex; flex-wrap:wrap; gap:2px; padding:11px 12px 9px; border-bottom:1px solid var(--line); }
+  .fg-tab { font-size:11px; color:var(--muted); padding:5px 9px; border-radius:8px; cursor:pointer; user-select:none; }
+  .fg-tab:hover { color:var(--text); background:var(--s2); }
+  .fg-tab .n { font-size:9.5px; color:var(--dim); margin-left:4px; font-variant-numeric:tabular-nums; }
+  .fg-radio { display:none; }
+  #fi-sessions:checked ~ .fg-body .fg-tab[for=fi-sessions],
+  #fi-processes:checked ~ .fg-body .fg-tab[for=fi-processes],
+  #fi-mcp:checked ~ .fg-body .fg-tab[for=fi-mcp],
+  #fi-subagents:checked ~ .fg-body .fg-tab[for=fi-subagents],
+  #fi-schedules:checked ~ .fg-body .fg-tab[for=fi-schedules],
+  #fi-gotify:checked ~ .fg-body .fg-tab[for=fi-gotify],
+  #fi-slack:checked ~ .fg-body .fg-tab[for=fi-slack],
+  #fi-tasks:checked ~ .fg-body .fg-tab[for=fi-tasks] { color:var(--accent); background:rgba(244,118,0,.11); }
+  .fg-panel { display:none; }
+  #fi-sessions:checked ~ .fg-body #fp-sessions,
+  #fi-processes:checked ~ .fg-body #fp-processes,
+  #fi-mcp:checked ~ .fg-body #fp-mcp,
+  #fi-subagents:checked ~ .fg-body #fp-subagents,
+  #fi-schedules:checked ~ .fg-body #fp-schedules,
+  #fi-gotify:checked ~ .fg-body #fp-gotify,
+  #fi-slack:checked ~ .fg-body #fp-slack,
+  #fi-tasks:checked ~ .fg-body #fp-tasks { display:block; }
+
+  /* NEEDS ATTENTION rides below the banner and above the tab body, never scrolling */
+  .fg-band { border-bottom:1px solid var(--line); padding:10px 15px 11px; background:rgba(224,104,62,.045); }
+  .fg-bh { display:flex; align-items:center; font-size:10px; letter-spacing:.15em; color:var(--muted); font-weight:600; text-transform:uppercase; margin-bottom:7px; }
+  .fg-bh span { margin-left:auto; color:var(--dim); letter-spacing:0; font-variant-numeric:tabular-nums; }
+  .fg-br { display:flex; align-items:baseline; gap:8px; font-size:11.5px; padding:2.5px 0; }
+  .fg-br .g { width:13px; flex:0 0 13px; font-size:10px; }
+  .fg-br .nm { font-weight:700; white-space:nowrap; flex:0 0 auto; }
+  .fg-br .role { color:var(--dim); white-space:nowrap; flex:0 0 auto; }
+  .fg-br .dt { color:var(--dim); margin-left:auto; font-size:10.5px; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
+  .fg-g-err { color:var(--bad); } .fg-g-wait { color:var(--warn); } .fg-g-rev { color:var(--addressed); }
+
+  .fg-iscroll { flex:1; overflow-y:auto; }
+  .fg-sec { padding:12px 15px 13px; border-bottom:1px solid var(--line); }
+  .fg-sec:last-child { border-bottom:none; }
+  .fg-sec h4 { display:flex; align-items:center; font-size:10px; letter-spacing:.15em; color:var(--dim); text-transform:uppercase; margin-bottom:8px; font-weight:600; }
+  .fg-sec h4 .rt { margin-left:auto; letter-spacing:0; display:flex; gap:6px; align-items:center; }
+  .fg-owl { cursor:pointer; color:var(--dim); font-size:11px; }
+  .fg-owl:hover { color:var(--text); }
+  .fg-badge { color:var(--addressed); font-size:10.5px; cursor:pointer; }
+  .fg-aff { cursor:pointer; color:var(--dim); font-size:11.5px; text-transform:none; letter-spacing:0; font-weight:400; }
+  .fg-aff:hover { color:var(--text); }
+  .fg-r { display:flex; align-items:center; gap:9px; font-size:12px; padding:4px 0; color:var(--muted); }
+  .fg-r .k { color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .fg-r .v { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--dim); }
+  .fg-mono { font-family:ui-monospace,Menlo,monospace; }
+  .fg-sub { font-size:11.5px; color:var(--dim); padding:2.5px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .fg-add { color:var(--ok); } .fg-del { color:var(--bad); }
+  .fg-layer { display:flex; align-items:center; font-size:11px; color:var(--muted); padding:7px 0 3px; }
+  .fg-layer .v { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:11px; }
+  .fg-filerow { display:flex; align-items:center; gap:7px; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--muted); padding:2.5px 0 2.5px 6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .fg-filerow .v { margin-left:auto; font-size:10.5px; }
+  .fg-dir { color:var(--dim); }
+  .fg-more { font-size:11px; color:var(--dim); font-style:italic; padding:3px 0 1px 6px; }
+  .fg-task { display:flex; gap:8px; font-size:11.5px; color:var(--muted); padding:4px 0; cursor:pointer; border-radius:6px; }
+  .fg-task:hover { color:var(--text); background:rgba(40,48,66,.35); }
+  .fg-task .g { width:12px; flex:0 0 12px; font-size:11px; }
+  .fg-task .body { min-width:0; flex:1; }
+  .fg-task .nm.done { color:var(--dim); text-decoration:line-through; }
+  .fg-task .nm.run { color:var(--text); font-weight:600; }
+  .fg-task .mt { font-size:10.5px; color:var(--dim); margin-top:2px; }
+  .fg-run { color:var(--accent); }
+
+  /* the task detail: full width, three quarters tall, Esc or a click outside dismisses it */
+  .fg-floatwrap { position:absolute; inset:0; z-index:5; background:rgba(4,5,10,.5); backdrop-filter:blur(9px) saturate(.8); display:none; align-items:center; justify-content:center; }
+  #fgtaskdetail:checked ~ .fg-floatwrap { display:flex; }
+  .fg-backdrop { position:absolute; inset:0; cursor:pointer; }
+  .fg-float { position:relative; z-index:1; width:78%; max-width:800px; border:1px solid #2b3448; border-radius:14px; overflow:hidden;
+    background:linear-gradient(180deg,rgba(28,34,48,.97),rgba(16,20,30,.99));
+    box-shadow:0 50px 120px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.05); cursor:default; }
+  .fg-fh { display:flex; align-items:center; gap:10px; padding:14px 18px; border-bottom:1px solid var(--line); }
+  .fg-fh h3 { font-size:13.5px; font-weight:600; }
+  .fg-fk { margin-left:auto; font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:6px; padding:2px 7px; }
+  .fg-fd { padding:15px 18px 17px; }
+  .fg-kv { display:flex; gap:10px; font-size:12px; padding:3px 0; }
+  .fg-kv .k { width:72px; color:var(--dim); }
+  .fg-kv .v { color:var(--muted); font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+  .fg-prose { font-size:12.5px; color:var(--muted); padding:10px 0 2px; line-height:1.6; }
+</style>
+
+<div class="fg">
+  <input class="fg-radio" type="radio" name="fginsp" id="fi-sessions" checked>
+  <input class="fg-radio" type="radio" name="fginsp" id="fi-processes">
+  <input class="fg-radio" type="radio" name="fginsp" id="fi-mcp">
+  <input class="fg-radio" type="radio" name="fginsp" id="fi-subagents">
+  <input class="fg-radio" type="radio" name="fginsp" id="fi-schedules">
+  <input class="fg-radio" type="radio" name="fginsp" id="fi-gotify">
+  <input class="fg-radio" type="radio" name="fginsp" id="fi-slack">
+  <input class="fg-radio" type="radio" name="fginsp" id="fi-tasks">
+  <input class="fg-radio" type="checkbox" id="fgtaskdetail">
+
+  <div class="fg-chrome">
+    <span class="fg-dot" style="background:#ff5f57;"></span>
+    <span class="fg-dot" style="background:#febc2e;"></span>
+    <span class="fg-dot" style="background:#28c840;"></span>
+    <span class="fg-url">localhost:7777 &nbsp;&middot;&nbsp; forge</span>
+  </div>
+
+  <div class="fg-body">
+    <div class="fg-left">
+      <div class="fg-org">Busytools</div>
+      <div class="fg-p on"><span class="fg-pn">forge</span><span class="fg-pc">4</span></div>
+      <div class="fg-s live"><span class="fg-dot2"></span>claude-tui</div>
+      <div class="fg-s"><span class="fg-idle"></span>disable-cleanup</div>
+      <div class="fg-s"><span class="fg-idle"></span>tool-family</div>
+      <div class="fg-s"><span class="fg-idle"></span>task-list</div>
+      <div class="fg-p"><span class="fg-pn">busymail</span><span class="fg-pc">2</span></div>
+      <div class="fg-p"><span class="fg-pn">hdp</span><span class="fg-pc">1</span></div>
+
+      <div class="fg-prof">
+        <div class="fg-acct">
+          <div class="fg-av">S</div>
+          <div><div class="fg-an">subspace</div><div class="fg-ao">Busytools</div></div>
+        </div>
+        <div class="fg-meta">
+          <div class="fg-mr">Mode <span class="fg-pill">auto</span></div>
+          <div class="fg-mr">Model <b>opus-5-5</b></div>
+          <div class="fg-mr">Effort <b>high</b></div>
+        </div>
+        <div class="fg-gauge fg-c"><div class="fg-gl"><span>CTX</span><span>38% &middot; 1M</span></div><div class="fg-g"><i></i></div></div>
+        <div class="fg-gauge fg-h"><div class="fg-gl"><span>5H</span><span>15% &middot; 4h 12m</span></div><div class="fg-g"><i></i></div></div>
+        <div class="fg-gauge fg-d"><div class="fg-gl"><span>7D</span><span>89% &middot; 2d 6h</span></div><div class="fg-g"><i></i></div></div>
+      </div>
+    </div>
+
+    <div class="fg-mid">
+      <div class="fg-mh">
+        <span class="fg-t">claude-tui</span>
+        <span class="fg-tag">opus-5-5</span>
+        <span class="fg-meta2"><span class="fg-chip">38% context</span><span class="fg-chip">main</span><span class="fg-chip">4 workers</span></span>
+      </div>
+      <div class="fg-scroll">
+        <div class="fg-m">
+          <div class="fg-av2 u">V</div>
+          <div style="flex:1;min-width:0;">
+            <div class="fg-w">Ved &middot; 12:04</div>
+            <div class="fg-tx">how many crates does this have, and are they layered?</div>
+          </div>
+        </div>
+        <div class="fg-m">
+          <div class="fg-av2 a">A</div>
+          <div style="flex:1;min-width:0;">
+            <div class="fg-w">Assistant &middot; 12:04</div>
+            <div class="fg-tx">Eleven, and the layering is acyclic. <code>forge-primitives</code> is the leaf and everything points down to it.</div>
+            <div class="fg-tx" style="color:var(--muted);margin-top:10px;font-size:13px;">Nothing above it depends on anything below; the inspector's GIT section is reading this worktree.</div>
+          </div>
+        </div>
+      </div>
+      <div class="fg-comp">
+        <div class="fg-box">
+          <span class="fg-ph">Ask anything, or type / for a command</span>
+          <span class="fg-send">&#8593;</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="fg-right">
+      <div class="fg-tabs">
+        <label class="fg-tab" for="fi-sessions">Sessions</label>
+        <label class="fg-tab" for="fi-processes">Processes</label>
+        <label class="fg-tab" for="fi-mcp">MCP</label>
+        <label class="fg-tab" for="fi-subagents">Subagents</label>
+        <label class="fg-tab" for="fi-schedules">Schedules</label>
+        <label class="fg-tab" for="fi-gotify">Gotify</label>
+        <label class="fg-tab" for="fi-slack">Slack</label>
+        <label class="fg-tab" for="fi-tasks">Tasks<span class="n">2/5</span></label>
+      </div>
+
+      <div class="fg-band">
+        <div class="fg-bh">Needs attention<span>4</span></div>
+        <div class="fg-br"><span class="g fg-g-err">&#10005;</span><span class="nm">gateway-backend</span><span class="dt">failed &middot; server_error HTTP 529 &middot; 3m</span></div>
+        <div class="fg-br"><span class="g fg-g-wait">&#9651;</span><span class="nm">stargate</span><span class="dt">question &middot; 20s</span></div>
+        <div class="fg-br"><span class="g fg-g-wait">&#9651;</span><span class="nm">core-v1</span><span class="role">(steward)</span><span class="dt">permission &middot; Bash &middot; 3m</span></div>
+        <div class="fg-br"><span class="g fg-g-rev">&#128172;</span><span class="nm">forge</span><span class="dt">review replies &middot; 2 &middot; 8m</span></div>
+      </div>
+
+      <div class="fg-iscroll">
+
+        <div class="fg-panel" id="fp-sessions">
+          <div class="fg-sec">
+            <h4>Git<span class="rt"><span class="fg-badge">&#128172; 2</span><span class="fg-owl" title="opens the diff overlay">&#129430;</span></span></h4>
+            <div class="fg-sub fg-mono">~/Projects/forge/.claude/worktrees/implementer</div>
+            <div class="fg-sub fg-mono"><span class="fg-dir">&#9095;</span> <span style="color:var(--accent);">implementer/issue-185-inspector-git-follows-focus</span></div>
+            <div class="fg-sub fg-mono"><span class="fg-dir">PR </span><span style="color:var(--accent);">#188</span><span class="fg-dir"> &rarr; closes #185</span></div>
+            <div class="fg-layer">uncommitted<span class="v"><span class="fg-add">+42</span> <span class="fg-del">-8</span></span></div>
+            <div class="fg-filerow"><span class="fg-dir">crates/forge-tui/src/ui</span></div>
+            <div class="fg-filerow"><span class="fg-dir">&#9492;&#9472;</span> inspector_pane.rs<span class="v"><span class="fg-add">+42</span> <span class="fg-del">-8</span></span></div>
+            <div class="fg-layer" style="padding-top:10px;">3 commits vs origin/main<span class="v"><span class="fg-add">+1667</span> <span class="fg-del">-1139</span></span></div>
+            <div class="fg-filerow"><span class="fg-dir">crates</span></div>
+            <div class="fg-filerow"><span class="fg-dir">&#9500;&#9472; forge-agent/src/env</span></div>
+            <div class="fg-filerow"><span class="fg-dir">&nbsp;&nbsp;&#9492;&#9472;</span> git_diff.rs<span class="v"><span class="fg-add">+648</span> <span class="fg-del">-559</span></span></div>
+            <div class="fg-filerow"><span class="fg-dir">&#9492;&#9472; forge-tui/src</span></div>
+            <div class="fg-filerow" style="padding-left:22px;"><span class="fg-dir">&#9500;&#9472;</span> app/diff_overlay.rs<span class="v"><span class="fg-add">+19</span> <span class="fg-del">-13</span></span></div>
+            <div class="fg-filerow" style="padding-left:22px;"><span class="fg-dir">&#9492;&#9472;</span> ui/inspector_pane.rs<span class="v"><span class="fg-add">+340</span> <span class="fg-del">-200</span></span></div>
+            <div class="fg-more">+22 more</div>
+          </div>
+          <div class="fg-sec">
+            <h4>Workers</h4>
+            <div class="fg-r"><span class="k">sessions-extract</span><span class="v">kind 3 &middot; building</span></div>
+            <div class="fg-r"><span class="k">tool-family</span><span class="v">merged</span></div>
+          </div>
+        </div>
+
+        <div class="fg-panel" id="fp-processes">
+          <div class="fg-sec">
+            <h4>Processes</h4>
+            <div class="fg-r" style="align-items:flex-start;">
+              <span class="fg-run">&#9656;</span><span style="color:var(--text);font-weight:600;font-size:12.5px;">Print marker in background</span><span class="v">local_bash</span>
+            </div>
+            <div class="fg-r" style="align-items:flex-start;">
+              <span class="fg-run">&#9656;</span><span style="color:var(--text);font-weight:600;font-size:12.5px;">Run unit tests</span><span class="v">1.2 GB</span>
+            </div>
+            <div class="fg-sub fg-mono" style="padding-left:6px;">&#9500;&#9472; cargo nextest run &middot; 256 MB</div>
+            <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492;&#9472; rustc --crate-name forge_tui &middot; 512 MB</div>
+            <div class="fg-r" style="align-items:flex-start;padding-top:8px;">
+              <span style="color:var(--muted);">&#9656;</span><span class="fg-mono" style="font-size:12px;">npm run build</span><span class="v">88 MB</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="fg-panel" id="fp-mcp">
+          <div class="fg-sec">
+            <h4>MCP servers<span class="rt"><span class="fg-aff" title="opens /extensions on the Mcps tab">&#9638;</span></span></h4>
+            <div class="fg-r"><span class="k">forge</span><span style="color:var(--ok);">&#9679;</span></div>
+            <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492;&#9472; sdk &middot; 18 tools</div>
+            <div class="fg-r" style="padding-top:7px;"><span class="k">context7</span><span style="color:var(--ok);">&#9679;</span></div>
+            <div class="fg-sub fg-mono" style="padding-left:6px;">&#9500;&#9472; dynamic &middot; 2 tools</div>
+            <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492;&#9472; npm exec @upstash/&#8230; &middot; 46 MB &middot; 47881</div>
+            <div class="fg-r" style="padding-top:7px;"><span class="k">playwright</span><span style="color:var(--k-read);">&#9672;</span></div>
+            <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492;&#9472; user &middot; pending</div>
+            <div class="fg-r" style="padding-top:7px;"><span class="k">granite-ops</span><span style="color:var(--bad);">&#10007;</span></div>
+            <div class="fg-sub fg-mono" style="padding-left:6px;">&#9492;&#9472; user &middot; connect refused</div>
+            <div class="fg-sub" style="padding-top:8px;">click through to /extensions</div>
+          </div>
+        </div>
+
+        <div class="fg-panel" id="fp-subagents">
+          <div class="fg-sec">
+            <h4>Subagents</h4>
+            <div class="fg-r" style="align-items:flex-start;padding-bottom:2px;">
+              <span class="fg-run">&#10307;</span><span style="color:var(--text);font-weight:600;font-size:12.5px;">&#9671; Explore &middot; map hidden tool calls</span>
+            </div>
+            <div class="fg-sub" style="padding-left:10px;"><span class="fg-mono">&#8981;</span> <b>Grep</b> &nbsp;<span class="fg-mono">SubagentChild</span></div>
+            <div class="fg-sub" style="padding-left:10px;"><span class="fg-mono">&#11034;</span> <b>Read</b> &nbsp;<span class="fg-mono">inspector_pane.rs</span></div>
+            <div class="fg-sub" style="padding-left:10px;"><span class="fg-mono">&#9654;</span> <b>Bash</b> &nbsp;<span class="fg-mono">git log --oneline -3</span></div>
+            <div class="fg-r" style="padding-top:10px;">
+              <span style="color:var(--ok);">&#10003;</span><span class="k" style="font-size:12.5px;">&#9671; code-reviewer &middot; review the diff</span><span class="v">&middot; 12 tools</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="fg-panel" id="fp-schedules">
+          <div class="fg-sec">
+            <h4>Schedules</h4>
+            <div class="fg-r"><span class="fg-run">&#9719;</span><span class="k">watching CI run</span><span class="v">&middot; in 8m</span></div>
+            <div class="fg-r" style="align-items:flex-start;padding-bottom:0;padding-top:7px;"><span class="fg-run">&#9780;</span><span class="k">Morning summary</span></div>
+            <div class="fg-sub fg-mono" style="padding-left:14px;">daily at 09:00 &nbsp;&middot;&nbsp; recurring</div>
+            <div class="fg-r" style="align-items:flex-start;padding-bottom:0;padding-top:9px;"><span class="fg-run">&#9780;</span><span class="k">Staging deploy</span></div>
+            <div class="fg-sub fg-mono" style="padding-left:14px;">today 14:30 &nbsp;&middot;&nbsp; in 2h10m</div>
+          </div>
+        </div>
+
+        <div class="fg-panel" id="fp-gotify">
+          <div class="fg-sec">
+            <h4>Gotify<span class="rt"><span class="fg-run">&#9672;</span><span style="color:var(--dim);letter-spacing:0;text-transform:none;font-weight:400;">connected</span></span></h4>
+            <div class="fg-sub" style="color:var(--text);font-weight:600;font-size:12px;">Beszel, Host, Backups, Security, Media</div>
+            <div class="fg-sub fg-mono" style="padding-left:14px;">priority &gt;=5</div>
+            <div class="fg-sub" style="color:var(--text);font-weight:600;font-size:12px;padding-top:8px;">Alerts, Deploys</div>
+            <div class="fg-sub fg-mono" style="padding-left:14px;">priority any</div>
+          </div>
+        </div>
+
+        <div class="fg-panel" id="fp-slack">
+          <div class="fg-sec">
+            <h4>Slack</h4>
+            <div class="fg-sub" style="color:var(--text);font-weight:600;font-size:12px;">Trust Machines <span class="fg-run">&#9672;</span></div>
+            <div class="fg-sub fg-mono" style="padding-left:14px;">direct messages</div>
+            <div class="fg-sub fg-mono" style="padding-left:14px;">mentions anywhere</div>
+            <div class="fg-sub fg-mono" style="padding-left:14px;">#granite-prod-aeusdc-alerts</div>
+            <div class="fg-sub fg-mono" style="padding-left:26px;">every message</div>
+            <div class="fg-sub fg-mono" style="padding-left:14px;">#granite-prod-usdcx-alerts</div>
+            <div class="fg-sub fg-mono" style="padding-left:26px;">every message</div>
+          </div>
+        </div>
+
+        <div class="fg-panel" id="fp-tasks">
+          <div class="fg-sec">
+            <h4>Tasks <span style="margin-left:6px;letter-spacing:0;color:var(--dim);font-weight:400;">&middot; 2/5</span></h4>
+            <label class="fg-task" for="fgtaskdetail">
+              <span class="g" style="color:var(--ok);">&#10003;</span>
+              <span class="body"><span class="nm done">Read the rate-limit code</span><span class="mt">steward</span></span>
+            </label>
+            <label class="fg-task" for="fgtaskdetail">
+              <span class="g" style="color:var(--ok);">&#10003;</span>
+              <span class="body"><span class="nm done">Add the soft-wording branch</span><span class="mt">steward &middot; PR #1173</span></span>
+            </label>
+            <label class="fg-task" for="fgtaskdetail">
+              <span class="g fg-run">&#10361;</span>
+              <span class="body"><span class="nm run">Adding tests for the near-threshold branch</span><span class="mt">steward &middot; 1d</span></span>
+            </label>
+            <label class="fg-task" for="fgtaskdetail">
+              <span class="g" style="color:var(--dim);">&#9675;</span>
+              <span class="body"><span class="nm">Run cargo nextest</span></span>
+            </label>
+            <label class="fg-task" for="fgtaskdetail">
+              <span class="g" style="color:var(--dim);">&#9675;</span>
+              <span class="body"><span class="nm">Open PR</span></span>
+            </label>
+            <div class="fg-sub" style="padding-top:9px;">click a row for that task's detail</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="fg-floatwrap">
+    <label class="fg-backdrop" for="fgtaskdetail"></label>
+    <div class="fg-float">
+      <div class="fg-fh">
+        <span class="fg-run" style="font-size:13px;">&#10361;</span>
+        <h3>Adding tests for the near-threshold branch</h3>
+        <span style="color:var(--dim);font-size:11px;">&middot; in progress &middot; 1d</span>
+        <span class="fg-fk">click outside to close</span>
+      </div>
+      <div class="fg-fd">
+        <div class="fg-kv"><span class="k">owner</span><span class="v">steward</span></div>
+        <div class="fg-kv"><span class="k">parent</span><span class="v">Add the soft-wording branch</span></div>
+        <div class="fg-kv"><span class="k">artifact</span><span class="v">PR #1173</span></div>
+        <div class="fg-kv"><span class="k">created</span><span class="v">2026-09-24T17:34:29Z</span></div>
+        <div class="fg-kv"><span class="k">updated</span><span class="v">2026-09-24T18:02:11Z</span></div>
+        <div class="fg-kv"><span class="k">status</span><span class="v">in progress</span></div>
+        <div class="fg-prose">The cap hid finished work; the store does not need one.</div>
+        <div class="fg-kv" style="padding-top:10px;"><span class="k">subtasks</span><span class="v">2</span></div>
+        <div style="padding-top:4px;">
+          <div class="fg-sub"><span style="color:var(--ok);">&#10003;</span> &nbsp;Wire the store into the section</div>
+          <div class="fg-sub"><span class="fg-run">&#10361;</span> &nbsp;Cover the two views</div>
+        </div>
+        <div style="margin-top:16px;font-size:11px;color:var(--dim);">esc close</div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>

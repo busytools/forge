@@ -1,0 +1,290 @@
+<div style="background:#04050a;padding:24px;border-radius:12px;">
+<style>
+  .d *, .d *::before, .d *::after { box-sizing:border-box; margin:0; }
+  .d { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c; --line2:#2b3448;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --addressed:#61a0e0; --cyan:#4ec9c9; --read:#5b9cf8;
+    position:relative; width:100%; max-width:1440px; margin:0 auto; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px;
+    box-shadow:0 40px 120px rgba(0,0,0,.85); }
+  .d::after { content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(900px 420px at 8% -8%, rgba(244,118,0,.09), transparent 62%),
+               radial-gradient(700px 420px at 97% 112%, rgba(91,156,248,.07), transparent 60%); }
+  .d-chrome { display:flex; align-items:center; gap:8px; padding:11px 16px; background:rgba(8,10,16,.94); border-bottom:1px solid var(--line); position:relative; z-index:1; }
+  .d-dot { width:11px; height:11px; border-radius:50%; }
+  .d-url { margin-left:14px; font-size:11.5px; color:var(--dim); background:var(--s2); border:1px solid var(--line); border-radius:8px; padding:5px 14px; font-family:ui-monospace,Menlo,monospace; }
+
+  .d-bar { display:flex; align-items:center; gap:12px; padding:13px 20px; border-bottom:1px solid var(--line); background:rgba(13,17,26,.5); position:relative; z-index:1; }
+  .d-title { font-size:15px; font-weight:650; letter-spacing:-.01em; }
+  .d-title .num { color:var(--accent); font-family:ui-monospace,Menlo,monospace; }
+  .d-ref { font-size:12px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; }
+  .d-ref .to { color:var(--muted); }
+  .d-tot { font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  .d-add { color:var(--ok); } .d-del { color:var(--bad); }
+  .d-bar .right { margin-left:auto; display:flex; align-items:center; gap:10px; }
+  .d-seg { display:flex; gap:2px; border:1px solid var(--line); border-radius:9px; padding:2px; background:rgba(4,5,10,.6); }
+  .d-seg label { font-size:11.5px; color:var(--muted); padding:5px 11px; border-radius:7px; cursor:pointer; }
+  .d-seg .seg-unified { background:var(--s3); color:var(--text); font-weight:600; }
+  #dsplit:checked ~ .d .seg-split { background:var(--s3); color:var(--text); font-weight:600; }
+  #dsplit:checked ~ .d .seg-unified { background:transparent; color:var(--muted); font-weight:400; }
+  .d-btn { font-size:12.5px; font-weight:600; border-radius:9px; padding:8px 15px; cursor:pointer; border:1px solid var(--line2); color:var(--muted); }
+  .d-btn.primary { border:none; color:#140b02; background:linear-gradient(135deg,var(--accent),#ff9a3c); box-shadow:0 8px 22px rgba(244,118,0,.28); }
+
+  .d-wrap { display:flex; height:800px; position:relative; z-index:1; }
+
+  .d-rail { width:268px; flex:0 0 268px; border-right:1px solid var(--line); display:flex; flex-direction:column; background:rgba(8,10,16,.4); }
+  .d-filter { margin:12px 12px 8px; border:1px solid var(--line); border-radius:9px; padding:8px 11px; font-size:12.5px; color:var(--dim); display:flex; align-items:center; gap:8px; background:rgba(4,5,10,.6); }
+  .d-filter svg { width:13px; height:13px; }
+  .d-files { flex:1; overflow-y:auto; padding:0 8px 10px; }
+  .d-files::-webkit-scrollbar { width:8px; } .d-files::-webkit-scrollbar-thumb { background:#222a3c; border-radius:99px; }
+  .d-dir { padding:8px 10px 4px; font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); font-weight:600; }
+  .d-file { display:flex; align-items:center; gap:9px; padding:7px 10px; border-radius:9px; cursor:pointer; }
+  .d-file:hover { background:rgba(40,48,66,.35); }
+  .d-file.on { background:rgba(244,118,0,.1); }
+  .d-file .st { width:12px; font-size:11px; font-weight:700; }
+  .d-file .nm { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .d-file.on .nm { color:var(--text); }
+  .d-file .cm { margin-left:auto; font-size:10px; color:var(--addressed); font-weight:600; }
+  .d-file .stt { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:10.5px; color:var(--dim); display:flex; gap:5px; }
+  .d-summary { border-top:1px solid var(--line); padding:13px 16px 15px; }
+  .d-summary .h { font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); font-weight:600; padding-bottom:9px; }
+  .d-summary .r { display:flex; align-items:center; gap:9px; font-size:12px; color:var(--muted); padding:4px 0; }
+  .d-summary .r b { margin-left:auto; color:var(--text); font-weight:600; }
+
+  .d-doc { flex:1; min-width:0; overflow-y:auto; background:rgba(4,5,10,.25); }
+  .d-doc::-webkit-scrollbar { width:9px; } .d-doc::-webkit-scrollbar-thumb { background:#222a3c; border-radius:99px; }
+  .d-fh { position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:11px; padding:11px 18px; background:rgba(27,33,48,.97); backdrop-filter:blur(6px); border-bottom:1px solid var(--line); }
+  .d-fh .caret { color:var(--dim); font-size:11px; }
+  .d-fh b { font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
+  .d-fh .tot { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+  .d-viewed { display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--muted); }
+  .d-viewed i { width:14px; height:14px; border-radius:4px; border:1.5px solid var(--line2); display:block; }
+  .d-hh { padding:6px 18px; font-family:ui-monospace,Menlo,monospace; font-size:12px; color:var(--cyan); background:rgba(78,201,201,.05); }
+  .d-exp { padding:5px 18px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:var(--dim); cursor:pointer; }
+  .d-exp:hover { color:var(--muted); background:rgba(40,48,66,.25); }
+  .d-ln { display:flex; font-family:ui-monospace,Menlo,monospace; font-size:12px; white-space:pre; }
+  .d-ln .n { width:46px; flex:0 0 46px; text-align:right; padding-right:10px; color:#4a5266; user-select:none; }
+  .d-ln .s { width:16px; flex:0 0 16px; color:var(--dim); }
+  .d-ln .tx { flex:1; min-width:0; }
+  .d-ln.a { background:rgba(3,58,22,.5); } .d-ln.a .s { color:var(--ok); }
+  .d-ln.d { background:rgba(103,6,12,.45); } .d-ln.d .s { color:var(--bad); }
+  .d-ln.a em { font-style:normal; background:rgba(130,199,107,.2); border-radius:3px; }
+  .d-ln.d em { font-style:normal; background:rgba(224,104,62,.2); border-radius:3px; }
+  .d-ln .kw { color:#c792ea; } .d-ln .ty { color:#82aaff; } .d-ln .fn { color:#82c76b; } .d-ln .st { color:#ecc48d; } .d-ln .cm2 { color:#5d6675; }
+  .d-split { display:flex; }
+  .d-split .half { width:50%; min-width:0; }
+  .d-split .half.right { border-left:1px solid var(--line); }
+  .d-split .hide { display:none; }
+  #dsplit:checked ~ .d .d-unified { display:none; }
+  #dsplit:checked ~ .d .d-splitonly { display:block; }
+  .d-splitonly { display:none; }
+
+  .d-thread { margin:8px 18px 12px 64px; border:1px solid var(--line2); border-radius:12px; background:rgba(13,17,26,.9); }
+  .d-th { display:flex; align-items:center; gap:9px; padding:10px 14px; border-bottom:1px solid var(--line); font-size:12px; }
+  .d-th .who { font-weight:650; }
+  .d-th .path { color:var(--dim); font-family:ui-monospace,Menlo,monospace; font-size:11px; }
+  .d-th .state { margin-left:auto; font-size:10px; letter-spacing:.08em; color:var(--addressed); border:1px solid rgba(97,160,224,.4); border-radius:6px; padding:2px 7px; }
+  .d-t { display:flex; gap:11px; padding:11px 14px 2px; font-size:13px; }
+  .d-t .av { width:24px; height:24px; border-radius:8px; flex:0 0 24px; display:grid; place-items:center; font-size:10px; font-weight:800; }
+  .d-t.me .av { background:var(--s3); color:var(--muted); border:1px solid var(--line); }
+  .d-t.them .av { background:linear-gradient(135deg,#5b9cf8,#4ec9c9); color:#08131c; }
+  .d-t .bd { line-height:1.62; color:var(--muted); }
+  .d-t .bd b { color:var(--text); }
+  .d-t .bd code { font-family:ui-monospace,Menlo,monospace; font-size:12px; background:var(--s2); border:1px solid var(--line); border-radius:5px; padding:1px 6px; color:#9fc6ff; }
+  .d-t .mt { font-size:11px; color:var(--dim); padding-top:3px; }
+  .d-tf { display:flex; align-items:center; gap:14px; padding:11px 14px; font-size:11.5px; color:var(--dim); }
+  .d-tf .ok { color:var(--ok); font-weight:600; }
+  .d-compose { margin:8px 18px 20px 64px; border:1px solid rgba(244,118,0,.5); border-radius:12px; overflow:hidden; background:rgba(4,5,10,.9); }
+  .d-compose .hd { display:flex; align-items:center; gap:9px; padding:9px 13px; border-bottom:1px solid var(--line); font-size:11px; color:var(--muted); }
+  .d-compose .hd .md { margin-left:auto; color:var(--dim); font-size:10.5px; }
+  .d-compose .bd { padding:12px 13px; font-size:13.5px; line-height:1.6; }
+  .d-compose .bd .cursor { display:inline-block; width:2px; height:15px; background:var(--accent); vertical-align:-2px; animation:dcursor 1.05s step-end infinite; }
+  @keyframes dcursor { 50%{opacity:0} }
+  .d-compose .ft { display:flex; align-items:center; gap:12px; padding:9px 13px; border-top:1px solid var(--line); font-size:11px; color:var(--dim); }
+  .d-compose .ft .save { color:#140b02; background:var(--accent); border-radius:7px; padding:5px 12px; font-weight:700; font-size:11.5px; }
+  .d-cap { font-size:11.5px; color:var(--dim); }
+
+  .d-panel { width:352px; flex:0 0 352px; border-left:1px solid var(--line); display:flex; flex-direction:column;
+    background:linear-gradient(180deg,rgba(20,25,38,.7),rgba(13,17,26,.96)); }
+  .d-ph { padding:15px 18px 12px; border-bottom:1px solid var(--line); }
+  .d-ph .h { font-size:13px; font-weight:650; display:flex; align-items:center; gap:9px; }
+  .d-ph .h span { margin-left:auto; font-size:11px; color:var(--dim); font-weight:400; }
+  .d-ph .sub { font-size:11.5px; color:var(--dim); padding-top:5px; }
+  .d-plist { flex:1; overflow-y:auto; padding:12px 14px; }
+  .d-plist::-webkit-scrollbar { width:8px; } .d-plist::-webkit-scrollbar-thumb { background:#222a3c; border-radius:99px; }
+  .d-pc { border:1px solid var(--line); border-radius:11px; padding:11px 12px; margin-bottom:10px; background:rgba(4,5,10,.45); }
+  .d-pc .top { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; }
+  .d-pc .top .dt { width:8px; height:8px; border-radius:50%; background:var(--accent); }
+  .d-pc .top .dt.th { background:var(--read); }
+  .d-pc .bd { font-size:12.5px; color:var(--muted); padding-top:6px; line-height:1.55; }
+  .d-pc .bd mark { background:rgba(244,118,0,.16); color:var(--text); border-radius:3px; padding:0 2px; }
+  .d-pc .bd code { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; background:var(--s2); border:1px solid var(--line); border-radius:5px; padding:1px 5px; color:#9fc6ff; }
+  .d-pc .st { font-size:10px; color:var(--dim); padding-top:7px; letter-spacing:.06em; }
+  .d-submit { border-top:1px solid var(--line); padding:14px 18px 16px; }
+  .d-ov { border:1px solid var(--line2); border-radius:11px; padding:11px 13px; font-size:13px; color:var(--dim); background:rgba(4,5,10,.6); line-height:1.6; }
+  .d-states { display:flex; gap:7px; padding-top:12px; }
+  .d-states .s { flex:1; text-align:center; font-size:11.5px; color:var(--muted); border:1px solid var(--line); border-radius:9px; padding:7px 0; cursor:pointer; }
+  .d-states .s.on { color:var(--text); border-color:rgba(244,118,0,.5); background:rgba(244,118,0,.08); font-weight:600; }
+  .d-sub { width:100%; margin-top:11px; text-align:center; font-size:13px; font-weight:650; color:#140b02; background:linear-gradient(135deg,var(--accent),#ff9a3c); border-radius:10px; padding:11px 0; cursor:pointer; }
+  .d-note { font-size:11px; color:var(--dim); padding-top:9px; line-height:1.55; }
+</style>
+
+<input type="checkbox" id="dsplit" style="display:none">
+
+<div class="d">
+  <div class="d-chrome">
+    <span class="d-dot" style="background:#ff5f57;"></span>
+    <span class="d-dot" style="background:#febc2e;"></span>
+    <span class="d-dot" style="background:#28c840;"></span>
+    <span class="d-url">forge.local/review/188</span>
+  </div>
+
+  <div class="d-bar">
+    <div class="d-title">Review <span class="num">#188</span></div>
+    <div class="d-ref">implementer/issue-185-inspector-tabs <span class="to">&#8594;</span> main</div>
+    <div class="d-tot"><span class="d-add">+1,808</span> <span class="d-del">-1,166</span> &middot; 5 files</div>
+    <div class="right">
+      <div class="d-seg">
+        <label for="dsplit" class="seg-split">Split</label>
+        <label for="dsplit" class="seg-unified">Unified</label>
+      </div>
+      <div class="d-btn">Resolve all</div>
+      <div class="d-btn primary">Submit review</div>
+    </div>
+  </div>
+
+  <div class="d-wrap">
+    <div class="d-rail">
+      <div class="d-filter">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+        Filter files, or type a path
+      </div>
+      <div class="d-files">
+        <div class="d-dir">crates/forge-tui/src/ui</div>
+        <div class="d-file on"><span class="st" style="color:var(--warn);">M</span><span class="nm">inspector_pane.rs</span><span class="cm">2</span></div>
+        <div class="d-file"><span class="st" style="color:var(--warn);">M</span><span class="nm">preflight.rs</span><span class="stt"><span class="d-add">+8</span><span class="d-del">-2</span></span></div>
+        <div class="d-dir">crates/forge-agent/src/env</div>
+        <div class="d-file"><span class="st" style="color:var(--warn);">M</span><span class="nm">git_diff.rs</span><span class="stt"><span class="d-add">+648</span><span class="d-del">-559</span></span></div>
+        <div class="d-file"><span class="st" style="color:var(--ok);">A</span><span class="nm">git_diff/hunks.rs</span><span class="stt"><span class="d-add">+120</span></span></div>
+        <div class="d-file"><span class="st" style="color:var(--bad);">D</span><span class="nm">ui/diff/old_split.rs</span><span class="stt"><span class="d-del">-120</span></span></div>
+        <div class="d-file" style="color:var(--dim);"><span class="st" style="color:var(--dim);">T</span><span class="nm" style="color:var(--dim);">ui/inspector_pane.rs</span><span class="stt">mode change</span></div>
+      </div>
+      <div class="d-summary">
+        <div class="h">Comments</div>
+        <div class="r"><span style="color:var(--accent);">&#9679;</span>Open<b>2</b></div>
+        <div class="r"><span style="color:var(--addressed);">&#9679;</span>Addressed<b>1</b></div>
+        <div class="r"><span style="color:var(--ok);">&#9679;</span>Resolved<b>3</b></div>
+        <div class="r" style="color:var(--dim);">Viewed<b>2 of 5</b></div>
+      </div>
+    </div>
+
+    <div class="d-doc">
+      <div class="d-fh">
+        <span class="caret">&#9662;</span>
+        <b>crates/forge-tui/src/ui/inspector_pane.rs</b>
+        <span class="tot"><span class="d-add">+42</span> <span class="d-del">-18</span></span>
+        <span class="d-viewed"><i></i>Viewed</span>
+      </div>
+
+      <div class="d-exp">&#8942;&#8942;&#8942; 12 unchanged lines &#8942;&#8942;&#8942;</div>
+
+      <div class="d-unified">
+        <div class="d-hh">@@ -470,7 +470,9 @@ impl InspectorPane</div>
+        <div class="d-ln"><span class="n">470</span><span class="s"></span><span class="tx">    pub <span class="ty">current_file_idx</span>: <span class="kw">usize</span>,</span></div>
+        <div class="d-ln d"><span class="n">471</span><span class="s">-</span><span class="tx">    pub <em>body_scroll</em>: <span class="kw">u16</span>,</span></div>
+        <div class="d-ln a"><span class="n">472</span><span class="s">+</span><span class="tx">    pub <em>doc_scroll</em>: <span class="kw">u32</span>,</span></div>
+        <div class="d-ln a"><span class="n">473</span><span class="s">+</span><span class="tx">    pub <em>tab</em>: <span class="ty">InspectorTab</span>,</span></div>
+        <div class="d-ln"><span class="n">474</span><span class="s"></span><span class="tx">    pub <span class="ty">comments</span>: <span class="ty">Vec</span>&lt;<span class="ty">HunkComment</span>&gt;,</span></div>
+        <div class="d-ln"><span class="n">475</span><span class="s"></span><span class="tx">    <span class="cm2">/// Scroll across the whole diff doc.</span></span></div>
+        <div class="d-ln"><span class="n">476</span><span class="s"></span><span class="tx">    pub <span class="ty">attention</span>: <span class="ty">Option</span>&lt;<span class="ty">Band</span>&gt;,</span></div>
+      </div>
+      <div class="d-splitonly">
+        <div class="d-hh">@@ -470,7 +470,9 @@ impl InspectorPane</div>
+        <div class="d-split">
+          <div class="half">
+            <div class="d-ln"><span class="n">470</span><span class="s"></span><span class="tx">    pub <span class="ty">current_file_idx</span>: <span class="kw">usize</span>,</span></div>
+            <div class="d-ln d"><span class="n">471</span><span class="s">-</span><span class="tx">    pub <em>body_scroll</em>: <span class="kw">u16</span>,</span></div>
+            <div class="d-ln" style="opacity:.4;"><span class="n"></span><span class="s"></span><span class="tx"></span></div>
+            <div class="d-ln"><span class="n">474</span><span class="s"></span><span class="tx">    pub <span class="ty">comments</span>: <span class="ty">Vec</span>&lt;<span class="ty">HunkComment</span>&gt;,</span></div>
+            <div class="d-ln"><span class="n">475</span><span class="s"></span><span class="tx">    <span class="cm2">/// Scroll across the whole diff doc.</span></span></div>
+          </div>
+          <div class="half right">
+            <div class="d-ln"><span class="n">470</span><span class="s"></span><span class="tx">    pub <span class="ty">current_file_idx</span>: <span class="kw">usize</span>,</span></div>
+            <div class="d-ln a"><span class="n">471</span><span class="s">+</span><span class="tx">    pub <em>doc_scroll</em>: <span class="kw">u32</span>,</span></div>
+            <div class="d-ln a"><span class="n">472</span><span class="s">+</span><span class="tx">    pub <em>tab</em>: <span class="ty">InspectorTab</span>,</span></div>
+            <div class="d-ln"><span class="n">474</span><span class="s"></span><span class="tx">    pub <span class="ty">comments</span>: <span class="ty">Vec</span>&lt;<span class="ty">HunkComment</span>&gt;,</span></div>
+            <div class="d-ln"><span class="n">475</span><span class="s"></span><span class="tx">    <span class="cm2">/// Scroll across the whole diff doc.</span></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-thread">
+        <div class="d-th">
+          <span class="who">Ved</span><span class="path">inspector_pane.rs:472</span>
+          <span class="state">OPEN</span>
+        </div>
+        <div class="d-t me">
+          <span class="av">V</span>
+          <div><div class="bd">Does the tab live on the pane or on the session? If the session keeps its own offsets, the pane's field is the wrong home.</div><div class="mt">2h ago</div></div>
+        </div>
+        <div class="d-t them">
+          <span class="av">I</span>
+          <div><div class="bd">On the pane. The session keeps its own scroll offsets per tab, and the pane is what renders them: <code>doc_scroll</code> is the only one that has to survive a tab switch.</div><div class="mt">1h ago &middot; addressed this in <code>3a91df0</code></div></div>
+        </div>
+        <div class="d-tf">
+          <span class="ok">&#10003; Resolve</span><span>&#8634; Reopen</span><span>Reply</span><span>Quote</span>
+          <span style="margin-left:auto;">2 turns</span>
+        </div>
+      </div>
+
+      <div class="d-compose">
+        <div class="hd">Comment on line 473 <span class="md">markdown, rendered in the thread after saving</span></div>
+        <div class="bd">Then the attention band has to render outside the tab body, or a failed turn hides behind a tab.<span class="cursor"></span></div>
+        <div class="ft"><span class="save">Comment</span><span>Ctrl+Enter</span><span>Esc</span><span style="margin-left:auto;">&#8984;B bold &middot; &#8984;K code</span></div>
+      </div>
+
+      <div class="d-exp" style="padding-bottom:22px;">&#8942;&#8942;&#8942; 214 unchanged lines &#8942;&#8942;&#8942;</div>
+    </div>
+
+    <div class="d-panel">
+      <div class="d-ph">
+        <div class="h">Review summary <span>3 of 6 files viewed</span></div>
+        <div class="sub">Comments are grouped by file, newest first. Submitting nudges the worker with one line.</div>
+      </div>
+      <div class="d-plist">
+        <div class="d-pc">
+          <div class="top"><span class="dt"></span>inspector_pane.rs:473</div>
+          <div class="bd">Then the <mark>attention band</mark> has to render outside the tab body, or a failed turn hides behind a tab.</div>
+          <div class="st">OPEN</div>
+        </div>
+        <div class="d-pc">
+          <div class="top"><span class="dt"></span>git_diff.rs:212</div>
+          <div class="bd">Is the <mark>backoff</mark> actually capped here, or does it ride the retry budget?</div>
+          <div class="st">OPEN</div>
+        </div>
+        <div class="d-pc">
+          <div class="top"><span class="dt th"></span>hunks.rs:41</div>
+          <div class="bd">Returning <code>()</code> on empty input reads as success to every caller.</div>
+          <div class="st">ADDRESSED &middot; 1h ago</div>
+        </div>
+        <div class="d-pc" style="opacity:.65;">
+          <div class="top"><span class="dt" style="background:var(--ok);"></span>preflight.rs:88</div>
+          <div class="bd">Rename <code>tok</code> to <code>token</code> for the same reason as the others.</div>
+          <div class="st">RESOLVED</div>
+        </div>
+      </div>
+      <div class="d-submit">
+        <div class="d-ov">The tab model reads well. Two things to settle before this lands: where the tab state lives, and what happens to the attention band.</div>
+        <div class="d-states"><span class="s">Comment</span><span class="s on">Request changes</span><span class="s">Approve</span></div>
+        <div class="d-sub">Submit review</div>
+        <div class="d-note">The worker reads this through the review tools: list, get, reply, resolve. No bundle is pasted into chat.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="d-cap" style="max-width:1440px;margin:14px auto 0;line-height:1.7;">
+  Components this leans on rather than rebuilding: the diff view and its word-level intra-line highlighting from a maintained diff component (react-diff-view, or @git-diff-view/react); syntax highlighting from shiki, which the same component can drive; the file list and long diffs virtualised with @tanstack/react-virtual or react-virtuoso; comment bodies rendered with react-markdown plus rehype-sanitize; and the composer as a CodeMirror 6 instance if the reply wants code blocks, otherwise a plain textarea.
+</div>
+</div>

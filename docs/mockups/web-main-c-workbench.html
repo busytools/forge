@@ -1,0 +1,258 @@
+<div style="background:#04050a;padding:24px;border-radius:12px;">
+<style>
+  .c *, .c *::before, .c *::after { box-sizing:border-box; margin:0; }
+  .c { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c; --line2:#2b3448;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --addressed:#61a0e0; --read:#5b9cf8; --search:#4ec9b0; --edit:#b48ce0; --mcp:#4ec9c9;
+    position:relative; width:100%; max-width:1440px; margin:0 auto; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px;
+    box-shadow:0 40px 120px rgba(0,0,0,.85); }
+  .c::after { content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(900px 420px at 6% -8%, rgba(244,118,0,.10), transparent 62%),
+               radial-gradient(700px 420px at 98% 112%, rgba(91,156,248,.07), transparent 60%); }
+  .c-chrome { display:flex; align-items:center; gap:8px; padding:11px 16px; background:rgba(8,10,16,.94); border-bottom:1px solid var(--line); position:relative; z-index:1; }
+  .c-dot { width:11px; height:11px; border-radius:50%; }
+  .c-url { margin-left:14px; font-size:11.5px; color:var(--dim); background:var(--s2); border:1px solid var(--line); border-radius:8px; padding:5px 14px; font-family:ui-monospace,Menlo,monospace; }
+  .c-wrap { display:flex; height:840px; position:relative; z-index:1; }
+
+  /* session strip */
+  .c-strip { width:60px; flex:0 0 60px; border-right:1px solid var(--line); background:rgba(8,10,16,.7);
+    display:flex; flex-direction:column; align-items:center; gap:10px; padding:14px 0; }
+  .c-mono { width:38px; height:38px; border-radius:12px; display:grid; place-items:center; font-size:13px; font-weight:800;
+    color:var(--muted); background:var(--s2); border:1px solid var(--line); cursor:pointer; position:relative; }
+  .c-mono:hover { color:var(--text); border-color:var(--line2); }
+  .c-mono.on { color:#140b02; background:linear-gradient(135deg,var(--accent),#ff9a3c); border-color:transparent; box-shadow:0 8px 22px rgba(244,118,0,.35); }
+  .c-mono .d { position:absolute; right:-2px; bottom:-2px; width:9px; height:9px; border-radius:50%; border:2px solid #0a0d14; }
+  .c-mono .d.live { background:var(--ok); animation:cpulse 1.8s ease-in-out infinite; }
+  .c-mono .d.att { background:var(--warn); }
+  .c-mono .d.dead { background:var(--bad); }
+  @keyframes cpulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.35;transform:scale(.8)} }
+  .c-strip .sp { flex:1; }
+  .c-strip .add { width:38px; height:38px; border-radius:12px; border:1px dashed var(--line2); color:var(--dim); display:grid; place-items:center; font-size:17px; cursor:pointer; }
+
+  /* work surface */
+  .c-work { flex:1; min-width:0; display:flex; flex-direction:column; background:rgba(4,5,10,.35); }
+  .c-wh { display:flex; align-items:center; gap:8px; padding:11px 18px; border-bottom:1px solid var(--line); background:rgba(13,17,26,.55); }
+  .c-wt { display:flex; gap:3px; }
+  .c-wt span { font-size:12.5px; color:var(--muted); padding:6px 12px; border-radius:8px; cursor:pointer; }
+  .c-wt span:hover { color:var(--text); background:var(--s2); }
+  .c-wt span.on { color:var(--text); background:var(--s3); font-weight:600; }
+  .c-wh .meta { margin-left:auto; display:flex; align-items:center; gap:10px; font-size:11.5px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; white-space:nowrap; }
+  .c-wfoot { display:flex; align-items:center; gap:14px; padding:11px 18px; border-top:1px solid var(--line); background:rgba(13,17,26,.6); font-size:11.5px; color:var(--dim); }
+  .c-wfoot .dot { width:8px; height:8px; border-radius:50%; background:var(--addressed); }
+  .c-btn { font-size:11.5px; font-weight:600; color:#140b02; background:linear-gradient(135deg,var(--accent),#ff9a3c); border-radius:8px; padding:6px 13px; cursor:pointer; }
+  .c-btn.ghost { background:transparent; color:var(--muted); border:1px solid var(--line2); font-weight:500; }
+
+  .c-files { display:flex; flex:1; min-height:0; }
+  .c-rail { width:232px; flex:0 0 232px; border-right:1px solid var(--line); overflow-y:auto; padding:10px; }
+  .c-rail .h { font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); font-weight:600; padding:6px 8px 8px; }
+  .c-f { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:8px; font-size:12px; color:var(--muted); cursor:pointer; }
+  .c-f:hover { background:rgba(40,48,66,.4); color:var(--text); }
+  .c-f.on { background:rgba(244,118,0,.1); color:var(--text); }
+  .c-f .st { width:11px; font-weight:700; font-size:11px; }
+  .c-f .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+  .c-f .cm { margin-left:auto; font-size:10px; color:var(--addressed); }
+  .c-f .sm { margin-left:auto; font-size:10px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; }
+
+  .c-doc { flex:1; min-width:0; overflow-y:auto; }
+  .c-doc::-webkit-scrollbar { width:9px; } .c-doc::-webkit-scrollbar-thumb { background:#222a3c; border-radius:99px; }
+  .c-fh { position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:10px; padding:11px 18px;
+    background:rgba(27,33,48,.96); backdrop-filter:blur(6px); border-bottom:1px solid var(--line); font-size:13px; }
+  .c-fh b { font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
+  .c-fh .badge { font-size:10.5px; border-radius:6px; padding:2px 7px; }
+  .c-fh .badge.mod { color:var(--warn); background:rgba(201,161,59,.12); }
+  .c-fh .tot { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; }
+  .c-add { color:var(--ok); } .c-del { color:var(--bad); }
+  .c-hunk { font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  .c-hh { padding:5px 18px; color:var(--mcp); background:rgba(78,201,201,.05); }
+  .c-ln { display:flex; gap:14px; padding:2px 18px; font-family:ui-monospace,Menlo,monospace; font-size:12px; white-space:pre; }
+  .c-ln .n { width:38px; flex:0 0 38px; text-align:right; color:#4a5266; }
+  .c-ln .s { width:8px; flex:0 0 8px; color:var(--dim); }
+  .c-ln.a { background:rgba(3,58,22,.55); } .c-ln.a .s { color:var(--ok); }
+  .c-ln.d { background:rgba(103,6,12,.5); } .c-ln.d .s { color:var(--bad); }
+  .c-ln.a em { font-style:normal; background:rgba(130,199,107,.22); border-radius:3px; }
+  .c-ln.d em { font-style:normal; background:rgba(224,104,62,.22); border-radius:3px; }
+  .c-thread { margin:10px 18px 16px 70px; border:1px solid var(--line2); border-radius:11px; background:rgba(13,17,26,.85); }
+  .c-thh { display:flex; align-items:center; gap:9px; padding:10px 13px; border-bottom:1px solid var(--line); font-size:12px; }
+  .c-thh b { font-weight:650; }
+  .c-thh .st { margin-left:auto; font-size:10.5px; color:var(--addressed); letter-spacing:.06em; }
+  .c-turn { display:flex; gap:10px; padding:9px 13px 3px; font-size:13px; }
+  .c-turn .av { width:22px; height:22px; border-radius:7px; flex:0 0 22px; display:grid; place-items:center; font-size:10px; font-weight:800; }
+  .c-turn.me .av { background:var(--s3); color:var(--muted); border:1px solid var(--line); }
+  .c-turn.them .av { background:linear-gradient(135deg,#5b9cf8,#4ec9c9); color:#08131c; }
+  .c-turn .tx { color:var(--muted); line-height:1.6; }
+  .c-turn .tx b { color:var(--text); font-weight:600; }
+  .c-thf { display:flex; align-items:center; gap:14px; padding:11px 13px; font-size:11.5px; color:var(--dim); }
+  .c-thf .ok { color:var(--ok); font-weight:600; }
+  .c-editor { margin:10px 18px 20px 70px; border:1px solid rgba(244,118,0,.5); border-radius:11px; background:rgba(4,5,10,.9); }
+  .c-editor .eh { padding:8px 13px; font-size:10.5px; color:var(--muted); border-bottom:1px solid var(--line); }
+  .c-editor .eb { padding:11px 13px; font-size:13px; color:var(--text); }
+  .c-editor .ef { padding:8px 13px; font-size:10.5px; color:var(--dim); border-top:1px solid var(--line); }
+
+  /* conversation pane */
+  .c-talk { width:470px; flex:0 0 470px; border-left:1px solid var(--line); display:flex; flex-direction:column;
+    background:linear-gradient(180deg,rgba(20,25,38,.7),rgba(13,17,26,.96)); }
+  .c-acct { display:flex; align-items:center; gap:11px; padding:14px 18px; border-bottom:1px solid var(--line); }
+  .c-av { width:28px; height:28px; border-radius:9px; background:conic-gradient(from 210deg,#f47600,#ff9a3c,#b48ce0,#f47600); display:grid; place-items:center; font-size:12px; font-weight:800; color:#140b02; }
+  .c-acct .nm { font-size:13px; font-weight:600; }
+  .c-acct .og { font-size:11px; color:var(--dim); }
+  .c-acct .mins { margin-left:auto; display:flex; gap:10px; font-size:10.5px; color:var(--dim); }
+  .c-mini { width:44px; }
+  .c-mini .lbl { display:flex; font-size:9.5px; letter-spacing:.08em; padding-bottom:4px; }
+  .c-mini .lbl span:last-child { margin-left:auto; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .c-mbar { height:4px; border-radius:99px; background:var(--s3); overflow:hidden; }
+  .c-mbar i { display:block; height:100%; }
+  .c-mbar.c i { width:38%; background:var(--read); }
+  .c-mbar.h i { width:15%; background:var(--ok); }
+  .c-mbar.d i { width:89%; background:linear-gradient(90deg,var(--ok),var(--warn) 45%,var(--bad)); }
+  .c-head { display:flex; align-items:center; gap:9px; padding:12px 18px; border-bottom:1px solid var(--line); font-size:12.5px; }
+  .c-head .live { width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 10px var(--ok); animation:cpulse 1.8s ease-in-out infinite; }
+  .c-head .chip { margin-left:auto; font-size:11px; color:var(--muted); background:var(--s2); border:1px solid var(--line); border-radius:99px; padding:3px 10px; }
+  .c-msgs { flex:1; overflow-y:auto; padding:16px 18px 8px; }
+  .c-msgs::-webkit-scrollbar { width:9px; } .c-msgs::-webkit-scrollbar-thumb { background:#222a3c; border-radius:99px; }
+  .c-m { margin-bottom:18px; }
+  .c-m .w { font-size:11px; color:var(--dim); padding-bottom:6px; display:flex; align-items:center; gap:8px; }
+  .c-m .w b { color:var(--muted); font-weight:600; }
+  .c-m .b { font-size:13.5px; line-height:1.68; }
+  .c-m.mine .b { background:linear-gradient(180deg,rgba(40,44,52,.5),rgba(40,44,52,.26)); border:1px solid var(--line); border-radius:11px; padding:11px 13px; }
+  .c-m .b code { font-family:ui-monospace,Menlo,monospace; font-size:12.5px; background:var(--s2); border:1px solid var(--line); border-radius:6px; padding:2px 6px; color:#9fc6ff; }
+  .c-step { display:flex; align-items:center; gap:9px; font-size:12px; color:var(--muted); padding:5px 8px; border-radius:7px; margin-top:3px; }
+  .c-step:hover { background:rgba(40,48,66,.35); }
+  .c-step .ic { width:14px; height:14px; }
+  .c-step.read .ic { color:var(--read); } .c-step.edit .ic { color:var(--edit); }
+  .c-step.bash .ic { color:var(--accent); } .c-step.mcp .ic { color:var(--mcp); }
+  .c-step .tag { margin-left:auto; font-size:10.5px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; }
+  .c-spin { width:12px; height:12px; border-radius:50%; border:2px solid rgba(244,118,0,.22); border-top-color:var(--accent); animation:cspin 1s linear infinite; }
+  @keyframes cspin { to { transform:rotate(360deg); } }
+  .c-comp { border-top:1px solid var(--line); padding:13px 18px 15px; background:rgba(13,17,26,.6); }
+  .c-box { border:1px solid var(--line2); background:rgba(4,5,10,.85); border-radius:12px; padding:11px 13px; display:flex; align-items:center; gap:10px; }
+  .c-box.hot { border-color:rgba(244,118,0,.5); box-shadow:0 0 0 4px rgba(244,118,0,.07); }
+  .c-box .ph { color:var(--dim); font-size:13px; }
+  .c-send { margin-left:auto; width:28px; height:28px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#ff9a3c); color:#140b02; display:grid; place-items:center; }
+  .c-hints { display:flex; gap:12px; font-size:10.5px; color:var(--dim); padding-top:8px; }
+  .c-hints kbd { font-family:ui-monospace,Menlo,monospace; background:var(--s2); border:1px solid var(--line); border-radius:5px; padding:1px 5px; color:var(--muted); }
+</style>
+
+<div class="c">
+  <div class="c-chrome">
+    <span class="c-dot" style="background:#ff5f57;"></span>
+    <span class="c-dot" style="background:#febc2e;"></span>
+    <span class="c-dot" style="background:#28c840;"></span>
+    <span class="c-url">forge.local &nbsp;&middot;&nbsp; forge &nbsp;&middot;&nbsp; implementer</span>
+  </div>
+
+  <div class="c-wrap">
+    <div class="c-strip">
+      <div class="c-mono on">F<span class="d live"></span></div>
+      <div class="c-mono">B<span class="d att"></span></div>
+      <div class="c-mono">H<span class="d dead"></span></div>
+      <div class="c-mono">D</div>
+      <div class="c-mono">P<span class="d live"></span></div>
+      <div class="sp"></div>
+      <div class="add">+</div>
+    </div>
+
+    <div class="c-work">
+      <div class="c-wh">
+        <div class="c-wt"><span class="on">Review</span><span>Run</span><span>Inspector</span><span>Tasks</span></div>
+        <div class="meta">implementer/issue-185-inspector-tabs &nbsp;&middot;&nbsp; vs origin/main &nbsp;&middot;&nbsp; 3 commits</div>
+        <span class="c-btn ghost">Split</span>
+        <span class="c-btn">Submit review</span>
+      </div>
+
+      <div class="c-files">
+        <div class="c-rail">
+          <div class="h">Changed &middot; 4</div>
+          <div class="c-f on"><span class="st" style="color:var(--warn);">M</span><span class="nm">inspector_pane.rs</span><span class="cm">2</span></div>
+          <div class="c-f"><span class="st" style="color:var(--warn);">M</span><span class="nm">git_diff.rs</span><span class="sm">+648 -559</span></div>
+          <div class="c-f"><span class="st" style="color:var(--ok);">A</span><span class="nm">hunks.rs</span><span class="sm">+120</span></div>
+          <div class="c-f"><span class="st" style="color:var(--bad);">D</span><span class="nm">old_split.rs</span><span class="sm">-120</span></div>
+          <div class="h" style="padding-top:14px;">Review</div>
+          <div class="c-f"><span class="st" style="color:var(--addressed);">&#9679;</span><span class="nm" style="font-family:system-ui;">2 open threads</span></div>
+          <div class="c-f"><span class="st" style="color:var(--dim);">&#9675;</span><span class="nm" style="font-family:system-ui;">1 resolved</span></div>
+        </div>
+
+        <div class="c-doc">
+          <div class="c-fh">
+            <b>crates/forge-tui/src/ui/inspector_pane.rs</b>
+            <span class="badge mod">modified</span>
+            <span class="tot"><span class="c-add">+42</span> <span class="c-del">-18</span></span>
+          </div>
+          <div class="c-hunk">
+            <div class="c-hh">@@ -470,7 +470,9 @@ impl InspectorPane</div>
+            <div class="c-ln"><span class="n">470</span><span class="s"></span><span>    pub current_file_idx: usize,</span></div>
+            <div class="c-ln d"><span class="n">471</span><span class="s">-</span><span>    pub <em>body_scroll: u16</em>,</span></div>
+            <div class="c-ln a"><span class="n">472</span><span class="s">+</span><span>    pub <em>doc_scroll: u32</em>,</span></div>
+            <div class="c-ln a"><span class="n">473</span><span class="s">+</span><span>    pub tab: InspectorTab,</span></div>
+            <div class="c-ln"><span class="n">474</span><span class="s"></span><span>    pub comments: Vec&lt;HunkComment&gt;,</span></div>
+          </div>
+
+          <div class="c-thread">
+            <div class="c-thh"><b>2 threads on this file</b><span class="st">OPEN</span></div>
+            <div class="c-turn me"><span class="av">V</span><span class="tx"><b>you</b> &middot; line 472 - does the tab live on the pane or on the session?</span></div>
+            <div class="c-turn them"><span class="av">I</span><span class="tx"><b>implementer</b> &middot; on the pane. The session keeps its own scroll offsets.</span></div>
+            <div class="c-thf"><span class="ok">&#10003; Resolve</span><span>&#8634; Reopen</span><span>reply</span><span style="margin-left:auto;">2 turns</span></div>
+          </div>
+
+          <div class="c-editor">
+            <div class="eh">Comment on line 473</div>
+            <div class="eb">Then the attention band has to render outside the tab body.</div>
+            <div class="ef">&#9166; save &nbsp;&middot;&nbsp; esc cancel</div>
+          </div>
+        </div>
+      </div>
+      <div class="c-wfoot">
+        <span class="dot"></span><span>2 open threads on this branch, 1 resolved</span>
+        <span style="margin-left:auto;">last pass 2h ago by implementer</span>
+      </div>
+    </div>
+
+    <div class="c-talk">
+      <div class="c-acct">
+        <div class="c-av">S</div>
+        <div><div class="nm">subspace</div><div class="og">Busytools &middot; opus-5-5 &middot; high</div></div>
+        <div class="mins">
+          <div class="c-mini"><div class="lbl"><span>CTX</span><span>38%</span></div><div class="c-mbar c"><i></i></div></div>
+          <div class="c-mini"><div class="lbl"><span>5H</span><span>15%</span></div><div class="c-mbar h"><i></i></div></div>
+          <div class="c-mini"><div class="lbl"><span>7D</span><span>89%</span></div><div class="c-mbar d"><i></i></div></div>
+        </div>
+      </div>
+
+      <div class="c-head"><span class="live"></span>implementer &middot; working on #185<span class="chip">4 workers</span></div>
+
+      <div class="c-msgs">
+        <div class="c-m mine">
+          <div class="w"><b>Ved</b> &middot; 12:04</div>
+          <div class="b">Make the inspector's sections tabs, and keep the attention band outside them.</div>
+        </div>
+        <div class="c-m">
+          <div class="w"><b>implementer</b> &middot; 12:06</div>
+          <div class="b">Done, and the diff is up for review on the left. I kept <code>tab</code> on the pane rather than the session.</div>
+          <div class="c-step read">
+            <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1.5"/><path d="M3 6.5h10"/></svg>
+            Read <span style="color:var(--dim);">inspector_pane.rs</span><span class="tag">2</span>
+          </div>
+          <div class="c-step edit">
+            <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1.5"/><path d="M6 8h4M8 6v4"/></svg>
+            Edit <span style="color:var(--dim);">inspector_pane.rs (+42, -8)</span><span class="tag">2</span>
+          </div>
+          <div class="c-step bash">
+            <span class="c-spin"></span>
+            Bash <span style="color:var(--dim);">just check</span><span class="tag">running 8.7s</span>
+          </div>
+        </div>
+        <div class="c-m mine">
+          <div class="w"><b>Ved</b> &middot; 12:09</div>
+          <div class="b">Left a comment on the field, and one on the band. Submit when the tests come back.</div>
+        </div>
+      </div>
+
+      <div class="c-comp">
+        <div class="c-box hot"><span class="ph">Reply to implementer...</span><span class="c-send">&#8593;</span></div>
+        <div class="c-hints"><span><kbd>&#8984;K</kbd> commands</span><span><kbd>&#8984;&#8629;</kbd> send</span><span style="margin-left:auto;">thread in review, left</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>

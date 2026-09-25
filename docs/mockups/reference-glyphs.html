@@ -1,0 +1,145 @@
+<div style="background:#04050a;padding:26px;border-radius:12px;">
+<style>
+  .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
+  .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
+    --warn:#c9a13b; --user-msg-bg:#282c34; --code-bg:#171b23; --code-label:#555c68;
+    --slash:#e0a0e8; --subagent:#8ab4f8; --addressed:#61a0e0; --experimental:#c9a13b;
+    --gotify:#4ec9c9; --slack:#2eb67d;
+    color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .fg h2 { font-size:10.5px; letter-spacing:.19em; color:var(--accent); text-transform:uppercase; font-weight:700; margin:0 0 4px; }
+  .fg .sub { font-size:11.5px; color:var(--dim); margin-bottom:14px; }
+  .fg-sec { margin-bottom:30px; }
+  .fg-sw { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; }
+  .fg-card { border:1px solid var(--line); border-radius:10px; background:linear-gradient(180deg,rgba(20,25,38,.6),rgba(13,17,26,.9)); overflow:hidden; }
+  .fg-chipc { height:38px; display:flex; align-items:flex-end; padding:6px 10px; font-family:ui-monospace,Menlo,monospace; font-size:10px; }
+  .fg-card .info { padding:8px 10px 10px; }
+  .fg-card .nm { font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--text); }
+  .fg-card .vr { font-family:ui-monospace,Menlo,monospace; font-size:10px; color:var(--dim); padding-top:2px; }
+  .fg-card .us { font-size:11px; color:var(--muted); padding-top:6px; }
+
+  .fg-glyphs { display:grid; grid-template-columns:repeat(5, 1fr); gap:10px; }
+  .fg-g { border:1px solid var(--line); border-radius:10px; background:linear-gradient(180deg,rgba(20,25,38,.6),rgba(13,17,26,.9)); padding:11px 12px 12px; }
+  .fg-g .ch { font-size:22px; line-height:1.25; color:var(--text); font-family:ui-monospace,Menlo,monospace; }
+  .fg-g .mn { font-size:11.5px; color:var(--muted); padding-top:8px; line-height:1.5; }
+  .fg-g .wh { font-size:10.5px; color:var(--dim); padding-top:5px; line-height:1.5; }
+  .fg-acc { color:var(--accent); } .fg-okc { color:var(--ok); } .fg-badc { color:var(--bad); }
+  .fg-warnc { color:var(--warn); } .fg-dimc { color:var(--dim); } .fg-addc { color:var(--addressed); }
+  .fg-subc { color:var(--subagent); } .fg-gotc { color:var(--gotify); } .fg-slkc { color:var(--slack); }
+
+  .fg-notices { display:flex; flex-direction:column; gap:12px; }
+  .fg-n { border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:rgba(4,5,10,.6); }
+  .fg-n .sev { font-size:11px; font-weight:700; }
+  .fg-n .sev.w { color:var(--warn); } .fg-n .sev.e { color:var(--bad); } .fg-n .sev.i { color:var(--dim); }
+  .fg-n .bd { font-size:12.5px; padding-top:5px; line-height:1.6; }
+  .fg-n .bd.w { color:var(--warn); } .fg-n .bd.e { color:var(--bad); } .fg-n .bd.i { color:var(--dim); }
+  .fg-n .cap { font-size:10.5px; color:var(--dim); padding-top:8px; }
+  .fg-two { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+  .fg-term { border:1px solid var(--line); border-radius:10px; background:rgba(4,5,10,.6); padding:12px 14px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; line-height:1.7; color:var(--dim); white-space:pre-wrap; }
+  .fg-term .e { color:var(--bad); } .fg-term .b { color:var(--text); font-weight:700; }
+</style>
+
+<div class="fg">
+
+  <div class="fg-sec">
+    <h2>Theme tokens</h2>
+    <div class="sub">Hardcoded in the theme module. There is no light mode and no custom themes; this table is partial, and a token not listed here still paints its own colour.</div>
+    <div class="fg-sw">
+      <div class="fg-card"><div class="fg-chipc" style="background:var(--accent);color:#140b02;">RUST_ORANGE</div><div class="info"><div class="nm">--rust-orange</div><div class="vr">Rgb(244, 118, 0)</div><div class="us">Banners, the composer border, running work, the active tab.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:#0d111a;color:var(--dim);border-bottom:1px solid var(--line);">DIM</div><div class="info"><div class="nm">--dim</div><div class="vr">dark gray</div><div class="us">Labels, connectors, captions, anything the eye skips.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:var(--user-msg-bg);color:#c8ccd4;">USER_MSG_BG</div><div class="info"><div class="nm">--user-msg-bg</div><div class="vr">Rgb(40, 44, 52)</div><div class="us">The user turn's own band in the scrollback.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:var(--code-bg);color:var(--code-label);">CODE_PANEL_BG</div><div class="info"><div class="nm">--code-bg</div><div class="vr">Rgb(23, 27, 35)</div><div class="us">Fenced code blocks in a reply.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:var(--code-bg);color:var(--code-label);">CODE_PANEL_LABEL</div><div class="info"><div class="nm">--code-label</div><div class="vr">Rgb(85, 92, 104)</div><div class="us">The language label on a code block.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:#2a1114;color:#e79b9b;">STATUS_ERROR</div><div class="info"><div class="nm">--status-error</div><div class="vr">red</div><div class="us">Deny, a failed tool call, a dead turn.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:#2a2413;color:var(--warn);">STATUS_WARNING</div><div class="info"><div class="nm">--status-warn</div><div class="vr">yellow</div><div class="us">Degraded but not broken: a drift, a cap, a dropped flag.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:#1c1020;color:var(--slash);">SLASH_COMMAND</div><div class="info"><div class="nm">--slash</div><div class="vr">light magenta</div><div class="us">A slash command in the composer.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:#101a26;color:var(--subagent);">SUBAGENT_TOKEN</div><div class="info"><div class="nm">--subagent</div><div class="vr">light blue</div><div class="us">A subagent's name on a diff thread.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:#0f311e;color:var(--ok);">REVIEW_RESOLVED</div><div class="info"><div class="nm">--success</div><div class="vr">Rgb(130, 199, 107)</div><div class="us">Resolved, complete, green.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:#0e1a2a;color:var(--addressed);">REVIEW_ADDRESSED</div><div class="info"><div class="nm">--addressed</div><div class="vr">Rgb(97, 160, 224)</div><div class="us">Addressed, and the review-replies badge.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:#251f10;color:var(--experimental);">EXPERIMENTAL</div><div class="info"><div class="nm">--experimental</div><div class="vr">Rgb(201, 161, 59)</div><div class="us">An estimated cost, and the mode pill.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:#0c2222;color:var(--gotify);">GOTIFY</div><div class="info"><div class="nm">--gotify</div><div class="vr">Rgb(78, 201, 201)</div><div class="us">The Gotify block and its diamond.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:#0c2119;color:var(--slack);">SLACK</div><div class="info"><div class="nm">--slack</div><div class="vr">Rgb(46, 182, 125)</div><div class="us">The Slack block and its diamond.</div></div></div>
+    </div>
+  </div>
+
+  <div class="fg-sec">
+    <h2>Glyphs in use</h2>
+    <div class="sub">Every character used as chrome. Scope is current state only: a new glyph lands here in the same change as the code.</div>
+    <div class="fg-glyphs">
+      <div class="fg-g"><div class="ch fg-dimc">&#9472; &#9474; &#9500; &#9492;</div><div class="mn">Rules, spines, tree connectors</div><div class="wh">panes, tool bodies, file trees</div></div>
+      <div class="fg-g"><div class="ch">&#11034; &#9635;</div><div class="mn">Read; Write and the edit family</div><div class="wh">open square is read-only, filled is a mutation</div></div>
+      <div class="fg-g"><div class="ch">&#8981; &#9654;</div><div class="mn">Glob / Grep / LS; Bash</div><div class="wh">magnifier; execute</div></div>
+      <div class="fg-g"><div class="ch fg-acc">&#9671; &#9670;</div><div class="mn">Subagent or an inbound Slack message; a completed turn on an inactive tab</div><div class="wh">hollow is delegated or inbound, filled green is completion</div></div>
+      <div class="fg-g"><div class="ch">&#8853; &#8857; &#8644;</div><div class="mn">WebFetch / WebSearch; plan mode and Config; Move and worktree</div><div class="wh">fetch from outside; meta; a directory or worktree move</div></div>
+      <div class="fg-g"><div class="ch">&#9673; &#9677;</div><div class="mn">TaskOutput and Monitor; TaskStop</div><div class="wh">fisheye observes, the fill terminates</div></div>
+      <div class="fg-g"><div class="ch fg-acc">&#9719; &#9780;</div><div class="mn">ScheduleWakeup; a durable cron</div><div class="wh">SCHEDULES rows in the Inspector; the TUI's timer clock is U+23F0, which a browser paints as a colour emoji, so the web view takes the monochrome sibling</div></div>
+      <div class="fg-g"><div class="ch fg-gotc">&#9672;</div><div class="mn">Gotify, and an MCP server in a group summary</div><div class="wh">the shared diamond for an external server call</div></div>
+      <div class="fg-g"><div class="ch fg-warnc">&#9888;&#65038;</div><div class="mn">Degraded: auth required, a dropped stream, a bailed account</div><div class="wh">yellow, except a Bailed auth failure, which is red</div></div>
+      <div class="fg-g"><div class="ch">&#10022; &#8999;</div><div class="mn">Skill and Advisor; ToolSearch</div><div class="wh">meta capability; tool search</div></div>
+      <div class="fg-g"><div class="ch">&#9650; &#9881;</div><div class="mn">PushNotification; LSP</div><div class="wh">outbound signal; tooling integration</div></div>
+      <div class="fg-g"><div class="ch fg-dimc">&#9675;</div><div class="mn">Open circle, reused</div><div class="wh">fallback tool, pending task, unfocused option, sleeping row</div></div>
+      <div class="fg-g"><div class="ch fg-okc">&#10003;</div><div class="mn">Completed, and Allow</div><div class="wh">green</div></div>
+      <div class="fg-g"><div class="ch fg-badc">&#10007;</div><div class="mn">Failed, and Reject</div><div class="wh">red</div></div>
+      <div class="fg-g"><div class="ch fg-acc">&#10148;</div><div class="mn">The input prompt</div><div class="wh">rust orange, leading the composer</div></div>
+      <div class="fg-g"><div class="ch fg-acc">&#9601;&#9602;&#9603;&#9604;&#9605;&#9606;&#9607;&#9608;</div><div class="mn">The dictate level meter</div><div class="wh">the composer's 26-cell block ramp</div></div>
+      <div class="fg-g"><div class="ch fg-okc">&#9679;</div><div class="mn">A connected MCP server, the recording dot, a value in force</div><div class="wh">green connected; the dotted circle is pending or transcribing</div></div>
+      <div class="fg-g"><div class="ch fg-addc">&#9672;</div><div class="mn">A pending MCP server and the transcribing dot</div><div class="wh">blue in both spots</div></div>
+      <div class="fg-g"><div class="ch fg-dimc">&#183; &#8226;</div><div class="mn">A permission option separator; plan-approval actions</div><div class="wh">middle dot and bullet</div></div>
+      <div class="fg-g"><div class="ch fg-acc">&#9656;</div><div class="mn">Highlight cursor, selection, a worker's parent heading</div><div class="wh">small right triangle</div></div>
+      <div class="fg-g"><div class="ch fg-warnc">&#9651;</div><div class="mn">Waiting on the user</div><div class="wh">yellow, in the pane and in NEEDS ATTENTION</div></div>
+      <div class="fg-g"><div class="ch fg-badc">&#10005;</div><div class="mn">A failed turn or worker; an overlay close</div><div class="wh">red; the overlay's own X is dim</div></div>
+      <div class="fg-g"><div class="ch fg-dimc">&#9636;</div><div class="mn">Narrow-tier Projects icon</div><div class="wh">toggles the overlay</div></div>
+      <div class="fg-g"><div class="ch fg-addc">&#128172; &#9998; &#8627;</div><div class="mn">A diff comment card; your editable turns; the reply line</div><div class="wh">outside the overlay the balloon counts unread worker answers</div></div>
+      <div class="fg-g"><div class="ch fg-acc">? [ ]</div><div class="mn">The question header; a mode badge and checkbox</div><div class="wh">rust orange in the header; ASCII brackets</div></div>
+      <div class="fg-g"><div class="ch fg-acc">&#9615;</div><div class="mn">The user turn gutter</div><div class="wh">a rule down the left of a user turn's body</div></div>
+      <div class="fg-g"><div class="ch fg-okc">&#9619;&#9617;</div><div class="mn">Usage bars</div><div class="wh">filled cells colour by position; empty cells are dim</div></div>
+      <div class="fg-g"><div class="ch fg-acc">&#9095;</div><div class="mn">The GIT branch marker</div><div class="wh">dim on default, rust orange on a feature branch, yellow HEAD when detached</div></div>
+      <div class="fg-g"><div class="ch fg-acc">&#10307;</div><div class="mn">Spinner frames</div><div class="wh">the configured style, on the project row and every running surface</div></div>
+      <div class="fg-g"><div class="ch fg-dimc">&gt;</div><div class="mn">Selected marker</div><div class="wh">the trust prompt and an MCP list row</div></div>
+    </div>
+  </div>
+
+  <div class="fg-sec">
+    <h2>Notices</h2>
+    <div class="sub">The scrollback is the only error surface. A notice carries the severity word in bold over body lines tinted to match, hard-wrapped.</div>
+    <div class="fg-two">
+      <div class="fg-notices">
+        <div class="fg-n">
+          <div class="sev e">Error</div>
+          <div class="bd e">Connection failed: claude binary not found at /usr/local/bin/claude</div>
+          <div class="bd e">Input disabled after an error. Press Ctrl+Q to quit and try again.</div>
+          <div class="cap">The input goes read-only rather than being replaced.</div>
+        </div>
+        <div class="fg-n">
+          <div class="sev w">Warning</div>
+          <div class="bd w">Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</div>
+          <div class="cap">Deduplicated per file per parse attempt.</div>
+        </div>
+        <div class="fg-n">
+          <div class="sev w">Warning</div>
+          <div class="bd w">Near rate-limit threshold. Resets in 4h 23m at 14:30 UTC.</div>
+          <div class="cap">The same message tints the rate-limit chip on the assistant's reply.</div>
+        </div>
+        <div class="fg-n">
+          <div class="sev i">Info</div>
+          <div class="bd i">Mode changed: default &#8594; acceptEdits</div>
+          <div class="cap">Severity word dim, body dim.</div>
+        </div>
+      </div>
+
+      <div class="fg-two" style="grid-template-columns:1fr; gap:12px;">
+        <div class="fg-term"><span class="e">&#10007;</span> <span class="b">&#11034;</span> crates/forge-tui/src/missing.rs
+<span class="e">&#9474;  File not found: crates/forge-tui/src/missing.rs</span>
+<span class="e">&#9492;&#9472; error path: open() returned ENOENT</span></div>
+        <div class="fg-term"><span class="e">&#10007;</span> <span class="b">&#9654;</span> cargo build --release
+<span class="e">&#9492;&#9472; error: failed to compile due to 3 errors</span></div>
+        <div class="fg-term"><span class="e">&#10007;</span> <span class="b">&#11034;</span> crates/forge-tui/src/something.rs
+<span class="e">&#9474;  </span><span class="b e">Internal Agent SDK error</span>
+<span class="e">&#9492;&#9472; stream closed at offset 12483 mid-frame</span></div>
+        <div class="fg-term" style="color:var(--dim);">A failed tool call renders the red cross with its body in red; for Bash only the first non-empty stderr line shows. Internal failures wear a bold red header over a red summary instead.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
