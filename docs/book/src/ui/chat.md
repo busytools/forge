@@ -352,7 +352,7 @@ Consecutive tool calls between two user messages fold into one foldable group (t
 <details>
 <summary>Group shapes, levels, click behavior</summary>
 
-The L2 summary is one tree for every run: a parent count row - the aggregated status icon (spinner while any call runs, green check when all complete, red cross if any failed, hollow circle while only pending), bold glyph and label, the dim `ctrl+x to expand` hint - then one dim-connected child per kind (`├─` / `└─` with a `│` spine), each kind nesting one child row per resolved target (uncapped), or a bare row with `×N` when a target-less kind repeats. Same-glyph tools merge: Grep / Glob / LS become one `search` child, WebFetch / WebSearch one `web`, LSP `lsp`; MCP calls group by server under the `◈` marker, one child per call.
+The L2 summary is one tree for every run: a parent count row - the aggregated status icon (spinner while any call runs, green check when all complete, red cross if any failed, hollow circle while only pending), bold glyph and label, the dim `ctrl+x to expand` hint - then one dim-connected child per kind (`├─` / `└─` with a `│` spine), each kind nesting one child row per resolved target (uncapped), or a bare row with `×N` when a target-less kind repeats. Tools of one family merge: Grep / Glob / LS become one `search` child, WebFetch / WebSearch one `web`, LSP `lsp`; MCP calls group by server under the `◈` marker, one child per call.
 
 Click a group's summary row to cycle it L2 (summary) → L1 (title rows) → L0 (title + full body, the standard per-tool render); a click on a single row inside an L1 group flips just that row's body. At L2 the members are hidden behind the summary and are not click targets - a click resolving to one is refused rather than toggling a body that is not on screen. Ctrl+x stays bound to the session-wide global toggle; per-group state is independent of it. Each group's range, level and aggregate status fold into the message's render signature, so a level flip invalidates only that message's cached layout; spinner ticks invalidate the message cache but not the layout - the status cell changes while the width stays stable.
 
@@ -396,7 +396,7 @@ MCP by server:
   <pre class="indent">
   <span class="success">✓</span> <span class="bold">6 tool calls</span>   <span class="dim">ctrl+x to expand</span>
   <span class="dim">├─ </span><span class="bold">⬚ read</span>
-  <span class="dim">│  ├─ crates/forge-tui/src/ui/message/grouping.rs</span>
+  <span class="dim">│  ├─ crates/forge-sessions/src/grouping.rs</span>
   <span class="dim">│  └─ crates/forge-tui/src/ui/theme.rs</span>
   <span class="dim">├─ </span><span class="bold">◈ context7</span>
   <span class="dim">│  ├─ resolve-library-id</span>

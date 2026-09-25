@@ -16,7 +16,7 @@ pub use group::render_group_summary_line;
 use std::borrow::Cow;
 
 use crate::agent::model;
-use crate::app::ToolCallInfo;
+use crate::app::{BlockCache, ToolCallInfo};
 use crate::ui::markdown;
 use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
@@ -90,6 +90,7 @@ const BODY_PREFIX_COLS: u16 = 5;
 /// provenance: the title and the `  │  `-prefixed body rows.
 pub fn render_tool_call_cached_with_tools_collapsed(
     tc: &mut ToolCallInfo,
+    cache: &mut BlockCache,
     render_context: ToolCallRenderContext<'_>,
     width: u16,
     spinner_glyph: char,
@@ -123,8 +124,7 @@ pub fn render_tool_call_cached_with_tools_collapsed(
     let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
 
     // Expanded body: use cache if valid, otherwise render and cache.
-    let cached_body =
-        if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
+    let cached_body = if body_depends_on_width { cache.get_for_width(width) } else { cache.get() };
     if let Some(cached_body) = cached_body {
         crate::perf::mark_with("tc::cache_hit_body", "lines", cached_body.len());
         out.extend_from_slice(cached_body);
@@ -142,12 +142,11 @@ pub fn render_tool_call_cached_with_tools_collapsed(
         crate::perf::mark_with("tc::render_body_id", "tc_id_hash", stable_hash_usize(&tc.id));
         let body = standard::render_tool_call_body(tc, width);
         if body_depends_on_width {
-            tc.cache.store_for_width(body, width);
+            cache.store_for_width(body, width);
         } else {
-            tc.cache.store(body);
+            cache.store(body);
         }
-        let stored =
-            if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
+        let stored = if body_depends_on_width { cache.get_for_width(width) } else { cache.get() };
         if let Some(stored) = stored {
             out.extend_from_slice(stored);
         }
@@ -163,6 +162,7 @@ pub fn render_tool_call_cached_with_tools_collapsed(
 /// Returns `(height, lines_wrapped_for_measurement)`.
 pub fn measure_tool_call_height_cached_with_tools_collapsed(
     tc: &mut ToolCallInfo,
+    cache: &mut BlockCache,
     render_context: ToolCallRenderContext<'_>,
     width: u16,
     spinner_glyph: char,
@@ -199,21 +199,20 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     }
 
     let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
-    let cached_body =
-        if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
+    let cached_body = if body_depends_on_width { cache.get_for_width(width) } else { cache.get() };
     if cached_body.is_some() {
-        if let Some(body_h) = tc.cache.height_at(width) {
+        if let Some(body_h) = cache.height_at(width) {
             let total = title_h + body_h;
             tc.record_measured_height(width, total, layout_generation, tools_collapsed);
             return (total, 1);
         }
-        if let Some(body_h) = tc.cache.measure_and_set_height(width) {
+        if let Some(body_h) = cache.measure_and_set_height(width) {
             let total = title_h + body_h;
             tc.record_measured_height(width, total, layout_generation, tools_collapsed);
             let cached_len = if body_depends_on_width {
-                tc.cache.get_for_width(width).map_or(1, |body| body.len() + 1)
+                cache.get_for_width(width).map_or(1, |body| body.len() + 1)
             } else {
-                tc.cache.get().map_or(1, |body| body.len() + 1)
+                cache.get().map_or(1, |body| body.len() + 1)
             };
             return (total, cached_len);
         }
@@ -223,17 +222,17 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     let body_h =
         Paragraph::new(Text::from(body.clone())).wrap(Wrap { trim: false }).line_count(width);
     if body_depends_on_width {
-        tc.cache.store_for_width(body, width);
+        cache.store_for_width(body, width);
     } else {
-        tc.cache.store(body);
+        cache.store(body);
     }
-    tc.cache.set_height(body_h, width);
+    cache.set_height(body_h, width);
     let total = title_h + body_h;
     tc.record_measured_height(width, total, layout_generation, tools_collapsed);
     let cached_len = if body_depends_on_width {
-        tc.cache.get_for_width(width).map_or(1, |body| body.len() + 1)
+        cache.get_for_width(width).map_or(1, |body| body.len() + 1)
     } else {
-        tc.cache.get().map_or(1, |body| body.len() + 1)
+        cache.get().map_or(1, |body| body.len() + 1)
     };
     (total, cached_len)
 }
@@ -321,7 +320,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -525,11 +523,13 @@ mod tests {
         // no bordered card. Output should be a title row + body lines
         // prefixed with `  │  ` / `  └─ ` (DIM), like every other tool.
         let mut tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);
+        let mut cache = BlockCache::default();
         tc.terminal_output = Some("hello\nworld".to_owned());
 
         let mut out = Vec::new();
         render_tool_call_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             80,
             '\u{280B}',
@@ -565,10 +565,12 @@ mod tests {
     #[test]
     fn execute_measure_fast_path_keeps_height_stable_across_repeated_measurement() {
         let mut tc = test_tool_call("tc-fast", "Bash", model::ToolCallStatus::InProgress);
+        let mut cache = BlockCache::default();
         tc.terminal_output = Some("hello\nworld".to_owned());
 
         let (h1, lines1) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             80,
             '\u{280B}',
@@ -580,6 +582,7 @@ mod tests {
 
         let (h2, lines2) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             80,
             '\u{2839}',
@@ -593,10 +596,12 @@ mod tests {
     #[test]
     fn execute_measure_recomputes_on_layout_generation_change() {
         let mut tc = test_tool_call("tc-layout-gen", "Bash", model::ToolCallStatus::InProgress);
+        let mut cache = BlockCache::default();
         tc.terminal_output = Some("hello".to_owned());
 
         let (_, first_lines) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             80,
             '\u{280B}',
@@ -606,6 +611,7 @@ mod tests {
         assert!(first_lines > 0);
         let (_, second_lines) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             80,
             '\u{280B}',
@@ -618,10 +624,12 @@ mod tests {
     #[test]
     fn layout_dirty_invalidates_measure_fast_path() {
         let mut tc = test_tool_call("tc-dirty", "Read", model::ToolCallStatus::Completed);
+        let mut cache = BlockCache::default();
         tc.content = vec![model::RenderToolCallContent::from("one line")];
 
         let (first_height, first_lines) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             80,
             '\u{280B}',
@@ -631,6 +639,7 @@ mod tests {
         assert!(first_lines > 0);
         let (cached_height, fast_lines) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             80,
             '\u{280B}',
@@ -640,10 +649,11 @@ mod tests {
         assert_eq!(cached_height, first_height);
         assert!(fast_lines <= first_lines);
 
-        tc.mark_tool_call_layout_dirty();
+        crate::app::state::tool_calls::request_tool_call_layout_dirty(&mut tc);
         let (recomputed_height, recompute_lines) =
             measure_tool_call_height_cached_with_tools_collapsed(
                 &mut tc,
+                &mut cache,
                 ToolCallRenderContext::default(),
                 80,
                 '\u{280B}',
@@ -709,11 +719,13 @@ mod tests {
     #[test]
     fn completed_non_execute_collapse_changes_visible_body_without_hiding_the_title() {
         let mut tc = test_tool_call("tc-collapse", "Read", model::ToolCallStatus::Completed);
+        let mut cache = BlockCache::default();
         tc.content = vec![model::RenderToolCallContent::from("alpha\nbeta".to_owned())];
 
         let mut expanded = Vec::new();
         render_tool_call_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             80,
             '\u{280B}',
@@ -730,6 +742,7 @@ mod tests {
         let mut collapsed = Vec::new();
         render_tool_call_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             80,
             '\u{280B}',
@@ -750,11 +763,13 @@ mod tests {
     fn completed_non_execute_measurement_changes_with_session_collapse_preference() {
         let mut tc =
             test_tool_call("tc-measure-collapse", "Read", model::ToolCallStatus::Completed);
+        let mut cache = BlockCache::default();
         tc.content =
             vec![model::RenderToolCallContent::from("alpha\nbeta\ngamma\ndelta".to_owned())];
 
         let (expanded_h, _) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             24,
             '\u{280B}',
@@ -763,6 +778,7 @@ mod tests {
         );
         let (collapsed_h, _) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             24,
             '\u{280B}',
@@ -783,9 +799,11 @@ mod tests {
 
         // What an expanded measurement costs from cold.
         let mut cold = test_tool_call("tc-key-cold", "Read", model::ToolCallStatus::Completed);
+        let mut cache = BlockCache::default();
         cold.content = vec![model::RenderToolCallContent::from(body.clone())];
         let (expanded_from_cold, _) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut cold,
+            &mut cache,
             ToolCallRenderContext::default(),
             24,
             '\u{280B}',
@@ -796,9 +814,13 @@ mod tests {
         // The same tool measured collapsed first, then expanded with
         // nothing else changed.
         let mut tc = test_tool_call("tc-key-reused", "Read", model::ToolCallStatus::Completed);
+        // Its own cache: the cold call above stores into a different one,
+        // and sharing would let this call read that call's lines.
+        let mut cache = BlockCache::default();
         tc.content = vec![model::RenderToolCallContent::from(body)];
         let (collapsed, _) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             24,
             '\u{280B}',
@@ -807,6 +829,7 @@ mod tests {
         );
         let (expanded_after_flip, _) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             24,
             '\u{280B}',
@@ -827,6 +850,7 @@ mod tests {
     #[test]
     fn diff_tool_stays_expanded_when_session_prefers_collapsed() {
         let mut tc = test_tool_call("tc-diff", "Write", model::ToolCallStatus::Completed);
+        let mut cache = BlockCache::default();
         tc.content = vec![model::RenderToolCallContent::Diff(
             model::Diff::new("src/main.rs", "new".to_owned()).old_text(Some("old".to_owned())),
         )];
@@ -834,6 +858,7 @@ mod tests {
         let mut rendered = Vec::new();
         render_tool_call_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             80,
             '\u{280B}',
@@ -1025,15 +1050,17 @@ mod tests {
         assert!(rendered.iter().any(|line| line == "Line B"));
     }
 
-    /// A Bash tool call carrying captured output, for the body-render tests.
+    /// A Bash tool call carrying captured output, for the body-render
+    /// tests, paired with a cache of its own - the renderers are handed
+    /// the cache now that it no longer lives on the tool call.
     fn bash_tool_call(
         id: &str,
         status: model::ToolCallStatus,
         terminal_output: &str,
-    ) -> ToolCallInfo {
+    ) -> (ToolCallInfo, BlockCache) {
         let mut tc = test_tool_call(id, "Bash", status);
         tc.terminal_output = Some(terminal_output.to_owned());
-        tc
+        (tc, BlockCache::default())
     }
 
     #[test]
@@ -1052,7 +1079,7 @@ mod tests {
         // For Failed/Killed Bash, the body shows the first non-empty
         // stderr-ish line via `failed_execute_first_line` instead of
         // dumping the whole captured output.
-        let mut tc = bash_tool_call(
+        let (mut tc, mut cache) = bash_tool_call(
             "tc-3",
             model::ToolCallStatus::Failed,
             "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail",
@@ -1061,6 +1088,7 @@ mod tests {
         let mut out = Vec::new();
         render_tool_call_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             120,
             '\u{280B}',
@@ -1080,7 +1108,7 @@ mod tests {
     /// that message rather than the raw first output line.
     #[test]
     fn failed_bash_body_prefers_extracted_tool_use_error_over_first_line() {
-        let mut tc = bash_tool_call(
+        let (mut tc, mut cache) = bash_tool_call(
             "tc-err",
             model::ToolCallStatus::Failed,
             "<tool_use_error>EXTRACTED</tool_use_error>\nFALLBACK",
@@ -1089,6 +1117,7 @@ mod tests {
         let mut out = Vec::new();
         render_tool_call_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             120,
             '\u{280B}',
@@ -1114,7 +1143,7 @@ mod tests {
     /// shows its whole captured output.
     #[test]
     fn completed_bash_body_shows_full_output_not_extracted_message() {
-        let mut tc = bash_tool_call(
+        let (mut tc, mut cache) = bash_tool_call(
             "tc-done",
             model::ToolCallStatus::Completed,
             "<tool_use_error>EXTRACTED</tool_use_error>\nFALLBACK",
@@ -1123,6 +1152,7 @@ mod tests {
         let mut out = Vec::new();
         render_tool_call_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             120,
             '\u{280B}',
@@ -1150,7 +1180,7 @@ mod tests {
     /// metadata spans.
     #[test]
     fn failed_execute_error_line_pictures_control_chars_so_measured_width_equals_painted() {
-        let mut tc = bash_tool_call(
+        let (mut tc, mut cache) = bash_tool_call(
             "tc-4",
             model::ToolCallStatus::Failed,
             "50%\r75%\r100%\nbash: line 1: cd: too many arguments",
@@ -1159,6 +1189,7 @@ mod tests {
         let mut out = Vec::new();
         render_tool_call_cached_with_tools_collapsed(
             &mut tc,
+            &mut cache,
             ToolCallRenderContext::default(),
             120,
             '\u{280B}',

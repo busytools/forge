@@ -3,7 +3,11 @@
 
 use std::ops::Range;
 
-use crate::app::MessageBlock;
+use crate::envelope::{PeerInboundKind, detect_inbound};
+use crate::family::{ToolFamily, tool_family, tool_label};
+use crate::model::MessageBlock;
+use crate::model::ToolCallInfo;
+use crate::peer_outbound::{PeerOutboundKind, detect_outbound};
 
 /// True when `block` breaks a group-run when encountered. Run-breakers
 /// split a run into group-above / breaker / group-below; each side
@@ -25,11 +29,11 @@ use crate::app::MessageBlock;
 /// - Any tool whose `content` carries a `RenderToolCallContent::Diff`
 ///   entry (Edit / Write / MultiEdit / NotebookEdit post-result).
 /// - Tools that actually RENDER as a lifecycle block
-///   (`ui/message.rs::renders_as_lifecycle_block`). Keyed on the render,
-///   not the name: a Monitor whose input does not parse paints an
-///   ordinary tool card and folds like one.
+///   ([`renders_as_lifecycle_block`]). Keyed on the render, not the name: a
+///   Monitor whose input does not parse paints an ordinary tool card and
+///   folds like one.
 /// - Tools rendered as an agent block
-///   (`ui/peer_block.rs::detect_outbound` match set:
+///   ([`crate::peer_outbound::detect_outbound`] match set:
 ///   agents__ask / agents__tell).
 ///
 /// `tc.hidden == true` (chat-suppressed: Task* / AskUserQuestion while
@@ -58,11 +62,11 @@ pub fn is_run_breaker(block: &MessageBlock) -> bool {
         return true;
     }
     let has_diff =
-        tc.content.iter().any(|c| matches!(c, crate::agent::model::RenderToolCallContent::Diff(_)));
+        tc.content.iter().any(|c| matches!(c, crate::model::agent::RenderToolCallContent::Diff(_)));
     if has_diff {
         return true;
     }
-    if crate::ui::message::renders_as_lifecycle_block(tc) {
+    if renders_as_lifecycle_block(tc) {
         return true;
     }
     if is_peer_block_render_tool(&tc.sdk_tool_name) {
@@ -78,8 +82,24 @@ fn is_edit_tool(sdk_tool_name: &str) -> bool {
     matches!(sdk_tool_name, "Edit" | "Write" | "MultiEdit" | "NotebookEdit")
 }
 
+/// True when the lifecycle one-liner would produce a block for this tool.
+/// Keyed on the same parse the renderer gates on, NOT on the tool name
+/// alone: a `Monitor` whose input does not parse falls through to the
+/// standard tool card and must behave like one - collapsible, clickable,
+/// carrying its own affordance.
+pub fn renders_as_lifecycle_block(tc: &ToolCallInfo) -> bool {
+    // Name first, then the parse, and never build the lines: this runs
+    // from `pointer_shape_at` on every mouse-move and from the render
+    // and measure paths, so it must not allocate to answer a yes/no.
+    let Some(input) = tc.raw_input.as_ref() else {
+        return false;
+    };
+    tc.sdk_tool_name == "Monitor"
+        && forge_workspace::user_interaction::parse_monitor_input(input).is_some()
+}
+
 /// Tools whose chat surface is the peer-block render in
-/// `ui/peer_block.rs::detect_outbound` (rather than the standard tool
+/// `crate::peer_outbound::detect_outbound` (rather than the standard tool
 /// card). Name-based because `detect_outbound` matches by
 /// `sdk_tool_name` literal. Mirror its match set exactly.
 fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
@@ -96,13 +116,29 @@ fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
     )
 }
 
-/// One kind-line in a group's L2 summary: a glyph-family (or MCP
-/// server) with its count and one resolved target per call (uncapped -
-/// the render nests one child row per target). Same-glyph tools (Grep /
-/// Glob / LS) share one line; each `mcp__<server>__*` server gets its own.
+/// The row a kind line summarises under. Tools key on their family, so
+/// same-family tools merge; a peer envelope keys on its direction; each
+/// `mcp__<server>__*` server gets a row of its own.
+///
+/// The row is the classification only - which glyph draws it is the
+/// render's decision. A family is a concept and a glyph is one rendering
+/// of it, and spelling the grouping policy in glyphs is how the two drift
+/// apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KindRow {
+    Family(ToolFamily),
+    Mcp,
+    Inbound,
+    Outbound,
+}
+
+/// One kind-line in a group's L2 summary: a row with its count and one
+/// resolved target per call (uncapped - the render nests one child row
+/// per target). Same-row tools (Grep / Glob / LS) share one line; each
+/// `mcp__<server>__*` server gets its own.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KindLine {
-    pub glyph: &'static str,
+    pub row: KindRow,
     pub label: String,
     pub count: usize,
     pub targets: Vec<String>,
@@ -111,18 +147,13 @@ pub struct KindLine {
     pub warn: bool,
 }
 
-/// Per-group L2 summary: one [`KindLine`] per glyph-family / MCP
-/// server, in first-appearance order across the run. Replaces the old
-/// four-bucket count so `WebFetch` / `LSP` / `mcp__*` read as their
-/// own kinds instead of an opaque `N calls`.
+/// Per-group L2 summary: one [`KindLine`] per row, in first-appearance
+/// order across the run. Replaces the old four-bucket count so `WebFetch` /
+/// `LSP` / `mcp__*` read as their own kinds instead of an opaque `N calls`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct KindSummary {
     pub lines: Vec<KindLine>,
 }
-
-/// L2 marker glyph for `mcp__<server>__*` lines - distinct from the
-/// generic `\u{25cb}` so a server call reads apart from local tools.
-pub const MCP_GLYPH: &str = "\u{25c8}";
 
 impl KindSummary {
     /// Total tool calls across every kind line.
@@ -130,21 +161,20 @@ impl KindSummary {
         self.lines.iter().map(|l| l.count).sum()
     }
 
-    /// Fold one groupable tool call into its glyph-family / MCP-server
-    /// line, creating the line on first appearance. Every kind keeps one
-    /// resolved target per call (uncapped) so the render can nest one
-    /// child row per instance.
-    pub fn tally(&mut self, tc: &crate::app::ToolCallInfo) {
-        let (glyph, label) = family_glyph_label(&tc.sdk_tool_name);
-        self.tally_resolved(glyph, label, family_target(tc), false);
+    /// Fold one groupable tool call into its row, creating the line on
+    /// first appearance. Every kind keeps one resolved target per call
+    /// (uncapped) so the render can nest one child row per instance.
+    pub fn tally(&mut self, tc: &ToolCallInfo) {
+        let (row, label) = family_row_label(&tc.sdk_tool_name);
+        self.tally_resolved(row, label, family_target(tc), false);
     }
 
     /// Fold one peer/worker message into its ENVELOPE-KIND line. The
     /// kind is the envelope kind rather than the direction, because a
     /// per-message group is always single-direction and direction would
     /// never discriminate.
-    pub fn tally_peer(&mut self, glyph: &'static str, label: &str, target: String, warn: bool) {
-        self.tally_resolved(glyph, label.to_owned(), Some(target), warn);
+    pub fn tally_peer(&mut self, row: KindRow, label: &str, target: String, warn: bool) {
+        self.tally_resolved(row, label.to_owned(), Some(target), warn);
     }
 
     /// The fold both entry points share: find the matching kind line or
@@ -153,53 +183,80 @@ impl KindSummary {
     /// `push_target` does NOT dedup, and that is load-bearing for
     /// messaging - three messages from one peer must stay three rows.
     /// Collapsing duplicates here silently breaks that render.
-    fn tally_resolved(
-        &mut self,
-        glyph: &'static str,
-        label: String,
-        target: Option<String>,
-        warn: bool,
-    ) {
-        if let Some(line) = self.lines.iter_mut().find(|l| l.glyph == glyph && l.label == label) {
+    fn tally_resolved(&mut self, row: KindRow, label: String, target: Option<String>, warn: bool) {
+        if let Some(line) = self.lines.iter_mut().find(|l| l.row == row && l.label == label) {
             line.count += 1;
             push_target(&mut line.targets, target);
         } else {
             let mut targets = Vec::new();
             push_target(&mut targets, target);
-            self.lines.push(KindLine { glyph, label, count: 1, targets, warn });
+            self.lines.push(KindLine { row, label, count: 1, targets, warn });
         }
     }
 }
 
-/// The read glyph (`⬚`), keyed by the theme's `tool_name_label`. The
-/// render special-cases read on this glyph: it relativizes each path
-/// against the project root and clips with a middle-ellipsis (keeping
-/// the filename), where every other kind clips end-first.
-pub const READ_GLYPH: &str = "\u{2b1a}";
-
-/// A tool's L2 glyph-family + label. Local tools key by the
-/// [`crate::ui::theme::tool_name_label`] glyph so same-glyph tools
-/// (Grep / Glob / LS) merge into one line; `mcp__<server>__*` keys by
-/// server so each server gets its own line under [`MCP_GLYPH`].
-fn family_glyph_label(sdk_tool_name: &str) -> (&'static str, String) {
+/// A tool's L2 kind row + label. The family decides both, so
+/// same-family tools (Grep / Glob / LS) merge into one line; a tool with
+/// no family keeps its own label. `mcp__<server>__*` keys by server so
+/// each server gets its own line.
+fn family_row_label(sdk_tool_name: &str) -> (KindRow, String) {
     if let Some((server, _)) = mcp_parts(sdk_tool_name) {
-        return (MCP_GLYPH, server.to_owned());
+        return (KindRow::Mcp, server.to_owned());
     }
-    let (glyph, tool_label) = crate::ui::theme::tool_name_label(sdk_tool_name);
-    let family = match glyph {
-        "\u{2b1a}" => "read",
-        "\u{2315}" => "search",
-        "\u{25b6}" => "bash",
-        "\u{2295}" => "web",
-        "\u{2699}" => "lsp",
-        "\u{2726}" => "skill",
-        "\u{2316}" => "toolsearch",
-        "\u{2299}" => "config",
-        "\u{21c4}" => "worktree",
-        "\u{25cb}" => "tool",
-        _ => tool_label,
+    let family = tool_family(sdk_tool_name);
+    (KindRow::Family(family), family.kind_label().to_owned())
+}
+
+/// Tree row data for one inbound envelope: the row it summarises under, the
+/// kind label, and whether the kind is a failure (styled as a warning).
+///
+/// The KIND is the envelope kind, not the direction - a per-message group
+/// is always single-direction, so direction would never discriminate.
+pub fn inbound_kind_row(kind: &PeerInboundKind) -> Option<(KindRow, &'static str, bool)> {
+    let row = match kind {
+        PeerInboundKind::Message { .. } => (KindRow::Inbound, "message", false),
+        PeerInboundKind::Question { .. } => (KindRow::Inbound, "question", false),
+        PeerInboundKind::Reply { .. } => (KindRow::Inbound, "reply", false),
+        PeerInboundKind::DeliveryFailure { .. } => (KindRow::Inbound, "failed", true),
+        PeerInboundKind::WorkerSpawnFailed { .. } => (KindRow::Inbound, "spawn failed", true),
+        // External events, never agent traffic - excluded from grouping.
+        PeerInboundKind::Gotify { .. }
+        | PeerInboundKind::Cron { .. }
+        | PeerInboundKind::Slack { .. } => return None,
     };
-    (glyph, family.to_owned())
+    Some(row)
+}
+
+/// Sibling of [`inbound_kind_row`] for outbound calls.
+pub fn outbound_kind_row(kind: &PeerOutboundKind) -> (KindRow, &'static str) {
+    match kind {
+        PeerOutboundKind::Ask { .. } => (KindRow::Outbound, "ask"),
+        PeerOutboundKind::Tell { .. } => (KindRow::Outbound, "tell"),
+    }
+}
+
+/// The body text a leaf row previews, per envelope kind. The external-event
+/// arms - `Gotify`, `Cron` and `Slack` - are unreachable: `inbound_kind_row`
+/// returns `None` for all three, so none ever becomes a leaf.
+pub fn inbound_body(kind: &PeerInboundKind) -> &str {
+    match kind {
+        PeerInboundKind::Message { body, .. }
+        | PeerInboundKind::Question { body, .. }
+        | PeerInboundKind::Reply { body, .. }
+        | PeerInboundKind::Slack { body, .. } => body,
+        PeerInboundKind::DeliveryFailure { reason, .. }
+        | PeerInboundKind::WorkerSpawnFailed { reason, .. } => reason,
+        PeerInboundKind::Gotify { message, .. } => message,
+        PeerInboundKind::Cron { prompt } => prompt,
+    }
+}
+
+/// A leaf row's content: `<peer> · <first non-blank body line>`. The
+/// renderer clips this to a computed budget, so no fixed length here -
+/// end-ellipsis keeps the peer name, which is at the head.
+pub fn kind_row_target(peer: &str, body: &str) -> String {
+    let head = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    if head.is_empty() { peer.to_owned() } else { format!("{peer} \u{b7} {head}") }
 }
 
 /// Split an `mcp__<server>__<tool>` name into (server, tool). `None`
@@ -212,22 +269,26 @@ fn mcp_parts(sdk_tool_name: &str) -> Option<(&str, &str)> {
 }
 
 /// Representative target for a kind line: MCP → the tool sub-name;
-/// local tools → their per-kind extractor, falling back to the title
+/// local tools → their family's extractor, falling back to the title
 /// with the kind-label prefix stripped.
-fn family_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+fn family_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
     if let Some((_, tool)) = mcp_parts(&tc.sdk_tool_name)
         && !tool.is_empty()
     {
         return Some(tool.to_owned());
     }
-    let (glyph, _) = crate::ui::theme::tool_name_label(&tc.sdk_tool_name);
-    let bespoke = match glyph {
-        "\u{2b1a}" => read_target(tc),
-        "\u{2315}" => search_target(tc),
-        "\u{25b6}" => command_target(tc),
-        "\u{2295}" => web_target(tc),
-        "\u{2316}" => query_target(tc),
-        _ => None,
+    let bespoke = match tool_family(&tc.sdk_tool_name) {
+        ToolFamily::Read => read_target(tc),
+        ToolFamily::Search => search_target(tc),
+        ToolFamily::Bash => command_target(tc),
+        ToolFamily::Web => web_target(tc),
+        ToolFamily::ToolSearch => query_target(tc),
+        ToolFamily::Lsp
+        | ToolFamily::Skill
+        | ToolFamily::Config
+        | ToolFamily::Worktree
+        | ToolFamily::Tool
+        | ToolFamily::Own(_) => None,
     };
     bespoke.or_else(|| strip_title_prefix(tc))
 }
@@ -242,7 +303,7 @@ fn push_target(targets: &mut Vec<String>, candidate: Option<String>) {
 /// The render relativizes it against the session project root and shows
 /// each file as a nested child, so the full path is kept here - not the
 /// basename.
-fn read_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+fn read_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object());
     let path =
         raw.and_then(|r| r.get("file_path")).and_then(serde_json::Value::as_str).map(str::trim);
@@ -258,7 +319,7 @@ fn read_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     stripped.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
 }
 
-fn search_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+fn search_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
     let value = match tc.sdk_tool_name.as_str() {
         "Grep" | "Glob" => raw.get("pattern"),
@@ -275,7 +336,7 @@ fn search_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
 /// Web family (`⊕`): WebFetch shows its URL (scheme stripped),
 /// WebSearch its query. The full value reaches the render, which clips
 /// it per row.
-fn web_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+fn web_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
     let value = match tc.sdk_tool_name.as_str() {
         "WebFetch" | "web_fetch" => raw.get("url"),
@@ -291,7 +352,7 @@ fn web_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
 
 /// ToolSearch (`⌖`): the search query. The full query reaches the
 /// render, which clips it per row.
-fn query_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+fn query_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
     raw.get("query")
         .and_then(serde_json::Value::as_str)
@@ -307,8 +368,8 @@ fn strip_scheme(url: &str) -> &str {
 /// Fallback target for a kind with no bespoke extractor: `tc.title`
 /// with a leading kind-label prefix stripped (claude sends titles like
 /// `"Skill code-review"` / `"LSP hover"`).
-fn strip_title_prefix(tc: &crate::app::ToolCallInfo) -> Option<String> {
-    let (_, label) = crate::ui::theme::tool_name_label(&tc.sdk_tool_name);
+fn strip_title_prefix(tc: &crate::model::ToolCallInfo) -> Option<String> {
+    let label = tool_label(&tc.sdk_tool_name);
     let title = tc.title.trim();
     if title.is_empty() {
         return None;
@@ -318,7 +379,7 @@ fn strip_title_prefix(tc: &crate::app::ToolCallInfo) -> Option<String> {
     (!stripped.is_empty()).then(|| stripped.to_owned())
 }
 
-fn command_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+fn command_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object());
     // Prefer Claude's human-readable description (the collapsed
     // headline) - it rides the same raw_input object as the command,
@@ -403,8 +464,8 @@ impl GroupId {
 ///
 /// Non-ToolCall blocks are skipped (the partitioner never emits a
 /// Group containing them, but the helper stays defensive).
-pub fn aggregate_run_status(blocks: &[MessageBlock]) -> crate::agent::model::ToolCallStatus {
-    use crate::agent::model::ToolCallStatus;
+pub fn aggregate_run_status(blocks: &[MessageBlock]) -> crate::model::agent::ToolCallStatus {
+    use crate::model::agent::ToolCallStatus;
     let mut any_failed = false;
     let mut any_pending = false;
     for block in blocks {
@@ -439,7 +500,7 @@ pub struct MessagingGroupSegment {
     /// carries no target list.
     pub summary: KindSummary,
     /// Aggregate run-status across the segment.
-    pub aggregate_status: crate::agent::model::ToolCallStatus,
+    pub aggregate_status: crate::model::agent::ToolCallStatus,
 }
 
 /// A render-time chunk: either an individual block (today's behaviour),
@@ -457,7 +518,7 @@ pub enum RenderUnit {
         /// Aggregate status across the run (see `aggregate_run_status`)
         /// so the L2 summary's status_icon stays in sync as tools flip
         /// through the InProgress -> Completed lifecycle.
-        aggregate_status: crate::agent::model::ToolCallStatus,
+        aggregate_status: crate::model::agent::ToolCallStatus,
     },
     /// A run of consecutive peer/worker MCP message blocks (outbound
     /// and inbound) within one message. `group_leader_id` keys the
@@ -511,7 +572,7 @@ pub struct MessagingGroupHit {
 /// dispatches over, so a hit here and a group on screen cannot
 /// disagree about scope.
 pub fn messaging_group_hit_at(
-    messages: &[crate::app::ChatMessage],
+    messages: &[crate::model::ChatMessage],
     msg_idx: usize,
     block_idx: usize,
 ) -> Option<MessagingGroupHit> {
@@ -553,11 +614,11 @@ pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<Render
 /// through). The session-walking partitioner classifies more finely;
 /// this per-message predicate is for the within-message post-pass.
 fn is_messaging_block(block: &MessageBlock) -> bool {
-    use crate::ui::peer_block;
     match block {
-        MessageBlock::ToolCall(tc) if !tc.hidden => peer_block::detect_outbound(tc).is_some(),
-        MessageBlock::Text(text) => peer_block::detect_inbound(&text.text)
-            .is_some_and(|k| k.peer_sender_identity().is_some()),
+        MessageBlock::ToolCall(tc) if !tc.hidden => detect_outbound(tc).is_some(),
+        MessageBlock::Text(text) => {
+            detect_inbound(&text.text).is_some_and(|k| k.peer_sender_identity().is_some())
+        }
         _ => false,
     }
 }
@@ -571,7 +632,6 @@ fn is_messaging_block(block: &MessageBlock) -> bool {
 /// messaging run - nearly all of them - hands `tool_units` straight
 /// back rather than copying every unit into a fresh vector.
 fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) -> Vec<RenderUnit> {
-    use crate::ui::peer_block::{self, PeerInboundKind, PeerOutboundKind};
     // Unit ranges that fold, ascending and non-overlapping, each with
     // the MessagingGroup replacing it.
     let mut merged: Vec<(Range<usize>, RenderUnit)> = Vec::new();
@@ -610,23 +670,18 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) 
         // Walk the block range and accumulate per-direction targets,
         // the per-kind tally, aggregate_status.
         let mut summary = KindSummary::default();
-        let mut any_status: Option<crate::agent::model::ToolCallStatus> = None;
+        let mut any_status: Option<crate::model::agent::ToolCallStatus> = None;
         let mut leader_id: Option<GroupId> = None;
         for block in &blocks[block_range.clone()] {
             match block {
                 MessageBlock::ToolCall(tc) if !tc.hidden => {
-                    if let Some(kind) = peer_block::detect_outbound(tc) {
-                        let (glyph, label) = peer_block::outbound_kind_row(&kind);
+                    if let Some(kind) = detect_outbound(tc) {
+                        let (row, label) = outbound_kind_row(&kind);
                         let (target, body) = match &kind {
                             PeerOutboundKind::Ask { target, body }
                             | PeerOutboundKind::Tell { target, body } => (target, body.as_str()),
                         };
-                        summary.tally_peer(
-                            glyph,
-                            label,
-                            peer_block::kind_row_target(target, body),
-                            false,
-                        );
+                        summary.tally_peer(row, label, kind_row_target(target, body), false);
                         update_aggregate(&mut any_status, tc.status);
                         if leader_id.is_none() {
                             leader_id = Some(GroupId::from_leader_id(tc.id.clone()));
@@ -634,17 +689,17 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) 
                     }
                 }
                 MessageBlock::Text(text) => {
-                    let kind = peer_block::detect_inbound(&text.text);
+                    let kind = detect_inbound(&text.text);
                     if let Some(from) =
                         kind.as_ref().and_then(PeerInboundKind::peer_sender_identity)
                     {
                         if let Some(k) = kind.as_ref()
-                            && let Some((glyph, label, warn)) = peer_block::inbound_kind_row(k)
+                            && let Some((row, label, warn)) = inbound_kind_row(k)
                         {
                             summary.tally_peer(
-                                glyph,
+                                row,
                                 label,
-                                peer_block::kind_row_target(from, peer_block::inbound_body(k)),
+                                kind_row_target(from, inbound_body(k)),
                                 warn,
                             );
                             // An inbound failure has no ToolCallStatus of
@@ -654,7 +709,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) 
                             if warn {
                                 update_aggregate(
                                     &mut any_status,
-                                    crate::agent::model::ToolCallStatus::Failed,
+                                    crate::model::agent::ToolCallStatus::Failed,
                                 );
                             }
                         }
@@ -662,7 +717,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) 
                         // index: an index repeats in every message and
                         // would share one collapse level across them.
                         if leader_id.is_none()
-                            && let Some(id) = peer_block::inbound_envelope_id(&text.text)
+                            && let Some(id) = crate::envelope::inbound_envelope_id(&text.text)
                         {
                             leader_id = Some(GroupId::from_leader_id(format!("inbound-{id}")));
                         }
@@ -682,7 +737,7 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) 
         }
         let leader_id = leader_id
             .unwrap_or_else(|| GroupId::from_leader_id(format!("block-{first_block_idx}")));
-        let aggregate_status = any_status.unwrap_or(crate::agent::model::ToolCallStatus::Completed);
+        let aggregate_status = any_status.unwrap_or(crate::model::agent::ToolCallStatus::Completed);
         let segment = MessagingGroupSegment { block_range, summary, aggregate_status };
         merged.push((
             run_start_pos..run_end_pos,
@@ -777,10 +832,10 @@ fn partition_tool_call_groups(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
 /// Mirrors [`aggregate_run_status`]'s priority (InProgress > Failed >
 /// Pending > Completed).
 fn update_aggregate(
-    aggregate: &mut Option<crate::agent::model::ToolCallStatus>,
-    status: crate::agent::model::ToolCallStatus,
+    aggregate: &mut Option<crate::model::agent::ToolCallStatus>,
+    status: crate::model::agent::ToolCallStatus,
 ) {
-    use crate::agent::model::ToolCallStatus;
+    use crate::model::agent::ToolCallStatus;
     match (aggregate, status) {
         (slot @ None, s) => *slot = Some(s),
         (Some(ToolCallStatus::InProgress), _) => {}
@@ -798,8 +853,8 @@ fn update_aggregate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::model;
-    use crate::app::{BlockCache, TextBlock, ToolCallInfo};
+    use crate::model::agent as model;
+    use crate::model::{TextBlock, ToolCallInfo};
 
     fn tool_call_block(id: &str, sdk_tool_name: &str) -> MessageBlock {
         MessageBlock::ToolCall(Box::new(ToolCallInfo {
@@ -823,7 +878,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -1081,7 +1135,7 @@ mod tests {
         assert_eq!(count_of(&k, "context7"), 2, "same server merges");
         assert_eq!(count_of(&k, "playwright"), 1);
         assert!(kind_line(&k, "calls").is_none(), "no generic calls grab-bag");
-        assert_eq!(kind_line(&k, "context7").unwrap().glyph, MCP_GLYPH);
+        assert_eq!(kind_line(&k, "context7").unwrap().row, KindRow::Mcp);
     }
 
     #[test]
@@ -1819,7 +1873,7 @@ mod tests {
 
     fn inbound_peer_block(from: &str, kind: &str) -> MessageBlock {
         // `kind` is "Question" | "Message" | "Reply". Use the
-        // wrapper-prose shape `peer_block::detect_inbound` matches.
+        // wrapper-prose shape `crate::envelope::detect_inbound` matches.
         let id = next_fixture_id("t");
         let header = match kind {
             "Question" => format!("[Question id={id} from agent '{from}' (org 'forge')]"),
@@ -1833,19 +1887,19 @@ mod tests {
         MessageBlock::Text(TextBlock::from_complete(&text))
     }
 
-    fn assistant_message_with_blocks(blocks: Vec<MessageBlock>) -> crate::app::ChatMessage {
-        crate::app::ChatMessage::new(crate::app::MessageRole::Assistant, blocks)
+    fn assistant_message_with_blocks(blocks: Vec<MessageBlock>) -> crate::model::ChatMessage {
+        crate::model::ChatMessage::new(crate::model::MessageRole::Assistant, blocks)
     }
 
-    fn user_text_message(text: &str) -> crate::app::ChatMessage {
-        crate::app::ChatMessage::new(
-            crate::app::MessageRole::User,
+    fn user_text_message(text: &str) -> crate::model::ChatMessage {
+        crate::model::ChatMessage::new(
+            crate::model::MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
         )
     }
 
     /// Partition every message the way the render path does.
-    fn per_message_units(messages: &[crate::app::ChatMessage]) -> Vec<Vec<RenderUnit>> {
+    fn per_message_units(messages: &[crate::model::ChatMessage]) -> Vec<Vec<RenderUnit>> {
         messages.iter().map(|m| partition_blocks_into_render_units(&m.blocks)).collect()
     }
 
@@ -1859,8 +1913,8 @@ mod tests {
     #[test]
     fn inbound_led_runs_in_different_messages_get_distinct_leaders() {
         let run = |a: &str, b: &str| {
-            crate::app::ChatMessage::new(
-                crate::app::MessageRole::User,
+            crate::model::ChatMessage::new(
+                crate::model::MessageRole::User,
                 vec![inbound_peer_block(a, "Message"), inbound_peer_block(b, "Reply")],
             )
         };
@@ -1960,8 +2014,8 @@ mod tests {
     #[test]
     fn single_block_turns_do_not_group_across_the_boundary() {
         let messages = vec![
-            crate::app::ChatMessage::new(
-                crate::app::MessageRole::User,
+            crate::model::ChatMessage::new(
+                crate::model::MessageRole::User,
                 vec![inbound_peer_block("steward", "Message")],
             ),
             assistant_message_with_blocks(vec![outbound_peer_block("steward", "Tell")]),
@@ -1984,8 +2038,8 @@ mod tests {
                 outbound_peer_block("debugger", "Ask"),
             ]),
             user_text_message("any update?"),
-            crate::app::ChatMessage::new(
-                crate::app::MessageRole::User,
+            crate::model::ChatMessage::new(
+                crate::model::MessageRole::User,
                 vec![
                     inbound_peer_block("tester", "Reply"),
                     inbound_peer_block("tester", "Message"),

@@ -579,7 +579,7 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     // Layout-dirty bumps both the layout epoch (forcing a remeasure) and
     // the render epoch (which is hashed into MessageRenderSignature),
     // invalidating the per-block + message-level render caches.
-    tc.mark_tool_call_layout_dirty();
+    crate::app::state::tool_calls::request_tool_call_layout_dirty(tc);
     app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
     tracing::debug!(
         target: crate::logging::targets::APP_INPUT,
@@ -744,7 +744,7 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
 /// Peer-block (#114) inbound twin of [`try_toggle_tool_call_at_click`].
 /// Inbound peer envelopes are user-message TextBlocks (the workspace's
 /// synthetic Message::User echo, pattern-matched at render time by
-/// `peer_block::detect_inbound`). They don't have a `ToolCallInfo`
+/// `forge_sessions::envelope::detect_inbound`). They don't have a `ToolCallInfo`
 /// to hang collapse state off of, so the relevant flag lives on
 /// `TextBlock::peer_collapsed_override` and the renderer stamps the
 /// same `peer_last_measured_y/height/width` triple a tool call gets.
@@ -829,7 +829,6 @@ fn try_toggle_turn_info_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     };
     if let Some(msg) = app.active_messages_mut().and_then(|messages| messages.get_mut(msg_idx)) {
         msg.turn_info.expanded = !msg.turn_info.expanded;
-        msg.invalidate_render_cache();
     }
     app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
     tracing::debug!(
@@ -1585,7 +1584,7 @@ mod tests {
         raw_input: Option<serde_json::Value>,
     ) -> crate::ui::message::grouping::GroupId {
         use crate::agent::model;
-        use crate::app::{BlockCache, ChatMessage, MessageRole, ToolCallInfo};
+        use crate::app::{ChatMessage, MessageRole, ToolCallInfo};
         use crate::ui::message::grouping::GroupId;
         let tool_id = "tu-solo";
         let tc = ToolCallInfo {
@@ -1611,7 +1610,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
         };
         app.push_message_tracked(ChatMessage::new(
@@ -2219,7 +2217,7 @@ mod tests {
     /// with a `Text` block, outbound with a `ToolCall`.
     fn seed_peer_run(app: &mut App, inbound: bool) -> crate::ui::message::grouping::GroupId {
         use crate::agent::model;
-        use crate::app::{BlockCache, ChatMessage, MessageRole, TextBlock, ToolCallInfo};
+        use crate::app::{ChatMessage, MessageRole, TextBlock, ToolCallInfo};
         use crate::ui::message::grouping::{RenderUnit, partition_blocks_into_render_units};
 
         let envelope = |id: &str, y: usize| {
@@ -2259,7 +2257,6 @@ mod tests {
                 last_measured_layout_epoch: 0,
                 last_measured_layout_generation: 0,
                 last_measured_tools_collapsed: false,
-                cache: BlockCache::default(),
                 collapsed_override: None,
             }))
         };
@@ -2329,7 +2326,7 @@ mod tests {
     #[test]
     fn click_resolving_to_a_tool_block_hidden_by_an_l2_summary_does_not_toggle_it() {
         use crate::agent::model;
-        use crate::app::{BlockCache, ChatMessage, MessageRole, ToolCallInfo};
+        use crate::app::{ChatMessage, MessageRole, ToolCallInfo};
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
         let read_tool = |id: &str, y: usize| ToolCallInfo {
@@ -2355,7 +2352,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
         };
 
@@ -2397,7 +2393,7 @@ mod tests {
     #[test]
     fn click_resolving_to_a_block_hidden_by_an_l2_summary_does_not_toggle_it() {
         use crate::agent::model;
-        use crate::app::{BlockCache, ChatMessage, MessageRole, ToolCallInfo};
+        use crate::app::{ChatMessage, MessageRole, ToolCallInfo};
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
         let peer_tool = |id: &str, target: &str, y: usize, h: usize| ToolCallInfo {
@@ -2423,7 +2419,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
         };
 
@@ -2576,7 +2571,7 @@ mod tests {
     #[test]
     fn click_on_multi_item_tool_group_summary_cycles_to_l1() {
         use crate::agent::model;
-        use crate::app::{BlockCache, ChatMessage, MessageRole, ToolCallInfo};
+        use crate::app::{ChatMessage, MessageRole, ToolCallInfo};
         use crate::ui::message::grouping::{GroupCollapseLevel, GroupId};
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
@@ -2603,7 +2598,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
         };
 
@@ -2692,7 +2686,7 @@ mod tests {
     #[test]
     fn cmd_x_after_group_click_still_toggles_global_tools_collapsed() {
         use crate::agent::model;
-        use crate::app::{BlockCache, ChatMessage, MessageRole, ToolCallInfo};
+        use crate::app::{ChatMessage, MessageRole, ToolCallInfo};
         use crate::ui::message::grouping::{
             GroupCollapseLevel, GroupId, RenderUnit, partition_blocks_into_render_units,
         };
@@ -2724,7 +2718,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
         };
         app.push_message_tracked(ChatMessage::new(

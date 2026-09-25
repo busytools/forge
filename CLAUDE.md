@@ -1,7 +1,7 @@
 # forge - project guide
 
 A Rust workspace that wraps Anthropic's `claude` CLI in a multi-session
-terminal UI. Nine crates, layered acyclically:
+terminal UI. Ten crates, layered acyclically:
 
 ```
 forge-primitives ───── leaf (pure data, no logic)
@@ -11,7 +11,8 @@ forge-connectors ───→ primitives
 forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + gateway
 forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
-forge-tui        ───→ primitives + workspace      (no direct agent dep)
+forge-sessions   ───→ primitives + workspace
+forge-tui        ───→ primitives + workspace + sessions      (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```
 
@@ -46,6 +47,16 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-workspace`** - multi-session orchestrator. Owns
   `DomainSession` + per-session `SessionTask` actors. Single TUI-facing
   facade.
+- **`forge-sessions`** - what a view needs and nothing about how it
+  renders: the session records as a view sees them, the peer envelope
+  parsing in both directions, the tool family table, and the policy
+  that folds a run of blocks. Sits between `forge-workspace` and the
+  views, so a second view attaches beside the TUI rather than
+  duplicating it. Nothing here may depend on a view. It reaches the
+  workspace for the one thing a session record cannot answer alone -
+  whether a tool's input parses into a lifecycle block - and does that
+  through `forge-workspace` rather than `forge-agent`, so the agent
+  layer stays behind the workspace facade the way it does for the TUI.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
@@ -107,17 +118,36 @@ Work top-down; first match wins.
    out.
 7. **Orchestration across projects, sessions, accounts, `forge.toml`,
    or the command bus?** -> `forge-workspace`. Adds `Workspace` methods,
-   `Command` variants, `SessionUpdate` events.
-8. **A widget, screen, key binding, mouse handler, or per-session
+   `Command` variants, `SessionUpdate` events. A read a VIEW needs is a
+   verb on the view surface below, not a bare method.
+8. **A session record as a view sees it, or a decision any view would
+   make over one?** (the render-ready record, the reducer that derives
+   it, the policy that decides how a run of blocks folds, the peer
+   envelope parsing in both directions) -> `forge-sessions`. Sits
+   between workspace and the views; the test is "does this render?" -
+   if it does, it is the view's.
+9. **A widget, screen, key binding, mouse handler, or per-session
    presentation state?** -> `forge-tui`. Render in `ui/`, dispatch +
    state in `app/`.
-9. **A wire-conformance scenario?** -> `forge-test-harness`.
+10. **A wire-conformance scenario?** -> `forge-test-harness`.
+
+**The view surface (designed, not built).** A view is meant to read the
+core through named verbs by subject - `roster`, `session`, `accounts`,
+`plugins`, `reviews`, `workers`, `connectors`, `dictate` - to act
+through `dispatch(Command)`, and to receive changes through
+`subscribe()`. Only the last two exist today: the TUI still calls
+`Workspace` methods directly, so `forge-tui` keeps its `forge-workspace`
+dependency and the arrow below is not yet one-way. A read a second view
+would want goes on that surface; a read only the TUI makes stays a
+plain method. Routing the direct calls through the surface is its own
+piece of work, not a prerequisite for adding to the crates.
 
 Legitimate splits are common (a git-diff feature touches agent +
 workspace + tui). Rule of thumb: logic/IO/subprocess -> agent;
 cross-crate shape -> primitives; multi-session state -> workspace;
-anything the user sees -> TUI. The default failure mode here is "too
-much in forge-tui", so bias toward the deeper crate when unsure.
+a session record as a view sees it -> sessions; anything the user
+sees -> TUI. The default failure mode here is "too much in
+forge-tui", so bias toward the deeper crate when unsure.
 
 ### Anti-patterns (caught in review repeatedly)
 

@@ -108,7 +108,6 @@ impl super::App {
             welcome.subscription = value;
             welcome.cwd = cwd;
             welcome.session_id = session_id;
-            welcome.cache.invalidate();
             self.sync_render_cache_slot(0, 0);
             self.recompute_message_retained_bytes(0);
             self.invalidate_layout(super::LayoutInvalidation::MessagesFrom(0));

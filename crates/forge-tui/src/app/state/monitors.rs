@@ -156,7 +156,7 @@ impl super::App {
             return;
         }
         tc.monitor_status = Some(status);
-        tc.mark_tool_call_layout_dirty();
+        crate::app::state::tool_calls::request_tool_call_layout_dirty(tc);
         self.invalidate_lifecycle_block_height(msg_idx, block_idx);
     }
 
@@ -249,7 +249,7 @@ impl super::App {
             return;
         }
         tc.monitor_output_tail = last_five;
-        tc.mark_tool_call_layout_dirty();
+        crate::app::state::tool_calls::request_tool_call_layout_dirty(tc);
         self.invalidate_lifecycle_block_height(msg_idx, block_idx);
     }
 
@@ -300,7 +300,7 @@ impl super::App {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{App, BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+    use super::super::{App, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
     use crate::app::state::tests::make_test_app;
     use pretty_assertions::assert_eq;
 
@@ -351,7 +351,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -440,7 +439,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -511,7 +509,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),

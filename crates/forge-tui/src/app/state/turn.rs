@@ -197,7 +197,6 @@ impl super::App {
                 started_at: Some(at),
                 ..crate::app::state::messages::TurnInfo::default()
             };
-            msg.invalidate_render_cache();
         }
     }
 
@@ -278,16 +277,11 @@ impl super::App {
         let carried = source_idx
             .and_then(|idx| self.active_messages_mut().and_then(|messages| messages.get_mut(idx)))
             .filter(|msg| !msg.turn_info.is_settled() && !msg.turn_info.is_empty())
-            .map_or_else(fresh_row, |msg| {
-                let carried = std::mem::take(&mut msg.turn_info);
-                msg.invalidate_render_cache();
-                carried
-            });
+            .map_or_else(fresh_row, |msg| std::mem::take(&mut msg.turn_info));
         if let Some(msg) =
             self.active_messages_mut().and_then(|messages| messages.get_mut(target_idx))
         {
             msg.turn_info = carried;
-            msg.invalidate_render_cache();
         }
     }
 

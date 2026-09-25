@@ -4986,7 +4986,7 @@ impl Workspace {
             // worker. Use the workspace's update channel + a fresh
             // Command::Prompt so the lead's claude subprocess sees
             // the envelope as a user turn and the TUI render path
-            // picks up the bracketed prefix via peer_block::detect_inbound.
+            // picks up the bracketed prefix via forge_sessions::envelope::detect_inbound.
             let lead_slot = entry.spawned_by.clone();
             let pool_has_lead = self.pool.lock().contains_key(&lead_slot);
             if pool_has_lead {

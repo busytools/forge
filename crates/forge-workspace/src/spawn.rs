@@ -757,10 +757,11 @@ pub(crate) fn deliver_gotify_message(
 /// The user-turn prose for one conversation's delivered Slack messages. It
 /// carries the ids a reply needs - conversation, each member's own ts, and
 /// its thread - because the only way an agent can answer in place is to feed
-/// those back to `slack__post` or `slack__edit`. The session chat parses
-/// this shape back into a Slack block (`forge_tui::ui::peer_block`), so the
-/// bracketed header, its member count and the one-line-per-member body are a
-/// contract with it.
+/// those back to `slack__post` or `slack__edit`.
+/// `forge_sessions::envelope::detect_inbound` parses this shape into a Slack
+/// envelope and the TUI renders that as a block (`forge_tui::ui::peer_block`),
+/// so the bracketed header, its member count and the one-line-per-member body
+/// are a contract with the parser.
 pub(crate) fn slack_bundle_to_prose(messages: &[SlackMessage]) -> String {
     let Some(head) = messages.first() else { return String::new() };
     let newest = messages.iter().map(|message| message.ts.as_str()).max().unwrap_or(&head.ts);
@@ -798,10 +799,10 @@ fn in_thread_order(messages: &[SlackMessage]) -> Vec<&SlackMessage> {
     grouped.into_iter().map(|(_, message)| message).collect()
 }
 
-/// One bundle member. The `<author>: ` clause is what the chat block's
-/// detector keys on, so a member always carries one. A resolved name is
-/// preferred; the raw id is only a fallback the block drops, since an id
-/// is never a name to print.
+/// One bundle member. The `<author>: ` clause is what
+/// `forge_sessions::envelope::detect_inbound` keys on, so a member always
+/// carries one. A resolved name is preferred; the raw id is only a fallback
+/// the block drops, since an id is never a name to print.
 fn member_line(message: &SlackMessage) -> String {
     let author = message.author.as_deref().or(message.user.as_deref()).unwrap_or("unknown");
     let mut out = format!("{author}: {} [ts {}", message.text, message.ts);
@@ -3248,16 +3249,16 @@ provider = "anthropic"
         assert!(prose.contains("F1"), "the file id is present: {prose}");
     }
 
-    /// The header and the `<author>: ` member line are a contract with the
-    /// chat block's detector, so the whole shape is pinned: a reformat here
-    /// silently reverts the block to painting nothing.
+    /// The header and the `<author>: ` member line are a contract with
+    /// `forge_sessions::envelope::detect_inbound`, so the whole shape is
+    /// pinned: a reformat here silently reverts the block to painting nothing.
     #[test]
     fn slack_prose_names_the_workspace_and_the_author() {
         let prose = slack_bundle_to_prose(&[slack_msg("hello there")]);
         assert_eq!(
             prose,
             "[Slack - workspace 'acme', U9] id D1 ts 100.000001\nU9: hello there [ts 100.000001]",
-            "the exact prose the chat block's detector keys on",
+            "the exact prose forge_sessions::envelope::detect_inbound keys on",
         );
     }
 

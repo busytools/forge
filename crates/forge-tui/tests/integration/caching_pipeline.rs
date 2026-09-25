@@ -6,9 +6,10 @@
 // Validates the full pipeline: streaming -> block splitting -> cache storage ->
 // budget enforcement -> viewport invalidation -> height measurement -> prefix sums.
 
+use forge_tui::app::testing::{block_bytes, store_block};
 use forge_tui::app::{
-    App, AppStatus, BlockCache, ChatMessage, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
-    DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES, MessageBlock, MessageRole, TextBlock, TextBlockSpacing,
+    App, AppStatus, ChatMessage, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
+    DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES, MessageBlock, MessageRole, TextBlock,
 };
 use forge_tui::ui::{SpinnerState, measure_message_height_cached};
 use forge_workspace::SessionUpdate;
@@ -47,26 +48,19 @@ fn user_text_message(text: &str) -> ChatMessage {
     ChatMessage::new(MessageRole::User, vec![MessageBlock::Text(TextBlock::from_complete(text))])
 }
 
-/// Build an assistant message with a text block and pre-stored cache lines.
-/// Returns the message with `cached_bytes > 0`.
-fn assistant_message_with_cache(text: &str) -> ChatMessage {
+/// Build an assistant message with a text block and store its rendered
+/// lines in the view's cache, so the message carries cached bytes.
+fn assistant_message_with_cache(app: &App, text: &str) -> ChatMessage {
     let lines: Vec<Line<'static>> =
         text.lines().map(|l| Line::from(Span::raw(l.to_owned()))).collect();
-    let mut cache = BlockCache::default();
-    cache.store(lines);
-    ChatMessage::new(
+    let message = ChatMessage::new(
         MessageRole::Assistant,
-        vec![MessageBlock::Text(TextBlock {
-            text: text.to_owned(),
-            cache,
-            markdown: forge_tui::app::IncrementalMarkdown::from_complete(text),
-            trailing_spacing: TextBlockSpacing::None,
-            peer_collapsed_override: None,
-            peer_last_measured_y_in_msg: 0,
-            peer_last_measured_height: 0,
-            peer_last_measured_width: 0,
-        })],
-    )
+        vec![MessageBlock::Text(TextBlock::from_complete(text))],
+    );
+    if let Some(MessageBlock::Text(block)) = message.blocks.first() {
+        store_block(app, block, lines);
+    }
+    message
 }
 
 /// Extract the text content of all text blocks in a message.
@@ -193,9 +187,8 @@ async fn budget_enforcement_no_eviction_under_budget() {
     let mut app = test_app();
 
     // Create a message with a small cache.
-    app.active_messages_mut()
-        .expect("active session")
-        .push(assistant_message_with_cache("short line"));
+    let message = assistant_message_with_cache(&app, "short line");
+    app.active_messages_mut().expect("active session").push(message);
     complete_turn(&mut app);
 
     let stats = app.enforce_render_cache_budget();
@@ -211,15 +204,12 @@ async fn budget_enforcement_evicts_lru_when_over_budget() {
     // Insert 3 messages with caches that each exceed 50 bytes.
     // Stored in order: msg 0 (oldest tick), msg 1, msg 2 (newest tick).
     let big_text = "x".repeat(80);
-    app.active_messages_mut()
-        .expect("active session")
-        .push(assistant_message_with_cache(&big_text));
-    app.active_messages_mut()
-        .expect("active session")
-        .push(assistant_message_with_cache(&big_text));
-    app.active_messages_mut()
-        .expect("active session")
-        .push(assistant_message_with_cache(&big_text));
+    let message = assistant_message_with_cache(&app, &big_text);
+    app.active_messages_mut().expect("active session").push(message);
+    let message = assistant_message_with_cache(&app, &big_text);
+    app.active_messages_mut().expect("active session").push(message);
+    let message = assistant_message_with_cache(&app, &big_text);
+    app.active_messages_mut().expect("active session").push(message);
 
     let stats = app.enforce_render_cache_budget();
     assert!(stats.evicted_blocks > 0, "expected evictions, got 0");
@@ -238,12 +228,10 @@ async fn budget_enforcement_protects_streaming_tail() {
     app.render_cache_budget.max_bytes = 100;
 
     let big_text = "x".repeat(80);
-    app.active_messages_mut()
-        .expect("active session")
-        .push(assistant_message_with_cache(&big_text));
-    app.active_messages_mut()
-        .expect("active session")
-        .push(assistant_message_with_cache(&big_text));
+    let message = assistant_message_with_cache(&app, &big_text);
+    app.active_messages_mut().expect("active session").push(message);
+    let message = assistant_message_with_cache(&app, &big_text);
+    app.active_messages_mut().expect("active session").push(message);
 
     // Set streaming state -- last message is protected.
     app.status = AppStatus::Running;
@@ -257,7 +245,7 @@ async fn budget_enforcement_protects_streaming_tail() {
         .blocks
         .iter()
         .map(|b| match b {
-            MessageBlock::Text(block) => block.cache.cached_bytes(),
+            MessageBlock::Text(block) => block_bytes(&app, block),
             _ => 0,
         })
         .sum();
@@ -316,10 +304,11 @@ async fn history_retention_inserts_hidden_marker() {
 
 #[tokio::test]
 async fn history_estimator_bytes_reasonable() {
+    let app = test_app();
     let text = "z".repeat(1000);
     let msg = user_text_message(&text);
 
-    let estimated = App::measure_message_bytes(&msg);
+    let estimated = forge_tui::app::testing::retained_bytes_estimate(&app, &msg);
     // The estimate should be in a reasonable range around the payload size.
     // The text is 1000 bytes, but the estimate includes struct overhead,
     // String capacity, and IncrementalMarkdown internal storage.

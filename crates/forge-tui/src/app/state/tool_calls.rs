@@ -6,8 +6,25 @@
 use std::collections::HashSet;
 
 use super::types::ToolCallScope;
-use super::{AnsweredQuestion, MessageBlock};
+use super::{AnsweredQuestion, MessageBlock, ToolCallInfo};
 use crate::agent::model;
+
+/// Mark a tool call's render cache stale, counting the request.
+///
+/// The counter is the view's, not the model's: `ToolCallInfo` moves to
+/// `forge-sessions`, which carries no perf dependency. Every request for an
+/// invalidation goes through one of these, so the count keeps meaning what
+/// it did when the mark sat on the model.
+pub(crate) fn request_tool_call_render_dirty(tc: &mut ToolCallInfo) {
+    crate::perf::mark("tc_invalidations_requested");
+    tc.mark_tool_call_render_dirty();
+}
+
+/// As above for a layout-only change, which also requests a render.
+pub(crate) fn request_tool_call_layout_dirty(tc: &mut ToolCallInfo) {
+    crate::perf::mark("tc_invalidations_requested");
+    tc.mark_tool_call_layout_dirty();
+}
 
 impl super::App {
     /// Track a Task/Agent tool call as active (in-progress subagent).
@@ -156,8 +173,8 @@ impl super::App {
             let tc = tc.as_mut();
             tc.answered_questions.push(answered);
             tc.hidden = false;
-            tc.mark_tool_call_render_dirty();
-            tc.mark_tool_call_layout_dirty();
+            request_tool_call_render_dirty(tc);
+            request_tool_call_layout_dirty(tc);
         }
     }
 
@@ -217,7 +234,7 @@ impl super::App {
                         ) && !exempt.contains(tc.id.as_str())
                         {
                             tc.status = new_status;
-                            tc.mark_tool_call_layout_dirty();
+                            request_tool_call_layout_dirty(tc);
                             changed_slots.push((msg_idx, block_idx));
                             if changed_message_indices.last().copied() != Some(msg_idx) {
                                 changed_message_indices.push(msg_idx);
@@ -659,8 +676,8 @@ fn subagent_label_from_root(root: &crate::app::ToolCallInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        App, BlockCache, ChatMessage, MessageBlock, MessageRole, SUBAGENT_TAIL_CAP, TextBlock,
-        ToolCallInfo, ToolCallScope,
+        App, ChatMessage, MessageBlock, MessageRole, SUBAGENT_TAIL_CAP, TextBlock, ToolCallInfo,
+        ToolCallScope,
     };
     use crate::agent::model;
     use crate::app::state::tests::{
@@ -696,7 +713,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -1399,7 +1415,6 @@ mod tests {
                     last_measured_layout_epoch: 0,
                     last_measured_layout_generation: 0,
                     last_measured_tools_collapsed: false,
-                    cache: BlockCache::default(),
                     collapsed_override: Some(override_val),
                 }))],
             ));
@@ -1567,7 +1582,6 @@ mod tests {
                 last_measured_layout_epoch: 0,
                 last_measured_layout_generation: 0,
                 last_measured_tools_collapsed: false,
-                cache: BlockCache::default(),
                 collapsed_override: Some(true),
             }))],
         ));
@@ -1633,7 +1647,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -1662,7 +1675,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),

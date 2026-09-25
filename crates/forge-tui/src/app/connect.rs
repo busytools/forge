@@ -279,6 +279,7 @@ fn create_app_impl(
         notifications: super::notify::NotificationManager::new(),
         perf,
         render_cache_budget: RenderCacheBudget::default(),
+        render_caches: std::rc::Rc::new(crate::app::RenderCacheStore::default()),
         fps_ema: None,
         last_frame_at: None,
         connection_started: false,

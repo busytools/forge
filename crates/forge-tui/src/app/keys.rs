@@ -1631,6 +1631,7 @@ mod tests {
             dragging: false,
         });
 
+        let render_caches = std::rc::Rc::clone(&app.render_caches);
         if let Some(MessageBlock::Text(block)) = app
             .active_messages_mut()
             .expect("active session")
@@ -1638,8 +1639,7 @@ mod tests {
             .and_then(|message| message.blocks.get_mut(0))
         {
             block.text.push_str(" world");
-            block.markdown.append(" world");
-            block.cache.invalidate();
+            render_caches.markdown(block.id, &block.text).append(" world");
         }
         app.invalidate_layout(InvalidationLevel::MessageChanged(0));
 

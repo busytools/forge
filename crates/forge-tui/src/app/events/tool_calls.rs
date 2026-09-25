@@ -1,6 +1,6 @@
 use super::super::{
-    App, AppStatus, BlockCache, ChatMessage, InvalidationLevel, MessageBlock, MessageRole,
-    ToolCallInfo, ToolCallScope,
+    App, AppStatus, ChatMessage, InvalidationLevel, MessageBlock, MessageRole, ToolCallInfo,
+    ToolCallScope,
 };
 use super::tool_updates::raw_output_to_terminal_text;
 use crate::agent::model;
@@ -193,7 +193,6 @@ fn build_tool_info_from_tool_call(
         last_measured_layout_epoch: 0,
         last_measured_layout_generation: 0,
         last_measured_tools_collapsed: false,
-        cache: BlockCache::default(),
         collapsed_override: None,
         last_measured_y_in_msg: 0,
         answered_questions: Vec::new(),
@@ -343,7 +342,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
             changed |= sync_if_changed(&mut existing.terminal_output, &tool_info.terminal_output);
         }
         if changed {
-            existing.mark_tool_call_layout_dirty();
+            crate::app::state::tool_calls::request_tool_call_layout_dirty(existing);
             layout_dirty = true;
         } else {
             crate::perf::mark("tool_update_noop_skips");
@@ -600,7 +599,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),

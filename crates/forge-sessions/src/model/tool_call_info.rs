@@ -1,6 +1,5 @@
-use super::block_cache::BlockCache;
+use super::agent as model;
 use super::types::MonitorStatus;
-use crate::agent::model;
 
 pub struct ToolCallInfo {
     pub id: String,
@@ -56,8 +55,6 @@ pub struct ToolCallInfo {
     /// Session collapse preference the last measured height was taken
     /// under; the height depends on it, so a flip must miss the cache.
     pub last_measured_tools_collapsed: bool,
-    /// Per-block render cache for this tool call.
-    pub cache: BlockCache,
     /// Per-tool collapse override set by clicking the tool-call row.
     /// `None` means follow the global `app.tools_collapsed` default;
     /// `Some(true)` forces collapsed, `Some(false)` forces expanded.
@@ -99,7 +96,7 @@ pub struct AnsweredQuestion {
 }
 
 impl ToolCallInfo {
-    pub(crate) fn estimate_json_value_bytes(value: &serde_json::Value) -> usize {
+    pub fn estimate_json_value_bytes(value: &serde_json::Value) -> usize {
         serde_json::to_string(value).map_or(0, |json| json.len())
     }
 
@@ -127,12 +124,15 @@ impl ToolCallInfo {
         self.hidden
     }
 
-    /// Mark render cache for this tool call as stale.
+    /// Mark render cache for this tool call as stale: the view's store
+    /// stamps each entry with the epoch it was rendered at, so bumping
+    /// it is the whole invalidation.
+    ///
+    /// The invalidation counter lives in the view rather than here, because
+    /// this type moves to `forge-sessions` and cannot carry a perf
+    /// dependency. `tool_calls::request_*` are the marked entry points.
     pub fn mark_tool_call_render_dirty(&mut self) {
-        crate::perf::mark("tc_invalidations_requested");
         self.render_epoch = self.render_epoch.wrapping_add(1);
-        self.cache.invalidate();
-        crate::perf::mark("tc_invalidations_applied");
     }
 
     /// Mark layout cache for this tool call as stale, discarding the

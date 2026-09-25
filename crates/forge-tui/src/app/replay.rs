@@ -548,7 +548,7 @@ mod tests {
 
     fn build_app_with_consecutive_reads(n: usize) -> App {
         use crate::agent::model::{self, SessionId};
-        use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+        use crate::app::{ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
 
         let mut app = App::test_default();
         app.set_session_id(Some(SessionId::new("group-render-test")));
@@ -575,7 +575,6 @@ mod tests {
                     last_measured_layout_epoch: 0,
                     last_measured_layout_generation: 0,
                     last_measured_tools_collapsed: false,
-                    cache: BlockCache::default(),
                     collapsed_override: None,
                     last_measured_y_in_msg: 0,
                     answered_questions: Vec::new(),

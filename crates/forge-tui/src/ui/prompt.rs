@@ -187,7 +187,7 @@ fn build_header_lines(prompt: &PromptState, content_width: usize) -> Vec<Line<'s
             // the resolved name is what shows. An id is never dressed as a
             // channel: a DM's label is the partner's user id, and
             // `#U0AE0CBJ77G` reads as a channel that does not exist.
-            let conversation = if crate::ui::peer_block::is_slack_id(&draft.conversation_label) {
+            let conversation = if forge_sessions::envelope::is_slack_id(&draft.conversation_label) {
                 draft.conversation_label.clone()
             } else {
                 format!("#{}", draft.conversation_label)

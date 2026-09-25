@@ -1203,6 +1203,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-sessions"
+version = "1.0.86"
+dependencies = [
+ "forge-primitives",
+ "forge-workspace",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "forge-test-harness"
 version = "1.0.86"
 dependencies = [
@@ -1231,6 +1241,7 @@ dependencies = [
  "dirs",
  "forge-primitives",
  "forge-sdk",
+ "forge-sessions",
  "forge-test-harness",
  "forge-tui",
  "forge-workspace",

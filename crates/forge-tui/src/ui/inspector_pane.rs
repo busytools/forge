@@ -3725,7 +3725,7 @@ pub(crate) mod tests {
         description: &str,
     ) -> crate::app::ToolCallInfo {
         use crate::agent::model::ToolCallStatus;
-        use crate::app::{BlockCache, ToolCallInfo};
+        use crate::app::ToolCallInfo;
         ToolCallInfo {
             id: id.to_owned(),
             title: "Task".to_owned(),
@@ -3751,7 +3751,6 @@ pub(crate) mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -3764,7 +3763,7 @@ pub(crate) mod tests {
         title: &str,
     ) -> crate::app::ToolCallInfo {
         use crate::agent::model::ToolCallStatus;
-        use crate::app::{BlockCache, ToolCallInfo};
+        use crate::app::ToolCallInfo;
         ToolCallInfo {
             id: id.to_owned(),
             title: title.to_owned(),
@@ -3786,7 +3785,6 @@ pub(crate) mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),

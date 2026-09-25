@@ -531,8 +531,8 @@ mod tests {
 
     use super::*;
     use crate::app::{
-        ActiveView, BlockCache, HelpView, SelectionKind, SelectionPoint, SelectionState,
-        TextBlockSpacing, ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
+        ActiveView, HelpView, SelectionKind, SelectionPoint, SelectionState, TextBlockSpacing,
+        ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use forge_primitives::cloud::service_status::ServiceSeverity;
@@ -581,7 +581,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
@@ -5096,8 +5095,10 @@ mod tests {
         let mut app = make_test_app();
         let chat_width: u16 = 40;
 
-        let mut text_block = TextBlock::from_complete("hello\nworld");
-        text_block.cache.set_height(2, chat_width);
+        let text_block = TextBlock::from_complete("hello\nworld");
+        app.render_caches
+            .text_block(text_block.id, text_block.content_signature(), false, false, 0)
+            .set_height(2, chat_width);
 
         let mut tool = tool_call("tool-x", model::ToolCallStatus::InProgress);
         tool.last_measured_width = chat_width;
@@ -5733,6 +5734,51 @@ mod tests {
                 .any(|b| matches!(b, MessageBlock::Text(t) if t.text.contains("streaming reply"))),
             "response streamed into the placeholder below the notice",
         );
+    }
+
+    /// Every store entry belongs to a block the model still holds. The
+    /// splitter replaces the tail block on each paragraph boundary, so the
+    /// replaced block's id is dropped - and its markdown entry with it,
+    /// because nothing else can reach an entry whose id is gone.
+    #[test]
+    fn splitting_a_streamed_block_leaves_no_orphan_markdown() {
+        use crate::app::state::render_cache_store::testing::markdown_entry_ids;
+
+        let mut app = make_test_app();
+        app.active_messages_mut().expect("active session").push(user_msg("go"));
+        app.push_active_turn_assistant_placeholder();
+        app.status = AppStatus::Running;
+
+        for chunk in ["alpha\n\n", "beta\n\n", "gamma\n\n", "delta\n\n", "omega", "more"] {
+            super::streaming::handle_agent_message_chunk(
+                &mut app,
+                model::ContentChunk::new(model::RenderContentBlock::Text(model::TextContent::new(
+                    chunk.to_owned(),
+                ))),
+            );
+        }
+
+        let owner = app.active_turn_assistant_idx().expect("active turn");
+        let live: Vec<forge_sessions::model::BlockId> = app.messages().expect("active session")
+            [owner]
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                MessageBlock::Text(block) => Some(block.id),
+                MessageBlock::Notice(block) => Some(block.text.id),
+                _ => None,
+            })
+            .collect();
+        assert!(live.len() > 1, "the run split into several blocks, got {}", live.len());
+
+        let held = markdown_entry_ids(&app);
+        assert!(!held.is_empty(), "the streamed tail left an entry to check");
+        for id in held {
+            assert!(
+                live.contains(&id),
+                "markdown entry {id:?} belongs to a block the model no longer holds"
+            );
+        }
     }
 
     /// Item 2 idle path unchanged: with no active turn the Info notice

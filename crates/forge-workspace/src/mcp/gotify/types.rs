@@ -6,7 +6,7 @@
 //! `SessionUpdate::GotifyNotificationAppended`, and [`to_prose`] is the
 //! single source of the user-turn prose that both the session's LLM
 //! (via `Command::Prompt`) and the TUI chat echo (via
-//! `forge-tui::ui::peer_block::detect_inbound`) consume. Workspace-
+//! `forge_sessions::envelope::detect_inbound`) consume. Workspace-
 //! internal - only forge-workspace builds it and forge-tui reads it
 //! through the protocol enums, so it stays out of forge-primitives
 //! (logic-free wire types only).
@@ -27,7 +27,7 @@ pub struct GotifyNotification {
 impl GotifyNotification {
     /// The user-turn prose injected into the subscriber's session. The
     /// format MUST match the prefix
-    /// `forge-tui::ui::peer_block::detect_inbound` keys on to render the
+    /// `forge_sessions::envelope::detect_inbound` keys on to render the
     /// notification chat block.
     pub fn to_prose(&self) -> String {
         format!(

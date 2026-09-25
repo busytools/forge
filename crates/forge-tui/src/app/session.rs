@@ -720,7 +720,7 @@ impl UiSession {
                     )
                 {
                     tc.status = model::ToolCallStatus::Completed;
-                    tc.mark_tool_call_layout_dirty();
+                    crate::app::state::tool_calls::request_tool_call_layout_dirty(tc);
                     settled.push((msg_idx, block_idx));
                 }
             }

@@ -13,11 +13,14 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     if text.text.is_empty() {
         return;
     }
+    // Cloned out before the message borrow: the store handle is needed while
+    // `owner` holds the messages.
+    let render_caches = std::rc::Rc::clone(&app.render_caches);
     if let Some(owner_idx) = app.active_turn_assistant_idx()
         && let Some(owner) =
             app.active_messages_mut().and_then(|messages| messages.get_mut(owner_idx))
     {
-        append_agent_stream_text(&mut owner.blocks, &text.text);
+        append_agent_stream_text(&mut owner.blocks, Some(&render_caches), &text.text);
         app.sync_after_message_tail_changed(owner_idx);
         return;
     }
@@ -29,24 +32,32 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     // last, which would glue two unrelated turns together with no
     // separator (e.g. "...pull/107Monitor closed cleanly.").
     let mut blocks = Vec::new();
-    append_agent_stream_text(&mut blocks, &text.text);
+    append_agent_stream_text(&mut blocks, Some(&app.render_caches), &text.text);
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks));
     app.bind_active_turn_assistant_to_tail();
 }
 
-pub(super) fn append_agent_stream_text(blocks: &mut Vec<MessageBlock>, chunk: &str) {
+pub(super) fn append_agent_stream_text(
+    blocks: &mut Vec<MessageBlock>,
+    render_caches: Option<&crate::app::RenderCacheStore>,
+    chunk: &str,
+) {
     if chunk.is_empty() {
         return;
     }
     if let Some(MessageBlock::Text(block)) = blocks.last_mut() {
         block.text.push_str(chunk);
-        block.markdown.append(chunk);
-        block.cache.invalidate();
+        // The id keys the markdown cache, so this extends the entry rather
+        // than starting a new one - which is what keeps the incremental
+        // render incremental.
+        if let Some(render_caches) = render_caches {
+            render_caches.markdown(block.id, &block.text).append(chunk);
+        }
     } else {
         blocks.push(new_text_block(chunk.to_owned()));
     }
 
-    let split_count = split_tail_text_block(blocks);
+    let split_count = split_tail_text_block(blocks, render_caches);
     if split_count > 0 {
         crate::perf::mark_with("text_block_split_count", "count", split_count);
     }
@@ -62,7 +73,10 @@ fn new_text_block(text: String) -> MessageBlock {
     MessageBlock::Text(TextBlock::new(text))
 }
 
-fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
+fn split_tail_text_block(
+    blocks: &mut Vec<MessageBlock>,
+    render_caches: Option<&crate::app::RenderCacheStore>,
+) -> usize {
     let mut split_count = 0usize;
     #[allow(clippy::while_let_loop)] // multiple early-break conditions inside
     loop {
@@ -90,6 +104,15 @@ fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
             break;
         }
 
+        // The replaced block's id is dropped here, so its entries go with it:
+        // nothing else can reach them once the id is gone, and the splitter
+        // runs on every paragraph boundary of a streamed reply.
+        if let (Some(caches), Some(MessageBlock::Text(block))) =
+            (render_caches, blocks.get(tail_idx))
+        {
+            caches.evict_block(block.id);
+            caches.evict_markdown(block.id);
+        }
         blocks[tail_idx] = new_text_block(remainder);
         blocks.insert(tail_idx, completed_text_block(completed, split));
         split_count += 1;

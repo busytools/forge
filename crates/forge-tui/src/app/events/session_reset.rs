@@ -1,7 +1,4 @@
-use super::super::{
-    App, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, TextBlock,
-    TextBlockSpacing,
-};
+use super::super::{App, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;
 
 pub(super) fn reset_for_new_session(
@@ -158,7 +155,7 @@ fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
 /// rather than as its own turn.
 fn tail_renders_as_envelope_card(msg: &ChatMessage) -> bool {
     matches!(msg.blocks.last(), Some(MessageBlock::Text(block))
-        if crate::ui::peer_block::detect_inbound(&block.text).is_some())
+        if forge_sessions::envelope::detect_inbound(&block.text).is_some())
 }
 
 /// Append one replayed user text chunk. `continues_previous` carries
@@ -176,6 +173,8 @@ fn append_resume_user_message_chunk(
         return;
     }
 
+    // Cloned out before the message borrow below.
+    let render_caches = std::rc::Rc::clone(&app.render_caches);
     if continues_previous
         && let Some(last) = app.active_messages_mut().and_then(|messages| messages.last_mut())
         && matches!(last.role, MessageRole::User)
@@ -183,41 +182,18 @@ fn append_resume_user_message_chunk(
     {
         if let Some(MessageBlock::Text(block)) = last.blocks.last_mut() {
             block.text.push_str(&text.text);
-            block.markdown.append(&text.text);
-            block.cache.invalidate();
+            render_caches.markdown(block.id, &block.text).append(&text.text);
         } else {
-            let mut incr = IncrementalMarkdown::default();
-            incr.append(&text.text);
-            last.blocks.push(MessageBlock::Text(TextBlock {
-                text: text.text.clone(),
-                cache: BlockCache::default(),
-                markdown: incr,
-                trailing_spacing: TextBlockSpacing::default(),
-                peer_collapsed_override: None,
-                peer_last_measured_y_in_msg: 0,
-                peer_last_measured_height: 0,
-                peer_last_measured_width: 0,
-            }));
+            last.blocks.push(MessageBlock::Text(TextBlock::new(text.text.clone())));
         }
         let last_idx = app.messages().map_or(0, <[ChatMessage]>::len).saturating_sub(1);
         app.sync_after_message_tail_changed(last_idx);
         return;
     }
 
-    let mut incr = IncrementalMarkdown::default();
-    incr.append(&text.text);
     app.push_message_tracked(ChatMessage::new(
         MessageRole::User,
-        vec![MessageBlock::Text(TextBlock {
-            text: text.text.clone(),
-            cache: BlockCache::default(),
-            markdown: incr,
-            trailing_spacing: TextBlockSpacing::default(),
-            peer_collapsed_override: None,
-            peer_last_measured_y_in_msg: 0,
-            peer_last_measured_height: 0,
-            peer_last_measured_width: 0,
-        })],
+        vec![MessageBlock::Text(TextBlock::new(text.text.clone()))],
     ));
 }
 
@@ -516,7 +492,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                         rendered_user_text = true;
                     }
                     // The dispatcher below paints an inbound envelope stamped.
-                    if crate::ui::peer_block::detect_inbound(text).is_some() {
+                    if forge_sessions::envelope::detect_inbound(text).is_some() {
                         continue;
                     }
                     let chunk = model::ContentChunk::new(model::RenderContentBlock::Text(
