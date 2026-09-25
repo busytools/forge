@@ -94,7 +94,7 @@ Every character used as chrome - borders, icons, status, separators. Scope is cu
 | `▲` `⚙` | PushNotification; LSP | outbound signal; tooling integration |
 | `○` | fallback tool icon; pending or blocked task; unfocused permission option; sleeping project row | open circle, reused |
 | `✓` `✗` | completed / Allow; failed / Reject | completed and failed |
-| `➤` | input prompt; SendMessage | prompt char |
+| `➤` | input prompt | prompt char |
 | `▁▂▃▄▅▆▇█` | dictate level meter | the composer's 26-cell block ramp |
 | `●` `◌` | recording dot, MCP connected server, in-force value; transcribing dot, MCP pending server | filled circle pulses on a 1.05 s cycle leading the [status row](./input.md), and marks a connected server green / a pending server blue on [MCP SERVERS](./inspector-processes.md); the dotted circle takes the same spots in blue while transcribing or pending |
 | `·` `•` | permission option separator, sleeping project row; plan-approval actions | middle dot; bullet |
