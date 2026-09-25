@@ -562,7 +562,7 @@ impl super::App {
     /// Rebuild if any message's slot row disagrees with its block
     /// count. The shared guard only compares list lengths, so a
     /// block-count change that skipped
-    /// `sync_after_message_blocks_changed` leaves one row stale and the
+    /// `sync_render_cache_message_tail` leaves one row stale and the
     /// byte totals short. Firing means such a change reached us.
     fn repair_render_cache_accounting_drift(&mut self) {
         self.ensure_render_cache_accounting();
