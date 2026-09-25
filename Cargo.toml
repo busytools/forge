@@ -18,8 +18,10 @@ hyper = { version = "1.9", default-features = false, features = ["server", "http
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 # The web view's server and markup. axum rides the hyper 1.x line pinned
-# above, so the lock gains no second copy.
-axum = "0.8"
+# above, so the lock gains no second copy. Features are named rather than
+# defaulted: the defaults pull form, json and query support the view has
+# no use for.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 # `axum` enables `IntoResponse` for `Markup`; the view renders every page
 # through it.
 maud = { version = "0.27", features = ["axum"] }
