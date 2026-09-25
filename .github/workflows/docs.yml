@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   build:
-    name: mdbook build
+    name: build site
     # A pull request from a fork cannot deploy and has nothing to gain
     # from running here, so it is skipped outright.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -39,11 +39,43 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # forge-dictate captures audio through cpal, whose Linux backend
+      # is ALSA; without the headers `alsa-sys` fails to build and the
+      # rustdoc step below dies.
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - uses: ./.github/actions/rust
+
+      # Caches this job's own builds. Does not share an entry with CI's
+      # `cargo doc` job despite the matching shared-key/key pair: rust-cache
+      # hashes RUST* variables, and CI carries workflow-level RUSTFLAGS.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: docs
+
       - uses: taiki-e/install-action@v2
         with:
           tool: mdbook@0.5.4
 
       - run: mdbook build docs/book
+
+      # `--enable-index-page` is what gives the site a front door: the
+      # root manifest is virtual, so rustdoc writes no index of its own.
+      - name: Build rustdoc
+        env:
+          RUSTDOCFLAGS: "-D warnings -Z unstable-options --enable-index-page"
+        run: cargo doc --workspace --no-deps --all-features --document-private-items
+
+      - name: Stage the site
+        run: |
+          mkdir -p target/site/rustdoc
+          cp -R target/book/. target/site/
+          cp -R target/doc/. target/site/rustdoc/
+          # An `--enable-index-page` that stops producing an index leaves
+          # this build green and publishes a book whose link to it 404s.
+          test -f target/site/index.html
+          test -f target/site/rustdoc/index.html
 
       # Reads the repo's Pages config, so it fails until Pages is
       # enabled by hand: Settings, Pages, Source = GitHub Actions.
@@ -56,7 +88,7 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         if: github.event_name != 'pull_request'
         with:
-          path: target/book
+          path: target/site
 
   deploy:
     name: deploy to pages

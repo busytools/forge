@@ -626,7 +626,7 @@ impl ForgeSdkBridge {
         false
     }
 
-    /// Sibling of [`check_session_id`] for methods that intentionally
+    /// Sibling of [`Self::check_session_id`] for methods that intentionally
     /// pass through on mismatch (no silent drop). Logs a breadcrumb at
     /// `trace` so postmortems can correlate "my prompt vanished" with
     /// a session-swap race, without raising the noise floor under

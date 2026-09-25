@@ -171,7 +171,7 @@ pub enum WorkerDespawnError {
 /// ## Bridge-prefix contract (#245 Layer C blocker 2)
 ///
 /// Async spawn failures arrive here pre-wrapped by the bridge in
-/// [`forge_agent::forge_sdk_bridge`]:
+/// `forge_agent::forge_sdk_bridge`:
 ///
 /// - `"forge-sdk session spawn failed: {err}"`
 /// - `"forge-sdk session resume failed: {err}"`

@@ -3,7 +3,7 @@
 //!
 //! Mirrors [`crate::mcp::peers::facade`]: the four `Tool` impls hold an
 //! `Arc<dyn ReviewFacade>` so tests drive them with a
-//! [`MockReviewFacade`] instead of a live `Workspace`. [`resolve_scope`]
+//! `MockReviewFacade` instead of a live `Workspace`. [`resolve_scope`]
 //! maps the caller to its `(project, branch)` review scope - project via
 //! the shared [`crate::mcp::caller_context`], branch via a git query on
 //! the caller's cwd - matching the key the `/diff` overlay persists under.

@@ -352,7 +352,7 @@ impl super::App {
 
     /// Settle the open descendants of a backgrounded root that just left
     /// the roster on the active session. See
-    /// [`UiSession::settle_children_of`].
+    /// [`settle_children_of`](crate::app::session::UiSession::settle_children_of).
     pub(crate) fn settle_departed_root_children(&mut self, root_id: &str) {
         let Some(bucket) = self.active_bucket_mut() else {
             return;
@@ -375,8 +375,8 @@ impl super::App {
     }
 
     /// Clear the active session's background-task registry (and its
-    /// task-id mirror) on teardown. See
-    /// [`UiSession::clear_background_task_registry`].
+    /// task-id mirror) on teardown. See `clear_background_task_registry`
+    /// on [`UiSession`](crate::app::session::UiSession).
     pub(crate) fn clear_active_session_background_task_registry(&mut self) {
         if let Some(bucket) = self.active_bucket_mut() {
             bucket.clear_background_task_registry();
@@ -384,7 +384,8 @@ impl super::App {
     }
 
     /// Mark a tool-use id as a backgrounded agent root on the active
-    /// session. See [`UiSession::backgrounded_roots`].
+    /// session. See
+    /// [`backgrounded_roots`](crate::app::session::UiSession::backgrounded_roots).
     pub(crate) fn mark_backgrounded_root(&mut self, tool_use_id: String) {
         if let Some(bucket) = self.active_bucket_mut() {
             bucket.backgrounded_roots.insert(tool_use_id);

@@ -92,7 +92,8 @@ impl Context {
     }
 }
 
-/// Build the prompt from a whole [`NormalizeOptions`].
+/// Build the prompt from a whole
+/// [`NormalizeOptions`](crate::normalize::NormalizeOptions).
 ///
 /// The seam that lets a test assert every field reaches the control
 /// line without a model. `normalize_with` calls this rather than

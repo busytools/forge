@@ -1611,8 +1611,9 @@ pub(crate) fn handle_close_worker(
 /// up to the 5s close-wait budget to reap the child. The worktree
 /// removal runs immediately on the command loop, so it may overlap
 /// the claude child's final seconds. A post-teardown worktree-removal
-/// failure is surfaced as a warning in the [`DespawnResult`] but never
-/// rolls back the kill - teardown and worktree cleanup are independent.
+/// failure is surfaced as a warning in the
+/// [`DespawnResult`](crate::protocol::DespawnResult) but never rolls back
+/// the kill - teardown and worktree cleanup are independent.
 pub(crate) fn handle_despawn_worker(
     workspace: &Arc<Workspace>,
     project_key: &ProjectKey,

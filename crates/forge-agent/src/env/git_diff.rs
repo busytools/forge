@@ -160,7 +160,7 @@ async fn rev_parse_gate(cwd: &Path) -> Result<String, RepoGate> {
 }
 
 /// Minimum gap between background `git fetch` kicks for one repo. The
-/// scan piggybacks a fetch to keep origin/<default> fresh; this caps it
+/// scan piggybacks a fetch to keep `origin/<default>` fresh; this caps it
 /// so a burst of scans (session switches, the 1s ticker's 10s refresh)
 /// fetches at most once per window.
 const FETCH_THROTTLE: Duration = Duration::from_secs(240);
@@ -210,7 +210,7 @@ fn claim_fetch_slot(key: &Path, now: Instant, window: Duration) -> bool {
 /// remote-tracking ref the branch-ahead diff compares against stays
 /// fresh. Only fires for a remote-tracking default (`origin/...`); a
 /// purely-local default has no remote to fetch. The scan never awaits
-/// it - this scan used the current origin/<default>; the fetch refreshes
+/// it - this scan used the current `origin/<default>`; the fetch refreshes
 /// it for the NEXT scan. Failures (offline, auth, no remote) are
 /// logged at DEBUG and are a no-op: the machine's network is not
 /// forge's condition to report.

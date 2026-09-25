@@ -1,14 +1,15 @@
 //! Background runtime for [`Client`](crate::Client) - owns the
 //! subprocess reader, decodes incoming frames, dispatches inbound
 //! `control_request`s on detached tasks, and routes outbound
-//! `control_response`s to the [`pending_controls`] map so [`send_control`]
-//! callers can `await` their typed reply.
+//! `control_response`s to the [`PendingControls`] map so
+//! [`send_control`](crate::Client::send_control) callers can `await`
+//! their typed reply.
 //!
 //! ## Lifecycle
 //!
-//! 1. [`Client::spawn`] runs the init handshake inline (sends the
-//!    `initialize` `control_request`, drains the response, captures
-//!    any pre-init Messages).
+//! 1. [`Client::spawn`](crate::Client::spawn) runs the init handshake
+//!    inline (sends the `initialize` `control_request`, drains the
+//!    response, captures any pre-init Messages).
 //! 2. Once init completes, [`spawn_reader_task`] takes ownership of
 //!    the [`Subprocess`], the dispatch handle, the events channel,
 //!    and any pre-init Messages.
@@ -16,7 +17,7 @@
 //!    `subprocess.read_line()` until shutdown / EOF / I/O error.
 //! 4. On exit, the reader task closes the subprocess and drains
 //!    `pending_controls` with an EOF error so blocked
-//!    [`send_control`] callers wake up.
+//!    [`send_control`](crate::Client::send_control) callers wake up.
 
 use std::collections::HashMap;
 use std::sync::Arc;

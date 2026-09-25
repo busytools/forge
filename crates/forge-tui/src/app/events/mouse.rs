@@ -1344,7 +1344,7 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 /// in the session this click woke.
 ///
 /// The bucket is resolved by the same rule the Projects pane uses
-/// ([`projects_pane::live_lead_key`]), which prefers the active
+/// ([`live_lead_key`](crate::ui::projects_pane::live_lead_key)), which prefers the active
 /// session's bucket when two sit on one cwd - a state a session left
 /// failed can produce, and the reason the pane's rule carries that
 /// tie-break.

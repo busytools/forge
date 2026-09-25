@@ -417,17 +417,26 @@ inspected.
 18. **The published documentation is a separate obligation from the
     UI surface pages, with a different audience.** Rule 11 owns the
     book's `ui/` pages, the maintainer's visual record. This rule
-    covers the rest of `docs/book/`, the site users read at
+    covers the rest of `docs/book/` and the rustdoc published beside
+    it, the site users read at
     https://busytools.github.io/forge/.
 
     **The publish is automatic and the content is not.**
-    `.github/workflows/docs.yml` builds `docs/book` and deploys to
-    Pages on every push to `main`, while a pull request skips the
-    deploy. mdbook renders hand-written markdown and no page
-    derives from the code, so a change that edits no page republishes
-    the old description within minutes of the merge, with a green
-    build and a green deploy beside it. The site is never out of date
-    with the repo, and it can be confidently wrong about the code.
+    `.github/workflows/docs.yml` builds `docs/book` and the
+    workspace's rustdoc - the book at the site root, rustdoc under
+    `/rustdoc/` - and deploys both to Pages on every push to `main`,
+    while a pull request skips the deploy. The book pages are
+    hand-written markdown and none of them derives from the code, so
+    a change that edits no page republishes the old description
+    within minutes of the merge, with a green build and a green
+    deploy beside it. Those pages are never out of date with the
+    repo, and they can be confidently wrong about the code. The
+    rustdoc is generated from the tree, so it tracks the code rather
+    than lagging it; the obligation it carries is that the docs build
+    publishes every crate's rustdoc, private items included, and the
+    raw source of every file it documents, so a doc comment in a
+    documented file reaches a public URL whether or not rustdoc
+    renders an item for it.
 
     The pages, and the usual way each goes false:
 
@@ -439,7 +448,7 @@ inspected.
       or step falsifies it; a recipe missing from its avowedly partial
       `just` list does not.
     - `index.md` - what forge is, the surfaces it renders, the scope
-      caveats.
+      caveats, and the pointer to the rustdoc.
     - `architecture.md` - crate count, layering diagram, crate table,
       placement guide, the TUI-to-workspace contract, the MCP tool
       groups, the single-instance guard, the pointer to the UI
