@@ -254,23 +254,24 @@ mod tests {
         }
     }
 
-    /// A `replay-only:` marker exempts the retired tools it NAMES, on a
-    /// line ADJACENT to it.
+    /// A `replay-only:` marker exempts the retired tools it NAMES, on one
+    /// of the three lines around it.
     ///
     /// Two rules, and each closes a hole the other leaves. Naming: a marker
     /// exempts only the tools written after it, so an unlisted retired name
-    /// beside it still fails and the marker cannot be decorative.
+    /// beside it still fails - a marker naming something absent is merely
+    /// inert, and what it cannot do is cover a name it does not list.
     /// Adjacency: the marker must sit on the exempted line, or the line
-    /// directly above or below it - so a marker cannot launder a SECOND use
-    /// of the same name elsewhere in the same comment block, which is a
+    /// directly above or below it, so a marker cannot launder a SECOND use
+    /// of the same name elsewhere in the same comment block - which is a
     /// stale instruction wearing a replay marker's clothes. Three positions
     /// rather than one because the formatter moves a trailing comment
-    /// between an arm's own line and its body.
+    /// between an arm's own line and its body, and the two neighbours mean
+    /// one marker covers a line either side of it.
     ///
     /// It exists for text that cites a retired name as history: a reader of
     /// what a session recorded before the rename. Nothing can call a retired
-    /// tool, so the marker cannot be an alias, and writing one per
-    /// occurrence is a deliberate act rather than a widened exemption.
+    /// tool, so the marker cannot be an alias.
     const REPLAY_ONLY: &str = "replay-only:";
 
     /// A line that IS one of `OLD_NAMES`' own entries. The list has to
@@ -378,6 +379,48 @@ mod tests {
             "a retired tool name survives at: {offenders:?}. If the line cites one as history \
              rather than calling it, put a `{REPLAY_ONLY}` comment naming that tool on the line \
              itself or the one next to it.",
+        );
+    }
+
+    /// The exemption has to REJECT, not only accept. Without this the helper
+    /// could return every retired name unconditionally - or scan the whole
+    /// file rather than the adjacent lines - and the gate would pass while
+    /// exempting everything, which is how the pre-rewrite version went wrong
+    /// when it skipped the file outright.
+    ///
+    /// The fixture is built from `OLD_NAMES` rather than repeating the names,
+    /// so it cannot drift from what the gate scans for.
+    #[test]
+    fn the_replay_exemption_names_its_tools_and_only_those() {
+        let marker_line = |tool: &str| format!("// {REPLAY_ONLY} {tool}");
+        let used_line = |tool: &str| format!("\"mcp__forge__{tool}\",");
+        let (wrapped, other) = (OLD_NAMES[9], OLD_NAMES[3]);
+        let (mark_wrapped, use_wrapped) = (marker_line(wrapped), used_line(wrapped));
+        let (mark_other, use_other) = (marker_line(other), used_line(other));
+        let lines = [
+            mark_wrapped.as_str(),
+            use_wrapped.as_str(),
+            "",
+            mark_wrapped.as_str(),
+            use_other.as_str(),
+            "",
+            mark_other.as_str(),
+            "",
+            "",
+            use_other.as_str(),
+        ];
+        assert_eq!(exempted_names(&lines, 1), vec![wrapped], "a marker exempts the tool it names");
+        assert!(
+            !exempted_names(&lines, 4).contains(&other),
+            "a marker naming another tool does not cover this line's tool",
+        );
+        assert!(
+            exempted_names(&lines, 9).is_empty(),
+            "a marker three lines away is not adjacent, whatever it names",
+        );
+        assert!(
+            exempted_names(&[use_wrapped.as_str(), "// nothing here"], 0).is_empty(),
+            "an unmarked line is exempt from nothing",
         );
     }
 

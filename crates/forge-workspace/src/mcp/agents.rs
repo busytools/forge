@@ -1635,7 +1635,7 @@ mod tests {
             (asked[0].wrapped.sender_name.clone(), asked[0].wrapped.sender_org.clone())
         };
         assert_eq!(name, "core/w2", "an ask names the worker");
-        assert_eq!(org, "acme");
+        assert_eq!(org, "acme", "and its org, not the project's");
 
         let tell = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
         let output = tell
@@ -1793,13 +1793,175 @@ mod tests {
             .await;
         assert!(!output.is_error, "the despawn must be answered: {:?}", output.blocks);
         let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
-        assert_eq!(parsed["status"], "despawned");
-        assert_eq!(parsed["worktree_cleanup_warning"], "the directory lingers");
+        assert_eq!(parsed["status"], "despawned", "a clean despawn reports it");
+        assert_eq!(
+            parsed["worktree_cleanup_warning"], "the directory lingers",
+            "the worktree warning reaches the caller",
+        );
         assert!(
             parsed.get("branch_cleanup_warning").is_none(),
             "a warning that did not fire is absent, not null",
         );
         assert!(host.workers.despawn_calls.lock()[0].2, "force reaches the facade");
+    }
+
+    #[tokio::test]
+    async fn update_forwards_only_the_supplied_fields() {
+        // Every field is optional, so an omitted one must arrive as `None`
+        // rather than as an empty string - which the store would write,
+        // blanking a text the caller never meant to touch.
+        let host = host();
+        let tool =
+            Update { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "w1",
+                    "resume_kick": "re-read the plan first",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "the update must succeed: {:?}", output.blocks);
+        let calls = host.workers.update_calls.lock();
+        assert_eq!(calls.len(), 1, "the facade saw one update");
+        assert_eq!(calls[0].1, "w1", "the label reaches the facade");
+        assert_eq!(calls[0].2, None, "an omitted charter stays None");
+        assert_eq!(calls[0].3, None, "an omitted kick stays None");
+        assert_eq!(
+            calls[0].4.as_deref(),
+            Some("re-read the plan first"),
+            "the supplied resume_kick reaches the facade",
+        );
+        assert!(
+            output.blocks[0].text.contains("resume_kick"),
+            "the reply names the changed field: {}",
+            output.blocks[0].text,
+        );
+    }
+
+    #[tokio::test]
+    async fn update_refuses_when_the_worker_does_not_exist() {
+        // Update revises a row; it must never create one, because a row is
+        // what re-spawns a worker at the next lead connect.
+        let host = host();
+        *host.workers.update_result.lock() = Some(Err(WorkerUpdateError::NoSuchWorker {
+            label: "ghost".to_owned(),
+            project_key: "core".to_owned(),
+        }));
+        let tool =
+            Update { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({ "label": "ghost", "charter": "c" }) })
+            .await;
+        assert!(output.is_error, "an absent worker is refused, not reported as revised");
+        assert!(
+            output.blocks[0].text.contains("agents__spawn"),
+            "the refusal points at spawn: {}",
+            output.blocks[0].text,
+        );
+    }
+
+    #[tokio::test]
+    async fn update_refuses_a_field_that_is_empty_after_trim() {
+        let host = host();
+        let tool =
+            Update { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({ "label": "w1", "kick": "  \n " }) })
+            .await;
+        assert!(output.is_error, "a whitespace-only field is refused");
+        assert!(
+            output.blocks[0].text.contains("kick must be non-empty after trim"),
+            "the refusal names the offending field: {}",
+            output.blocks[0].text,
+        );
+        assert!(host.workers.update_calls.lock().is_empty(), "refused before touching the store");
+    }
+
+    #[tokio::test]
+    async fn update_is_lead_only() {
+        let host = host();
+        let tool = Update {
+            facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>,
+            slot: worker_caller(),
+        };
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({ "label": "w1", "charter": "c" }) })
+            .await;
+        assert!(output.is_error, "a worker caller is refused");
+        assert!(host.workers.update_calls.lock().is_empty(), "refused before touching the store");
+    }
+
+    #[tokio::test]
+    async fn despawn_non_lead_caller_is_error() {
+        let host = host();
+        let tool = Despawn {
+            facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>,
+            slot: worker_caller(),
+        };
+        let output = tool.call(ToolInput { value: serde_json::json!({ "label": "w1" }) }).await;
+        assert!(output.is_error, "a worker caller is refused");
+        assert!(
+            output.blocks[0].text.to_lowercase().contains("lead-only"),
+            "the refusal says why: {}",
+            output.blocks[0].text,
+        );
+        assert!(host.workers.despawn_calls.lock().is_empty(), "refused before the facade");
+    }
+
+    #[tokio::test]
+    async fn despawn_empty_label_is_error() {
+        let host = host();
+        let tool =
+            Despawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool.call(ToolInput { value: serde_json::json!({ "label": "   " }) }).await;
+        assert!(output.is_error, "a blank label is refused");
+        assert!(
+            output.blocks[0].text.to_lowercase().contains("label"),
+            "the refusal names the label: {}",
+            output.blocks[0].text,
+        );
+    }
+
+    #[tokio::test]
+    async fn despawn_unknown_label_is_error() {
+        // The failure this pins: reporting `despawned` for a label that
+        // resolved to nothing tells a lead its worker is gone while it
+        // keeps coming back on the next reconnect.
+        let host = host();
+        let tool =
+            Despawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool.call(ToolInput { value: serde_json::json!({ "label": "ghost" }) }).await;
+        assert!(output.is_error, "a label with no live worker is refused, not reported as gone");
+        assert!(
+            output.blocks[0].text.contains("ghost"),
+            "the refusal names the label: {}",
+            output.blocks[0].text,
+        );
+    }
+
+    #[tokio::test]
+    async fn despawn_surfaces_a_branch_cleanup_warning() {
+        // The description promises this key, so a kept branch has to reach
+        // the caller on an otherwise successful despawn.
+        let host = host();
+        *host.workers.despawn_outcome.lock() = Some(DespawnOutcome::Despawned {
+            worktree_cleanup_warning: None,
+            branch_cleanup_warning: Some("branch 'worktree-w1' kept: 2 commits".to_owned()),
+        });
+        let tool =
+            Despawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool.call(ToolInput { value: serde_json::json!({ "label": "w1" }) }).await;
+        assert!(!output.is_error, "a kept branch is not an error: {:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(parsed["status"], "despawned", "a despawn with a kept branch still reports it");
+        assert!(
+            parsed["branch_cleanup_warning"]
+                .as_str()
+                .expect("the branch warning is present")
+                .contains("worktree-w1"),
+            "the warning names the branch: {parsed}",
+        );
     }
 
     #[tokio::test]

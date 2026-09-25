@@ -918,6 +918,10 @@ pub struct MockWorkerFacade {
     pub spawn_reply: parking_lot::Mutex<Option<Result<WorkerSpawnReply, WorkerSpawnError>>>,
     /// Captured `update_worker` calls.
     pub update_calls: parking_lot::Mutex<Vec<RecordedUpdateCall>>,
+    /// Pre-loaded result for `update_worker`. When `None`, the mock
+    /// reports success, so a test that cares only about the args passed
+    /// through does not have to set it.
+    pub update_result: parking_lot::Mutex<Option<Result<(), WorkerUpdateError>>>,
     /// Captured `deliver_worker_prompt` calls.
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionSlot, String, WrappedPrompt)>>,
     /// Captured `deliver_worker_prompt_to_project` calls.
@@ -1006,7 +1010,7 @@ impl WorkerFacade for MockWorkerFacade {
             kick,
             resume_kick,
         ));
-        Ok(())
+        self.update_result.lock().clone().unwrap_or(Ok(()))
     }
 
     async fn despawn_worker(
