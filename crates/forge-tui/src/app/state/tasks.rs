@@ -32,7 +32,11 @@ pub struct TaskRow {
 /// supplies its children's rollup and its parent's subject.
 fn build_task_row(task: &Task, all: &[Task]) -> TaskRow {
     let display = match (&task.active_form, task.status) {
-        (Some(active_form), TaskStatus::InProgress) => active_form.clone(),
+        // A model that fills an optional string with `""` is routine, and
+        // an empty active form would draw a running row as a bare glyph.
+        (Some(active_form), TaskStatus::InProgress) if !active_form.is_empty() => {
+            active_form.clone()
+        }
         _ => task.subject.clone(),
     };
     let rollup = if task.parent.is_none() {
@@ -419,6 +423,24 @@ pub(crate) mod tests {
         assert_eq!(
             app.task_detail, None,
             "an overlay drawing nothing must not go on swallowing every key and click",
+        );
+    }
+
+    /// `active_form` is a bare string on both tools, so a session can store
+    /// an empty one. A running row falls back to its subject rather than
+    /// drawing a bare glyph with no text beside it.
+    #[test]
+    fn a_running_row_with_a_blank_active_form_falls_back_to_its_subject() {
+        let mut app = app_with_tasks(vec![Task {
+            active_form: Some(String::new()),
+            status: TaskStatus::InProgress,
+            ..owned_task("t-1", "Merge peers", Some(WORKER))
+        }]);
+        app.focus_lead_session();
+        app.refresh_tasks();
+        assert_eq!(
+            app.ui_task_rows[0].display, "Merge peers",
+            "a blank active form does not replace the subject",
         );
     }
 
