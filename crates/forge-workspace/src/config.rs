@@ -496,11 +496,18 @@ fn read_config(config_dir: &Path) -> Result<(PathBuf, String), WorkspaceError> {
 /// The `[web]` section, refusing the two ports that cannot work: 0, which
 /// is OS-assigned and so unguessable from a browser, and the gateway's
 /// own port, where the listener that binds second loses at boot.
+///
+/// A disabled view is not validated at all. Nothing will bind that port,
+/// so a stale one left in a hand-authored file is not worth refusing the
+/// boot over.
 fn resolve_web(
     web: WebConfig,
     gateway_port: u16,
     path: &Path,
 ) -> Result<WebConfig, WorkspaceError> {
+    if !web.enabled {
+        return Ok(web);
+    }
     if web.port == 0 {
         return Err(WorkspaceError::WebPortInvalid { path: path.to_path_buf() });
     }
@@ -1077,6 +1084,22 @@ no_reset_cooldown_secs = 90
         assert!(!config.web.enabled);
         assert_eq!(config.web.port, 9100);
         assert_eq!(config.web.bind, "10.0.0.5".parse::<IpAddr>().expect("ip"));
+    }
+
+    /// A section that never binds cannot stop the boot: a stale port on a
+    /// disabled view is the config's business only if something would use
+    /// it, and nothing will.
+    #[test]
+    fn a_disabled_web_section_is_not_validated() {
+        for port in [0, DEFAULT_GATEWAY_PORT] {
+            let dir = tempdir().expect("tempdir");
+            write_config(
+                dir.path(),
+                &format!("{}\n[web]\nenabled = false\nport = {port}\n", minimal_config()),
+            );
+            let config = load_from_dir(dir.path()).expect("a disabled view must not fail the load");
+            assert!(!config.web.enabled, "the section stays disabled at port {port}");
+        }
     }
 
     #[test]
