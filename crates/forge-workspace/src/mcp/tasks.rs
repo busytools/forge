@@ -73,16 +73,17 @@ fn task_to_json(task: &Task) -> serde_json::Value {
     map.insert("project".to_owned(), serde_json::json!(task.project_name));
     map.insert("subject".to_owned(), serde_json::json!(task.subject));
     map.insert("status".to_owned(), serde_json::json!(status_str(task.status)));
-    map.insert(
-        "owner".to_owned(),
-        serde_json::json!(task.owner.as_ref().map_or("unclaimed", SessionSlot::label)),
-    );
+    // An unclaimed task omits `owner` rather than writing a sentinel: a
+    // caller that reads the field back and filters on it would otherwise
+    // find none, and a session actually labelled `unclaimed` would read the
+    // same as nobody.
     for (key, value) in [
         ("active_form", task.active_form.as_deref()),
         ("detail", task.detail.as_deref()),
         ("artifact", task.artifact.as_deref()),
         ("estimate", task.estimate.as_deref()),
         ("parent", task.parent.as_ref().map(TaskId::as_str)),
+        ("owner", task.owner.as_ref().map(SessionSlot::label)),
     ] {
         if let Some(value) = value {
             map.insert(key.to_owned(), serde_json::json!(value));
@@ -275,12 +276,13 @@ impl Tool for List {
     }
 
     fn description(&self) -> &'static str {
-        "List the live tasks of YOUR project as whole records (id, subject, status, owner, \
-         parent, detail, artifact, estimate, timestamps). Optionally narrow with `owner` (a \
-         session label) or `parent` (a task id), so one task's detail or one session's rows are \
-         a filter away. An empty array means your project has no tasks in flight, or that your \
-         project could not be resolved, or that this run could not read its stored tasks. Any \
-         session in the project may call this."
+        "List the live tasks of YOUR project as whole records: id, subject and status always, \
+         then `owner`, `parent`, `active_form`, `detail`, `artifact` and `estimate` on the tasks \
+         that have them, plus the created and updated timestamps. Optionally narrow with `owner` \
+         (a session label) or `parent` (a task id), so one task's detail or one session's rows \
+         are a filter away. An empty array means your project has no tasks in flight, or that \
+         your project could not be resolved, or that this run could not read its stored tasks. \
+         Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -447,6 +449,43 @@ mod tests {
         assert_eq!(patch.artifact.as_deref(), Some("x"));
         assert_eq!(patch.subject, None, "an unstated field is left alone");
         assert_eq!(patch.owner, None, "an unstated field is left alone");
+    }
+
+    fn sample_task() -> Task {
+        Task {
+            id: TaskId::from("t-1"),
+            project_name: "myproj".to_owned(),
+            subject: "Merge peers and workers".to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: None,
+            parent: None,
+            artifact: None,
+            estimate: None,
+            created_at: SystemTime::UNIX_EPOCH,
+            updated_at: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    /// An unclaimed task carries no `owner` key at all. Writing a sentinel
+    /// makes the field unreadable: a caller filtering on what it read back
+    /// finds none, and a session actually labelled `unclaimed` reads the
+    /// same as nobody.
+    #[test]
+    fn an_unclaimed_task_omits_its_owner() {
+        let json = task_to_json(&sample_task());
+        assert!(json.get("owner").is_none(), "an unclaimed task carries no owner key: {json}");
+    }
+
+    #[test]
+    fn a_claimed_task_names_its_owner_by_label() {
+        let task = Task {
+            owner: Some(SessionSlot::worker("TestOrg", "myproj", "steward")),
+            ..sample_task()
+        };
+        let json = task_to_json(&task);
+        assert_eq!(json.get("owner").and_then(serde_json::Value::as_str), Some("steward"));
     }
 
     /// An empty list has three causes, and the description names all of
