@@ -404,6 +404,42 @@ mod prod_facade_tests {
         );
     }
 
+    /// Every field `tasks__update` can state moves, not just the two the
+    /// other tests happen to use.
+    #[test]
+    fn a_patch_moves_every_field_it_can_state() {
+        let (ws, facade, lead, _worker) = fixture();
+        let task = facade.create_task(&lead, draft("before", None, None)).expect("create");
+        assert!(
+            facade
+                .update_task(
+                    &lead,
+                    &task.id,
+                    TaskPatch {
+                        subject: Some("after".to_owned()),
+                        active_form: Some("doing".to_owned()),
+                        detail: Some("why".to_owned()),
+                        status: Some(TaskStatus::Blocked),
+                        owner: Some("lead".to_owned()),
+                        parent: Some("epic".to_owned()),
+                        artifact: Some("PR #9".to_owned()),
+                        estimate: Some("2d".to_owned()),
+                    },
+                )
+                .expect("update"),
+            "the task is there to move",
+        );
+        let stored = &ws.tasks_for_project("myproj")[0];
+        assert_eq!(stored.subject, "after");
+        assert_eq!(stored.active_form.as_deref(), Some("doing"));
+        assert_eq!(stored.detail.as_deref(), Some("why"));
+        assert_eq!(stored.status, TaskStatus::Blocked);
+        assert_eq!(stored.owner.as_ref().map(SessionSlot::label), Some("lead"));
+        assert_eq!(stored.parent.as_ref().map(TaskId::as_str), Some("epic"));
+        assert_eq!(stored.artifact.as_deref(), Some("PR #9"));
+        assert_eq!(stored.estimate.as_deref(), Some("2d"));
+    }
+
     #[test]
     fn update_moves_a_task_owned_by_another_session() {
         let (ws, facade, lead, worker) = fixture();

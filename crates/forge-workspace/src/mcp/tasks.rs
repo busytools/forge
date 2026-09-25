@@ -468,6 +468,38 @@ mod tests {
         }
     }
 
+    /// Every field the list description promises is in the block the model
+    /// reads, spelled the way the description spells it.
+    #[test]
+    fn a_task_block_carries_the_named_fields() {
+        let task = Task {
+            active_form: Some("Merging".to_owned()),
+            detail: Some("why".to_owned()),
+            artifact: Some("PR #9".to_owned()),
+            estimate: Some("1d".to_owned()),
+            parent: Some(TaskId::from("epic")),
+            owner: Some(SessionSlot::lead("TestOrg", "myproj")),
+            ..sample_task()
+        };
+        let json = task_to_json(&task);
+        for key in [
+            "id",
+            "project",
+            "subject",
+            "status",
+            "active_form",
+            "detail",
+            "artifact",
+            "estimate",
+            "parent",
+            "owner",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(json.get(key).is_some(), "the task block carries {key}: {json}");
+        }
+    }
+
     /// An unclaimed task carries no `owner` key at all. Writing a sentinel
     /// makes the field unreadable: a caller filtering on what it read back
     /// finds none, and a session actually labelled `unclaimed` reads the

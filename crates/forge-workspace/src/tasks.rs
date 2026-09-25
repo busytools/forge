@@ -165,15 +165,22 @@ mod tests {
         ws.push_task(sample_task_with_parent("epic", None, "forge"));
         ws.push_task(sample_task_with_parent("sub-a", Some("epic"), "forge"));
         ws.push_task(sample_task_with_parent("sub-b", Some("sub-a"), "forge"));
+        // A task in the SAME project but outside the tree: the cascade must
+        // take the descendants and nothing else.
+        ws.push_task(sample_task("sibling", "forge"));
         let unrelated = sample_task("other-project", "elsewhere");
         ws.push_task(unrelated);
         assert!(ws.remove_task_tree("forge", &TaskId::from("epic")), "the tree is removed");
         let left = ws.tasks_for_project("forge");
-        assert!(left.is_empty(), "children and grandchildren go with the parent");
+        assert_eq!(
+            left.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+            vec![TaskId::from("sibling")],
+            "children and grandchildren go with the parent, and nothing else does",
+        );
         let stored =
             crate::store::tasks::list(ws.db.lock().as_ref().expect("db installed")).expect("list");
         assert!(
-            stored.iter().all(|t| t.project_name != "forge"),
+            stored.iter().all(|t| t.project_name != "forge" || t.id == TaskId::from("sibling")),
             "the deletion reached the store, not only the in-memory set: {stored:?}",
         );
         assert_eq!(ws.tasks_for_project("elsewhere").len(), 1, "another project is untouched");
