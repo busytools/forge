@@ -48,11 +48,11 @@ fn create_app_impl(
     //   Trust + file_index init handle an empty cwd cleanly; the
     //   first per-project Connected event populates the real
     //   bucket's `cwd_raw` from the agent's reported cwd.
+    let surface = forge_sessions::surface::ViewSurface::new(Arc::clone(&workspace));
     let project_path = cli
         .project
         .as_deref()
-        .and_then(|name| workspace.list_projects().into_iter().find(|p| p.name == name))
-        .map(|p| p.path);
+        .and_then(|name| surface.roster().project_named(name).map(|project| project.path.clone()));
     let cwd_raw =
         project_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
 
@@ -71,8 +71,9 @@ fn create_app_impl(
     // Runs after App construction so the seeded run guards `u`/`c`
     // from the first frame.
     let boot_cwd_raw = if cwd_raw.is_empty() {
-        workspace
-            .list_projects()
+        surface
+            .roster()
+            .projects
             .first()
             .map(|project| project.path.to_string_lossy().to_string())
             .unwrap_or_default()
@@ -132,19 +133,15 @@ fn create_app_impl(
         logger
     });
 
-    // Subscribe to workspace's SessionUpdate channel BEFORE any
+    // Subscribe to the workspace's SessionUpdate stream BEFORE any
     // `Command::StartDefault` dispatch so the first emit is delivered
     // to the App event loop.
-    let update_rx = workspace.subscribe().unwrap_or_else(|| {
-        // Second-subscribe paths only occur if construction is
-        // accidentally called twice (a misconfiguration). Returning a
-        // dummy receiver keeps the App constructable so the error
-        // surfaces in the regular event-loop diagnostics rather than
-        // an unwrap on the App field type.
-        let (_, rx) = mpsc::unbounded_channel();
-        rx
-    });
-    let update_tx = workspace.update_sender();
+    let workspace_rx = workspace.subscribe();
+    // The TUI's own channel, for the presentation events its async
+    // tasks emit. Kept apart from the subscription above so the
+    // workspace's stream stays the only thing a second frontend has to
+    // reproduce.
+    let (update_tx, update_rx) = mpsc::unbounded_channel();
 
     // No session is focused until a spawn lands, so the boot render is
     // the preflight handing over to the launchpad (or, on the
@@ -213,6 +210,7 @@ fn create_app_impl(
         help_open: false,
         help_dialog: DialogState::default(),
         help_visible_count: 0,
+        workspace_rx,
         update_rx,
         update_tx,
         file_index_event_tx,
@@ -395,7 +393,8 @@ pub fn start_connection(app: &mut App) {
     // forge.toml definition order; once data lands, subsequent spawns
     // see the right tier.
     if app.startup_project.is_none() {
-        let auto_start = workspace.auto_start_project_names();
+        let auto_start =
+            forge_sessions::surface::ViewSurface::new(Arc::clone(workspace)).roster().auto_start();
         for project_name in auto_start {
             let cmd = forge_workspace::Command::SpawnProject {
                 project_name: project_name.clone(),
@@ -418,7 +417,8 @@ pub fn start_connection(app: &mut App) {
     // takes every other case - so the first match arm always wins here
     // and that project is the focused spawn. The `None` arms are
     // exhaustiveness over `Option<String>`, not a reachable path.
-    let auto_start = workspace.auto_start_project_names();
+    let auto_start =
+        forge_sessions::surface::ViewSurface::new(Arc::clone(workspace)).roster().auto_start();
     let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice())
     {
         (Some(name), _) => vec![Some(name.clone())],

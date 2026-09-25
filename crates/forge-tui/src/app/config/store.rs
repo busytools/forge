@@ -2,6 +2,7 @@ use serde_json::{Map, Value};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{DefaultPermissionMode, OutputStyle};
@@ -41,7 +42,7 @@ pub struct LoadedSettingsDocuments {
 /// an `AgentHandle` directly.
 #[derive(Clone, Copy)]
 pub struct WorkspaceBridge<'a> {
-    pub workspace: &'a forge_workspace::Workspace,
+    pub workspace: &'a Arc<forge_workspace::Workspace>,
     pub key: &'a forge_workspace::SessionSlot,
 }
 
@@ -310,7 +311,10 @@ fn resolve_paths(
     // the session's config dir, so neither produces a path.
     let settings = match (home_override, bridge) {
         (None, Some(bridge)) => {
-            bridge.workspace.config_dir_for(bridge.key).map(|dir| dir.join(SETTINGS_FILENAME))
+            forge_sessions::surface::ViewSurface::new(Arc::clone(bridge.workspace))
+                .roster()
+                .config_dir(bridge.key)
+                .map(|dir| dir.join(SETTINGS_FILENAME))
         }
         (Some(_), _) | (None, None) => None,
     };

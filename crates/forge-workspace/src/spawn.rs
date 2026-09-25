@@ -191,18 +191,17 @@ pub(crate) fn stamp_permission_mode(
     }
 }
 
-/// Emit a `SessionUpdate` and log at debug when the receiver is gone
-/// (TUI is shutting down or has crashed). The send is logically
+/// Emit a `SessionUpdate` and log at debug when no subscriber took it
+/// (the view has not attached yet, or has gone). The send is logically
 /// best-effort - no caller can act on the failure - but visibility
-/// in the log distinguishes "TUI dropped the channel" from "the
-/// emit never happened" during diagnosis.
+/// in the log distinguishes "no view took it" from "the emit never
+/// happened" during diagnosis.
 fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
-    if let Err(err) = workspace.update_tx().send(update) {
+    if !workspace.update_tx().send(update) {
         tracing::debug!(
             target: "forge_workspace::spawn",
             label,
-            error = %err,
-            "SessionUpdate dropped - receiver is gone (likely TUI shutdown)"
+            "SessionUpdate not taken - no subscriber attached"
         );
     }
 }
@@ -2370,7 +2369,7 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default());
 
@@ -2394,7 +2393,7 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
@@ -2425,7 +2424,7 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         // Drive a failure by passing a project name that doesn't
         // exist in forge.toml.
@@ -2464,7 +2463,7 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         handle_spawn_session(
             &workspace,
@@ -2507,7 +2506,7 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         let caller = SessionSlot::from_str_for_test("caller-1");
         handle_deliver_peer_prompt(
@@ -2624,7 +2623,7 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         let caller = SessionSlot::from_str_for_test("caller-tell");
         let w = fixture_wrapped(); // WrappedKind::Message (tell)
@@ -4505,7 +4504,7 @@ provider = "anthropic"
             "fixture precondition: git refuses this worktree unforced"
         );
         assert!(wt.exists(), "and the refusal leaves it on disk");
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
@@ -4752,7 +4751,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn close_worker_reports_the_worktree_intact() {
         let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer");
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         handle_close_worker(&workspace, &project_key, "reviewer");
 
@@ -4765,7 +4764,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn despawn_reports_the_worktree_removed() {
         let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer");
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
@@ -4784,7 +4783,7 @@ provider = "anthropic"
         // directory, which is the case that reads as Removed.
         std::fs::remove_dir_all(repo.path().join(".git").join("worktrees").join("reviewer"))
             .expect("deregister the worktree");
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", true, tx);
@@ -4808,7 +4807,7 @@ provider = "anthropic"
         let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         run_git(repo.path(), &["worktree", "remove", wt.to_str().expect("utf8 path")]);
         assert!(!wt.exists(), "nothing on disk before the despawn");
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", true, tx);
@@ -4846,7 +4845,7 @@ provider = "anthropic"
             .find(|v| v.name == "ghost")
             .expect("seeded project present")
             .key;
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_spawn_worker(

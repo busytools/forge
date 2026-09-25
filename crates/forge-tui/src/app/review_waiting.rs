@@ -92,6 +92,7 @@ pub fn hydrate_pending(app: &mut App) {
     let Some(workspace) = app.workspace.clone() else {
         return;
     };
+    let surface = forge_sessions::surface::ViewSurface::new(Arc::clone(&workspace));
     let pending: Vec<(SessionSlot, String, PathBuf, Arc<AtomicBool>)> = app
         .sessions
         .iter()
@@ -115,7 +116,7 @@ pub fn hydrate_pending(app: &mut App) {
         if in_flight.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
             continue;
         }
-        let cwd = workspace.git_scan_cwd_for_session(&key, &cwd_raw);
+        let cwd = surface.session(&key, &cwd_raw).scan_cwd;
         request_refresh(
             app.review_waiting_event_tx.clone(),
             key,

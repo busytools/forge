@@ -449,17 +449,21 @@ pub struct App {
     /// Number of items that currently fit in the help viewport (updated each render).
     /// Used by key handlers for accurate scroll step size.
     pub help_visible_count: usize,
-    /// Receiver for `SessionUpdate`s emitted by the workspace. The
-    /// main event loop reads from here and dispatches via
-    /// `events::apply_session_update`. User actions flow out via
-    /// `workspace.dispatch(Command::...)`.
-    pub update_rx: mpsc::UnboundedReceiver<forge_workspace::SessionUpdate>,
-    /// Sender shared with TUI-internal async tasks (plugin inventory,
-    /// usage refresh, slash command executors) that need to emit
-    /// `SessionUpdate` envelopes back to the App event loop. Cloned
-    /// from `workspace.update_sender()` at App construction; falls
-    /// back to a no-op sender in test contexts.
+    /// Receiver for `SessionUpdate`s emitted by the workspace, taken
+    /// from `Workspace::subscribe()`. The main event loop reads from
+    /// here and dispatches via `events::apply_session_update`. User
+    /// actions flow out via `workspace.dispatch(Command::...)`.
+    pub workspace_rx: mpsc::UnboundedReceiver<forge_workspace::SessionUpdate>,
+    /// Send half of the TUI's own `SessionUpdate` channel. Async tasks
+    /// inside the TUI (plugin inventory and update runs, slash command
+    /// executors, the service-status check, the input-submit cancel
+    /// path) emit their presentation events here rather than into the
+    /// workspace's stream, so `Workspace::subscribe()` stays the whole
+    /// of what a frontend has to reproduce.
     pub update_tx: mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
+    /// Receive half of that channel, drained by the same event loop
+    /// through the same reducer as `workspace_rx`.
+    pub update_rx: mpsc::UnboundedReceiver<forge_workspace::SessionUpdate>,
     pub file_index_event_tx: std_mpsc::Sender<file_index::FileIndexEvent>,
     pub file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     /// Send / receive ends of the TUI-internal channel that the
@@ -739,15 +743,28 @@ pub struct App {
 }
 
 impl App {
+    /// The read surface over the workspace, `None` exactly when
+    /// [`Self::workspace`] is.
+    pub(crate) fn surface(&self) -> Option<forge_sessions::surface::ViewSurface> {
+        self.workspace
+            .as_ref()
+            .map(|workspace| forge_sessions::surface::ViewSurface::new(Arc::clone(workspace)))
+    }
+
+    /// Every project and its catalog sessions; empty when there is no
+    /// workspace.
+    pub(crate) fn roster_projects(&self) -> Vec<forge_workspace::ProjectView> {
+        self.surface().map(|surface| surface.roster().projects).unwrap_or_default()
+    }
+
     /// `true` when the active session has a registered agent handle
     /// in the workspace's `DomainSession`. Production code consults
     /// this rather than holding an `Arc<AgentHandle>` directly -
     /// outbound traffic flows through `Workspace::dispatch` /
     /// `Workspace::refresh_*` calls.
     pub fn has_active_agent(&self) -> bool {
-        let Some(workspace) = self.workspace.as_ref() else { return false };
         let Some(key) = self.active_session_key.as_ref() else { return false };
-        workspace.has_agent_for(key)
+        self.surface().is_some_and(|surface| surface.roster().has_agent(key))
     }
 
     /// Dispatch a workspace [`forge_workspace::Command`] for the
@@ -957,6 +974,12 @@ impl App {
     #[cfg(feature = "testing")]
     pub fn test_default() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
+        // The stub workspace's own stream is not what a test App reads:
+        // `update_tx` / `update_rx` above are this App's private pair,
+        // and `workspace_rx` stands in closed until a test attaches one.
+        let (workspace_tx, workspace_rx) =
+            tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
+        drop(workspace_tx);
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         let (git_diff_tx, git_diff_rx) = std_mpsc::channel();
         let (dictate_devices_tx, dictate_devices_rx) = std_mpsc::channel();
@@ -1026,6 +1049,7 @@ impl App {
             help_open: false,
             help_dialog: dialog::DialogState::default(),
             help_visible_count: 0,
+            workspace_rx,
             update_rx: rx,
             update_tx: tx,
             file_index_event_tx: file_index_tx,

@@ -1767,9 +1767,10 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
     // forge's path on every event regardless of which account
     // actually owns this rate-limit signal.
     let config_dir = app
-        .workspace
-        .as_ref()
-        .and_then(|ws| app.active_session_key.as_ref().and_then(|k| ws.config_dir_for(k)))
+        .surface()
+        .and_then(|surface| {
+            app.active_session_key.as_ref().and_then(|key| surface.roster().config_dir(key))
+        })
         .map_or_else(|| "(unbound)".to_owned(), |p| p.to_string_lossy().into_owned());
     // Raw payload at debug - useful for triaging whether a notice
     // surfaces from forge cache vs. an account-level Anthropic signal.

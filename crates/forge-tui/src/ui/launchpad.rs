@@ -108,12 +108,14 @@ fn effective_click_intent(
     if !workspace.all_accounts_loaded() {
         return ClickIntent::Block;
     }
+    let Some(roster) = app.surface().map(|surface| surface.roster()) else {
+        return ClickIntent::Block;
+    };
     // Resolve the project through the selection walk. The launchpad
     // only shows projects from forge.toml, so the lookup should always
     // succeed; if it doesn't, conservatively Block.
-    let project_key =
-        workspace.list_projects().into_iter().find(|p| p.name == project_name).map(|p| p.key);
-    let pool_ok = project_key.is_some_and(|k| workspace.project_would_bind(&k));
+    let project_key = roster.project_named(project_name).map(|project| project.key.clone());
+    let pool_ok = project_key.as_ref().is_some_and(|key| roster.would_bind(key));
     if !pool_ok {
         return ClickIntent::Block;
     }
@@ -140,16 +142,16 @@ struct PickerRow {
     is_last_in_org: bool,
 }
 
-/// Build the flat list of picker rows from `app.workspace.list_projects()`.
+/// Build the flat list of picker rows from the workspace roster.
 /// Returns rows grouped by org (sorted alphabetically by org, then by
 /// project name). The renderer interleaves org headers + tree
 /// connectors at draw time; selection only indexes into this flat
 /// project-row list.
 fn build_picker_rows(app: &App) -> Vec<PickerRow> {
-    let Some(workspace) = app.workspace.as_ref() else {
+    let Some(surface) = app.surface() else {
         return Vec::new();
     };
-    let projects = workspace.list_projects();
+    let projects = surface.roster().projects;
     if projects.is_empty() {
         return Vec::new();
     }
@@ -508,6 +510,9 @@ fn build_picker_content(
         app.workspace.as_ref().map(|ws| ws.worker_labels_by_project()).unwrap_or_default();
     let live_workers =
         app.workspace.as_ref().map(|ws| ws.live_worker_states_by_project()).unwrap_or_default();
+    // One roster for the whole picker. Collecting it walks the session
+    // catalog, so it stays out of the per-row loop below.
+    let roster = app.surface().map(|surface| surface.roster());
 
     let mut last_org: Option<String> = None;
     for (project_row_idx, row) in rows.iter().enumerate() {
@@ -532,25 +537,25 @@ fn build_picker_content(
         }
         // Worker rows: the project's persisted dynamic workers nested
         // under it. Info-only, not selectable.
-        let project_view = app
-            .workspace
-            .as_ref()
-            .map(|ws| ws.list_projects())
-            .and_then(|list| list.into_iter().find(|p| p.name == row.project_name));
+        let project_view =
+            roster.as_ref().and_then(|roster| roster.project_named(&row.project_name));
         if let Some(project) = project_view.as_ref()
             && let Some(labels) = worker_labels.get(&project.key)
         {
             let live = live_workers.get(&project.key).map_or(&[][..], Vec::as_slice);
-            push_worker_rows(&mut lines, project, app, labels, live);
+            // One chip for every worker row of this project: they share
+            // the project's account.
+            let chip_info = roster.as_ref().and_then(|roster| roster.chip_for(&project.key));
+            push_worker_rows(&mut lines, app, labels, live, chip_info.as_ref());
         }
         // Surface why no spawn can run: nothing the walk could reach
         // declares the project's model, or the project declares no
         // model for it to match on. The row stays unclickable via
         // `effective_click_intent`'s Block downgrade; the hint names
         // the one to fix.
-        if let Some(workspace) = app.workspace.as_ref()
-            && workspace.all_accounts_loaded()
-            && project_view.as_ref().is_some_and(|p| !workspace.project_would_bind(&p.key))
+        if app.workspace.as_ref().is_some_and(|workspace| workspace.all_accounts_loaded())
+            && project_view
+                .is_some_and(|project| roster.as_ref().is_some_and(|r| !r.would_bind(&project.key)))
         {
             let reason = match project_view.as_ref() {
                 Some(p) if !p.has_model => NO_MODEL_HINT,
@@ -695,11 +700,13 @@ fn push_project_row(
     // Account chip: the account the walk would pick for this project's
     // lead session. Padded to a fixed column (CHIP_COLUMN_WIDTH) so
     // chips land at the same x across every project and worker row.
-    let chip_info = app
-        .workspace
-        .as_ref()
-        .and_then(|ws| find_project_key(ws.list_projects().as_slice(), &row.project_name))
-        .and_then(|key| app.workspace.as_ref().and_then(|ws| ws.session_chip_for(&key)));
+    let chip_info = app.surface().and_then(|surface| {
+        let roster = surface.roster();
+        roster
+            .project_named(&row.project_name)
+            .map(|project| project.key.clone())
+            .and_then(|key| roster.chip_for(&key))
+    });
     let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
 
     // Fixed column widths so rows align across projects + workers:
@@ -786,14 +793,11 @@ const NO_MODEL_HINT: &str = "no model declared - add `model` to this project";
 /// launchpad renders in.
 fn push_worker_rows(
     lines: &mut Vec<Line<'static>>,
-    project: &ProjectView,
     app: &App,
     labels: &[String],
     live: &[forge_workspace::LiveWorkerState],
+    chip_info: Option<&SessionChipInfo>,
 ) {
-    let Some(workspace) = app.workspace.as_ref() else {
-        return;
-    };
     let dim = Style::default().fg(theme::DIM);
     let count = labels.len();
     for (idx, label) in labels.iter().enumerate() {
@@ -805,8 +809,7 @@ fn push_worker_rows(
             worker_has_background_work(app, live, label),
             app.active_spinner_glyph(),
         );
-        let chip_info = workspace.session_chip_for(&project.key);
-        let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
+        let (chip_spans, chip_width) = account_chip_spans(chip_info);
         let name_label = truncate_to(label, WORKER_NAME_WIDTH);
         let name_pad = WORKER_NAME_WIDTH.saturating_sub(name_label.chars().count());
         let chip_col_pad = CHIP_COLUMN_WIDTH.saturating_sub(chip_width);
@@ -894,13 +897,6 @@ fn account_chip_spans(chip: Option<&SessionChipInfo>) -> (Vec<Span<'static>>, us
     let text = format!("({prefix}{name})");
     let width = text.chars().count();
     (vec![Span::raw(" "), Span::styled(text, style)], 1 + width)
-}
-
-/// Lookup helper: given a `ProjectView` list + a project name,
-/// return the matching `ProjectKey`. Returns `None` when no project
-/// is found.
-fn find_project_key(projects: &[ProjectView], name: &str) -> Option<forge_workspace::ProjectKey> {
-    projects.iter().find(|p| p.name == name).map(|p| p.key.clone())
 }
 
 fn push_error_row(lines: &mut Vec<Line<'static>>, error: &str, area_width: u16) {
@@ -1112,10 +1108,7 @@ pub fn retry_selected_project(app: &mut App) {
 /// sit on one cwd. This path used to scan by cwd alone, so a launchpad
 /// Enter could land on the wrong one.
 fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
-    let view = app
-        .workspace
-        .as_ref()
-        .and_then(|w| w.list_projects().into_iter().find(|p| p.name == project_name));
+    let view = app.roster_projects().into_iter().find(|p| p.name == project_name);
     let Some(view) = view else {
         // The picker shouldn't be able to surface an unknown
         // project name, so log + bail rather than ignoring silently.

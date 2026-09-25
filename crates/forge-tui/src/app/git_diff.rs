@@ -276,8 +276,8 @@ fn apply_timer_tick(app: &mut App) {
         app.workspace.is_some(),
         "workspace unset after init (apply_timer_tick); MVVM contract violated",
     );
-    let cwd = if let Some(workspace) = app.workspace.as_ref() {
-        workspace.git_scan_cwd_for_session(&active_key, &cwd_raw_path)
+    let cwd = if let Some(surface) = app.surface() {
+        surface.session(&active_key, &cwd_raw_path).scan_cwd
     } else {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,

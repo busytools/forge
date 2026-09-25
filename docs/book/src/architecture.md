@@ -25,7 +25,7 @@ forge-test-harness->  primitives + sdk
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
-| `forge-sessions` | What a view needs and nothing about how it renders: the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, and the policy that folds a run of blocks. Holds no terminal types, so a second view attaches beside the TUI rather than duplicating it. |
+| `forge-sessions` | What a view needs and nothing about how it renders: the read surface a view uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, and the policy that folds a run of blocks. Holds no terminal types, so a second view attaches beside the TUI rather than duplicating it. |
 | `forge-web` | The web view: HTTP served beside the TUI, from the process that owns the sessions, with a wiring-proof page today. axum plus server-rendered markup. Never names `forge-workspace`, and starts no subsystem of its own. |
 | `forge-tui` | The view layer. Rendering, key and mouse handling, per-session presentation state. Ships the `forge` binary. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. Dev tooling, not in the runtime path. |
@@ -81,15 +81,17 @@ Work top-down; the first match wins.
     in `forge-sessions`, never through `forge-workspace`.
 11. **A wire-conformance scenario** goes in `forge-test-harness`.
 
-**The view surface is designed, not built.** A view is meant to read
-the core through named verbs by subject - `roster`, `session`,
-`accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate` -
-to act through `dispatch(Command)`, and to receive changes through
-`subscribe()`. Only the last two exist today: the TUI still calls
-`Workspace` methods directly, so `forge-tui` keeps its
-`forge-workspace` dependency and the arrow above is not yet one-way. A
-read a second view would want goes on that surface; a read only the
-TUI makes stays a plain method.
+**The view surface is partially built.** A view reads the core through
+named verbs by subject - `roster`, `session`, `accounts`, `plugins`,
+`reviews`, `workers`, `connectors`, `dictate` - acts through
+`dispatch(Command)`, and receives changes through `subscribe()`. Three
+verbs exist today, `roster`, `session` and `workers` in
+`forge-sessions`, and the TUI reads its project roster, session scan
+cwd and worker registry through them. The other five are still direct
+`Workspace` calls, so `forge-tui` keeps its `forge-workspace`
+dependency and the arrow above is not yet one-way. A read a second view
+would want goes on that surface; a read only the TUI makes stays a
+plain method.
 
 Splits across several crates are normal; a git-diff feature naturally
 touches agent, workspace and TUI. The rule of thumb is that logic, I/O
@@ -117,15 +119,30 @@ Five patterns get caught in review repeatedly:
 
 ## The TUI and workspace contract
 
-One channel pair, one producer and one consumer in each direction.
+One entry point in each direction, and the workspace's stream fans out
+to however many views subscribe.
 
 ```
 forge-tui  --  Workspace::dispatch(Command)  ->  forge-workspace
 forge-tui  <-  SessionUpdate via subscribe()  --  forge-workspace
 ```
 
-That is the whole contract. There is no second channel in the design,
-no callback hooks, and no shared mutable state. Nothing under
+`subscribe()` hands every caller a stream of its own, so a second view
+attaches beside the TUI rather than being refused the one receiver. A
+stream carries what the workspace emits after that call, so a view that
+attaches late is handed no backlog, and a view that drops its
+subscription leaves the fan-out. The first caller to attach is handed
+what was emitted before it as well, which is how a notice raised during
+boot reaches a view.
+
+A subscriber declares whether it can answer the workspace's prompts.
+The TUI does, so a permission or question request delivered to it keeps
+its turn alive; a consumer that only reads takes `subscribe_observer()`
+instead, and a request that reaches no answering subscriber is resolved
+`Cancelled` rather than parked on a reply nobody will send.
+
+That is the whole contract. There are no callback hooks and no shared
+mutable state. Nothing under
 `forge-tui/src` holds a handle into the agent layer, though that crate's
 own integration tests do build one directly. Query-style refreshes such
 as the status snapshot, context usage and the MCP snapshot are plain
@@ -153,14 +170,13 @@ renders lives on `UiSession`.
 Two things about this boundary surprise people, and both are worth
 knowing before you change it:
 
-**The update channel doubles as a TUI-internal event bus.** `App`
-grabs `Workspace::update_sender()` once at construction and keeps it as
-`App.update_tx`; a few `forge-tui` modules then emit their own
-`SessionUpdate`s through that field rather than making a command
-round-trip. That is an implicit second contract, and a non-TUI frontend
-would have to replicate it. It is tracked in
-[issue 105](https://github.com/busytools/forge/issues/105) rather than
-treated as settled design.
+**The TUI has an update channel of its own.** `App` mints an
+`update_tx` / `update_rx` pair for `forge-tui`'s own async work, and a
+few modules (plugin inventory and update runs, slash command executors,
+the service-status check, the input-submit cancel path) emit their
+presentation events through it rather than making a command round-trip.
+Both feeds reach the same reducer, and that pair is not part of what a
+frontend has to reproduce: that is `dispatch()` and `subscribe()`.
 
 **`forge-workspace` is a thin facade, not strong isolation.** The
 boundary is enforced by the dependency graph, not by visibility:

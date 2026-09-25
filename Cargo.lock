@@ -1256,6 +1256,7 @@ dependencies = [
  "forge-workspace",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

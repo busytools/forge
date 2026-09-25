@@ -719,7 +719,8 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
 /// existing name stands rather than being cleared.
 fn restamp_bucket_project_from_cwd(app: &mut App, key: &SessionSlot) {
     let cwd = app.sessions.get(key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
-    let Some(name) = app.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd)) else {
+    let Some(name) = app.surface().and_then(|surface| surface.roster().project_name_for_path(&cwd))
+    else {
         return;
     };
     if let Some(bucket) = app.sessions.get_mut(key) {
@@ -759,7 +760,8 @@ pub(super) fn apply_session_update_connected(
         // from the session's own cwd here. A cwd that maps to no
         // configured project leaves the key unbucketed, because a
         // session the TUI cannot name is not one this model holds.
-        let Some(project) = app.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd))
+        let Some(project) =
+            app.surface().and_then(|surface| surface.roster().project_name_for_path(&cwd))
         else {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
@@ -780,7 +782,7 @@ pub(super) fn apply_session_update_connected(
         // synthesize `SessionUpdate::Connected` directly and the
         // legacy single-session SessionReplaced shape.
         if let Some(workspace) = app.workspace.as_ref()
-            && workspace.domain_session_for(key).is_none()
+            && app.surface().is_some_and(|surface| !surface.roster().has_domain(key))
         {
             workspace.register_domain_session(key.clone(), None);
         }
@@ -860,7 +862,8 @@ pub(super) fn apply_session_update_session_replaced(
         // from the cwd it resumed into. Without one there is nothing to
         // file the session under, and the chain below would address
         // nothing.
-        let Some(project) = app.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd))
+        let Some(project) =
+            app.surface().and_then(|surface| surface.roster().project_name_for_path(&cwd))
         else {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
