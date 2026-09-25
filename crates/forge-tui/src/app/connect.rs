@@ -133,19 +133,15 @@ fn create_app_impl(
         logger
     });
 
-    // Subscribe to workspace's SessionUpdate channel BEFORE any
+    // Subscribe to the workspace's SessionUpdate stream BEFORE any
     // `Command::StartDefault` dispatch so the first emit is delivered
     // to the App event loop.
-    let update_rx = workspace.subscribe().unwrap_or_else(|| {
-        // Second-subscribe paths only occur if construction is
-        // accidentally called twice (a misconfiguration). Returning a
-        // dummy receiver keeps the App constructable so the error
-        // surfaces in the regular event-loop diagnostics rather than
-        // an unwrap on the App field type.
-        let (_, rx) = mpsc::unbounded_channel();
-        rx
-    });
-    let update_tx = workspace.update_sender();
+    let workspace_rx = workspace.subscribe();
+    // The TUI's own channel, for the presentation events its async
+    // tasks emit. Kept apart from the subscription above so the
+    // workspace's stream stays the only thing a second frontend has to
+    // reproduce.
+    let (update_tx, update_rx) = mpsc::unbounded_channel();
 
     // No session is focused until a spawn lands, so the boot render is
     // the preflight handing over to the launchpad (or, on the
@@ -214,6 +210,7 @@ fn create_app_impl(
         help_open: false,
         help_dialog: DialogState::default(),
         help_visible_count: 0,
+        workspace_rx,
         update_rx,
         update_tx,
         file_index_event_tx,
