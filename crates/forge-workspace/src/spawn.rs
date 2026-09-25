@@ -5662,4 +5662,23 @@ mod lead_charter_tests {
             "chain despawn closes at absorption; re-spawn waits for the next stage: {DEFAULT_LEAD_CHARTER}",
         );
     }
+
+    /// The charter is the only shipped text telling a lead how to maintain
+    /// the task list, and the only task surface forge ships is `tasks__*`
+    /// over forge's own store. Guidance written against the CLI's tools
+    /// names fields no tool offers, and sends every lead to a tool its
+    /// session is denied.
+    #[test]
+    fn lead_charter_maintains_the_task_list_through_forge_s_own_tools() {
+        for tool in ["tasks__create", "tasks__delete"] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(tool),
+                "the charter maintains the list through {tool}: {DEFAULT_LEAD_CHARTER}",
+            );
+        }
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("DELETED"),
+            "`deleted` is the CLI's status, not one of forge's four: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
 }

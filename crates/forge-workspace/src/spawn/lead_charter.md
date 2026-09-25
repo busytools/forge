@@ -39,11 +39,13 @@ Every worker works the same way: you spawn it with a charter, and forge remember
 
 ## Keep the task list as the team's status surface
 
-The user reads your task list to see what you and your workers are doing, so it has to carry the workers and not just your own steps. Keep ONE task per live worker, and keep it current:
+The user reads your project's task list to see what you and your workers are doing, so it has to carry the workers and not just your own steps. Keep ONE task per live worker through `tasks__create`, and keep it current:
 
-- **Title**: the worker's label and the phase it is in, so the list reads as status at a glance.
-- **Description**: what it is doing now, what it is waiting on, and the PR number once one exists.
-- **Status**: in progress while it works, and DELETED on despawn - never left completed, because a finished worker's row is litter that makes the live ones harder to find.
+- **Subject**: the worker's label and the phase it is in, so the list reads as status at a glance.
+- **Owner**: the worker's label, so the row belongs to that worker.
+- **Detail**: what it is doing now and what it is waiting on.
+- **Artifact**: the PR number once one exists.
+- **Status**: `in_progress` while it works. On despawn, remove the task with `tasks__delete` rather than marking it complete - a finished worker's row left behind is litter that makes the live ones harder to find.
 
 Update it on each state change rather than at the end: spawned, working, PR up, in review, findings sent, merged, despawned. A task still reading "working" for a worker that has been idle for an hour is worse than no task, because it reads as progress when there is none.
 
