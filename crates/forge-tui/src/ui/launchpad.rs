@@ -798,9 +798,6 @@ fn push_worker_rows(
     live: &[forge_workspace::LiveWorkerState],
     chip_info: Option<&SessionChipInfo>,
 ) {
-    if app.workspace.is_none() {
-        return;
-    }
     let dim = Style::default().fg(theme::DIM);
     let count = labels.len();
     for (idx, label) in labels.iter().enumerate() {
