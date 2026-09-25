@@ -5616,7 +5616,28 @@ pub(crate) mod tests {
             forge_primitives::tasks::TaskId::from("t-2"),
             "the target names its task",
         );
-        assert!(targets[0].height >= 1, "the target covers the row's own height");
+    }
+
+    /// A row is taller than one line - a subject and the dim metadata line
+    /// under it - and the target has to cover both, or a click on the line
+    /// carrying the owner, artifact and estimate falls through to nothing.
+    #[test]
+    fn a_click_on_a_rows_metadata_line_opens_that_task() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(1);
+        let targets = render_inspector_and_collect_hit_targets(&mut app, 30, 60);
+        let target = targets.first().expect("the row stamped a target").clone();
+        assert!(
+            target.height >= 2,
+            "the target owns the subject line and the metadata line under it; got {}",
+            target.height,
+        );
+
+        click_at(&mut app, target.x_start, target.y + target.height - 1);
+        assert_eq!(
+            app.task_detail,
+            Some(target.task_id),
+            "a click on the row's last line opens its task",
+        );
     }
 
     #[test]
