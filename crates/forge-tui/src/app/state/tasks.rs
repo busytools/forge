@@ -426,6 +426,60 @@ pub(crate) mod tests {
         );
     }
 
+    /// The section orders running, then blocked, then pending, then
+    /// completed. The book states it, and it is the only thing telling a
+    /// blocked row from a pending one, which share a glyph.
+    #[test]
+    fn rows_come_out_running_blocked_pending_then_completed() {
+        let mut app = app_with_tasks(vec![
+            Task { status: TaskStatus::Completed, ..owned_task("t-done", "done", Some(WORKER)) },
+            Task {
+                status: TaskStatus::Pending,
+                ..owned_task("t-pending", "pending", Some(WORKER))
+            },
+            Task {
+                status: TaskStatus::Blocked,
+                ..owned_task("t-blocked", "blocked", Some(WORKER))
+            },
+            Task {
+                status: TaskStatus::InProgress,
+                ..owned_task("t-running", "running", Some(WORKER))
+            },
+        ]);
+        app.focus_lead_session();
+        app.refresh_tasks();
+        let order: Vec<TaskId> = app.ui_task_rows.iter().map(|row| row.id.clone()).collect();
+        assert_eq!(
+            order,
+            vec![
+                TaskId::from("t-running"),
+                TaskId::from("t-blocked"),
+                TaskId::from("t-pending"),
+                TaskId::from("t-done"),
+            ],
+            "the section orders running, blocked, pending, completed",
+        );
+    }
+
+    /// A top-level row with no children has nothing to roll up, which is
+    /// what leaves it without a rollup on its metadata line.
+    #[test]
+    fn a_top_level_row_with_no_children_carries_no_rollup() {
+        let mut app = app_with_tasks(vec![
+            task_with_parent("epic", None),
+            task_with_parent("lone", None),
+            task_with_parent("sub-a", Some("epic")),
+        ]);
+        app.focus_lead_session();
+        app.refresh_tasks();
+        let lone = app
+            .ui_task_rows
+            .iter()
+            .find(|row| row.id == TaskId::from("lone"))
+            .expect("the childless row is on the board");
+        assert_eq!(lone.rollup, None, "a childless top-level row has nothing to roll up");
+    }
+
     /// `active_form` is a bare string on both tools, so a session can store
     /// an empty one. A running row falls back to its subject rather than
     /// drawing a bare glyph with no text beside it.
