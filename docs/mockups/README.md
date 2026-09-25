@@ -1,8 +1,12 @@
 # Web view mockups
 
-Mockups for forge's web view. Each file is one screen, written as a
-standalone HTML fragment: it is meant to be dropped into a page that
-supplies its own frame, so no file carries a doctype or a body tag.
+Mockups for forge's web view. Each file is a standalone HTML fragment,
+written to be dropped into a page that supplies its own frame, so none
+of them carries a doctype or a body tag. Some are a single screen; the
+rest are sheets showing two or three panels side by side, each panel
+captioned: `usage-page.html`, `reference-glyphs.html`,
+`slack-connector.html`, `help-and-welcome.html` and
+`pickers-and-overlays.html`.
 
 ## The approved direction
 
@@ -44,7 +48,7 @@ renders today.
 | `slack-connector.html` | Slack subscriptions, a delivered block, the approval dock |
 | `reference-glyphs.html` | theme tokens, the glyph inventory, notices |
 
-## Two things that cost time to rediscover
+## Four things that cost time to rediscover
 
 - The files are ASCII, with every glyph written as an HTML entity.
   Served without a charset declaration the literal box-drawing
@@ -54,9 +58,16 @@ renders today.
   alarm clock (U+23F0). A browser paints U+23F0 as a colour emoji
   whatever the CSS colour says, and neither `font-variant-emoji: text`
   nor a VS15 suffix changes that; U+25F7 stays monochrome and takes the
-  colour. Two other glyphs are emoji-only in a browser and stay in
-  colour: the comment balloon (U+1F4AC) and the owl (U+1F989). The
-  hourglass (U+231B) is fixed by a VS15 suffix.
+  colour it is given.
+- Two other glyphs have no monochrome form and stay in colour wherever
+  they appear: the comment balloon (U+1F4AC) and the owl (U+1F989), the
+  latter on the Git header of `inspector-tabs.html` and
+  `pickers-and-overlays.html`. The hourglass (U+231B) is the opposite
+  case: a VS15 suffix makes it monochrome.
+- The fixture issue and PR numbers are deliberately fictional (9408 to
+  9414). They replaced numbers that exist in this repository and were
+  carrying states those PRs do not have, which is a claim a reader can
+  check and find wrong.
 
 ## Removal
 
