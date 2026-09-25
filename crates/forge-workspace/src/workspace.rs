@@ -683,15 +683,15 @@ fn persist_session_tag_cache(
 /// Open the machine-local redb store at `<app_support>/db.redb`,
 /// creating the app-support dir first. Returns `None` (with a warn) when
 /// the dir can't be created or the DB can't open - forge then runs
-/// without durable crons, subscriptions or dynamic workers this session
-/// (hard rule #14: no cwd fallback).
+/// without durable crons, subscriptions, tasks or dynamic workers this
+/// session (hard rule #14: no cwd fallback).
 fn open_db(app_support: &Path) -> Option<crate::store::Db> {
     if let Err(error) = std::fs::create_dir_all(app_support) {
         tracing::warn!(
             target: "forge_workspace::workspace",
             %error,
             path = %app_support.display(),
-            "creating the app-support dir failed; durable crons, subscriptions and dynamic workers will not persist",
+            "creating the app-support dir failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
         );
         return None;
     }
@@ -701,7 +701,7 @@ fn open_db(app_support: &Path) -> Option<crate::store::Db> {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 %error,
-                "opening the redb store failed; durable crons, subscriptions and dynamic workers will not persist",
+                "opening the redb store failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
             );
             None
         }
@@ -1186,7 +1186,7 @@ impl Workspace {
             // otherwise fire per-op into the log only.
             let _ = workspace.update_tx.send(SessionUpdate::ServiceStatus {
                 severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-                message: "Machine-local store unavailable this run; crons, Gotify and Slack subscriptions and the spinner override will not persist".to_owned(),
+                message: "Machine-local store unavailable this run; crons, tasks, Gotify and Slack subscriptions and the spinner override will not persist".to_owned(),
             });
         }
         Ok(workspace)
