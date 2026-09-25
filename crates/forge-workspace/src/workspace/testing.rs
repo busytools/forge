@@ -414,9 +414,11 @@ impl Workspace {
 
     /// Write a session row for `slot` carrying `charter`, bypassing a
     /// spawn. A test that drives `/new` needs the store to already hold
-    /// the worker's mission, which is what the re-delivery reads.
+    /// the worker's mission, which is what the re-delivery reads; the
+    /// `interactive` flag is what its respawn reads to decide whether the
+    /// worker may put a question to its user.
     #[cfg(any(test, feature = "testing"))]
-    pub fn seed_test_session_charter(&self, slot: &SessionSlot, charter: &str) {
+    pub fn seed_test_session_charter(&self, slot: &SessionSlot, charter: &str, interactive: bool) {
         let guard = self.db.lock();
         let Some(db) = guard.as_ref() else { return };
         let _ = crate::store::sessions::put(
@@ -429,7 +431,7 @@ impl Workspace {
                 charter: Some(charter.to_owned()),
                 kick: None,
                 resume_kick: None,
-                interactive: None,
+                interactive: Some(interactive),
                 is_git_repo: None,
             },
         );

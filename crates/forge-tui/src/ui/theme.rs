@@ -111,28 +111,16 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
                 _ => "EnterWorktree",
             },
         ),
-        // CLI 2.1.156 tool surface (#273). 13 new tool name glyphs +
-        // Workflow's distinct filled-diamond marker.
+        // CLI 2.1.156 tool surface (#273).
         "ScheduleWakeup" => ("\u{23f2}", "ScheduleWakeup"),
         "Skill" => ("\u{2726}", "Skill"),
         "ToolSearch" | "tool_search_tool_regex" | "tool_search_tool_bm25" => {
             ("\u{2316}", "ToolSearch")
         }
-        // Cron* family shares the ASCII `*` glyph (cron-syntax mapping
-        // `* * * * *`); width-1 keeps the kind-icon slot deterministic
-        // across terminals regardless of EAW interpretation. Per-arm
-        // label preserves the originating tool name for log diagnostics.
-        "CronCreate" => ("*", "CronCreate"),
-        "CronDelete" => ("*", "CronDelete"),
-        "CronList" => ("*", "CronList"),
         "PushNotification" => ("\u{25b2}", "PushNotification"),
-        "RemoteTrigger" => ("\u{21e8}", "RemoteTrigger"),
         "LSP" => ("\u{2699}", "LSP"),
         "TaskOutput" => ("\u{25c9}", "TaskOutput"),
         "TaskStop" => ("\u{25cd}", "TaskStop"),
-        // Filled diamond ◆ - agent-script flow, distinct from
-        // Task/Agent's hollow ◇ subagent-dispatch glyph.
-        "Workflow" => ("\u{25c6}", "Workflow"),
         // `advisor` is the upstream server-tool wire name for the
         // model-side advisor call. Borrows the Skill sparkle (✦) since
         // both surface model-side counsel without a local handler. The
@@ -145,7 +133,6 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         // CLI 2.1.204 tool surface (new names in the init tool list).
         "DesignSync" => ("\u{21bb}", "DesignSync"),
         "ReportFindings" => ("\u{25a4}", "ReportFindings"),
-        "SendMessage" => ("\u{27a4}", "SendMessage"),
         "ShareOnboardingGuide" => ("\u{29c9}", "ShareOnboardingGuide"),
         _ => ("\u{25cb}", "Tool"),
     }
@@ -177,20 +164,10 @@ mod tests {
         assert_eq!(tool_name_label("Skill"), ("\u{2726}", "Skill"));
         assert_eq!(tool_name_label("ToolSearch"), ("\u{2316}", "ToolSearch"));
 
-        // Cron family shares the ASCII `*` glyph.
-        assert_eq!(tool_name_label("CronCreate"), ("*", "CronCreate"));
-        assert_eq!(tool_name_label("CronDelete"), ("*", "CronDelete"));
-        assert_eq!(tool_name_label("CronList"), ("*", "CronList"));
-
         assert_eq!(tool_name_label("PushNotification"), ("\u{25b2}", "PushNotification"));
-        assert_eq!(tool_name_label("RemoteTrigger"), ("\u{21e8}", "RemoteTrigger"));
         assert_eq!(tool_name_label("LSP"), ("\u{2699}", "LSP"));
         assert_eq!(tool_name_label("TaskOutput"), ("\u{25c9}", "TaskOutput"));
         assert_eq!(tool_name_label("TaskStop"), ("\u{25cd}", "TaskStop"));
-
-        // Workflow is the filled diamond ◆, distinct from Task/Agent's
-        // hollow ◇ - agent-script flow vs subagent dispatch.
-        assert_eq!(tool_name_label("Workflow"), ("\u{25c6}", "Workflow"));
     }
 
     /// Server-side tool wire names land here too (e.g. ToolSearch
@@ -215,7 +192,6 @@ mod tests {
     fn cli_2_1_204_tool_glyphs_match_picks() {
         assert_eq!(tool_name_label("DesignSync"), ("\u{21bb}", "DesignSync"));
         assert_eq!(tool_name_label("ReportFindings"), ("\u{25a4}", "ReportFindings"));
-        assert_eq!(tool_name_label("SendMessage"), ("\u{27a4}", "SendMessage"));
         assert_eq!(tool_name_label("ShareOnboardingGuide"), ("\u{29c9}", "ShareOnboardingGuide"));
     }
 }

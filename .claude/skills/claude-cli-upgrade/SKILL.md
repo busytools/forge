@@ -105,7 +105,7 @@ done
 
 Cross-reference against the Phase 1 tool union. For each tool in the union with NO matching scenario, decide:
 
-- **High-signal wire surface** (new tool family with rich `tool_input` shape - e.g. TaskCreate/Update/List/Get, Workflow): file an issue for a follow-up scenario PR. Not a blocker for the upgrade - additive coverage.
+- **High-signal wire surface** (new tool family with rich `tool_input` shape): file an issue for a follow-up scenario PR. Not a blocker for the upgrade - additive coverage. Check `REPLACED_CLI_TOOLS` (`crates/forge-workspace/src/spawn.rs`) first: a tool forge deliberately blocks is not a gap to render.
 - **Generic / low-shape tool** (e.g. ToolSearch which is a single-arg lookup): low priority; may not need a scenario.
 - **Removed tool** (was covered, no longer in the union): retire the scenario file + delete its baseline.
 
@@ -335,7 +335,7 @@ If all scenarios pass: the decoder is up to date with the new CLI's wire surface
 
 ## Phase 6: Renderer / inspector adjustments (if Phase 1 flagged adds)
 
-If Phase 1 surfaced new tool names forge-tui doesn't handle (e.g. `TaskCreate` family), file a tracking issue per cluster. The PR for those changes can land separately from the version bump PR if it's substantial, but the upgrade is incomplete until the renderer catches up. Pin the issue in the upgrade PR's description so future readers see the linkage.
+If Phase 1 surfaced new tool names forge-tui doesn't handle, file a tracking issue per cluster - unless `REPLACED_CLI_TOOLS` (`crates/forge-workspace/src/spawn.rs`) names it, which means forge blocks it on purpose and there is no renderer to catch up. The PR for those changes can land separately from the version bump PR if it's substantial, but the upgrade is incomplete until the renderer catches up. Pin the issue in the upgrade PR's description so future readers see the linkage.
 
 ## Phase 7: Land the upgrade
 

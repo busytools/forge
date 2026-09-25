@@ -1316,6 +1316,60 @@ mod tests {
         serde_json::from_str(&output.blocks[0].text).expect("list returns a JSON array")
     }
 
+    /// The despawn trigger is shipped text a session reads at the moment it
+    /// decides whether to despawn, and this description plus
+    /// [`Despawn::description`] are two of its three homes (the third is
+    /// `lead_charter.md`). Both cases have to survive an edit here: a worker
+    /// whose output is a PR lives until that PR merges, and one whose output
+    /// is not a PR closes at handover.
+    #[test]
+    fn spawn_metadata_shape() {
+        let host = host();
+        let tool =
+            Spawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        assert_eq!(tool.name(), "agents__spawn");
+        assert!(
+            tool.description().contains("no merge to wait for"),
+            "the two-case despawn trigger stays: {}",
+            tool.description()
+        );
+        assert!(
+            tool.description().contains("a finished sweep"),
+            "non-PR outputs stay named as despawn triggers: {}",
+            tool.description()
+        );
+        let schema = tool.input_schema();
+        let required = schema["required"].as_array().expect("required field present");
+        assert!(required.iter().any(|v| v == "label"));
+        assert!(
+            required.iter().any(|v| v == "charter"),
+            "charter is required - there is no file to fall back to"
+        );
+    }
+
+    #[test]
+    fn despawn_metadata_shape() {
+        let host = host();
+        let tool =
+            Despawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        assert_eq!(tool.name(), "agents__despawn");
+        assert!(
+            tool.description().contains("lives until that PR merges"),
+            "the PR case waits for the merge: {}",
+            tool.description()
+        );
+        assert!(
+            tool.description().contains("done when it hands over"),
+            "the non-PR case closes at handover: {}",
+            tool.description()
+        );
+        let schema = tool.input_schema();
+        let required = schema["required"].as_array().expect("required field present");
+        assert!(required.iter().any(|v| v == "label"));
+        assert!(required.iter().all(|v| v != "force"), "force is optional");
+        assert!(schema["properties"].as_object().unwrap().contains_key("force"));
+    }
+
     #[tokio::test]
     async fn tell_reaches_a_worker_in_another_project() {
         // The reach the merge adds: today this takes two leads and a

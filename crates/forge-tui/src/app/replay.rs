@@ -17,7 +17,7 @@
 //!   the final App state.
 //! - [`ReplayHarness::default_session`] exposes the active session's
 //!   `UiSession` for direct assertions on its fields (`monitors`,
-//!   `workflows`, `messages`, etc.). Future helpers covering
+//!   `messages`, etc.). Future helpers covering
 //!   multi-session baselines can add a per-key accessor; until then,
 //!   one bucket is sufficient.
 //! - [`ReplayHarness::snapshot_inspector`] and
@@ -274,6 +274,22 @@ mod tests {
         );
     }
 
+    /// Review Focus 5: blocking a tool must not make a transcript that
+    /// already carries its call unreadable. The baseline holds a real
+    /// `Workflow` tool_use, so replaying it proves the frames still decode
+    /// and that the call still reaches the chat - the WORKFLOWS section it
+    /// used to surface in is gone, and a call that renders nowhere would be
+    /// a silent hole in an old session.
+    #[test]
+    fn a_transcript_carrying_a_disabled_tools_event_still_replays() {
+        let mut harness = replay_baseline("workflow");
+        let rendered = harness.snapshot_chat(100, 60);
+        assert!(
+            rendered.contains("Workflow"),
+            "a replayed Workflow call still renders with the section gone:\n{rendered}",
+        );
+    }
+
     /// Inspector pane render at the post-replay end-state. The
     /// MONITORS section is gone (Monitor lives in chat now); the
     /// snapshot captures the surviving GIT + post-section chrome.
@@ -363,97 +379,6 @@ mod tests {
             Some(expected),
             "Result.duration_ms must stamp onto the latest assistant; got {:?}",
             latest.turn_info.duration_ms,
-        );
-    }
-
-    /// #302: CronCreate's `tool_use_result` envelope carries the
-    /// canonical job id at `envelope.id`. A subsequent CronDelete
-    /// removes the SCHEDULES entry by that id. Pre-fix, the extractor
-    /// stamped the inner content text (the human description) onto
-    /// `cron_id`, so the delete never matched and the entry persisted
-    /// as a phantom. This test drives the full CronCreate ->
-    /// tool_use_result -> CronDelete sequence through the production
-    /// reducer (`decode_dispatch` + `apply_session_update`) and
-    /// asserts the SCHEDULES bucket drains.
-    #[test]
-    fn replay_cron_lifecycle_create_then_delete_drains_entry() {
-        let session_id = "replay-cron-302";
-        let job_id = "d17a030d";
-        // 1) Assistant turn: tool_use = CronCreate.
-        let create_tool_use = format!(
-            "{{\"type\":\"assistant\",\"message\":{{\"model\":\"claude-test\",\
-             \"id\":\"msg_cr\",\"type\":\"message\",\"role\":\"assistant\",\
-             \"content\":[{{\"type\":\"tool_use\",\"id\":\"tu_create\",\
-             \"name\":\"CronCreate\",\"input\":{{\"cron\":\"*/1 * * * *\",\
-             \"recurring\":true,\"durable\":false,\"reason\":\"test\"}}}}],\
-             \"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\
-             \"input_tokens\":0,\"output_tokens\":0}}}},\
-             \"parent_tool_use_id\":null,\"session_id\":\"{session_id}\",\
-             \"uuid\":\"uuid-create\"}}"
-        );
-        // 2) User turn: tool_result envelope. The inner content text
-        //    contains the id as a substring (the old extractor's
-        //    bug-source); the outer `tool_use_result.id` carries the
-        //    canonical id (the new extractor's source).
-        let create_result = format!(
-            "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\
-             \"content\":[{{\"type\":\"tool_result\",\
-             \"tool_use_id\":\"tu_create\",\
-             \"content\":\"Scheduled recurring job {job_id} (Every minute)\",\
-             \"is_error\":false}}]}},\"parent_tool_use_id\":null,\
-             \"session_id\":\"{session_id}\",\"uuid\":\"uuid-result\",\
-             \"tool_use_result\":{{\"id\":\"{job_id}\",\
-             \"humanSchedule\":\"Every minute\",\"recurring\":true,\
-             \"durable\":false}}}}"
-        );
-        // 3) Assistant turn: tool_use = CronDelete, addressing the
-        //    job by id.
-        let delete_tool_use = format!(
-            "{{\"type\":\"assistant\",\"message\":{{\"model\":\"claude-test\",\
-             \"id\":\"msg_del\",\"type\":\"message\",\"role\":\"assistant\",\
-             \"content\":[{{\"type\":\"tool_use\",\"id\":\"tu_delete\",\
-             \"name\":\"CronDelete\",\"input\":{{\"id\":\"{job_id}\"}}}}],\
-             \"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\
-             \"input_tokens\":0,\"output_tokens\":0}}}},\
-             \"parent_tool_use_id\":null,\"session_id\":\"{session_id}\",\
-             \"uuid\":\"uuid-delete\"}}"
-        );
-
-        let mut app = App::test_default();
-        app.set_session_id(Some(model::SessionId::new(session_id)));
-        // Address every frame to the slot the app actually holds: a
-        // frame for an unknown slot is dropped, which would leave
-        // SCHEDULES empty and the drain assertion below passing because
-        // nothing ever landed.
-        let key = app.active_session_key.clone().expect("test_default seeds a session bucket");
-        let drive = |app: &mut App, line: &str, line_no: u64| {
-            let decoded = decode_dispatch(line, line_no);
-            if let DecodedLine::Malformed { line, reason } = decoded {
-                panic!("decode_dispatch line {line}: {reason}");
-            }
-            if let DecodedLine::Message(msg) = decoded {
-                apply_session_update(app, SessionUpdate::ChatAppended { key: key.clone(), msg });
-            }
-        };
-        drive(&mut app, &create_tool_use, 1);
-        drive(&mut app, &create_result, 2);
-        // Non-vacuity: the create landed in SCHEDULES, so the drain below
-        // is the delete's own verdict rather than a frame that never
-        // reached a bucket.
-        assert_eq!(
-            app.active_session().expect("active bucket").schedules.len(),
-            1,
-            "CronCreate must populate SCHEDULES before the delete is replayed",
-        );
-        drive(&mut app, &delete_tool_use, 3);
-
-        let harness = ReplayHarness::from_app(app);
-        let schedules = &harness.default_session().schedules;
-        assert!(
-            schedules.is_empty(),
-            "CronDelete must drain the entry; got {} stale entry/entries: {:?}",
-            schedules.len(),
-            schedules.iter().map(|e| &e.label).collect::<Vec<_>>(),
         );
     }
 

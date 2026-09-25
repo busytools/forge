@@ -134,8 +134,8 @@ impl MonitorEntry {
 
 /// A CLI-tracked background task from a `background_tasks_changed`
 /// event's snapshot. `local_bash` entries feed the Inspector PROCESSES
-/// section (deduped against the OS scan); agents / workflows surface in
-/// their own sections. `task_type` names the kind.
+/// section (deduped against the OS scan); agents surface in their own
+/// section. `task_type` names the kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundTask {
     pub task_id: String,
@@ -145,16 +145,12 @@ pub struct BackgroundTask {
 
 impl BackgroundTask {
     /// Whether this task's kind routes to an Inspector section at all:
-    /// `local_bash` to PROCESSES, an agent kind to SUBAGENTS, a workflow
-    /// kind to WORKFLOWS. One list, shared by the drift warning in
-    /// `handle_background_tasks_changed` and the Projects-pane row glyph -
-    /// a kind the CLI renames on one side only renders nowhere while its
-    /// spinner keeps turning.
+    /// `local_bash` to PROCESSES, an agent kind to SUBAGENTS. One list,
+    /// shared by the drift warning in `handle_background_tasks_changed`
+    /// and the Projects-pane row glyph - a kind the CLI renames on one
+    /// side only renders nowhere while its spinner keeps turning.
     pub(crate) fn routes_to_inspector_section(&self) -> bool {
-        matches!(
-            self.task_type.as_str(),
-            "local_bash" | "agent" | "local_agent" | "local_workflow" | "workflow"
-        )
+        matches!(self.task_type.as_str(), "local_bash" | "agent" | "local_agent")
     }
 }
 
@@ -171,8 +167,7 @@ impl BackgroundTask {
 ///
 /// A card the history drops after the mapping leaves these facts standing: a
 /// pruned agent card still promotes the row glyph, while a pruned bash card
-/// still draws, from the recorded command. A workflow kind is unaffected
-/// either way, because its section paints from its own entry list.
+/// still draws, from the recorded command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionTaskCard {
     pub tool_use_id: String,
@@ -195,27 +190,19 @@ impl SessionTaskCard {
 pub enum ScheduleKind {
     /// One-shot `ScheduleWakeup` (the /loop dynamic-pacing mechanism).
     Wakeup,
-    /// `CronCreate` job. `recurring` distinguishes repeat vs one-shot.
+    /// A forge cron (`mcp__forge__cron`). `recurring` distinguishes
+    /// repeat vs one-shot.
     Cron { recurring: bool },
 }
 
 /// A pending time-based schedule surfaced in the Inspector SCHEDULES
-/// section. Wakeups carry a concrete `fire_at`; crons carry the raw
-/// expression in `label` and a `created_at` used for the 7-day
-/// recurring-expiry prune.
+/// section. Wakeups carry a concrete `fire_at`; forge crons carry the
+/// humanized schedule in `schedule`.
 #[derive(Debug, Clone)]
 pub struct ScheduleEntry {
-    /// Stable key. For a wakeup, the `tool_use_id` (one pending wakeup
-    /// per session; replaced each /loop re-arm). For a cron, the
-    /// `tool_use_id` of its `CronCreate` until the job id is stamped.
-    pub key: String,
-    /// Cron job id (from the `CronCreate` result), used to match a
-    /// later `CronDelete`. `None` for wakeups and un-stamped crons.
-    pub cron_id: Option<String>,
     pub kind: ScheduleKind,
-    /// Wakeup: the `reason`. Cron: the headline candidate - a forge
-    /// cron's prompt first line, empty for a cloud cron whose only text
-    /// is its expression.
+    /// Wakeup: the `reason`. Cron: the headline candidate - the
+    /// prompt's first line.
     pub label: String,
     /// Cron only: the human "what/why" from `cron__create`, preferred
     /// over `label` as the row headline. `None` for wakeups and crons
@@ -224,32 +211,20 @@ pub struct ScheduleEntry {
     /// Cron only: the humanized schedule (`daily at 09:00`, `today
     /// 14:30`). Empty for wakeups.
     pub schedule: String,
-    /// When it fires: `now + delaySeconds` for a wakeup, the resolved
-    /// next occurrence for a one-shot cron. `None` for a recurring cron
-    /// and for a one-shot whose expression didn't parse.
+    /// When it fires: `now + delaySeconds` for a wakeup, the cron's
+    /// next occurrence for a forge cron.
     pub fire_at: Option<std::time::SystemTime>,
-    /// When the entry was created. Recurring-cron 7-day-expiry
-    /// reference; informational for wakeups.
+    /// When the entry was created; informational for wakeups.
     pub created_at: std::time::SystemTime,
 }
 
 impl ScheduleEntry {
-    /// Recurring crons auto-expire after 7 days (CLI-documented).
-    pub const CRON_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
-
-    /// True when `now` is at/after the entry's validity end: a wakeup or
-    /// one-shot cron whose `fire_at` has passed, or a recurring cron
-    /// older than `CRON_MAX_AGE`. A one-shot with no resolvable fire
-    /// time is retained rather than guessed at.
+    /// True when `now` is at/after the entry's validity end. Only a
+    /// wakeup expires here: a forge cron's lifetime is the store's, and
+    /// its row is refreshed from there each tick rather than pruned
+    /// against this struct.
     pub fn is_expired(&self, now: std::time::SystemTime) -> bool {
-        match self.kind {
-            ScheduleKind::Wakeup | ScheduleKind::Cron { recurring: false } => {
-                self.fire_at.is_some_and(|t| now >= t)
-            }
-            ScheduleKind::Cron { recurring: true } => {
-                now.duration_since(self.created_at).is_ok_and(|age| age >= Self::CRON_MAX_AGE)
-            }
-        }
+        matches!(self.kind, ScheduleKind::Wakeup) && self.fire_at.is_some_and(|t| now >= t)
     }
 }
 
@@ -345,60 +320,6 @@ pub struct AttentionEntry {
     pub enqueued_at: std::time::SystemTime,
 }
 
-/// Lifecycle status of a Workflow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkflowStatus {
-    /// Workflow is in progress - phases / agents may still fire.
-    InProgress,
-    /// All phases reported terminal; renderer collapses the tree
-    /// to a single-liner and the section auto-clears once every
-    /// session workflow shares this status.
-    Completed,
-}
-
-/// Per-phase status (mirrors the wire `state` field's
-/// canonical values).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PhaseStatus {
-    /// Phase has been declared by the workflow but no agent has
-    /// started in it yet.
-    Pending,
-    /// At least one agent inside the phase is `start` / `progress`.
-    InProgress,
-    /// Every agent inside the phase reported `done`.
-    Completed,
-}
-
-/// One phase row inside a WorkflowEntry's per-phase
-/// tree. The renderer walks `phases` in `index` order; per-phase
-/// logs are the truncated lifecycle markers (last_tool_name +
-/// last_tool_summary + resultPreview) captured from
-/// `WorkflowProgressEvent` events.
-#[derive(Debug, Clone)]
-pub struct PhaseEntry {
-    /// 1-indexed phase number from the wire `index` field - matches
-    /// the order `phase()` is called inside the script.
-    pub index: u32,
-    /// Phase title (from `phase("Ping")` literal).
-    pub title: String,
-    /// Current status - drives the glyph in the tree.
-    pub status: PhaseStatus,
-    /// Bounded ring buffer of per-phase log lines (each line is a
-    /// captured agent transition summary). Capped at
-    /// `WorkflowEntry::PHASE_LOG_MAX`.
-    pub logs: std::collections::VecDeque<String>,
-}
-
-impl PhaseEntry {
-    /// Push a log line, evicting oldest at capacity.
-    pub fn push_log(&mut self, line: String) {
-        if self.logs.len() == WorkflowEntry::PHASE_LOG_MAX {
-            self.logs.pop_front();
-        }
-        self.logs.push_back(line);
-    }
-}
-
 /// One row in the SUBAGENTS Inspector section's per-root tail. The
 /// otherwise-hidden child tool call this row represents - the
 /// underlying `ToolCallInfo` stays `hidden: true` in the chat
@@ -440,138 +361,6 @@ pub struct SubagentEntry {
 /// `+N more` overflow on the terminal-summary line. Picked to match
 /// the SUBAGENTS mockup in `docs/book/src/ui/inspector-processes.md`.
 pub const SUBAGENT_TAIL_CAP: usize = 4;
-
-/// A single Workflow entry surfaced in chat + the
-/// Inspector WORKFLOWS section. Populated on `Workflow` tool_use;
-/// `phases` / `final_result_summary` updated from each
-/// `Message::TaskProgress` carrying `workflow_progress` events.
-#[derive(Debug, Clone)]
-pub struct WorkflowEntry {
-    /// `tool_use_id` from the Workflow tool_use block.
-    pub tool_use_id: String,
-    /// Task id assigned by the CLI when the Workflow starts
-    /// (`tool_use_result.taskId` or `TaskStarted` mapping).
-    pub task_id: Option<String>,
-    /// `name` from the script's `export const meta = {...}` block,
-    /// or the literal `"Workflow"` fallback.
-    pub meta_name: String,
-    /// Optional `description` field from the meta block. Surfaces
-    /// as a DIM subtitle row in the Inspector tree.
-    pub meta_description: Option<String>,
-    /// Phase tree - built / rebuilt from each TaskProgress's full
-    /// `workflow_progress` snapshot. Order matches phase index.
-    pub phases: Vec<PhaseEntry>,
-    /// Lifecycle status. Drives chat one-liner shape (`started` vs
-    /// `done`) and the per-row collapsed glyph in the Inspector.
-    pub status: WorkflowStatus,
-    /// Final result preview captured from the terminating
-    /// `workflow_agent.state == "done"` event's `resultPreview`.
-    pub final_result_summary: Option<String>,
-    /// Per-row expand toggle for the Inspector. Click flips this.
-    pub expanded_in_inspector: bool,
-}
-
-impl WorkflowEntry {
-    /// Maximum log lines kept per phase. Bounded so the Inspector
-    /// row doesn't grow unbounded for a long-lived workflow.
-    pub const PHASE_LOG_MAX: usize = 8;
-
-    /// True when this workflow has at least one phase that hasn't
-    /// reached `Completed`. The all-completed predicate drives the
-    /// WORKFLOWS-section auto-clear.
-    pub fn is_in_progress(&self) -> bool {
-        self.status == WorkflowStatus::InProgress
-    }
-
-    /// Apply a full `workflow_progress` snapshot from a single
-    /// `system/task_progress` event. The wire shape is a complete
-    /// snapshot (not a delta), so this rebuilds the phase list.
-    /// Phase-level logs accumulate across snapshots; agent
-    /// transition events append to the matching phase.
-    pub fn apply_workflow_progress(&mut self, events: &[forge_primitives::WorkflowProgressEvent]) {
-        use forge_primitives::WorkflowProgressEvent;
-
-        // Build the phase set first so phases with no agent
-        // activity yet still surface.
-        for event in events {
-            if let WorkflowProgressEvent::WorkflowPhase { index, title } = event {
-                let already = self.phases.iter().any(|p| p.index == *index);
-                if !already {
-                    self.phases.push(PhaseEntry {
-                        index: *index,
-                        title: title.clone(),
-                        status: PhaseStatus::Pending,
-                        logs: std::collections::VecDeque::new(),
-                    });
-                }
-            }
-        }
-
-        // Walk agent events and update each matching phase. The
-        // most recent state-per-agent wins (snapshots are
-        // monotonic: start -> progress -> done).
-        for event in events {
-            let WorkflowProgressEvent::WorkflowAgent {
-                phase_index,
-                phase_title,
-                state,
-                last_tool_name,
-                last_tool_summary,
-                result_preview,
-                ..
-            } = event
-            else {
-                continue;
-            };
-            if state == "done"
-                && let Some(preview) = result_preview.as_deref().filter(|s| !s.is_empty())
-            {
-                // Last writer wins. Snapshots are cumulative, so the
-                // walk ends on the terminating agent - which is the
-                // one this field is documented to carry.
-                self.final_result_summary = Some(preview.to_owned());
-            }
-            // Agent entries may arrive without phase tagging (observed
-            // outside the pinned corpus); such an event has no phase
-            // to attach to.
-            let Some((phase_index, phase_title)) = phase_index.as_ref().zip(phase_title.as_ref())
-            else {
-                continue;
-            };
-            // Ensure phase exists (wire sometimes emits an agent
-            // before a workflow_phase marker - defensive create).
-            if !self.phases.iter().any(|p| p.index == *phase_index) {
-                self.phases.push(PhaseEntry {
-                    index: *phase_index,
-                    title: phase_title.clone(),
-                    status: PhaseStatus::Pending,
-                    logs: std::collections::VecDeque::new(),
-                });
-            }
-            let Some(phase) = self.phases.iter_mut().find(|p| p.index == *phase_index) else {
-                continue;
-            };
-            phase.status = match state.as_str() {
-                "done" => PhaseStatus::Completed,
-                "start" | "progress" => PhaseStatus::InProgress,
-                _ => phase.status,
-            };
-            if let Some(summary) = last_tool_summary.as_deref().filter(|s| !s.is_empty()) {
-                let tool = last_tool_name.as_deref().unwrap_or("agent");
-                phase.push_log(format!("{tool}: {summary}"));
-            } else if let Some(tool) = last_tool_name.as_deref().filter(|s| !s.is_empty()) {
-                phase.push_log(format!("running {tool}"));
-            }
-        }
-
-        // After the whole snapshot, not inside it: a phase finishing is
-        // not evidence about the phases ordered after it.
-        if !self.phases.is_empty() && self.phases.iter().all(|p| p.status == PhaseStatus::Completed)
-        {
-            self.status = WorkflowStatus::Completed;
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecentSessionInfo {
@@ -756,104 +545,11 @@ pub struct PasteSessionState {
 mod tests {
     use super::*;
 
-    fn agent_event(
-        phase_index: u32,
-        state: &str,
-        result_preview: Option<&str>,
-    ) -> forge_primitives::WorkflowProgressEvent {
-        forge_primitives::WorkflowProgressEvent::WorkflowAgent {
-            index: phase_index,
-            label: format!("agent-{phase_index}"),
-            phase_index: Some(phase_index),
-            phase_title: Some(format!("phase {phase_index}")),
-            state: state.to_owned(),
-            last_tool_name: None,
-            last_tool_summary: None,
-            result_preview: result_preview.map(str::to_owned),
-        }
-    }
-
-    /// Snapshots are cumulative, so a finished agent reappears at the
-    /// same position in every later one. The walk used to return at the
-    /// first `done` carrying a preview, which meant it bailed at that
-    /// same position every time and never applied the events after it.
-    /// So the summary froze on the first finisher rather than the
-    /// terminating one, and every later phase stayed Pending.
-    #[test]
-    fn a_later_finisher_in_the_same_snapshot_is_not_stranded() {
-        let mut entry = WorkflowEntry {
-            tool_use_id: "toolu_wf".into(),
-            task_id: None,
-            meta_name: "sweep".into(),
-            meta_description: None,
-            phases: Vec::new(),
-            status: WorkflowStatus::InProgress,
-            final_result_summary: None,
-            expanded_in_inspector: false,
-        };
-
-        entry.apply_workflow_progress(&[
-            agent_event(1, "done", Some("first")),
-            agent_event(2, "progress", None),
-        ]);
-        // The discriminating one. Bailing at agent 1 left `phases`
-        // holding only agent 1, so the all-complete check ran over a
-        // one-element set and passed vacuously - the entry went
-        // terminal while agent 2 was still running, and the caller
-        // drains the section the moment it does.
-        assert_eq!(
-            entry.status,
-            WorkflowStatus::InProgress,
-            "a workflow whose later phase is still running has not completed",
-        );
-
-        entry.apply_workflow_progress(&[
-            agent_event(1, "done", Some("first")),
-            agent_event(2, "done", Some("second")),
-        ]);
-
-        let phase_two = entry.phases.iter().find(|p| p.index == 2).map(|p| p.status);
-        assert_eq!(
-            (phase_two, entry.status, entry.final_result_summary.as_deref()),
-            (Some(PhaseStatus::Completed), WorkflowStatus::Completed, Some("second")),
-            "the terminating agent completes its own phase, the entry and the summary",
-        );
-    }
-
-    /// `Other` absorbs any event type forge does not decode, and
-    /// contributes no phase - so a snapshot of only those reaches the
-    /// all-complete check with an empty list, where `all()` is
-    /// vacuously true. Moving that check out of the agent branch is
-    /// what made this reachable.
-    #[test]
-    fn a_snapshot_carrying_no_phase_does_not_complete_the_workflow() {
-        let mut entry = WorkflowEntry {
-            tool_use_id: "toolu_wf".into(),
-            task_id: None,
-            meta_name: "sweep".into(),
-            meta_description: None,
-            phases: Vec::new(),
-            status: WorkflowStatus::InProgress,
-            final_result_summary: None,
-            expanded_in_inspector: false,
-        };
-
-        entry.apply_workflow_progress(&[forge_primitives::WorkflowProgressEvent::Other]);
-
-        assert_eq!(
-            entry.status,
-            WorkflowStatus::InProgress,
-            "an undecoded event carries no evidence that anything finished",
-        );
-    }
-
     #[test]
     fn schedule_entry_wakeup_expires_at_fire_time() {
         let t0 = std::time::SystemTime::UNIX_EPOCH;
         let fire = t0 + std::time::Duration::from_secs(60);
         let e = ScheduleEntry {
-            key: "tu1".into(),
-            cron_id: None,
             kind: ScheduleKind::Wakeup,
             label: "poll".into(),
             description: None,
@@ -864,186 +560,6 @@ mod tests {
         assert!(!e.is_expired(t0));
         assert!(e.is_expired(fire));
         assert!(e.is_expired(fire + std::time::Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn schedule_entry_recurring_cron_expires_after_7_days() {
-        let t0 = std::time::SystemTime::UNIX_EPOCH;
-        let e = ScheduleEntry {
-            key: "tu2".into(),
-            cron_id: Some("job1".into()),
-            kind: ScheduleKind::Cron { recurring: true },
-            label: "*/5 * * * *".into(),
-            description: None,
-            schedule: "every 5 minutes".into(),
-            fire_at: None,
-            created_at: t0,
-        };
-        assert!(!e.is_expired(t0 + std::time::Duration::from_secs(60)));
-        assert!(e.is_expired(t0 + ScheduleEntry::CRON_MAX_AGE));
-    }
-
-    #[test]
-    fn schedule_entry_one_shot_cron_expires_at_its_fire_time() {
-        let t0 = std::time::SystemTime::UNIX_EPOCH;
-        let fire = t0 + std::time::Duration::from_secs(3600);
-        let e = ScheduleEntry {
-            key: "tu3".into(),
-            cron_id: Some("job2".into()),
-            kind: ScheduleKind::Cron { recurring: false },
-            label: "0 9 1 1 *".into(),
-            description: None,
-            schedule: "monthly on the 1st at 09:00".into(),
-            fire_at: Some(fire),
-            created_at: t0,
-        };
-        assert!(!e.is_expired(t0));
-        assert!(e.is_expired(fire), "a one-shot cron fires once, then auto-deletes upstream");
-    }
-
-    #[test]
-    fn schedule_entry_one_shot_cron_without_a_fire_time_is_retained() {
-        // An unparseable expression yields no fire time; retaining the row
-        // beats guessing an expiry the wire never gave us.
-        let t0 = std::time::SystemTime::UNIX_EPOCH;
-        let e = ScheduleEntry {
-            key: "tu4".into(),
-            cron_id: Some("job3".into()),
-            kind: ScheduleKind::Cron { recurring: false },
-            label: "weird".into(),
-            description: None,
-            schedule: "weird".into(),
-            fire_at: None,
-            created_at: t0,
-        };
-        assert!(!e.is_expired(t0 + ScheduleEntry::CRON_MAX_AGE * 2));
-    }
-
-    #[test]
-    fn workflow_entry_applies_progress_snapshot_to_build_phase_tree() {
-        let mut entry = WorkflowEntry {
-            tool_use_id: "tu".to_owned(),
-            task_id: Some("task_1".to_owned()),
-            meta_name: "minimal-ping".to_owned(),
-            meta_description: Some("sanity".to_owned()),
-            phases: Vec::new(),
-            status: WorkflowStatus::InProgress,
-            final_result_summary: None,
-            expanded_in_inspector: false,
-        };
-        let events = vec![
-            forge_primitives::WorkflowProgressEvent::WorkflowPhase {
-                index: 1,
-                title: "Ping".to_owned(),
-            },
-            forge_primitives::WorkflowProgressEvent::WorkflowAgent {
-                index: 1,
-                label: "ping".to_owned(),
-                phase_index: Some(1),
-                phase_title: Some("Ping".to_owned()),
-                state: "start".to_owned(),
-                last_tool_name: None,
-                last_tool_summary: None,
-                result_preview: None,
-            },
-        ];
-        entry.apply_workflow_progress(&events);
-        assert_eq!(entry.phases.len(), 1);
-        assert_eq!(entry.phases[0].title, "Ping");
-        assert_eq!(entry.phases[0].status, PhaseStatus::InProgress);
-        assert_eq!(entry.status, WorkflowStatus::InProgress);
-    }
-
-    #[test]
-    fn workflow_entry_completes_on_terminal_done_event_with_result() {
-        let mut entry = WorkflowEntry {
-            tool_use_id: "tu".to_owned(),
-            task_id: Some("task_1".to_owned()),
-            meta_name: "ping".to_owned(),
-            meta_description: None,
-            phases: vec![PhaseEntry {
-                index: 1,
-                title: "Ping".to_owned(),
-                status: PhaseStatus::InProgress,
-                logs: std::collections::VecDeque::new(),
-            }],
-            status: WorkflowStatus::InProgress,
-            final_result_summary: None,
-            expanded_in_inspector: false,
-        };
-        let events = vec![forge_primitives::WorkflowProgressEvent::WorkflowAgent {
-            index: 1,
-            label: "ping".to_owned(),
-            phase_index: Some(1),
-            phase_title: Some("Ping".to_owned()),
-            state: "done".to_owned(),
-            last_tool_name: Some("StructuredOutput".to_owned()),
-            last_tool_summary: Some("pong".to_owned()),
-            result_preview: Some("{\"answer\":\"pong\"}".to_owned()),
-        }];
-        entry.apply_workflow_progress(&events);
-        assert_eq!(entry.phases[0].status, PhaseStatus::Completed);
-        assert_eq!(entry.status, WorkflowStatus::Completed);
-        assert_eq!(entry.final_result_summary.as_deref(), Some("{\"answer\":\"pong\"}"));
-    }
-
-    /// A phase-less agent entry carries no phase to attach logs to, but
-    /// its `done` result must still populate `final_result_summary` -
-    /// the result walk is phase-free. Drop that and a phase-less
-    /// workflow renders as completed with an empty result line.
-    #[test]
-    fn a_phase_less_done_agent_still_populates_the_result_summary() {
-        let mut entry = WorkflowEntry {
-            tool_use_id: "tu".to_owned(),
-            task_id: None,
-            meta_name: "w".to_owned(),
-            meta_description: None,
-            phases: Vec::new(),
-            status: WorkflowStatus::InProgress,
-            final_result_summary: None,
-            expanded_in_inspector: false,
-        };
-        let events = vec![forge_primitives::WorkflowProgressEvent::WorkflowAgent {
-            index: 1,
-            label: "solo".to_owned(),
-            phase_index: None,
-            phase_title: None,
-            state: "done".to_owned(),
-            last_tool_name: Some("StructuredOutput".to_owned()),
-            last_tool_summary: Some("pong".to_owned()),
-            result_preview: Some("{\"answer\":\"pong\"}".to_owned()),
-        }];
-        entry.apply_workflow_progress(&events);
-        assert_eq!(entry.final_result_summary.as_deref(), Some("{\"answer\":\"pong\"}"));
-        assert!(
-            entry.phases.is_empty(),
-            "a phase-less entry creates no phase rows - the defensive create must not fire \
-             on a None phase",
-        );
-    }
-
-    #[test]
-    fn workflow_entry_logs_accumulate_with_bounded_ring() {
-        let mut entry = WorkflowEntry {
-            tool_use_id: "tu".to_owned(),
-            task_id: None,
-            meta_name: "w".to_owned(),
-            meta_description: None,
-            phases: vec![PhaseEntry {
-                index: 1,
-                title: "p".to_owned(),
-                status: PhaseStatus::Pending,
-                logs: std::collections::VecDeque::new(),
-            }],
-            status: WorkflowStatus::InProgress,
-            final_result_summary: None,
-            expanded_in_inspector: false,
-        };
-        for i in 0..WorkflowEntry::PHASE_LOG_MAX + 3 {
-            entry.phases[0].push_log(format!("log {i}"));
-        }
-        assert_eq!(entry.phases[0].logs.len(), WorkflowEntry::PHASE_LOG_MAX);
-        assert_eq!(entry.phases[0].logs.front().map(String::as_str), Some("log 3"));
     }
 
     #[test]

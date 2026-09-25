@@ -10,7 +10,7 @@ Every surface forge-tui renders, one page each. Scope is current state only: a p
 
 <div class="surface-card"><a href="./inspector.md"><span class="name">Inspector</span><span class="blurb">The right-side pane: git state, tasks, and the attention band for background sessions.</span></a></div>
 
-<div class="surface-card"><a href="./inspector-processes.md"><span class="name">Inspector processes</span><span class="blurb">The running-process, MCP, workflow, monitor, subagent, schedule, Gotify and Slack sections in detail.</span></a></div>
+<div class="surface-card"><a href="./inspector-processes.md"><span class="name">Inspector processes</span><span class="blurb">The running-process, MCP, monitor, subagent, schedule, Gotify and Slack sections in detail.</span></a></div>
 
 <div class="surface-card"><a href="./preflight.md"><span class="name">Preflight</span><span class="blurb">The account and dictation check forge runs on every start, and the failure screens it can show.</span></a></div>
 

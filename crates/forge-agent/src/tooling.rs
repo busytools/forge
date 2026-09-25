@@ -114,22 +114,6 @@ fn tool_title(name: &str, input: &Value) -> String {
                 (true, true) => name.to_owned(),
             }
         }
-        "SendMessage" => {
-            let to = match s("to") {
-                "" => s("recipient"),
-                to => to,
-            };
-            let body = match s("summary") {
-                "" => s("message"),
-                summary => summary,
-            };
-            match (to.is_empty(), body.is_empty()) {
-                (false, false) => format!("SendMessage to {to}: {body}"),
-                (false, true) => format!("SendMessage to {to}"),
-                (true, false) => format!("SendMessage {body}"),
-                (true, true) => name.to_owned(),
-            }
-        }
         "LSP" => {
             let operation = s("operation");
             let file_path = s("filePath");
@@ -1072,51 +1056,6 @@ mod tests {
             "empty-input title must not end with whitespace; got {:?}",
             empty.title,
         );
-    }
-
-    /// SendMessage's live wire shape (59 occurrences in Ved's own
-    /// transcripts, all carrying the same six fields): `to` and
-    /// `recipient` duplicate each other, `summary` is the bounded
-    /// human-readable line and `message` the full text - the same
-    /// description-over-command preference Bash's title makes.
-    #[test]
-    fn create_tool_call_titles_send_message_carries_recipient_and_summary() {
-        let full = create_tool_call(
-            "tu_sm1",
-            "SendMessage",
-            &json!({
-                "to": "aa32ac1c4e464f26d",
-                "recipient": "aa32ac1c4e464f26d",
-                "summary": "Add record-ordering check to round 7 A/B",
-                "message": "One addition to your brief, and it is genuinely not implied by what I already sent.",
-                "content": "One addition to your brief…",
-                "type": "message",
-            }),
-            None,
-        );
-        assert_eq!(
-            full.title,
-            "SendMessage to aa32ac1c4e464f26d: Add record-ordering check to round 7 A/B"
-        );
-
-        let recipient_only_key = create_tool_call(
-            "tu_sm2",
-            "SendMessage",
-            &json!({"recipient": "planner", "summary": "s"}),
-            None,
-        );
-        assert_eq!(recipient_only_key.title, "SendMessage to planner: s");
-
-        let no_summary = create_tool_call(
-            "tu_sm3",
-            "SendMessage",
-            &json!({"to": "planner", "message": "the full body line"}),
-            None,
-        );
-        assert_eq!(no_summary.title, "SendMessage to planner: the full body line");
-
-        let empty = create_tool_call("tu_sm4", "SendMessage", &json!({}), None);
-        assert_eq!(empty.title, "SendMessage");
     }
 
     /// Delete and Move arms per issue #848. UNVERIFIED wire shapes:

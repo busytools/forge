@@ -32,20 +32,6 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::RenderToolCall) {
         );
     }
 
-    // Workflow tool_use → push a UiSession.workflows
-    // entry. `meta_name` / `meta_description` are extracted from
-    // the script's `export const meta = {...}` block via the
-    // substring parser; malformed scripts still get an entry with
-    // the literal "Workflow" fallback so the Inspector row always
-    // renders.
-    if sdk_tool_name == "Workflow"
-        && let Some(input) = tc.raw_input.as_ref()
-        && let Some(parsed) = forge_workspace::user_interaction::parse_workflow_input(input)
-    {
-        let (meta_name, meta_description) = crate::ui::workflow_meta_fields(&parsed.script);
-        app.upsert_workflow_from_tool_input(&id_str, meta_name, meta_description);
-    }
-
     // ScheduleWakeup tool_use - one pending wakeup per session
     // (the /loop dynamic-pacing re-arm). fire_at = now + delaySeconds;
     // `reason` is the headline shown in the SCHEDULES section.
@@ -55,34 +41,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::RenderToolCall) {
         let delay = input.get("delaySeconds").and_then(serde_json::Value::as_u64).unwrap_or(0);
         let reason = input.get("reason").and_then(serde_json::Value::as_str).unwrap_or("");
         let fire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(delay);
-        app.upsert_wakeup_from_tool_input(&id_str, reason, fire_at);
-    }
-
-    // CronCreate tool_use - upsert a cron entry keyed by tool_use_id.
-    // The CLI's CronCreate result carries the job id (stamped later
-    // via `stamp_cron_id_from_result` in the tool_use_result handler).
-    if sdk_tool_name == "CronCreate"
-        && let Some(input) = tc.raw_input.as_ref()
-    {
-        let expr = input.get("cron").and_then(serde_json::Value::as_str).unwrap_or("");
-        let prompt = input.get("prompt").and_then(serde_json::Value::as_str).unwrap_or("");
-        let recurring = input.get("recurring").and_then(serde_json::Value::as_bool).unwrap_or(true);
-        app.upsert_cron_from_tool_input(
-            &id_str,
-            expr,
-            prompt,
-            recurring,
-            std::time::SystemTime::now(),
-        );
-    }
-
-    // CronDelete tool_use - remove the matching cron entry by job id.
-    // No-op when the job id is missing (malformed input).
-    if sdk_tool_name == "CronDelete"
-        && let Some(input) = tc.raw_input.as_ref()
-        && let Some(job_id) = input.get("id").and_then(serde_json::Value::as_str)
-    {
-        app.remove_cron_by_id(job_id);
+        app.upsert_wakeup_from_tool_input(reason, fire_at);
     }
 
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
@@ -194,13 +153,9 @@ fn build_tool_info_from_tool_call(
     };
 
     // CLI 2.1.156 chat-suppressed tools (#273):
-    // - TaskOutput / TaskStop - paired with Monitor / Workflow; their
-    //   side-effects surface on those tools' own blocks.
+    // - TaskOutput / TaskStop - paired with Monitor; their side-effects
+    //   surface on that tool's own block.
     // - AskUserQuestion - dock-morph widget renders instead of a card.
-    //
-    // - Workflow - the Inspector WORKFLOWS section is the surface. A
-    //   chat block was tried and reverted; keeping the Inspector as the
-    //   only surface is the standing choice, not pending work.
     //
     // Monitor is NOT here: the lifecycle block in
     // `ui::message::render_lifecycle_one_liner` is its only surface,
@@ -208,13 +163,7 @@ fn build_tool_info_from_tool_call(
     // visible tool call.
     let is_chat_suppressed = matches!(
         sdk_tool_name.as_str(),
-        "TaskOutput"
-            | "TaskStop"
-            | "AskUserQuestion"
-            | "Workflow"
-            | "ScheduleWakeup"
-            | "CronCreate"
-            | "CronDelete",
+        "TaskOutput" | "TaskStop" | "AskUserQuestion" | "ScheduleWakeup",
     );
     let monitor_status = app.monitor_status_for_tool_use(&tc.tool_call_id);
     let mut tool_info = ToolCallInfo {
@@ -796,27 +745,6 @@ mod tests {
         assert!(
             rendered.contains("ci-watch"),
             "Monitor lifecycle block missing from the chat render; got:\n{rendered}",
-        );
-    }
-
-    /// Workflow is chat-suppressed: the Inspector WORKFLOWS section is
-    /// its surface.
-    #[test]
-    fn workflow_stays_chat_suppressed() {
-        let app = App::test_default();
-        let tc = model::RenderToolCall::new("toolu_wf", "Workflow")
-            .raw_input(serde_json::json!({"script": "export const meta = { name: 'x' }"}));
-        let info = build_tool_info_from_tool_call(
-            &app,
-            tc,
-            "Workflow".to_owned(),
-            &ToolCallScope::MainAgent,
-        );
-        assert!(info.hidden, "Workflow renders in the Inspector, not the chat stream");
-        let rendered = render_assistant_block(MessageBlock::ToolCall(Box::new(info)));
-        assert!(
-            !rendered.contains("Workflow"),
-            "a suppressed Workflow paints no block of its own; got:\n{rendered}",
         );
     }
 

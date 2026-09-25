@@ -228,13 +228,11 @@ pub fn build_updated_input(
 }
 
 // ----------------------------------------------------------------
-// #273: CLI 2.1.156 Monitor + Workflow typed tool_use inputs.
+// #273: CLI 2.1.156 Monitor typed tool_use input.
 //
-// Placement follows the AskUserQuestion convention above - agent-layer
-// types co-located with their parsers. The renderer consumes these
-// via the standard `raw_input: Value` -> parse path; the typed
-// structs give Tasks 8/9 a clean shape to mutate `UiSession.monitors`
-// + `UiSession.workflows` from.
+// Placement follows the AskUserQuestion convention above - the
+// agent-layer type sits with its parser. The renderer consumes it via
+// the standard `raw_input: Value` -> parse path.
 // ----------------------------------------------------------------
 
 /// `Monitor` tool's `tool_use.input` payload. The renderer consumes
@@ -266,27 +264,6 @@ pub fn parse_monitor_input(input: &Value) -> Option<MonitorInput> {
     // CLI-default").
     let timeout_ms = obj.get("timeout_ms").and_then(Value::as_u64).unwrap_or(0);
     Some(MonitorInput { description, command, persistent, timeout_ms })
-}
-
-/// `Workflow` tool's `tool_use.input` payload. The CLI parses +
-/// executes the JS source itself; forge preserves the script
-/// verbatim for the WORKFLOWS-section header (`meta` block is
-/// extracted via substring at render time in Task 9).
-#[derive(Debug, PartialEq, Eq)]
-pub struct WorkflowInput {
-    pub script: String,
-}
-
-/// Parse a `Workflow` tool_use's `raw_input` into a `WorkflowInput`.
-/// Returns `None` when `script` is missing or non-string - the
-/// renderer can't show a phase tree or even an inferred meta name
-/// without the source.
-pub fn parse_workflow_input(input: &Value) -> Option<WorkflowInput> {
-    let script = input.as_object()?.get("script").and_then(Value::as_str)?.to_owned();
-    if script.is_empty() {
-        return None;
-    }
-    Some(WorkflowInput { script })
 }
 
 #[cfg(test)]
@@ -518,23 +495,6 @@ mod tests {
             json!(["not", "an", "object"]),
         ] {
             assert!(parse_monitor_input(&malformed).is_none(), "expected None for {malformed:?}");
-        }
-    }
-
-    #[test]
-    fn parse_workflow_input_preserves_script_verbatim() {
-        let script = "export const meta = { name: 'minimal-ping' }\nphase('Ping')";
-        let input = json!({"script": script});
-        let parsed = parse_workflow_input(&input).expect("valid input");
-        assert_eq!(parsed.script, script);
-    }
-
-    #[test]
-    fn parse_workflow_input_returns_none_when_script_missing_or_empty() {
-        for malformed in
-            [json!({}), json!({"script": ""}), json!({"script": 42}), json!({"other": "x"})]
-        {
-            assert!(parse_workflow_input(&malformed).is_none(), "expected None for {malformed:?}");
         }
     }
 }
