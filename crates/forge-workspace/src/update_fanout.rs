@@ -85,9 +85,10 @@ impl UpdateFanout {
     /// response nobody will send.
     ///
     /// Unlike [`Self::send`], an update emitted before anything attached
-    /// is not held for the first subscriber. The caller that raised it
-    /// has already failed it closed, so replaying it would offer the
-    /// first view a reply that reaches nothing.
+    /// is not held for the first subscriber: replaying it would offer
+    /// the first view a reply that reaches nothing. So a caller must
+    /// fail its turn closed on a `false` return; one that parked the
+    /// turn anyway belongs on [`Self::send`].
     pub(crate) fn send_answering(&self, update: SessionUpdate) -> bool {
         self.deliver(update, Some(SubscriberRole::Answering))
     }
@@ -96,10 +97,10 @@ impl UpdateFanout {
         let mut shared = self.shared.lock();
         let Some(tail) = shared.subscribers.pop() else {
             // Hold what was emitted before anything attached, so a boot
-            // notice is not lost. A role-gated update is not held: the
-            // caller that raised it has already failed it closed, and
-            // handing the first subscriber a prompt whose slot is gone
-            // would offer a reply that reaches nothing.
+            // notice is not lost. A role-gated update is not held,
+            // because a caller of `send_answering` must fail its turn
+            // closed on a false return: replaying it would offer the
+            // first subscriber a reply that reaches nothing.
             if !shared.attached && required.is_none() {
                 shared.pending.push(update);
             }
