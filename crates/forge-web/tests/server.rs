@@ -4,11 +4,11 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_primitives::WebConfig;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 
-/// A port nothing is listening on: bind one, read it, let it go. The
-/// window between that drop and the server's own bind is ours, not the
-/// server's.
+/// A port to hand the server: bind one, read it, let it go. Something
+/// else can take it in the gap before the server binds, which is why
+/// `start_on_a_free_port` retries rather than trusting this.
 fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
     let port = listener.local_addr().expect("the ephemeral address").port();
@@ -16,21 +16,32 @@ fn free_port() -> u16 {
     port
 }
 
+/// Start on a free port, retrying if the gap in `free_port` lost the race.
+async fn start_on_a_free_port(bind: IpAddr) -> (SocketAddr, WebConfig) {
+    for _ in 0..8 {
+        let config = WebConfig { enabled: true, port: free_port(), bind };
+        match forge_web::start(config).await {
+            Ok(Some(bound)) => return (bound, config),
+            Ok(None) => panic!("an enabled config must not come back disabled"),
+            // A stolen probe port: take another and try again.
+            Err(_) => {}
+        }
+    }
+    panic!("no free port after eight tries");
+}
+
 /// Every interface rather than loopback, so the address has to come
 /// from the config: loopback is what a hardcoded one would look like.
 #[tokio::test]
 async fn serves_on_the_configured_address() {
-    let port = free_port();
-    let config = WebConfig { enabled: true, port, bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED) };
-
-    let bound = forge_web::start(config).await.expect("the server starts").expect("it is enabled");
+    let (bound, config) = start_on_a_free_port(IpAddr::V4(Ipv4Addr::UNSPECIFIED)).await;
     assert_eq!(
         bound,
-        SocketAddr::new(config.bind, port),
+        SocketAddr::new(config.bind, config.port),
         "the listener bound the configured address, not a default",
     );
 
-    let body = reqwest::get(format!("http://127.0.0.1:{port}/"))
+    let body = reqwest::get(format!("http://127.0.0.1:{}/", config.port))
         .await
         .expect("the page is served")
         .text()
@@ -66,16 +77,17 @@ async fn a_taken_port_is_an_error() {
     );
 }
 
+/// The port is held for the whole test, so a view that tried to bind it
+/// would come back with an error: `Ok(None)` is what says it never tried.
+/// No window for another process to take the port, and no listening check
+/// to be right about for the wrong reason.
 #[tokio::test]
 async fn disabled_binds_nothing() {
-    let port = free_port();
+    let holder = TcpListener::bind("127.0.0.1:0").expect("hold a port");
+    let port = holder.local_addr().expect("the held address").port();
     let config = WebConfig { enabled: false, port, bind: IpAddr::V4(Ipv4Addr::LOCALHOST) };
 
     let bound = forge_web::start(config).await.expect("turning it off is not an error");
 
     assert!(bound.is_none(), "a disabled server binds nothing");
-    assert!(
-        TcpStream::connect(("127.0.0.1", port)).is_err(),
-        "nothing is listening on the configured port",
-    );
 }
