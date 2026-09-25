@@ -46,8 +46,9 @@ jobs:
 
       - uses: ./.github/actions/rust
 
-      # Shares a cache with CI's own `cargo doc` job, which uses the same
-      # shared-key and key.
+      # Caches this job's own builds. Does not share an entry with CI's
+      # `cargo doc` job despite the matching shared-key/key pair: rust-cache
+      # hashes RUST* variables, and CI carries workflow-level RUSTFLAGS.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cargo-${{ runner.os }}
