@@ -83,6 +83,11 @@ impl UpdateFanout {
     /// this rather than [`Self::send`]: an observer takes the update and
     /// never replies, so counting it would leave the turn waiting on a
     /// response nobody will send.
+    ///
+    /// Unlike [`Self::send`], an update emitted before anything attached
+    /// is not held for the first subscriber. The caller that raised it
+    /// has already failed it closed, so replaying it would offer the
+    /// first view a reply that reaches nothing.
     pub(crate) fn send_answering(&self, update: SessionUpdate) -> bool {
         self.deliver(update, Some(SubscriberRole::Answering))
     }
