@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   build:
-    name: mdbook build
+    name: build site
     # A pull request from a fork cannot deploy and has nothing to gain
     # from running here, so it is skipped outright.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
