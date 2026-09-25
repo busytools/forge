@@ -450,12 +450,12 @@ impl SessionTask {
                         PendingInteractionSlot::Permission(response_tx),
                     );
                 }
-                let delivered = self.update_tx.send(SessionUpdate::PermissionRequest {
+                let answerable = self.update_tx.send_answering(SessionUpdate::PermissionRequest {
                     key: self.key.clone(),
                     tool_id: tool_call_id.clone(),
                     request: wire_request,
                 });
-                if delivered {
+                if answerable {
                     spawn_permission_response_forwarder(
                         Arc::clone(&self.handle),
                         response_rx,
@@ -463,10 +463,11 @@ impl SessionTask {
                         tool_call_id,
                     );
                 } else {
-                    // TUI channel closed between the insert and the
-                    // send. Resolve the orphaned oneshot with Cancelled
-                    // so the SDK callback unblocks rather than hanging
-                    // the `claude` subprocess turn forever.
+                    // No subscriber can answer a permission prompt -
+                    // either none is attached or none renders one.
+                    // Resolve the orphaned oneshot with Cancelled so the
+                    // SDK callback unblocks rather than hanging the
+                    // `claude` subprocess turn forever.
                     if let Some(pending) =
                         self.domain.lock().pending_interactions.remove(&tool_call_id)
                         && let PendingInteractionSlot::Permission(tx) = pending
@@ -477,7 +478,7 @@ impl SessionTask {
                         target: "forge_workspace::session_task",
                         slot = %self.key.display(),
                         tool_id = %tool_call_id,
-                        "PermissionRequest send failed; orphaned oneshot cancelled"
+                        "no subscriber can answer the PermissionRequest; orphaned oneshot cancelled"
                     );
                 }
             }
@@ -493,12 +494,12 @@ impl SessionTask {
                         PendingInteractionSlot::Question(response_tx),
                     );
                 }
-                let delivered = self.update_tx.send(SessionUpdate::QuestionRequest {
+                let answerable = self.update_tx.send_answering(SessionUpdate::QuestionRequest {
                     key: self.key.clone(),
                     tool_id: tool_call_id.clone(),
                     request: wire_request,
                 });
-                if delivered {
+                if answerable {
                     spawn_question_response_forwarder(
                         Arc::clone(&self.handle),
                         response_rx,
@@ -506,9 +507,10 @@ impl SessionTask {
                         tool_call_id,
                     );
                 } else {
-                    // TUI channel closed between insert and send -
-                    // resolve the orphan with Cancelled so the SDK
-                    // callback unblocks.
+                    // No subscriber can answer a question - either none
+                    // is attached or none renders one. Resolve the
+                    // orphan with Cancelled so the SDK callback
+                    // unblocks rather than hanging the turn.
                     if let Some(pending) =
                         self.domain.lock().pending_interactions.remove(&tool_call_id)
                         && let PendingInteractionSlot::Question(tx) = pending
@@ -519,7 +521,7 @@ impl SessionTask {
                         target: "forge_workspace::session_task",
                         slot = %self.key.display(),
                         tool_id = %tool_call_id,
-                        "QuestionRequest send failed; orphaned oneshot cancelled"
+                        "no subscriber can answer the QuestionRequest; orphaned oneshot cancelled"
                     );
                 }
             }
@@ -1401,6 +1403,7 @@ fn spawn_question_response_forwarder(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::update_fanout::SubscriberRole;
     use forge_agent::Agent;
     use forge_agent::client::SpawnFailureKind;
 
@@ -1630,7 +1633,7 @@ mod tests {
         let handle = Arc::new(handle);
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let update_tx = UpdateFanout::default();
-        let update_rx = update_tx.subscribe();
+        let update_rx = update_tx.subscribe(SubscriberRole::Answering);
         let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(handle.clone()))));
         let task = SessionTask {
             key: key.clone(),
@@ -1655,7 +1658,7 @@ mod tests {
         let handle = Arc::new(handle);
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let update_tx = UpdateFanout::default();
-        let _update_rx = update_tx.subscribe();
+        let _update_rx = update_tx.subscribe(SubscriberRole::Answering);
         let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(handle.clone()))));
         let task = SessionTask {
             key: key.clone(),
@@ -2329,7 +2332,7 @@ mod tests {
         let handle = Arc::new(handle);
         let (cmd_tx, command_rx) = mpsc::unbounded_channel();
         let update_tx = UpdateFanout::default();
-        let mut update_rx = update_tx.subscribe();
+        let mut update_rx = update_tx.subscribe(SubscriberRole::Answering);
         workspace.pool.lock().insert(
             key.clone(),
             crate::workspace::PooledAgent {
@@ -2384,7 +2387,7 @@ mod tests {
         let handle = Arc::new(handle);
         let (cmd_tx, command_rx) = mpsc::unbounded_channel();
         let update_tx = UpdateFanout::default();
-        let _update_rx = update_tx.subscribe();
+        let _update_rx = update_tx.subscribe(SubscriberRole::Answering);
         workspace.pool.lock().insert(
             key.clone(),
             crate::workspace::PooledAgent {
@@ -2435,7 +2438,7 @@ mod tests {
         let handle = Arc::new(handle);
         let (cmd_tx, command_rx) = mpsc::unbounded_channel();
         let update_tx = UpdateFanout::default();
-        let _update_rx = update_tx.subscribe();
+        let _update_rx = update_tx.subscribe(SubscriberRole::Answering);
         workspace.pool.lock().insert(
             key.clone(),
             crate::workspace::PooledAgent {
@@ -2483,7 +2486,7 @@ mod tests {
         let key = SessionSlot::from_str_for_test("perm");
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let update_tx = UpdateFanout::default();
-        let _update_rx = update_tx.subscribe();
+        let _update_rx = update_tx.subscribe(SubscriberRole::Answering);
         let mut task = SessionTask {
             key: key.clone(),
             handle: Arc::clone(&handle),
@@ -2530,6 +2533,52 @@ mod tests {
         );
     }
 
+    /// A subscriber that only reads must not keep a permission request
+    /// parked. With no subscriber that can answer it, the guard resolves
+    /// the slot `Cancelled` rather than leaving the turn waiting on a
+    /// reply nobody will send. Catches the guard keying on "somebody
+    /// took the update" instead of "somebody can answer it", which the
+    /// observer's arrival would otherwise turn into a hang.
+    #[tokio::test]
+    async fn a_permission_request_with_only_an_observer_fails_closed() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
+        let (handle, _agent_rx) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let key = SessionSlot::from_str_for_test("perm-observer");
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let mut observer = update_tx.subscribe(SubscriberRole::Observing);
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::clone(&handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(
+                key.clone(),
+                Some(Arc::clone(&handle)),
+            ))),
+            update_tx,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        task.translate_event(AgentEvent::PermissionRequest {
+            session_id: key.display(),
+            request: permission_request_fixture("tu-obs"),
+        });
+
+        assert!(
+            !task.domain.lock().pending_interactions.contains_key("tu-obs"),
+            "the slot is resolved rather than parked, so the turn cannot hang",
+        );
+        assert!(
+            matches!(
+                observer.try_recv(),
+                Ok(SessionUpdate::PermissionRequest { tool_id, .. }) if tool_id == "tu-obs"
+            ),
+            "the observer is still delivered the request it cannot answer",
+        );
+    }
+
     /// The cross-kind guard: `AskUserQuestion` reuses the can_use_tool
     /// wire, so a `RespondPermission` can arrive with a tool id whose
     /// slot is a Question. The mismatched outcome must be dropped and
@@ -2542,7 +2591,7 @@ mod tests {
         let key = SessionSlot::from_str_for_test("xkind");
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let update_tx = UpdateFanout::default();
-        let _update_rx = update_tx.subscribe();
+        let _update_rx = update_tx.subscribe(SubscriberRole::Answering);
         let mut task = SessionTask {
             key: key.clone(),
             handle: Arc::clone(&handle),
@@ -2868,7 +2917,7 @@ provider = "anthropic"
         let (_cmd_tx, command_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
         let update_tx = UpdateFanout::default();
-        let _update_rx = update_tx.subscribe();
+        let _update_rx = update_tx.subscribe(SubscriberRole::Answering);
         let domain = Arc::new(parking_lot::Mutex::new(empty_domain()));
         let (response_tx, mut response_rx) =
             oneshot::channel::<forge_primitives::PermissionOutcome>();

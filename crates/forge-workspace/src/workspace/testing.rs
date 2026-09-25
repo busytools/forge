@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use crate::config::LoadedConfig;
 use crate::protocol::SessionUpdate;
 use crate::target::{ProjectKey, SessionSlot};
-use crate::update_fanout::UpdateFanout;
+use crate::update_fanout::{SubscriberRole, UpdateFanout};
 use crate::workspace::{KickRequest, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
 
@@ -145,7 +145,8 @@ impl Workspace {
         // that exercise the cron / state stores expect `forge/` present.
         let _ = crate::config::ensure_forge_data_dir(&config_dir);
         let update_tx = UpdateFanout::default();
-        let update_rx = update_tx.subscribe();
+        // A stub's caller stands in for the frontend, so it answers.
+        let update_rx = update_tx.subscribe(SubscriberRole::Answering);
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
         let accounts = std::sync::Arc::new(forge_gateway::AccountPool::empty_for_test());
@@ -179,7 +180,6 @@ impl Workspace {
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
             update_tx,
-            update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),

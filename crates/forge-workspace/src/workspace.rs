@@ -25,7 +25,7 @@ use crate::protocol::{Command, DispatchError, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
-use crate::update_fanout::UpdateFanout;
+use crate::update_fanout::{SubscriberRole, UpdateFanout};
 use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 
 #[cfg(any(test, feature = "testing"))]
@@ -233,11 +233,6 @@ pub struct Workspace {
     /// subscribed at [`Self::subscribe`].
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) update_tx: UpdateFanout,
-    /// The receiver minted at construction, held here until the first
-    /// [`Self::subscribe`] claims it. It buffers whatever the workspace
-    /// emits before anything attaches, so a boot-time notice still
-    /// reaches the view that subscribes a moment later.
-    update_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<SessionUpdate>>>,
     /// Per-session [`Command`] sender map. Populated when
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
     /// key; cleared on [`Self::release_session_with_cascade`] and [`Self::shutdown`].
@@ -1115,11 +1110,7 @@ impl Workspace {
         config.ui.spinner = crate::ui::resolve_spinner(state.spinner, config.ui.spinner);
 
         let gateway_port = config.gateway_port;
-        // The constructor's receiver is subscriber zero. It stays in the
-        // slot until the first `subscribe()` claims it, which is what
-        // carries a boot-time notice to a view that attaches just after.
         let update_tx = UpdateFanout::default();
-        let update_rx = update_tx.subscribe();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
         let db = Arc::new(Mutex::new(db));
@@ -1152,7 +1143,6 @@ impl Workspace {
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
             update_tx,
-            update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
@@ -2976,18 +2966,34 @@ impl Workspace {
 
     /// Subscribe to this workspace's [`SessionUpdate`] stream. Every
     /// caller gets its own stream, so a second view attaches beside the
-    /// first rather than being refused. A stream carries what is emitted
-    /// after this call, so a view that attaches late is handed no
-    /// backlog, and the workspace drops the matching subscription once
-    /// its receiver goes.
+    /// first rather than being refused, and the workspace drops the
+    /// matching subscription once its receiver goes.
     ///
-    /// The first caller takes the receiver minted at construction, which
-    /// is what holds anything emitted during boot.
+    /// A stream carries what is emitted after this call. The first
+    /// caller to attach is handed whatever the workspace emitted before
+    /// it as well, which is how a notice raised during boot reaches a
+    /// view; a caller attaching after one already has inherits no
+    /// backlog.
+    ///
+    /// The stream answers the workspace's prompts, so a permission or
+    /// question request delivered here keeps its turn alive waiting for
+    /// the reply. A consumer that only reads the stream takes
+    /// [`Self::subscribe_observer`] instead.
     pub fn subscribe(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
-        if let Some(rx) = self.update_rx_slot.lock().take() {
-            return rx;
-        }
-        self.update_tx.subscribe()
+        self.update_tx.subscribe(SubscriberRole::Answering)
+    }
+
+    /// Subscribe without answering the workspace's prompts: a logger, a
+    /// mirror, anything that reads the stream but renders no prompt.
+    ///
+    /// The distinction is load-bearing rather than descriptive. A
+    /// permission, question or Slack-draft request is parked on a reply,
+    /// and the paths that raise one resolve it `Cancelled` instead when
+    /// no subscriber can answer, so that a request nobody will reply to
+    /// fails the turn rather than hanging it. A subscriber that declares
+    /// itself an observer is not counted as an answer.
+    pub fn subscribe_observer(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
+        self.update_tx.subscribe(SubscriberRole::Observing)
     }
 
     /// Clone the workspace's [`SessionUpdate`] sender. Internal to this
@@ -9154,7 +9160,7 @@ provider = "anthropic"
         let domain = workspace.domain_session_for(&key).expect("domain registered");
         let pooled_handle = domain.lock().conn.clone().expect("pooled handle on domain");
         let update_tx = UpdateFanout::default();
-        let _task_update_rx = update_tx.subscribe();
+        let _task_update_rx = update_tx.subscribe(SubscriberRole::Answering);
         let task = crate::session_task::SessionTask {
             key: key.clone(),
             handle: pooled_handle,

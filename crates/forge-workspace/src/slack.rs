@@ -191,13 +191,16 @@ impl Workspace {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let id = draft.id;
         self.slack_drafts.lock().insert(id, (caller.clone(), sender));
-        let delivered = self
-            .update_sender()
-            .send(crate::protocol::SessionUpdate::SlackPostPending { key: caller.clone(), draft });
-        if !delivered {
-            // No UI can answer this draft, so holding the caller would
-            // park it forever. Drop the draft; the awaiting caller sees
-            // the dropped receiver and fails closed.
+        let answerable =
+            self.update_sender().send_answering(crate::protocol::SessionUpdate::SlackPostPending {
+                key: caller.clone(),
+                draft,
+            });
+        if !answerable {
+            // No subscriber can answer this draft - either none is
+            // attached or none renders one - so holding the caller
+            // would park it forever. Drop the draft; the awaiting
+            // caller sees the dropped receiver and fails closed.
             self.slack_drafts.lock().remove(&id);
             let (_ignored_sender, dead_receiver) = tokio::sync::oneshot::channel();
             return (id, dead_receiver);
