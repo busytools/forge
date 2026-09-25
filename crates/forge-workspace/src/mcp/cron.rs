@@ -10,7 +10,7 @@
 //! The tools (`cron__create` / `cron__list` / `cron__delete`) are
 //! ANY-CALLER and owner-scoped: `create` stamps the caller as the new
 //! entry's owner, and `list` / `delete` narrow to the crons the caller
-//! owns. Mirrors `workers__list`, not the lead-only `workers__spawn`.
+//! owns. Mirrors `agents__list`, not the lead-only `agents__spawn`.
 //! Cron-list mutations are direct `Workspace` methods (state writes), not
 //! Command-bus dispatches.
 //!

@@ -1185,7 +1185,7 @@ pub(crate) struct WorkerSpawnArgs {
 /// and transitions the entry from Spawning to Running (or rolls back
 /// on tag-write failure).
 ///
-/// The reply's session id is informational: the LLM's `workers__spawn`
+/// The reply's session id is informational: the LLM's `agents__spawn`
 /// caller addresses the worker by label, not by id, and logs the id to
 /// have a stable handle on the row.
 pub(crate) fn handle_spawn_worker(
@@ -1275,7 +1275,7 @@ pub(crate) fn handle_spawn_worker(
     };
     // Label uniqueness AND the project's worker cap, enforced atomically
     // at this shared core so neither dispatch source - the boot
-    // re-spawn or an MCP `workers__spawn` - can double-insert and fork
+    // re-spawn or an MCP `agents__spawn` - can double-insert and fork
     // two subprocesses onto one worktree, or overshoot the cap on
     // genuinely-concurrent dispatches. The cap is per project: the
     // project's `max_workers` override, else the
@@ -1302,7 +1302,7 @@ pub(crate) fn handle_spawn_worker(
                     "spawn_worker: label already live; skipping duplicate spawn",
                 );
                 let _ = return_to.send(Err(format!(
-                    "a worker labeled '{label}' is already live (session {existing_session}); message it with workers__tell / workers__ask or close it first (one live worker per label)"
+                    "a worker labeled '{label}' is already live (session {existing_session}); message it with agents__tell / agents__ask or close it first (one live worker per label)"
                 )));
             }
             LiveWorkerRefusal::AtCap { live, cap } => {
@@ -1491,7 +1491,7 @@ pub(crate) fn handle_spawn_worker(
 }
 
 /// Shared worker teardown used by both `handle_close_worker` (the TUI
-/// X-button) and `handle_despawn_worker` (the `workers__despawn` MCP
+/// X-button) and `handle_despawn_worker` (the `agents__despawn` MCP
 /// tool): remove the latest-spawned worker matching `label` from
 /// `live_workers[project_key]`, release its session (terminates the
 /// claude subprocess on drop), and expire its inflight asks. Returns
@@ -1515,7 +1515,7 @@ fn teardown_worker(
 ) -> Option<crate::mcp::workers::types::WorkerEntry> {
     let entry = workspace.remove_latest_worker(project_key, label)?;
     // Both entry points into this routine (the Projects-pane close and
-    // the `workers__despawn` MCP tool) delete the persisted worker row so
+    // the `agents__despawn` MCP tool) delete the persisted worker row so
     // it never re-spawns. Cancel and the lead-close cascade go through
     // other paths and deliberately leave the row intact.
     let _ = workspace.delete_worker_row(project_key, label);
@@ -1562,7 +1562,7 @@ fn emit_worker_removed(
 
 /// Handle a `Command::CloseWorker` (the TUI per-row X-button): tear
 /// the worker down via [`teardown_worker`]. Does NOT touch the git
-/// worktree - that's the `workers__despawn` path's job; the X-button's
+/// worktree - that's the `agents__despawn` path's job; the X-button's
 /// behavior is intentionally unchanged.
 pub(crate) fn handle_close_worker(
     workspace: &Arc<Workspace>,
@@ -1582,7 +1582,7 @@ pub(crate) fn handle_close_worker(
     emit_worker_removed(workspace, project_key, &entry, worktree);
 }
 
-/// Handle a `Command::DespawnWorker` (the `workers__despawn` MCP
+/// Handle a `Command::DespawnWorker` (the `agents__despawn` MCP
 /// tool): the lead's clean-close gesture. Unlike `handle_close_worker`
 /// it also cleans up the worker's git worktree.
 ///
@@ -2034,7 +2034,7 @@ pub(crate) fn handle_deliver_worker_prompt(
     wrapped: WrappedPrompt,
 ) {
     // Latest-spawned matching label wins (mirrors the addressing rule
-    // in workers__tell / workers__ask).
+    // in agents__tell / agents__ask).
     let Some(entry) = workspace
         .list_live_workers(project_key)
         .into_iter()
@@ -2436,7 +2436,6 @@ provider = "anthropic"
         WrappedPrompt {
             correlation_id: crate::mcp::peers::types::CorrelationId::new_tell(),
             kind: crate::mcp::peers::types::WrappedKind::Message,
-            channel: crate::mcp::peers::types::AskChannel::Peers,
             sender_name: "forge".to_owned(),
             sender_org: "Default".to_owned(),
             body: "fyi".to_owned(),
@@ -4297,7 +4296,7 @@ provider = "anthropic"
     }
 
     /// The same failure at the surface a caller actually reads: the facade
-    /// must hand it back as a failed despawn, since `workers__despawn`
+    /// must hand it back as a failed despawn, since `agents__despawn`
     /// renders `UnknownLabel` as "no live worker with label ...", which
     /// sends the lead looking for a worker that is right there.
     #[tokio::test]
@@ -5106,7 +5105,7 @@ provider = "anthropic"
 
     /// `handle_deliver_worker_prompt` is a no-op when the target
     /// label has no live worker. Mirrors the close_worker_unknown
-    /// branch - the upstream Tool gate (workers__tell facade)
+    /// branch - the upstream Tool gate (agents__tell facade)
     /// rejects synchronously; the spawn handler is defence in depth.
     #[tokio::test]
     async fn deliver_worker_prompt_unknown_label_is_noop() {
@@ -5511,7 +5510,7 @@ provider = "anthropic"
     /// `<project_key>::<label>` covers worker-bound traffic.
     #[tokio::test]
     async fn close_worker_expires_inflight_asks_addressed_to_it() {
-        use crate::mcp::peers::types::{AskChannel, CorrelationId, InflightAsk};
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
         let (workspace, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
         workspace.insert_live_worker(&project, fake_worker_entry("reviewer", "worker-1"));
@@ -5525,7 +5524,6 @@ provider = "anthropic"
             cid.clone(),
             InflightAsk {
                 correlation_id: cid.clone(),
-                channel: AskChannel::Workers,
                 caller: SessionSlot::from_str_for_test("lead-uuid"),
                 target_project: composite,
                 target_session: None,
@@ -5611,7 +5609,7 @@ mod lead_charter_tests {
     #[test]
     fn bundled_lead_charter_assumes_no_local_environment() {
         assert!(
-            DEFAULT_LEAD_CHARTER.contains("workers__spawn"),
+            DEFAULT_LEAD_CHARTER.contains("agents__spawn"),
             "the compiled-in charter is the real one, not an empty or wrong file",
         );
         for (token, why) in [

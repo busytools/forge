@@ -12,11 +12,11 @@
 //!
 //! ## Identity model
 //!
-//! A "peer agent" is one project session (as loaded from forge.toml).
-//! v1 supports one session per project - the project name is the
-//! stable identity that peers address each other by. All messages
-//! between peers go through forge's in-process MCP server (named
-//! `forge`) with the four `peers__*` tools.
+//! A session is addressed by its slot: the project name, the org that
+//! project belongs to, and a label, with `lead` naming the project's own
+//! agent and a worker's label naming it. One project therefore holds many
+//! addressable seats. All messages between sessions go through forge's
+//! in-process MCP server (named `forge`) with the `agents__*` tools.
 //!
 //! ## Wire wrapping
 //!
@@ -40,7 +40,7 @@ use crate::SessionSlot;
 /// is 8 lowercase hex characters drawn from a fresh `Uuid::new_v4`.
 /// Generated once at the sender's tool impl; threaded through the
 /// wrapper text the recipient sees, then echoed back via
-/// `in_reply_to` on the recipient's `tell_agent` reply.
+/// `in_reply_to` on the recipient's `agents__tell` reply.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CorrelationId(pub String);
 
@@ -93,8 +93,7 @@ fn hex_8() -> String {
     s[..8].to_owned()
 }
 
-/// Liveness of a peer agent (= project) from the perspective of any
-/// other agent calling `peers__list_agents`.
+/// Liveness of a project's own agent, as `agents__list` reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerLiveness {
@@ -116,35 +115,21 @@ pub enum PeerFailureReason {
     TargetConnectionFailed,
 }
 
-/// Which MCP a cross-agent ask/message travelled over. Drives the
-/// reply-tool named in the Question envelope and the same-channel /
-/// wrong-channel reply-routing decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AskChannel {
-    Peers,
-    Workers,
-}
-
-impl AskChannel {
-    /// The tell-tool an inbound Question on this channel expects a reply through.
-    pub fn reply_tool(self) -> &'static str {
-        match self {
-            AskChannel::Peers => "peers__tell_agent",
-            AskChannel::Workers => "workers__tell",
-        }
-    }
-}
+/// The tell-tool an inbound Question expects its reply through. One
+/// family now carries every ask, so the envelope names one tool
+/// whatever the sender was.
+pub const REPLY_TOOL: &str = "agents__tell";
 
 /// Wire kind of a peer message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WrappedKind {
-    /// `ask_agent` from sender. Recipient replies via the channel's
-    /// tell-tool with `in_reply_to` set to this id.
+    /// `agents__ask` from sender. Recipient replies with
+    /// `in_reply_to` set to this id.
     Question,
-    /// Unsolicited `tell_agent` from sender (no reply expected),
+    /// Unsolicited `agents__tell` from sender (no reply expected),
     /// OR a degraded reply where `in_reply_to` didn't resolve.
     Message,
-    /// `tell_agent` that's a reply to an earlier ask.
+    /// `agents__tell` that's a reply to an earlier ask.
     Reply,
     /// forge-synthesised notice landing in the CALLER's chat when
     /// delivery to the target failed (target crashed mid-flight,
@@ -166,11 +151,6 @@ pub enum WrappedKind {
 #[derive(Clone, Debug)]
 pub struct InflightAsk {
     pub correlation_id: CorrelationId,
-    /// Which MCP this ask travelled over. A reply's `in_reply_to`
-    /// routes by this channel: a same-channel reply goes straight to
-    /// `caller`; a reply arriving on the other channel is rejected
-    /// with a steer to the right tool.
-    pub channel: AskChannel,
     pub caller: SessionSlot,
     pub target_project: String,
     /// Session stamped with this ask's `IncomingPlus1` at delivery
@@ -179,30 +159,11 @@ pub struct InflightAsk {
     pub target_session: Option<SessionSlot>,
 }
 
-/// Outcome of classifying a `tell` with an optional `in_reply_to`
-/// against the shared inflight-ask map. Drives the three-way routing
-/// decision in both MCP tell handlers.
-pub(crate) enum ReplyRouting {
-    /// `in_reply_to` resolved to an ask on THIS channel: route the
-    /// Reply straight to `caller`'s session, closing `correlation`.
-    Reply { caller: SessionSlot, correlation: CorrelationId },
-    /// No `in_reply_to`, or one that resolved to no open ask: deliver
-    /// as an unsolicited Message to the tell's declared target.
-    Message,
-    /// `in_reply_to` resolved to an ask on the OTHER channel: reject
-    /// with a steer naming `correct_tool`.
-    WrongChannel { correct_tool: &'static str },
-}
-
 /// The complete content of an outgoing or inbound peer message.
 #[derive(Clone, Debug)]
 pub struct WrappedPrompt {
     pub correlation_id: CorrelationId,
     pub kind: WrappedKind,
-    /// Channel this message travelled over. The Question envelope
-    /// names the matching reply-tool so the recipient replies through
-    /// the same MCP the ask arrived on.
-    pub channel: AskChannel,
     pub sender_name: String,
     pub sender_org: String,
     pub body: String,
@@ -220,7 +181,7 @@ impl WrappedPrompt {
                 self.correlation_id,
                 self.sender_name,
                 self.sender_org,
-                self.channel.reply_tool(),
+                REPLY_TOOL,
                 self.correlation_id,
                 self.body,
             ),
@@ -244,9 +205,9 @@ impl WrappedPrompt {
     }
 }
 
-/// Live snapshot of a peer agent returned by `peers__list_agents` or
-/// `peers__whoami`. Built fresh on each tool call from forge.toml +
-/// workspace per-session state. Not persisted.
+/// Live snapshot of a project's own agent, as `agents__list` and
+/// `agents__whoami` report it. Built fresh on each tool call from
+/// forge.toml + workspace per-session state. Not persisted.
 #[derive(Clone, Debug, Serialize)]
 pub struct PeerStatus {
     /// Project name as configured in forge.toml.
@@ -327,13 +288,7 @@ mod tests {
         }
     }
 
-    fn wrapper(
-        kind: WrappedKind,
-        channel: AskChannel,
-        sender: &str,
-        org: &str,
-        body: &str,
-    ) -> WrappedPrompt {
+    fn wrapper(kind: WrappedKind, sender: &str, org: &str, body: &str) -> WrappedPrompt {
         WrappedPrompt {
             correlation_id: CorrelationId(match kind {
                 WrappedKind::Question
@@ -343,7 +298,6 @@ mod tests {
                 WrappedKind::Message => "t-c45a8f12".to_owned(),
             }),
             kind,
-            channel,
             sender_name: sender.to_owned(),
             sender_org: org.to_owned(),
             body: body.to_owned(),
@@ -351,42 +305,22 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_prompt_question_prose_names_peers_reply_tool() {
-        let w = wrapper(
-            WrappedKind::Question,
-            AskChannel::Peers,
-            "forge",
-            "Personal",
-            "What's the test setup look like?",
-        );
+    fn wrapped_prompt_question_prose_names_the_reply_tool() {
+        // One family carries every ask, so the envelope names one tool
+        // whatever project the sender lives in.
+        let w =
+            wrapper(WrappedKind::Question, "forge", "Personal", "What's the test setup look like?");
         let prose = w.to_prose();
         assert!(prose.starts_with(
-            "[Question id=q-7f3a92e0 from agent 'forge' (org 'Personal') - reply with peers__tell_agent in_reply_to=q-7f3a92e0]",
+            "[Question id=q-7f3a92e0 from agent 'forge' (org 'Personal') - reply with agents__tell in_reply_to=q-7f3a92e0]",
         ));
         assert!(prose.ends_with("What's the test setup look like?"));
-    }
-
-    #[test]
-    fn wrapped_prompt_question_prose_names_workers_reply_tool() {
-        let w = wrapper(
-            WrappedKind::Question,
-            AskChannel::Workers,
-            "lead",
-            "Personal",
-            "Status on the failing test?",
-        );
-        let prose = w.to_prose();
-        assert!(prose.starts_with(
-            "[Question id=q-7f3a92e0 from agent 'lead' (org 'Personal') - reply with workers__tell in_reply_to=q-7f3a92e0]",
-        ));
-        assert!(prose.ends_with("Status on the failing test?"));
     }
 
     #[test]
     fn wrapped_prompt_message_prose_matches_mockup() {
         let w = wrapper(
             WrappedKind::Message,
-            AskChannel::Peers,
             "forge",
             "Personal",
             "FYI I just pushed the rewriter cleanup.",
@@ -399,7 +333,6 @@ mod tests {
     fn wrapped_prompt_reply_prose_matches_mockup() {
         let w = wrapper(
             WrappedKind::Reply,
-            AskChannel::Peers,
             "gateway-backend",
             "Gateway",
             "We use pgtemp for postgres fixtures.",
@@ -414,7 +347,6 @@ mod tests {
     fn wrapped_prompt_delivery_failure_notice_prose() {
         let w = wrapper(
             WrappedKind::DeliveryFailureNotice,
-            AskChannel::Peers,
             "gateway-liq-bot",
             "Gateway",
             "target session connection lost",
@@ -432,7 +364,6 @@ mod tests {
     fn wrapped_prompt_worker_spawn_failed_notice_prose() {
         let w = wrapper(
             WrappedKind::WorkerSpawnFailedNotice,
-            AskChannel::Workers,
             "reviewer",
             "",
             "Failed to resolve base branch \"HEAD\": git rev-parse failed",

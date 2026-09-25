@@ -5875,7 +5875,7 @@ pub(crate) mod tests {
             session_key: forge_workspace::SessionSlot::from_str_for_test("s"),
             name: "a-very-long-project-name-that-must-truncate".to_owned(),
             role: Some("steward".to_owned()),
-            kind: AttentionKind::Permission { tool: "mcp__forge__workers__spawn".to_owned() },
+            kind: AttentionKind::Permission { tool: "mcp__forge__agents__spawn".to_owned() },
             enqueued_at: now,
         };
         for width in [30_u16, 40, 60] {

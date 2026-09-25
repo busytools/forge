@@ -2768,7 +2768,7 @@ provider = "anthropic"
     /// method directly).
     #[tokio::test]
     async fn first_connected_drains_parked_peer_prompts_in_fifo_order() {
-        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
+        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
 
         let (workspace, _update_rx) = crate::Workspace::testing_stub();
 
@@ -2786,7 +2786,6 @@ provider = "anthropic"
                 WrappedPrompt {
                     correlation_id: CorrelationId::new_tell(),
                     kind: WrappedKind::Message,
-                    channel: AskChannel::Peers,
                     sender_name: "forge".to_owned(),
                     sender_org: "Default".to_owned(),
                     body: body.to_owned(),
@@ -3714,7 +3713,7 @@ mod connected_hook_tests {
         slot
     }
 
-    /// A worker spawned with `workers__spawn(kick=...)` gets that kick
+    /// A worker spawned with `agents__spawn(kick=...)` gets that kick
     /// delivered as its first turn, verbatim, through the rate-limited
     /// dispatcher.
     #[tokio::test(start_paused = true)]
@@ -3774,7 +3773,7 @@ mod connected_hook_tests {
     }
 
     /// A live worker whose entry carries no kick gets none - it idles
-    /// until the lead sends a workers__tell.
+    /// until the lead sends an agents__tell.
     #[tokio::test(start_paused = true)]
     async fn worker_without_inline_kick_for_adhoc_label_does_not_kick() {
         let (workspace, _update_rx) = Workspace::testing_stub();

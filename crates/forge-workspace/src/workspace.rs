@@ -10,9 +10,7 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::{PeerInflightStats, SDKSessionInfo};
 
-use crate::mcp::peers::types::{
-    AskChannel, CorrelationId, InflightAsk, WrappedKind, WrappedPrompt,
-};
+use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -84,27 +82,27 @@ const KICK_DISPATCH_INTERVAL: Duration = Duration::from_millis(750);
 
 /// Delegation block appended to a Lead session's system prompt.
 ///
-/// Lead-only: `workers__spawn` refuses a worker caller, so a worker
+/// Lead-only: `agents__spawn` refuses a worker caller, so a worker
 /// given this block would be told to call a tool that rejects it.
 ///
 /// Matches the shipped-prompt constants in `forge-agent`: one escaped
 /// literal, no runtime assembly.
 const LEAD_DELEGATION_PREAMBLE: &str = "\
 You can delegate work to worker sessions via the \
-mcp__forge__workers__ tools. These tools manage THIS project's worker \
-sessions only. The peers__* family is a different one: it addresses \
-other projects' agents (list / ask / tell) and never creates a worker \
-in YOUR project - if you mean to spawn a worker, emit workers__spawn, \
-never a peers call. Spawn one with \
-workers__spawn(label=\"<name>\", charter=\"<its mission>\") - the charter \
+mcp__forge__agents__ tools. Spawn one with \
+agents__spawn(label=\"<name>\", charter=\"<its mission>\") - the charter \
 is required and is what defines that worker; talk to it with \
-workers__tell / workers__ask; list live workers with workers__list; \
-revise a worker's stored charter or kicks with workers__update, which \
-takes effect on its next restart. At most one live worker exists per \
-label - if it already exists, message it instead of spawning again. \
+agents__tell / agents__ask; list your live workers with agents__list; \
+revise a worker's stored charter or kicks with agents__update, which \
+takes effect on its next restart. agents__spawn always creates the \
+worker in YOUR project. The same family reaches other projects' \
+agents: tell and ask take an org and project, plus a label to name a \
+worker rather than that project's own agent. At most one live worker \
+exists per label - if it already exists, message it instead of \
+spawning again. \
 Spawned workers are durable: they survive forge restarts and re-spawn \
 automatically, resuming where they left off, until you explicitly \
-despawn them with workers__despawn (or close their row in the Projects \
+despawn them with agents__despawn (or close their row in the Projects \
 pane). Despawn a worker once its work is truly done, otherwise it keeps \
 coming back on every restart. A PR review loop \
 fans out as ephemeral in-session subagents, not workers - a reviewer \
@@ -247,12 +245,12 @@ pub struct Workspace {
     /// `pub(crate)` so crate-internal spawn and delivery paths can
     /// reach a session's `DomainSession` directly.
     pub(crate) domain_handles: Mutex<HashMap<SessionSlot, Arc<Mutex<DomainSession>>>>,
-    /// Wire-shape state for in-flight peer-coordination asks
-    /// (`mcp__forge__peers__ask_agent`). One entry per outstanding ask
+    /// Wire-shape state for in-flight agent asks
+    /// (`mcp__forge__agents__ask`). One entry per outstanding ask
     /// keyed by [`CorrelationId`]. Registered by
-    /// [`mcp::peers::facade::WorkspaceFacade::register_inflight_ask`]
-    /// when a caller's `ask_agent` tool fires; removed on successful
-    /// reply (`complete_inflight_ask`) or target-failure
+    /// [`mcp::workers::facade::WorkerFacade::register_inflight_ask`]
+    /// when a caller's ask tool fires; removed on successful reply
+    /// (`complete_inflight_ask`) or target-failure
     /// (`expire_inflight_ask_failed`).
     ///
     /// There is no timeout machinery - asks live until reply or
@@ -1636,9 +1634,10 @@ impl Workspace {
 
         // Build the per-session `forge` MCP server. ONE server name;
         // tool surface depends on whether this spawn is for a project
-        // lead or a worker. Leads see peers + workers (cross-project
-        // coordination is a lead-only role); workers see workers
-        // only. See `crate::mcp::SessionKind` for the rationale.
+        // lead or a worker. Both kinds reach any other session by its
+        // slot; a lead additionally gets the four verbs that act on its
+        // own project (spawn / despawn / update / capacity). See
+        // `crate::mcp::SessionKind` for the rationale.
         // One source for both answers: the slot's label decides the kind,
         // so a worker's tool surface and a worker's address cannot
         // disagree.
@@ -2735,7 +2734,7 @@ impl Workspace {
     }
 
     /// Mirror the id a live worker adopted onto its registry entry, so
-    /// the status echo and `workers__list` name the occupant that is
+    /// the status echo and `agents__list` name the occupant that is
     /// running rather than the one it was spawned under.
     fn note_worker_session_id(&self, slot: &SessionSlot, session_id: &str) {
         if let Some(entry) = self.pool.lock().get_mut(slot) {
@@ -3935,7 +3934,7 @@ impl Workspace {
     }
 
     /// `entry` projected to the wire shape with `activity` derived.
-    /// This is the `workers__list` projection; `WorkerEntry::to_status`
+    /// This is the `agents__list` projection; `WorkerEntry::to_status`
     /// is the event-path one that leaves `activity` unset.
     pub fn worker_status_snapshot(
         &self,
@@ -4530,7 +4529,7 @@ impl Workspace {
     /// that project's live worker count is under it. Holds
     /// `live_workers.lock()` across the label-check, the cap-check AND
     /// the push, so two genuinely-concurrent SpawnWorker dispatches (a
-    /// reconnect re-spawn racing a manual `workers__spawn`, say) can't
+    /// reconnect re-spawn racing a manual `agents__spawn`, say) can't
     /// both pass a check-then-insert window and fork two subprocesses
     /// onto one worktree or overshoot the cap. The label check precedes
     /// the cap check, so a duplicate-label spawn at the cap reports the
@@ -4898,7 +4897,7 @@ impl Workspace {
         // predicate in expire_target_inflight can't catch them.
         self.expire_inflight_for_closed_worker(&project_key, &entry.label);
         // Classify against the entry's recorded is_git_repo_at_spawn
-        // flag - same heuristic the sync workers__spawn path uses.
+        // flag - same heuristic the sync agents__spawn path uses.
         let classified = crate::mcp::workers::facade::classify_worker_spawn_failure(
             message,
             entry.is_git_repo_at_spawn,
@@ -4936,7 +4935,6 @@ impl Workspace {
                 let wrapped = WrappedPrompt {
                     correlation_id: CorrelationId::new_tell(),
                     kind: WrappedKind::WorkerSpawnFailedNotice,
-                    channel: AskChannel::Workers,
                     sender_name: entry.label.clone(),
                     sender_org: String::new(),
                     body: reason.clone(),
@@ -5672,7 +5670,6 @@ impl Workspace {
         let caller_notice = WrappedPrompt {
             correlation_id: id.clone(),
             kind: WrappedKind::DeliveryFailureNotice,
-            channel: ask.channel,
             sender_name: ask.target_project.clone(),
             sender_org: target_org,
             body,
@@ -5695,7 +5692,7 @@ impl Workspace {
     /// (a worker asker has no addressable project name), so this
     /// by-session path is load-bearing for closing a cross-agent ask.
     /// Confirms the caller session is still live before dispatching.
-    /// Shared by the peers + workers facades.
+    /// Reached through the in-project facade.
     pub(crate) fn deliver_reply_to_caller(
         self: &Arc<Self>,
         caller: &SessionSlot,
@@ -7109,7 +7106,7 @@ provider = "anthropic"
         assert_eq!(labels, vec!["tester"], "close deletes only the closed worker's row");
     }
 
-    /// The `workers__despawn` path (`handle_despawn_worker` ->
+    /// The `agents__despawn` path (`handle_despawn_worker` ->
     /// `teardown_worker`) deletes the persisted dynamic-worker row too.
     #[tokio::test]
     async fn mcp_despawn_deletes_persisted_dynamic_worker_row() {
@@ -9405,7 +9402,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
                 target_project: "gateway-backend".to_owned(),
                 target_session: None,
@@ -9439,7 +9435,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
                 target_project: "gateway-backend".to_owned(),
                 target_session: None,
@@ -9465,7 +9460,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn expire_inflight_ask_failed_emits_peer_envelope_echo() {
         use crate::mcp::peers::types::{
-            AskChannel, CorrelationId, InflightAsk, PeerFailureReason, WrappedKind,
+            CorrelationId, InflightAsk, PeerFailureReason, WrappedKind,
         };
         let dir = forge_toml_with_two_projects();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
@@ -9477,7 +9472,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: AskChannel::Peers,
                 caller: caller.clone(),
                 target_project: "gateway-backend".to_owned(),
                 target_session: None,
@@ -9517,7 +9511,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Workers,
                 caller: SessionSlot::from_str_for_test("lead-1"),
                 target_project: crate::mcp::workers::worker_target_project_key("forge", "builder"),
                 target_session: Some(worker_key.clone()),
@@ -9548,7 +9541,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: caller.clone(),
                 target_project: "gateway-backend".to_owned(),
                 target_session: Some(target.clone()),
@@ -9590,7 +9582,6 @@ provider = "anthropic"
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Peers,
                 caller: SessionSlot::from_str_for_test("asker"),
                 target_project: "gateway-backend".to_owned(),
                 target_session: None,
@@ -9612,7 +9603,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn deliver_reply_to_caller_routes_by_session_and_guards() {
         use crate::mcp::peers::facade::ReplyDeliverError;
-        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
+        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
         let (ws, _rx) = Workspace::testing_stub();
         ws.enable_test_dispatch_intercept();
 
@@ -9620,7 +9611,6 @@ provider = "anthropic"
         let reply = WrappedPrompt {
             correlation_id: CorrelationId::new_tell(),
             kind: WrappedKind::Reply,
-            channel: AskChannel::Workers,
             sender_name: "worker".to_owned(),
             sender_org: "worker in forge".to_owned(),
             body: "here's the answer".to_owned(),
@@ -9666,7 +9656,7 @@ provider = "anthropic"
     /// signal that renders the inbound `[Reply ...]` chat block.
     #[tokio::test]
     async fn deliver_reply_to_caller_emits_peer_envelope_echo() {
-        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
+        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
         let (ws, mut rx) = Workspace::testing_stub();
         ws.enable_test_dispatch_intercept();
 
@@ -9674,7 +9664,6 @@ provider = "anthropic"
         let reply = WrappedPrompt {
             correlation_id: CorrelationId::new_tell(),
             kind: WrappedKind::Reply,
-            channel: AskChannel::Workers,
             sender_name: "worker".to_owned(),
             sender_org: "worker in forge".to_owned(),
             body: "here's the answer".to_owned(),
@@ -9762,7 +9751,6 @@ provider = "anthropic"
                 id_a.clone(),
                 InflightAsk {
                     correlation_id: id_a.clone(),
-                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_a.clone(),
                     target_project: "gateway-backend".to_owned(),
                     target_session: None,
@@ -9772,7 +9760,6 @@ provider = "anthropic"
                 id_b.clone(),
                 InflightAsk {
                     correlation_id: id_b.clone(),
-                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_b.clone(),
                     target_project: "gateway-backend".to_owned(),
                     target_session: None,
@@ -9782,7 +9769,6 @@ provider = "anthropic"
                 id_c.clone(),
                 InflightAsk {
                     correlation_id: id_c.clone(),
-                    channel: crate::mcp::peers::types::AskChannel::Peers,
                     caller: caller_c.clone(),
                     target_project: "forge".to_owned(),
                     target_session: None,
@@ -9968,7 +9954,7 @@ mod worker_activity_tests {
     }
 
     /// The whole point of the field: a worker that finished its turn is
-    /// still `WorkerLiveness::Running`, so a lead polling `workers__list`
+    /// still `WorkerLiveness::Running`, so a lead polling `agents__list`
     /// used to have no way to tell it from one mid-turn.
     #[test]
     fn connected_worker_with_no_turn_in_flight_reports_idle() {
@@ -10069,7 +10055,7 @@ mod worker_activity_tests {
         );
     }
 
-    /// `activity` is populated by the `workers__list` read path only; the
+    /// `activity` is populated by the `agents__list` read path only; the
     /// `WorkerStatusChanged` event path leaves it `None`.
     #[test]
     fn event_path_leaves_activity_none() {
@@ -10582,7 +10568,7 @@ mod tag_retry_tests {
 
     /// The non-NotFound rollback discards a spawn that minted its own row,
     /// so the row goes with it: left behind, it is a row with no live
-    /// worker - which `workers__despawn` cannot clear - and the next boot
+    /// worker - which `agents__despawn` cannot clear - and the next boot
     /// re-spawns the worker this arm just rolled back (#1142).
     #[tokio::test]
     async fn a_non_notfound_tag_failure_rolls_back_the_row_with_the_worker() {
@@ -11015,8 +11001,14 @@ mod worker_respawn_tests {
     }
 
     /// The tool names the per-session `forge` MCP server registers for
-    /// `kind`, composed exactly as the spawn path composes them.
-    fn forge_tool_surface(workspace: &Arc<Workspace>, kind: crate::mcp::SessionKind) -> String {
+    /// `kind`, composed exactly as the spawn path composes them. Read
+    /// off the server's debug listing rather than substring-searched in
+    /// it, so a description naming a tool cannot answer for the
+    /// registration.
+    fn forge_tool_surface(
+        workspace: &Arc<Workspace>,
+        kind: crate::mcp::SessionKind,
+    ) -> Vec<String> {
         let server = crate::mcp::build_forge_server(
             crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
             crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
@@ -11028,7 +11020,14 @@ mod worker_respawn_tests {
             SessionSlot::from_str_for_test("caller"),
             kind,
         );
-        format!("{server:?}")
+        let debug = format!("{server:?}");
+        let (_, tools) = debug.split_once("tools: [").expect("debug lists the tool names");
+        let (tools, _) = tools.split_once(']').expect("the tool list is closed");
+        tools
+            .split(", ")
+            .map(|name| name.trim_matches('"').to_owned())
+            .filter(|name| !name.is_empty())
+            .collect()
     }
 
     /// The guard refuses a second claim while the first is outstanding.
@@ -11046,7 +11045,7 @@ mod worker_respawn_tests {
     }
 
     /// A worker must not receive the delegation block. It instructs the
-    /// reader to call `workers__spawn`, which is lead-only, so a worker
+    /// reader to call `agents__spawn`, which is lead-only, so a worker
     /// given it would be told to call a tool that refuses it. The lead
     /// half is the control: without it, a helper that did nothing at all
     /// would still satisfy the assertion above. The negative pin keeps
@@ -11061,8 +11060,8 @@ mod worker_respawn_tests {
         Workspace::apply_lead_delegation(&mut lead, crate::mcp::SessionKind::Lead);
         let preamble = lead.delegation_preamble.expect("a lead does get it");
         assert!(
-            preamble.contains("workers__spawn")
-                && preamble.contains("never a peers call")
+            preamble.contains("agents__spawn")
+                && preamble.contains("always creates the worker in YOUR project")
                 && preamble.contains("Workers build; subagents review"),
             "a lead does get it",
         );
@@ -11076,7 +11075,7 @@ mod worker_respawn_tests {
     /// comes from the same value - so a worker cannot be handed a worker's
     /// tool surface AND the lead's address. A worker re-spawned by the
     /// boot resume path was classified as Lead while the key's shape was
-    /// the only signal, which hands it the lead-only `peers__*` group; the
+    /// the only signal, which hands it the lead-only `agents__*` group; the
     /// caller that knows the row is a worker now says so.
     #[test]
     fn a_worker_spawn_carries_its_label_and_a_worker_tool_surface() {
@@ -11093,8 +11092,8 @@ mod worker_respawn_tests {
             crate::mcp::SessionKind::Worker
         };
         assert!(
-            !forge_tool_surface(&ws, kind).contains("peers__"),
-            "and a worker's forge server carries no peers tools",
+            !forge_tool_surface(&ws, kind).contains(&"agents__spawn".to_owned()),
+            "and a worker's forge server carries no lead-only verb",
         );
     }
 
@@ -11116,13 +11115,14 @@ mod worker_respawn_tests {
     /// A tool surface for each kind, which is what the role gates: this is
     /// the lead half of the pair above, and it is the control that stops a
     /// derivation answering Worker for everything from satisfying the
-    /// worker case while stripping peers from every lead.
+    /// worker case while stripping the lead-only verbs from every lead.
     #[test]
-    fn a_lead_tool_surface_keeps_its_peers_tools() {
+    fn a_lead_tool_surface_keeps_its_lead_only_verbs() {
         let (ws, _rx) = Workspace::testing_stub();
         assert!(
-            forge_tool_surface(&ws, crate::mcp::SessionKind::Lead).contains("peers__ask_agent"),
-            "a lead keeps its peers tools",
+            forge_tool_surface(&ws, crate::mcp::SessionKind::Lead)
+                .contains(&"agents__spawn".to_owned()),
+            "a lead keeps the verbs only a lead may call",
         );
     }
 
@@ -13109,7 +13109,6 @@ mod async_worker_spawn_failure_tests {
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
-                channel: crate::mcp::peers::types::AskChannel::Workers,
                 caller: SessionSlot::from_str_for_test("lead-1"),
                 target_project: crate::mcp::workers::worker_target_project_key("proj-x", "builder"),
                 target_session: None,

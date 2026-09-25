@@ -13,9 +13,9 @@ use crate::runtime::SessionLifecycleState;
 /// formatted as `forge:worker:<label>` via [`worker_tag`].
 pub const FORGE_WORKER_TAG_PREFIX: &str = "forge:worker:";
 
-/// Reserved label a worker uses to address its spawning lead via
-/// `workers__tell` / `workers__ask`. `workers__spawn` rejects it so no
-/// live worker can shadow the keyword.
+/// Reserved label for a project's own agent, addressed as the `label`
+/// of an `agents__tell` / `agents__ask` target. `agents__spawn`
+/// rejects it so no live worker can shadow the keyword.
 pub const LEAD_LABEL: &str = "lead";
 
 /// Format a worker session's tag value: `forge:worker:<label>`.
@@ -41,7 +41,7 @@ pub enum WorkerLiveness {
     Failed,
 }
 
-/// Snapshot of one worker. Returned by `workers__list` and threaded
+/// Snapshot of one worker. Carried by `agents__list` and threaded
 /// through `SessionUpdate::WorkerStatusChanged` for TUI rendering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerStatus {
@@ -53,7 +53,7 @@ pub struct WorkerStatus {
     /// The slot the worker fills, which is what addresses it.
     pub slot: crate::SessionSlot,
     pub spawned_at: SystemTime,
-    /// The slot of the caller that issued the `workers__spawn` call.
+    /// The slot of the caller that issued the `agents__spawn` call.
     /// In v1 this is always the project's lead; field exists
     /// pre-baked for v2 worker-spawn-from-worker (currently gated).
     pub spawned_by: crate::SessionSlot,
@@ -74,7 +74,7 @@ pub struct WorkerStatus {
     ///
     /// `None` means **this path does not derive activity**, not that
     /// activity is unknown - do not project a state from it. The only
-    /// producer that populates it is `workers__list`;
+    /// producer that populates it is `agents__list`;
     /// `SessionUpdate::WorkerStatusChanged` leaves it `None` because
     /// nothing on that path reads it.
     ///

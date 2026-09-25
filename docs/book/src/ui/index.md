@@ -18,7 +18,7 @@ Every surface forge-tui renders, one page each. Scope is current state only: a p
 
 <div class="surface-card"><a href="./chat.md"><span class="name">Chat</span><span class="blurb">Every message kind in the scrollback: user and assistant turns, tool calls and their groupings, the notices between them.</span></a></div>
 
-<div class="surface-card"><a href="./peers.md"><span class="name">Peers</span><span class="blurb">Cross-agent messaging: peer blocks, Gotify and Slack notifications, cron prompts, and the forge MCP tools.</span></a></div>
+<div class="surface-card"><a href="./agents.md"><span class="name">Agents</span><span class="blurb">Cross-agent messaging: agent blocks, Gotify and Slack notifications, cron prompts, and the forge MCP tools.</span></a></div>
 
 <div class="surface-card"><a href="./input.md"><span class="name">Input</span><span class="blurb">The composer, its hint slot and dictation status row, autocomplete, and the permission / question dock.</span></a></div>
 

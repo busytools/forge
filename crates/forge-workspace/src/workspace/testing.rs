@@ -379,7 +379,7 @@ impl Workspace {
         self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);
     }
 
-    /// Persist a dynamic-worker row directly, bypassing `workers__spawn`.
+    /// Persist a dynamic-worker row directly, bypassing `agents__spawn`.
     /// Cross-crate test access to the otherwise `pub(crate)` store write
     /// so forge-tui can render launchpad worker rows against a seeded row.
     #[cfg(any(test, feature = "testing"))]
