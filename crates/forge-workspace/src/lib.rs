@@ -202,6 +202,6 @@ pub use mcp::agents::build_server as build_agents_server;
 pub use mcp::peers::facade::MockWorkspaceFacade;
 #[cfg(feature = "testing")]
 pub use mcp::peers::types::{PeerLiveness, PeerStatus};
+pub use mcp::workers::facade::LEAD_LABEL;
 #[cfg(feature = "testing")]
 pub use mcp::workers::facade::{CallerProject, MockWorkerFacade, WorkerFacade};
-pub use mcp::workers::facade::{LEAD_LABEL, PERSONAL_ORG};

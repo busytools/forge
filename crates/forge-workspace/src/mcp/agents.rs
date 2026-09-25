@@ -107,7 +107,10 @@ struct TargetArgs {
 /// hold on every path. A reply names no target, and the two engines
 /// answered this differently - the in-project one by label, the
 /// cross-project one by project - so a single worker rendered as two
-/// senders depending on which verb carried its message.
+/// senders depending on which verb carried its message. The label is what
+/// keeps a worker distinguishable from its own lead at all: without it a
+/// worker messaging another project carried the bare project name, which
+/// is exactly what its lead sends.
 fn sender_identity(slot: &SessionSlot) -> (String, String) {
     let name = if slot.is_lead() {
         slot.project().to_owned()
@@ -1557,7 +1560,9 @@ mod tests {
     async fn capacity_floors_at_zero_free_slots_when_the_cap_drops_below_the_pool() {
         // `max_workers` can be lowered under a live pool, and the free-slot
         // count is rendered to the model: subtracting without flooring
-        // wraps to a 20-digit number, or panics in a debug build.
+        // wraps to a 20-digit number, or panics in a debug build. The
+        // assertion below is therefore the release-profile kill; in debug
+        // the panic is rustc's subtract-overflow and fires first.
         let host = host();
         *host.workers.capacity_reply.lock() = Some(WorkerCapacity {
             project: "core".to_owned(),
@@ -1604,6 +1609,51 @@ mod tests {
         assert_eq!(calls.len(), 1, "the facade saw the spawn");
         assert_eq!(calls[0].3.as_deref(), Some("start with the diff"), "the kick reaches it");
         assert!(calls[0].5, "the interactive flag reaches it");
+    }
+
+    #[tokio::test]
+    async fn a_workers_envelope_carries_its_label_beside_its_project() {
+        // Drop the label and a worker's envelope is the bare project name,
+        // which is exactly what its own lead sends - so a recipient cannot
+        // tell the two apart at all. Both verbs carry the one identity.
+        let host = host();
+
+        let ask = Ask { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
+        let output = ask
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "org": "other",
+                    "project": "proj",
+                    "label": "w1",
+                    "prompt": "question",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "the ask must land: {:?}", output.blocks);
+        let (name, org) = {
+            let asked = host.workers.deliver_to_project_calls.lock();
+            (asked[0].wrapped.sender_name.clone(), asked[0].wrapped.sender_org.clone())
+        };
+        assert_eq!(name, "core/w2", "an ask names the worker");
+        assert_eq!(org, "acme");
+
+        let tell = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
+        let output = tell
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "org": "other",
+                    "project": "proj",
+                    "label": "w1",
+                    "message": "hi",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "the tell must land: {:?}", output.blocks);
+        let told = host.workers.deliver_to_project_calls.lock();
+        assert_eq!(
+            told[1].wrapped.sender_name, "core/w2",
+            "a tell names the same worker the same way"
+        );
     }
 
     #[tokio::test]
@@ -1673,6 +1723,83 @@ mod tests {
             host.workers.bumps.lock().contains(&(asker, PeerStatsDelta::OutgoingMinus1)),
             "the asker stops counting an ask that has been answered",
         );
+    }
+
+    #[tokio::test]
+    async fn update_refuses_a_revision_that_would_change_nothing() {
+        // Every field is optional, so a call naming none of them is a
+        // no-op the caller would read as a successful revision. The
+        // boundary is the assertion: the empty case refuses, and a
+        // supplied field is named back rather than silently accepted.
+        let host = host();
+        let tool =
+            Update { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+
+        let empty = tool.call(ToolInput { value: serde_json::json!({ "label": "w1" }) }).await;
+        assert!(empty.is_error, "an update naming no field is refused");
+        assert!(
+            empty.blocks[0].text.contains("at least one"),
+            "the refusal says what to supply: {}",
+            empty.blocks[0].text,
+        );
+        assert!(host.workers.update_calls.lock().is_empty(), "nothing reached the facade");
+
+        let supplied = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "w1", "charter": "new mission" }),
+            })
+            .await;
+        assert!(!supplied.is_error, "one supplied field is enough: {:?}", supplied.blocks);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&supplied.blocks[0].text).expect("JSON");
+        assert_eq!(
+            parsed["updated"],
+            serde_json::json!(["charter"]),
+            "only the supplied field is reported as changed",
+        );
+    }
+
+    #[tokio::test]
+    async fn despawn_reports_a_blocked_worktree_as_a_result() {
+        // A dirty worktree leaves the worker live, so this is a result
+        // the caller has to read and act on rather than a tool error.
+        let host = host();
+        *host.workers.despawn_outcome.lock() =
+            Some(DespawnOutcome::Blocked { reason: "3 uncommitted files".to_owned() });
+        let tool =
+            Despawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool.call(ToolInput { value: serde_json::json!({ "label": "w1" }) }).await;
+        assert!(!output.is_error, "a blocked despawn is not a tool error: {:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(parsed["status"], "blocked");
+        assert_eq!(parsed["reason"], "3 uncommitted files", "the reason reaches the caller");
+        assert!(
+            !host.workers.despawn_calls.lock()[0].2,
+            "an omitted force means the worktree is protected",
+        );
+    }
+
+    #[tokio::test]
+    async fn despawn_carries_a_cleanup_warning_into_the_result() {
+        let host = host();
+        *host.workers.despawn_outcome.lock() = Some(DespawnOutcome::Despawned {
+            worktree_cleanup_warning: Some("the directory lingers".to_owned()),
+            branch_cleanup_warning: None,
+        });
+        let tool =
+            Despawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({ "label": "w1", "force": true }) })
+            .await;
+        assert!(!output.is_error, "the despawn must be answered: {:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(parsed["status"], "despawned");
+        assert_eq!(parsed["worktree_cleanup_warning"], "the directory lingers");
+        assert!(
+            parsed.get("branch_cleanup_warning").is_none(),
+            "a warning that did not fire is absent, not null",
+        );
+        assert!(host.workers.despawn_calls.lock()[0].2, "force reaches the facade");
     }
 
     #[tokio::test]

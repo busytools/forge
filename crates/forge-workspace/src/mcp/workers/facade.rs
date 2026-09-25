@@ -56,13 +56,6 @@ pub enum WorkerLeadDeliverError {
 /// keyword.
 pub use forge_primitives::LEAD_LABEL;
 
-/// Org string stamped into a lead caller's wire envelope (and the
-/// matching synthetic org for Assistant peer-outbound tool_use rows
-/// on the lead-worker chat surface). Pairs with [`LEAD_LABEL`] so
-/// both sides of the wire envelope stay in sync when they describe
-/// the lead's identity.
-pub const PERSONAL_ORG: &str = "Personal";
-
 /// Synchronous error from `spawn_worker`. All gating happens before
 /// the workspace dispatch is even issued.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -944,6 +937,9 @@ pub struct MockWorkerFacade {
     pub bumps: parking_lot::Mutex<Vec<(SessionSlot, PeerStatsDelta)>>,
     /// Captured `despawn_worker` calls: (caller, label, force).
     pub despawn_calls: parking_lot::Mutex<Vec<(SessionSlot, String, bool)>>,
+    /// Pre-loaded outcome for `despawn_worker` on a known label. When
+    /// `None`, the mock reports `Despawned` with neither warning set.
+    pub despawn_outcome: parking_lot::Mutex<Option<DespawnOutcome>>,
     /// Pre-loaded reply for `capacity`. When `None`, the mock derives
     /// it from the workers map: default cap, live count from the
     /// caller's project's entries.
@@ -1038,10 +1034,10 @@ impl WorkerFacade for MockWorkerFacade {
             });
         }
         self.despawn_calls.lock().push((caller.clone(), label.to_owned(), force));
-        Ok(DespawnOutcome::Despawned {
+        Ok(self.despawn_outcome.lock().clone().unwrap_or(DespawnOutcome::Despawned {
             worktree_cleanup_warning: None,
             branch_cleanup_warning: None,
-        })
+        }))
     }
 
     fn list_workers(&self, caller: &SessionSlot) -> Vec<WorkerStatus> {

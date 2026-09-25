@@ -2013,7 +2013,7 @@ mod tests {
                 assert_eq!(target, "gateway-backend");
                 assert_eq!(body, "landed");
             }
-            other => panic!("expected Tell, got {other:?}"),
+            other => panic!("a pre-rename tell card must still read as a Tell, got {other:?}"),
         }
 
         let worker = make_tc(
@@ -2026,7 +2026,7 @@ mod tests {
                 assert_eq!(target, "planner");
                 assert_eq!(body, "ready?");
             }
-            other => panic!("expected Ask, got {other:?}"),
+            other => panic!("a pre-rename ask card must still read as an Ask, got {other:?}"),
         }
     }
 

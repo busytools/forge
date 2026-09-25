@@ -220,7 +220,7 @@ pub fn build_server(facade: Arc<dyn ReviewFacade>, slot: SessionSlot) -> McpServ
 
 /// Attach the four review-conversation tools to an existing builder. The
 /// parent module's `build_forge_server` calls this so they share the
-/// `forge` server name with the peers / workers tools.
+/// `forge` server name with the agents tools.
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn ReviewFacade>,

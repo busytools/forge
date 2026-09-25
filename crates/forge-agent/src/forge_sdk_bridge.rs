@@ -105,7 +105,7 @@ pub(crate) struct BridgeInner {
     display_name: Option<String>,
     /// Forge-workspace-supplied in-process MCP servers attached at
     /// every `spawn_session` call. Today this is the per-session
-    /// `forge` MCP server with the four peer-coordination tools;
+    /// `forge` MCP server, whose tool surface varies by session kind;
     /// future modules (worktree, memory, …) slot in alongside under
     /// the same `forge` server name. Cheap to clone - each entry
     /// is just a name + a few `Arc<dyn Tool>`s.

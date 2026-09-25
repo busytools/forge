@@ -254,18 +254,55 @@ mod tests {
         }
     }
 
-    /// A line carrying this marker may name a retired tool, and so may the
-    /// line above it - rustfmt decides which of the two an arm's comment
-    /// lands on, and the exemption should not depend on the formatter's
-    /// choice of shape.
+    /// A `replay-only:` marker exempts the retired tools it NAMES, for the
+    /// block it heads.
     ///
-    /// It exists for one case: a transcript reader recognising what a
-    /// session recorded before the rename. Nothing can call a retired tool,
-    /// so the marker cannot be an alias, and writing it is a deliberate act
-    /// unlike quietly widening an exemption.
+    /// Two rules, and both matter. Naming: a marker exempts only the names
+    /// written after it, so an unlisted retired name in the same block
+    /// still fails and the marker cannot be decorative. Block: the
+    /// exemption runs from the marker to the next blank line, which is what
+    /// lets one marker head a whole match arm or array - and what survives
+    /// the formatter moving the comment between the arm's line and its
+    /// body, a position no per-line rule can track.
+    ///
+    /// It exists for text that cites a retired name as history: a reader of
+    /// what a session recorded before the rename, or a passage naming what
+    /// was replaced. Nothing can call a retired tool, so the marker cannot
+    /// be an alias, and writing it is a deliberate act rather than a quietly
+    /// widened exemption.
     const REPLAY_ONLY: &str = "replay-only:";
 
-    /// The tracked `.rs` and `.md` files, read from the working tree.
+    /// A line that IS one of `OLD_NAMES`' own entries. The list has to
+    /// name the retired tools in order to assert them away, and this
+    /// recognises exactly those lines rather than exempting the file that
+    /// holds them - so a stale name added anywhere else here still fails.
+    fn is_old_name_entry(line: &str) -> bool {
+        let entry = line.trim().trim_end_matches(',');
+        entry.len() > 1
+            && entry.starts_with('"')
+            && entry.ends_with('"')
+            && OLD_NAMES.contains(&entry.trim_matches('"'))
+    }
+
+    /// The retired names exempted by the markers in the block containing
+    /// line `at`, up to the blank lines on either side of it.
+    fn exempted_names(lines: &[&str], at: usize) -> Vec<&'static str> {
+        let start =
+            lines[..at].iter().rposition(|line| line.trim().is_empty()).map_or(0, |i| i + 1);
+        let end = lines[at..]
+            .iter()
+            .position(|line| line.trim().is_empty())
+            .map_or(lines.len(), |i| at + i);
+        let mut out = Vec::new();
+        for line in &lines[start..end] {
+            let Some((_, named)) = line.split_once(REPLAY_ONLY) else { continue };
+            out.extend(OLD_NAMES.iter().copied().filter(|old| named.contains(old)));
+        }
+        out
+    }
+
+    /// The tracked `.rs` and `.md` files, read from the working tree, paired
+    /// with how many were listed.
     ///
     /// Tracked content, not a filesystem walk. A surface forge ships is a
     /// file in the repository, and a walk descends into everything git
@@ -274,7 +311,7 @@ mod tests {
     /// depending on who else is using the machine. The recorded baselines
     /// are `.jsonl`, so the extension filter leaves them out: a capture
     /// holds whatever the capture machine printed.
-    fn tracked_source_files(root: &std::path::Path) -> Vec<(String, String)> {
+    fn tracked_source_files(root: &std::path::Path) -> (usize, Vec<(String, String)>) {
         let listed = std::process::Command::new("git")
             .arg("-C")
             .arg(root)
@@ -283,7 +320,7 @@ mod tests {
             .expect("git ls-files runs");
         assert!(listed.status.success(), "git ls-files failed: {listed:?}");
         let listing = String::from_utf8(listed.stdout).expect("git lists UTF-8 paths");
-        listing
+        let paths: Vec<&str> = listing
             .split('\0')
             .filter(|rel| {
                 matches!(
@@ -291,10 +328,15 @@ mod tests {
                     Some("rs" | "md")
                 )
             })
+            .collect();
+        let listed_count = paths.len();
+        let files = paths
+            .into_iter()
             .filter_map(|rel| {
                 std::fs::read_to_string(root.join(rel)).ok().map(|text| (rel.to_owned(), text))
             })
-            .collect()
+            .collect();
+        (listed_count, files)
     }
 
     /// The names are gone rather than aliased, so a session that follows a
@@ -303,33 +345,42 @@ mod tests {
     #[test]
     fn no_surface_still_names_a_retired_tool() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let files = tracked_source_files(&root);
-        // A scan that read nothing reports the same clean result as a scan
-        // that read everything, so the population is asserted alongside the
-        // verdict. The repository carries several hundred of these.
+        let (listed, files) = tracked_source_files(&root);
+        // Two questions, because a scan that read nothing reports the same
+        // clean verdict as a scan that read everything. The count is of
+        // files that READ, against what git listed, so a partial failure
+        // cannot pass; the second is a floor, so an empty listing cannot.
         assert!(
-            files.len() > 300,
+            !files.is_empty() && files.len() == listed,
+            "read {} of {listed} tracked .rs/.md files, so the scan is not the tree it claims",
+            files.len(),
+        );
+        assert!(
+            files.len() > 400,
             "the scan read only {} files, too few for its verdict to mean anything",
             files.len(),
         );
         let mut offenders = Vec::new();
         for (path, text) in files {
-            // This file names them to assert them away.
-            if path == "crates/forge-workspace/src/mcp.rs" {
-                continue;
-            }
             let lines: Vec<&str> = text.lines().collect();
             for (number, line) in lines.iter().enumerate() {
-                let marked = line.contains(REPLAY_ONLY)
-                    || number.checked_sub(1).is_some_and(|above| {
-                        lines.get(above).is_some_and(|prev| prev.contains(REPLAY_ONLY))
-                    });
-                if !marked && OLD_NAMES.iter().any(|old| line.contains(old)) {
-                    offenders.push(format!("{path}:{}", number + 1));
+                let exempt = exempted_names(&lines, number);
+                let unexempted: Vec<&str> = OLD_NAMES
+                    .iter()
+                    .copied()
+                    .filter(|old| line.contains(old) && !exempt.contains(old))
+                    .collect();
+                if !unexempted.is_empty() && !is_old_name_entry(line) {
+                    offenders.push(format!("{path}:{} names {unexempted:?}", number + 1));
                 }
             }
         }
-        assert!(offenders.is_empty(), "a retired tool name survives at: {offenders:?}");
+        assert!(
+            offenders.is_empty(),
+            "a retired tool name survives at: {offenders:?}. If the line cites one as history \
+             rather than calling it, head its block with a `{REPLAY_ONLY}` comment naming that \
+             tool.",
+        );
     }
 
     #[test]

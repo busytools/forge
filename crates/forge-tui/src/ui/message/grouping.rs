@@ -984,9 +984,16 @@ mod tests {
             );
         }
         // A pre-rename card in a resumed transcript renders the same way,
-        // so it has to break runs the same way.
-        // replay-only: peers__ask_agent, workers__tell
-        for name in ["mcp__forge__peers__ask_agent", "mcp__forge__workers__tell"] {
+        // so it has to break runs the same way. All four retired names:
+        // this set mirrors `detect_outbound`'s, and a name covered on one
+        // side and not the other is how the two drift apart.
+        // replay-only: peers__ask_agent, peers__tell_agent, workers__ask, workers__tell
+        for name in [
+            "mcp__forge__peers__ask_agent",
+            "mcp__forge__peers__tell_agent",
+            "mcp__forge__workers__ask",
+            "mcp__forge__workers__tell",
+        ] {
             assert!(
                 is_run_breaker(&tool_call_block("x", name)),
                 "{name} is read from a recorded transcript and MUST break runs",

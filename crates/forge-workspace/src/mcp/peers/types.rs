@@ -12,11 +12,11 @@
 //!
 //! ## Identity model
 //!
-//! A "peer agent" is one project session (as loaded from forge.toml).
-//! v1 supports one session per project - the project name is the
-//! stable identity that peers address each other by. All messages
-//! between peers go through forge's in-process MCP server (named
-//! `forge`) with the `agents__*` tools.
+//! A session is addressed by its slot: the project name, the org that
+//! project belongs to, and a label, with `lead` naming the project's own
+//! agent and a worker's label naming it. One project therefore holds many
+//! addressable seats. All messages between sessions go through forge's
+//! in-process MCP server (named `forge`) with the `agents__*` tools.
 //!
 //! ## Wire wrapping
 //!
@@ -40,7 +40,7 @@ use crate::SessionSlot;
 /// is 8 lowercase hex characters drawn from a fresh `Uuid::new_v4`.
 /// Generated once at the sender's tool impl; threaded through the
 /// wrapper text the recipient sees, then echoed back via
-/// `in_reply_to` on the recipient's `tell_agent` reply.
+/// `in_reply_to` on the recipient's `agents__tell` reply.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CorrelationId(pub String);
 
@@ -123,13 +123,13 @@ pub const REPLY_TOOL: &str = "agents__tell";
 /// Wire kind of a peer message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WrappedKind {
-    /// `ask_agent` from sender. Recipient replies via the channel's
-    /// tell-tool with `in_reply_to` set to this id.
+    /// `agents__ask` from sender. Recipient replies with
+    /// `in_reply_to` set to this id.
     Question,
-    /// Unsolicited `tell_agent` from sender (no reply expected),
+    /// Unsolicited `agents__tell` from sender (no reply expected),
     /// OR a degraded reply where `in_reply_to` didn't resolve.
     Message,
-    /// `tell_agent` that's a reply to an earlier ask.
+    /// `agents__tell` that's a reply to an earlier ask.
     Reply,
     /// forge-synthesised notice landing in the CALLER's chat when
     /// delivery to the target failed (target crashed mid-flight,

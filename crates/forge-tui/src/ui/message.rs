@@ -4916,14 +4916,14 @@ mod tests {
 
     #[test]
     fn envelope_streak_first_envelope_is_start() {
-        let blocks = vec![envelope_block("planner", "worker in forge", "first")];
+        let blocks = vec![envelope_block("planner", "Personal", "first")];
         assert_eq!(envelope_streak_positions(&blocks), vec![Some(EnvelopeStreakPosition::Start)]);
     }
 
     #[test]
     fn envelope_streak_after_non_envelope_is_start() {
         let blocks =
-            vec![plain_block("plain user text"), envelope_block("planner", "worker in forge", "e")];
+            vec![plain_block("plain user text"), envelope_block("planner", "Personal", "e")];
         assert_eq!(
             envelope_streak_positions(&blocks),
             vec![None, Some(EnvelopeStreakPosition::Start)],
@@ -4933,8 +4933,8 @@ mod tests {
     #[test]
     fn envelope_streak_different_worker_same_project_is_follower_new_worker() {
         let blocks = vec![
-            envelope_block("planner", "worker in forge", "first"),
-            envelope_block("implementer", "worker in forge", "second"),
+            envelope_block("planner", "Personal", "first"),
+            envelope_block("implementer", "Personal", "second"),
         ];
         assert_eq!(
             envelope_streak_positions(&blocks)[1],
@@ -4945,8 +4945,8 @@ mod tests {
     #[test]
     fn envelope_streak_same_worker_is_follower_same_worker() {
         let blocks = vec![
-            envelope_block("planner", "worker in forge", "first"),
-            envelope_block("planner", "worker in forge", "second"),
+            envelope_block("planner", "Personal", "first"),
+            envelope_block("planner", "Personal", "second"),
         ];
         assert_eq!(
             envelope_streak_positions(&blocks)[1],
@@ -4974,9 +4974,9 @@ mod tests {
     #[test]
     fn envelope_streak_resets_across_a_non_envelope_block() {
         let blocks = vec![
-            envelope_block("planner", "worker in forge", "first"),
+            envelope_block("planner", "Personal", "first"),
             plain_block("something else"),
-            envelope_block("planner", "worker in forge", "second"),
+            envelope_block("planner", "Personal", "second"),
         ];
         assert_eq!(envelope_streak_positions(&blocks)[2], Some(EnvelopeStreakPosition::Start));
     }
