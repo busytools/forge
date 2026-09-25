@@ -41,11 +41,7 @@ impl UpdateFanout {
             delivered |= live;
             live
         });
-        if delivered {
-            Ok(())
-        } else {
-            Err(mpsc::error::SendError(update))
-        }
+        if delivered { Ok(()) } else { Err(mpsc::error::SendError(update)) }
     }
 }
 
@@ -81,7 +77,11 @@ mod tests {
         fanout.send(status("one")).expect("a subscribed fan-out delivers");
 
         assert_eq!(next(&mut first, "first"), "one", "the first subscriber sees the update");
-        assert_eq!(next(&mut second, "second"), "one", "the second subscriber sees the same update");
+        assert_eq!(
+            next(&mut second, "second"),
+            "one",
+            "the second subscriber sees the same update"
+        );
     }
 
     /// Catches dropping the prune in `send`, which leaves a dead sender
@@ -114,8 +114,16 @@ mod tests {
         let mut late = fanout.subscribe();
         fanout.send(status("after")).expect("both subscribers receive");
 
-        assert_eq!(next(&mut first, "first"), "before", "the first subscriber keeps its earlier update");
-        assert_eq!(next(&mut first, "first"), "after", "the first subscriber also sees the later one");
+        assert_eq!(
+            next(&mut first, "first"),
+            "before",
+            "the first subscriber keeps its earlier update"
+        );
+        assert_eq!(
+            next(&mut first, "first"),
+            "after",
+            "the first subscriber also sees the later one"
+        );
         assert_eq!(next(&mut late, "late"), "after", "the late subscriber misses the backlog");
         assert!(
             late.try_recv().is_err(),

@@ -376,10 +376,7 @@ fn flush_pointer_shape(app: &mut App) {
 /// queued updates lands first - and the workspace's is the one carrying
 /// session state the TUI's own events annotate.
 fn next_queued_update(app: &mut App) -> Option<forge_workspace::SessionUpdate> {
-    app.workspace_rx
-        .try_recv()
-        .ok()
-        .or_else(|| app.update_rx.try_recv().ok())
+    app.workspace_rx.try_recv().ok().or_else(|| app.update_rx.try_recv().ok())
 }
 
 pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {

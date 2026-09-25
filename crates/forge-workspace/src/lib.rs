@@ -14,15 +14,17 @@
 //!
 //! ## Communication contract
 //!
-//! The TUI ↔ workspace contract is **one channel pair**:
+//! The TUI ↔ workspace contract is **one entry point in each
+//! direction**:
 //!
 //! - **TUI → workspace:** [`Workspace::dispatch`] takes a
 //!   [`protocol::Command`]. One enum, one entry point.
 //! - **workspace → TUI:** [`Workspace::subscribe`] returns a receiver
-//!   for [`protocol::SessionUpdate`]. One enum, one consumer.
+//!   for [`protocol::SessionUpdate`]. Every caller gets a stream of its
+//!   own, so a second view attaches beside the first, and a stream
+//!   carries only what is emitted after it subscribes.
 //!
-//! No second channel for "control events" vs "data events." No
-//! callback hooks. No shared mutable state. TUI does not hold an
+//! No callback hooks. No shared mutable state. TUI does not hold an
 //! `Arc<AgentHandle>`: every outbound call goes through
 //! `Workspace::dispatch(Command)`; query-style refreshes
 //! (`refresh_status_snapshot`, `refresh_oauth_credentials_snapshot`,
@@ -32,18 +34,17 @@
 //! inherent methods on [`Workspace`]. The handle stays on the
 //! workspace's [`DomainSession`].
 //!
-//! ## Single-channel event bus
+//! ## The TUI's own event bus
 //!
-//! The same `SessionUpdate` channel TUI subscribes to is also reused
-//! as an event bus for TUI-internal async work. A few TUI-side
-//! modules (`forge_tui::app::plugins`, `slash::executors`,
-//! `service_status_check`, `input_submit`) grab a sender via
-//! [`Workspace::update_sender`] and emit their own `SessionUpdate`s
-//! rather than dispatching a `Command` and waiting for a round-trip.
-//! They only mutate presentation-side state in TUI's `UiSession`
-//! buckets - workspace itself never reads those updates.
-//! See <https://github.com/busytools/forge/issues/105> for the
-//! tracking issue.
+//! TUI-internal async work has a channel of its own rather than a
+//! second use of the one above. A few TUI-side modules
+//! (`forge_tui::app::extensions`, `slash::executors`,
+//! `service_status_check`, `input_submit`) emit their own
+//! `SessionUpdate`s onto it rather than dispatching a `Command` and
+//! waiting for a round-trip. They only mutate presentation-side state
+//! in TUI's `UiSession` buckets - workspace itself never reads those
+//! updates - and the TUI's event loop drains both feeds into the same
+//! reducer.
 //!
 //! ## Facade scope (intentionally thin)
 //!
@@ -72,7 +73,6 @@ pub mod protocol;
 mod provider_probe;
 mod review;
 mod session_task;
-mod update_fanout;
 mod single_instance;
 mod slack;
 mod spawn;
@@ -80,6 +80,7 @@ pub mod store;
 mod target;
 mod tasks;
 pub mod ui;
+mod update_fanout;
 mod views;
 mod workspace;
 

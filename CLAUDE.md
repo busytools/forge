@@ -172,16 +172,17 @@ forge-tui", so bias toward the deeper crate when unsure.
 
 ## Communication contract (MVVM)
 
-The TUI to workspace contract is **one channel pair**, single
-producer/consumer each direction:
+The TUI to workspace contract is **one entry point in each direction**:
 
 - **TUI -> workspace:** `Workspace::dispatch(Command)`. One enum, one
   entry point, every user-driven action.
 - **workspace -> TUI:** `SessionUpdate` via `Workspace::subscribe()`,
-  consumed by `App.update_rx`.
+  consumed by `App.workspace_rx`. Every caller gets a stream of its
+  own, so a second view attaches beside the TUI; a stream carries only
+  what the workspace emits after that call.
 
-That is the whole contract: no second channel, no callback hooks, no
-shared mutable state. TUI holds no `Arc<AgentHandle>`; query-style
+That is the whole contract: no callback hooks, no shared mutable state.
+TUI holds no `Arc<AgentHandle>`; query-style
 refreshes (`refresh_status_snapshot`, `refresh_context_usage`,
 `refresh_mcp_snapshot`, and friends) are direct `Workspace` methods
 rather than Command variants. `DomainSession` keeps only
@@ -203,13 +204,14 @@ the slot is still their address.
 
 **Two nuances that surprise people:**
 
-- The `SessionUpdate` channel doubles as an event bus for TUI-internal
-  async work. `App` caches the sender from `Workspace::update_sender()`
-  at construction, and four modules (`app/extensions.rs`,
-  `app/slash/executors.rs`, `app/service_status_check.rs`,
-  `app/input_submit.rs`) emit their own updates through it instead of a
-  Command round-trip. That is an implicit second contract a non-TUI
-  frontend would have to replicate.
+- The TUI has an update channel of its own for its own async work.
+  `App` mints an `update_tx` / `update_rx` pair, and four modules
+  (`app/extensions.rs`, `app/slash/executors.rs`,
+  `app/service_status_check.rs`, `app/input_submit.rs`) emit their
+  presentation events through it instead of a Command round-trip. The
+  event loop drains both feeds into the same reducer, and neither is
+  part of what a non-TUI frontend reproduces: that is `dispatch()` and
+  `subscribe()`.
 - `forge-workspace` is a **thin facade, not strong isolation**. The
   boundary is enforced at the dependency graph (forge-tui has no
   forge-agent dep), not by visibility: workspace wildcard-re-exports
