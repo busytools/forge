@@ -1302,6 +1302,32 @@ mod tests {
         assert!(decision.await.is_err(), "a dead receiver reads as not-approved");
     }
 
+    /// An observer attached to the stream cannot answer a draft, so the
+    /// guard must fail it closed the way it does with no subscriber at
+    /// all. `a_draft_with_no_ui_to_answer_it_fails_closed` cannot tell
+    /// `send` from `send_answering` - with nobody attached both report
+    /// false - so this is the test that catches pointing the guard back
+    /// at `send`.
+    #[tokio::test]
+    async fn a_draft_with_only_an_observer_fails_closed() {
+        let (ws, _dir, rx) = workspace_with_one_slack_workspace("acme");
+        drop(rx);
+        let mut observer = ws.subscribe_observer();
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+
+        let (_id, decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+
+        assert!(
+            ws.slack_drafts.lock().is_empty(),
+            "a draft only an observer can see is dropped, not held forever",
+        );
+        assert!(
+            matches!(observer.try_recv(), Ok(crate::protocol::SessionUpdate::SlackPostPending { .. })),
+            "the observer is still delivered the draft it cannot answer",
+        );
+        assert!(decision.await.is_err(), "the awaiting caller sees a dead receiver");
+    }
+
     #[test]
     fn answering_a_draft_removes_it() {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");

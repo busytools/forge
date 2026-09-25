@@ -2579,6 +2579,51 @@ mod tests {
         );
     }
 
+    /// The question guard keys on an answering subscriber the same way
+    /// the permission one does. Catches pointing this site back at
+    /// `send`: the permission test drives a different event, so an
+    /// observer's arrival here would park the question on a reply nobody
+    /// will send and no other test would notice.
+    #[tokio::test]
+    async fn a_question_request_with_only_an_observer_fails_closed() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
+        let (handle, _agent_rx) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let key = SessionSlot::from_str_for_test("question-observer");
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let mut observer = update_tx.subscribe(SubscriberRole::Observing);
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::clone(&handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(
+                key.clone(),
+                Some(Arc::clone(&handle)),
+            ))),
+            update_tx,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        task.translate_event(AgentEvent::QuestionRequest {
+            session_id: key.display(),
+            request: question_request_fixture("tu-q-obs"),
+        });
+
+        assert!(
+            !task.domain.lock().pending_interactions.contains_key("tu-q-obs"),
+            "the question slot is resolved rather than parked, so the turn cannot hang",
+        );
+        assert!(
+            matches!(
+                observer.try_recv(),
+                Ok(SessionUpdate::QuestionRequest { tool_id, .. }) if tool_id == "tu-q-obs"
+            ),
+            "the observer is still delivered the question it cannot answer",
+        );
+    }
+
     /// The cross-kind guard: `AskUserQuestion` reuses the can_use_tool
     /// wire, so a `RespondPermission` can arrive with a tool id whose
     /// slot is a Question. The mismatched outcome must be dropped and
