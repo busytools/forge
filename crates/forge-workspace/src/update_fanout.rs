@@ -94,12 +94,15 @@ mod tests {
     }
 
     /// Catches dropping the prune in `send`, which leaves a dead sender
-    /// in the registry for the life of the workspace.
+    /// in the registry for the life of the workspace. The dropped
+    /// subscriber is subscribed FIRST, so it is not the one `send` takes
+    /// out as the tail and the prune is the only thing that can remove
+    /// it.
     #[test]
     fn a_subscriber_that_drops_leaves_the_fan_out() {
         let fanout = UpdateFanout::default();
-        let mut kept = fanout.subscribe();
         let dropped = fanout.subscribe();
+        let mut kept = fanout.subscribe();
         drop(dropped);
 
         assert!(fanout.send(status("one")), "the live subscriber still receives");
