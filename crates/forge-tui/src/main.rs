@@ -140,6 +140,31 @@ fn run() -> anyhow::Result<()> {
         // that moment, and a branch usually outlives its worker.
         workspace.start_review_branch_sweep();
 
+        // Serve the web view on the address `[web]` names. A second view
+        // in the same process, which is the point: it starts no subsystem
+        // of its own, so the cron scheduler and the connectors above stay
+        // the only ones. A bind that fails still boots - the TUI is not
+        // downstream of this.
+        match forge_web::start(workspace.web_config()).await {
+            Ok(Some(addr)) => tracing::info!(
+                target: forge_tui::logging::targets::APP_LIFECYCLE,
+                event_name = "web_view_listening",
+                %addr,
+                "web view listening",
+            ),
+            Ok(None) => tracing::debug!(
+                target: forge_tui::logging::targets::APP_LIFECYCLE,
+                event_name = "web_view_disabled",
+                "[web] enabled = false; no web view this run",
+            ),
+            Err(error) => tracing::error!(
+                target: forge_tui::logging::targets::APP_LIFECYCLE,
+                event_name = "web_view_bind_failed",
+                error = %error,
+                "the web view is not serving; the TUI is unaffected",
+            ),
+        }
+
         // Create the app (instant, no I/O). The TUI holds an
         // `Arc<Workspace>` clone; main keeps the original so it
         // can drain the pool after the event loop returns.

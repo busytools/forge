@@ -1,0 +1,23 @@
+[package]
+name = "forge-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The web view: forge's core served as HTML over HTTP"
+
+[dependencies]
+forge-primitives = { workspace = true }
+axum = { workspace = true }
+maud = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

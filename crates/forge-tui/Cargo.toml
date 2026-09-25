@@ -23,6 +23,7 @@ path = "src/main.rs"
 # unless overridden here.
 forge-primitives = { workspace = true }
 forge-sessions = { workspace = true }
+forge-web = { workspace = true }
 forge-workspace = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

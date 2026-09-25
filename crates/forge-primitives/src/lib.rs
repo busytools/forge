@@ -79,6 +79,7 @@ pub mod tasks;
 pub mod token_usage;
 pub mod turn_error;
 pub mod usage;
+pub mod web;
 pub mod workers;
 
 pub use command::AgentCommand;
@@ -143,4 +144,5 @@ pub use session_update::{
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
 pub use tasks::{Task, TaskId, TaskStatus};
 pub use turn_error::TurnErrorClass;
+pub use web::{DEFAULT_WEB_PORT, WebConfig};
 pub use workers::{FORGE_WORKER_TAG_PREFIX, LEAD_LABEL, WorkerLiveness, WorkerStatus, worker_tag};
