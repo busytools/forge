@@ -1,4 +1,4 @@
-//! TUI-side consumer of [`forge_agent::env::git_diff::scan`].
+//! TUI-side consumer of [`forge_workspace::env::git_diff::scan`].
 //!
 //! Owns the refresh cadence (10s periodic timer + event-driven
 //! triggers). Spawned local tasks `await`
@@ -82,7 +82,7 @@ impl Drop for ScanInFlightGuard {
 /// `GitDiffSnapshot`, cloned by the caller (the spawn moves
 /// ownership into the task). The scanner uses it to short-circuit
 /// the `gh pr list` call when the branch hasn't changed - see
-/// [`forge_agent::env::git_diff::scan`].
+/// [`forge_workspace::env::git_diff::scan`].
 ///
 /// Early-returns (and logs at debug level) when:
 /// - `cwd` is empty (no directory to diff).

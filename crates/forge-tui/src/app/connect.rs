@@ -1,6 +1,6 @@
 //! App creation and connection startup. User actions flow out via
 //! [`forge_workspace::Workspace::dispatch`] with
-//! [`forge_workspace::Command::Spawn*`] / `StartDefault` for
+//! `forge_workspace::Command::Spawn*` / `StartDefault` for
 //! App-level kicks and per-session commands otherwise.
 
 mod session_start;

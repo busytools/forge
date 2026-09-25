@@ -255,7 +255,7 @@ fn rfc3339_now() -> String {
 }
 
 /// Resolve the caller's review scope or a ready-to-return tool error
-/// naming the step that failed (see [`ScopeError`]).
+/// naming the step that failed (see [`ScopeError`](facade::ScopeError)).
 async fn scope_or_error(
     facade: &Arc<dyn ReviewFacade>,
     slot: &SessionSlot,

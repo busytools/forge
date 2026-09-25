@@ -1,4 +1,4 @@
-//! TUI-side consumer of [`forge_workspace::Workspace::fetch_cli_version_info`].
+//! TUI-side consumer of [`forge_workspace::env::cli_version::fetch_info`].
 //!
 //! Spawns a local task that fetches the merged CLI-version snapshot at
 //! startup and then re-probes on [`REFRESH_INTERVAL`] so a transient

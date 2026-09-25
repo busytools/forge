@@ -4,7 +4,7 @@
 //! file-level hunks fetched via
 //! [`forge_workspace::env::git_diff::hunks::scan`] rendered as a
 //! single continuous scroll of every changed file with a FILES jump
-//! rail. See [`crate::ui::diff_overlay`] for the renderer.
+//! rail. See `crate::ui::diff_overlay` for the renderer.
 //!
 //! One submodule per concern:
 //! - [`types`]: the data shapes shared across the overlay (render
@@ -24,7 +24,7 @@
 //!   the seal-and-nudge close path.
 //! - [`keys`] / [`mouse`]: the key and mouse dispatch.
 //!
-//! [`test_support`] holds the fixtures shared by the submodules' tests.
+//! `test_support` holds the fixtures shared by the submodules' tests.
 
 pub(crate) mod comments;
 pub(crate) mod keys;

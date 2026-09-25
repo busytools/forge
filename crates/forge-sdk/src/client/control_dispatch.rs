@@ -3,12 +3,12 @@
 //! appropriate handler and writes the matching `control_response` via
 //! a clonable [`SharedWriter`].
 //!
-//! Internal: built once during [`Client::spawn`], cloned and moved
-//! into a `tokio::spawn`'d task per inbound `control_request` by the
-//! reader task in [`crate::client::runtime`]. The clonable writer +
-//! the `tokio::spawn` mean a slow callback cannot block the read
-//! loop, and cancellation of the actor's `select!` cannot drop a
-//! `control_response` write mid-flight.
+//! Internal: built once during [`Client::spawn`](crate::Client::spawn),
+//! cloned and moved into a `tokio::spawn`'d task per inbound
+//! `control_request` by the reader task in [`crate::client::runtime`].
+//! The clonable writer + the `tokio::spawn` mean a slow callback cannot
+//! block the read loop, and cancellation of the actor's `select!` cannot
+//! drop a `control_response` write mid-flight.
 //!
 //! Used the same way during the synchronous init handshake - the
 //! init loop calls [`ControlDispatchHandle::dispatch`] directly for

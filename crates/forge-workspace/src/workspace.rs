@@ -248,7 +248,7 @@ pub struct Workspace {
     /// Wire-shape state for in-flight agent asks
     /// (`mcp__forge__agents__ask`). One entry per outstanding ask
     /// keyed by [`CorrelationId`]. Registered by
-    /// [`mcp::workers::facade::WorkerFacade::register_inflight_ask`]
+    /// [`crate::mcp::workers::facade::WorkerFacade::register_inflight_ask`]
     /// when a caller's ask tool fires; removed on successful reply
     /// (`complete_inflight_ask`) or target-failure
     /// (`expire_inflight_ask_failed`).
@@ -260,7 +260,7 @@ pub struct Workspace {
     /// cheaper than a stale-notification bug class.
     pub(crate) inflight_asks: Mutex<HashMap<CorrelationId, InflightAsk>>,
     /// Per-session counters of peer-message activity. Mutated by
-    /// [`mcp::peers::facade::WorkspaceFacade::bump_inflight_stats`]
+    /// [`crate::mcp::peers::facade::WorkspaceFacade::bump_inflight_stats`]
     /// whenever a peer ask is registered / replied / timed out /
     /// delivery-failed. Read by `list_peers` and `whoami`. Drives
     /// `SessionUpdate::PeerInflightStatsChanged` which the TUI
@@ -4823,7 +4823,7 @@ impl Workspace {
     /// - **Any other failure** (resume against missing JSONL,
     ///   generic dispatch error, claude subprocess exit, etc.):
     ///   keep the `WorkerEntry` and transition it to
-    ///   [`WorkerLiveness::Failed`] with the first line of the
+    ///   [`WorkerLiveness::Failed`](forge_primitives::WorkerLiveness::Failed) with the first line of the
     ///   message as the diagnostic. The Projects pane renders the
     ///   worker as a red `✕` with a DIM sub-row carrying the
     ///   diagnostic, so a stuck-Spawning-forever case becomes
@@ -5551,7 +5551,7 @@ impl Workspace {
     /// each (PeerAskFailed UI state + Command::Prompt with
     /// DeliveryFailureNotice wrapper to caller).
     ///
-    /// Idempotent. Safe to call from a Drop impl via Weak<Workspace>.
+    /// Idempotent. Safe to call from a Drop impl via `Weak<Workspace>`.
     pub(crate) fn expire_target_inflight(
         self: &Arc<Self>,
         closing_key: &SessionSlot,

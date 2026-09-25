@@ -327,7 +327,7 @@ impl super::App {
     /// Sync the accounting for a message whose TAIL changed: the last
     /// block was extended, or blocks were appended or dropped at the
     /// end. Earlier blocks are assumed untouched, which is what every
-    /// caller of [`Self::sync_after_message_blocks_changed`] does.
+    /// caller of [`Self::sync_render_cache_message_tail`] does.
     ///
     /// Costs O(blocks added or dropped), not O(blocks in the message).
     /// Syncing every slot instead made a run of N appends into one

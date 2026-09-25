@@ -1004,7 +1004,7 @@ impl SessionTask {
 /// DeliveryFailureNotice prompt to each caller so they aren't left
 /// waiting on a session that no longer exists.
 ///
-/// Uses the stored Weak<Workspace> reference so a Workspace drop
+/// Uses the stored `Weak<Workspace>` reference so a Workspace drop
 /// before the task drops doesn't double-fire or panic.
 impl Drop for SessionTask {
     fn drop(&mut self) {

@@ -1,6 +1,7 @@
 //! The comment editor's lifecycle: closing it with the saved comment
-//! preserved, and saving the text into a durable [`ReviewThread`] on
-//! the workspace command bus.
+//! preserved, and saving the text into a durable
+//! [`ReviewThread`](forge_primitives::review::ReviewThread) on the
+//! workspace command bus.
 
 use super::state::DiffOverlayState;
 use super::threads::refresh_replies_waiting;
@@ -343,8 +344,9 @@ fn anchor_side(kind: DiffLineKind) -> ReviewSide {
     }
 }
 
-/// Build (or update) a durable [`ReviewThread`] for a review comment.
-/// Reuses `prior`'s id / status / timestamps and comment chain:
+/// Build (or update) a durable
+/// [`ReviewThread`](forge_primitives::review::ReviewThread) for a review
+/// comment. Reuses `prior`'s id / status / timestamps and comment chain:
 /// `edit_turn = Some(idx)` rewrites that turn in place (only a
 /// `User`-authored turn in range; an agent turn or out-of-range index
 /// is left untouched), and `edit_turn = None` appends a new user turn

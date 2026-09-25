@@ -356,7 +356,7 @@ fn mcp_name_from_npm(cmdline: &str) -> Option<String> {
     mcp_friendly_name(scope, name)
 }
 
-/// `node /opt/foo-mcp-server.js` → `foo`. Requires a `node` argv[0] and
+/// `node /opt/foo-mcp-server.js` → `foo`. Requires a `node` `argv[0]` and
 /// a later token whose basename (sans `.js` / `@version`) resolves via
 /// [`mcp_friendly_name`] (scope-less, so a bare `mcp` doesn't match).
 fn mcp_name_from_node(cmdline: &str) -> Option<String> {
@@ -480,7 +480,7 @@ pub struct RootProcess<'a> {
 }
 
 /// Executables an stdio MCP server's live process image runs under, matched on
-/// the argv[0] basename so a server that `exec`ed out of its configured
+/// the `argv[0]` basename so a server that `exec`ed out of its configured
 /// `sh -c` wrapper still qualifies.
 ///
 /// **No shell belongs here.** A shell is how claude spawns both its Bash-tool
@@ -491,7 +491,7 @@ pub struct RootProcess<'a> {
 /// shell-shaped, and one that hasn't still text-matches its own `-c` script.
 const INTERPRETERS: [&str; 7] = ["node", "python", "python3", "deno", "bun", "npx", "uvx"];
 
-/// True when a root process may stand in for an unmatched server: its argv[0]
+/// True when a root process may stand in for an unmatched server: its `argv[0]`
 /// is one of [`INTERPRETERS`]. Keeps transient tool processes (an `rg` from a
 /// Grep) out of the pool, which would otherwise decline the pairing on any scan
 /// where one was alive and flicker the row.

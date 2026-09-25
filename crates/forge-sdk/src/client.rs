@@ -16,7 +16,7 @@
 //!   `await` their typed reply.
 //! - The writer half is a clonable
 //!   [`SharedWriter`](crate::transport::process::SharedWriter) cloned
-//!   from [`Subprocess`](crate::transport::process::Subprocess); outbound
+//!   from [`Subprocess`]; outbound
 //!   writes go through it without contending on `&mut self`.
 
 pub(crate) mod control_dispatch;
@@ -142,7 +142,7 @@ struct ClientInner {
     /// Shutdown signal for the reader task. `take()`'d on the first
     /// [`Client::disconnect`] call; subsequent calls are no-ops.
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
-    /// Set by [`Client::disconnect`](Self::disconnect) before the
+    /// Set by [`Client::disconnect`] before the
     /// shutdown signal, so the stream's end can be read as "told to
     /// stop" rather than pipe death.
     disconnect_requested: AtomicBool,
