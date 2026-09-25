@@ -42,15 +42,18 @@
 //!   `crate::app::processes::collect_active_processes`, which skips
 //!   the pids the MCP SERVERS join claims).
 //!
-//! Reads from per-session state on `UiSession.todos` and
-//! `UiSession.git_diff_snapshot`.
+//! Reads from per-session state on `UiSession.git_diff_snapshot`, and from
+//! the task snapshot on `App` (`ui_task_rows`, `forge_project_tasks`).
 //!
 //! TASKS item rendering:
 //! - `✓` green glyph + DIM crossed-out text for `Completed`
-//! - `▸` RUST_ORANGE glyph + white bold text for `InProgress`
-//!   (wraps onto continuation lines indented under the glyph;
-//!   uses `active_form` when present, else `content`)
-//! - `○` DIM glyph + gray text for `Pending` (truncates with `...`)
+//! - the active spinner glyph, RUST_ORANGE, + white bold text for
+//!   `InProgress` (wraps onto continuation lines indented under the glyph;
+//!   uses `active_form` when present and non-empty, else the subject)
+//! - `○` DIM glyph + gray text for `Blocked` and `Pending` (truncate with
+//!   `...`)
+//! - a dim metadata line under any row that has a rollup, an owner, an
+//!   artifact or an estimate
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
