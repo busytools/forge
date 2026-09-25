@@ -406,22 +406,16 @@ pub struct App {
     /// the local timezone + humanizing per frame; the live countdown
     /// still recomputes from each row's `fire_at` at render time.
     pub forge_schedule_rows: Vec<crate::app::state::types::ScheduleEntry>,
-    /// The active project's live tasks (`mcp__forge__tasks`), refreshed on
-    /// the ~1s ticker by [`App::refresh_tasks`] and narrowed by session
-    /// kind: a lead holds the top-level rows, a worker the rows it owns.
-    /// The Inspector TASKS section reads this cache each render instead of
-    /// hitting the workspace per frame. Empty when there's no active
-    /// project or the project has no tasks in flight.
-    pub forge_tasks: Vec<forge_primitives::tasks::Task>,
-    /// Presentation rows for the Inspector TASKS section, resolved once
-    /// per ~1s tick by [`App::refresh_tasks`] (parallel to
-    /// `forge_tasks`). The render reads these so it pays nothing per
-    /// frame for the rollup, the owner label or the breadcrumb.
+    /// The Inspector TASKS section's rows, resolved once per ~1s tick by
+    /// [`App::refresh_tasks`] and narrowed by session kind: a lead holds
+    /// the top-level rows, a worker the rows it owns. The render reads
+    /// these instead of hitting the workspace per frame, so the rollup,
+    /// the owner label and the breadcrumb are paid for once. Empty when
+    /// there's no active project or the project has no tasks in flight.
     pub ui_task_rows: Vec<crate::app::state::tasks::TaskRow>,
     /// Every task in the active project, unscoped. The TASKS detail
-    /// overlay reads it for a task's children, which neither
-    /// `forge_tasks` (scoped to this session) nor `ui_task_rows` (rows
-    /// only) carries.
+    /// overlay reads it for the task's own record and its children, which
+    /// `ui_task_rows` (resolved rows only) does not carry.
     pub forge_project_tasks: Vec<forge_primitives::tasks::Task>,
     /// The task whose detail overlay is open, if any. Set by a click on a
     /// TASKS row; cleared by `Esc` or a click outside the panel. The pane
@@ -1018,7 +1012,6 @@ impl App {
             pending_spawn_focus: None,
             forge_crons: Vec::new(),
             forge_schedule_rows: Vec::new(),
-            forge_tasks: Vec::new(),
             ui_task_rows: Vec::new(),
             forge_project_tasks: Vec::new(),
             task_detail: None,

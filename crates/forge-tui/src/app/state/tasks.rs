@@ -13,7 +13,6 @@ use super::App;
 /// One TASKS row, resolved at refresh time.
 pub struct TaskRow {
     pub id: TaskId,
-    pub subject: String,
     /// The in-progress wording for a running row, else the subject.
     pub display: String,
     pub status: TaskStatus,
@@ -55,7 +54,6 @@ fn build_task_row(task: &Task, all: &[Task]) -> TaskRow {
     });
     TaskRow {
         id: task.id.clone(),
-        subject: task.subject.clone(),
         display,
         status: task.status,
         owner_label: task.owner.as_ref().map(|owner| owner.label().to_owned()),
@@ -101,7 +99,6 @@ impl App {
             self.task_detail = None;
         }
         self.ui_task_rows = scoped.iter().map(|t| build_task_row(t, &all)).collect();
-        self.forge_tasks = scoped;
         self.forge_project_tasks = all;
     }
 }
@@ -305,8 +302,8 @@ pub(crate) mod tests {
         ]);
         app.focus_worker_session(WORKER);
         app.refresh_tasks();
-        assert_eq!(app.forge_tasks.len(), 1, "one worker's rows, not its siblings'");
-        assert_eq!(app.forge_tasks[0].id, TaskId::from("t-1"));
+        assert_eq!(app.ui_task_rows.len(), 1, "one worker's rows, not its siblings'");
+        assert_eq!(app.ui_task_rows[0].id, TaskId::from("t-1"));
     }
 
     #[test]
@@ -318,8 +315,7 @@ pub(crate) mod tests {
         ]);
         app.focus_lead_session();
         app.refresh_tasks();
-        let rows = &app.forge_tasks;
-        assert_eq!(rows.len(), 1, "the lead sees the epic, not its children");
+        assert_eq!(app.ui_task_rows.len(), 1, "the lead sees the epic, not its children");
         assert_eq!(app.ui_task_rows[0].rollup, Some((0, 2)), "with 0 of 2 done");
     }
 
@@ -328,7 +324,7 @@ pub(crate) mod tests {
         let mut app = app_with_tasks(Vec::new());
         app.focus_lead_session();
         app.refresh_tasks();
-        assert!(app.forge_tasks.is_empty(), "nothing to render suppresses the whole section");
+        assert!(app.ui_task_rows.is_empty(), "nothing to render suppresses the whole section");
     }
 
     #[test]
@@ -361,7 +357,7 @@ pub(crate) mod tests {
         app.mark_worker_dead(WORKER);
         app.focus_lead_session();
         app.refresh_tasks();
-        assert_eq!(app.forge_tasks.len(), 1, "a dead owner's row is not hidden");
+        assert_eq!(app.ui_task_rows.len(), 1, "a dead owner's row is not hidden");
         assert_eq!(
             app.ui_task_rows[0].owner_label.as_deref(),
             Some(WORKER),
@@ -503,10 +499,9 @@ pub(crate) mod tests {
         let mut app = app_with_tasks(vec![task("t-1", Some(WORKER))]);
         app.focus_lead_session();
         app.refresh_tasks();
-        assert_eq!(app.forge_tasks.len(), 1, "the fixture populated the cache");
+        assert_eq!(app.ui_task_rows.len(), 1, "the fixture populated the cache");
         app.active_session_key = None;
         app.refresh_tasks();
-        assert!(app.forge_tasks.is_empty(), "no active session leaves nothing to render");
-        assert!(app.ui_task_rows.is_empty(), "and no rows either");
+        assert!(app.ui_task_rows.is_empty(), "no active session leaves nothing to render");
     }
 }
