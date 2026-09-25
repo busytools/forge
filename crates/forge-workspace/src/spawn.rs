@@ -52,10 +52,12 @@ fn cli_task_tools_arg() -> String {
 }
 
 /// Deny every session - lead, resumed or worker - the CLI's task tools,
-/// merging into a `--disallowedTools` value already there so a session is
-/// never launched with the flag twice. Called from the one spawn path every
-/// session goes through and from the respawn stamp, so no launch can be
-/// assembled without it.
+/// merging into a `--disallowedTools` value already there, so the flag is
+/// emitted once with every name in it rather than twice. A worker's spawn
+/// is the case that carries one: its worktree and question denials already
+/// hold that entry. Called from the one spawn path every session goes
+/// through and from the respawn stamp, so no launch can be assembled
+/// without it.
 pub(crate) fn apply_disallowed_task_tools(settings: &mut SessionLaunchSettings) {
     let Some((_, value)) =
         settings.extra_args.iter_mut().find(|(flag, _)| flag == "disallowedTools")
@@ -83,10 +85,10 @@ pub(crate) fn apply_disallowed_task_tools(settings: &mut SessionLaunchSettings) 
 /// `--disallowedTools EnterWorktree,ExitWorktree` entry: workers are
 /// pinned to their spawn-time location (whether a worktree or the
 /// project cwd) and must not be able to call claude's built-in
-/// worktree-hop tools to escape. The CLI's task tools join that entry -
-/// they are denied to every session, not just a worker. Comma-separated
-/// value form is empirically accepted by the CLI's variadic
-/// `<tools...>` parser.
+/// worktree-hop tools to escape. The CLI's task tools are NOT listed
+/// here - every spawn is denied those at the one spawn path, which
+/// merges them into this same entry. Comma-separated value form is
+/// empirically accepted by the CLI's variadic `<tools...>` parser.
 ///
 /// Unless `interactive`, `AskUserQuestion` joins that list. A worker's
 /// question renders in its own row, which nobody is usually looking
@@ -108,7 +110,7 @@ fn build_worker_extra_args(
     if is_git_repo {
         args.push(("worktree".to_owned(), Some(label.to_owned())));
     }
-    let mut disallowed = format!("EnterWorktree,ExitWorktree,{}", cli_task_tools_arg());
+    let mut disallowed = "EnterWorktree,ExitWorktree".to_owned();
     if !interactive {
         disallowed.push_str(",AskUserQuestion");
     }
@@ -5383,15 +5385,21 @@ provider = "anthropic"
             .expect("expected a --disallowedTools entry")
     }
 
-    /// forge owns the task list now, so no session may reach the CLI's
-    /// own: a call would write a second list nothing renders and route to
-    /// neither honestly. The worker case, which carries the worktree and
-    /// AskUserQuestion denials in the same value.
+    /// A worker's own denials, which are the worktree tools and the
+    /// question it must not ask. The CLI's task tools are deliberately
+    /// absent: the spawn path owns those, and listing them here as well
+    /// would leave two places claiming the same names.
     #[test]
-    fn a_worker_is_denied_the_cli_task_tools() {
+    fn a_worker_carries_its_own_denials_and_leaves_the_task_tools_to_the_spawn_path() {
         let list = disallowed_tools_value(&build_worker_extra_args(false, "reviewer", false));
-        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+        for tool in ["EnterWorktree", "ExitWorktree", "AskUserQuestion"] {
             assert!(list.contains(tool), "{tool} must be denied to a worker; got {list:?}");
+        }
+        for tool in ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"] {
+            assert!(
+                !list.contains(tool),
+                "{tool} comes from the spawn path, not from here; got {list:?}",
+            );
         }
         assert!(
             !list.contains("ScheduleWakeup"),
