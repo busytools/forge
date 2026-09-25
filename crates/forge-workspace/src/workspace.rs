@@ -2992,6 +2992,12 @@ impl Workspace {
     /// no subscriber can answer, so that a request nobody will reply to
     /// fails the turn rather than hanging it. A subscriber that declares
     /// itself an observer is not counted as an answer.
+    ///
+    /// Who takes the pre-attach backlog is positional, not role-aware:
+    /// an observer subscribing before the TUI is the first caller and
+    /// takes whatever the workspace emitted beforehand, the boot notice
+    /// included. The binary's `start_*` calls all run before the TUI
+    /// attaches, so this belongs after them rather than among them.
     pub fn subscribe_observer(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
         self.update_tx.subscribe(SubscriberRole::Observing)
     }

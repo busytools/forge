@@ -51,8 +51,8 @@ pub(crate) struct UpdateFanout {
 impl UpdateFanout {
     /// Mint a subscriber stream, declaring what the caller can do with
     /// it. The first caller also takes whatever was emitted before it
-    /// attached; every later one carries what is emitted after its own
-    /// call and nothing before it.
+    /// attached, whichever role it declares; every later one carries
+    /// what is emitted after its own call and nothing before it.
     pub(crate) fn subscribe(&self, role: SubscriberRole) -> mpsc::UnboundedReceiver<SessionUpdate> {
         let (tx, rx) = mpsc::unbounded_channel();
         let mut shared = self.shared.lock();
