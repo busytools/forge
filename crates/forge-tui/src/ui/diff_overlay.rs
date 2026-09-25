@@ -1404,9 +1404,9 @@ fn cached_line_spans(cache: Option<&FileHighlight>, key: LineKey) -> &[Span<'sta
 /// Soft-wrap a styled span list into visual rows of at most
 /// `content_width` display columns, splitting a span mid-content when
 /// a token straddles the boundary. Always returns at least one row
-/// (possibly empty). For single-width text the row count is what the
-/// height measurement counts, which keeps the measured height and the
-/// rendered rows in step.
+/// (possibly empty). For single-width text this row count agrees with
+/// the height the renderer measures, which keeps the measured height
+/// and the rendered rows in step.
 fn wrap_spans_to_width(spans: &[Span<'static>], content_width: usize) -> Vec<Vec<Span<'static>>> {
     if content_width == 0 {
         return vec![Vec::new()];
