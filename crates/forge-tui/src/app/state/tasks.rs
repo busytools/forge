@@ -97,6 +97,8 @@ impl App {
             && !all.iter().any(|t| t.id == *open)
         {
             self.task_detail = None;
+            // The overlay is still on screen from the last frame.
+            self.needs_redraw = true;
         }
         self.ui_task_rows = scoped.iter().map(|t| build_task_row(t, &all)).collect();
         self.forge_project_tasks = all;
@@ -415,11 +417,13 @@ pub(crate) mod tests {
         );
 
         app.task_detail = Some(TaskId::from("deleted-elsewhere"));
+        app.needs_redraw = false;
         app.refresh_tasks();
         assert_eq!(
             app.task_detail, None,
             "an overlay drawing nothing must not go on swallowing every key and click",
         );
+        assert!(app.needs_redraw, "the frame still holding that overlay has to be repainted");
     }
 
     /// The section orders running, then blocked, then pending, then

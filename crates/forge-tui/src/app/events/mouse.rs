@@ -1097,8 +1097,13 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 return true;
             }
             PaneHitTarget::InspectorTaskRow { task_id, .. } => {
-                app.task_detail = Some(task_id);
-                app.needs_redraw = true;
+                // A target stamped before the last refresh can name a task
+                // that has since left the store, and opening it would draw
+                // nothing while swallowing every key and click.
+                if app.forge_project_tasks.iter().any(|task| task.id == task_id) {
+                    app.task_detail = Some(task_id);
+                    app.needs_redraw = true;
+                }
                 return true;
             }
             PaneHitTarget::CloseWorker { project_key, label, .. } => {
@@ -1451,6 +1456,17 @@ mod tests {
             Some(forge_primitives::tasks::TaskId::from("t-2")),
             "the clicked task opens",
         );
+    }
+
+    /// A row target is stamped at render time, so a click can arrive after
+    /// the task has left the store. Opening it would put up a modal that
+    /// draws nothing and swallows every key and click.
+    #[test]
+    fn clicking_a_stale_task_row_target_opens_nothing() {
+        let mut app = crate::app::state::tasks::tests::app_with_task_rows(3);
+        app.forge_project_tasks.clear();
+        crate::ui::inspector_pane::tests::click_task_row(&mut app, 1);
+        assert_eq!(app.task_detail, None, "a target with no task behind it opens nothing");
     }
 
     #[test]
