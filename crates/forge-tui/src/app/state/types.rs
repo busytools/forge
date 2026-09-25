@@ -167,8 +167,7 @@ impl BackgroundTask {
 ///
 /// A card the history drops after the mapping leaves these facts standing: a
 /// pruned agent card still promotes the row glyph, while a pruned bash card
-/// still draws, from the recorded command. A workflow kind is unaffected
-/// either way, because its section paints from its own entry list.
+/// still draws, from the recorded command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionTaskCard {
     pub tool_use_id: String,
@@ -201,10 +200,6 @@ pub enum ScheduleKind {
 /// humanized schedule in `schedule`.
 #[derive(Debug, Clone)]
 pub struct ScheduleEntry {
-    /// Stable key: the `tool_use_id` for a wakeup (one pending wakeup
-    /// per session; replaced each /loop re-arm), the cron id for a
-    /// forge cron.
-    pub key: String,
     pub kind: ScheduleKind,
     /// Wakeup: the `reason`. Cron: the headline candidate - the
     /// prompt's first line.
@@ -229,10 +224,7 @@ impl ScheduleEntry {
     /// its row is refreshed from there each tick rather than pruned
     /// against this struct.
     pub fn is_expired(&self, now: std::time::SystemTime) -> bool {
-        match self.kind {
-            ScheduleKind::Wakeup => self.fire_at.is_some_and(|t| now >= t),
-            ScheduleKind::Cron { .. } => false,
-        }
+        matches!(self.kind, ScheduleKind::Wakeup) && self.fire_at.is_some_and(|t| now >= t)
     }
 }
 
@@ -558,7 +550,6 @@ mod tests {
         let t0 = std::time::SystemTime::UNIX_EPOCH;
         let fire = t0 + std::time::Duration::from_secs(60);
         let e = ScheduleEntry {
-            key: "tu1".into(),
             kind: ScheduleKind::Wakeup,
             label: "poll".into(),
             description: None,
@@ -569,24 +560,6 @@ mod tests {
         assert!(!e.is_expired(t0));
         assert!(e.is_expired(fire));
         assert!(e.is_expired(fire + std::time::Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn a_forge_cron_row_never_expires_on_this_tick() {
-        // The SCHEDULES row for a forge cron is refreshed from the store
-        // every tick, so nothing here may prune it: its lifetime is the
-        // store's to decide.
-        let t0 = std::time::SystemTime::UNIX_EPOCH;
-        let e = ScheduleEntry {
-            key: "cron-1".into(),
-            kind: ScheduleKind::Cron { recurring: false },
-            label: "0 9 1 1 *".into(),
-            description: None,
-            schedule: "monthly on the 1st at 09:00".into(),
-            fire_at: Some(t0),
-            created_at: t0,
-        };
-        assert!(!e.is_expired(t0 + std::time::Duration::from_secs(3600)));
     }
 
     #[test]

@@ -2060,7 +2060,6 @@ pub(crate) fn forge_cron_to_schedule_entry(
         CronKind::Once(at) => (false, humanize_once(*at, now, tz)),
     };
     crate::app::ScheduleEntry {
-        key: cron.id.as_str().to_owned(),
         kind: crate::app::ScheduleKind::Cron { recurring },
         label: first_line(&cron.prompt),
         description: cron.description.clone(),
@@ -2262,8 +2261,8 @@ fn append_subagent_row(
         ToolCallStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
     };
     // Terminal roots get a `  · N tools` summary right-justified on
-    // the header (matches MONITORS / WORKFLOWS / SCHEDULES'
-    // pad-spacer pattern). In-progress roots have no summary on the
+    // the header (matches SCHEDULES' pad-spacer pattern). In-progress
+    // roots have no summary on the
     // header line; their tail rows render the live activity below.
     let trailing = if in_progress {
         String::new()
@@ -2527,7 +2526,7 @@ fn append_process_row(
     let suffix_chars = suffix_text.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
     // every inspector row routes its chrome
     // budget through `row_text_budget` so PROCESSES + TASKS +
-    // MONITORS + WORKFLOWS observe the same right-gutter contract.
+    // SUBAGENTS observe the same right-gutter contract.
     let chrome_chars = usize::from(PANE_PAD)
         + tree_chrome_cols
         + glyph_cols
@@ -2709,7 +2708,6 @@ pub(crate) mod tests {
         assert_eq!(entry.description, None, "no description on this cron");
         assert_eq!(entry.fire_at, Some(next), "next_fire carried for the countdown");
         assert!(matches!(entry.kind, crate::app::ScheduleKind::Cron { recurring: true }));
-        assert_eq!(entry.key, "c1", "the row keys on the cron id");
     }
 
     #[test]
@@ -2744,7 +2742,6 @@ pub(crate) mod tests {
         fire_at: Option<std::time::SystemTime>,
     ) -> crate::app::ScheduleEntry {
         crate::app::ScheduleEntry {
-            key: "c1".to_owned(),
             kind: crate::app::ScheduleKind::Cron { recurring },
             label: label.to_owned(),
             description: description.map(str::to_owned),
@@ -2825,7 +2822,6 @@ pub(crate) mod tests {
         use std::time::{Duration, SystemTime};
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let entry = crate::app::ScheduleEntry {
-            key: "w1".to_owned(),
             kind: crate::app::ScheduleKind::Wakeup,
             label: "watching CI run".to_owned(),
             description: None,
@@ -2959,7 +2955,6 @@ pub(crate) mod tests {
 
         let mut app = App::test_default();
         app.upsert_wakeup_from_tool_input(
-            "tu1",
             "watching CI",
             SystemTime::now() + Duration::from_secs(600),
         );

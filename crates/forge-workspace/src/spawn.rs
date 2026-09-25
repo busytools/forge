@@ -87,14 +87,19 @@ fn blocked_tools_for(kind: crate::mcp::SessionKind, interactive: bool) -> String
 /// entry. Called from the one spawn path every session goes through and
 /// from the respawn stamp, so no launch can be assembled without it.
 ///
-/// The question denial is left out here on purpose: only a worker's own
-/// spawn knows whether that session may ask, and
-/// [`build_worker_extra_args`] owns that name.
+/// `interactive` decides the question denial, and each caller answers it
+/// from the only place it can. A worker's spawn hands it the flag it was
+/// given; a respawn reads the worker's stored row, which is where the flag
+/// outlives the launch settings the TUI rebuilds. The one spawn path in
+/// `get_agent_handle_at_key` passes `true` because it cannot know: a
+/// worker's [`build_worker_extra_args`] has already written that name into
+/// the same entry, and the merge leaves it there.
 pub(crate) fn apply_blocked_tools(
     settings: &mut SessionLaunchSettings,
     kind: crate::mcp::SessionKind,
+    interactive: bool,
 ) {
-    let blocked = blocked_tools_for(kind, true);
+    let blocked = blocked_tools_for(kind, interactive);
     let Some((_, value)) =
         settings.extra_args.iter_mut().find(|(flag, _)| flag == "disallowedTools")
     else {
@@ -5463,22 +5468,6 @@ provider = "anthropic"
         }
     }
 
-    #[test]
-    fn a_worker_is_blocked_from_the_same_set_plus_its_own() {
-        let blocked = blocked_names(crate::mcp::SessionKind::Worker, false);
-        for tool in ["CronCreate", "TaskCreate", "SendMessage", "Workflow"] {
-            assert!(blocked.iter().any(|name| name == tool), "{tool} is blocked for a worker");
-        }
-        assert!(
-            blocked.iter().any(|name| name == "EnterWorktree"),
-            "a worker stays pinned to its spawn location",
-        );
-        assert!(
-            blocked.iter().any(|name| name == "ExitWorktree"),
-            "a worker stays pinned to its spawn location",
-        );
-    }
-
     /// The question is a property of the spawn, not of the kind: one
     /// worker may ask (its row is open) and another may not.
     #[test]
@@ -5507,6 +5496,29 @@ provider = "anthropic"
                 assert!(!blocked.iter().any(|name| name == tool), "{tool} stays enabled");
             }
         }
+    }
+
+    /// The extent of the set, not just its members: every other assertion
+    /// here says a name is present or a kept name is absent, and a twelfth
+    /// name appended to the constant would satisfy all of them. This is the
+    /// assertion that fails when the decided list grows by accident.
+    #[test]
+    fn the_blocked_set_holds_exactly_the_decided_names() {
+        assert_eq!(
+            blocked_names(crate::mcp::SessionKind::Lead, true).len(),
+            11,
+            "a lead loses the eleven replaced tools and nothing else",
+        );
+        assert_eq!(
+            blocked_names(crate::mcp::SessionKind::Worker, false).len(),
+            14,
+            "a worker adds the two worktree pins and the question it may not ask",
+        );
+        assert_eq!(
+            blocked_names(crate::mcp::SessionKind::Worker, true).len(),
+            13,
+            "an interactive worker keeps the question",
+        );
     }
 
     /// The worker's own entry carries its own denials - the worktree pins
@@ -5614,7 +5626,7 @@ provider = "anthropic"
     #[test]
     fn the_denial_adds_the_flag_when_there_is_none() {
         let mut settings = SessionLaunchSettings::default();
-        apply_blocked_tools(&mut settings, crate::mcp::SessionKind::Lead);
+        apply_blocked_tools(&mut settings, crate::mcp::SessionKind::Lead, true);
         let list = disallowed_tools_value(&settings.extra_args);
         for tool in REPLACED {
             assert!(
@@ -5643,7 +5655,7 @@ provider = "anthropic"
             extra_args: build_worker_extra_args(false, "reviewer", false),
             ..SessionLaunchSettings::default()
         };
-        apply_blocked_tools(&mut settings, crate::mcp::SessionKind::Worker);
+        apply_blocked_tools(&mut settings, crate::mcp::SessionKind::Worker, false);
         let flags =
             settings.extra_args.iter().filter(|(flag, _)| flag == "disallowedTools").count();
         assert_eq!(flags, 1, "one flag, not two; got {:?}", settings.extra_args);
@@ -5666,7 +5678,7 @@ provider = "anthropic"
             extra_args: vec![("disallowedTools".to_owned(), None)],
             ..SessionLaunchSettings::default()
         };
-        apply_blocked_tools(&mut settings, crate::mcp::SessionKind::Lead);
+        apply_blocked_tools(&mut settings, crate::mcp::SessionKind::Lead, true);
         assert_eq!(
             settings.extra_args.len(),
             1,
@@ -5880,6 +5892,32 @@ mod lead_charter_tests {
             assert!(
                 !DEFAULT_LEAD_CHARTER.contains(token),
                 "bundled lead charter names '{token}' ({why})"
+            );
+        }
+    }
+
+    /// The charter is shipped text every lead reads, so a blocked CLI tool
+    /// named here would send it to a surface its own launch denies. The
+    /// preamble is the other lead-facing text and carries the same test in
+    /// its own file.
+    #[test]
+    fn the_lead_charter_names_no_blocked_cli_tool() {
+        for tool in [
+            "CronCreate",
+            "CronDelete",
+            "CronList",
+            "TaskCreate",
+            "TaskGet",
+            "TaskList",
+            "TaskUpdate",
+            "SendMessage",
+            "ListAgents",
+            "Workflow",
+            "RemoteTrigger",
+        ] {
+            assert!(
+                !DEFAULT_LEAD_CHARTER.contains(tool),
+                "the lead charter must not name the blocked CLI tool {tool}",
             );
         }
     }

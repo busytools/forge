@@ -1474,7 +1474,11 @@ impl Workspace {
             crate::protocol::SpawnRole::Lead => crate::mcp::SessionKind::Lead,
             crate::protocol::SpawnRole::Worker { .. } => crate::mcp::SessionKind::Worker,
         };
-        crate::spawn::apply_blocked_tools(&mut settings, spawn_kind);
+        // `interactive` is passed as `true` because this point cannot know
+        // it, and the question denial must not be decided wrongly here: a
+        // worker's own spawn writes that name when the flag calls for it,
+        // and the merge below leaves it in place.
+        crate::spawn::apply_blocked_tools(&mut settings, spawn_kind, true);
         // The boot gate is a spawn precondition, not just a launchpad
         // decoration: a child stamped before the listener is bound
         // points at a base URL nothing answers.
@@ -2488,7 +2492,9 @@ impl Workspace {
     /// The tools forge has replaced are denied unconditionally, because a
     /// respawn's settings are built by the TUI and carry no spawn-time
     /// flags - so `/new` and `/resume` are exactly where those denials
-    /// would otherwise come back.
+    /// would otherwise come back. A worker's own denials come back with
+    /// them: the kind decides the worktree pins, and the row's own
+    /// `interactive` flag decides the question.
     pub(crate) fn stamp_respawn_overrides(
         &self,
         slot: &SessionSlot,
@@ -2500,7 +2506,15 @@ impl Workspace {
         } else {
             crate::mcp::SessionKind::Worker
         };
-        crate::spawn::apply_blocked_tools(launch_settings, kind);
+        // A lead is the session whose row the user is looking at, so the
+        // question is never denied to it. A worker's row answers for it,
+        // and a row that never carried the flag was spawned under the
+        // non-interactive default.
+        let interactive = match kind {
+            crate::mcp::SessionKind::Lead => true,
+            crate::mcp::SessionKind::Worker => self.stored_interactive_for(slot).unwrap_or(false),
+        };
+        crate::spawn::apply_blocked_tools(launch_settings, kind, interactive);
         let (registration, replaced) = {
             let mut pool = self.pool.lock();
             let Some(entry) = pool.get_mut(slot) else { return };
@@ -2677,6 +2691,18 @@ impl Workspace {
             .ok()
             .flatten()
             .and_then(|row| row.charter)
+    }
+
+    /// Whether the store's row for `slot` says its session may ask its user
+    /// a question. `None` when the store holds no row: a lead has none, and
+    /// a worker without one was never spawned.
+    pub(crate) fn stored_interactive_for(&self, slot: &SessionSlot) -> Option<bool> {
+        let db = self.db.lock();
+        let db = db.as_ref()?;
+        crate::store::sessions::get(db, slot.org(), slot.project(), slot.label())
+            .ok()
+            .flatten()
+            .and_then(|row| row.interactive)
     }
 
     /// The id the store holds for `slot`, unless `--new` (`force_new`)
@@ -11101,6 +11127,27 @@ mod worker_respawn_tests {
             !preamble.contains("doing the work yourself"),
             "the charter, not this block, carries the delegation default",
         );
+        // The preamble is lead-facing text, and a lead's launch denies the
+        // replaced CLI tools: naming one here sends the lead to a surface
+        // it does not have. The charter carries the same test in `spawn`.
+        for tool in [
+            "CronCreate",
+            "CronDelete",
+            "CronList",
+            "TaskCreate",
+            "TaskGet",
+            "TaskList",
+            "TaskUpdate",
+            "SendMessage",
+            "ListAgents",
+            "Workflow",
+            "RemoteTrigger",
+        ] {
+            assert!(
+                !preamble.contains(tool),
+                "the delegation preamble must not name the blocked CLI tool {tool}",
+            );
+        }
     }
 
     /// The role a spawn carries is the role it gets, and the slot's label

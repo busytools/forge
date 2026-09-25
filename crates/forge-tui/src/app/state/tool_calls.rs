@@ -479,8 +479,8 @@ impl super::App {
     /// the last `SUBAGENT_TAIL_CAP` `SubagentChild` tool calls under
     /// each root, identified via `parent_tool_use_id` on the
     /// scope-registered map. Returns an empty Vec when every root is
-    /// terminal AND absent from the session roster - mirrors
-    /// `clear_workflows_if_all_terminal` so the section auto-clears.
+    /// terminal AND absent from the session roster, so the section
+    /// auto-clears.
     /// Pure derive over `UiSession` state; no mutation, no new wire
     /// surface.
     pub fn subagents_view(&self) -> Vec<crate::app::state::types::SubagentEntry> {
@@ -1801,8 +1801,7 @@ mod tests {
     }
 
     /// Auto-clear: when every root in the session is at a terminal
-    /// status the view returns empty, mirroring
-    /// `clear_workflows_if_all_terminal` so the section disappears.
+    /// status the view returns empty, so the section disappears.
     #[test]
     fn subagents_view_returns_empty_when_every_root_is_terminal() {
         let mut app = App::test_default();
@@ -2104,7 +2103,7 @@ mod tests {
     /// path drops it - and an agent has no OS process to fall back to. The
     /// session-scoped `background_tasks` registry (agent kind, resolved via
     /// the session-scoped task map) must keep it in SUBAGENTS with its
-    /// tail, mirroring how WORKFLOWS survives across turns.
+    /// tail across a turn boundary.
     #[test]
     fn subagents_view_keeps_backgrounded_agent_alive_via_registry_after_turn_reset() {
         let mut app = App::test_default();

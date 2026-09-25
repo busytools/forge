@@ -41,7 +41,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::RenderToolCall) {
         let delay = input.get("delaySeconds").and_then(serde_json::Value::as_u64).unwrap_or(0);
         let reason = input.get("reason").and_then(serde_json::Value::as_str).unwrap_or("");
         let fire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(delay);
-        app.upsert_wakeup_from_tool_input(&id_str, reason, fire_at);
+        app.upsert_wakeup_from_tool_input(reason, fire_at);
     }
 
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
@@ -153,8 +153,8 @@ fn build_tool_info_from_tool_call(
     };
 
     // CLI 2.1.156 chat-suppressed tools (#273):
-    // - TaskOutput / TaskStop - paired with Monitor / Workflow; their
-    //   side-effects surface on those tools' own blocks.
+    // - TaskOutput / TaskStop - paired with Monitor; their side-effects
+    //   surface on that tool's own block.
     // - AskUserQuestion - dock-morph widget renders instead of a card.
     //
     // Monitor is NOT here: the lifecycle block in

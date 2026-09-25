@@ -293,7 +293,7 @@ Single line: 2-space indent, status icon in its status color, kind icon and kind
   <span class="success">✓</span> <span class="bold">⌕</span> <span class="bold">Glob</span> crates/**/Cargo.toml
   <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Bash</span> cargo nextest run -p forge-tui
   <span class="success">✓</span> <span class="bold">⊕</span> <span class="bold">WebFetch</span> https://docs.rs/ratatui/latest/ratatui/
-  <span class="success">✓</span> <span class="bold">⌖</span> <span class="bold">ToolSearch</span> select:CronList
+  <span class="success">✓</span> <span class="bold">⌖</span> <span class="bold">ToolSearch</span> select:TaskStop
   <span class="success">✓</span> <span class="bold">⊕</span> <span class="bold">WebSearch</span> rust async runtime comparison
   <span class="success">✓</span> <span class="bold">✦</span> <span class="bold">Advisor</span> how to handle a stuck migration
   <span class="error">✗</span> <span class="bold">⬚</span> <span class="bold">Read</span> /path/to/missing.rs</pre>
@@ -554,7 +554,7 @@ L1 expansion:
 
 The `claude` CLI's own task tools - `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` - are not offered to any session. forge owns the task list now: sessions declare their work through the `tasks__*` MCP tools over forge's own store, and the [Inspector](./inspector.md)'s `TASKS` section is its only surface. CLI 2.1.156 had already retired the single-call `TodoWrite` forge used to render.
 
-`Workflow` is likewise not offered to any session, and forge carries no surface for it: a `◆ Workflow` tool call in an existing transcript renders as an ordinary tool row.
+`Workflow` is likewise not offered to any session, and forge carries no surface for it: a `Workflow` tool call in an existing transcript renders as an ordinary tool row, with the generic glyph.
 
 ## Monitor
 

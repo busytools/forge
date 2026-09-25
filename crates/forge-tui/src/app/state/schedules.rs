@@ -20,15 +20,9 @@ impl super::App {
 
     /// Insert/replace the session's single pending wakeup. The /loop
     /// dynamic-pacing mechanism re-arms each turn so at most one
-    /// `Wakeup` entry survives - a new `ScheduleWakeup` tool_use
-    /// replaces any prior wakeup regardless of `tool_use_id`. Cron
-    /// entries in the same bucket are left untouched.
-    pub fn upsert_wakeup_from_tool_input(
-        &mut self,
-        tool_use_id: &str,
-        reason: &str,
-        fire_at: std::time::SystemTime,
-    ) {
+    /// `Wakeup` entry survives: a new `ScheduleWakeup` replaces any
+    /// prior one, whatever the tool call that carried it.
+    pub fn upsert_wakeup_from_tool_input(&mut self, reason: &str, fire_at: std::time::SystemTime) {
         // #302 redux: wakeups are inherently session-scoped - the
         // /loop dynamic-pacing mechanism re-arms each turn, no
         // `durable` flag exists. The CLI kills every live wakeup at
@@ -47,7 +41,6 @@ impl super::App {
         };
         schedules.retain(|e| !matches!(e.kind, crate::app::state::types::ScheduleKind::Wakeup));
         schedules.push(crate::app::state::types::ScheduleEntry {
-            key: tool_use_id.to_owned(),
             kind: crate::app::state::types::ScheduleKind::Wakeup,
             label: if reason.is_empty() { "wakeup".to_owned() } else { reason.to_owned() },
             description: None,
@@ -57,9 +50,8 @@ impl super::App {
         });
     }
 
-    /// Drop schedule entries that are no longer valid at `now`
-    /// (passed wakeups, 7-day-expired recurring crons). Called from
-    /// the ~1s timer tick.
+    /// Drop a wakeup whose `fire_at` has passed. Called from the ~1s
+    /// timer tick; the session's own entries are the only ones it walks.
     pub fn prune_expired_schedules(&mut self, now: std::time::SystemTime) {
         if self.active_session().is_none_or(|s| s.schedules.is_empty()) {
             return;
@@ -172,16 +164,11 @@ mod tests {
     fn upsert_wakeup_replaces_prior_wakeup() {
         let mut app = App::test_default();
         let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_wakeup_from_tool_input("tu1", "first", t0 + std::time::Duration::from_secs(60));
-        app.upsert_wakeup_from_tool_input(
-            "tu2",
-            "second",
-            t0 + std::time::Duration::from_secs(120),
-        );
+        app.upsert_wakeup_from_tool_input("first", t0 + std::time::Duration::from_secs(60));
+        app.upsert_wakeup_from_tool_input("second", t0 + std::time::Duration::from_secs(120));
         let s = app.schedules();
         assert_eq!(s.len(), 1, "re-armed wakeup replaces the prior one");
         assert_eq!(s[0].label, "second");
-        assert_eq!(s[0].key, "tu2");
     }
 
     #[test]
@@ -189,7 +176,7 @@ mod tests {
         let mut app = App::test_default();
         let t0 = std::time::SystemTime::UNIX_EPOCH;
         let fire = t0 + std::time::Duration::from_secs(60);
-        app.upsert_wakeup_from_tool_input("tu1", "poll", fire);
+        app.upsert_wakeup_from_tool_input("poll", fire);
         app.prune_expired_schedules(t0); // before fire - kept
         assert_eq!(app.schedules().len(), 1);
         app.prune_expired_schedules(fire); // at fire - dropped
@@ -723,7 +710,7 @@ mod tests {
         app.replay_in_progress = true;
         let fire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
 
-        app.upsert_wakeup_from_tool_input("tu-wake", "loop poll", fire_at);
+        app.upsert_wakeup_from_tool_input("loop poll", fire_at);
 
         assert!(
             app.schedules().is_empty(),
@@ -738,7 +725,7 @@ mod tests {
         assert!(!app.replay_in_progress, "live default");
         let fire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
 
-        app.upsert_wakeup_from_tool_input("tu-live-wake", "poll", fire_at);
+        app.upsert_wakeup_from_tool_input("poll", fire_at);
 
         assert_eq!(
             app.schedules().len(),

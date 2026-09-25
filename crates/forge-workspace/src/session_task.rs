@@ -1687,7 +1687,7 @@ mod tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
-        workspace.seed_test_session_charter(&slot, "mind the queues");
+        workspace.seed_test_session_charter(&slot, "mind the queues", false);
         let (task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         task.execute_command(Command::NewSession {
@@ -1841,6 +1841,128 @@ mod tests {
             None,
             "and the segment the new session left behind is dropped",
         );
+    }
+
+    /// A respawn rebuilds the launch from TUI-built settings, so every denial
+    /// a worker's own spawn wrote has to come back from the row that holds
+    /// its flags. `AskUserQuestion` is the one the respawn stamp used to
+    /// omit: a non-interactive worker that regained it would put a question
+    /// in a row nobody is watching, and block there unseen.
+    #[test]
+    fn a_respawned_worker_keeps_its_own_denials() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
+        workspace.seed_test_session_charter(&slot, "review the diff", false);
+        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+
+        task.execute_command(Command::NewSession {
+            key: slot.clone(),
+            cwd: "/tmp/forge".to_owned(),
+            launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+        });
+
+        let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
+            agent_rx.try_recv().ok()
+        else {
+            panic!("the task forwards the new-session command to the handle");
+        };
+        let denied = respawn_denials(&launch_settings);
+        let names: Vec<&str> = denied.split(',').collect();
+        for tool in ["AskUserQuestion", "EnterWorktree", "ExitWorktree"] {
+            assert!(
+                names.contains(&tool),
+                "{tool} must come back on a non-interactive worker's respawn; got {denied:?}",
+            );
+        }
+    }
+
+    /// The question denial belongs to the spawn, not to the kind: a worker
+    /// the user asked to talk to directly keeps `AskUserQuestion` across a
+    /// respawn, and still keeps the worktree pins that make it a worker.
+    #[test]
+    fn a_respawned_interactive_worker_keeps_the_question() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
+        workspace.seed_test_session_charter(&slot, "review the diff", true);
+        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+
+        task.execute_command(Command::NewSession {
+            key: slot.clone(),
+            cwd: "/tmp/forge".to_owned(),
+            launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+        });
+
+        let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
+            agent_rx.try_recv().ok()
+        else {
+            panic!("the task forwards the new-session command to the handle");
+        };
+        let denied = respawn_denials(&launch_settings);
+        let names: Vec<&str> = denied.split(',').collect();
+        assert!(
+            !names.contains(&"AskUserQuestion"),
+            "an interactive worker asks its own row's user; got {denied:?}",
+        );
+        assert!(
+            names.contains(&"EnterWorktree"),
+            "and it is still a worker, pinned to its spawn location; got {denied:?}",
+        );
+    }
+
+    /// The kind half of the same stamp: a lead respawns without the
+    /// worktree pins because a lead still hops worktrees, and keeps the
+    /// question because a lead's row is where the user is.
+    #[test]
+    fn a_respawned_lead_keeps_its_own_surface() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+
+        task.execute_command(Command::NewSession {
+            key: slot.clone(),
+            cwd: "/tmp/forge".to_owned(),
+            launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+        });
+
+        let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
+            agent_rx.try_recv().ok()
+        else {
+            panic!("the task forwards the new-session command to the handle");
+        };
+        let denied = respawn_denials(&launch_settings);
+        let names: Vec<&str> = denied.split(',').collect();
+        for tool in ["EnterWorktree", "ExitWorktree", "AskUserQuestion"] {
+            assert!(!names.contains(&tool), "a lead keeps {tool} across a respawn; got {denied:?}");
+        }
+        assert!(
+            names.contains(&"Workflow"),
+            "the replaced set still reaches a lead's respawn; got {denied:?}",
+        );
+    }
+
+    /// The `--disallowedTools` value a respawn's launch carries.
+    fn respawn_denials(launch_settings: &serde_json::Value) -> String {
+        launch_settings
+            .get("extra_args")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|pairs| {
+                pairs.iter().find(|pair| {
+                    pair.get(0).and_then(serde_json::Value::as_str) == Some("disallowedTools")
+                })
+            })
+            .and_then(|pair| pair.get(1).and_then(serde_json::Value::as_str))
+            .unwrap_or_default()
+            .to_owned()
     }
 
     /// First-Connected drains the session's buffered Slack messages: each

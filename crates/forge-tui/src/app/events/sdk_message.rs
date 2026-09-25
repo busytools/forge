@@ -1411,7 +1411,7 @@ fn handle_task_updated(app: &mut App, msg: Message) {
     // `tool_use_id` mapping to apply a status patch to the
     // chat-stream card. If the mapping is missing (turn already
     // finalised + TurnState reset), skip just THIS path - the
-    // MONITORS / WORKFLOWS sections are already updated above.
+    // section rows are already updated above.
     let tool_use_id = app.with_turn_state(|ts| ts.task_tool_use_ids.get(&task_id).cloned());
     let Some(tool_use_id) = tool_use_id else {
         tracing::debug!(
@@ -1658,21 +1658,22 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
         );
     }
     // Drift breadcrumb: every kind must route to a section
-    // (local_bash -> PROCESSES; agent/local_agent -> SUBAGENTS). An
-    // unrecognised kind renders nowhere - warn so a renamed CLI kind is
-    // caught rather than silent.
+    // (local_bash -> PROCESSES; agent/local_agent -> SUBAGENTS). A kind
+    // that routes nowhere is either one forge retired on purpose or a
+    // renamed CLI kind, and the log cannot tell them apart - so it says
+    // both rather than claiming drift.
     for task in &parsed {
         if !task.routes_to_inspector_section() {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "background_task_unrouted_kind",
-                message = "background_tasks entry has an unrecognised task_type; renders in no Inspector section (possible wire drift)",
+                message = "background_tasks entry renders in no Inspector section: either a task_type forge retired or an unrecognised one (possible wire drift)",
                 outcome = "partial",
                 task_type = %task.task_type,
             );
         }
     }
-    // Cleanup for rostered non-agent tasks (bash/monitor/workflow), which get
+    // Cleanup for rostered non-agent tasks (bash / monitor), which get
     // no task_notification: a task_id in the previous snapshot but absent from
     // this one has left the roster, so its `task_id -> tool_use_id` resolver is
     // dropped here (this also backstops an agent if its roster drop arrives).
@@ -3428,7 +3429,10 @@ mod inbound_message_surfacing_tests {
             "a fired forge cron lands as a cron envelope",
         );
         let rendered = crate::app::replay::ReplayHarness::from_app(app).snapshot_chat(100, 40);
-        assert!(rendered.contains("Cron"), "a fired forge cron still renders in chat:\n{rendered}");
+        assert!(
+            rendered.lines().any(|line| line.trim() == "Cron"),
+            "the fired cron keeps its own source label, which no other envelope paints:\n{rendered}",
+        );
         assert!(rendered.contains("morning summary"), "and its prompt is the body:\n{rendered}");
     }
 
