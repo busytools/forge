@@ -13,7 +13,7 @@ use crate::config::LoadedConfig;
 use crate::protocol::SessionUpdate;
 use crate::target::{ProjectKey, SessionSlot};
 use crate::update_fanout::{SubscriberRole, UpdateFanout};
-use crate::workspace::{KickRequest, PooledAgent, Workspace};
+use crate::workspace::{KickRequest, PendingInteractionKind, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
 
 #[cfg(any(test, feature = "testing"))]
@@ -403,6 +403,27 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_usage(&self, account: &str, snapshot: forge_primitives::usage::UsageSnapshot) {
         self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);
+    }
+
+    /// Park a pending interaction on `slot`, registering its domain if it
+    /// has none, so a test can read the state a held turn produces without
+    /// driving the wire. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_pending_interaction(&self, slot: &SessionSlot, kind: PendingInteractionKind) {
+        let pending = match kind {
+            PendingInteractionKind::Question => {
+                let (tx, _rx) = tokio::sync::oneshot::channel();
+                crate::protocol::PendingInteractionSlot::Question(tx)
+            }
+            PendingInteractionKind::Permission => {
+                let (tx, _rx) = tokio::sync::oneshot::channel();
+                crate::protocol::PendingInteractionSlot::Permission(tx)
+            }
+        };
+        let domain = self
+            .domain_session_for(slot)
+            .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
+        domain.lock().pending_interactions.insert(slot.display(), pending);
     }
 
     /// Persist a dynamic-worker row directly, bypassing `agents__spawn`.

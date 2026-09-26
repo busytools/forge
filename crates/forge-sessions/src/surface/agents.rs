@@ -22,11 +22,10 @@ pub struct AgentRow {
     pub last_activity: Option<SystemTime>,
 }
 
-/// What a session is waiting on a person for.
-pub enum PendingKind {
-    Question,
-    Permission,
-}
+/// What a session is waiting on a person for. The core's own kind rather
+/// than a second enum of the same two arms, so the row and the read cannot
+/// drift apart.
+pub use forge_workspace::PendingInteractionKind as PendingKind;
 
 /// Every project's agents, in the order `list_projects` returned the
 /// projects.
@@ -97,7 +96,7 @@ fn row_for(
     AgentRow {
         has_background_work: workspace.has_background_work(&slot),
         last_activity: workspace.session_last_activity(&slot),
-        pending: None,
+        pending: workspace.pending_interaction(&slot),
         lifecycle,
         label,
         slot,
@@ -119,6 +118,7 @@ mod tests {
     use forge_primitives::{SessionLifecycleState, SessionSlot, WorkerLiveness};
 
     use crate::surface::ViewSurface;
+    use crate::surface::agents::PendingKind;
 
     /// The row set the home draws: a project's lead first, then its
     /// workers in the persisted-label order. Catches a collect that heads
@@ -233,6 +233,41 @@ mod tests {
             row.lifecycle,
             SessionLifecycleState::Sleeping,
             "no session behind it is asleep, whichever liveness the registry last held",
+        );
+    }
+
+    /// The ask reaches the row, which is what lets a needs-you row name
+    /// what it is waiting on instead of only marking it. Catches a row
+    /// wired to `None`, and one answering another session's pending set.
+    #[test]
+    fn a_row_carries_what_its_session_is_waiting_on() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        workspace.register_domain_session(SessionSlot::lead("TestOrg", "forge"), None);
+
+        let asked = SessionSlot::worker("TestOrg", "forge", "probe-asked");
+        let quiet = SessionSlot::worker("TestOrg", "forge", "probe-quiet");
+        workspace.seed_test_worker_row(&project, "probe-asked");
+        workspace.seed_test_worker_row(&project, "probe-quiet");
+        workspace.seed_test_pending_interaction(&asked, PendingKind::Question);
+
+        let agents = surface.agents();
+        let rows = agents.for_project(&project);
+        let row_of = |slot: &SessionSlot| {
+            rows.iter().find(|row| &row.slot == slot).expect("the session has a row")
+        };
+
+        assert_eq!(
+            row_of(&asked).pending,
+            Some(PendingKind::Question),
+            "the row names the question its session is held on",
+        );
+        assert_eq!(
+            row_of(&quiet).pending,
+            None,
+            "a session holding nothing says so rather than borrowing its neighbour's ask",
         );
     }
 

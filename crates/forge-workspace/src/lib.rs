@@ -108,7 +108,7 @@ pub use views::{
     AccountAuth, AccountBudget, AccountLoadingRow, AccountRow, GatewayOrgView, ProjectView,
     SessionView,
 };
-pub use workspace::{SessionChipInfo, SessionChipState, Workspace};
+pub use workspace::{PendingInteractionKind, SessionChipInfo, SessionChipState, Workspace};
 
 // MCP (agents / peers / workers) public surface. The `mcp` module
 // itself is crate-private now; these flat re-exports expose only the

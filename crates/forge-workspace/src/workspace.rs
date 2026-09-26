@@ -164,6 +164,15 @@ pub enum SessionChipState {
     Degraded,
 }
 
+/// What a session is waiting on a person for. The kind a needs-you row
+/// names, since "asked you a question" and "a permission prompt is
+/// waiting" are different asks with the same mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingInteractionKind {
+    Question,
+    Permission,
+}
+
 /// The dedupe key for a delivered Slack message: one destination is
 /// (project, owner, conversation, ts), so a lead and a worker in one
 /// project never starve each other as "already delivered".
@@ -3965,6 +3974,29 @@ impl Workspace {
     /// every view.
     pub fn has_background_work(&self, slot: &SessionSlot) -> bool {
         self.domain_session_for(slot).is_some_and(|domain| domain.lock().background_work)
+    }
+
+    /// What the session at `slot` is waiting on a person for, or `None`
+    /// when it can advance on its own.
+    pub fn pending_interaction(&self, slot: &SessionSlot) -> Option<PendingInteractionKind> {
+        let domain = self.domain_session_for(slot)?;
+        let guard = domain.lock();
+        // A question outranks a permission prompt: both hold a turn, and
+        // the question is the one a person has to read before answering.
+        // A slot holding both therefore answers as the question.
+        if guard
+            .pending_interactions
+            .values()
+            .any(|pending| matches!(pending, crate::protocol::PendingInteractionSlot::Question(_)))
+        {
+            return Some(PendingInteractionKind::Question);
+        }
+        if guard.pending_interactions.values().any(|pending| {
+            matches!(pending, crate::protocol::PendingInteractionSlot::Permission(_))
+        }) {
+            return Some(PendingInteractionKind::Permission);
+        }
+        None
     }
 
     /// What `entry`'s session is doing right now. The two liveness states
@@ -10107,6 +10139,60 @@ mod worker_activity_tests {
             ws.session_activity(&blocked),
             L::Attention,
             "a turn in flight holding a pending interaction needs a person",
+        );
+    }
+
+    /// What a session is waiting on a person for, which is what a
+    /// needs-you row has to name. A question outranks a permission prompt,
+    /// so a slot holding both reads as the question.
+    #[test]
+    fn pending_interaction_answers_the_kind_a_slot_is_waiting_on() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let held = |name: &str, slots: Vec<PendingInteractionSlot>| {
+            let key = SessionSlot::from_str_for_test(name);
+            let domain = ws.register_domain_session(key.clone(), None);
+            {
+                let mut guard = domain.lock();
+                for (index, slot) in slots.into_iter().enumerate() {
+                    guard.pending_interactions.insert(format!("{name}-{index}"), slot);
+                }
+            }
+            key
+        };
+        let permission = || {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            PendingInteractionSlot::Permission(tx)
+        };
+        let question = || {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            PendingInteractionSlot::Question(tx)
+        };
+
+        assert_eq!(
+            ws.pending_interaction(&SessionSlot::from_str_for_test("p-none")),
+            None,
+            "a slot with no domain session is waiting on nothing",
+        );
+
+        let asked = held("p-question", vec![question()]);
+        assert_eq!(
+            ws.pending_interaction(&asked),
+            Some(PendingInteractionKind::Question),
+            "a held question is what the slot is waiting on",
+        );
+
+        let prompted = held("p-permission", vec![permission()]);
+        assert_eq!(
+            ws.pending_interaction(&prompted),
+            Some(PendingInteractionKind::Permission),
+            "a permission prompt alone is what the slot is waiting on",
+        );
+
+        let both = held("p-both", vec![permission(), question()]);
+        assert_eq!(
+            ws.pending_interaction(&both),
+            Some(PendingInteractionKind::Question),
+            "a question outranks the permission prompt beside it",
         );
     }
 
