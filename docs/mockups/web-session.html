@@ -1,0 +1,1117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; session</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* One theme, the home's tokens, from [web] theme in forge.toml.
+     Shared with the home, so these lift into the one stylesheet as-is:
+     the --tokens, .dot (all nine state marks), .ring (the work mark),
+     .kv, .bar (a usage bar), .pop (a popover).
+     New here, and the shape the pages after this should take:
+     .rail + .pane-tog (a collapsible pane and its handle), details.kind
+     (a tool family with its calls as leaves), details.leaf (one call that
+     opens on its own), .mine (a user turn - the orange rule is the
+     attribution, so it carries no label), .code, .dif, .notice, .peer,
+     .msg (a messaging group), .card (an answered question), .mon. */
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
+    --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5);
+    --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, Menlo, monospace;
+    /* One type scale, so a size says what a thing IS. Prose is what you
+       read; a row is data; meta is a label on data. */
+    --fs-prose: 17px; --fs-group: 14px; --fs-row: 13px;
+    --fs-meta: 12.5px; --fs-label: 11.5px;
+    --ins: 10px; --rail-l: 312px; --rail-r: 366px;
+  }
+
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1200px 560px at 6% -14%, rgba(244,118,0,.09), transparent 58%),
+      radial-gradient(900px 480px at 98% 108%, rgba(91,156,248,.06), transparent 60%),
+      var(--bg);
+    background-attachment: fixed;
+    color: var(--text); font-family: var(--ui); font-size: var(--fs-prose);
+    line-height: 1.62; -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: var(--mono); }
+  .dim { color: var(--dim); }
+
+  /* ---------- panes: checked is COLLAPSED, and the handle lives in the
+     chat header so it stays clickable while the pane is gone ---------- */
+  .app { display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr) var(--rail-r);
+    gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden; }
+  #l:checked ~ .app { --rail-l: 0px; }
+  #r:checked ~ .app { --rail-r: 0px; }
+  #l:checked ~ .app .rail.left, #r:checked ~ .app .rail.right { display: none; }
+  .pane-tog { display: flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
+    color: var(--muted); border: 1px solid transparent; }
+  .pane-tog:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
+  .pane-tog svg { width: 16px; height: 16px; display: block; }
+  /* Both handles sit with the title on a phone; on a wide screen the
+     inspector's goes to the far right, past the settings. */
+  .sess .tog-r { order: 99; }
+  #l:checked ~ .app .pane-tog.tog-l, #r:checked ~ .app .pane-tog.tog-r {
+    color: var(--accent); background: rgba(244,118,0,.1); border-color: rgba(244,118,0,.3); }
+
+  .dot { width: 11px; height: 11px; flex: 0 0 11px; }
+  .dot.live { border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 900ms linear infinite; }
+  .dot.idle { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--accent); }
+  .dot.unseen { background: var(--ok); clip-path: polygon(50% 2%, 98% 50%, 50% 98%, 2% 50%); }
+  .dot.needs { background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%);
+    animation: pulse 1500ms ease-in-out infinite; }
+  .dot.off { width: 9px; height: 9px; flex: 0 0 9px; border: 1.4px solid var(--dim); border-radius: 50%; }
+  .dot.failed { background: var(--bad);
+    clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
+  /* The work spinner is the RING, the only one this view draws. */
+  .ring { width: 10px; height: 10px; display: inline-block; border-radius: 50%;
+    border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
+    animation: spin 900ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .32 } }
+
+  .rail { display: flex; flex-direction: column; overflow: hidden; border-radius: 16px;
+    border: 1px solid rgba(34,42,60,.9);
+    background: linear-gradient(180deg, rgba(20,25,38,.62), rgba(9,12,20,.74));
+    backdrop-filter: blur(14px) saturate(120%);
+    box-shadow: 0 18px 48px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.03); }
+  /* An appearing scrollbar must not shift the layout under the pointer. */
+  .rail .scroll { overflow-y: auto; flex: 1; padding: 0 8px 12px;
+    scrollbar-gutter: stable; }
+  .rail .scroll::-webkit-scrollbar { width: 8px; }
+  .rail .scroll::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+  .rail .scroll::-webkit-scrollbar-track { background: transparent; }
+  .banner { display: flex; align-items: center; gap: 8px; padding: 13px 12px 9px; }
+  .banner .t { font-size: 11px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--accent); }
+  .banner .n { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  .banner .n.ml { margin-left: auto; }
+
+  /* ---------- projects ---------- */
+  .state { padding: 12px 8px 4px; font-size: 11px; font-weight: 700;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+  .state.needs { color: var(--warn); }
+  .pj { border-radius: 10px; margin: 1px 0; }
+  .pj:hover { background: rgba(27,33,48,.5); }
+  .pj.cur { background: rgba(244,118,0,.1); box-shadow: inset 0 0 0 1px rgba(244,118,0,.35); }
+  .pr { display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; }
+  .pr .nm { font-size: 14px; font-weight: 600; flex: none; white-space: nowrap; }
+  .pr .org { font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+    flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .pr .age { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
+    font-family: var(--mono); font-size: 12px; line-height: 1.5;
+    border-radius: 5px; padding: 0 5px; cursor: pointer; }
+  .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
+  .pj.cur .pr .nm { color: var(--accent); }
+  .wk { display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 34px; cursor: pointer; }
+  .wk:hover { background: rgba(27,33,48,.4); border-radius: 0 8px 8px 0; }
+  .wk .nm { font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The reason a row is in this group, on every row that has one. */
+  .why { font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+    padding: 0 10px 6px 34px; display: flex; align-items: center; gap: 7px; }
+  .why.bad { color: var(--bad); }
+
+  /* ---------- chat ---------- */
+  /* min-height:0 or the column refuses to shrink below its content and the
+   composer is pushed past the viewport, where overflow:hidden eats it. */
+  main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .sess { display: flex; align-items: center; gap: 12px; padding: 2px 0 12px;
+    flex-wrap: wrap; row-gap: 8px; }
+  .sess .nm { font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
+  .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
+    font-family: var(--mono); font-size: 13px; color: var(--dim); }
+  .sess .facts > span { white-space: nowrap; }
+  .sess .facts .v { color: var(--muted); }
+  /* Every setting reads label-then-value, so the line is one kind of thing.
+     The mode is the TUI's permission badge, in the TUI's own colours. */
+  .sess .facts .fk { color: var(--dim); font-size: 11.5px; }
+  .sess .facts .sep { color: #2b3448; }
+  .perm { color: var(--dim); }
+  .perm.auto { color: var(--warn); }
+  .perm.plan { color: var(--blue); }
+  .perm.bypass { color: var(--bad); }
+  .cm { display: flex; align-items: center; gap: 7px; }
+  .cm .tk { width: 76px; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+  .cm .fl { height: 100%; background: var(--accent); }
+
+  details.acct { position: relative; }
+  details.acct > summary { list-style: none; cursor: pointer; display: flex; align-items: center;
+    gap: 7px; font-family: var(--mono); font-size: 13px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 2px 11px; }
+  details.acct > summary::-webkit-details-marker { display: none; }
+  details.acct > summary:hover { border-color: #2e3850; color: var(--text); }
+  details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--accent); }
+  .pop { position: absolute; right: 0; top: calc(100% + 10px); width: 320px; z-index: 20;
+    background: var(--s1); border: 1px solid rgba(34,42,60,.95); border-radius: 14px;
+    padding: 13px 15px; box-shadow: 0 24px 60px rgba(0,0,0,.6); }
+  .pop .hd { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+  .pop .hd .nm { font-size: 15px; font-weight: 650; color: var(--accent); }
+  .pop .hd .st { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--ok); }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
+    font-family: var(--mono); font-size: var(--fs-row); }
+  .kv .k { color: var(--dim); }
+  .kv .v { color: var(--muted); text-align: right; }
+  .kv .v.a { color: var(--accent); }
+  .pop hr { border: 0; height: 1px; background: var(--line); margin: 9px 0 7px; }
+  .bar { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
+  .bar .lb { font-family: var(--mono); font-size: 12px; color: var(--dim); width: 26px; }
+  .bar .tk { flex: 1; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+  .bar .fl { height: 100%; background: var(--accent); }
+  .bar .pc { font-family: var(--mono); font-size: 11.5px; color: var(--muted); width: 34px; text-align: right; }
+  .bar .eta { font-family: var(--mono); font-size: 11px; color: var(--dim); width: 60px; text-align: right; }
+
+  .conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable; }
+  .conv::-webkit-scrollbar { width: 8px; }
+  .conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+  .conv::-webkit-scrollbar-track { background: transparent; }
+  .mine { margin: 15px 0; padding: 10px 15px; border-left: 2px solid var(--accent);
+    background: linear-gradient(90deg, rgba(244,118,0,.09), rgba(244,118,0,.015));
+    border-radius: 0 10px 10px 0; }
+  .work { padding: 4px 0 8px; }
+  .work .prose p + p { margin-top: 10px; }
+  .work .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
+    background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+
+  /* ---------- the family tree is the DEFAULT view ---------- */
+  .kind { margin: 3px 0; }
+  .kind > summary { list-style: none; display: flex; align-items: center; gap: 9px;
+    padding: 6px 10px; border-radius: 9px; cursor: pointer;
+    font-family: var(--mono); font-size: var(--fs-group); }
+  .kind > summary::-webkit-details-marker { display: none; }
+  .kind > summary:hover { background: rgba(27,33,48,.45); }
+  /* The aggregate: enough to know the run has a failure in it, never a
+     substitute for the per-call status that says which one. */
+  .kind > summary .st { width: 13px; flex: 0 0 13px; text-align: center; color: var(--ok); }
+  .kind > summary .st.err { color: var(--bad); }
+  .kind > summary .nm { font-weight: 700; white-space: nowrap; }
+  .kind > summary .arw { margin-left: auto; color: var(--dim); font-size: 11px; }
+  .kind[open] > summary .arw { color: var(--accent); }
+  .leaves { padding: 0 0 6px 4px; }
+  /* One family inside a group: a label, and its calls on their own lane
+     behind a rail, so what is a group and what is a call never reads alike. */
+  .knd { display: flex; align-items: center; gap: 8px; padding: 9px 8px 3px;
+    font-family: var(--mono); font-size: var(--fs-row); }
+  .knd .gl { width: 16px; flex: 0 0 16px; color: var(--dim); }
+  .knd .nm { color: var(--muted); font-weight: 700; }
+  .knd .c { color: var(--dim); }
+
+  /* one call, opening on its own */
+  details.leaf { margin-left: 22px; border-left: 1px solid #232b3d; }
+  details.leaf > summary { list-style: none; display: flex; align-items: center; gap: 8px;
+    padding: 3px 9px 3px 12px; border-radius: 0 7px 7px 0; cursor: pointer;
+    font-family: var(--mono); font-size: var(--fs-row); color: var(--muted); }
+  details.leaf > summary::-webkit-details-marker { display: none; }
+  details.leaf > summary:hover { background: rgba(27,33,48,.4); }
+  /* Every call carries its own status; the group's is only the roll-up. */
+  details.leaf > summary .st { width: 13px; flex: 0 0 13px; text-align: center; color: var(--ok); }
+  details.leaf > summary .st.err { color: var(--bad); }
+  details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  details.leaf > summary .arw { margin-left: auto; color: var(--dim); font-size: 10px;
+    flex: none; }
+  details.leaf:hover > summary .arw { color: var(--muted); }
+  details.leaf[open] > summary { color: var(--text); }
+  details.leaf[open] > summary .arw { color: var(--accent); }
+
+  /* a call that stands alone (a run-breaker: diff tools, Monitor, peers) */
+  .rb { margin: 7px 0; }
+  .rb > summary { display: flex; align-items: center; gap: 9px; list-style: none;
+    padding: 4px 6px; border-radius: 8px; cursor: pointer;
+    font-family: var(--mono); font-size: 13px; }
+  .rb > summary::-webkit-details-marker { display: none; }
+  .rb > summary:hover { background: rgba(27,33,48,.45); }
+  .rb > summary .st { width: 12px; flex: 0 0 12px; color: var(--ok); }
+  .rb > summary .gl { width: 15px; flex: 0 0 15px; color: var(--muted); }
+  .rb > summary .nm { font-weight: 700; color: var(--text); white-space: nowrap; }
+  .rb > summary .ti { color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .rb > summary .dl { margin-left: auto; color: var(--accent); font-size: 12px; }
+
+  .body { margin: 3px 0 6px 27px; }
+  .code { border: 1px solid var(--line); border-radius: 9px;
+    background: var(--s2); overflow: hidden; }
+  .code .lang { font-family: var(--mono); font-size: 11px; color: var(--dim);
+    padding: 5px 12px; border-bottom: 1px solid var(--line); }
+  .code pre { font-family: var(--mono); font-size: var(--fs-row); padding: 8px 12px;
+    white-space: pre; overflow-x: auto; line-height: 1.55; }
+  .k { color: #c9a13b; } .s { color: #8fd07a; } .c2 { color: var(--dim); font-style: italic; }
+  .f { color: #8fb4e0; }
+
+  .term { font-family: var(--mono); font-size: var(--fs-row); color: var(--muted);
+    border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
+    white-space: pre-wrap; overflow-x: auto; }
+  .term .pfx { color: var(--dim); }
+  .term .sum { color: var(--ok); }
+  .searchhit { font-family: var(--mono); font-size: var(--fs-row); padding: 3px 0 3px 13px;
+    margin: 4px 0; border-left: 1px solid var(--line); }
+  .searchhit .ln { color: var(--accent); }
+  .searchhit .fl { color: var(--muted); }
+  .searchhit .hit { color: var(--warn); }
+
+  .dif { border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
+    font-family: var(--mono); font-size: var(--fs-row); }
+  .dif .h { color: var(--teal); background: var(--s2); padding: 4px 12px; }
+  .dif .ln { display: grid; grid-template-columns: 44px 1fr; }
+  .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
+  .dif .ln .l { white-space: pre; padding-right: 12px; }
+  .dif .ln.a .l { background: var(--add-bg); }
+  .dif .ln.d .l { background: var(--del-bg); }
+  .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
+  .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
+
+  /* peer traffic */
+  .peer { display: flex; align-items: center; gap: 9px; padding: 7px 12px; border-radius: 9px;
+    border: 1px solid rgba(78,201,201,.28); background: rgba(78,201,201,.06);
+    font-family: var(--mono); font-size: 12.5px; margin: 6px 0; }
+  .peer .dir { color: var(--teal); flex: none; }
+  .peer .from { color: var(--text); font-weight: 700; flex: none; }
+  .peer .txt { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  details.msg { border: 1px solid rgba(78,201,201,.22); border-radius: 10px; margin: 7px 0;
+    background: rgba(78,201,201,.03); }
+  details.msg > summary { list-style: none; display: flex; align-items: center; gap: 9px;
+    padding: 8px 12px; cursor: pointer; font-family: var(--mono); font-size: 13px; }
+  details.msg > summary::-webkit-details-marker { display: none; }
+  details.msg > summary:hover { background: rgba(78,201,201,.06); }
+  details.msg > summary .c { font-weight: 700; }
+  details.msg > summary .arw { margin-left: auto; color: var(--dim); font-size: 11px; }
+  details.msg[open] > summary .arw { color: var(--teal); }
+  .msgbody { padding: 0 12px 10px; }
+  .mkind { font-family: var(--mono); font-size: 12.5px; padding: 5px 0 2px; }
+  .mkind .kb { font-weight: 700; }
+  .mkind .dir { color: var(--teal); }
+  .mleaf { font-family: var(--mono); font-size: 12.5px; color: var(--dim);
+    padding: 1px 0 1px 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mleaf .who { color: var(--muted); }
+
+  /* an answered question survives the dock clearing */
+  .card { margin: 8px 0; padding: 2px 0; }
+  .card .q { display: flex; align-items: baseline; gap: 9px; font-size: 14px; color: var(--muted); }
+  .card .q .qm { color: var(--accent); font-weight: 700; flex: none; }
+  .card .a { display: flex; align-items: baseline; gap: 8px; padding-left: 24px;
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .card .a .am { color: var(--dim); }
+  .card .a .picked { color: var(--ok); }
+  .card .a .typed { color: var(--text); font-weight: 700; }
+
+  .notice { margin: 10px 0; padding: 9px 13px; border-radius: 9px; font-size: 14px; }
+  .notice .sev { font-weight: 700; margin-right: 7px; }
+  .notice.info { border: 1px solid var(--line); color: var(--dim); }
+  .notice.warn { border: 1px solid rgba(201,161,59,.35); background: rgba(201,161,59,.07); color: var(--warn); }
+  .notice.err { border: 1px solid rgba(224,104,62,.35); background: rgba(224,104,62,.07); color: var(--bad); }
+
+  .compacting { display: flex; align-items: center; gap: 9px; color: var(--accent);
+    font-family: var(--mono); font-size: 13px; margin: 10px 0 2px; }
+  .hooks { display: flex; align-items: center; gap: 8px; margin: 4px 0;
+    font-family: var(--mono); font-size: 12.5px; color: var(--dim); cursor: pointer; }
+  .hooks:hover { color: var(--muted); }
+  .hooks .tog { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; font-size: 11px; }
+
+  .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  /* Wrap between fields, never inside one: a broken token pair reads as two
+   numbers rather than as in and out. */
+  .turninfo > summary { list-style: none; display: flex; align-items: center; gap: 8px;
+    cursor: pointer; flex-wrap: wrap; row-gap: 2px; }
+  .turninfo > summary > span { white-space: nowrap; }
+  .turninfo > summary::-webkit-details-marker { display: none; }
+  .turninfo .sep { opacity: .5; }
+  .turninfo .tog { color: var(--muted); border: 1px solid var(--line);
+    border-radius: 6px; padding: 0 8px; font-size: 11.5px; }
+  .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
+    padding: 6px 0 0 18px; width: max-content;
+    font-family: var(--mono); font-size: var(--fs-meta); }
+  .tibody .l, .tibody .n { color: var(--muted); }
+  .tibody .wide { grid-column: 1 / -1; }
+  .tibody b { color: var(--dim); font-weight: 400; display: inline-block; width: 78px; }
+
+  .composer { padding: 4px 0 2px; }
+  .box { border: 1px solid rgba(244,118,0,.4); border-radius: 14px; padding: 12px 14px;
+    background: linear-gradient(180deg, rgba(20,25,38,.7), rgba(13,17,26,.76));
+    backdrop-filter: blur(10px); box-shadow: 0 12px 34px rgba(0,0,0,.4); }
+  .box:focus-within { border-color: var(--accent); }
+  .box .row { display: flex; align-items: flex-start; gap: 10px; }
+  .box .pr { color: var(--accent); font-family: var(--mono); font-size: 13px; padding-top: 3px; }
+  .box textarea { flex: 1; background: none; border: none; outline: none; resize: none;
+    color: var(--text); font-family: var(--ui); font-size: 16px; line-height: 1.5; min-height: 24px; }
+  .box textarea::placeholder { color: var(--dim); }
+
+  /* ---------- inspector ---------- */
+  .sec { border-bottom: 1px solid rgba(34,42,60,.55); }
+  .sec:last-child { border-bottom: 0; }
+  details.sec > summary { list-style: none; display: flex; align-items: center; gap: 10px;
+    padding: 11px 14px; font-size: 11px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted); cursor: pointer; }
+  details.sec > summary::-webkit-details-marker { display: none; }
+  details.sec > summary:hover { background: rgba(27,33,48,.4); }
+  details.sec > summary .gl { color: var(--dim); }
+  details.sec > summary .c2 { color: var(--dim); font-family: var(--mono); font-size: 11.5px;
+    letter-spacing: 0; text-transform: none; font-weight: 400;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  details.sec > summary .arw { margin-left: auto; color: var(--dim); font-size: 12px; }
+  details.sec[open] > summary .arw { color: var(--accent); }
+  details.sec[open] > summary { border-bottom: 1px solid var(--line); }
+  .sb { padding: 10px 14px 14px; }
+  .file { display: flex; align-items: center; gap: 8px; padding: 2px 0;
+    font-family: var(--mono); font-size: var(--fs-row); }
+  .file .p { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    cursor: pointer; }
+  .file .p:hover { color: var(--accent); }
+  .file .st { color: var(--accent); width: 12px; flex: 0 0 12px; }
+  .file .st.a { color: var(--ok); }
+  .file .pm { margin-left: auto; color: var(--ok); }
+  .file .mm { color: var(--bad); }
+  .dir { font-family: var(--mono); font-size: 12px; color: var(--dim); padding: 5px 0 1px; }
+
+  .tk { display: flex; align-items: flex-start; gap: 9px; padding: 5px 0; }
+  .tk .b { width: 3px; align-self: stretch; border-radius: 99px; background: var(--s3); flex: none; }
+  .tk.now .b { background: var(--accent); }
+  .tk.done .b { background: var(--ok); }
+  .tk.blocked .b { background: var(--warn); }
+  .tk .s { font-size: 13px; color: var(--muted); }
+  .tk.done .s { color: var(--dim); text-decoration: line-through; }
+  .tk .meta { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin-top: 1px; }
+  .tk .meta b { color: var(--muted); font-weight: 500; }
+
+  .sa { border: 1px solid var(--line); border-radius: 10px; background: rgba(13,17,26,.5);
+    margin: 6px 0; overflow: hidden; }
+  .sa .sh { display: flex; align-items: center; gap: 9px; padding: 8px 12px;
+    font-family: var(--mono); font-size: 12.5px; min-width: 0; }
+  .sa .sh .st { width: 12px; flex: 0 0 12px; color: var(--ok); }
+  .sa .sh .gl { color: var(--violet); }
+  .sa .sh .nm { color: var(--accent); font-weight: 700; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .sa .sh .n { margin-left: auto; color: var(--dim); font-size: 11.5px;
+    white-space: nowrap; flex: none; }
+  .sa .tt { font-family: var(--mono); font-size: 12px; color: var(--dim); padding: 0 12px 3px 12px; }
+  .sa .tt .tg { color: var(--muted); }
+  .sa .settled { font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+    padding: 0 12px 9px; font-style: italic; }
+  .sa .note { font-size: 11.5px; color: var(--dim); padding: 0 12px 9px; }
+
+  /* ---------- the diff page ---------- */
+  #diff { display: none; }
+  #diff:checked ~ .page { display: flex; }
+  .page { display: none; position: fixed; inset: 0; z-index: 60; flex-direction: column;
+    background: var(--bg); }
+  .ph { display: flex; align-items: center; gap: 14px; padding: 12px 22px;
+    border-bottom: 1px solid var(--line); background: rgba(8,10,16,.75); }
+  .ph .ttl { font-size: 15px; font-weight: 650; }
+  .ph .sub { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .ph .x { margin-left: auto; cursor: pointer; color: var(--muted); font-family: var(--mono);
+    font-size: 12.5px; border: 1px solid var(--line); border-radius: 7px; padding: 3px 11px; }
+  .ph .x:hover { color: var(--text); border-color: #2e3850; }
+  .pbody { flex: 1; display: grid; grid-template-columns: 264px minmax(0,1fr); overflow: hidden; }
+  .prail { border-right: 1px solid var(--line); overflow-y: auto; padding: 12px 10px; }
+  .prail .h { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--accent); padding: 4px 6px 8px; }
+  .prail .f { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 7px;
+    font-family: var(--mono); font-size: 12.5px; cursor: pointer; }
+  .prail .f:hover { background: rgba(27,33,48,.5); }
+  .prail .f.cur { background: rgba(244,118,0,.1); }
+  .prail .f .m { width: 12px; flex: 0 0 12px; color: var(--accent); }
+  .prail .f .m.a { color: var(--ok); }
+  .prail .f .p { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prail .f .c { margin-left: auto; color: var(--accent); font-size: 11.5px; }
+  .pmain { overflow-y: auto; padding: 16px 22px 40px; grid-column: 2; }
+  .fhead { display: flex; align-items: center; gap: 10px; padding: 9px 12px; margin-bottom: 10px;
+    background: var(--s2); border: 1px solid var(--line); border-radius: 9px;
+    font-family: var(--mono); font-size: 12.5px; }
+  .fhead .path { font-weight: 700; color: var(--text); }
+  .fhead .badge { color: var(--accent); border: 1px solid rgba(244,118,0,.35);
+    border-radius: 99px; padding: 0 8px; font-size: 11px; }
+  .fhead .pm { margin-left: auto; color: var(--ok); }
+  .fhead .mm { color: var(--bad); }
+  .pdiff { border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+    font-family: var(--mono); font-size: 12.5px; }
+  .pdiff .h { color: var(--teal); background: var(--s2); padding: 5px 12px; }
+  .pdiff .ln { display: grid; grid-template-columns: 56px 1fr; }
+  .pdiff .ln .n { color: var(--dim); text-align: right; padding-right: 12px; user-select: none; }
+  .pdiff .ln .l { white-space: pre; padding-right: 14px; }
+  .pdiff .ln.a .l { background: var(--add-bg); }
+  .pdiff .ln.d .l { background: var(--del-bg); }
+  .pdiff .ln.a .n { background: var(--add-bg); color: var(--ok); }
+  .pdiff .ln.d .n { background: var(--del-bg); color: var(--bad); }
+  .pfoot { border-top: 1px solid var(--line); padding: 9px 22px; font-family: var(--mono);
+    font-size: 12px; color: var(--dim); display: flex; gap: 8px; }
+  .pfoot .key { color: var(--accent); }
+  .pfoot .sep { padding: 0 8px; opacity: .5; }
+
+  /* Narrow: one column, each pane a sheet over the chat. The checkbox
+     inverts meaning here - unchecked is hidden, not open - so a phone
+     opens on the conversation and the header's two handles reach the
+     panes. */
+  @media (max-width: 1280px) { .app { grid-template-columns: var(--rail-l) minmax(0,1fr); }
+    .rail.right { display: none; } #r:checked ~ .app .rail.right { display: none; } }
+  @media (max-width: 980px) {
+    .app { grid-template-columns: minmax(0,1fr); }
+    .sess { flex-wrap: wrap; gap: 8px; }
+    .sess .facts { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
+    .sess .facts .sep { display: none; }
+    .sess .tog-r { order: 0; }
+    .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
+    .rail.left, .rail.right { display: none; }
+    #l:checked ~ .app .rail.left { display: flex; }
+    #r:checked ~ .app .rail.right { display: flex; }
+    #l:checked ~ .app, #r:checked ~ .app { --rail-l: 0px; --rail-r: 0px; }
+    .pbody { grid-template-columns: minmax(0,1fr); }
+    .prail { display: none; }
+    .pmain { grid-column: 1; }
+  }
+</style>
+</head>
+<body>
+
+<input type="checkbox" id="l" hidden>
+<input type="checkbox" id="r" hidden>
+<input type="checkbox" id="diff" hidden>
+
+<div class="app">
+
+  <!-- ============ PROJECTS ============ -->
+  <aside class="rail left">
+    <div class="banner">
+      <span class="t">projects</span>
+      <span class="n ml">10 live / 16</span>
+    </div>
+    <div class="scroll">
+
+      <div class="state needs">needs you</div>
+      <div class="pj">
+        <div class="pr"><span class="dot needs"></span><span class="nm">core-v1</span>
+          <span class="org">Granite</span>
+          <span class="x">&#10005;</span></div>
+        <div class="why">a permission prompt is waiting</div>
+      </div>
+      <div class="pj">
+        <div class="pr"><span class="dot needs"></span><span class="nm">companies/steward</span>
+          <span class="org">Personal</span>
+          <span class="x">&#10005;</span></div>
+        <div class="why">asked you a question</div>
+      </div>
+      <div class="pj">
+        <div class="pr"><span class="dot failed"></span><span class="nm">trader-cc</span>
+          <span class="org">Busytools</span>
+          <span class="x">&#10005;</span></div>
+        <div class="why bad">spawn failed</div>
+      </div>
+
+      <div class="state">working</div>
+      <div class="pj cur">
+        <div class="pr"><span class="dot live"></span><span class="nm">forge</span>
+          <span class="org">Busytools</span>
+          <span class="x">&#10005;</span></div>
+      </div>
+      <div class="pj">
+        <div class="pr"><span class="dot unseen"></span><span class="nm">hub-modules</span>
+          <span class="org">Busytools</span>
+          <span class="x">&#10005;</span></div>
+        <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
+          <span class="nm">em-dash-sweep</span><span class="x">&#10005;</span></div>
+        <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
+          <span class="nm">steward</span><span class="x">&#10005;</span></div>
+      </div>
+      <div class="pj">
+        <div class="pr"><span class="dot unseen"></span><span class="nm">busymail</span>
+          <span class="org">Busytools</span>
+          <span class="x">&#10005;</span></div>
+      </div>
+      <div class="pj">
+        <div class="pr"><span class="dot unseen"></span><span class="nm">granite-backend</span>
+          <span class="org">Granite</span>
+          <span class="x">&#10005;</span></div>
+        <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
+          <span class="nm">referral-signature-fix</span><span class="x">&#10005;</span></div>
+      </div>
+      <div class="pj">
+        <div class="pr"><span class="dot unseen"></span><span class="nm">companies</span>
+          <span class="org">Personal</span>
+          <span class="x">&#10005;</span></div>
+        <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
+          <span class="nm">steward</span><span class="x">&#10005;</span></div>
+        <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
+          <span class="nm">inbox-triage</span><span class="x">&#10005;</span></div>
+      </div>
+
+      <div class="state">asleep</div>
+      <div class="pj">
+        <div class="pr"><span class="dot off"></span><span class="nm">playground</span>
+          <span class="org">Personal</span><span class="age">6h</span></div>
+      </div>
+      <div class="pj">
+        <div class="pr"><span class="dot off"></span><span class="nm">busyblocks</span>
+          <span class="org">Busytools</span><span class="age">16h</span></div>
+      </div>
+      <div class="pj">
+        <div class="pr"><span class="dot off"></span><span class="nm">subspace</span>
+          <span class="org">Subspace</span><span class="age">1d</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ CHAT ============ -->
+  <main class="chat">
+    <div class="sess">
+      <label class="pane-tog tog-l" for="l" title="projects">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </label>
+      <label class="pane-tog tog-r" for="r" title="inspector">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+      </label>
+      <span class="dot live"></span>
+      <span class="nm">forge</span><span class="mono dim">Busytools</span>
+      <span class="facts">
+        <span><span class="fk">model</span> <span class="v">claude-opus-5-5</span></span>
+        <span class="sep">&#183;</span>
+        <span><span class="fk">effort</span> <span class="v">high</span></span>
+        <span class="sep">&#183;</span>
+        <span><span class="fk">mode</span> <span class="perm bypass">bypassPermissions</span></span>
+        <span class="sep">&#183;</span>
+        <span class="cm"><span class="fk">ctx</span>
+          <span class="tk"><span class="fl" style="width:41%"></span></span>
+          <span class="v">41%</span></span>
+        <details class="acct">
+          <summary><span class="dot idle"></span>Zai</summary>
+          <div class="pop">
+            <div class="hd"><span class="nm">Zai</span><span class="st">ready</span></div>
+            <div class="kv"><span class="k">type</span><span class="v">subscription &#183; monthly</span></div>
+            <div class="kv"><span class="k">model</span><span class="v">glm-5.3-flash</span></div>
+            <hr>
+            <div class="bar"><span class="lb">5h</span>
+              <span class="tk"><span class="fl" style="width:68%"></span></span>
+              <span class="pc">68%</span><span class="eta">1h 48m</span></div>
+            <div class="bar"><span class="lb">7d</span>
+              <span class="tk"><span class="fl" style="width:24%"></span></span>
+              <span class="pc">24%</span><span class="eta">2d 6h</span></div>
+            <hr>
+            <div class="kv"><span class="k">day</span><span class="v">$12.40</span></div>
+            <div class="kv"><span class="k">week</span><span class="v">$61.18</span></div>
+            <div class="kv"><span class="k">month</span><span class="v">$214.06</span></div>
+            <div class="kv"><span class="k">balance</span><span class="v">$41.02 left &#183; monthly</span></div>
+          </div>
+        </details>
+      </span>
+    </div>
+
+    <div class="conv">
+
+      <div class="mine">
+        Make the call tree the default, let me open one call at a time, and cover every kind the CLI can produce.
+      </div>
+
+      <div class="work">
+        <div class="prose">
+          <p>One family per block, its calls under it, and a call opens on its own. Edits are the exception: their diff is already there.</p>
+        </div>
+
+        <details class="kind" open>
+          <summary>
+            <span class="st err">&#10007;</span>
+            <span class="nm">17 tool calls</span>
+            <span class="arw">&#9662;</span>
+          </summary>
+          <div class="leaves">
+            <div class="knd"><span class="gl">&#10022;</span><span class="nm">skill</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">pr-review-loop &#183; PR #1204</span><span class="arw">&#9656;</span></summary>
+              <div class="body"><div class="term">4 reviewers on disjoint axes &#183; 3 rounds max</div></div>
+            </details>
+
+            <div class="knd"><span class="gl">&#11034;</span><span class="nm">read</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">crates/forge-sessions/src/family.rs</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="code">
+                  <div class="lang">rust</div>
+                  <pre><span class="c2">/// The group a tool's calls are summarised under.</span>
+<span class="k">pub enum</span> <span class="f">ToolFamily</span> {
+    <span class="f">Read</span>, <span class="f">Search</span>, <span class="f">Bash</span>, <span class="f">Web</span>, <span class="f">Lsp</span>,
+    <span class="f">Skill</span>, <span class="f">ToolSearch</span>, <span class="f">Config</span>,
+    <span class="c2">/// Every tool this crate has no row for.</span>
+    <span class="f">Tool</span>,
+    <span class="f">Own</span>(<span class="k">&amp;'static</span> <span class="k">str</span>),
+}</pre>
+                </div>
+              </div>
+            </details>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">crates/forge-sessions/src/grouping.rs</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="code">
+                  <div class="lang">rust</div>
+                  <pre><span class="k">pub fn</span> <span class="f">partition_blocks_into_render_units</span>(
+    blocks: <span class="k">&amp;</span>[<span class="f">Block</span>],
+) -&gt; <span class="f">Vec</span>&lt;<span class="f">RenderUnit</span>&gt; {</pre>
+                </div>
+              </div>
+            </details>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">crates/forge-tui/src/ui/tool_call/group.rs</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="code">
+                  <div class="lang">rust</div>
+                  <pre><span class="k">pub fn</span> <span class="f">kl</span>(row: <span class="f">KindRow</span>, name: <span class="k">&amp;str</span>, n: <span class="k">usize</span>, targets: <span class="k">&amp;</span>[<span class="k">&amp;str</span>]) -&gt; <span class="f">KindLine</span> {</pre>
+                </div>
+              </div>
+            </details>
+
+            <div class="knd"><span class="gl">&#8981;</span><span class="nm">search</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">"render_group_summary" &#183; 3 files</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="searchhit"><span class="ln">142:</span> <span class="fl">crates/forge-sessions/src/grouping.rs</span>
+<span class="hit">render_group_summary</span>(unit, width)</div>
+                <div class="searchhit"><span class="ln">88:</span> <span class="fl">crates/forge-tui/src/ui/tool_call/group.rs</span>
+<span class="hit">render_group_summary</span>(&amp;unit, width)</div>
+              </div>
+            </details>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">"KindLine" &#183; 2 files</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="searchhit"><span class="ln">31:</span> <span class="fl">crates/forge-sessions/src/family.rs</span>
+<span class="k">pub struct</span> <span class="hit">KindLine</span> {</div>
+              </div>
+            </details>
+
+            <div class="knd"><span class="gl">&#9654;</span><span class="nm">bash</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">run the full workspace gate, then the feature-config build</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="term"><span class="pfx">$</span> just check
+   Compiling forge-primitives v1.0.90
+   Compiling forge-tui v1.0.90
+    Finished in 41.2s
+<span class="sum">Summary [92.418s] 1258 tests run: 1258 passed, 1174 skipped</span></div>
+              </div>
+            </details>
+            <details class="leaf">
+              <summary><span class="st"><span class="ring"></span></span><span class="tn">cargo nextest run -p forge-web</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="term"><span class="pfx">$</span> cargo nextest run -p forge-web
+    Starting 42 tests across 3 binaries</div>
+              </div>
+            </details>
+
+            <div class="knd"><span class="gl">&#8853;</span><span class="nm">web</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">docs.rs/ratatui/latest/ratatui/widgets/struct.List.html</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="term">List &#183; ratatui 0.29.0
+A widget that renders a scrollable list of items.</div>
+              </div>
+            </details>
+
+            <div class="knd"><span class="gl">&#9881;</span><span class="nm">lsp</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">hover &#183; crates/forge-tui/src/ui/message.rs</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="term">fn <span class="f">render_body</span>(&amp;self, area: <span class="f">Rect</span>) -&gt; <span class="f">Vec</span>&lt;<span class="f">Line</span>&gt;
+docs: Render the message body into rows.</div>
+              </div>
+            </details>
+
+            <div class="knd"><span class="gl">&#9672;</span><span class="nm">playwright</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">browser_navigate</span><span class="arw">&#9656;</span></summary>
+              <div class="body"><div class="term">http://127.0.0.1:8765/web-session.html &#183; forge &#183; session</div></div>
+            </details>
+            <details class="leaf">
+              <summary><span class="st err">&#10007;</span><span class="tn">browser_click &#183; label[for="diff"]</span><span class="arw">&#9656;</span></summary>
+              <div class="body"><div class="term"><span class="err">Timeout 5000ms exceeded waiting for the element to be stable</span></div></div>
+            </details>
+
+            <div class="knd"><span class="gl">&#9672;</span><span class="nm">forge</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">agents__list</span><span class="arw">&#9656;</span></summary>
+              <div class="body"><div class="term">15 projects &#183; 1 live worker on forge</div></div>
+            </details>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">tasks__list</span><span class="arw">&#9656;</span></summary>
+              <div class="body"><div class="term">2 tasks in flight</div></div>
+            </details>
+            <details class="leaf">
+              <summary><span class="st"><span class="ring"></span></span><span class="tn">agents__ask &#183; cli-version</span><span class="arw">&#9656;</span></summary>
+              <div class="body"><div class="term">q-7f3a92e0 &#183; inflight</div></div>
+            </details>
+
+            <div class="knd"><span class="gl">&#8984;</span><span class="nm">toolsearch</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">select:TaskStop</span><span class="arw">&#9656;</span></summary>
+              <div class="body"><div class="term">Found KillShell, BashOutput</div></div>
+            </details>
+
+            <div class="knd"><span class="gl">&#9675;</span><span class="nm">tool</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">mcp__forge__cron__list</span><span class="arw">&#9656;</span></summary>
+              <div class="body"><div class="term">[] &#183; no crons registered</div></div>
+            </details>
+          </div>
+        </details>
+
+        <!-- a run-breaker: the diff tools never fold into a group, and an
+             edit opens by default -->
+        <details class="rb" open>
+          <summary>
+            <span class="st">&#10003;</span><span class="gl">&#9634;</span>
+            <span class="nm">Edit</span>
+            <span class="ti">crates/forge-web/src/home.css (+12, -4)</span>
+          </summary>
+          <div class="body">
+            <div class="dif">
+              <div class="h">@@ -30,7 +30,9 @@</div>
+              <div class="ln"><span class="n">30</span><span class="l">.row .what a {</span></div>
+              <div class="ln"><span class="n">31</span><span class="l">  font-family: var(--mono); color: var(--accent);</span></div>
+              <div class="ln d"><span class="n">32</span><span class="l">- text-decoration: none; flex: none;</span></div>
+              <div class="ln a"><span class="n">33</span><span class="l">+ text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
+              <div class="ln a"><span class="n">34</span><span class="l">+ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
+              <div class="ln"><span class="n">35</span><span class="l">}</span></div>
+            </div>
+          </div>
+        </details>
+
+        <!-- the break the Edit made: the next tool call starts a new run,
+             and it runs to the end of the turn -->
+        <details class="kind" open>
+          <summary>
+            <span class="st">&#10003;</span>
+            <span class="nm">3 tool calls</span>
+            <span class="arw">&#9662;</span>
+          </summary>
+          <div class="leaves">
+            <div class="knd"><span class="gl">&#9654;</span><span class="nm">bash</span></div>
+            <details class="leaf">
+              <summary><span class="st"><span class="ring"></span></span><span class="tn">just check</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="term"><span class="pfx">$</span> just check
+    Starting fmt-check...</div>
+              </div>
+            </details>
+
+            <div class="knd"><span class="gl">&#11034;</span><span class="nm">read</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">docs/book/src/ui/chat.md</span><span class="arw">&#9656;</span></summary>
+              <div class="body">
+                <div class="term">## Tool-call grouping (L2 / L1 / L0)
+Consecutive tool calls between two user messages fold into one group.</div>
+              </div>
+            </details>
+
+            <div class="knd"><span class="gl">&#9672;</span><span class="nm">forge</span></div>
+            <details class="leaf">
+              <summary><span class="st">&#10003;</span><span class="tn">tasks__update</span><span class="arw">&#9656;</span></summary>
+              <div class="body"><div class="term">cli-version &#183; in_progress</div></div>
+            </details>
+          </div>
+        </details>
+
+        <div class="card">
+          <div class="q"><span class="qm">?</span>How should an answered question survive the dock clearing?</div>
+          <div class="a"><span class="am">&#8594;</span><span class="picked">Clean answered-card</span></div>
+          <div class="a"><span class="am">&#8594;</span><span class="am">you typed:</span>
+            <span class="typed">"and keep the multiSelect case too"</span></div>
+        </div>
+
+        <div class="peer"><span class="dir">&#10549;</span>
+          <span class="from">companies</span>
+          <span class="txt">is the cron issue filed? the wake dies on the 2nd</span></div>
+
+        <details class="msg" open>
+          <summary><span class="st">&#10003;</span>
+            <span class="c">3 messages</span>
+            <span class="arw">&#9662;</span></summary>
+          <div class="msgbody">
+            <div class="mkind"><span class="dir">&#10549;</span> <span class="kb">message</span></div>
+            <div class="mleaf"><span class="who">steward</span> &#183; IT IMPORTED. The window is lost&#8230;</div>
+            <div class="mleaf"><span class="who">planner</span> &#183; picking up the migration now&#8230;</div>
+            <div class="mkind"><span class="dir">&#10549;</span> <span class="kb">reply</span></div>
+            <div class="mleaf"><span class="who">tester</span> &#183; take the render half, I&#39;ll take the partition&#8230;</div>
+          </div>
+        </details>
+
+        <div class="notice info"><span class="sev">Info</span>Mode changed: default &#8594; acceptEdits</div>
+        <div class="notice warn"><span class="sev">Warning</span>Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</div>
+        <div class="notice err"><span class="sev">Error</span>Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</div>
+
+        <div class="compacting"><span class="ring"></span>Compacting context&#8230;</div>
+
+        <details class="hooks">
+          <summary><span>&#8627; hook summary &#183; 3 actions</span>
+            <span class="tog">expand</span></summary>
+        </details>
+
+        <details class="turninfo">
+          <summary>
+            <span>&#8617;</span><span>2m 41s</span><span class="sep">&#183;</span>
+            <span>18.4k&#8593; 3.1k&#8595;</span><span class="sep">&#183;</span>
+            <span>94% cached</span><span class="sep">&#183;</span>
+            <span>12.6k written</span><span class="tog">expand</span>
+          </summary>
+        </details>
+      </div>
+
+      <div class="mine">
+        And show the expanded turn row, since that is a view of its own.
+      </div>
+
+      <div class="work">
+        <details class="turninfo" open>
+          <summary>
+            <span>&#8617;</span><span>1m 19s</span><span class="sep">&#183;</span>
+            <span>4.2k&#8593; 1.1k&#8595;</span><span class="sep">&#183;</span>
+            <span>93% cached</span><span class="sep">&#183;</span>
+            <span>3.1k written</span><span class="tog">collapse</span>
+          </summary>
+          <div class="tibody">
+            <span class="l"><b>ended</b>15:48:31</span><span class="n"><b>model</b>claude-opus-5</span>
+            <span class="l"><b>elapsed</b>1m 19s</span><span class="n"><b>api</b>1m 04s</span>
+            <span class="l"><b>local</b>15.0s tools + hooks</span><span class="n"></span>
+            <span class="l"><b>thinking</b>434 est</span><span class="n"></span>
+            <span class="l"><b>in</b>4,231</span><span class="n"><b>out</b>1,102</span>
+            <span class="l"><b>cache</b>108,442 read</span><span class="n"><b>wrote</b>3,180</span>
+            <span class="n wide">93% of input served from cache</span>
+            <span class="l"><b>session</b>$4.82 cumulative</span><span class="n"></span>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="box"><div class="row">
+        <span class="pr">&#10148;</span>
+        <textarea rows="1" placeholder="Type a message..."></textarea>
+      </div></div>
+    </div>
+  </main>
+
+  <!-- ============ INSPECTOR ============ -->
+  <aside class="rail right">
+    <div class="banner">
+      <span class="t">inspector</span>
+      <span class="n ml">forge</span>
+    </div>
+    <div class="scroll">
+
+      <details class="sec" open>
+        <summary><span class="gl">&#9095;</span> git
+          <span class="c2">web-home-layout &#183; 8 files</span>
+          <span class="arw">&#9662;</span></summary>
+        <div class="sb">
+          <div class="kv"><span class="k">PR #1203</span><span class="v a">&#8594; closes #1200</span></div>
+          <div class="kv" style="padding-top:6px"><span class="k">uncommitted</span>
+            <span class="v"><span style="color:var(--ok)">+122</span> <span style="color:var(--bad)">&minus;79</span></span></div>
+          <div class="dir">crates/forge-web/src/</div>
+          <div class="file"><span class="st">M</span><label class="p" for="diff">home.css</label>
+            <span class="pm">+12</span><span class="mm">&minus;4</span></div>
+          <div class="file"><span class="st">M</span><label class="p" for="diff">home.rs</label>
+            <span class="pm">+66</span><span class="mm">&minus;31</span></div>
+          <div class="dir">crates/forge-sessions/src/</div>
+          <div class="file"><span class="st">M</span><label class="p" for="diff">surface/agents.rs</label>
+            <span class="pm">+28</span><span class="mm">&minus;9</span></div>
+          <div class="file"><span class="st">M</span><label class="p" for="diff">surface.rs</label>
+            <span class="pm">+9</span><span class="mm">&minus;2</span></div>
+          <div class="dir">crates/forge-tui/src/</div>
+          <div class="file"><span class="st">M</span><label class="p" for="diff">app/cli_version.rs</label>
+            <span class="pm">+4</span><span class="mm">&minus;31</span></div>
+          <div class="dir">docs/mockups/</div>
+          <div class="file"><span class="st a">A</span><label class="p" for="diff">web-session.html</label>
+            <span class="pm">+812</span></div>
+        </div>
+      </details>
+
+      <details class="sec">
+        <summary><span class="gl">&#10003;</span> tasks
+          <span class="c2">2 of 7</span>
+          <span class="arw">&#9656;</span></summary>
+        <div class="sb">
+          <div class="tk now"><span class="b"></span><span>
+            <div class="s">Land the Claude version on the core</div>
+            <div class="meta"><b>cli-version</b> &#183; in review &#183; PR #1204</div></span></div>
+          <div class="tk now"><span class="b"></span><span>
+            <div class="s">Redesign the session page against the TUI&#39;s structure</div>
+            <div class="meta"><b>lead</b> &#183; in progress</div></span></div>
+          <div class="tk"><span class="b"></span><span>
+            <div class="s">Read the inspector&#39;s sections from the book</div>
+            <div class="meta"><b>lead</b> &#183; pending &#183; 2h</div></span></div>
+          <div class="tk blocked"><span class="b"></span><span>
+            <div class="s">Decide the subagent card&#39;s collapse rule</div>
+            <div class="meta"><b>lead</b> &#183; blocked on a design call</div></span></div>
+          <div class="tk done"><span class="b"></span><span>
+            <div class="s">Merge, release and install the layout pass</div>
+            <div class="meta"><b>lead</b> &#183; completed 24m ago</div></span></div>
+        </div>
+      </details>
+
+      <details class="sec">
+        <summary><span class="gl">&#9671;</span> subagents
+          <span class="c2">1 running</span>
+          <span class="arw">&#9656;</span></summary>
+        <div class="sb">
+          <div class="note">The only surface subagents have - the chat suppresses them.</div>
+          <div class="sa">
+            <div class="sh"><span class="st">&#10003;</span><span class="gl">&#9671;</span>
+              <span class="nm">cli-version</span><span class="n">7 tools &#183; settled 3m</span></div>
+            <div class="settled">settled - open to read its four most recent calls</div>
+          </div>
+          <div class="sa">
+            <div class="sh"><span class="st"><span class="ring" style="width:8px;height:8px"></span></span>
+              <span class="gl">&#9671;</span>
+              <span class="nm">web-session-review</span><span class="n">running &#183; 4 tools</span></div>
+            <div class="tt"><span class="tg">&#11034;</span> Read docs/book/src/ui/chat.md</div>
+            <div class="tt"><span class="tg">&#9634;</span> Edit docs/mockups/web-session.html</div>
+            <div class="tt"><span class="tg">&#9654;</span> Bash cargo nextest run -p forge-web</div>
+            <div class="tt"><span class="tg">&#8981;</span> Grep "subagent" crates/forge-tui</div>
+          </div>
+        </div>
+      </details>
+
+      <details class="sec">
+        <summary><span class="gl">&#9684;</span> schedules
+          <span class="c2">4</span>
+          <span class="arw">&#9656;</span></summary>
+        <div class="sb">
+          <div class="kv"><span class="k">&#9200; weekly bench</span>
+            <span class="v">Sat 10:30 &#183; recurring</span></div>
+          <div class="kv"><span class="k">&#9684; deps sweep</span>
+            <span class="v">10:23 on the 3rd &#183; recurring</span></div>
+          <div class="kv"><span class="k">&#9684; rules sweep</span>
+            <span class="v">10:00 on the 1st, 15th</span></div>
+          <div class="kv"><span class="k">&#9684; plugin audit</span>
+            <span class="v">in 27d &#183; one-shot</span></div>
+        </div>
+      </details>
+
+      <details class="sec">
+        <summary><span class="gl">&#9672;</span> gotify
+          <span class="c2">connected</span>
+          <span class="arw">&#9656;</span></summary>
+        <div class="sb">
+          <div class="kv"><span class="k">apps</span><span class="v">homelab, alerts</span></div>
+          <div class="kv"><span class="k">priority</span><span class="v">&gt;=4</span></div>
+        </div>
+      </details>
+
+      <details class="sec">
+        <summary><span class="gl">&#9671;</span> slack
+          <span class="c2">2 workspaces</span>
+          <span class="arw">&#9656;</span></summary>
+        <div class="sb">
+          <div class="kv"><span class="k">Trust Machines</span><span class="v">connected</span></div>
+          <div class="kv"><span class="k">&nbsp;&nbsp;#granite-staging-alerts</span>
+            <span class="v">every message</span></div>
+          <div class="kv"><span class="k">Acme</span><span class="v">connected</span></div>
+          <div class="kv"><span class="k">&nbsp;&nbsp;mentions anywhere</span>
+            <span class="v">mentions only</span></div>
+        </div>
+      </details>
+
+      <details class="sec">
+        <summary><span class="gl">&#9638;</span> mcp servers
+          <span class="c2">2</span>
+          <span class="arw">&#9656;</span></summary>
+        <div class="sb">
+          <div class="kv"><span class="k">forge &#183; session</span><span class="v">24 tools</span></div>
+          <div class="kv"><span class="k">context7 &#183; sdk</span><span class="v">2 tools</span></div>
+        </div>
+      </details>
+
+      <details class="sec">
+        <summary><span class="gl">&#9654;</span> processes
+          <span class="c2">3</span>
+          <span class="arw">&#9656;</span></summary>
+        <div class="sb">
+          <div class="kv"><span class="k">cargo nextest run</span><span class="v">412 MB &#183; 8842</span></div>
+          <div class="kv"><span class="k">&nbsp;&nbsp;cargo</span><span class="v">settled</span></div>
+          <div class="kv"><span class="k">&nbsp;&nbsp;rustc</span><span class="v">running</span></div>
+          <div class="kv"><span class="k">&nbsp;&nbsp;cc</span><span class="v">running</span></div>
+        </div>
+      </details>
+
+      <details class="sec">
+        <summary><span class="gl">&#9673;</span> monitors
+          <span class="c2">1 running</span>
+          <span class="arw">&#9656;</span></summary>
+        <div class="sb">
+          <div class="sa">
+            <div class="sh"><span class="st"><span class="ring" style="width:8px;height:8px"></span></span>
+              <span class="gl">&#9673;</span>
+              <span class="nm">ci-watch</span><span class="n">persistent</span></div>
+            <div class="tt"><span class="tg">$</span> gh run watch 18234567</div>
+            <div class="tt"><span class="tg">&#9679;</span> build &#183; in_progress</div>
+            <div class="tt"><span class="tg">&#10003;</span> lint &#183; success</div>
+            <div class="tt"><span class="tg">&#9679;</span> deploy &#183; queued</div>
+            <div class="tt"><span class="tg">&#9675;</span> notify &#183; queued</div>
+          </div>
+          <div class="sa">
+            <div class="sh"><span class="st">&#10003;</span><span class="gl">&#9673;</span>
+              <span class="nm">deploy-gate</span><span class="n">completed 12m</span></div>
+            <div class="settled">settled - its output stays in the transcript</div>
+          </div>
+        </div>
+      </details>
+    </div>
+  </aside>
+</div>
+
+<!-- ============ THE DIFF, AS ITS OWN PAGE ============ -->
+<div class="page">
+  <div class="ph">
+    <span class="ttl">Diff review</span>
+    <span class="sub">web-home-layout vs main &#183; 8 files</span>
+    <label class="x" for="diff">close</label>
+  </div>
+  <div class="pbody">
+    <div class="prail">
+      <div class="h">files</div>
+      <div class="f cur"><span class="m">M</span><span class="p">home.css</span><span class="c">2</span></div>
+      <div class="f"><span class="m">M</span><span class="p">home.rs</span></div>
+      <div class="f"><span class="m">M</span><span class="p">surface/agents.rs</span></div>
+      <div class="f"><span class="m">M</span><span class="p">surface.rs</span></div>
+      <div class="f"><span class="m">M</span><span class="p">app/cli_version.rs</span><span class="c">1</span></div>
+      <div class="f"><span class="m a">A</span><span class="p">web-session.html</span></div>
+    </div>
+    <div class="pmain">
+      <div class="fhead">
+        <span class="path">crates/forge-web/src/home.css</span>
+        <span class="badge">modified</span>
+        <span class="pm">+12</span><span class="mm">&minus;4</span>
+      </div>
+      <div class="pdiff">
+        <div class="h">@@ -30,7 +30,9 @@ .row .what a {</div>
+        <div class="ln"><span class="n">30</span><span class="l">.row .what a {</span></div>
+        <div class="ln"><span class="n">31</span><span class="l">  font-family: var(--mono); font-size: 11.5px;</span></div>
+        <div class="ln d"><span class="n">32</span><span class="l">-  text-decoration: none; flex: none;</span></div>
+        <div class="ln a"><span class="n">33</span><span class="l">+  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
+        <div class="ln a"><span class="n">34</span><span class="l">+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
+        <div class="ln"><span class="n">35</span><span class="l">}</span></div>
+        <div class="h">@@ -195,6 +197,8 @@ .versions b {</div>
+        <div class="ln"><span class="n">197</span><span class="l">.versions b { color: var(--muted); font-weight: 500; }</span></div>
+        <div class="ln a"><span class="n">198</span><span class="l">+/* An available update is something to act on, so it carries</span></div>
+        <div class="ln a"><span class="n">199</span><span class="l">+   the amber the TUI uses for the same notice. */</span></div>
+        <div class="ln a"><span class="n">200</span><span class="l">+.versions .upd { color: var(--warn); }</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="pfoot">
+    <span class="key">&#8593;&#8595;</span> scroll
+    <span class="sep">&#183;</span><span class="key">t</span> split/unified
+    <span class="sep">&#183;</span><span class="key">click line</span> comment
+    <span class="sep">&#183;</span><span class="key">l</span> reviews
+    <span class="sep">&#183;</span><span class="key">Esc</span> close
+    <span class="sep">&#183;</span><span style="color:var(--accent)">unified</span>
+  </div>
+</div>
+
+</body>
+</html>
