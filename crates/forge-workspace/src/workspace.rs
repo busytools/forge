@@ -3963,14 +3963,9 @@ impl Workspace {
             .collect()
     }
 
-    /// What `entry`'s session is doing right now - the axis
-    /// `WorkerLiveness` does not answer, since it stops moving once the
-    /// worker connects.
-    ///
-    /// A pending interaction outranks the turn it is blocking:
-    /// `Attention` is the state a lead has to act on, and reporting the
-    /// blocked worker as `Running` is what let the deadlock stay
-    /// invisible.
+    /// What `entry`'s session is doing right now. The two liveness states
+    /// that need no session of their own answer here; everything else is
+    /// [`Self::session_activity`].
     ///
     /// Call this with no worker lock held - it reaches for
     /// `domain_handles` and then the `DomainSession`.
@@ -3986,7 +3981,25 @@ impl Workspace {
             WorkerLiveness::Failed => return L::Failed,
             WorkerLiveness::Running => {}
         }
-        let Some(domain) = self.domain_session_for(&entry.slot) else {
+        self.session_activity(&entry.slot)
+    }
+
+    /// What the session at `slot` is doing right now - the axis
+    /// `WorkerLiveness` does not answer, since it stops moving once the
+    /// worker connects. Reachable without a `WorkerEntry`, which a project
+    /// lead has none of.
+    ///
+    /// A pending interaction outranks the turn it is blocking:
+    /// `Attention` is the state a lead has to act on, and reporting the
+    /// blocked worker as `Running` is what let the deadlock stay
+    /// invisible.
+    ///
+    /// Call this with no worker lock held - it reaches for
+    /// `domain_handles` and then the `DomainSession`.
+    pub fn session_activity(&self, slot: &SessionSlot) -> forge_primitives::SessionLifecycleState {
+        use forge_primitives::SessionLifecycleState as L;
+
+        let Some(domain) = self.domain_session_for(slot) else {
             return L::Sleeping;
         };
         let guard = domain.lock();
@@ -10061,6 +10074,36 @@ mod worker_activity_tests {
             diagnostic: None,
             kick: None,
         }
+    }
+
+    /// The same derivation has to be reachable by slot: a project lead has
+    /// no `WorkerEntry` to hand `worker_activity`, and a view drawing the
+    /// lead's row needs its state from somewhere.
+    #[test]
+    fn session_activity_reads_a_slot_with_no_worker_entry() {
+        let (ws, _rx) = Workspace::testing_stub();
+
+        assert_eq!(
+            ws.session_activity(&SessionSlot::from_str_for_test("s-gone")),
+            L::Sleeping,
+            "a slot with no domain session is asleep, not idle",
+        );
+
+        let blocked = SessionSlot::from_str_for_test("s-blocked");
+        let domain = ws.register_domain_session(blocked.clone(), None);
+        {
+            let mut guard = domain.lock();
+            guard.turn_pending = true;
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            guard
+                .pending_interactions
+                .insert("tool-1".to_owned(), PendingInteractionSlot::Permission(tx));
+        }
+        assert_eq!(
+            ws.session_activity(&blocked),
+            L::Attention,
+            "a turn in flight holding a pending interaction needs a person",
+        );
     }
 
     /// The whole point of the field: a worker that finished its turn is
