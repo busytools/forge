@@ -4,9 +4,13 @@ use std::net::SocketAddr;
 
 use axum::Router;
 use axum::extract::State;
+use axum::http::header;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use forge_primitives::WebConfig;
 use maud::{DOCTYPE, Markup, html};
+
+use crate::{brand, theme};
 
 /// Why the web view is not serving.
 #[derive(Debug, thiserror::Error)]
@@ -52,7 +56,22 @@ pub async fn start(config: WebConfig) -> Result<Option<SocketAddr>, WebError> {
 }
 
 fn router(wiring: Wiring) -> Router {
-    Router::new().route("/", get(wiring_page)).with_state(wiring)
+    Router::new()
+        .route("/", get(wiring_page))
+        .route("/favicon.svg", get(favicon))
+        .with_state(wiring)
+}
+
+/// The mark, as a standalone document a browser reads from a tab. Nothing
+/// is inherited here, so the palette's accent is set on the root rather
+/// than left to a cascade.
+async fn favicon(State(wiring): State<Wiring>) -> impl IntoResponse {
+    let body = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" color="{}">{}</svg>"#,
+        theme::accent(wiring.config.theme.as_deref()),
+        brand::mark_path(wiring.config.mark.as_deref()),
+    );
+    ([(header::CONTENT_TYPE, "image/svg+xml")], body)
 }
 
 /// The wiring proof, and nothing else: what the listener bound and what
@@ -64,6 +83,7 @@ async fn wiring_page(State(wiring): State<Wiring>) -> Markup {
             head {
                 meta charset="utf-8";
                 title { "forge" }
+                (root_block(wiring.config.theme.as_deref()))
             }
             body {
                 h1 { "forge web view" }
@@ -75,5 +95,13 @@ async fn wiring_page(State(wiring): State<Wiring>) -> Markup {
                 }
             }
         }
+    }
+}
+
+/// The palette as the page's own root variables, in every page: one place
+/// to change a theme, and no component carries a branch for it.
+fn root_block(theme_name: Option<&str>) -> Markup {
+    html! {
+        style { ":root{" (theme::root_variables(theme_name)) "}" }
     }
 }

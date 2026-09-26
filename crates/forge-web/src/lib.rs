@@ -5,7 +5,9 @@
 //! It never names `forge-workspace`: reads of the core will go through
 //! `forge-sessions`.
 
+pub mod brand;
 mod server;
+pub mod theme;
 mod work;
 
 pub use server::{WebError, start};
