@@ -4,9 +4,9 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
-use axum::extract::State;
-use axum::http::header;
-use axum::response::IntoResponse;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use forge_primitives::WebConfig;
 use forge_sessions::surface::ViewSurface;
@@ -21,6 +21,15 @@ use crate::{brand, theme};
 /// from the process, and a view that needed a file beside it would be a
 /// path to get wrong.
 const HOME_CSS: &str = include_str!("home.css");
+
+/// The vendored assets, by the name the page asks for. Each is
+/// byte-for-byte as published, with its version, source and licence
+/// recorded beside it in `assets/VENDOR.md`.
+const ASSETS: &[(&str, &str)] = &[
+    ("htmx.js", include_str!("../assets/htmx.min.js")),
+    ("htmx-sse.js", include_str!("../assets/htmx-sse.min.js")),
+    ("idiomorph.js", include_str!("../assets/idiomorph-ext.min.js")),
+];
 
 /// Why the web view is not serving.
 #[derive(Debug, thiserror::Error)]
@@ -88,7 +97,30 @@ fn router(wiring: Wiring) -> Router {
         .route("/events", get(events))
         .route("/favicon.svg", get(favicon))
         .route("/home.css", get(home_css))
+        .route("/vendor/{file}", get(asset))
         .with_state(wiring)
+}
+
+/// One vendored asset: the page's own scripts, as published. An unknown
+/// name is a 404 rather than an empty script, so a page asking for
+/// something that is not vendored says so where a browser can report it.
+///
+/// `no-cache` rather than a TTL, because a browser holding an old copy
+/// would report a bug in forge's code. A validator would only turn the
+/// re-fetch into a 304: there is no CDN in front of this, the files are
+/// pinned, and the three together are 66KB over loopback.
+async fn asset(Path(file): Path<String>) -> Response {
+    let Some((_, body)) = ASSETS.iter().find(|(name, _)| *name == file) else {
+        return (StatusCode::NOT_FOUND, "no such vendored asset").into_response();
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        *body,
+    )
+        .into_response()
 }
 
 /// The home, as the whole page.

@@ -478,20 +478,6 @@ fn push_org(orgs: &mut Vec<OrgSection>, name: String, live: usize, rows: Project
 }
 
 /// The page. Pure: everything it draws comes from `view`.
-/// The page's only script, and deliberately one block: it swaps the region
-/// the stream sends and closes when the server says the stream is over.
-/// Nothing else on the page knows it exists, so replacing it with a
-/// library is a cut and a paste rather than an untangling.
-///
-/// `outerHTML` rather than `innerHTML`: the payload is the region element
-/// itself, so filling the region with it would nest a second one, with the
-/// same id, on the first event.
-const APP_JS: &str = "const source = new EventSource('/events');\
-     source.addEventListener('fleet', (event) => {\
-     document.getElementById('home').outerHTML = event.data;\
-     });\
-     source.addEventListener('close', () => source.close());";
-
 fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup {
     html! {
         (DOCTYPE)
@@ -504,26 +490,32 @@ fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup 
                 link rel="stylesheet" href="/home.css";
                 link rel="icon" href="/favicon.svg" type="image/svg+xml";
             }
-            body {
+            // The stream, wired by attributes: htmx opens it, swaps the
+            // `fleet` event's payload into the region, and closes on the
+            // server's own `close` event rather than reconnecting to a
+            // stream that has ended. Nothing on the page is script of
+            // forge's own.
+            //
+            // Both extensions are named, and `morph` is not optional: an
+            // undeclared swap style is not an error, it falls back to
+            // filling the target, which nests the region inside itself.
+            body hx-ext="sse, morph" sse-connect="/events" sse-close="close" {
                 (region(view, bound))
-                // Escaped through `PreEscaped` because maud escapes text,
-                // and inside a `<script>` element an entity is never
-                // decoded: an escaped arrow function is a page that never
-                // updates. Safe here because the source is a constant with
-                // nothing interpolated into it.
-                script { (PreEscaped(APP_JS)) }
+                script src="/vendor/htmx.js" {}
+                script src="/vendor/htmx-sse.js" {}
+                script src="/vendor/idiomorph.js" {}
             }
         }
     }
 }
 
 /// The region the stream swaps in: everything the page draws from the
-/// core, and nothing it draws from the request. Assigning the whole
-/// document into it would nest a second `.wrap` and re-parse the head
-/// inside the body, on the first event that arrives.
+/// core, and nothing it draws from the request. The payload is this
+/// element itself, so the swap replaces it rather than filling it, and the
+/// two swap attributes travel with it so the replacement keeps listening.
 fn region(view: &HomeView, bound: SocketAddr) -> Markup {
     html! {
-        div .wrap #home {
+        div .wrap #home sse-swap="fleet" hx-swap="morph:outerHTML" {
             header .top {
                 div .brand {
                     span .mark { (PreEscaped(brand::mark_svg(view.mark.as_deref()))) }
@@ -925,25 +917,27 @@ mod tests {
         );
     }
 
-    /// Catches the page's own script being escaped on the way out: maud
-    /// escapes `<` and `>`, and inside a `<script>` element an entity is
-    /// never decoded, so an escaped arrow function is a page whose live
-    /// update never runs. The wire tests all pass either way, because
-    /// they read bytes rather than parse them.
+    /// Catches a page whose stream is not wired at all, or wired to fill
+    /// the region rather than replace it: the payload is the region
+    /// element itself, so filling would nest a second one with the same id.
+    /// The wire tests pass either way, because they read bytes rather than
+    /// load them in a browser.
     #[test]
-    fn the_pages_script_reaches_the_browser_unescaped() {
+    fn the_page_opens_the_stream_by_attribute() {
         let markup = render(&empty());
 
         assert!(
-            markup.contains("(event) => {"),
-            "the arrow function survives as written: {markup}"
+            markup.contains("hx-ext=\"sse, morph\" sse-connect=\"/events\" sse-close=\"close\""),
+            "the body opens the stream, enables the swap, and closes on the server's own \
+             event: {markup}",
         );
-        assert!(!markup.contains("=&gt;"), "and nothing escaped it on the way: {markup}");
         assert!(
-            markup.contains("document.getElementById('home').outerHTML = event.data;"),
-            "the swap replaces the region rather than filling it, which would nest a second: \
-             {markup}",
+            markup.contains("sse-swap=\"fleet\" hx-swap=\"morph:outerHTML\""),
+            "and the region replaces itself from the fleet event: {markup}",
         );
+        for asset in ["/vendor/htmx.js", "/vendor/htmx-sse.js", "/vendor/idiomorph.js"] {
+            assert!(markup.contains(asset), "the page loads {asset}: {markup}");
+        }
     }
 
     /// Catches a swap payload that is the whole document: assigning that

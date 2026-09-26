@@ -260,6 +260,42 @@ async fn a_project_that_has_run_and_stopped_reads_asleep() {
     assert!(page.contains("class=\"row never\""), "and one that has never run is not: {page}");
 }
 
+/// The page's own scripts, served from the process: a browser that cannot
+/// load them has a page that never updates, and nothing on the page itself
+/// would say so. The markers are strings each library defines.
+#[tokio::test]
+async fn the_vendored_scripts_are_served() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    for (path, marker) in [
+        ("/vendor/htmx.js", "htmx"),
+        ("/vendor/htmx-sse.js", "sse"),
+        ("/vendor/idiomorph.js", "Idiomorph"),
+    ] {
+        let response =
+            reqwest::get(format!("http://127.0.0.1:{}{path}", config.port)).await.expect("served");
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "{path} is served");
+        assert_eq!(
+            response.headers()["cache-control"],
+            "no-cache",
+            "{path} must not be held stale by a browser",
+        );
+        let content_type = response.headers()["content-type"].to_str().expect("readable");
+        assert!(content_type.starts_with("text/javascript"), "{path} is a script");
+        let body = response.text().await.expect("the body reads");
+        assert!(body.contains(marker), "{path} carries {marker}, got {} bytes", body.len());
+    }
+
+    let (status, _content_type, _body) = get(&config, "/vendor/absent.js").await;
+    assert_eq!(
+        status,
+        reqwest::StatusCode::NOT_FOUND,
+        "a name that is not vendored says so rather than serving an empty script",
+    );
+}
+
 /// The stylesheet is served beside the page, as a stylesheet.
 #[tokio::test]
 async fn the_home_serves_its_stylesheet() {
