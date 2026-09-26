@@ -182,6 +182,25 @@ async fn the_home_lists_every_project_under_its_org() {
     );
 }
 
+/// The header's claude version is the core's answer rather than anything
+/// the request carried, so the page the server renders states it.
+#[tokio::test]
+async fn the_home_names_the_claude_version_the_core_holds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.set_cli_version(Some("2.1.156"), Some("2.1.201"));
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains("claude 2.1.156"), "the header names the installed version: {page}");
+    assert!(
+        page.contains("\u{2191} v2.1.201 available"),
+        "and the available one, which is what this page is for: {page}",
+    );
+}
+
 /// The orgs read alphabetically rather than in the order `forge.toml`
 /// happens to declare them. The fixture names Personal first, so a page
 /// that kept declaration order fails this.

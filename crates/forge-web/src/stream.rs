@@ -107,11 +107,12 @@ impl Live {
                 true
             }
             // Everything else that changes what a row or a card says. The
-            // catalog and the dictation snapshot are here because both
+            // catalog, the dictation snapshot and the claude version all
             // arrive after the listener binds: a page opened in those
             // first seconds would otherwise keep the empty answer it
-            // painted for the rest of its life.
+            // painted until the next tick.
             SessionUpdate::CatalogLoaded
+            | SessionUpdate::CliVersionChanged
             | SessionUpdate::DictateAvailability
             | SessionUpdate::ConnectionFailed { .. }
             | SessionUpdate::AuthRequired { .. }
@@ -335,15 +336,19 @@ mod tests {
         );
     }
 
-    /// The two updates that land after the listener binds, and that a page
+    /// The updates that land after the listener binds, and that a page
     /// opened in that window has already painted an answer for: the
-    /// catalog scan and the dictation snapshot. Catches a page that keeps
-    /// the empty answer for the rest of its life.
+    /// catalog scan, the dictation snapshot and the claude version probe.
+    /// Catches a page that keeps the empty answer until the next tick.
     #[test]
     fn the_late_boot_updates_redraw_the_page() {
         let mut live = Live::new();
 
-        for update in [SessionUpdate::CatalogLoaded, SessionUpdate::DictateAvailability] {
+        for update in [
+            SessionUpdate::CatalogLoaded,
+            SessionUpdate::DictateAvailability,
+            SessionUpdate::CliVersionChanged,
+        ] {
             assert!(live.apply(&update), "{update:?} is exactly a render wake-up");
         }
     }

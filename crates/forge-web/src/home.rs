@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime};
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{SessionLifecycleState, SessionSlot};
 use forge_sessions::surface::{
-    AccountsView, AgentRow, DictateFailure, DictateModelState, DictateView, LoadingState,
-    PendingKind, Roster, ViewSurface,
+    AccountsView, AgentRow, CliVersionInfo, DictateFailure, DictateModelState, DictateView,
+    LoadingState, PendingKind, Roster, ViewSurface,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
@@ -43,6 +43,8 @@ pub struct HomeView {
     /// The mark the config picked, `None` for the built-in. The region
     /// draws it, so it travels with the view rather than the request.
     pub mark: Option<String>,
+    /// The claude versions the core holds, `None` until its probe lands.
+    pub cli: Option<CliVersionInfo>,
     pub band: Vec<Card>,
     pub orgs: Vec<OrgSection>,
 }
@@ -264,6 +266,7 @@ async fn view_of(home: &Home<'_>) -> HomeView {
             .sum(),
         projects: roster.projects.len(),
         mark: home.mark.map(str::to_owned),
+        cli: home.surface.cli_version(),
         band: band(home, &accounts, &dictate),
         orgs,
     }
@@ -558,7 +561,15 @@ fn region(view: &HomeView) -> Markup {
                     span .mark { (PreEscaped(brand::mark_svg(view.mark.as_deref()))) }
                     span .word { "forge" }
                 }
-                div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }
+                div .versions {
+                    b { "v" (env!("CARGO_PKG_VERSION")) }
+                    @if let Some(installed) = view.cli.as_ref().and_then(|cli| cli.installed.as_deref()) {
+                        " \u{b7} claude " (installed)
+                    }
+                    @if let Some(latest) = available(view.cli.as_ref()) {
+                        " \u{b7} " span .upd { "\u{2191} v" (latest) " available" }
+                    }
+                }
                 div .totals {
                     span .n { (view.live_agents) } " agents \u{b7} "
                     span .n { (view.tasks) } " tasks \u{b7} "
@@ -601,6 +612,13 @@ fn region(view: &HomeView) -> Markup {
             }
         }
     }
+}
+
+/// The published version to name, when npm has a newer one than the
+/// installed CLI. `has_update` is the rule and already requires both sides.
+fn available(cli: Option<&CliVersionInfo>) -> Option<&str> {
+    let cli = cli?;
+    if cli.has_update() { cli.latest.as_deref() } else { None }
 }
 
 fn counts_of(org: &OrgSection) -> String {
@@ -758,9 +776,67 @@ mod tests {
             tasks: 0,
             projects: 0,
             mark: None,
+            cli: None,
             band: Vec::new(),
             orgs: Vec::new(),
         }
+    }
+
+    /// The header names the versions the core holds, the same answer the
+    /// TUI's boot line draws: what is installed, and what npm publishes
+    /// when that is newer.
+    #[test]
+    fn the_header_names_the_installed_version_and_any_update() {
+        let mut view = empty();
+        view.cli = Some(CliVersionInfo {
+            installed: Some("2.1.156".to_owned()),
+            latest: Some("2.1.201".to_owned()),
+        });
+
+        let markup = render(&view);
+
+        assert!(
+            markup.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
+            "the forge version still leads the line: {markup}",
+        );
+        assert!(markup.contains("claude 2.1.156"), "the installed version draws: {markup}");
+        assert!(
+            markup.contains("\u{2191} v2.1.201 available"),
+            "and the available one when npm is ahead: {markup}",
+        );
+        assert!(
+            markup.contains("class=\"upd\""),
+            "the available version is dressed as an update rather than plain text: {markup}",
+        );
+    }
+
+    /// A side the core has not resolved draws nothing rather than a
+    /// placeholder. The page has no fixed row to keep one for, unlike the
+    /// TUI's panel.
+    #[test]
+    fn a_version_the_core_has_not_resolved_draws_nothing() {
+        let mut view = empty();
+        view.cli = Some(CliVersionInfo { installed: Some("2.1.156".to_owned()), latest: None });
+        let markup = render(&view);
+        assert!(
+            markup.contains("claude 2.1.156"),
+            "the installed version draws whether or not npm has anything newer: {markup}",
+        );
+        assert!(
+            !markup.contains("\u{2191}"),
+            "no arrow without a newer published version: {markup}",
+        );
+
+        view.cli = None;
+        let markup = render(&view);
+        assert!(
+            markup.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
+            "the forge version draws alone: {markup}",
+        );
+        assert!(
+            !markup.contains("claude"),
+            "and nothing stands in for a version the core has not read: {markup}",
+        );
     }
 
     /// Catches a state whose mark is borrowed from its neighbour: a
@@ -902,6 +978,7 @@ mod tests {
             tasks: 1,
             projects: 3,
             mark: None,
+            cli: None,
             band: Vec::new(),
             orgs: vec![
                 OrgSection {
