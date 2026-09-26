@@ -23,6 +23,9 @@
 //! content swap rather than a resize. The chat route redraws anyway, so
 //! only the picker handover is a geometry claim.
 
+use std::sync::Arc;
+
+use forge_sessions::surface::ViewSurface;
 use forge_workspace::{
     AccountAuth, AccountLoadingRow, DictateBind, DictateFailure, DictateModel, DictateModelState,
     DictateSnapshot, LoadingState, UsageFetchStatus,
@@ -87,7 +90,7 @@ pub(super) fn account_glyph(
 /// share this one condition.
 pub fn accounts_settled(app: &App) -> bool {
     app.workspace.as_ref().is_some_and(|ws| {
-        let rows = ws.account_loading_snapshot();
+        let rows = ViewSurface::new(Arc::clone(ws)).accounts().loading;
         !rows.is_empty()
             && rows
                 .iter()
@@ -98,7 +101,10 @@ pub fn accounts_settled(app: &App) -> bool {
 /// `true` once preflight has nothing left to wait for.
 pub fn is_complete(app: &App) -> bool {
     accounts_settled(app)
-        && app.workspace.as_ref().is_some_and(|ws| ws.dictate_snapshot().is_ready())
+        && app
+            .workspace
+            .as_ref()
+            .is_some_and(|ws| ViewSurface::new(Arc::clone(ws)).dictate().snapshot.is_ready())
 }
 
 /// Render the preflight screen over the whole frame.
@@ -108,10 +114,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let panel_width = PICKER_WIDTH.min(area.width.saturating_sub(8));
     let body = panel_lines(app, panel_width);
-    let cancelled = app
-        .workspace
-        .as_ref()
-        .is_some_and(|ws| ws.dictate_snapshot().failure.is_some_and(|f| f.is_cancelled()));
+    let cancelled = app.workspace.as_ref().is_some_and(|ws| {
+        ViewSurface::new(Arc::clone(ws))
+            .dictate()
+            .snapshot
+            .failure
+            .is_some_and(|f| f.is_cancelled())
+    });
 
     let footer_height: u16 = 1;
     let available = area.height.saturating_sub(footer_height);
@@ -218,13 +227,20 @@ fn keep_the_tail(mut body: Vec<Line<'static>>, height: u16) -> Vec<Line<'static>
 /// Everything between the two framing rules.
 fn panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![heading_row("Accounts", width)];
-    let accounts =
-        app.workspace.as_ref().map(|ws| ws.account_loading_snapshot()).unwrap_or_default();
+    let accounts = app
+        .workspace
+        .as_ref()
+        .map(|ws| ViewSurface::new(Arc::clone(ws)).accounts().loading)
+        .unwrap_or_default();
     for row in &accounts {
         lines.push(account_row(row, width));
     }
 
-    let dictate = app.workspace.as_ref().map(|ws| ws.dictate_snapshot()).unwrap_or_default();
+    let dictate = app
+        .workspace
+        .as_ref()
+        .map(|ws| ViewSurface::new(Arc::clone(ws)).dictate().snapshot)
+        .unwrap_or_default();
     if !dictate.models.is_empty() {
         lines.push(Line::default());
         lines.push(heading_row("Dictation", width));
@@ -263,8 +279,9 @@ fn gateway_rows(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(workspace) = app.workspace.as_ref() else {
         return Vec::new();
     };
-    let port = workspace.gateway_port();
-    let (glyph, color, state, state_style) = match workspace.gateway_bind_error() {
+    let accounts = ViewSurface::new(Arc::clone(workspace)).accounts();
+    let port = accounts.gateway.port;
+    let (glyph, color, state, state_style) = match accounts.gateway.bind_error.clone() {
         Some(error) => {
             return vec![
                 Line::default(),
@@ -283,7 +300,7 @@ fn gateway_rows(app: &App, width: u16) -> Vec<Line<'static>> {
                 file_row(&error, width),
             ];
         }
-        None if workspace.gateway_ready() => {
+        None if accounts.gateway.ready => {
             ("\u{25cf}", Color::Green, format!("bound :{port}"), dim())
         }
         None => ("\u{25cb}", Color::Yellow, "binding".to_owned(), dim()),
@@ -630,7 +647,7 @@ fn first_run_note(app: &App, width: u16) -> Vec<Line<'static>> {
     let dir = app
         .workspace
         .as_ref()
-        .and_then(|ws| ws.dictate_models_dir())
+        .and_then(|ws| ViewSurface::new(Arc::clone(ws)).dictate().models_dir)
         .map_or_else(|| "the models directory".to_owned(), |dir| home_relative(&dir));
     wrapped(
         2,
@@ -641,7 +658,11 @@ fn first_run_note(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 fn footer_hint(app: &App) -> String {
-    let dictate = app.workspace.as_ref().map(|ws| ws.dictate_snapshot()).unwrap_or_default();
+    let dictate = app
+        .workspace
+        .as_ref()
+        .map(|ws| ViewSurface::new(Arc::clone(ws)).dictate().snapshot)
+        .unwrap_or_default();
     // Escape only means something while bytes are moving: there is
     // nothing to cancel once every transfer has finished, and a hint
     // for a key that does nothing is worse than no hint.

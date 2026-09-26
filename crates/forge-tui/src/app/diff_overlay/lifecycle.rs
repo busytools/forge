@@ -13,6 +13,7 @@ use super::types::{DiffOverlayEvent, DiffScanKind, DiffScope, NavOutcome};
 use crate::app::App;
 use crate::app::view::{ActiveView, set_active_view};
 use forge_primitives::git_diff::RepoGate;
+use forge_sessions::surface::ViewSurface;
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 
 /// Which scope the initial `/diff` open should land on, resolved from the
@@ -107,9 +108,12 @@ pub fn spawn_fetch(
         // the default scope; the post-open `hydrate_threads` hits the
         // same error and surfaces the notice against the open overlay.
         let initial = match (&project, &branch, &workspace) {
-            (Some(project), Some(branch), Some(workspace)) => workspace
-                .load_review_threads(project, branch)
-                .map_or(InitialScope::Default, |threads| initial_scope_from_threads(&threads)),
+            (Some(project), Some(branch), Some(workspace)) => {
+                ViewSurface::new(std::sync::Arc::clone(workspace))
+                    .reviews(project, branch)
+                    .threads
+                    .map_or(InitialScope::Default, |threads| initial_scope_from_threads(&threads))
+            }
             _ => InitialScope::Default,
         };
         let commits = forge_workspace::env::git_diff::hunks::scan_commits(&cwd, &target).await;

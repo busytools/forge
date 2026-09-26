@@ -350,7 +350,8 @@ pub fn start_connection(app: &mut App) {
     //
     // Neither half waits on the dictation weights, so the models load
     // alongside the session rather than delaying it.
-    let workspace_ready = workspace.all_accounts_loaded();
+    let workspace_ready =
+        forge_sessions::surface::ViewSurface::new(Arc::clone(workspace)).accounts().all_loaded;
     if !workspace_ready || !crate::ui::preflight::accounts_settled(app) {
         if !app.spawn_deferred_logged {
             app.spawn_deferred_logged = true;

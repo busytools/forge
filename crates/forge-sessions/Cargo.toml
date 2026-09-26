@@ -24,3 +24,5 @@ serde_json = { workspace = true }
 # `forge.toml` fixture `Workspace::new_for_test` builds from a tempdir.
 forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
 tempfile = { workspace = true }
+# The connectors fixture seeds durable subscriptions, which are keyed by id.
+uuid = { workspace = true }

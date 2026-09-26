@@ -60,7 +60,8 @@ fn handle_gateway_submit(app: &mut App, args: &[&str]) -> bool {
     let Some(workspace) = app.workspace.clone() else {
         return true;
     };
-    crate::app::gateway_view::open(app, workspace.gateway_view_snapshot());
+    let orgs = forge_sessions::surface::ViewSurface::new(workspace).accounts().orgs;
+    crate::app::gateway_view::open(app, orgs);
     true
 }
 
