@@ -1,19 +1,28 @@
 # Web view mockups
 
-Mockups for forge's web view. Each file is a standalone HTML fragment,
-written to be dropped into a page that supplies its own frame, so none
-of them carries a doctype or a body tag. Some are a single screen; the
-rest are sheets showing two or three panels side by side, each panel
-captioned: `usage-page.html`, `reference-glyphs.html`,
-`slack-connector.html`, `help-and-welcome.html` and
-`pickers-and-overlays.html`.
+Mockups for forge's web view. Most are a standalone HTML fragment,
+written to be dropped into a page that supplies its own frame, so they
+carry no doctype and no body tag. Some are a single screen; the rest are
+sheets showing two or three panels side by side, each panel captioned:
+`usage-page.html`, `reference-glyphs.html`, `slack-connector.html`,
+`help-and-welcome.html` and `pickers-and-overlays.html`.
+
+Two carry their own frame instead, because they are pages rather than
+fragments and are meant to be opened on their own:
+
+- `web-home.html` - the web view's home page, with every state it can
+  render behind the "show every state" toggle.
+- `web-logo-options.html` - the sixteen mark directions the home's
+  `[web] mark` picks from. The paths in `crates/forge-web/src/brand.rs`
+  are copied from it verbatim; it is the sheet they were checked against.
 
 ## The approved direction
 
-`web-main-a-crafted.html` is the direction that was approved, and it is
-the visual target the implementation work builds against. It keeps the
-three regions and the account panel and lays them out for a browser
-rather than for a character grid.
+`web-main-a-crafted.html` is the direction that was approved for the
+session layout, and it is the visual target that work builds against. It
+keeps the three regions and the account panel and lays them out for a
+browser rather than for a character grid. The home page ships before it
+and is drawn in `web-home.html`.
 
 Two further directions were drawn for comparison and were not taken up:
 

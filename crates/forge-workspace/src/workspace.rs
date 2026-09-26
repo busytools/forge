@@ -4780,21 +4780,19 @@ impl Workspace {
 
     /// The working directory forge holds for `session_key`. Two
     /// sources, in order:
-    /// 1. The sessions catalog ([`Self::session_cwd_for`]). Leads only:
-    ///    the boot scan hides worker-tagged sessions and the Connected
+    /// 1. The sessions catalog (`session_cwd_for`). Leads only: the
+    ///    boot scan hides worker-tagged sessions and the Connected
     ///    handler skips the catalog mirror for workers, so a worker
     ///    never has a row to read.
     /// 2. The worker registry (`live_workers` via
-    ///    [`Self::worker_lookup_for_session`]), composed against the
-    ///    project's `forge.toml` path by [`worker_tag_dir`] - the
-    ///    worktree for a git worker, the project root otherwise. This
-    ///    is the authoritative source for every worker.
+    ///    `worker_lookup_for_session`), composed against the project's
+    ///    `forge.toml` path by `worker_tag_dir` - the worktree for a
+    ///    git worker, the project root otherwise. This is the
+    ///    authoritative source for every worker.
     ///
     /// `None` leaves the caller to decide what an unknown cwd means:
-    /// [`Self::resume_cwd_for_slot`] hands claude an empty cwd,
-    /// while the review MCP reports `SessionCwdUnknown` to the caller.
-    ///
-    /// [`worker_tag_dir`]: crate::mcp::workers::types::worker_tag_dir
+    /// `resume_cwd_for_slot` hands claude an empty cwd, while the
+    /// review MCP reports `SessionCwdUnknown` to the caller.
     pub fn cwd_for_session(&self, session_key: &SessionSlot) -> Option<String> {
         if let Some(cwd) = self.session_cwd_for(session_key) {
             return Some(cwd);

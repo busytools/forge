@@ -31,7 +31,7 @@ forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
 forge-sessions    ->  primitives + workspace
-forge-web         ->  primitives
+forge-web         ->  primitives + agent + sessions
 forge-tui         ->  primitives + workspace + sessions + web
 forge-test-harness->  primitives + sdk
 ```
@@ -46,7 +46,7 @@ forge-test-harness->  primitives + sdk
 | [`forge-agent`](crates/forge-agent) | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. User-data reads, cloud calls, environment probes, event translation, tooling. |
 | [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
 | [`forge-sessions`](crates/forge-sessions) | What a view needs and nothing about how it renders: the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, and the policy that folds a run of blocks. Sits between the workspace and the views. |
-| [`forge-web`](crates/forge-web) | The web view: HTTP served beside the TUI, from the process that owns the sessions, with a wiring-proof page today. Never names `forge-workspace`, and starts no subsystem of its own. |
+| [`forge-web`](crates/forge-web) | The web view: HTTP served beside the TUI, from the process that owns the sessions, kept live by a stream the page subscribes to. Reads the core through the view surface in `forge-sessions`; never names `forge-workspace`, and starts no subsystem of its own. |
 | [`forge-tui`](crates/forge-tui) | The view layer, and the `forge` binary. Rendering, input handling, per-session presentation state. No direct `forge-agent` dependency. |
 | [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness: replay-based offline tests plus opt-in live capture. |
 

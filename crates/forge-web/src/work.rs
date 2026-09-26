@@ -68,7 +68,7 @@ impl WorkCache {
         Self { entries: Mutex::new(HashMap::new()) }
     }
 
-    /// `cwd` as an agent's working tree, at most [`REFRESH_INTERVAL`] old.
+    /// `cwd` as an agent's working tree, at most `REFRESH_INTERVAL` old.
     /// A read outside the window goes to git; one inside answers from the
     /// cache. A moved cwd - a `/new`, a worktree - is a different tree and
     /// is read afresh.
