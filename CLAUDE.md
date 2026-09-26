@@ -694,6 +694,37 @@ inspected.
     directives in `crates/forge-tui/src/logging.rs` are where a record
     that no longer claims a problem stays readable.
 
+21. **The web view is ONE theme built from reusable components.** Ved,
+    2026-09-26: *"Everything reusability, single theme. It's a hard
+    project scope rule."* Not a preference, and it applies to every page
+    from the home onward.
+
+    - **One theme.** Every page reads the same token set, and that set is
+      `[web] theme` in `forge.toml` - the key already exists and is what
+      a second palette will hang off. A page carrying its own palette,
+      its own spacing scale or its own copy of a mark is the defect this
+      rule names.
+    - **Reusable components.** The pages that exist are the reference for
+      the page that does not. The state marks, the row, the chip, the
+      band card, the hairline grouping and the live stream wiring are
+      shared pieces, not one-offs. Before adding a page, name what it
+      takes from the existing ones rather than re-deriving it; when it
+      needs something new, build it so the others could use it too and
+      put it where they can reach it.
+    - **The review test:** could the NEXT page be written by reusing this
+      one's pieces, or would it copy them? A second copy of a row or a
+      mark is a finding, not a style choice.
+    - **Prefer upstream to building.** A maintained script vendored into
+      `forge-web/assets` or a maintained crate beats writing either,
+      because the maintenance we avoid is the point. `pulldown-cmark` for
+      markdown and `syntect` for highlighting are the two already chosen
+      for the session page.
+    - **Keeping all the information is not in tension with this.** A
+      session page shows everything a session has - context, git and PR,
+      tasks, MCP servers, processes, subagents, schedules - because
+      nothing here is dropped to look modern. What changes is the
+      presentation, not the content.
+
 ## Claude Code worktree interop
 
 Non-guessable external conventions, recorded so forge does not reinvent
