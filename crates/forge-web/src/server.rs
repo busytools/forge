@@ -12,7 +12,7 @@ use forge_primitives::WebConfig;
 use forge_sessions::surface::ViewSurface;
 use maud::{Markup, html};
 
-use crate::home::{Home, render};
+use crate::home::{Home, render, render_region};
 use crate::stream::{Live, events};
 use crate::work::WorkCache;
 use crate::{brand, theme};
@@ -104,12 +104,11 @@ async fn home_page(State(wiring): State<Wiring>) -> Markup {
     .await
 }
 
-/// The region the stream swaps in: everything the page draws from the
-/// core, and nothing it draws from the request. The page has no composer
-/// and no `<details>`, so a wholesale replacement is the whole answer -
-/// and a swap target that held either would be the bug, not the page.
+/// The region the stream swaps in. The page has no composer and no
+/// `<details>`, so a wholesale replacement is the whole answer - and a
+/// swap target that held either would be the bug, not the page.
 pub(crate) async fn home_region(state: &WebState, bound: SocketAddr) -> Markup {
-    render(&Home {
+    render_region(&Home {
         surface: &state.surface,
         work: &state.work,
         live: &state.live,

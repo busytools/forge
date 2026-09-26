@@ -116,13 +116,25 @@ impl Fleet {
         Ok(())
     }
 
-    fn project_key(&self, project: &str) -> Result<ProjectKey, FixtureError> {
+    /// Record a transcript row for `project`, as a session that ran and
+    /// ended would leave behind: a project whose session is gone but whose
+    /// history is not.
+    pub fn record_session(&self, project: &str, session_id: &str) -> Result<(), FixtureError> {
+        let path = self.project_view(project)?.path.to_string_lossy().into_owned();
+        self.workspace.record_connected_session(&path, session_id, None);
+        Ok(())
+    }
+
+    fn project_view(&self, project: &str) -> Result<forge_workspace::ProjectView, FixtureError> {
         self.workspace
             .list_projects()
             .into_iter()
             .find(|view| view.name == project)
-            .map(|view| view.key)
             .ok_or_else(|| format!("{project} is not a project this fleet declared").into())
+    }
+
+    fn project_key(&self, project: &str) -> Result<ProjectKey, FixtureError> {
+        self.project_view(project).map(|view| view.key)
     }
 }
 

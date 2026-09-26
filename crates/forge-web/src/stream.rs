@@ -109,10 +109,17 @@ impl Live {
 pub async fn events(
     State(wiring): State<Wiring>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    // The page is rendered before its stream attaches, and a sleeping
+    // laptop or a backgrounded tab reconnects later: the first thing the
+    // stream says is what the region should be right now, so neither gap
+    // leaves the page stale until the next update happens to arrive.
+    let snapshot = home_region(&wiring.state, wiring.bound).await.into_string();
+    let opening =
+        stream::once(async move { Ok(Event::default().event(FLEET_EVENT).data(snapshot)) });
     let stream =
-        region_events(wiring.state.surface.subscribe(), wiring).chain(stream::once(async {
-            Ok(Event::default().event(CLOSE_EVENT).data("the core's stream ended"))
-        }));
+        opening.chain(region_events(wiring.state.surface.subscribe(), wiring)).chain(stream::once(
+            async { Ok(Event::default().event(CLOSE_EVENT).data("the core's stream ended")) },
+        ));
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(20)))
 }
 

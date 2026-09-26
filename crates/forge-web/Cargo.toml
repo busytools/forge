@@ -13,9 +13,8 @@ forge-primitives = { workspace = true }
 # a second spawn of `git` here: `env::git_command` scrubs the ambient
 # `GIT_DIR` / `GIT_WORK_TREE` that would answer about a foreign repo.
 forge-agent = { workspace = true }
-# The view surface, which is the only way this crate reads the core. It
-# never names `forge-workspace`: reads go through `forge-sessions` or they
-# do not happen.
+# The view surface, which is the only way this crate reads the core: a
+# read goes through it, or it does not happen.
 forge-sessions = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }

@@ -78,17 +78,21 @@ async fn open_stream(config: &WebConfig) -> reqwest::Response {
     response
 }
 
-/// The next chunk the stream sends, or a failure if none arrives: an SSE
-/// endpoint that never writes is the bug this catches.
-async fn next_event(response: reqwest::Response) -> String {
+/// Stream chunks, read until they carry `needle`: an SSE endpoint that
+/// never writes it is the bug this catches.
+async fn event_carrying(response: reqwest::Response, needle: &str) -> String {
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
-    let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
-        .await
-        .expect("an update arrives within five seconds")
-        .expect("the stream yields")
-        .expect("the chunk reads");
-    String::from_utf8_lossy(&chunk).into_owned()
+    let mut seen = String::new();
+    while !seen.contains(needle) {
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .expect("the update arrives within five seconds")
+            .expect("the stream yields")
+            .expect("the chunk reads");
+        seen.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    seen
 }
 
 async fn get(config: &WebConfig, path: &str) -> (reqwest::StatusCode, String, String) {
@@ -200,12 +204,60 @@ async fn two_subscribers_both_see_an_update() {
         message: "both tabs see this".to_owned(),
     });
 
-    let (a, b) = tokio::join!(next_event(first), next_event(second));
+    let (a, b) = tokio::join!(
+        event_carrying(first, "both tabs see this"),
+        event_carrying(second, "both tabs see this"),
+    );
 
     assert!(a.contains("event: fleet"), "the first tab is sent the region: {a}");
     assert!(a.contains("both tabs see this"), "carrying what changed: {a}");
     assert!(b.contains("event: fleet"), "and so is the second: {b}");
     assert!(b.contains("both tabs see this"), "with the same change: {b}");
+}
+
+/// The stream says what the region should be the moment it attaches. The
+/// page is rendered before its stream opens, and a sleeping laptop or a
+/// backgrounded tab reconnects much later, so an update landing in either
+/// gap would otherwise leave the page stale until the next one.
+#[tokio::test]
+async fn the_stream_opens_with_the_region() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let opening = event_carrying(open_stream(&config).await, "this page is served on").await;
+
+    assert!(opening.contains("event: fleet"), "the first event is the region: {opening}");
+    assert!(
+        opening.contains("class=\"wrap\" id=\"home\""),
+        "which is what the page swaps in: {opening}",
+    );
+    assert!(
+        !opening.contains("<html"),
+        "and not the document, which would nest a second wrap: {opening}",
+    );
+}
+
+/// A project that has run and stopped is asleep, not never-started. The
+/// mock draws the two differently, and a forge restart leaves every
+/// project with no live session, so reading the lifecycle alone makes the
+/// whole fleet look like it has never run.
+#[tokio::test]
+async fn a_project_that_has_run_and_stopped_reads_asleep() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet =
+        Fleet::in_dir(dir.path(), &[("Personal", &["dotfiles", "fitness"])]).expect("the fleet");
+    fleet.record_session("dotfiles", "s-1").expect("dotfiles is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(
+        page.contains("class=\"row asleep\""),
+        "a project that ran and stopped is asleep: {page}",
+    );
+    assert!(page.contains("class=\"row never\""), "and one that has never run is not: {page}");
 }
 
 /// The stylesheet is served beside the page, as a stylesheet.

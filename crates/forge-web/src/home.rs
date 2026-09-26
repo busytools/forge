@@ -13,7 +13,7 @@ use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{SessionLifecycleState, SessionSlot};
 use forge_sessions::surface::{
     AccountsView, AgentRow, DictateFailure, DictateModelState, DictateView, LoadingState,
-    PendingKind, ViewSurface,
+    PendingKind, Roster, ViewSurface,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
@@ -41,6 +41,9 @@ pub struct HomeView {
     pub live_agents: usize,
     pub tasks: usize,
     pub projects: usize,
+    /// The mark the config picked, `None` for the built-in. The region
+    /// draws it, so it travels with the view rather than the request.
+    pub mark: Option<String>,
     pub band: Vec<Card>,
     /// The upstream status probe's last word, when it had one.
     pub banner: Option<Banner>,
@@ -185,7 +188,12 @@ fn state_of_agent(agent: &AgentRow, unseen: &Unseen) -> State {
 
 /// Gather the fleet and render it.
 pub async fn render(home: &Home<'_>) -> Markup {
-    page(&view_of(home).await, home.bound, home.mark, home.theme)
+    page(&view_of(home).await, home.bound, home.theme)
+}
+
+/// Gather the fleet and render the region the stream swaps in.
+pub async fn render_region(home: &Home<'_>) -> Markup {
+    region(&view_of(home).await, home.bound)
 }
 
 /// Read the core into the shape the markup wants, with each row's working
@@ -202,14 +210,23 @@ async fn view_of(home: &Home<'_>) -> HomeView {
         let rows = agents.for_project(&project.key);
         let tasks = roster.tasks_for_project(&project.name);
         let lead_task = tasks.iter().find(|task| owned_by(task, "lead"));
+        // A project with no live session is asleep if anything ever ran in
+        // it, and never-started if nothing has: the mock draws the two
+        // differently, and a restart puts every project in the first case,
+        // so reading the lifecycle alone would call the whole fleet new.
+        let last_ran = project.sessions.iter().filter_map(|view| view.last_activity).max();
         let dormant = Seed {
             slot: &SessionSlot::lead(&project.org, &project.name),
             name: project.name.clone(),
-            state: State::NeverStarted,
+            state: if last_ran.is_some() {
+                State::Lifecycle(SessionLifecycleState::Sleeping)
+            } else {
+                State::NeverStarted
+            },
             pending: None,
             reason: None,
             task: None,
-            last_activity: None,
+            last_activity: last_ran,
         };
 
         let (lead, workers) = match rows.split_first() {
@@ -219,9 +236,12 @@ async fn view_of(home: &Home<'_>) -> HomeView {
                 // the row is called here.
                 let mut seed = Seed::from_agent(head, lead_task, &live.unseen);
                 seed.name.clone_from(&project.name);
-                (row_for(home, seed).await, worker_rows(home, rest, &tasks, &live.unseen).await)
+                (
+                    row_for(home, &roster, seed).await,
+                    worker_rows(home, &roster, rest, &tasks, &live.unseen).await,
+                )
             }
-            None => (row_for(home, dormant).await, Vec::new()),
+            None => (row_for(home, &roster, dormant).await, Vec::new()),
         };
         let refused = rows
             .is_empty()
@@ -244,6 +264,7 @@ async fn view_of(home: &Home<'_>) -> HomeView {
             .map(|project| roster.tasks_for_project(&project.name).len())
             .sum(),
         projects: roster.projects.len(),
+        mark: home.mark.map(str::to_owned),
         band: band(home, &accounts, &dictate),
         banner: live
             .upstream
@@ -254,6 +275,7 @@ async fn view_of(home: &Home<'_>) -> HomeView {
 
 async fn worker_rows(
     home: &Home<'_>,
+    roster: &Roster,
     rest: &[AgentRow],
     tasks: &[Task],
     unseen: &Unseen,
@@ -261,7 +283,7 @@ async fn worker_rows(
     let mut workers = Vec::new();
     for agent in rest {
         let task = tasks.iter().find(|task| owned_by(task, &agent.label));
-        workers.push(row_for(home, Seed::from_agent(agent, task, unseen)).await);
+        workers.push(row_for(home, roster, Seed::from_agent(agent, task, unseen)).await);
     }
     workers
 }
@@ -394,9 +416,12 @@ fn refusal(has_model: bool, would_bind: bool) -> Option<&'static str> {
     }
 }
 
-async fn row_for(home: &Home<'_>, seed: Seed<'_>) -> Row {
-    let work = match home.surface.roster().cwd_for(seed.slot) {
-        Some(cwd) => Some(home.work.snapshot(seed.slot, &cwd).await),
+/// One row, with its working tree out of the cache. The roster is passed
+/// in rather than collected here: it walks the project catalog, and a walk
+/// per row is the per-row-loop trap the view surface's own notes name.
+async fn row_for(home: &Home<'_>, roster: &Roster, seed: Seed<'_>) -> Row {
+    let work = match roster.cwd_for(seed.slot) {
+        Some(cwd) => Some(home.work.snapshot(seed.slot, cwd.as_path()).await),
         None => None,
     };
     Row {
@@ -453,12 +478,17 @@ fn push_org(orgs: &mut Vec<OrgSection>, name: String, live: usize, rows: Project
 }
 
 /// The page. Pure: everything it draws comes from `view`.
-fn page(
-    view: &HomeView,
-    bound: SocketAddr,
-    mark: Option<&str>,
-    theme_name: Option<&str>,
-) -> Markup {
+/// The page's only script, and deliberately one block: it swaps the region
+/// the stream sends and closes when the server says the stream is over.
+/// Nothing else on the page knows it exists, so replacing it with a
+/// library is a cut and a paste rather than an untangling.
+const APP_JS: &str = "const source = new EventSource('/events');\
+     source.addEventListener('fleet', (event) => {\
+     document.getElementById('home').innerHTML = event.data;\
+     });\
+     source.addEventListener('close', () => source.close());";
+
+fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -471,77 +501,82 @@ fn page(
                 link rel="icon" href="/favicon.svg" type="image/svg+xml";
             }
             body {
-                div .wrap #home {
-                    header .top {
-                        div .brand {
-                            span .mark { (PreEscaped(brand::mark_svg(mark))) }
-                            span .word { "forge" }
-                        }
-                        div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }
-                        div .totals {
-                            span .n { (view.live_agents) } " agents \u{b7} "
-                            span .n { (view.tasks) } " tasks \u{b7} "
-                            (view.projects) " projects"
-                        }
+                (region(view, bound))
+                // Escaped through `PreEscaped` because maud escapes text,
+                // and inside a `<script>` element an entity is never
+                // decoded: an escaped arrow function is a page that never
+                // updates. Safe here because the source is a constant with
+                // nothing interpolated into it.
+                script { (PreEscaped(APP_JS)) }
+            }
+        }
+    }
+}
+
+/// The region the stream swaps in: everything the page draws from the
+/// core, and nothing it draws from the request. Assigning the whole
+/// document into it would nest a second `.wrap` and re-parse the head
+/// inside the body, on the first event that arrives.
+fn region(view: &HomeView, bound: SocketAddr) -> Markup {
+    html! {
+        div .wrap #home {
+            header .top {
+                div .brand {
+                    span .mark { (PreEscaped(brand::mark_svg(view.mark.as_deref()))) }
+                    span .word { "forge" }
+                }
+                div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }
+                div .totals {
+                    span .n { (view.live_agents) } " agents \u{b7} "
+                    span .n { (view.tasks) } " tasks \u{b7} "
+                    (view.projects) " projects"
+                }
+            }
+            @if let Some(banner) = &view.banner {
+                div class=(banner_class(banner.severity)) {
+                    span .k { "claude status" }
+                    span { (banner.message) }
+                }
+            }
+            section .band {
+                @for card in &view.band {
+                    div class=(card.tone.card()) {
+                        div .k { span .dot .(card.tone.dot()) {} (card.title) }
+                        div .v { (card.value) }
+                        div .sub { (card.detail) }
                     }
-                    @if let Some(banner) = &view.banner {
-                        div class=(banner_class(banner.severity)) {
-                            span .k { "claude status" }
-                            span { (banner.message) }
-                        }
+                }
+            }
+            @if view.orgs.is_empty() {
+                (empty_state(view.mark.as_deref()))
+            }
+            @for org in &view.orgs {
+                section .org {
+                    h2 {
+                        (org.name) span .rule {}
+                        span .counts { (counts_of(org)) }
                     }
-                    section .band {
-                        @for card in &view.band {
-                            div class=(card.tone.card()) {
-                                div .k { span .dot .(card.tone.dot()) {} (card.title) }
-                                div .v { (card.value) }
-                                div .sub { (card.detail) }
-                            }
-                        }
-                    }
-                    @if view.orgs.is_empty() {
-                        (empty_state(mark))
-                    }
-                    @for org in &view.orgs {
-                        section .org {
-                            h2 {
-                                (org.name) span .rule {}
-                                span .counts { (counts_of(org)) }
-                            }
-                            ul .list {
-                                @for project in &org.projects {
-                                    li .node {
-                                        (row(&project.lead, project.refused))
-                                        @if !project.workers.is_empty() {
-                                            ul .children {
-                                                @for worker in &project.workers {
-                                                    li .node { (row(worker, None)) }
-                                                }
-                                            }
+                    ul .list {
+                        @for project in &org.projects {
+                            li .node {
+                                (row(&project.lead, project.refused))
+                                @if !project.workers.is_empty() {
+                                    ul .children {
+                                        @for worker in &project.workers {
+                                            li .node { (row(worker, None)) }
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    footer {
-                        span { "this page is served on " (bound) }
-                        span {
-                            (view.projects) " projects \u{b7} " (view.orgs.len()) " orgs \u{b7} "
-                            (view.live_agents) " live agents"
-                        }
-                    }
                 }
-                // The only script on the page, and deliberately one block:
-                // it swaps the region the stream sends and closes when the
-                // server says the stream is over. Nothing else on the page
-                // knows it exists.
-                script {
-                    "const source = new EventSource('/events');"
-                    "source.addEventListener('fleet', (event) => {"
-                    "document.getElementById('home').innerHTML = event.data;"
-                    "});"
-                    "source.addEventListener('close', () => source.close());"
+            }
+            footer {
+                span { "this page is served on " (bound) }
+                span {
+                    (view.projects) " projects \u{b7} " (view.orgs.len()) " orgs \u{b7} "
+                    (view.live_agents) " live agents"
                 }
             }
         }
@@ -686,7 +721,7 @@ mod tests {
     }
 
     fn render(view: &HomeView) -> String {
-        page(view, BOUND.parse().expect("addr"), None, None).into_string()
+        page(view, BOUND.parse().expect("addr"), None).into_string()
     }
 
     fn empty() -> HomeView {
@@ -694,6 +729,7 @@ mod tests {
             live_agents: 0,
             tasks: 0,
             projects: 0,
+            mark: None,
             band: Vec::new(),
             banner: None,
             orgs: Vec::new(),
@@ -755,6 +791,7 @@ mod tests {
             live_agents: 2,
             tasks: 1,
             projects: 3,
+            mark: None,
             band: Vec::new(),
             banner: None,
             orgs: vec![
@@ -882,6 +919,47 @@ mod tests {
             State::Lifecycle(SessionLifecycleState::Attention),
             "a session that needs you outranks the diamond it also earned",
         );
+    }
+
+    /// Catches the page's own script being escaped on the way out: maud
+    /// escapes `<` and `>`, and inside a `<script>` element an entity is
+    /// never decoded, so an escaped arrow function is a page whose live
+    /// update never runs. The wire tests all pass either way, because
+    /// they read bytes rather than parse them.
+    #[test]
+    fn the_pages_script_reaches_the_browser_unescaped() {
+        let markup = render(&empty());
+
+        assert!(
+            markup.contains("(event) => {"),
+            "the arrow function survives as written: {markup}"
+        );
+        assert!(!markup.contains("=&gt;"), "and nothing escaped it on the way: {markup}");
+        assert!(
+            markup.contains("document.getElementById('home').innerHTML = event.data;"),
+            "the swap line is intact: {markup}",
+        );
+    }
+
+    /// Catches a swap payload that is the whole document: assigning that
+    /// into the region nests a second `.wrap` and a second `#home` on the
+    /// first event, and re-parses the head inside the body.
+    #[test]
+    fn the_stream_payload_is_the_region_and_not_the_document() {
+        let view = empty();
+
+        let payload = region(&view, BOUND.parse().expect("addr")).into_string();
+
+        assert!(
+            payload.contains("class=\"wrap\" id=\"home\""),
+            "the region is the wrap: {payload}"
+        );
+        for outside in ["<!DOCTYPE", "<html", "<head>", "<body>", "<title>"] {
+            assert!(
+                !payload.contains(outside),
+                "and nothing outside it, found {outside}: {payload}"
+            );
+        }
     }
 
     /// A held session's row says what it is waiting on, so needs-you is

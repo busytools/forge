@@ -1277,6 +1277,11 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.session_id = Some(SessionId::new(session_id.clone()));
         domain.runtime_state = None;
         domain.turn_pending = false;
+        // A second Connected is a new occupant in the same slot, and the
+        // CLI re-sends the whole background set only when it changes: a
+        // registry left standing would spin a row over a task that went
+        // with the identity it belonged to.
+        domain.background_work = false;
     }
     // Mirror runtime liveness from `session_state_changed` so the
     // workspace's in-flight guards see a turn authoritatively,
@@ -2920,6 +2925,24 @@ provider = "anthropic"
 
         assert_eq!(domain.runtime_state, None, "runtime_state cleared on ConnectionFailed");
         assert!(!domain.turn_pending, "turn_pending cleared on ConnectionFailed");
+    }
+
+    /// A second `Connected` is a new occupant in the same slot, and it
+    /// inherits nothing the previous one held: `background_tasks_changed`
+    /// is not re-sent for a session that has not started one, so a
+    /// registry left standing would have a row spin over a task nobody is
+    /// running until a real snapshot arrives.
+    #[test]
+    fn a_second_connected_drops_background_work() {
+        let mut domain = empty_domain();
+        domain.background_work = true;
+
+        apply_event_to_domain(&mut domain, &connected_event("new-uuid", "/proj"));
+
+        assert!(
+            !domain.background_work,
+            "a replaced occupant's background work must not survive it",
+        );
     }
 
     /// A second `Connected` (`/new`, `/login`, `/logout`) overwrites
