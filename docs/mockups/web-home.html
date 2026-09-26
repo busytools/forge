@@ -17,7 +17,7 @@
     --r: 10px;
     /* one line per entity: state | name | where | what | when.
        no action column - the whole row is the target. */
-    --cols: 12px minmax(0, 1.15fr) minmax(0, 1.05fr) minmax(0, 1.6fr) 64px;
+    --cols: 13px minmax(0, 22rem) minmax(0, 20rem) minmax(0, 1fr) 74px;
     --pad: 16px;
   }
 
@@ -29,12 +29,12 @@
       var(--bg);
     color: var(--text);
     font-family: var(--ui);
-    font-size: 14px;
+    font-size: 15.5px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
   }
 
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 32px 72px; }
+  .wrap { padding: 30px 40px 64px; }
 
   /* ---------- header ---------- */
 
@@ -44,12 +44,12 @@
     border-bottom: 1px solid var(--line);
   }
   .brand { display: flex; align-items: center; gap: 10px; }
-  .brand .mark { width: 26px; height: 26px; flex: 0 0 26px; color: var(--accent); }
+  .brand .mark { width: 30px; height: 30px; flex: 0 0 30px; color: var(--accent); }
   .brand .mark svg { display: block; width: 100%; height: 100%; }
-  .brand .word { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
-  .versions { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+  .versions { font-family: var(--mono); font-size: 13.5px; color: var(--dim); }
   .versions b { color: var(--muted); font-weight: 500; }
-  .totals { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .totals { margin-left: auto; font-family: var(--mono); font-size: 13.5px; color: var(--muted); }
   .totals .n { color: var(--text); font-weight: 600; }
 
   /* ---------- system band ---------- */
@@ -62,11 +62,11 @@
   }
   .svc .k {
     display: flex; align-items: center; gap: 7px;
-    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-    color: var(--dim); margin-bottom: 6px;
+    font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 7px;
   }
-  .svc .v { font-family: var(--mono); font-size: 13px; color: var(--text); }
-  .svc .sub { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin-top: 3px; }
+  .svc .v { font-family: var(--mono); font-size: 15px; color: var(--text); }
+  .svc .sub { font-family: var(--mono); font-size: 13px; color: var(--dim); margin-top: 4px; }
   .svc.warn { border-color: rgba(201,161,59,.35); }
   .svc.warn .v { color: var(--warn); }
   .svc.bad { border-color: rgba(224,104,62,.4); }
@@ -143,8 +143,8 @@
   .org { margin-bottom: 30px; }
   .org > h2 {
     display: flex; align-items: baseline; gap: 10px;
-    font-size: 11px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
-    color: var(--muted); padding: 0 0 7px;
+    font-size: 12.5px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
+    color: var(--muted); padding: 0 0 8px;
   }
   .org > h2 .rule { flex: 1; height: 1px; background: var(--line); }
   .org > h2 .counts {
@@ -178,11 +178,11 @@
 
   .row .name {
     display: flex; align-items: center; gap: 8px;
-    min-width: 0; font-size: 13.5px;
+    min-width: 0; font-size: 15.5px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .row .where, .row .when {
-    font-family: var(--mono); font-size: 12px; color: var(--dim);
+    font-family: var(--mono); font-size: 13.5px; color: var(--dim);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .row .when { text-align: right; }
@@ -191,7 +191,7 @@
   /* what it is doing: its task when there is one, and its artifact */
   .row .what {
     display: flex; align-items: center; gap: 8px; min-width: 0;
-    font-size: 12.5px; color: var(--muted);
+    font-size: 14px; color: var(--muted);
   }
   .row .what .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .row .what .st {
@@ -248,12 +248,6 @@
   .note.dim { color: var(--dim); }
   .children .note { padding-left: 52px; }
 
-  footer {
-    margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line);
-    font-family: var(--mono); font-size: 11.5px; color: var(--dim);
-    display: flex; gap: 18px; flex-wrap: wrap;
-  }
-  footer b { color: var(--muted); font-weight: 500; }
 
   /* ---------- narrow: a phone is a client too ---------- */
 
@@ -1028,12 +1022,6 @@
       </li>
     </ul>
   </section>
-
-  <footer>
-    <span><b>real data</b> pulled 2026-09-26 08:52 IST</span>
-    <span>16 projects, 4 orgs, 15 live agents, 3 tasks</span>
-    <span>working vs idle is derived from when each session last wrote; the true state is in-process</span>
-  </footer>
 
 </div>
 </body>

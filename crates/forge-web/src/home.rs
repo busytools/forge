@@ -182,12 +182,12 @@ fn state_of_agent(agent: &AgentRow, unseen: &Unseen) -> State {
 
 /// Gather the fleet and render it.
 pub async fn render(home: &Home<'_>) -> Markup {
-    page(&view_of(home).await, home.bound, home.theme)
+    page(&view_of(home).await, home.theme)
 }
 
 /// Gather the fleet and render the region the stream swaps in.
 pub async fn render_region(home: &Home<'_>) -> Markup {
-    region(&view_of(home).await, home.bound)
+    region(&view_of(home).await)
 }
 
 /// Read the core into the shape the markup wants, with each row's working
@@ -249,6 +249,11 @@ async fn view_of(home: &Home<'_>) -> HomeView {
             ProjectRows { lead, workers, refused },
         );
     }
+
+    // The orgs read alphabetically rather than in whatever order
+    // forge.toml declares them; the projects inside each keep their
+    // declared order.
+    orgs.sort_by(|a, b| a.name.cmp(&b.name));
 
     HomeView {
         live_agents: agents.all().len(),
@@ -487,7 +492,7 @@ fn push_org(orgs: &mut Vec<OrgSection>, name: String, live: usize, rows: Project
 }
 
 /// The page. Pure: everything it draws comes from `view`.
-fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup {
+fn page(view: &HomeView, theme_name: Option<&str>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -515,7 +520,7 @@ fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup 
                 // every event - measured at ninety swaps per update and
                 // climbing, which is a page that cooks a core by itself.
                 div #fleet sse-swap="fleet" hx-swap="morph:outerHTML" hx-target="#home" {
-                    (region(view, bound))
+                    (region(view))
                 }
                 script src="/vendor/htmx.js" {}
                 script src="/vendor/htmx-sse.js" {}
@@ -529,7 +534,7 @@ fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup 
 /// core, and nothing it draws from the request. The payload is this
 /// element itself, and it carries no wiring of its own - the listener that
 /// swaps it lives on the wrapper outside it.
-fn region(view: &HomeView, bound: SocketAddr) -> Markup {
+fn region(view: &HomeView) -> Markup {
     html! {
         div .wrap #home {
             header .top {
@@ -576,13 +581,6 @@ fn region(view: &HomeView, bound: SocketAddr) -> Markup {
                             }
                         }
                     }
-                }
-            }
-            footer {
-                span { "this page is served on " (bound) }
-                span {
-                    (view.projects) " projects \u{b7} " (view.orgs.len()) " orgs \u{b7} "
-                    (view.live_agents) " live agents"
                 }
             }
         }
@@ -717,8 +715,6 @@ fn when_of(state: State, last_activity: Option<SystemTime>) -> String {
 mod tests {
     use super::*;
 
-    const BOUND: &str = "127.0.0.1:8790";
-
     fn row_of(state: State) -> Row {
         Row {
             state,
@@ -737,7 +733,7 @@ mod tests {
     }
 
     fn render(view: &HomeView) -> String {
-        page(view, BOUND.parse().expect("addr"), None).into_string()
+        page(view, None).into_string()
     }
 
     fn empty() -> HomeView {
@@ -1033,7 +1029,7 @@ mod tests {
     fn the_stream_payload_is_the_region_and_not_the_document() {
         let view = empty();
 
-        let payload = region(&view, BOUND.parse().expect("addr")).into_string();
+        let payload = region(&view).into_string();
 
         assert!(
             payload.contains("class=\"wrap\" id=\"home\""),
