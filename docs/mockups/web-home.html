@@ -1,0 +1,1040 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; home</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23f47600' fill-rule='evenodd' d='M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z'/%3E%3C/svg%3E">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, Menlo, monospace;
+    --r: 10px;
+    /* one line per entity: state | name | where | what | when.
+       no action column - the whole row is the target. */
+    --cols: 12px minmax(0, 1.15fr) minmax(0, 1.05fr) minmax(0, 1.6fr) 64px;
+    --pad: 16px;
+  }
+
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 32px 72px; }
+
+  /* ---------- header ---------- */
+
+  header.top {
+    display: flex; align-items: center; gap: 14px;
+    padding-bottom: 18px; margin-bottom: 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .mark { width: 26px; height: 26px; flex: 0 0 26px; color: var(--accent); }
+  .brand .mark svg { display: block; width: 100%; height: 100%; }
+  .brand .word { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
+  .versions { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .versions b { color: var(--muted); font-weight: 500; }
+  .totals { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .totals .n { color: var(--text); font-weight: 600; }
+
+  /* ---------- system band ---------- */
+
+  .band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .svc {
+    background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+    border: 1px solid var(--line); border-radius: var(--r);
+    padding: 12px 14px;
+  }
+  .svc .k {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 6px;
+  }
+  .svc .v { font-family: var(--mono); font-size: 13px; color: var(--text); }
+  .svc .sub { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin-top: 3px; }
+  .svc.warn { border-color: rgba(201,161,59,.35); }
+  .svc.warn .v { color: var(--warn); }
+  .svc.bad { border-color: rgba(224,104,62,.4); }
+  .svc.bad .v { color: var(--bad); }
+  .svc.off { opacity: .72; }
+
+  .banner {
+    display: flex; align-items: center; gap: 10px;
+    border: 1px solid rgba(201,161,59,.35); background: rgba(201,161,59,.07);
+    border-radius: var(--r); padding: 10px 14px; margin-bottom: 22px;
+    font-size: 12.5px; color: var(--warn);
+  }
+  .banner .k {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em;
+    text-transform: uppercase; flex: none;
+  }
+
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
+  .dot.off { background: var(--dim); }
+  .dot.live { background: var(--accent); box-shadow: 0 0 7px rgba(244,118,0,.6); }
+  .dot.bad { background: var(--bad); box-shadow: 0 0 7px rgba(224,104,62,.5); }
+  .dot.warn { background: var(--warn); }
+
+  /* the mark inside a row: one shape per meaning, never colour alone.
+     scoped to .row so the band keeps its plain dots. */
+  .row .dot {
+    width: 11px; height: 11px; flex: 0 0 11px;
+    border-radius: 0; background: none; box-shadow: none; opacity: 1;
+  }
+  .row.running .dot, .row.spawning .dot {
+    border-radius: 50%;
+    animation: spin 900ms linear infinite;
+  }
+  .row.running .dot { border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent); }
+  .row.spawning .dot {
+    border: 1.6px solid rgba(93,102,117,.45);
+    border-top-color: var(--muted);
+    animation-duration: 1500ms;
+  }
+  .row.idle .dot {
+    width: 7px; height: 7px; flex: 0 0 7px;
+    border-radius: 50%; background: var(--accent);
+  }
+  .row.asleep .dot, .row.never .dot {
+    width: 9px; height: 9px; flex: 0 0 9px;
+    border: 1.4px solid var(--dim); border-radius: 50%;
+  }
+  .row.never .dot { opacity: .55; }
+  .row.failed .dot {
+    width: 10px; height: 10px; flex: 0 0 10px; background: var(--bad);
+    clip-path: polygon(16% 0, 50% 34%, 84% 0, 100% 16%, 66% 50%, 100% 84%,
+                       84% 100%, 50% 66%, 16% 100%, 0 84%, 34% 50%, 0 16%);
+  }
+  .row.needs .dot, .row.auth .dot {
+    width: 11px; height: 11px; flex: 0 0 11px;
+    clip-path: polygon(50% 3%, 97% 95%, 3% 95%);
+    animation: pulse 1500ms ease-in-out infinite;
+  }
+  .row.needs .dot { background: var(--warn); }
+  .row.auth .dot { background: var(--bad); }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .row.running .dot { animation: none; border-color: var(--accent); }
+    .row.spawning .dot { animation: none; border-color: var(--muted); }
+    .row.needs .dot, .row.auth .dot { animation: none; }
+  }
+
+  /* ---------- org: a label and a hairline. no container anywhere ---------- */
+
+  .org { margin-bottom: 30px; }
+  .org > h2 {
+    display: flex; align-items: baseline; gap: 10px;
+    font-size: 11px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
+    color: var(--muted); padding: 0 0 7px;
+  }
+  .org > h2 .rule { flex: 1; height: 1px; background: var(--line); }
+  .org > h2 .counts {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+    text-transform: none; color: var(--dim); font-weight: 400;
+  }
+
+  .list { list-style: none; }
+  .list .node { border-top: 1px solid rgba(34,42,60,.55); }
+  .list > .node:first-child { border-top: 0; }
+
+  /* ---------- the row: one line, same for a lead and for a worker ---------- */
+
+  .row {
+    display: grid; grid-template-columns: var(--cols);
+    align-items: center; gap: 12px;
+    padding: 9px 24px 9px 2px;
+    cursor: pointer; position: relative;
+  }
+  .row:hover { background: rgba(27,33,48,.42); }
+  .row::after {
+    content: "\203A"; position: absolute; right: 6px; top: 50%;
+    transform: translateY(-50%); font-size: 15px; line-height: 1;
+    color: var(--accent); opacity: 0; transition: opacity .12s ease;
+  }
+  .row:hover::after { opacity: .75; }
+  /* a row that cannot act must not look like one that can */
+  .row.blocked { cursor: not-allowed; }
+  .row.blocked:hover { background: none; }
+  .row.blocked::after { content: none; }
+
+  .row .name {
+    display: flex; align-items: center; gap: 8px;
+    min-width: 0; font-size: 13.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row .where, .row .when {
+    font-family: var(--mono); font-size: 12px; color: var(--dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row .when { text-align: right; }
+  .row .where .files { color: var(--muted); }
+
+  /* what it is doing: its task when there is one, and its artifact */
+  .row .what {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    font-size: 12.5px; color: var(--muted);
+  }
+  .row .what .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .row .what .st {
+    font-family: var(--mono); font-size: 10.5px; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 7px; flex: none;
+  }
+  .row .what a {
+    font-family: var(--mono); font-size: 11.5px; color: var(--accent);
+    text-decoration: none; flex: none;
+  }
+  .row .what a:hover { text-decoration: underline; }
+
+  .row.running .name, .row.idle .name, .row.spawning .name { font-weight: 600; }
+
+  .row.asleep .name { color: var(--muted); font-weight: 400; }
+  .row.asleep .where, .row.asleep .what { opacity: .6; }
+
+  .row.never .name { color: var(--dim); font-weight: 400; }
+  .row.never .where, .row.never .what, .row.never .when { opacity: .45; }
+
+  /* finished, and you have not looked at it: the one state that answers
+     "what changed while I was away". a diamond, so it is a third shape. */
+  .row.unseen .dot {
+    width: 11px; height: 11px; flex: 0 0 11px; background: var(--ok);
+    clip-path: polygon(50% 2%, 98% 50%, 50% 98%, 2% 50%);
+  }
+  .row.unseen .what { color: var(--ok); }
+
+  .row.failed { background: rgba(224,104,62,.055); }
+  .row.failed .name { color: var(--bad); font-weight: 600; }
+  .row.failed .where, .row.failed .what { color: var(--bad); }
+  .row.failed::after { color: var(--bad); }
+
+  /* needs you: the one state that has to be impossible to miss */
+  .row.needs { background: rgba(201,161,59,.075); }
+  .row.needs .name { color: var(--warn); font-weight: 600; }
+  .row.needs .what { color: var(--warn); }
+  .row.needs::after { color: var(--warn); }
+
+  /* sign-in needed is the same family as needs-you, one step harder */
+  .row.auth { background: rgba(224,104,62,.06); }
+  .row.auth .name { color: var(--bad); font-weight: 600; }
+  .row.auth .what { color: var(--bad); }
+  .row.auth::after { color: var(--bad); }
+
+  /* hierarchy: an indent and nothing else. every other column stays put. */
+  .children { list-style: none; }
+  .children .row .name { padding-left: 22px; }
+
+  .note {
+    font-family: var(--mono); font-size: 11.5px; color: var(--bad);
+    padding: 0 var(--pad) 9px 30px;
+  }
+  .note.dim { color: var(--dim); }
+  .children .note { padding-left: 52px; }
+
+  footer {
+    margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+    display: flex; gap: 18px; flex-wrap: wrap;
+  }
+  footer b { color: var(--muted); font-weight: 500; }
+
+  /* ---------- narrow: a phone is a client too ---------- */
+
+  @media (max-width: 760px) {
+    :root { --pad: 14px; }
+    .wrap { padding: 18px 16px 56px; }
+    header.top { flex-wrap: wrap; gap: 8px 12px; }
+    .totals { margin-left: 0; width: 100%; }
+    .band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .org > h2 .counts { display: none; }
+    .row {
+      grid-template-columns: 12px minmax(0, 1fr) 62px;
+      row-gap: 3px; padding: 9px 18px 9px 2px;
+    }
+    .row .dot   { grid-column: 1; grid-row: 1; }
+    .row .name  { grid-column: 2; grid-row: 1; }
+    .row .when  { grid-column: 3; grid-row: 1; }
+    .row .where { grid-column: 2 / 4; grid-row: 2; }
+    .row .what  { grid-column: 2 / 4; grid-row: 3; }
+    .children .row .name { padding-left: 14px; }
+    footer { gap: 8px; }
+  }
+
+  /* ---------- states reference ---------- */
+
+  #demo { display: none; }
+  .demo-switch {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+    cursor: pointer; user-select: none; margin-bottom: 20px;
+  }
+  .demo-switch:hover { color: var(--muted); }
+  .demo-switch .box {
+    width: 13px; height: 13px; border: 1px solid var(--line);
+    border-radius: 3px; background: var(--s2); display: inline-block;
+  }
+  #demo:checked ~ .wrap .demo-switch .box { background: var(--accent); border-color: var(--accent); }
+  #demo:checked ~ .wrap .demo-switch { color: var(--muted); }
+  #demo:checked ~ .wrap .demo-panel { display: block; }
+  .demo-panel { display: none; margin-bottom: 32px; }
+  .demo-panel > h3 {
+    font-size: 11px; letter-spacing: .11em; text-transform: uppercase;
+    color: var(--warn); padding: 0 0 8px; font-weight: 600;
+  }
+  .demo-panel > .lede { font-size: 12.5px; color: var(--dim); padding: 0 0 24px; max-width: 72ch; }
+  .cat { margin-bottom: 26px; }
+  .cat h4 {
+    display: flex; align-items: baseline; gap: 9px;
+    font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--muted); padding: 0 0 7px; font-weight: 600;
+  }
+  .cat h4 .why {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0;
+    text-transform: none; color: var(--dim); font-weight: 400;
+  }
+  .empty {
+    border: 1px dashed var(--line); border-radius: var(--r);
+    padding: 46px 24px; text-align: center;
+  }
+  .empty .mark {
+    display: inline-block; width: 34px; height: 34px;
+    margin-bottom: 14px; color: rgba(244,118,0,.55);
+  }
+  .empty .mark svg { display: block; width: 100%; height: 100%; }
+  .empty .t { font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+  .empty .d { font-size: 12.5px; color: var(--dim); max-width: 46ch; margin: 0 auto; }
+  .empty code {
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    background: var(--s2); border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  .tokens { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .tok {
+    display: flex; align-items: center; gap: 9px;
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; background: rgba(13,17,26,.5);
+  }
+  .tok .sw {
+    width: 20px; height: 20px; border-radius: 5px; flex: 0 0 20px;
+    border: 1px solid rgba(255,255,255,.1);
+  }
+  .tok code { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+  .tok .hx { font-family: var(--mono); font-size: 10.5px; color: var(--dim); margin-left: auto; }
+  .cat .override {
+    font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+    padding: 12px 0 0; line-height: 1.7;
+  }
+  .cat .override b { color: var(--muted); font-weight: 500; }
+  .cfg { display: grid; gap: 10px; }
+  .cfgrow {
+    display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 16px;
+    align-items: baseline;
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 11px 13px; background: rgba(13,17,26,.5);
+  }
+  .cfgrow code { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .cfgrow .vals {
+    font-family: var(--mono); font-size: 11.5px; color: var(--dim); line-height: 1.9;
+  }
+  .cfgrow .vals b { color: var(--muted); font-weight: 500; }
+
+  @media (max-width: 760px) {
+    .tokens { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+
+<input type="checkbox" id="demo" hidden checked>
+
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg></span>
+      <span class="word">forge</span>
+    </div>
+    <div class="versions"><b>v1.0.88</b> &middot; claude 2.1.280</div>
+    <div class="totals"><span class="n">15</span> agents &middot; <span class="n">3</span> tasks &middot; 16 projects</div>
+  </header>
+
+  <label class="demo-switch" for="demo">
+    <span class="box"></span> show every state (uncheck for the live page alone)
+  </label>
+
+  <section class="band">
+    <div class="svc">
+      <div class="k"><span class="dot ok"></span> gateway</div>
+      <div class="v">bound :8787</div>
+      <div class="sub">inference listener</div>
+    </div>
+    <div class="svc">
+      <div class="k"><span class="dot ok"></span> web</div>
+      <div class="v">127.0.0.1:8790</div>
+      <div class="sub">this page</div>
+    </div>
+    <div class="svc">
+      <div class="k"><span class="dot ok"></span> dictation</div>
+      <div class="v">2 models</div>
+      <div class="sub">cohere loaded &middot; take 08:17</div>
+    </div>
+    <div class="svc">
+      <div class="k"><span class="dot ok"></span> accounts</div>
+      <div class="v">6 ready</div>
+      <div class="sub">probed 08:16</div>
+    </div>
+  </section>
+
+  <div class="demo-panel">
+    <h3>states reference &middot; the home's whole vocabulary, none of it live</h3>
+    <p class="lede">
+      Every state the home can render, on the components it renders them on.
+      This is what an implementation has to cover; the live page below shows
+      only the states that are true right now.
+    </p>
+
+    <div class="cat">
+      <h4>state marks <span class="why">one shape per meaning, so colour is never the only signal</span></h4>
+      <ul class="list">
+        <li class="node">
+          <div class="row running">
+            <span class="dot live"></span>
+            <span class="name">working</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">a turn is in flight, or background work is running</span></span>
+            <span class="when">now</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row spawning">
+            <span class="dot live"></span>
+            <span class="name">starting</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">the subprocess is coming up - slower and dimmer than working</span></span>
+            <span class="when">spawning</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row idle">
+            <span class="dot live"></span>
+            <span class="name">idle</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">alive, nothing in flight - no motion, so motion always means work</span></span>
+            <span class="when">17m</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row unseen">
+            <span class="dot ok"></span>
+            <span class="name">finished</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">a turn completed and you have not looked at it yet</span></span>
+            <span class="when">4m</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row needs">
+            <span class="dot warn"></span>
+            <span class="name">needs you</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">asked you a question</span></span>
+            <span class="when">2m</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row needs">
+            <span class="dot warn"></span>
+            <span class="name">needs you</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">a permission prompt is waiting</span></span>
+            <span class="when">6m</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row needs">
+            <span class="dot warn"></span>
+            <span class="name">needs you</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">rate limited; retrying at 14:05</span></span>
+            <span class="when">4m</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row auth">
+            <span class="dot bad"></span>
+            <span class="name">sign-in needed</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">waiting on /login before it can start</span></span>
+            <span class="when">12m</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row failed">
+            <span class="dot bad"></span>
+            <span class="name">failed</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">the bucket died and is kept only so you can see why</span></span>
+            <span class="when">failed</span>
+          </div>
+          <div class="note">OAuth token expired; run /login to retry</div>
+        </li>
+        <li class="node">
+          <div class="row asleep">
+            <span class="dot off"></span>
+            <span class="name">asleep</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">no session - it starts again when you ask it to</span></span>
+            <span class="when">8h</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row never">
+            <span class="dot off"></span>
+            <span class="name">never started</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">no session has ever run here</span></span>
+            <span class="when">never</span>
+          </div>
+        </li>
+      </ul>
+    </div>
+
+    <div class="cat">
+      <h4>an agent <span class="why">one row shape, the same for a lead and a worker</span></h4>
+      <ul class="list">
+        <li class="node">
+          <div class="row running">
+            <span class="dot live"></span>
+            <span class="name">api-gateway</span>
+            <span class="where">main &middot; <span class="files">7 files</span></span>
+            <span class="what">
+              <span class="txt">Rewrite the retry backoff so a 429 does not burn the window</span>
+              <span class="st">in progress</span>
+              <a href="#">PR 9412</a>
+            </span>
+            <span class="when">now</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row running">
+            <span class="dot live"></span>
+            <span class="name">taskless</span>
+            <span class="where">worktree-taskless</span>
+            <span class="what"><span class="txt">&middot;</span></span>
+            <span class="when">3m</span>
+          </div>
+        </li>
+      </ul>
+    </div>
+
+    <div class="cat">
+      <h4>a project that cannot start <span class="why">a spawn is refused, and the row says which refusal</span></h4>
+      <ul class="list">
+        <li class="node">
+          <div class="row asleep blocked">
+            <span class="dot off"></span>
+            <span class="name">notes</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">no model declared - add `model` to this project</span></span>
+            <span class="when">5d</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row asleep blocked">
+            <span class="dot off"></span>
+            <span class="name">web-api</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">no usable accounts</span></span>
+            <span class="when">2d</span>
+          </div>
+        </li>
+      </ul>
+    </div>
+
+    <div class="cat">
+      <h4>missing pieces <span class="why">what a row shows when the data behind it is not there</span></h4>
+      <ul class="list">
+        <li class="node">
+          <div class="row asleep">
+            <span class="dot off"></span>
+            <span class="name">dotfiles</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">not a git repository, so there is no branch to show</span></span>
+            <span class="when">6h</span>
+          </div>
+        </li>
+        <li class="node">
+          <div class="row asleep">
+            <span class="dot off"></span>
+            <span class="name">steward</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">its worktree is gone, so the row stays until it is despawned</span></span>
+            <span class="when">3d</span>
+          </div>
+        </li>
+      </ul>
+    </div>
+
+    <div class="cat">
+      <h4>a worker under its project <span class="why">hierarchy is the indent, and nothing else moves</span></h4>
+      <ul class="list">
+        <li class="node">
+          <div class="row idle">
+            <span class="dot live"></span>
+            <span class="name">hub-modules</span>
+            <span class="where">main</span>
+            <span class="what"></span>
+            <span class="when">now</span>
+          </div>
+          <ul class="children">
+            <li class="node">
+              <div class="row running">
+                <span class="dot live"></span>
+                <span class="name">em-dash-sweep</span>
+                <span class="where">worktree-em-dash-sweep</span>
+                <span class="what">
+                  <span class="txt">Sweep the memory corpus for banned dashes and curly quotes</span>
+                  <span class="st">in progress</span>
+                </span>
+                <span class="when">now</span>
+              </div>
+            </li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+
+    <div class="cat">
+      <h4>the system band <span class="why">one card per service, quiet until it is not</span></h4>
+      <section class="band">
+        <div class="svc">
+          <div class="k"><span class="dot ok"></span> gateway</div>
+          <div class="v">bound :8787</div>
+          <div class="sub">inference listener</div>
+        </div>
+        <div class="svc">
+          <div class="k"><span class="dot ok"></span> web</div>
+          <div class="v">127.0.0.1:8790</div>
+          <div class="sub">this page</div>
+        </div>
+        <div class="svc">
+          <div class="k"><span class="dot ok"></span> dictation</div>
+          <div class="v">2 models</div>
+          <div class="sub">cohere loaded</div>
+        </div>
+        <div class="svc">
+          <div class="k"><span class="dot ok"></span> accounts</div>
+          <div class="v">6 ready</div>
+          <div class="sub">probed 3m ago</div>
+        </div>
+      </section>
+      <section class="band">
+        <div class="svc warn">
+          <div class="k"><span class="dot warn"></span> gateway</div>
+          <div class="v">binding</div>
+          <div class="sub">inference listener</div>
+        </div>
+        <div class="svc off">
+          <div class="k"><span class="dot off"></span> web</div>
+          <div class="v">off</div>
+          <div class="sub">enabled = false</div>
+        </div>
+        <div class="svc warn">
+          <div class="k"><span class="dot warn"></span> dictation</div>
+          <div class="v">3.07 GB</div>
+          <div class="sub">fetching s1-mini &middot; first run</div>
+        </div>
+        <div class="svc warn">
+          <div class="k"><span class="dot warn"></span> accounts</div>
+          <div class="v">5 ready &middot; 1 at cap</div>
+          <div class="sub">Zai resets in 41m</div>
+        </div>
+      </section>
+      <section class="band">
+        <div class="svc bad">
+          <div class="k"><span class="dot bad"></span> gateway</div>
+          <div class="v">failed :8787</div>
+          <div class="sub">address in use</div>
+        </div>
+        <div class="svc bad">
+          <div class="k"><span class="dot bad"></span> dictation</div>
+          <div class="v">hash mismatch</div>
+          <div class="sub">s1-mini-f16.gguf</div>
+        </div>
+        <div class="svc bad">
+          <div class="k"><span class="dot bad"></span> accounts</div>
+          <div class="v">4 ready &middot; 2 bailed</div>
+          <div class="sub">auth failed or expired</div>
+        </div>
+        <div class="svc warn">
+          <div class="k"><span class="dot warn"></span> web</div>
+          <div class="v">127.0.0.1:8790</div>
+          <div class="sub">1 tab attached</div>
+        </div>
+      </section>
+    </div>
+
+    <div class="cat">
+      <h4>upstream <span class="why">sits above the band, and only when there is something to say</span></h4>
+      <div class="banner">
+        <span class="k">claude status</span>
+        <span>Elevated error rates on the Messages API. Sessions may fail and retry.</span>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>nothing configured <span class="why">a fresh install, before any project exists</span></h4>
+      <div class="empty">
+        <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg></span>
+        <p class="t">No projects yet</p>
+        <p class="d">Projects come from <code>forge.toml</code>. Add an <code>[[orgs.projects]]</code> entry pointing at a repository, and it appears here.</p>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>what is configurable <span class="why">one place in forge.toml, picking by name from what forge ships</span></h4>
+      <div class="cfg">
+        <div class="cfgrow">
+          <code>mark</code>
+          <span class="vals"><b>klin</b> &middot; lanes &middot; f_slab &middot; split &middot; spine &middot; slab &middot; grid &middot;
+            clamp &middot; strike &middot; cascade &middot; nest &middot; chamfer &middot; tally &middot; stencil_f &middot;
+            anvil &middot; spark<br>
+            the sixteen drawn in the logo sheet. no file path: every option is one forge has drawn and
+            checked at 16px</span>
+        </div>
+        <div class="cfgrow">
+          <code>spinner</code>
+          <span class="vals"><b>braille</b> &middot; phase_of_moon &middot; ember &middot; bars_v &middot; star &middot; sparkle<br>
+            the six the TUI already ships. only the working and starting marks animate, so this
+            picks how they animate and nothing else changes</span>
+        </div>
+        <div class="cfgrow">
+          <code>theme</code>
+          <span class="vals"><b>dark</b><br>
+            the palette below. a second palette is its own pass, since every state colour needs a
+            treatment that stays legible on the new background</span>
+        </div>
+        <div class="cfgrow">
+          <code>unknown name</code>
+          <span class="vals">a boot failure with the key and the value named, never a quiet fallback -
+            a setting that is ignored reads as the key not working</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>the palette <span class="why">the tokens a theme resolves to; dark is the one shipped so far</span></h4>
+      <div class="tokens">
+        <div class="tok"><span class="sw" style="background:#04050a"></span><code>--bg</code><span class="hx">#04050a</span></div>
+        <div class="tok"><span class="sw" style="background:#0d111a"></span><code>--s1</code><span class="hx">#0d111a</span></div>
+        <div class="tok"><span class="sw" style="background:#141926"></span><code>--s2</code><span class="hx">#141926</span></div>
+        <div class="tok"><span class="sw" style="background:#1b2130"></span><code>--s3</code><span class="hx">#1b2130</span></div>
+        <div class="tok"><span class="sw" style="background:#222a3c"></span><code>--line</code><span class="hx">#222a3c</span></div>
+        <div class="tok"><span class="sw" style="background:#5d6675"></span><code>--dim</code><span class="hx">#5d6675</span></div>
+        <div class="tok"><span class="sw" style="background:#8f98a8"></span><code>--muted</code><span class="hx">#8f98a8</span></div>
+        <div class="tok"><span class="sw" style="background:#eaeef6"></span><code>--text</code><span class="hx">#eaeef6</span></div>
+        <div class="tok"><span class="sw" style="background:#f47600"></span><code>--accent</code><span class="hx">#f47600</span></div>
+        <div class="tok"><span class="sw" style="background:#82c76b"></span><code>--ok</code><span class="hx">#82c76b</span></div>
+        <div class="tok"><span class="sw" style="background:#c9a13b"></span><code>--warn</code><span class="hx">#c9a13b</span></div>
+        <div class="tok"><span class="sw" style="background:#e0683e"></span><code>--bad</code><span class="hx">#e0683e</span></div>
+      </div>
+      <p class="override">
+        Every surface reads these twelve tokens and nothing else, so a theme is one place to change
+        and no component needs a branch for it. <b>[web] theme</b> in <b>forge.toml</b> picks one by
+        name; the server emits the selected set as the page's root variables.
+      </p>
+    </div>
+  </div>
+
+  <section class="org">
+    <h2>Busytools <span class="rule"></span>
+      <span class="counts">3 live &middot; 2 asleep</span>
+    </h2>
+    <ul class="list">
+      <li class="node">
+        <div class="row running">
+          <span class="dot live"></span>
+          <span class="name">forge</span>
+          <span class="where">main &middot; <span class="files">1 file</span></span>
+          <span class="what"></span>
+          <span class="when">now</span>
+        </div>
+      </li>
+      <li class="node">
+        <div class="row running">
+          <span class="dot live"></span>
+          <span class="name">hub-modules</span>
+          <span class="where">main</span>
+          <span class="what"></span>
+          <span class="when">now</span>
+        </div>
+        <ul class="children">
+          <li class="node">
+            <div class="row running">
+              <span class="dot live"></span>
+              <span class="name">em-dash-sweep</span>
+              <span class="where">worktree-em-dash-sweep</span>
+              <span class="what">
+                <span class="txt">Sweep the memory corpus for banned dashes and curly quotes</span>
+                <span class="st">in progress</span>
+              </span>
+              <span class="when">now</span>
+            </div>
+          </li>
+          <li class="node">
+            <div class="row idle">
+              <span class="dot live"></span>
+              <span class="name">steward</span>
+              <span class="where">tamilmv-header-blankq</span>
+              <span class="what">
+                <span class="txt">Refresh the steward charter row from the corrected file</span>
+                <span class="st">in progress</span>
+              </span>
+              <span class="when">now</span>
+            </div>
+          </li>
+        </ul>
+      </li>
+      <li class="node">
+        <div class="row idle">
+          <span class="dot live"></span>
+          <span class="name">busymail</span>
+          <span class="where">main</span>
+          <span class="what"></span>
+          <span class="when">now</span>
+        </div>
+      </li>
+      <li class="node">
+        <div class="row asleep">
+          <span class="dot off"></span>
+          <span class="name">busyblocks</span>
+          <span class="where"></span>
+          <span class="what"></span>
+          <span class="when">8h</span>
+        </div>
+      </li>
+      <li class="node">
+        <div class="row asleep">
+          <span class="dot off"></span>
+          <span class="name">trader-cc</span>
+          <span class="where"></span>
+          <span class="what"></span>
+          <span class="when">17h</span>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <section class="org">
+    <h2>Personal <span class="rule"></span>
+      <span class="counts">2 live &middot; 3 asleep</span>
+    </h2>
+    <ul class="list">
+      <li class="node">
+        <div class="row idle">
+          <span class="dot live"></span>
+          <span class="name">companies</span>
+          <span class="where">main</span>
+          <span class="what"></span>
+          <span class="when">17m</span>
+        </div>
+        <ul class="children">
+          <li class="node">
+            <div class="row idle">
+              <span class="dot live"></span>
+              <span class="name">inbox-triage</span>
+              <span class="where">worktree-inbox-triage</span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+          </li>
+          <li class="node">
+            <div class="row idle">
+              <span class="dot live"></span>
+              <span class="name">job-hunt</span>
+              <span class="where">worktree-job-hunt</span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+          </li>
+          <li class="node">
+            <div class="row idle">
+              <span class="dot live"></span>
+              <span class="name">steward</span>
+              <span class="where">worktree-steward</span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+          </li>
+        </ul>
+      </li>
+      <li class="node">
+        <div class="row idle">
+          <span class="dot live"></span>
+          <span class="name">playground</span>
+          <span class="where">main</span>
+          <span class="what"></span>
+          <span class="when">21m</span>
+        </div>
+        <ul class="children">
+          <li class="node">
+            <div class="row idle">
+              <span class="dot live"></span>
+              <span class="name">gpt-tutor</span>
+              <span class="where">worktree-gpt-tutor &middot; <span class="files">1 file</span></span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+          </li>
+          <li class="node">
+            <div class="row idle">
+              <span class="dot live"></span>
+              <span class="name">harness-tutor</span>
+              <span class="where">worktree-harness-tutor &middot; <span class="files">4 files</span></span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+          </li>
+        </ul>
+      </li>
+      <li class="node">
+        <div class="row asleep">
+          <span class="dot off"></span>
+          <span class="name">dotfiles</span>
+          <span class="where"></span>
+          <span class="what"></span>
+          <span class="when">6h</span>
+        </div>
+      </li>
+      <li class="node">
+        <div class="row never">
+          <span class="dot off"></span>
+          <span class="name">fitness</span>
+          <span class="where"></span>
+          <span class="what"></span>
+          <span class="when">never</span>
+        </div>
+      </li>
+      <li class="node">
+        <div class="row asleep">
+          <span class="dot off"></span>
+          <span class="name">pure-black-github-intellij</span>
+          <span class="where"></span>
+          <span class="what"></span>
+          <span class="when">10d</span>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <section class="org">
+    <h2>Granite <span class="rule"></span>
+      <span class="counts">2 live</span>
+    </h2>
+    <ul class="list">
+      <li class="node">
+        <div class="row running">
+          <span class="dot live"></span>
+          <span class="name">granite-backend</span>
+          <span class="where">main</span>
+          <span class="what"></span>
+          <span class="when">now</span>
+        </div>
+        <ul class="children">
+          <li class="node">
+            <div class="row idle">
+              <span class="dot live"></span>
+              <span class="name">referral-signature-fix</span>
+              <span class="where">fix/referral-stacks-signature</span>
+              <span class="what">
+                <span class="txt">#148 in review, round 2</span>
+                <span class="st">in progress</span>
+                <a href="#">PR 148</a>
+              </span>
+              <span class="when">now</span>
+            </div>
+          </li>
+        </ul>
+      </li>
+      <li class="node">
+        <div class="row idle">
+          <span class="dot live"></span>
+          <span class="name">core-v1</span>
+          <span class="where">master</span>
+          <span class="what"></span>
+          <span class="when">21m</span>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <section class="org">
+    <h2>Subspace <span class="rule"></span>
+      <span class="counts">4 asleep</span>
+    </h2>
+    <ul class="list">
+      <li class="node">
+        <div class="row asleep">
+          <span class="dot off"></span>
+          <span class="name">subspace</span>
+          <span class="where"></span>
+          <span class="what"></span>
+          <span class="when">2d</span>
+        </div>
+      </li>
+      <li class="node">
+        <div class="row asleep">
+          <span class="dot off"></span>
+          <span class="name">subspace-chain-pulse</span>
+          <span class="where"></span>
+          <span class="what"></span>
+          <span class="when">9d</span>
+        </div>
+      </li>
+      <li class="node">
+        <div class="row asleep">
+          <span class="dot off"></span>
+          <span class="name">infra</span>
+          <span class="where"></span>
+          <span class="what"></span>
+          <span class="when">9d</span>
+        </div>
+      </li>
+      <li class="node">
+        <div class="row never">
+          <span class="dot off"></span>
+          <span class="name">space-acres</span>
+          <span class="where"></span>
+          <span class="what"></span>
+          <span class="when">never</span>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <footer>
+    <span><b>real data</b> pulled 2026-09-26 08:52 IST</span>
+    <span>16 projects, 4 orgs, 15 live agents, 3 tasks</span>
+    <span>working vs idle is derived from when each session last wrote; the true state is in-process</span>
+  </footer>
+
+</div>
+</body>
+</html>
