@@ -1,7 +1,7 @@
 //! The listener, and the routes it serves.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::extract::State;
@@ -13,6 +13,7 @@ use forge_sessions::surface::ViewSurface;
 use maud::{Markup, html};
 
 use crate::home::{Home, render};
+use crate::stream::{Live, events};
 use crate::work::WorkCache;
 use crate::{brand, theme};
 
@@ -28,19 +29,28 @@ pub enum WebError {
     Bind { addr: SocketAddr, source: std::io::Error },
 }
 
-/// What the view serves: the core it reads, the cache it keeps, and the
-/// config it draws with.
+/// What the view serves: the core it reads, the cache it keeps, the live
+/// state its stream fills, and the config it draws with.
 pub struct WebState {
     pub surface: Arc<ViewSurface>,
     pub work: Arc<WorkCache>,
+    /// What the stream has told the view: the diamonds and the banner.
+    pub live: Mutex<Live>,
     pub config: WebConfig,
+}
+
+impl WebState {
+    /// A view that has learned nothing from the stream yet.
+    pub fn new(surface: Arc<ViewSurface>, work: Arc<WorkCache>, config: WebConfig) -> Self {
+        Self { surface, work, live: Mutex::new(Live::new()), config }
+    }
 }
 
 /// What one listener holds: the state, plus the address it came up on.
 #[derive(Clone)]
-struct Wiring {
-    bound: SocketAddr,
-    state: Arc<WebState>,
+pub(crate) struct Wiring {
+    pub(crate) bound: SocketAddr,
+    pub(crate) state: Arc<WebState>,
 }
 
 /// Bind the web view and serve it on a background task.
@@ -75,18 +85,35 @@ pub async fn start(state: WebState) -> Result<Option<SocketAddr>, WebError> {
 fn router(wiring: Wiring) -> Router {
     Router::new()
         .route("/", get(home_page))
+        .route("/events", get(events))
         .route("/favicon.svg", get(favicon))
         .route("/home.css", get(home_css))
         .with_state(wiring)
 }
 
-/// The home.
+/// The home, as the whole page.
 async fn home_page(State(wiring): State<Wiring>) -> Markup {
-    let state = &wiring.state;
+    render(&Home {
+        surface: &wiring.state.surface,
+        work: &wiring.state.work,
+        live: &wiring.state.live,
+        bound: wiring.bound,
+        mark: wiring.state.config.mark.as_deref(),
+        theme: wiring.state.config.theme.as_deref(),
+    })
+    .await
+}
+
+/// The region the stream swaps in: everything the page draws from the
+/// core, and nothing it draws from the request. The page has no composer
+/// and no `<details>`, so a wholesale replacement is the whole answer -
+/// and a swap target that held either would be the bug, not the page.
+pub(crate) async fn home_region(state: &WebState, bound: SocketAddr) -> Markup {
     render(&Home {
         surface: &state.surface,
         work: &state.work,
-        bound: wiring.bound,
+        live: &state.live,
+        bound,
         mark: state.config.mark.as_deref(),
         theme: state.config.theme.as_deref(),
     })

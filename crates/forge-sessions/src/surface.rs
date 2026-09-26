@@ -37,9 +37,29 @@ pub struct ViewSurface {
     workspace: Arc<Workspace>,
 }
 
+/// The update the core emits, re-exported: it is the workspace-to-view
+/// protocol already, so a view subscribes to it rather than to a second
+/// vocabulary this crate would have to keep in step.
+pub use forge_workspace::SessionUpdate;
+
+/// The wire shape a turn that finished arrives as. A view marking a
+/// completion reads the `Result` through this rather than deciding for
+/// itself which results count.
+pub fn is_success_result(is_error: bool, subtype: &str) -> bool {
+    !is_error && subtype == "success"
+}
+
 impl ViewSurface {
     pub fn new(workspace: Arc<Workspace>) -> Self {
         Self { workspace }
+    }
+
+    /// The core's own update stream. Every caller gets one of its own, so
+    /// a second view attaches beside the first rather than stealing its
+    /// events, and a subscriber is handed what was emitted before it
+    /// attached as well.
+    pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+        self.workspace.subscribe()
     }
 
     /// The projects, their sessions, and the per-project lists the

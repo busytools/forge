@@ -145,13 +145,13 @@ fn run() -> anyhow::Result<()> {
         // of its own, so the cron scheduler and the connectors above stay
         // the only ones. A bind that fails still boots - the TUI is not
         // downstream of this.
-        let web_state = forge_web::WebState {
-            surface: std::sync::Arc::new(forge_sessions::surface::ViewSurface::new(
-                std::sync::Arc::clone(&workspace),
-            )),
-            work: std::sync::Arc::new(forge_web::WorkCache::new()),
-            config: workspace.web_config(),
-        };
+        let web_state = forge_web::WebState::new(
+            std::sync::Arc::new(forge_sessions::surface::ViewSurface::new(std::sync::Arc::clone(
+                &workspace,
+            ))),
+            std::sync::Arc::new(forge_web::WorkCache::new()),
+            workspace.web_config(),
+        );
         match forge_web::start(web_state).await {
             Ok(Some(addr)) => tracing::info!(
                 target: forge_tui::logging::targets::APP_LIFECYCLE,

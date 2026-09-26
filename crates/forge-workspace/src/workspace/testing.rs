@@ -49,6 +49,13 @@ impl Workspace {
         forge_agent::Agent::testing_stub()
     }
 
+    /// Push one update onto the fan-out, so a test can watch a view react
+    /// to the core without driving a session. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn emit_for_test(&self, update: SessionUpdate) {
+        let _ = self.update_tx.send(update);
+    }
+
     /// Register a fresh testing-stub agent against `key`'s
     /// `DomainSession`. Returns the matching
     /// `forge_primitives::AgentCommand` receiver so tests can assert on

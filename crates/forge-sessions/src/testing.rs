@@ -17,6 +17,7 @@ use forge_primitives::SessionSlot;
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_workspace::{ProjectKey, Workspace};
 
+use crate::SessionUpdate;
 use crate::surface::ViewSurface;
 
 /// What a fixture hands back when it cannot build what was asked for.
@@ -48,6 +49,12 @@ impl Fleet {
     /// The surface, which keeps the workspace alive on its own.
     pub fn surface(&self) -> Arc<ViewSurface> {
         Arc::clone(&self.surface)
+    }
+
+    /// Push one update onto the core's stream, so a test can watch a view
+    /// react to it without driving a whole session.
+    pub fn emit(&self, update: SessionUpdate) {
+        self.workspace.emit_for_test(update);
     }
 
     /// Give `project` a live lead session, registering the domain a spawn

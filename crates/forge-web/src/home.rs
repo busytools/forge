@@ -5,8 +5,10 @@
 //! markup is a pure function of data a test can build by hand.
 
 use std::net::SocketAddr;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
+use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{SessionLifecycleState, SessionSlot};
 use forge_sessions::surface::{
@@ -17,12 +19,16 @@ use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::brand;
 use crate::server::root_block;
+use crate::stream::Live;
+use crate::unseen::Unseen;
 use crate::work::{WorkCache, WorkState};
 
 /// Everything the home draws with.
 pub struct Home<'a> {
     pub surface: &'a ViewSurface,
     pub work: &'a WorkCache,
+    /// What the stream has told the view: the diamonds and the banner.
+    pub live: &'a Mutex<Live>,
     /// The address this page is served from.
     pub bound: SocketAddr,
     /// The mark and palette the config picked. `None` is the built-in.
@@ -36,7 +42,15 @@ pub struct HomeView {
     pub tasks: usize,
     pub projects: usize,
     pub band: Vec<Card>,
+    /// The upstream status probe's last word, when it had one.
+    pub banner: Option<Banner>,
     pub orgs: Vec<OrgSection>,
+}
+
+/// The one line above the band, and only when there is something to say.
+pub struct Banner {
+    pub severity: ServiceSeverity,
+    pub message: String,
 }
 
 /// One card in the system band. Quiet until it is not.
@@ -109,11 +123,13 @@ pub struct Row {
     pub last_activity: Option<SystemTime>,
 }
 
-/// The state a row draws: the core's lifecycle, plus the state a project
-/// rather than a session has.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// The state a row draws: the core's lifecycle, plus the two states that
+/// are not the core's to know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Lifecycle(SessionLifecycleState),
+    /// A turn finished on this session while the page was not showing it.
+    Unseen,
     /// A project nothing has ever run in.
     NeverStarted,
 }
@@ -137,16 +153,33 @@ struct Seed<'a> {
 }
 
 impl Seed<'_> {
-    fn from_agent<'a>(agent: &'a AgentRow, task: Option<&'a Task>) -> Seed<'a> {
+    fn from_agent<'a>(agent: &'a AgentRow, task: Option<&'a Task>, unseen: &Unseen) -> Seed<'a> {
         Seed {
             slot: &agent.slot,
             name: agent.label.clone(),
-            state: State::Lifecycle(agent.lifecycle),
+            state: state_of_agent(agent, unseen),
             pending: agent.pending,
             reason: agent.reason.clone(),
             task,
             last_activity: agent.last_activity,
         }
+    }
+}
+
+/// What an agent's row draws. Two promotions the core does not make, both
+/// about what the mark means rather than what the session is:
+///
+/// - anything moving means work is happening, and a backgrounded task is
+///   work even after the turn that started it settled;
+/// - a turn that finished while this view was not showing the session is
+///   the one state that answers "what changed while I was away".
+fn state_of_agent(agent: &AgentRow, unseen: &Unseen) -> State {
+    match agent.lifecycle {
+        SessionLifecycleState::Idle if agent.has_background_work => {
+            State::Lifecycle(SessionLifecycleState::Running)
+        }
+        SessionLifecycleState::Idle if unseen.is_unseen(&agent.slot) => State::Unseen,
+        lifecycle => State::Lifecycle(lifecycle),
     }
 }
 
@@ -158,6 +191,7 @@ pub async fn render(home: &Home<'_>) -> Markup {
 /// Read the core into the shape the markup wants, with each row's working
 /// tree out of the cache.
 async fn view_of(home: &Home<'_>) -> HomeView {
+    let live = Live::lock(home.live).snapshot();
     let roster = home.surface.roster();
     let agents = home.surface.agents();
     let accounts = home.surface.accounts();
@@ -183,9 +217,9 @@ async fn view_of(home: &Home<'_>) -> HomeView {
                 // A project's row is its lead, and the home names it for
                 // the project: the lead's label is its identity, not what
                 // the row is called here.
-                let mut seed = Seed::from_agent(head, lead_task);
+                let mut seed = Seed::from_agent(head, lead_task, &live.unseen);
                 seed.name.clone_from(&project.name);
-                (row_for(home, seed).await, worker_rows(home, rest, &tasks).await)
+                (row_for(home, seed).await, worker_rows(home, rest, &tasks, &live.unseen).await)
             }
             None => (row_for(home, dormant).await, Vec::new()),
         };
@@ -211,15 +245,23 @@ async fn view_of(home: &Home<'_>) -> HomeView {
             .sum(),
         projects: roster.projects.len(),
         band: band(home, &accounts, &dictate),
+        banner: live
+            .upstream
+            .map(|issue| Banner { severity: issue.severity, message: issue.message }),
         orgs,
     }
 }
 
-async fn worker_rows(home: &Home<'_>, rest: &[AgentRow], tasks: &[Task]) -> Vec<Row> {
+async fn worker_rows(
+    home: &Home<'_>,
+    rest: &[AgentRow],
+    tasks: &[Task],
+    unseen: &Unseen,
+) -> Vec<Row> {
     let mut workers = Vec::new();
     for agent in rest {
         let task = tasks.iter().find(|task| owned_by(task, &agent.label));
-        workers.push(row_for(home, Seed::from_agent(agent, task)).await);
+        workers.push(row_for(home, Seed::from_agent(agent, task, unseen)).await);
     }
     workers
 }
@@ -429,7 +471,7 @@ fn page(
                 link rel="icon" href="/favicon.svg" type="image/svg+xml";
             }
             body {
-                div .wrap {
+                div .wrap #home {
                     header .top {
                         div .brand {
                             span .mark { (PreEscaped(brand::mark_svg(mark))) }
@@ -440,6 +482,12 @@ fn page(
                             span .n { (view.live_agents) } " agents \u{b7} "
                             span .n { (view.tasks) } " tasks \u{b7} "
                             (view.projects) " projects"
+                        }
+                    }
+                    @if let Some(banner) = &view.banner {
+                        div class=(banner_class(banner.severity)) {
+                            span .k { "claude status" }
+                            span { (banner.message) }
                         }
                     }
                     section .band {
@@ -484,8 +532,27 @@ fn page(
                         }
                     }
                 }
+                // The only script on the page, and deliberately one block:
+                // it swaps the region the stream sends and closes when the
+                // server says the stream is over. Nothing else on the page
+                // knows it exists.
+                script {
+                    "const source = new EventSource('/events');"
+                    "source.addEventListener('fleet', (event) => {"
+                    "document.getElementById('home').innerHTML = event.data;"
+                    "});"
+                    "source.addEventListener('close', () => source.close());"
+                }
             }
         }
+    }
+}
+
+/// The banner's classes, harsher for an incident than for a warning.
+fn banner_class(severity: ServiceSeverity) -> &'static str {
+    match severity {
+        ServiceSeverity::Warning => "banner",
+        ServiceSeverity::Error => "banner bad",
     }
 }
 
@@ -565,6 +632,10 @@ fn state_of(state: State) -> Mark {
             Mark { class: "spawning", dot: "live" }
         }
         State::Lifecycle(SessionLifecycleState::Idle) => Mark { class: "idle", dot: "live" },
+        // Finished, and this view has not looked at it: the one state that
+        // answers "what changed while I was away", and a third shape so it
+        // is findable without colour.
+        State::Unseen => Mark { class: "unseen", dot: "ok" },
         State::Lifecycle(SessionLifecycleState::Attention) => Mark { class: "needs", dot: "warn" },
         State::Lifecycle(SessionLifecycleState::AuthRequired) => Mark { class: "auth", dot: "bad" },
         State::Lifecycle(SessionLifecycleState::Failed) => Mark { class: "failed", dot: "bad" },
@@ -619,7 +690,14 @@ mod tests {
     }
 
     fn empty() -> HomeView {
-        HomeView { live_agents: 0, tasks: 0, projects: 0, band: Vec::new(), orgs: Vec::new() }
+        HomeView {
+            live_agents: 0,
+            tasks: 0,
+            projects: 0,
+            band: Vec::new(),
+            banner: None,
+            orgs: Vec::new(),
+        }
     }
 
     /// Catches a state whose mark is borrowed from its neighbour: a
@@ -678,6 +756,7 @@ mod tests {
             tasks: 1,
             projects: 3,
             band: Vec::new(),
+            banner: None,
             orgs: vec![
                 OrgSection {
                     name: "Busytools".to_owned(),
@@ -759,6 +838,50 @@ mod tests {
         assert_eq!(refusal(false, true), Some("no model declared - add `model` to this project"));
         assert_eq!(refusal(true, false), Some("no usable accounts"));
         assert_eq!(refusal(true, true), None, "a project that can start carries no refusal");
+    }
+
+    fn agent(lifecycle: SessionLifecycleState, background: bool) -> AgentRow {
+        AgentRow {
+            slot: SessionSlot::lead("Org", "forge"),
+            label: "lead".to_owned(),
+            lifecycle,
+            has_background_work: background,
+            pending: None,
+            last_activity: None,
+            reason: None,
+        }
+    }
+
+    /// The two promotions the core does not make, because both are about
+    /// what a mark means rather than what the session is. Catches a row
+    /// that reads the lifecycle alone.
+    #[test]
+    fn a_row_carries_the_two_states_the_core_cannot_know() {
+        let unseen = Unseen::new();
+
+        assert_eq!(
+            state_of_agent(&agent(SessionLifecycleState::Idle, true), &unseen),
+            State::Lifecycle(SessionLifecycleState::Running),
+            "a backgrounded task is work still happening, so the row moves",
+        );
+        assert_eq!(
+            state_of_agent(&agent(SessionLifecycleState::Running, true), &unseen),
+            State::Lifecycle(SessionLifecycleState::Running),
+            "a turn in flight moves whatever else is true",
+        );
+
+        let mut unseen = Unseen::new();
+        unseen.mark_completed(&SessionSlot::lead("Org", "forge"));
+        assert_eq!(
+            state_of_agent(&agent(SessionLifecycleState::Idle, false), &unseen),
+            State::Unseen,
+            "a turn that finished unlooked-at is the diamond",
+        );
+        assert_eq!(
+            state_of_agent(&agent(SessionLifecycleState::Attention, false), &unseen),
+            State::Lifecycle(SessionLifecycleState::Attention),
+            "a session that needs you outranks the diamond it also earned",
+        );
     }
 
     /// A held session's row says what it is waiting on, so needs-you is

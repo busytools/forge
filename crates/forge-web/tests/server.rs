@@ -50,11 +50,11 @@ async fn start_on_a_free_port_with(
 ) -> (SocketAddr, WebConfig) {
     for _ in 0..8 {
         let config = adjust(WebConfig { port: free_port(), bind, ..WebConfig::default() });
-        let state = WebState {
-            surface: Arc::clone(&surface),
-            work: Arc::new(forge_web::WorkCache::new()),
-            config: config.clone(),
-        };
+        let state = WebState::new(
+            Arc::clone(&surface),
+            Arc::new(forge_web::WorkCache::new()),
+            config.clone(),
+        );
         match forge_web::start(state).await {
             Ok(Some(bound)) => return (bound, config),
             Ok(None) => panic!("an enabled config must not come back disabled"),
@@ -63,6 +63,32 @@ async fn start_on_a_free_port_with(
         }
     }
     panic!("no free port after eight tries");
+}
+
+/// Open the page's stream, which stays open.
+async fn open_stream(config: &WebConfig) -> reqwest::Response {
+    let url = format!("http://127.0.0.1:{}/events", config.port);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), reqwest::get(url))
+        .await
+        .expect("the stream opens within five seconds")
+        .expect("the stream is served");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let content_type = response.headers()["content-type"].to_str().expect("a readable type");
+    assert!(content_type.starts_with("text/event-stream"), "got: {content_type}");
+    response
+}
+
+/// The next chunk the stream sends, or a failure if none arrives: an SSE
+/// endpoint that never writes is the bug this catches.
+async fn next_event(response: reqwest::Response) -> String {
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+        .await
+        .expect("an update arrives within five seconds")
+        .expect("the stream yields")
+        .expect("the chunk reads");
+    String::from_utf8_lossy(&chunk).into_owned()
 }
 
 async fn get(config: &WebConfig, path: &str) -> (reqwest::StatusCode, String, String) {
@@ -155,6 +181,33 @@ async fn a_fleet_with_nothing_started_still_draws_every_row() {
     assert!(page.contains("2 asleep"), "and the org says so: {page}");
 }
 
+/// A second tab watches beside the first: both subscribers see an update
+/// emitted after both attached, rather than splitting the stream between
+/// them. Catches a stream that hands every connection the same receiver.
+#[tokio::test]
+async fn two_subscribers_both_see_an_update() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    // Both attached: the response arrives once the handler has taken its
+    // own receiver, so nothing emitted after this reaches one of them only.
+    let first = open_stream(&config).await;
+    let second = open_stream(&config).await;
+
+    fleet.emit(forge_sessions::SessionUpdate::ServiceStatus {
+        severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+        message: "both tabs see this".to_owned(),
+    });
+
+    let (a, b) = tokio::join!(next_event(first), next_event(second));
+
+    assert!(a.contains("event: fleet"), "the first tab is sent the region: {a}");
+    assert!(a.contains("both tabs see this"), "carrying what changed: {a}");
+    assert!(b.contains("event: fleet"), "and so is the second: {b}");
+    assert!(b.contains("both tabs see this"), "with the same change: {b}");
+}
+
 /// The stylesheet is served beside the page, as a stylesheet.
 #[tokio::test]
 async fn the_home_serves_its_stylesheet() {
@@ -232,8 +285,7 @@ async fn a_taken_port_is_an_error() {
     let holder = TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let port = holder.local_addr().expect("the held address").port();
     let config = WebConfig { port, bind: IpAddr::V4(Ipv4Addr::LOCALHOST), ..WebConfig::default() };
-    let state =
-        WebState { surface: fleet.surface(), work: Arc::new(forge_web::WorkCache::new()), config };
+    let state = WebState::new(fleet.surface(), Arc::new(forge_web::WorkCache::new()), config);
 
     let error = forge_web::start(state).await.expect_err("a taken port must not pass as bound");
 
@@ -253,16 +305,16 @@ async fn disabled_binds_nothing() {
     let fleet = fleet(dir.path());
     let holder = TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let port = holder.local_addr().expect("the held address").port();
-    let state = WebState {
-        surface: fleet.surface(),
-        work: Arc::new(forge_web::WorkCache::new()),
-        config: WebConfig {
+    let state = WebState::new(
+        fleet.surface(),
+        Arc::new(forge_web::WorkCache::new()),
+        WebConfig {
             enabled: false,
             port,
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             ..WebConfig::default()
         },
-    };
+    );
 
     let bound = forge_web::start(state).await.expect("turning it off is not an error");
 

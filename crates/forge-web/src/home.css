@@ -68,6 +68,19 @@ header.top {
 .svc.bad .v { color: var(--bad); }
 .svc.off { opacity: .72; }
 
+/* upstream: above the band, and only when there is something to say */
+.banner {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid rgba(201,161,59,.35); background: rgba(201,161,59,.07);
+  border-radius: var(--r); padding: 10px 14px; margin-bottom: 22px;
+  font-size: 12.5px; color: var(--warn);
+}
+.banner.bad { border-color: rgba(224,104,62,.4); background: rgba(224,104,62,.07); color: var(--bad); }
+.banner .k {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em;
+  text-transform: uppercase; flex: none;
+}
+
 .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
 .dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
 .dot.off { background: var(--dim); }
@@ -190,6 +203,14 @@ header.top {
 
 .row.never .name { color: var(--dim); font-weight: 400; }
 .row.never .where, .row.never .what, .row.never .when { opacity: .45; }
+
+/* finished, and you have not looked at it: the one state that answers
+   "what changed while I was away". a diamond, so it is a third shape. */
+.row.unseen .dot {
+  width: 11px; height: 11px; flex: 0 0 11px; background: var(--ok);
+  clip-path: polygon(50% 2%, 98% 50%, 50% 98%, 2% 50%);
+}
+.row.unseen .what { color: var(--ok); }
 
 .row.failed { background: rgba(224,104,62,.055); }
 .row.failed .name { color: var(--bad); font-weight: 600; }

@@ -24,6 +24,9 @@ forge-primitives = { workspace = true }
 forge-workspace = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+# The subscription verb hands out the workspace's own receiver, and naming
+# that type is a tokio channel.
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 # The surface's equivalence tests read the same workspace the TUI reads,
