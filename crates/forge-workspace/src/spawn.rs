@@ -308,14 +308,15 @@ pub(crate) fn handle_spawn_project(
                 &crate::SessionSlot::lead(&project.org, &project.name),
                 crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
+            // The only record of the failure for the same reason: a view
+            // reading the slot afterwards would otherwise see a project
+            // that never started and no way to say why.
+            let message = format!("agent spawn failed: {err}");
+            workspace.record_spawn_failure(&session_key, &message);
             try_emit(
                 workspace,
                 "spawn_project::ConnectionFailed",
-                SessionUpdate::ConnectionFailed {
-                    key: session_key,
-                    message: format!("agent spawn failed: {err}"),
-                    fatal: false,
-                },
+                SessionUpdate::ConnectionFailed { key: session_key, message, fatal: false },
             );
         }
     }
@@ -1096,14 +1097,15 @@ pub(crate) fn handle_spawn_session(
                 slot,
                 crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
+            // The only record of the failure for the same reason: a view
+            // reading the slot afterwards would otherwise see a session
+            // that never started and no way to say why.
+            let message = format!("agent spawn failed: {err}");
+            workspace.record_spawn_failure(slot, &message);
             try_emit(
                 workspace,
                 "spawn_session::ConnectionFailed",
-                SessionUpdate::ConnectionFailed {
-                    key: slot.clone(),
-                    message: format!("agent spawn failed: {err}"),
-                    fatal: false,
-                },
+                SessionUpdate::ConnectionFailed { key: slot.clone(), message, fatal: false },
             );
         }
     }
@@ -1190,14 +1192,15 @@ pub(crate) fn handle_start_default(
                     crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                 );
             }
+            // The only record of the failure for the same reason: a view
+            // reading the slot afterwards would otherwise see a project
+            // that never started and no way to say why.
+            let message = format!("agent spawn failed: {err}");
+            workspace.record_spawn_failure(&session_key, &message);
             try_emit(
                 workspace,
                 "start_default::ConnectionFailed",
-                SessionUpdate::ConnectionFailed {
-                    key: session_key,
-                    message: format!("agent spawn failed: {err}"),
-                    fatal: true,
-                },
+                SessionUpdate::ConnectionFailed { key: session_key, message, fatal: true },
             );
             try_emit(
                 workspace,
@@ -2409,6 +2412,42 @@ provider = "anthropic"
             }
             other => panic!("expected Spawning update; got {other:?}"),
         }
+    }
+
+    /// A spawn that fails before a `SessionTask` exists records the failure
+    /// where a view reads it. The `ConnectionFailed` arm that would
+    /// normally record it runs inside that task, so this path has to do it
+    /// itself; a view rebuilding later reads the slot, and the record is
+    /// the only thing left to say why the row reads failed.
+    #[tokio::test]
+    async fn spawn_project_records_the_failure_it_announces() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        // A shut boot gate is the cheapest way to a spawn that never
+        // builds a task: the slot resolves and is announced, then the
+        // handle construction refuses.
+        workspace.seed_test_gateway_ready(false);
+        let mut rx = workspace.subscribe();
+
+        handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
+
+        assert!(
+            matches!(rx.try_recv(), Ok(SessionUpdate::Spawning { .. })),
+            "the spawn is announced before the handle is built",
+        );
+        let key = match rx.try_recv().expect("ConnectionFailed emit") {
+            SessionUpdate::ConnectionFailed { key, .. } => key,
+            other => panic!("expected ConnectionFailed; got {other:?}"),
+        };
+        assert_eq!(key, SessionSlot::lead("Default", "forge"));
+        let record = workspace
+            .spawn_failure(&key)
+            .expect("the announced failure is recorded against the key the envelope carried");
+        assert!(
+            record.contains("agent spawn failed"),
+            "the record carries the reason the envelope announced: {record}",
+        );
     }
 
     /// `handle_start_default` is the startup spawn path; on failure

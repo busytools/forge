@@ -211,6 +211,14 @@ impl SessionTask {
                 // own id never moves: it names the occupant, this names
                 // the seat.
                 let key = self.key.clone();
+                // The session came up, so whatever failed here last is
+                // over. This arm is where that clears rather than the
+                // spawn entry: production hoists a domain straight into
+                // `domain_handles` and never registers one, so a clear on
+                // registration would never run at all.
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.clear_spawn_failure(&key);
+                }
                 // Nothing re-keys on `Connected`: the task is
                 // registered under the slot the CLI never moves, so
                 // `pool`, `command_senders` and `domain_handles` are
@@ -382,6 +390,12 @@ impl SessionTask {
             }
             AgentEvent::ConnectionFailed { message, kind } => {
                 let key = self.key.clone();
+                // Before the release below takes the session with it: a
+                // view reading the slot afterwards has nothing left to say
+                // the attempt happened.
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.record_spawn_failure(&key, &message);
+                }
                 // A `/new` or `/resume` that fails to respawn ends the
                 // live turn without a Result, so flush the same way the
                 // peer-ask expiry below does.
@@ -1246,6 +1260,11 @@ fn warn_no_session(key: &SessionSlot, command: &'static str) -> forge_agent::Age
     forge_agent::AgentError::NoSession { command }
 }
 
+/// The wire subtype of the retry frame, where the CLI names an
+/// authentication failure on the retry path. The TUI matches the same
+/// literal.
+const API_RETRY_SUBTYPE: &str = "api_retry";
+
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
 /// I/O, no async, no sends. Called from inside
 /// [`SessionTask::translate_event`] under the domain's lock.
@@ -1282,6 +1301,63 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // registry left standing would spin a row over a task that went
         // with the identity it belonged to.
         domain.background_work = false;
+        // It connected, so it is not waiting to be let in.
+        domain.awaiting_login = false;
+    }
+    // The login wait, from the two signals the CLI actually sends: it
+    // attributes the failure to the assistant message, or names it on the
+    // retry frame. `AssistantMessageError` is typed, so nothing here keys
+    // on prose. `AgentEvent::AuthRequired` is constructed nowhere in the
+    // tree, and its arm stays for the state's own name rather than for a
+    // producer that exists.
+    if let AgentEvent::SdkMessage { msg, .. } = event {
+        match msg {
+            forge_primitives::Message::Assistant {
+                error: Some(forge_primitives::AssistantMessageError::AuthenticationFailed),
+                ..
+            } => domain.awaiting_login = true,
+            forge_primitives::Message::System { subtype, data, .. }
+                if subtype == API_RETRY_SUBTYPE
+                    && data
+                        .as_object()
+                        .and_then(forge_agent::translate::state_parsing::build_api_retry_update)
+                        .is_some_and(|update| {
+                            update.error == forge_primitives::ApiRetryError::AuthenticationFailed
+                        }) =>
+            {
+                domain.awaiting_login = true;
+            }
+            _ => {}
+        }
+    }
+    if let AgentEvent::AuthRequired { .. } = event {
+        domain.awaiting_login = true;
+    }
+    // The fallback, for one envelope only: `TurnError`'s producers are
+    // forge's own failed prompt write and failed cancel, not CLI output,
+    // so its text is the only thing there to read. The classifier is the
+    // TUI's presentation-time one, and the code that warns it can fire on
+    // ordinary error words is why it is not the primary here.
+    if let AgentEvent::TurnError { message, .. } = event
+        && forge_agent::translate::error_handling::classify_turn_error(message)
+            == forge_primitives::TurnErrorClass::AuthRequired
+    {
+        domain.awaiting_login = true;
+    }
+    // A turn that finished proves the credential works, so the wait is
+    // over before any reconnect. Success only: a turn that died on the
+    // missing credential ends with its own failed `Result`, and clearing
+    // on that would undo the mark the frames above just set. The same
+    // two-line test exists in the TUI and on the view surface, and folding
+    // the three into one is its own piece.
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::Result { is_error, subtype, .. },
+        ..
+    } = event
+        && !*is_error
+        && subtype == "success"
+    {
+        domain.awaiting_login = false;
     }
     // Mirror runtime liveness from `session_state_changed` so the
     // workspace's in-flight guards see a turn authoritatively,
@@ -3515,6 +3591,143 @@ provider = "anthropic"
             replaced_seen,
             "the scenario must still be a replacement, or the test proves nothing"
         );
+    }
+
+    /// The login wait comes from the typed signals the CLI sends, and a
+    /// turn that finished clears it.
+    ///
+    /// The `TurnError` envelope's text is a fallback rather than the
+    /// signal: its producers are forge's own failed prompt write and
+    /// failed cancel, so no CLI output reaches it, and the classifier it
+    /// reads is the presentation-time one the TUI warns can fire on
+    /// ordinary error words.
+    #[test]
+    fn a_login_wait_comes_from_the_typed_signals() {
+        let held = |event: &AgentEvent| {
+            let mut domain = empty_domain();
+            apply_event_to_domain(&mut domain, event);
+            domain.awaiting_login
+        };
+
+        assert!(
+            held(&sdk_message(assistant_with("authentication_failed"))),
+            "the CLI attributes the failure to the assistant message, and that is typed",
+        );
+        assert!(
+            held(&sdk_message(api_retry("authentication_failed"))),
+            "and names it on the retry frame as well",
+        );
+        assert!(
+            !held(&sdk_message(assistant_with("server_error"))),
+            "another class is not a login wait",
+        );
+
+        // A finished turn proves the credential works. A failed one does
+        // not, and clearing on it would undo the mark the frames above
+        // just set.
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(assistant_with("authentication_failed")));
+        assert!(domain.awaiting_login, "precondition: held");
+        apply_event_to_domain(
+            &mut domain,
+            &sdk_message(result_message("error_during_execution", true)),
+        );
+        assert!(
+            domain.awaiting_login,
+            "a turn that died on the missing credential does not clear the wait",
+        );
+        apply_event_to_domain(&mut domain, &sdk_message(result_message("success", false)));
+        assert!(!domain.awaiting_login, "a turn that finished does");
+    }
+
+    fn sdk_message(msg: forge_primitives::Message) -> AgentEvent {
+        AgentEvent::SdkMessage { session_id: "s".to_owned(), msg }
+    }
+
+    fn assistant_with(error: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "role": "assistant",
+                "model": "claude-sonnet-5",
+                "content": [],
+            },
+            "session_id": "s",
+            "error": error,
+        }))
+        .expect("parse an assistant message")
+    }
+
+    fn api_retry(error: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "api_retry",
+            "session_id": "s",
+            "attempt": 1,
+            "max_retries": 3,
+            "retry_delay_ms": 100,
+            "error": error,
+        }))
+        .expect("parse a retry frame")
+    }
+
+    /// A failed connection is recorded where a view can read it, and a
+    /// `Connected` clears it.
+    ///
+    /// Both halves go through `translate_event`, the dispatcher the run
+    /// loop uses, and that is what this test is for: the record is in the
+    /// failure arm and the clear is in the `Connected` arm rather than in
+    /// `register_domain_session`, which production never calls - the
+    /// spawn entries hoist a domain straight into `domain_handles` and
+    /// insert it themselves.
+    ///
+    /// Both `Connected` branches are driven, because narrowing the clear
+    /// into the replacement branch is the plausible mistake and it leaves
+    /// the common recovery reading failed for the life of the process: a
+    /// fresh task's FIRST connect after a retry.
+    #[tokio::test]
+    async fn a_connection_failure_is_recorded_and_a_connected_clears_it() {
+        let (workspace, _update_rx) = crate::Workspace::testing_stub();
+
+        for (key, connected_once) in [
+            (SessionSlot::from_str_for_test("record-failure-replaced"), true),
+            (SessionSlot::from_str_for_test("record-failure-fresh"), false),
+        ] {
+            let (handle, _agent_cmds) = Agent::testing_stub();
+            let arc = Arc::new(handle);
+            let domain = workspace.register_domain_session(key.clone(), Some(Arc::clone(&arc)));
+            let (_cmd_tx, command_rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+            let mut task = SessionTask {
+                key: key.clone(),
+                handle: arc,
+                command_rx,
+                domain,
+                update_tx: workspace.update_sender(),
+                connected_once,
+                workspace: Arc::downgrade(&workspace),
+            };
+
+            task.translate_event(AgentEvent::ConnectionFailed {
+                message: "the bucket died".to_owned(),
+                kind: SpawnFailureKind::Unclassified,
+            });
+            assert_eq!(
+                workspace.spawn_failure(&key).as_deref(),
+                Some("the bucket died"),
+                "a failed connection is recorded where a view can read it ({connected_once})",
+            );
+
+            task.translate_event(connected_event("fresh-uuid", "/proj"));
+
+            assert_eq!(
+                workspace.spawn_failure(&key),
+                None,
+                "and a session that comes up clears it rather than reading failed for the \
+                 process ({connected_once})",
+            );
+        }
     }
 
     /// A session-replacing re-spawn tears the live session down BEFORE

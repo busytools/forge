@@ -14,8 +14,10 @@ three things sharing a repository:
   control-request dispatch, and an in-process MCP host.
 - **A second view.** `forge-web` serves HTTP from the process the TUI
   runs in, on `127.0.0.1` by default, so reaching it from another
-  machine is a `[web] bind` line rather than a second forge. It serves a
-  wiring-proof page today.
+  machine is a `[web] bind` line rather than a second forge. It serves
+  the home page today: every project under its org, what each agent is
+  doing, and what needs you, kept live over a stream the page subscribes
+  to.
 
 forge never calls the Anthropic API itself. It spawns `claude` and
 talks to it, so the CLI stays the thing that runs the agent loop.

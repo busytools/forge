@@ -1,15 +1,13 @@
 //! `GET /events`: the page's subscription, one stream per tab.
 
 use std::convert::Infallible;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use axum::extract::State;
 use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
-use forge_agent::translate::state_parsing::parse_runtime_session_state;
 use forge_primitives::Message;
-use forge_primitives::cloud::service_status::ServiceIssue;
 use forge_primitives::runtime::RuntimeSessionState;
 use forge_sessions::SessionUpdate;
 use forge_sessions::surface::is_success_result;
@@ -18,7 +16,7 @@ use futures_util::stream::{self, Stream};
 use maud::Markup;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::server::{Wiring, home_region};
+use crate::server::{WebState, Wiring, home_region};
 use crate::unseen::Unseen;
 
 /// The name the page listens for. One region, one event: the page has no
@@ -29,12 +27,18 @@ const FLEET_EVENT: &str = "fleet";
 /// stream that just ends, so the page closes this one when it hears it.
 const CLOSE_EVENT: &str = "close";
 
+/// How long the region may go unsent with nothing to report. The `when`
+/// column and the git columns are computed when the region is rendered, so
+/// a fleet quiet enough to send no updates still ages: without a tick the
+/// page says `now` about something that finished forty minutes ago, while
+/// presenting as live.
+const TICK: Duration = Duration::from_secs(10);
+
 /// What the view has learned from the stream, which the first render and
 /// every later one both read.
 #[derive(Default)]
 pub struct Live {
     unseen: Unseen,
-    upstream: Option<ServiceIssue>,
 }
 
 /// What the stream has said, as one render reads it. A render takes this
@@ -43,7 +47,6 @@ pub struct Live {
 #[derive(Default)]
 pub struct LiveState {
     pub unseen: Unseen,
-    pub upstream: Option<ServiceIssue>,
 }
 
 impl Live {
@@ -57,7 +60,7 @@ impl Live {
     }
 
     pub fn snapshot(&self) -> LiveState {
-        LiveState { unseen: self.unseen.clone(), upstream: self.upstream.clone() }
+        LiveState { unseen: self.unseen.clone() }
     }
 
     /// Fold one update in, answering whether the page has to be redrawn.
@@ -83,8 +86,9 @@ impl Live {
                     // semantic and lands with the row's route; this only
                     // bounds the mark until then, so it cannot outlive the
                     // turn it reported.
-                    if parse_runtime_session_state(data.get("state"))
-                        == Some(RuntimeSessionState::Running)
+                    if forge_sessions::translate::state_parsing::parse_runtime_session_state(
+                        data.get("state"),
+                    ) == Some(RuntimeSessionState::Running)
                     {
                         self.unseen.clear(key);
                     }
@@ -93,11 +97,6 @@ impl Live {
                 Message::BackgroundTasksChanged { .. } => true,
                 _ => false,
             },
-            SessionUpdate::ServiceStatus { severity, message } => {
-                self.upstream =
-                    Some(ServiceIssue { severity: *severity, message: message.clone() });
-                true
-            }
             // The row set, and what each row is. A spawn or a replacement
             // is a fresh occupant, whose history is not a completion this
             // page has failed to show.
@@ -107,7 +106,14 @@ impl Live {
                 self.unseen.clear(key);
                 true
             }
-            SessionUpdate::ConnectionFailed { .. }
+            // Everything else that changes what a row or a card says. The
+            // catalog and the dictation snapshot are here because both
+            // arrive after the listener binds: a page opened in those
+            // first seconds would otherwise keep the empty answer it
+            // painted for the rest of its life.
+            SessionUpdate::CatalogLoaded
+            | SessionUpdate::DictateAvailability
+            | SessionUpdate::ConnectionFailed { .. }
             | SessionUpdate::AuthRequired { .. }
             | SessionUpdate::TurnError { .. }
             | SessionUpdate::TurnCancelled { .. }
@@ -126,35 +132,56 @@ impl Live {
 pub async fn events(
     State(wiring): State<Wiring>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    // The page is rendered before its stream attaches, and a sleeping
-    // laptop or a backgrounded tab reconnects later: the first thing the
-    // stream says is what the region should be right now, so neither gap
-    // leaves the page stale until the next update happens to arrive.
+    // Subscribe before rendering the opening region: an update landing
+    // between the two is otherwise lost for the life of the connection,
+    // and a sleeping laptop or a backgrounded tab makes that happen on
+    // every reconnect. The first thing the stream says is then what the
+    // region should be now, followed by whatever arrived while it was
+    // being drawn.
+    let receiver = wiring.state.surface.subscribe();
     let snapshot = home_region(&wiring.state, wiring.bound).await.into_string();
     let opening =
         stream::once(async move { Ok(Event::default().event(FLEET_EVENT).data(snapshot)) });
-    let stream =
-        opening.chain(region_events(wiring.state.surface.subscribe(), wiring)).chain(stream::once(
-            async { Ok(Event::default().event(CLOSE_EVENT).data("the core's stream ended")) },
-        ));
+    let stream = opening.chain(region_events(receiver, wiring)).chain(stream::once(async {
+        Ok(Event::default().event(CLOSE_EVENT).data("the core's stream ended"))
+    }));
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(20)))
 }
 
-/// One event per update that changes the page, carrying the region the
-/// page swaps in.
+/// Fold the stream into the view's live state for the life of the process,
+/// so `Live` is current whether or not a tab is attached: a turn that
+/// completes while the page is closed is exactly the case the diamond is
+/// for, and nothing inside a connection's own task would record it.
+pub async fn fold(mut receiver: UnboundedReceiver<SessionUpdate>, state: Arc<WebState>) {
+    while let Some(update) = receiver.recv().await {
+        let _ = Live::lock(&state.live).apply(&update);
+    }
+}
+
+/// One event per update that changes the page, or per tick, carrying the
+/// region the page swaps in.
 fn region_events(
     receiver: UnboundedReceiver<SessionUpdate>,
     wiring: Wiring,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
-    stream::unfold((receiver, wiring), |(mut receiver, wiring)| async move {
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + TICK, TICK);
+    // A render slower than the tick must not queue renders: the default
+    // bursts, so one slow region would be followed by a backlog of them.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    stream::unfold((receiver, wiring, tick), |(mut receiver, wiring, mut tick)| async move {
         loop {
-            let update = receiver.recv().await?;
-            if !Live::lock(&wiring.state.live).apply(&update) {
+            let redraw = tokio::select! {
+                update = receiver.recv() => {
+                    Live::lock(&wiring.state.live).apply(&update?)
+                }
+                _ = tick.tick() => true,
+            };
+            if !redraw {
                 continue;
             }
             let region: Markup = home_region(&wiring.state, wiring.bound).await;
             let event = Event::default().event(FLEET_EVENT).data(region.into_string());
-            return Some((Ok(event), (receiver, wiring)));
+            return Some((Ok(event), (receiver, wiring, tick)));
         }
     })
 }
@@ -308,21 +335,16 @@ mod tests {
         );
     }
 
-    /// The upstream banner is the last word the probe had, and it takes
-    /// an incident as readily as a warning.
+    /// The two updates that land after the listener binds, and that a page
+    /// opened in that window has already painted an answer for: the
+    /// catalog scan and the dictation snapshot. Catches a page that keeps
+    /// the empty answer for the rest of its life.
     #[test]
-    fn the_probe_sets_the_banner() {
+    fn the_late_boot_updates_redraw_the_page() {
         let mut live = Live::new();
-        assert!(live.snapshot().upstream.is_none(), "nothing is said before the probe runs");
 
-        assert!(
-            live.apply(&SessionUpdate::ServiceStatus {
-                severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-                message: "Elevated error rates".to_owned(),
-            }),
-            "a status change redraws the page",
-        );
-        let banner = live.snapshot().upstream.expect("the banner is set");
-        assert_eq!(banner.message, "Elevated error rates");
+        for update in [SessionUpdate::CatalogLoaded, SessionUpdate::DictateAvailability] {
+            assert!(live.apply(&update), "{update:?} is exactly a render wake-up");
+        }
     }
 }

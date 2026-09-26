@@ -8,7 +8,6 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{SessionLifecycleState, SessionSlot};
 use forge_sessions::surface::{
@@ -21,13 +20,13 @@ use crate::brand;
 use crate::server::root_block;
 use crate::stream::Live;
 use crate::unseen::Unseen;
-use crate::work::{WorkCache, WorkState};
+use crate::work::{Gate, WorkCache, WorkState};
 
 /// Everything the home draws with.
 pub struct Home<'a> {
     pub surface: &'a ViewSurface,
     pub work: &'a WorkCache,
-    /// What the stream has told the view: the diamonds and the banner.
+    /// What the stream has told the view.
     pub live: &'a Mutex<Live>,
     /// The address this page is served from.
     pub bound: SocketAddr,
@@ -45,15 +44,7 @@ pub struct HomeView {
     /// draws it, so it travels with the view rather than the request.
     pub mark: Option<String>,
     pub band: Vec<Card>,
-    /// The upstream status probe's last word, when it had one.
-    pub banner: Option<Banner>,
     pub orgs: Vec<OrgSection>,
-}
-
-/// The one line above the band, and only when there is something to say.
-pub struct Banner {
-    pub severity: ServiceSeverity,
-    pub message: String,
 }
 
 /// One card in the system band. Quiet until it is not.
@@ -124,6 +115,9 @@ pub struct Row {
     pub reason: Option<String>,
     /// `None` for a project nobody has started.
     pub last_activity: Option<SystemTime>,
+    /// What git said about the row's working tree, which is what the `what`
+    /// cell says when there is no task and no ask to put there.
+    pub gate: Gate,
 }
 
 /// The state a row draws: the core's lifecycle, plus the two states that
@@ -209,7 +203,7 @@ async fn view_of(home: &Home<'_>) -> HomeView {
     for project in &roster.projects {
         let rows = agents.for_project(&project.key);
         let tasks = roster.tasks_for_project(&project.name);
-        let lead_task = tasks.iter().find(|task| owned_by(task, "lead"));
+        let lead_task = task_for(&tasks, "lead");
         // A project with no live session is asleep if anything ever ran in
         // it, and never-started if nothing has: the mock draws the two
         // differently, and a restart puts every project in the first case,
@@ -266,9 +260,6 @@ async fn view_of(home: &Home<'_>) -> HomeView {
         projects: roster.projects.len(),
         mark: home.mark.map(str::to_owned),
         band: band(home, &accounts, &dictate),
-        banner: live
-            .upstream
-            .map(|issue| Banner { severity: issue.severity, message: issue.message }),
         orgs,
     }
 }
@@ -282,7 +273,7 @@ async fn worker_rows(
 ) -> Vec<Row> {
     let mut workers = Vec::new();
     for agent in rest {
-        let task = tasks.iter().find(|task| owned_by(task, &agent.label));
+        let task = task_for(tasks, &agent.label);
         workers.push(row_for(home, roster, Seed::from_agent(agent, task, unseen)).await);
     }
     workers
@@ -292,6 +283,23 @@ async fn worker_rows(
 /// slot, and the row it belongs on is the one carrying that label.
 fn owned_by(task: &Task, label: &str) -> bool {
     task.owner.as_ref().is_some_and(|owner| owner.label() == label)
+}
+
+/// The task a row shows: the one this label holds that is furthest from
+/// done, in-progress first.
+///
+/// Picking by position instead would show whatever the store happened to
+/// return first, which is insertion order within a run and key order across
+/// a restart: a label reused by a new worker can hold the last occupant's
+/// finished task, and the row would show it under a state column saying
+/// running. The TUI sorts in-progress first for the same reason.
+fn task_for<'a>(tasks: &'a [Task], label: &str) -> Option<&'a Task> {
+    tasks.iter().filter(|task| owned_by(task, label)).min_by_key(|task| match task.status {
+        TaskStatus::InProgress => 0,
+        TaskStatus::Blocked => 1,
+        TaskStatus::Pending => 2,
+        TaskStatus::Completed => 3,
+    })
 }
 
 /// The four cards. Each is quiet until its own state says otherwise.
@@ -428,6 +436,7 @@ async fn row_for(home: &Home<'_>, roster: &Roster, seed: Seed<'_>) -> Row {
         state: seed.state,
         name: seed.name,
         place: place_of(work.as_ref()),
+        gate: work.as_ref().map_or(Gate::InRepo, |work| work.gate),
         task: seed.task.map(|task| TaskCell {
             subject: task.subject.clone(),
             chip: chip_for(task.status),
@@ -500,7 +509,14 @@ fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup 
             // undeclared swap style is not an error, it falls back to
             // filling the target, which nests the region inside itself.
             body hx-ext="sse, morph" sse-connect="/events" sse-close="close" {
-                (region(view, bound))
+                // The swap lives on a wrapper the payload never replaces.
+                // htmx re-processes whatever it swaps in, so a `sse-swap`
+                // on the region itself registers one more listener for
+                // every event - measured at ninety swaps per update and
+                // climbing, which is a page that cooks a core by itself.
+                div #fleet sse-swap="fleet" hx-swap="morph:outerHTML" hx-target="#home" {
+                    (region(view, bound))
+                }
                 script src="/vendor/htmx.js" {}
                 script src="/vendor/htmx-sse.js" {}
                 script src="/vendor/idiomorph.js" {}
@@ -511,11 +527,11 @@ fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup 
 
 /// The region the stream swaps in: everything the page draws from the
 /// core, and nothing it draws from the request. The payload is this
-/// element itself, so the swap replaces it rather than filling it, and the
-/// two swap attributes travel with it so the replacement keeps listening.
+/// element itself, and it carries no wiring of its own - the listener that
+/// swaps it lives on the wrapper outside it.
 fn region(view: &HomeView, bound: SocketAddr) -> Markup {
     html! {
-        div .wrap #home sse-swap="fleet" hx-swap="morph:outerHTML" {
+        div .wrap #home {
             header .top {
                 div .brand {
                     span .mark { (PreEscaped(brand::mark_svg(view.mark.as_deref()))) }
@@ -526,12 +542,6 @@ fn region(view: &HomeView, bound: SocketAddr) -> Markup {
                     span .n { (view.live_agents) } " agents \u{b7} "
                     span .n { (view.tasks) } " tasks \u{b7} "
                     (view.projects) " projects"
-                }
-            }
-            @if let Some(banner) = &view.banner {
-                div class=(banner_class(banner.severity)) {
-                    span .k { "claude status" }
-                    span { (banner.message) }
                 }
             }
             section .band {
@@ -579,14 +589,6 @@ fn region(view: &HomeView, bound: SocketAddr) -> Markup {
     }
 }
 
-/// The banner's classes, harsher for an incident than for a warning.
-fn banner_class(severity: ServiceSeverity) -> &'static str {
-    match severity {
-        ServiceSeverity::Warning => "banner",
-        ServiceSeverity::Error => "banner bad",
-    }
-}
-
 fn counts_of(org: &OrgSection) -> String {
     let asleep = org.projects.len() - org.live;
     match (org.live, asleep) {
@@ -630,6 +632,8 @@ fn row(row: &Row, refused: Option<&'static str>) -> Markup {
                     }
                 } @else if let Some(refused) = refused {
                     span .txt { (refused) }
+                } @else if let Some(line) = gate_line(row.gate) {
+                    span .txt { (line) }
                 } @else {
                     span .txt { "\u{b7}" }
                 }
@@ -639,6 +643,17 @@ fn row(row: &Row, refused: Option<&'static str>) -> Markup {
         @if let Some(reason) = &row.reason {
             div .note { (reason) }
         }
+    }
+}
+
+/// What a row says when its working directory is not there to read. `InRepo`
+/// is the row that has nothing to explain, and says nothing.
+fn gate_line(gate: Gate) -> Option<&'static str> {
+    match gate {
+        Gate::InRepo => None,
+        Gate::NotARepository => Some("not a git repository, so there is no branch to show"),
+        Gate::Gone => Some("its working directory is not there"),
+        Gate::ScannerFailed => Some("its working tree could not be read"),
     }
 }
 
@@ -713,7 +728,12 @@ mod tests {
             pending: None,
             reason: None,
             last_activity: None,
+            gate: Gate::InRepo,
         }
+    }
+
+    fn work(branch: Option<&str>, changed: Option<usize>) -> WorkState {
+        WorkState { branch: branch.map(str::to_owned), changed, gate: Gate::InRepo }
     }
 
     fn render(view: &HomeView) -> String {
@@ -727,7 +747,6 @@ mod tests {
             projects: 0,
             mark: None,
             band: Vec::new(),
-            banner: None,
             orgs: Vec::new(),
         }
     }
@@ -759,23 +778,86 @@ mod tests {
     fn the_work_column_says_what_moved() {
         assert_eq!(place_of(None), "", "no repository is an empty column");
         assert_eq!(
-            place_of(Some(&WorkState { branch: None, changed: None })),
+            place_of(Some(&work(None, None))),
             "",
             "a directory outside a repository has no branch to show",
         );
         assert_eq!(
-            place_of(Some(&WorkState { branch: Some("main".to_owned()), changed: Some(0) })),
+            place_of(Some(&work(Some("main"), Some(0)))),
             "main",
-            "a clean tree is the branch alone",
+            "a clean tree is the branch"
         );
         assert_eq!(
-            place_of(Some(&WorkState { branch: Some("main".to_owned()), changed: Some(1) })),
+            place_of(Some(&work(Some("main"), Some(1)))),
             "main \u{b7} 1 file",
             "one file is not one files",
         );
+        assert_eq!(place_of(Some(&work(Some("main"), Some(7)))), "main \u{b7} 7 files");
+    }
+
+    /// Catches a row showing a finished task while its state column says
+    /// running: a label can hold more than one task across a restart, and
+    /// the one the store returns first is not the one being worked on.
+    #[test]
+    fn a_row_shows_the_task_still_being_worked_on() {
+        let task = |id: &str, status: TaskStatus| Task {
+            id: id.into(),
+            project_name: "forge".to_owned(),
+            subject: format!("subject {id}"),
+            active_form: None,
+            detail: None,
+            status,
+            owner: Some(SessionSlot::lead("Org", "forge")),
+            parent: None,
+            artifact: None,
+            estimate: None,
+            created_at: SystemTime::UNIX_EPOCH,
+            updated_at: SystemTime::UNIX_EPOCH,
+        };
+        // The finished one first, which is what the store tends to return.
+        let tasks =
+            vec![task("done", TaskStatus::Completed), task("running", TaskStatus::InProgress)];
+
         assert_eq!(
-            place_of(Some(&WorkState { branch: Some("main".to_owned()), changed: Some(7) })),
-            "main \u{b7} 7 files",
+            task_for(&tasks, "lead").map(|task| task.id.as_str()),
+            Some("running"),
+            "the task still being worked on is the one the row shows",
+        );
+        assert_eq!(
+            task_for(&tasks, "somebody-else"),
+            None,
+            "and a label holding none shows none, rather than its neighbour's",
+        );
+    }
+
+    /// A row whose tree git could not read says which of the two it was.
+    /// Catches a row that falls through to the taskless middot, which is
+    /// what an unreadable tree used to look like.
+    #[test]
+    fn an_unreadable_tree_says_why() {
+        assert_eq!(gate_line(Gate::InRepo), None, "a row with a repository has nothing to explain");
+        assert_eq!(
+            gate_line(Gate::NotARepository),
+            Some("not a git repository, so there is no branch to show"),
+        );
+        assert_eq!(
+            gate_line(Gate::Gone),
+            Some("its working directory is not there"),
+            "a missing path must not be reported as a project without a repository, and the \
+             line cannot claim a worker: a project's own directory goes missing the same way",
+        );
+        assert_eq!(
+            gate_line(Gate::ScannerFailed),
+            Some("its working tree could not be read"),
+            "a git that would not run is forge's problem, not the project's",
+        );
+
+        let mut row = row_of(State::Lifecycle(SessionLifecycleState::Idle));
+        row.gate = Gate::NotARepository;
+        assert!(
+            row_markup(&row).contains("not a git repository"),
+            "the row says it: {}",
+            row_markup(&row),
         );
     }
 
@@ -789,7 +871,6 @@ mod tests {
             projects: 3,
             mark: None,
             band: Vec::new(),
-            banner: None,
             orgs: vec![
                 OrgSection {
                     name: "Busytools".to_owned(),
@@ -917,11 +998,9 @@ mod tests {
         );
     }
 
-    /// Catches a page whose stream is not wired at all, or wired to fill
-    /// the region rather than replace it: the payload is the region
-    /// element itself, so filling would nest a second one with the same id.
-    /// The wire tests pass either way, because they read bytes rather than
-    /// load them in a browser.
+    /// Catches a page whose stream is not wired at all, wired to fill the
+    /// region rather than replace it, or wired on the region itself. All
+    /// three pass the wire tests, which read bytes rather than load them.
     #[test]
     fn the_page_opens_the_stream_by_attribute() {
         let markup = render(&empty());
@@ -932,8 +1011,15 @@ mod tests {
              event: {markup}",
         );
         assert!(
-            markup.contains("sse-swap=\"fleet\" hx-swap=\"morph:outerHTML\""),
-            "and the region replaces itself from the fleet event: {markup}",
+            markup.contains(
+                "id=\"fleet\" sse-swap=\"fleet\" hx-swap=\"morph:outerHTML\" hx-target=\"#home\""
+            ),
+            "the listener sits on a wrapper outside the payload: {markup}",
+        );
+        assert!(
+            !markup.contains("id=\"home\" sse-swap"),
+            "and not on the region, which htmx would re-process into another listener per \
+             event: {markup}",
         );
         for asset in ["/vendor/htmx.js", "/vendor/htmx-sse.js", "/vendor/idiomorph.js"] {
             assert!(markup.contains(asset), "the page loads {asset}: {markup}");

@@ -68,19 +68,35 @@ mod tests {
 
     use super::{DEFAULT_THEME, accent, root_variables};
 
-    /// Every token a surface reads is emitted, so a component that reads
-    /// one the palette forgot renders unstyled rather than loudly.
+    /// Every token the stylesheet reads is one the palette resolves: a
+    /// component reading a token no palette carries renders unstyled, and
+    /// the stylesheet is where the reads are.
+    ///
+    /// The reads come out of the sheet rather than a list written here,
+    /// which could only ever fail on a rename inside the palette - the
+    /// inverse of what the test is for.
     #[test]
-    fn the_root_block_carries_every_token() {
-        let variables = root_variables(None);
+    fn every_token_the_stylesheet_reads_resolves() {
+        let sheet = include_str!("home.css");
+        // The five the sheet defines for itself: layout, not palette.
+        let local = ["--ui", "--mono", "--r", "--cols", "--pad"];
+        let resolved = root_variables(None);
 
-        for token in [
-            "--bg", "--s1", "--s2", "--s3", "--line", "--text", "--muted", "--dim", "--accent",
-            "--ok", "--warn", "--bad",
-        ] {
+        let mut reads: Vec<&str> = sheet
+            .split("var(")
+            .skip(1)
+            .filter_map(|rest| rest.split([')', ',']).next())
+            .map(str::trim)
+            .filter(|token| !local.contains(token))
+            .collect();
+        reads.sort_unstable();
+        reads.dedup();
+
+        assert!(!reads.is_empty(), "the sheet reads the palette somewhere");
+        for token in reads {
             assert!(
-                variables.contains(&format!("{token}:")),
-                "the palette must resolve {token}, got: {variables}",
+                resolved.contains(&format!("{token}:")),
+                "the palette must resolve {token}, which the stylesheet reads",
             );
         }
     }

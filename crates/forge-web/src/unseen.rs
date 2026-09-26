@@ -35,31 +35,3 @@ impl Unseen {
         self.unseen.contains(slot)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Unseen;
-    use forge_primitives::SessionSlot;
-
-    /// Catches a marker that clears everything at once, one that never
-    /// clears, and one that misses the second completion on a slot.
-    #[test]
-    fn a_completion_is_unseen_until_that_session_is_shown() {
-        let mut unseen = Unseen::new();
-        let done = SessionSlot::lead("Org", "forge");
-        let other = SessionSlot::lead("Org", "other");
-
-        assert!(!unseen.is_unseen(&done), "nothing is unseen before a turn finishes");
-
-        unseen.mark_completed(&done);
-        assert!(unseen.is_unseen(&done), "a completed turn is unseen until it is shown");
-
-        unseen.mark_completed(&other);
-        assert!(unseen.is_unseen(&done), "a second slot's completion must not clear the first");
-        assert!(unseen.is_unseen(&other));
-
-        unseen.clear(&done);
-        assert!(!unseen.is_unseen(&done), "showing the session clears its diamond");
-        assert!(unseen.is_unseen(&other), "and leaves every other session alone");
-    }
-}

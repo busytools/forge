@@ -1326,7 +1326,6 @@ name = "forge-web"
 version = "1.0.88"
 dependencies = [
  "axum",
- "forge-agent",
  "forge-primitives",
  "forge-sessions",
  "futures-util",

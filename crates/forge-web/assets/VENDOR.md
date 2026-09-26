@@ -50,9 +50,23 @@ Verify with `shasum -a 256 crates/forge-web/assets/*.js`.
 One region, one event, one swap:
 
 ```
-body  hx-ext="sse" sse-connect="/events" sse-close="close"
-#home sse-swap="fleet" hx-swap="morph:outerHTML"
+body   hx-ext="sse, morph" sse-connect="/events" sse-close="close"
+#fleet sse-swap="fleet" hx-swap="morph:outerHTML" hx-target="#home"
+#home  (the region the stream sends - no wiring of its own)
 ```
+
+Two things here are load-bearing, and both were found by measuring rather
+than by reading:
+
+- **Both extension names.** An undeclared swap style is not an error in
+  htmx: it falls back to filling the target, which nests the region inside
+  itself on the first event.
+- **The swap lives on a wrapper the payload never replaces.** htmx
+  re-processes whatever it swaps in, so a `sse-swap` on the region itself
+  registers one more listener for every event. Measured in a browser: 43
+  swaps for the first update and climbing, ~90 by the fiftieth, against one
+  per event with the wrapper. A page that grows its own work exponentially
+  is worse than a page that does not update.
 
 The stream's payload is the region element itself, so the swap replaces it
 rather than filling it. `morph:outerHTML` keeps the swap from resetting DOM

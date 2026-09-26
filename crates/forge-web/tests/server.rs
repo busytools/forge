@@ -81,13 +81,32 @@ async fn open_stream(config: &WebConfig) -> reqwest::Response {
 /// Stream chunks, read until they carry `needle`: an SSE endpoint that
 /// never writes it is the bug this catches.
 async fn event_carrying(response: reqwest::Response, needle: &str) -> String {
+    let what = format!("a chunk carrying {needle:?}");
+    read_until(response, &what, &|seen| seen.contains(needle)).await
+}
+
+/// Stream chunks, read until the stream has carried two `fleet` events.
+async fn two_fleet_events(response: reqwest::Response) -> String {
+    read_until(response, "a second fleet event", &|seen| seen.matches("event: fleet").count() >= 2)
+        .await
+}
+
+/// Read until `enough` is satisfied, or fail naming what was awaited and
+/// which stream it never arrived on. A stall and a wrong needle read the
+/// same without both.
+async fn read_until(
+    response: reqwest::Response,
+    what: &str,
+    enough: &dyn Fn(&str) -> bool,
+) -> String {
     use futures_util::StreamExt;
+    let url = response.url().clone();
     let mut stream = response.bytes_stream();
     let mut seen = String::new();
-    while !seen.contains(needle) {
+    while !enough(&seen) {
         let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
             .await
-            .expect("the update arrives within five seconds")
+            .unwrap_or_else(|_| panic!("waited five seconds for {what} from {url}, saw: {seen}"))
             .expect("the stream yields")
             .expect("the chunk reads");
         seen.push_str(&String::from_utf8_lossy(&chunk));
@@ -150,7 +169,9 @@ async fn the_home_lists_every_project_under_its_org() {
     for org in ["Busytools", "Personal"] {
         assert!(page.contains(&format!(">{org}<")), "one header per org, missing {org}: {page}");
     }
-    for project in ["forge", "busymail", "dotfiles"] {
+    // Not "forge": the wordmark and the title carry that word, so a row
+    // that went missing would still pass. These two appear nowhere else.
+    for project in ["busymail", "dotfiles"] {
         assert!(page.contains(project), "every project is listed, missing {project}: {page}");
     }
     assert!(page.contains("3 projects"), "the header carries the project count: {page}");
@@ -188,6 +209,10 @@ async fn a_fleet_with_nothing_started_still_draws_every_row() {
 /// A second tab watches beside the first: both subscribers see an update
 /// emitted after both attached, rather than splitting the stream between
 /// them. Catches a stream that hands every connection the same receiver.
+///
+/// Every connection opens with the region it should be showing, so the
+/// tell is a *second* `fleet` event on each: the opening one, and the one
+/// the emit caused. No tick can account for it inside the read window.
 #[tokio::test]
 async fn two_subscribers_both_see_an_update() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -199,20 +224,52 @@ async fn two_subscribers_both_see_an_update() {
     let first = open_stream(&config).await;
     let second = open_stream(&config).await;
 
-    fleet.emit(forge_sessions::SessionUpdate::ServiceStatus {
-        severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-        message: "both tabs see this".to_owned(),
+    fleet.emit(forge_sessions::SessionUpdate::CatalogLoaded);
+
+    let (a, b) = tokio::join!(two_fleet_events(first), two_fleet_events(second));
+
+    assert_eq!(a.matches("event: fleet").count(), 2, "the first tab is sent it once: {a}");
+    assert_eq!(b.matches("event: fleet").count(), 2, "and so is the second: {b}");
+}
+
+/// The view folds the stream whether or not a tab is attached, which is
+/// the case the diamond exists for: a turn that completes while the page
+/// is closed is exactly "finished and you have not looked at it". Catches
+/// a fold that only happens inside a connection's own task.
+#[tokio::test]
+async fn a_completion_while_no_tab_is_open_earns_its_diamond() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    // No stream is opened at all: the page has never been loaded.
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: forge_primitives::SessionSlot::lead("Busytools", "forge"),
+        msg: serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "s",
+        }))
+        .expect("a result message"),
     });
+    // The fold runs in a task of its own. Two yields rather than one: the
+    // first lets the fold task wake from `recv`, the second lets it run
+    // to the apply and back to its await, which is the state the request
+    // below reads. A third would change nothing - the fold has no other
+    // await between those two points.
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
 
-    let (a, b) = tokio::join!(
-        event_carrying(first, "both tabs see this"),
-        event_carrying(second, "both tabs see this"),
+    let (_status, _content_type, page) = get(&config, "/").await;
+
+    assert!(
+        page.contains("class=\"row unseen\""),
+        "a turn that finished while the page was closed is the diamond: {page}",
     );
-
-    assert!(a.contains("event: fleet"), "the first tab is sent the region: {a}");
-    assert!(a.contains("both tabs see this"), "carrying what changed: {a}");
-    assert!(b.contains("event: fleet"), "and so is the second: {b}");
-    assert!(b.contains("both tabs see this"), "with the same change: {b}");
 }
 
 /// The stream says what the region should be the moment it attaches. The

@@ -254,6 +254,14 @@ pub struct Workspace {
     /// forge UI level; their JSONLs persist on disk). Mutated via
     /// `insert_live_worker` / `remove_latest_worker` / `drain_live_workers`.
     live_workers: Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
+    /// Why the last spawn or connection for a slot failed, keyed by slot.
+    /// Survives the failed attempt itself, which is what a `DomainSession`
+    /// cannot: a connection failure releases the session, so by the time a
+    /// view reads the slot there is nothing left to say the attempt ever
+    /// happened. Written before that release and cleared when a session
+    /// for the slot comes up again, so it reports an unrecovered failure
+    /// rather than a history.
+    spawn_failures: Mutex<HashMap<SessionSlot, String>>,
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
     /// `pub(crate)` so crate-internal spawn and delivery paths can
     /// reach a session's `DomainSession` directly.
@@ -1154,6 +1162,7 @@ impl Workspace {
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
+            spawn_failures: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
@@ -3021,6 +3030,17 @@ impl Workspace {
         self.update_tx.subscribe(SubscriberRole::Observing)
     }
 
+    /// Subscribe as an observer, carrying only what is emitted from here
+    /// on: a mirror of the stream, not a renderer of its prompts.
+    ///
+    /// The backlog goes to the first subscriber, so a mirror attaching at
+    /// boot must not take it - the view that renders prompts would lose
+    /// the boot notice. A mirror reads the rest of what it needs from the
+    /// read surface when it is asked, so it has nothing to replay.
+    pub fn subscribe_mirror(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
+        self.update_tx.subscribe_without_backlog(SubscriberRole::Observing)
+    }
+
     /// Clone the workspace's [`SessionUpdate`] sender. Internal to this
     /// crate: a view's own async work belongs on a channel of its own,
     /// so that [`Self::subscribe`] is the whole of what the core owes a
@@ -4022,6 +4042,28 @@ impl Workspace {
         self.session_activity(&entry.slot)
     }
 
+    /// Why the last spawn or connection for `slot` failed, when it has not
+    /// come up since. `None` for a slot that is running, was never tried,
+    /// or recovered.
+    pub fn spawn_failure(&self, slot: &SessionSlot) -> Option<String> {
+        self.spawn_failures.lock().get(slot).cloned()
+    }
+
+    /// Record that `slot`'s spawn or connection failed, and why. Called
+    /// before the failure releases the session, because the release is
+    /// what takes the rest of the evidence with it.
+    pub(crate) fn record_spawn_failure(&self, slot: &SessionSlot, message: &str) {
+        self.spawn_failures.lock().insert(slot.clone(), message.to_owned());
+    }
+
+    /// Clear `slot`'s recorded failure: a session for it came up. Called
+    /// from the `Connected` arm, which is the path production takes - the
+    /// spawn entries hoist a domain straight into `domain_handles` rather
+    /// than registering one, so clearing on registration would never run.
+    pub(crate) fn clear_spawn_failure(&self, slot: &SessionSlot) {
+        let _ = self.spawn_failures.lock().remove(slot);
+    }
+
     /// What the session at `slot` is doing right now - the axis
     /// `WorkerLiveness` does not answer, since it stops moving once the
     /// worker connects. Reachable without a `WorkerEntry`, which a project
@@ -4037,9 +4079,19 @@ impl Workspace {
     pub fn session_activity(&self, slot: &SessionSlot) -> forge_primitives::SessionLifecycleState {
         use forge_primitives::SessionLifecycleState as L;
 
+        // Both of these are terminal for the session's own progress, so
+        // they answer before anything about turns: a session waiting to
+        // be let in, and one whose last attempt to start is still the
+        // last thing that happened to it.
+        if self.spawn_failure(slot).is_some() {
+            return L::Failed;
+        }
         let Some(domain) = self.domain_session_for(slot) else {
             return L::Sleeping;
         };
+        if domain.lock().awaiting_login {
+            return L::AuthRequired;
+        }
         let guard = domain.lock();
         // A permission request only exists during a turn, so with no
         // turn there is nothing to be blocked on - a slot outliving its
@@ -10139,6 +10191,78 @@ mod worker_activity_tests {
             ws.session_activity(&blocked),
             L::Attention,
             "a turn in flight holding a pending interaction needs a person",
+        );
+    }
+
+    /// Two states the lifecycle derivation has to reach or a view cannot
+    /// draw them: a session held on `/login`, and one whose last attempt
+    /// to start failed and has not been retried. Both are facts about the
+    /// session, so the core answers them rather than each view folding
+    /// them out of the events it happened to see.
+    #[test]
+    fn session_activity_reaches_login_and_failure() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let held = SessionSlot::from_str_for_test("s-login");
+        let domain = ws.register_domain_session(held.clone(), None);
+        assert_eq!(ws.session_activity(&held), L::Idle, "a fresh domain is idle");
+
+        {
+            let mut guard = domain.lock();
+            guard.awaiting_login = true;
+            // A login wait is not a turn, so a state that claims one is in
+            // flight must not outrank it.
+            guard.turn_pending = true;
+        }
+        assert_eq!(
+            ws.session_activity(&held),
+            L::AuthRequired,
+            "a session waiting on /login cannot proceed, whatever its turn state says",
+        );
+
+        // The signal that actually arrives: a turn that died on a missing
+        // credential. `AgentEvent::AuthRequired` is constructed nowhere in
+        // the tree, so without this the state is unreachable and the row
+        // draws a calm idle for a session held on `/login`.
+        let by_error = SessionSlot::from_str_for_test("s-login-error");
+        let domain = ws.register_domain_session(by_error.clone(), None);
+        crate::session_task::apply_event_to_domain(
+            &mut domain.lock(),
+            &forge_agent::client::AgentEvent::TurnError {
+                session_id: "uuid".to_owned(),
+                message: "authentication failed: please log in".to_owned(),
+            },
+        );
+        assert_eq!(
+            ws.session_activity(&by_error),
+            L::AuthRequired,
+            "a turn error the classifier calls auth-required holds the session on /login",
+        );
+
+        // A failed attempt is recorded where the failure releases the
+        // session, so it survives the release.
+        let dead = SessionSlot::from_str_for_test("s-dead");
+        ws.record_spawn_failure(&dead, "OAuth token expired");
+        assert_eq!(ws.session_activity(&dead), L::Failed, "an unrecovered failure is failed");
+        assert_eq!(
+            ws.spawn_failure(&dead).as_deref(),
+            Some("OAuth token expired"),
+            "and carries why",
+        );
+
+        // Registering a domain is not what clears it. Production hoists a
+        // domain itself rather than registering one, so the clear lives in
+        // the `Connected` arm - see `a_connection_failure_is_recorded_and_
+        // a_connected_clears_it`, which drives a real task through both.
+        ws.register_domain_session(dead.clone(), None);
+        assert_eq!(
+            ws.spawn_failure(&dead).as_deref(),
+            Some("OAuth token expired"),
+            "registering a domain does not clear the record, because production never registers one",
+        );
+        assert_eq!(
+            ws.session_activity(&dead),
+            L::Failed,
+            "so the slot still reads failed until something connects",
         );
     }
 

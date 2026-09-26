@@ -20,9 +20,9 @@ pub struct AgentRow {
     pub has_background_work: bool,
     pub pending: Option<PendingKind>,
     pub last_activity: Option<SystemTime>,
-    /// Why a `Failed` worker died, from the core's own record. `None` for
-    /// a live session, and for a project lead, which has no core source
-    /// for its last failure.
+    /// Why this session failed, from the core's own record: a worker's
+    /// spawn diagnostic, or the failure the slot's last connection left
+    /// behind. `None` for a session that has not failed.
     pub reason: Option<String>,
 }
 
@@ -107,7 +107,10 @@ fn row_for(
         has_background_work: workspace.has_background_work(&slot),
         last_activity: workspace.session_last_activity(&slot),
         pending: workspace.pending_interaction(&slot),
-        reason,
+        // A worker's own spawn diagnostic is the more specific record, so
+        // it wins; a lead has only the slot's, which is why the fallback
+        // is here rather than at the call sites.
+        reason: reason.or_else(|| workspace.spawn_failure(&slot)),
         lifecycle,
         label,
         slot,
@@ -316,8 +319,32 @@ mod tests {
         assert_eq!(
             reason_of("lead"),
             None,
-            "a lead has no core source for a failure reason, so it carries none",
+            "a lead that has not failed carries none, the same as a live worker",
         );
+    }
+
+    /// A lead's failed spawn reaches its row, which is what the slot's own
+    /// failure record is for: the failure releases the session, so a row
+    /// reading only the lifecycle would call the slot dormant.
+    #[test]
+    fn a_lead_carries_the_reason_its_spawn_failed() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.register_domain_session(lead.clone(), None);
+        workspace.record_spawn_failure_for_test(&lead, "the subprocess exited");
+
+        let agents = surface.agents();
+        let row = agents.for_project(&project).first().expect("the lead's row");
+
+        assert_eq!(
+            row.lifecycle,
+            SessionLifecycleState::Failed,
+            "a spawn that failed is failed rather than idle",
+        );
+        assert_eq!(row.reason.as_deref(), Some("the subprocess exited"), "and the row carries why");
     }
 
     fn worker_row(label: &str, status: WorkerLiveness) -> forge_workspace::WorkerEntry {

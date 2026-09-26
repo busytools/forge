@@ -5,19 +5,56 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use forge_agent::env::git_diff;
 use forge_primitives::SessionSlot;
+use forge_primitives::git_diff::RepoGate;
+use forge_sessions::git_diff;
 
 /// How long a read answers for. Everything inside the window is served
 /// from the cache, which is what keeps a page render off a subprocess.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// What one agent's working tree looks like. Both fields are `None` when
-/// the directory is not a repository, or is gone.
+/// What one agent's working tree looks like, and what git said about it.
+///
+/// `branch` and `changed` are `None` when there is nothing to report, and
+/// `gate` is what tells the two cases apart: a directory outside a
+/// repository, a working tree that is gone, and a git that would not run
+/// all leave both fields empty and want different lines on the row.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkState {
     pub branch: Option<String>,
     pub changed: Option<usize>,
+    pub gate: Gate,
+}
+
+/// The repo gate, as a view reads it. Its own type so the view does not
+/// have to name the scanner's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Gate {
+    /// Git answered: there is a repository here, and whatever the two
+    /// fields say about it is the whole truth.
+    #[default]
+    InRepo,
+    /// A directory with no repository behind it.
+    NotARepository,
+    /// The directory is not there at all. Git reports this as the case
+    /// above, and it is true and misleading at once: a row saying a
+    /// project is not a repository about a path that does not exist
+    /// claims something it cannot know. A despawned worker's worktree is
+    /// the usual one.
+    Gone,
+    /// Git would not run, or would not answer. Distinct from both above
+    /// because it is forge's problem rather than the project's.
+    ScannerFailed,
+}
+
+impl From<RepoGate> for Gate {
+    fn from(gate: RepoGate) -> Self {
+        match gate {
+            RepoGate::InRepo => Self::InRepo,
+            RepoGate::NotARepo => Self::NotARepository,
+            RepoGate::ScannerFailed => Self::ScannerFailed,
+        }
+    }
 }
 
 /// Each session's working tree, so a caller reads a value instead of
@@ -103,14 +140,24 @@ impl WorkCache {
 }
 
 /// One read of `cwd`. The count decides whether the directory is a
-/// repository at all: outside one the row has nothing to show, so both
-/// fields are `None` rather than an error or a stale branch.
+/// repository at all: outside one both fields are `None` rather than an
+/// error or a stale branch, and the gate carries which of the two cases it
+/// was so the row can say so.
 async fn read(cwd: &Path) -> WorkState {
     let (branch, changed) =
         tokio::join!(git_diff::current_branch(cwd), git_diff::changed_file_count(cwd));
     match changed {
-        Ok(changed) => WorkState { branch: branch.ok().flatten(), changed: Some(changed) },
-        Err(_) => WorkState { branch: None, changed: None },
+        Ok(changed) => {
+            WorkState { branch: branch.ok().flatten(), changed: Some(changed), gate: Gate::InRepo }
+        }
+        Err(gate) => {
+            // Git calls a missing directory "not a repository", so the
+            // path itself decides between the two: the row can say a
+            // worktree is gone, and it cannot say a project is not a
+            // repository without looking.
+            let gate = if cwd.exists() { gate.into() } else { Gate::Gone };
+            WorkState { branch: None, changed: None, gate }
+        }
     }
 }
 
@@ -120,14 +167,22 @@ mod tests {
 
     use forge_primitives::SessionSlot;
 
-    use crate::work::WorkCache;
+    use crate::work::{Gate, WorkCache};
 
     fn slot() -> SessionSlot {
         SessionSlot::lead("TestOrg", "forge")
     }
 
+    /// Spawn git the way the product does, scrub included. The product's
+    /// constructor is `env::git_command::command`, which removes the
+    /// ambient repo-location variables before every spawn; a fixture that
+    /// skips that answers about a foreign repository when the suite runs
+    /// under a git hook, which is the bug the scrub exists for.
     fn git(dir: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -152,9 +207,9 @@ mod tests {
     }
 
     /// A directory that is not a repository answers with nothing at all,
-    /// never an error and never a stale branch: `dotfiles` and a despawned
-    /// worker's worktree both land here, and the row renders an empty
-    /// `where` for them.
+    /// never an error and never a stale branch, and says which of the two
+    /// it was: `dotfiles` and a despawned worker's worktree both land here,
+    /// and the row renders an empty `where` plus the line that says why.
     #[tokio::test]
     async fn a_directory_outside_a_repository_answers_with_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -164,6 +219,54 @@ mod tests {
 
         assert_eq!(state.branch, None, "a directory outside a repo has no branch");
         assert_eq!(state.changed, None, "and no changed-file count");
+        assert_eq!(
+            state.gate,
+            Gate::NotARepository,
+            "and the gate says it is the project rather than the scanner",
+        );
+    }
+
+    /// A path that is not there at all is its own case, not "not a
+    /// repository": git reports both the same way, and only the path can
+    /// tell them apart. A despawned worker's worktree is the usual one.
+    #[tokio::test]
+    async fn a_path_that_is_gone_is_not_a_repository_that_is_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gone = dir.path().join("worktree-that-was-despawned");
+        let cache = WorkCache::new();
+
+        let state = cache.snapshot(&slot(), &gone).await;
+
+        assert_eq!(
+            state.gate,
+            Gate::Gone,
+            "a missing path is gone, not a directory without a repository",
+        );
+
+        // And a directory that IS there with no repository is the other
+        // case, so the two cannot be the same arm.
+        let state = cache.snapshot(&slot(), dir.path()).await;
+        assert_eq!(state.gate, Gate::NotARepository);
+    }
+
+    /// A path git cannot answer about at all is the scanner's failure,
+    /// not the project's. A file in place of a directory is the cheapest
+    /// one to make: the repo-existence probe looks for `.git` under it,
+    /// finds a path that cannot hold one, and cannot rule a checkout out.
+    #[tokio::test]
+    async fn a_path_git_cannot_answer_about_is_the_scanners_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("not-a-directory");
+        std::fs::write(&file, "x\n").expect("write");
+        let cache = WorkCache::new();
+
+        let state = cache.snapshot(&slot(), &file).await;
+
+        assert_eq!(
+            state.gate,
+            Gate::ScannerFailed,
+            "git would not run there, which is forge's problem rather than the project's",
+        );
     }
 
     /// A repository answers its branch and how much has moved in it.

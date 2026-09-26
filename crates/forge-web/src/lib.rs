@@ -1,9 +1,9 @@
 //! The web view: an HTTP view beside the TUI, in the same process, so the
 //! cron scheduler and the connectors start once rather than twice.
 //!
-//! It serves the home page and nothing else so far. It never names
-//! `forge-workspace`: reads of the core go through `forge-sessions`, and
-//! reads of a working tree through `forge-agent`'s git plumbing.
+//! It serves the home page and nothing else so far. Everything it reads
+//! comes through `forge-sessions`, which re-exports the git plumbing and
+//! the wire parsers a view needs: it names no crate under that one.
 
 pub mod brand;
 mod home;

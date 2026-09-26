@@ -69,6 +69,18 @@ pub struct DomainSession {
     /// connection failure clears it because the CLI sends no terminal
     /// snapshot for a session that died.
     pub background_work: bool,
+    /// Whether this session is waiting on `/login` before it can run.
+    ///
+    /// Set from the signals the CLI actually sends: an assistant message
+    /// whose error is `AuthenticationFailed`, or a retry frame naming the
+    /// same class. A `TurnError` envelope whose text reads like an auth
+    /// failure sets it too, as a fallback - that envelope's producers are
+    /// forge's own failed write and cancel rather than CLI output. Cleared
+    /// by a `Connected` and by a turn that finished, since either proves
+    /// the credential works. A fact about the session, so the lifecycle
+    /// derivation reads it rather than each view inventing the state from
+    /// the event it saw.
+    pub awaiting_login: bool,
     /// The `/dictate` overlay's per-session normalizer-axis overrides.
     /// Set by `Command::SetDictateOverride` / `::ResetDictateOverrides`
     /// and consumed when a capture finishes into
@@ -93,6 +105,7 @@ impl DomainSession {
             runtime_state: None,
             turn_pending: false,
             background_work: false,
+            awaiting_login: false,
             dictate_overrides: crate::dictate::DictateOverrides::default(),
         }
     }

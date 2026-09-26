@@ -11,7 +11,7 @@ forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
 forge-sessions    ->  primitives + workspace
-forge-web         ->  primitives + agent + sessions
+forge-web         ->  primitives + sessions
 forge-tui         ->  primitives + workspace + sessions + web
 forge-test-harness->  primitives + sdk
 ```
@@ -26,7 +26,7 @@ forge-test-harness->  primitives + sdk
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
 | `forge-sessions` | What a view needs and nothing about how it renders: the read surface a view uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, and the policy that folds a run of blocks. Holds no terminal types, so a second view attaches beside the TUI rather than duplicating it. |
-| `forge-web` | The web view: HTTP served beside the TUI, from the process that owns the sessions. axum plus server-rendered markup, kept live by a stream the page subscribes to. Reads the core through the view surface in `forge-sessions` and the git plumbing in `forge-agent`; never names `forge-workspace`, and starts no subsystem of its own. |
+| `forge-web` | The web view: HTTP served beside the TUI, from the process that owns the sessions. axum plus server-rendered markup, kept live by a stream the page subscribes to. Reads everything through `forge-sessions`, git plumbing included; it does not name the crates under that one, and starts no subsystem of its own. |
 | `forge-tui` | The view layer. Rendering, key and mouse handling, per-session presentation state. Ships the `forge` binary. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. Dev tooling, not in the runtime path. |
 

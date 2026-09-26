@@ -43,7 +43,8 @@ pub enum WebError {
 pub struct WebState {
     pub surface: Arc<ViewSurface>,
     pub work: Arc<WorkCache>,
-    /// What the stream has told the view: the diamonds and the banner.
+    /// What the stream has told the view, which is the state no verb can
+    /// answer because it is about this viewer rather than about the core.
     pub live: Mutex<Live>,
     pub config: WebConfig,
 }
@@ -76,7 +77,12 @@ pub async fn start(state: WebState) -> Result<Option<SocketAddr>, WebError> {
         .await
         .map_err(|source| WebError::Bind { addr, source })?;
     let bound = listener.local_addr().map_err(|source| WebError::Bind { addr, source })?;
-    let wiring = Wiring { bound, state: Arc::new(state) };
+    let state = Arc::new(state);
+    // One folding subscription for the process, taken after the listener
+    // is up and before anything can be served. It is a mirror: it takes no
+    // backlog, so the view that renders prompts keeps the boot notice.
+    tokio::spawn(crate::stream::fold(state.surface.subscribe(), Arc::clone(&state)));
+    let wiring = Wiring { bound, state };
     tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, router(wiring)).await {
             tracing::error!(
@@ -151,8 +157,14 @@ pub(crate) async fn home_region(state: &WebState, bound: SocketAddr) -> Markup {
     .await
 }
 
+/// The stylesheet, with the same `no-cache` the scripts get: a browser
+/// holding an old sheet would report a bug in forge's code, and a page
+/// that looks wrong is harder to diagnose than one that reloads slowly.
 async fn home_css() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], HOME_CSS)
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
+        HOME_CSS,
+    )
 }
 
 /// The mark, as a standalone document a browser reads from a tab. Nothing

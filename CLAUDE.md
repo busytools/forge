@@ -12,7 +12,7 @@ forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + gateway
 forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
 forge-sessions   ───→ primitives + workspace
-forge-web        ───→ primitives + agent + sessions
+forge-web        ───→ primitives + sessions
 forge-tui        ───→ primitives + workspace + sessions + web (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```
@@ -63,9 +63,9 @@ forge-test-harness ─→ primitives + sdk + workspace
   process that already owns the sessions, so a second view costs a
   listener rather than a second cron scheduler. Server-rendered markup
   over axum, kept live by a stream the page subscribes to, with the home
-  page served today. It never names `forge-workspace`: reads of the core
-  go through `forge-sessions`, and reads of a working tree through
-  `forge-agent`'s git plumbing.
+  page served today. It never names a crate under `forge-sessions`: reads
+  of the core and of a working tree both go through that crate, which
+  re-exports what a view needs.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`

@@ -31,7 +31,7 @@ forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
 forge-sessions    ->  primitives + workspace
-forge-web         ->  primitives + agent + sessions
+forge-web         ->  primitives + sessions
 forge-tui         ->  primitives + workspace + sessions + web
 forge-test-harness->  primitives + sdk
 ```
