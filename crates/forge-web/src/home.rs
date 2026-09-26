@@ -290,6 +290,22 @@ fn owned_by(task: &Task, label: &str) -> bool {
     task.owner.as_ref().is_some_and(|owner| owner.label() == label)
 }
 
+/// What the artifact column shows: one short token, not the whole thing.
+/// A task's artifact is a PR URL or a path, and either would push the
+/// row's other cells off a narrow screen, so a PR URL reads `PR 148` and
+/// a path reads its file name.
+fn artifact_label(artifact: &str) -> String {
+    let trimmed = artifact.trim_end_matches('/');
+    let mut parts = trimmed.rsplit('/');
+    let last = parts.next().unwrap_or("");
+    let kind = parts.next().unwrap_or("");
+    if !last.is_empty() && (kind == "pull" || kind == "issues") {
+        let prefix = if kind == "pull" { "PR " } else { "#" };
+        return format!("{prefix}{last}");
+    }
+    if last.is_empty() { trimmed.to_owned() } else { last.to_owned() }
+}
+
 /// The task a row shows: the one this label holds that is furthest from
 /// done, in-progress first.
 ///
@@ -626,7 +642,7 @@ fn row(row: &Row, refused: Option<&'static str>) -> Markup {
                     span .txt { (&task.subject) }
                     span .st { (task.chip) }
                     @if let Some(artifact) = &task.artifact {
-                        a href="#" { (artifact) }
+                        a href=(artifact) target="_blank" rel="noreferrer" { (artifact_label(artifact)) }
                     }
                 } @else if let Some(refused) = refused {
                     span .txt { (refused) }
@@ -859,6 +875,26 @@ mod tests {
 
     /// The page draws one header per org, the fleet count in the header
     /// line, and a project's workers under its lead.
+    #[test]
+    fn an_artifact_reads_as_one_short_token() {
+        assert_eq!(
+            artifact_label("https://github.com/GraniteProtocol/granite-backend/pull/148"),
+            "PR 148",
+            "a pull request reads as its number, not as the URL",
+        );
+        assert_eq!(
+            artifact_label("https://github.com/o/r/issues/9/"),
+            "#9",
+            "a trailing slash does not become the label",
+        );
+        assert_eq!(
+            artifact_label("docs/plans/2026-09-26-web-home.md"),
+            "2026-09-26-web-home.md",
+            "a path reads as its file name",
+        );
+        assert_eq!(artifact_label("main"), "main", "and a bare token is itself");
+    }
+
     #[test]
     fn the_page_groups_projects_under_their_org() {
         let view = HomeView {
