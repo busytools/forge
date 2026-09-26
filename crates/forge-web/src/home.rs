@@ -182,12 +182,12 @@ fn state_of_agent(agent: &AgentRow, unseen: &Unseen) -> State {
 
 /// Gather the fleet and render it.
 pub async fn render(home: &Home<'_>) -> Markup {
-    page(&view_of(home).await, home.bound, home.theme)
+    page(&view_of(home).await, home.theme)
 }
 
 /// Gather the fleet and render the region the stream swaps in.
 pub async fn render_region(home: &Home<'_>) -> Markup {
-    region(&view_of(home).await, home.bound)
+    region(&view_of(home).await)
 }
 
 /// Read the core into the shape the markup wants, with each row's working
@@ -250,6 +250,11 @@ async fn view_of(home: &Home<'_>) -> HomeView {
         );
     }
 
+    // The orgs read alphabetically rather than in whatever order
+    // forge.toml declares them; the projects inside each keep their
+    // declared order.
+    orgs.sort_by(|a, b| a.name.cmp(&b.name));
+
     HomeView {
         live_agents: agents.all().len(),
         tasks: roster
@@ -283,6 +288,22 @@ async fn worker_rows(
 /// slot, and the row it belongs on is the one carrying that label.
 fn owned_by(task: &Task, label: &str) -> bool {
     task.owner.as_ref().is_some_and(|owner| owner.label() == label)
+}
+
+/// What the artifact column shows: one short token, not the whole thing.
+/// A task's artifact is a PR URL or a path, and either would push the
+/// row's other cells off a narrow screen, so a PR URL reads `PR 148` and
+/// a path reads its file name.
+fn artifact_label(artifact: &str) -> String {
+    let trimmed = artifact.trim_end_matches('/');
+    let mut parts = trimmed.rsplit('/');
+    let last = parts.next().unwrap_or("");
+    let kind = parts.next().unwrap_or("");
+    if !last.is_empty() && (kind == "pull" || kind == "issues") {
+        let prefix = if kind == "pull" { "PR " } else { "#" };
+        return format!("{prefix}{last}");
+    }
+    if last.is_empty() { trimmed.to_owned() } else { last.to_owned() }
 }
 
 /// The task a row shows: the one this label holds that is furthest from
@@ -487,7 +508,7 @@ fn push_org(orgs: &mut Vec<OrgSection>, name: String, live: usize, rows: Project
 }
 
 /// The page. Pure: everything it draws comes from `view`.
-fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup {
+fn page(view: &HomeView, theme_name: Option<&str>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -515,7 +536,7 @@ fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup 
                 // every event - measured at ninety swaps per update and
                 // climbing, which is a page that cooks a core by itself.
                 div #fleet sse-swap="fleet" hx-swap="morph:outerHTML" hx-target="#home" {
-                    (region(view, bound))
+                    (region(view))
                 }
                 script src="/vendor/htmx.js" {}
                 script src="/vendor/htmx-sse.js" {}
@@ -529,7 +550,7 @@ fn page(view: &HomeView, bound: SocketAddr, theme_name: Option<&str>) -> Markup 
 /// core, and nothing it draws from the request. The payload is this
 /// element itself, and it carries no wiring of its own - the listener that
 /// swaps it lives on the wrapper outside it.
-fn region(view: &HomeView, bound: SocketAddr) -> Markup {
+fn region(view: &HomeView) -> Markup {
     html! {
         div .wrap #home {
             header .top {
@@ -578,13 +599,6 @@ fn region(view: &HomeView, bound: SocketAddr) -> Markup {
                     }
                 }
             }
-            footer {
-                span { "this page is served on " (bound) }
-                span {
-                    (view.projects) " projects \u{b7} " (view.orgs.len()) " orgs \u{b7} "
-                    (view.live_agents) " live agents"
-                }
-            }
         }
     }
 }
@@ -628,7 +642,7 @@ fn row(row: &Row, refused: Option<&'static str>) -> Markup {
                     span .txt { (&task.subject) }
                     span .st { (task.chip) }
                     @if let Some(artifact) = &task.artifact {
-                        a href="#" { (artifact) }
+                        a href=(artifact) target="_blank" rel="noreferrer" { (artifact_label(artifact)) }
                     }
                 } @else if let Some(refused) = refused {
                     span .txt { (refused) }
@@ -717,8 +731,6 @@ fn when_of(state: State, last_activity: Option<SystemTime>) -> String {
 mod tests {
     use super::*;
 
-    const BOUND: &str = "127.0.0.1:8790";
-
     fn row_of(state: State) -> Row {
         Row {
             state,
@@ -737,7 +749,7 @@ mod tests {
     }
 
     fn render(view: &HomeView) -> String {
-        page(view, BOUND.parse().expect("addr"), None).into_string()
+        page(view, None).into_string()
     }
 
     fn empty() -> HomeView {
@@ -863,6 +875,26 @@ mod tests {
 
     /// The page draws one header per org, the fleet count in the header
     /// line, and a project's workers under its lead.
+    #[test]
+    fn an_artifact_reads_as_one_short_token() {
+        assert_eq!(
+            artifact_label("https://github.com/GraniteProtocol/granite-backend/pull/148"),
+            "PR 148",
+            "a pull request reads as its number, not as the URL",
+        );
+        assert_eq!(
+            artifact_label("https://github.com/o/r/issues/9/"),
+            "#9",
+            "a trailing slash does not become the label",
+        );
+        assert_eq!(
+            artifact_label("docs/plans/2026-09-26-web-home.md"),
+            "2026-09-26-web-home.md",
+            "a path reads as its file name",
+        );
+        assert_eq!(artifact_label("main"), "main", "and a bare token is itself");
+    }
+
     #[test]
     fn the_page_groups_projects_under_their_org() {
         let view = HomeView {
@@ -1033,7 +1065,7 @@ mod tests {
     fn the_stream_payload_is_the_region_and_not_the_document() {
         let view = empty();
 
-        let payload = region(&view, BOUND.parse().expect("addr")).into_string();
+        let payload = region(&view).into_string();
 
         assert!(
             payload.contains("class=\"wrap\" id=\"home\""),

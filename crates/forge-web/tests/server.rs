@@ -149,8 +149,8 @@ async fn serves_on_the_configured_address() {
     let (status, _content_type, body) = get(&config, "/").await;
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(
-        body.contains(&format!("this page is served on {bound}")),
-        "the page reports the address it bound, got: {body}",
+        body.contains(&bound.to_string()),
+        "the band reports the address it bound, got: {body}",
     );
 }
 
@@ -179,6 +179,27 @@ async fn the_home_lists_every_project_under_its_org() {
     assert!(
         page.contains("Sweep the corpus for banned dashes"),
         "and its task is what the row says it is doing: {page}",
+    );
+}
+
+/// The orgs read alphabetically rather than in the order `forge.toml`
+/// happens to declare them. The fixture names Personal first, so a page
+/// that kept declaration order fails this.
+#[tokio::test]
+async fn the_orgs_read_alphabetically() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet =
+        Fleet::in_dir(dir.path(), &[("Personal", &["dotfiles"]), ("Busytools", &["forge"])])
+            .expect("the fleet builds");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_, _, page) = get(&config, "/").await;
+
+    let busytools = page.find(">Busytools<").expect("Busytools is on the page");
+    let personal = page.find(">Personal<").expect("Personal is on the page");
+    assert!(
+        busytools < personal,
+        "declared Personal first, so this fails if declaration order survives: {page}",
     );
 }
 
@@ -282,7 +303,7 @@ async fn the_stream_opens_with_the_region() {
     let fleet = fleet(dir.path());
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
-    let opening = event_carrying(open_stream(&config).await, "this page is served on").await;
+    let opening = event_carrying(open_stream(&config).await, "id=\"home\"").await;
 
     assert!(opening.contains("event: fleet"), "the first event is the region: {opening}");
     assert!(
