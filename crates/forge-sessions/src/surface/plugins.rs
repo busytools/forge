@@ -50,6 +50,6 @@ mod tests {
             workspace.plugin_update_records(),
             "the records are the call's own",
         );
-        assert_eq!(view.update_records, vec![record], "the seeded record is what the read returns",);
+        assert_eq!(view.update_records, vec![record], "the seeded record is what the read returns");
     }
 }

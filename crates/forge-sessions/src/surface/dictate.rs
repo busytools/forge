@@ -46,7 +46,7 @@ mod tests {
 
         let view = ViewSurface::new(Arc::clone(&workspace)).dictate();
 
-        assert_eq!(view.snapshot, workspace.dictate_snapshot(), "the snapshot is the call's own",);
+        assert_eq!(view.snapshot, workspace.dictate_snapshot(), "the snapshot is the call's own");
         assert_eq!(view.snapshot.models.len(), 2, "dictation is on, so the snapshot is not empty");
         assert_eq!(
             view.models_dir,
