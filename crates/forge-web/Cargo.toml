@@ -13,6 +13,10 @@ forge-primitives = { workspace = true }
 # a second spawn of `git` here: `env::git_command` scrubs the ambient
 # `GIT_DIR` / `GIT_WORK_TREE` that would answer about a foreign repo.
 forge-agent = { workspace = true }
+# The view surface, which is the only way this crate reads the core. It
+# never names `forge-workspace`: reads go through `forge-sessions` or they
+# do not happen.
+forge-sessions = { workspace = true }
 axum = { workspace = true }
 maud = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
@@ -22,6 +26,8 @@ thiserror = { workspace = true }
 [dev-dependencies]
 reqwest = { workspace = true }
 tempfile = { workspace = true }
+# The view fixtures the page's own tests drive a real fleet through.
+forge-sessions = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]

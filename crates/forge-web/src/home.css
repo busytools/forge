@@ -1,0 +1,264 @@
+/* The home page's stylesheet.
+   Taken from the mock at docs/mockups/web-home.html, minus the states
+   reference panel, which is a design artifact rather than a page. The
+   palette is not here: the server injects it as the page's own :root
+   from [web] theme, so a theme is one place to change. */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, Menlo, monospace;
+  --r: 10px;
+  /* one line per entity: state | name | where | what | when.
+     no action column - the whole row is the target. */
+  --cols: 12px minmax(0, 1.15fr) minmax(0, 1.05fr) minmax(0, 1.6fr) 64px;
+  --pad: 16px;
+}
+
+html, body { height: 100%; }
+body {
+  background:
+    radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+    radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1120px; margin: 0 auto; padding: 28px 32px 72px; }
+
+/* ---------- header ---------- */
+
+header.top {
+  display: flex; align-items: center; gap: 14px;
+  padding-bottom: 18px; margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand .mark { width: 26px; height: 26px; flex: 0 0 26px; color: var(--accent); }
+.brand .mark svg { display: block; width: 100%; height: 100%; }
+.brand .word { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
+.versions { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.versions b { color: var(--muted); font-weight: 500; }
+.totals { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.totals .n { color: var(--text); font-weight: 600; }
+
+/* ---------- system band ---------- */
+
+.band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+.svc {
+  background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 12px 14px;
+}
+.svc .k {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--dim); margin-bottom: 6px;
+}
+.svc .v { font-family: var(--mono); font-size: 13px; color: var(--text); }
+.svc .sub { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin-top: 3px; }
+.svc.warn { border-color: rgba(201,161,59,.35); }
+.svc.warn .v { color: var(--warn); }
+.svc.bad { border-color: rgba(224,104,62,.4); }
+.svc.bad .v { color: var(--bad); }
+.svc.off { opacity: .72; }
+
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
+.dot.off { background: var(--dim); }
+.dot.live { background: var(--accent); box-shadow: 0 0 7px rgba(244,118,0,.6); }
+.dot.bad { background: var(--bad); box-shadow: 0 0 7px rgba(224,104,62,.5); }
+.dot.warn { background: var(--warn); }
+
+/* the mark inside a row: one shape per meaning, never colour alone.
+   scoped to .row so the band keeps its plain dots. */
+.row .dot {
+  width: 11px; height: 11px; flex: 0 0 11px;
+  border-radius: 0; background: none; box-shadow: none; opacity: 1;
+}
+.row.running .dot, .row.spawning .dot {
+  border-radius: 50%;
+  animation: spin 900ms linear infinite;
+}
+.row.running .dot { border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent); }
+.row.spawning .dot {
+  border: 1.6px solid rgba(93,102,117,.45);
+  border-top-color: var(--muted);
+  animation-duration: 1500ms;
+}
+.row.idle .dot {
+  width: 7px; height: 7px; flex: 0 0 7px;
+  border-radius: 50%; background: var(--accent);
+}
+.row.asleep .dot, .row.never .dot {
+  width: 9px; height: 9px; flex: 0 0 9px;
+  border: 1.4px solid var(--dim); border-radius: 50%;
+}
+.row.never .dot { opacity: .55; }
+.row.failed .dot {
+  width: 10px; height: 10px; flex: 0 0 10px; background: var(--bad);
+  clip-path: polygon(16% 0, 50% 34%, 84% 0, 100% 16%, 66% 50%, 100% 84%,
+                     84% 100%, 50% 66%, 16% 100%, 0 84%, 34% 50%, 0 16%);
+}
+.row.needs .dot, .row.auth .dot {
+  width: 11px; height: 11px; flex: 0 0 11px;
+  clip-path: polygon(50% 3%, 97% 95%, 3% 95%);
+  animation: pulse 1500ms ease-in-out infinite;
+}
+.row.needs .dot { background: var(--warn); }
+.row.auth .dot { background: var(--bad); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .row.running .dot { animation: none; border-color: var(--accent); }
+  .row.spawning .dot { animation: none; border-color: var(--muted); }
+  .row.needs .dot, .row.auth .dot { animation: none; }
+}
+
+/* ---------- org: a label and a hairline. no container anywhere ---------- */
+
+.org { margin-bottom: 30px; }
+.org > h2 {
+  display: flex; align-items: baseline; gap: 10px;
+  font-size: 11px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
+  color: var(--muted); padding: 0 0 7px;
+}
+.org > h2 .rule { flex: 1; height: 1px; background: var(--line); }
+.org > h2 .counts {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+  text-transform: none; color: var(--dim); font-weight: 400;
+}
+
+.list { list-style: none; }
+.list .node { border-top: 1px solid rgba(34,42,60,.55); }
+.list > .node:first-child { border-top: 0; }
+
+/* ---------- the row: one line, same for a lead and for a worker ---------- */
+
+.row {
+  display: grid; grid-template-columns: var(--cols);
+  align-items: center; gap: 12px;
+  padding: 9px 24px 9px 2px;
+  position: relative;
+}
+/* The row is the whole click target on the mock, with a pointer cursor
+   and a hover chevron. Nothing on this page can be opened yet: the
+   session route does not exist, so a row that looked clickable would
+   promise a click that does nothing, which is the one thing the mock's
+   own rows are not allowed to do. Both come back with the route. */
+/* Not the mock's `display: flex`: the row's mark is a grid sibling, not a
+   child, so the flex only stops the text from ellipsising - and a name
+   like `pure-black-github-intellij` has to shorten rather than clip. */
+.row .name {
+  min-width: 0; font-size: 13.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row .where, .row .when {
+  font-family: var(--mono); font-size: 12px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row .when { text-align: right; }
+.row .where .files { color: var(--muted); }
+
+/* what it is doing: its task when there is one, and its artifact */
+.row .what {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  font-size: 12.5px; color: var(--muted);
+}
+.row .what .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.row .what .st {
+  font-family: var(--mono); font-size: 10.5px; color: var(--dim);
+  border: 1px solid var(--line); border-radius: 99px; padding: 0 7px; flex: none;
+}
+.row .what a {
+  font-family: var(--mono); font-size: 11.5px; color: var(--accent);
+  text-decoration: none; flex: none;
+}
+.row .what a:hover { text-decoration: underline; }
+
+.row.running .name, .row.idle .name, .row.spawning .name { font-weight: 600; }
+
+.row.asleep .name { color: var(--muted); font-weight: 400; }
+.row.asleep .where, .row.asleep .what { opacity: .6; }
+
+.row.never .name { color: var(--dim); font-weight: 400; }
+.row.never .where, .row.never .what, .row.never .when { opacity: .45; }
+
+.row.failed { background: rgba(224,104,62,.055); }
+.row.failed .name { color: var(--bad); font-weight: 600; }
+.row.failed .where, .row.failed .what { color: var(--bad); }
+
+/* needs you: the one state that has to be impossible to miss */
+.row.needs { background: rgba(201,161,59,.075); }
+.row.needs .name { color: var(--warn); font-weight: 600; }
+.row.needs .what { color: var(--warn); }
+
+/* sign-in needed is the same family as needs-you, one step harder */
+.row.auth { background: rgba(224,104,62,.06); }
+.row.auth .name { color: var(--bad); font-weight: 600; }
+.row.auth .what { color: var(--bad); }
+
+/* hierarchy: an indent and nothing else. every other column stays put. */
+.children { list-style: none; }
+.children .row .name { padding-left: 22px; }
+
+.note {
+  font-family: var(--mono); font-size: 11.5px; color: var(--bad);
+  padding: 0 var(--pad) 9px 30px;
+}
+.children .note { padding-left: 52px; }
+
+footer {
+  margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+  display: flex; gap: 18px; flex-wrap: wrap;
+}
+footer b { color: var(--muted); font-weight: 500; }
+
+/* ---------- nothing configured: a fresh install ---------- */
+
+.empty {
+  border: 1px dashed var(--line); border-radius: var(--r);
+  padding: 46px 24px; text-align: center;
+}
+.empty .mark {
+  display: inline-block; width: 34px; height: 34px;
+  margin-bottom: 14px; color: rgba(244,118,0,.55);
+}
+.empty .mark svg { display: block; width: 100%; height: 100%; }
+.empty .t { font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+.empty .d { font-size: 12.5px; color: var(--dim); max-width: 46ch; margin: 0 auto; }
+.empty code {
+  font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  background: var(--s2); border: 1px solid var(--line);
+  border-radius: 4px; padding: 1px 5px;
+}
+
+/* ---------- narrow: a phone is a client too ---------- */
+
+@media (max-width: 760px) {
+  :root { --pad: 14px; }
+  .wrap { padding: 18px 16px 56px; }
+  header.top { flex-wrap: wrap; gap: 8px 12px; }
+  .totals { margin-left: 0; width: 100%; }
+  .band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .org > h2 .counts { display: none; }
+  .row {
+    grid-template-columns: 12px minmax(0, 1fr) 62px;
+    row-gap: 3px; padding: 9px 18px 9px 2px;
+  }
+  .row .dot   { grid-column: 1; grid-row: 1; }
+  .row .name  { grid-column: 2; grid-row: 1; }
+  .row .when  { grid-column: 3; grid-row: 1; }
+  .row .where { grid-column: 2 / 4; grid-row: 2; }
+  .row .what  { grid-column: 2 / 4; grid-row: 3; }
+  .children .row .name { padding-left: 14px; }
+  footer { gap: 8px; }
+}

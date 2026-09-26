@@ -21,6 +21,13 @@ use std::sync::Arc;
 use forge_primitives::SessionSlot;
 use forge_workspace::Workspace;
 
+pub use accounts::{AccountsView, GatewayView};
+pub use agents::{AgentRow, Agents, PendingKind};
+pub use dictate::DictateView;
+// A view compares the values the surface hands it, so it needs their names
+// too - re-exported here rather than reached for in the crate below, which
+// a view does not name.
+pub use forge_workspace::{DictateFailure, DictateModelState, LoadingState};
 pub use roster::Roster;
 pub use session::SessionState;
 pub use workers::{WorkerRef, Workers};

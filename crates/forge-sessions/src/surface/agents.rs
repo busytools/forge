@@ -20,6 +20,10 @@ pub struct AgentRow {
     pub has_background_work: bool,
     pub pending: Option<PendingKind>,
     pub last_activity: Option<SystemTime>,
+    /// Why a `Failed` worker died, from the core's own record. `None` for
+    /// a live session, and for a project lead, which has no core source
+    /// for its last failure.
+    pub reason: Option<String>,
 }
 
 /// What a session is waiting on a person for. The core's own kind rather
@@ -51,14 +55,19 @@ impl Agents {
                 continue;
             }
             let start = rows.len();
-            rows.push(row_for(workspace, lead, "lead".to_owned(), None));
+            rows.push(row_for(workspace, lead, "lead".to_owned(), None, None));
             for label in labels.get(&project.key).into_iter().flatten() {
                 let slot = SessionSlot::worker(&project.org, &project.name, label);
-                let status = live
+                let state = live
                     .get(&project.key)
-                    .and_then(|states| states.iter().find(|state| &state.label == label))
-                    .map(|state| state.status);
-                rows.push(row_for(workspace, slot, label.clone(), status));
+                    .and_then(|states| states.iter().find(|s| &s.label == label));
+                rows.push(row_for(
+                    workspace,
+                    slot,
+                    label.clone(),
+                    state.map(|state| state.status),
+                    state.and_then(|state| state.diagnostic.clone()),
+                ));
             }
             spans.insert(project.key.clone(), start..rows.len());
         }
@@ -87,6 +96,7 @@ fn row_for(
     slot: SessionSlot,
     label: String,
     status: Option<WorkerLiveness>,
+    reason: Option<String>,
 ) -> AgentRow {
     let lifecycle = match status {
         Some(WorkerLiveness::Spawning) => SessionLifecycleState::Spawning,
@@ -97,6 +107,7 @@ fn row_for(
         has_background_work: workspace.has_background_work(&slot),
         last_activity: workspace.session_last_activity(&slot),
         pending: workspace.pending_interaction(&slot),
+        reason,
         lifecycle,
         label,
         slot,
@@ -268,6 +279,44 @@ mod tests {
             row_of(&quiet).pending,
             None,
             "a session holding nothing says so rather than borrowing its neighbour's ask",
+        );
+    }
+
+    /// A failed row says why. The reason is the core's own record of the
+    /// failure, carried through the projection a render path reads rather
+    /// than re-fetched by the view. Catches a row that drops it, and one
+    /// that answers a live worker with another session's reason.
+    #[test]
+    fn a_row_carries_the_reason_the_core_recorded() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        workspace.register_domain_session(SessionSlot::lead("TestOrg", "forge"), None);
+        workspace.seed_test_worker_row(&project, "probe-dead");
+        workspace.seed_test_worker_row(&project, "probe-live");
+
+        let mut dead = worker_row("probe-dead", WorkerLiveness::Failed);
+        dead.diagnostic = Some("OAuth token expired; run /login to retry".to_owned());
+        workspace.insert_live_worker(&project, dead);
+        workspace.insert_live_worker(&project, worker_row("probe-live", WorkerLiveness::Running));
+
+        let agents = surface.agents();
+        let rows = agents.for_project(&project);
+        let reason_of = |label: &str| {
+            rows.iter().find(|row| row.label == label).expect("the row exists").reason.clone()
+        };
+
+        assert_eq!(
+            reason_of("probe-dead").as_deref(),
+            Some("OAuth token expired; run /login to retry"),
+            "a failed row carries the reason the core recorded",
+        );
+        assert_eq!(reason_of("probe-live"), None, "a live worker has no failure to explain");
+        assert_eq!(
+            reason_of("lead"),
+            None,
+            "a lead has no core source for a failure reason, so it carries none",
         );
     }
 

@@ -74,6 +74,9 @@ pub struct LiveWorkerState {
     pub label: String,
     pub status: WorkerLiveness,
     pub slot: SessionSlot,
+    /// Why a `Failed` spawn died, carried through so a row can say it
+    /// without cloning the whole entry.
+    pub diagnostic: Option<String>,
 }
 
 /// In-memory entry stored in `Workspace.live_workers[project_key]`.

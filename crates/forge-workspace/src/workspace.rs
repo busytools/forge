@@ -3963,6 +3963,7 @@ impl Workspace {
                         label: w.label.clone(),
                         status: w.status,
                         slot: w.slot.clone(),
+                        diagnostic: w.diagnostic.clone(),
                     })
                     .collect();
                 (project.clone(), states)
@@ -4794,7 +4795,7 @@ impl Workspace {
     /// while the review MCP reports `SessionCwdUnknown` to the caller.
     ///
     /// [`worker_tag_dir`]: crate::mcp::workers::types::worker_tag_dir
-    pub(crate) fn cwd_for_session(&self, session_key: &SessionSlot) -> Option<String> {
+    pub fn cwd_for_session(&self, session_key: &SessionSlot) -> Option<String> {
         if let Some(cwd) = self.session_cwd_for(session_key) {
             return Some(cwd);
         }

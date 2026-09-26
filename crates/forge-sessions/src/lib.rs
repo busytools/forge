@@ -11,3 +11,5 @@ pub mod grouping;
 pub mod model;
 pub mod peer_outbound;
 pub mod surface;
+#[cfg(feature = "testing")]
+pub mod testing;

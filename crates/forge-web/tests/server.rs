@@ -1,10 +1,16 @@
-//! The server's wiring: it binds what the config says, reports what it
-//! bound, and binds nothing at all when it is turned off.
+//! The server: it binds what the config says, serves the home, and binds
+//! nothing at all when it is turned off.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use forge_primitives::WebConfig;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::path::Path;
+use std::sync::Arc;
+
+use forge_primitives::WebConfig;
+use forge_sessions::surface::ViewSurface;
+use forge_sessions::testing::Fleet;
+use forge_web::WebState;
 
 /// A port to hand the server: bind one, read it, let it go. Something
 /// else can take it in the gap before the server binds, which is why
@@ -16,20 +22,40 @@ fn free_port() -> u16 {
     port
 }
 
-/// Start on a free port, retrying if the gap in `free_port` lost the race.
-async fn start_on_a_free_port(bind: IpAddr) -> (SocketAddr, WebConfig) {
-    start_on_a_free_port_with(bind, std::convert::identity).await
+/// A fleet on disk: two orgs, one live project with a worker and a task,
+/// one live project with nothing under it, and a dormant project.
+fn fleet(dir: &Path) -> Fleet {
+    let fleet =
+        Fleet::in_dir(dir, &[("Busytools", &["forge", "busymail"]), ("Personal", &["dotfiles"])])
+            .expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.add_worker("Busytools", "forge", "em-dash-sweep").expect("forge is declared");
+    fleet
+        .add_task("Busytools", "forge", "Sweep the corpus for banned dashes", "lead")
+        .expect("forge is declared");
+    fleet.start("Busytools", "busymail").expect("busymail is declared");
+    fleet
 }
 
-/// [`start_on_a_free_port`] with the config adjusted before it is handed
-/// over, so a test can set a key without giving up the retry.
+async fn start(bind: IpAddr, surface: Arc<ViewSurface>) -> (SocketAddr, WebConfig) {
+    start_on_a_free_port_with(bind, surface, std::convert::identity).await
+}
+
+/// [`start`] with the config adjusted before it is handed over, so a test
+/// can set a key without giving up the retry.
 async fn start_on_a_free_port_with(
     bind: IpAddr,
+    surface: Arc<ViewSurface>,
     adjust: impl Fn(WebConfig) -> WebConfig,
 ) -> (SocketAddr, WebConfig) {
     for _ in 0..8 {
         let config = adjust(WebConfig { port: free_port(), bind, ..WebConfig::default() });
-        match forge_web::start(config.clone()).await {
+        let state = WebState {
+            surface: Arc::clone(&surface),
+            work: Arc::new(forge_web::WorkCache::new()),
+            config: config.clone(),
+        };
+        match forge_web::start(state).await {
             Ok(Some(bound)) => return (bound, config),
             Ok(None) => panic!("an enabled config must not come back disabled"),
             // A stolen probe port: take another and try again.
@@ -38,44 +64,6 @@ async fn start_on_a_free_port_with(
     }
     panic!("no free port after eight tries");
 }
-
-/// Every interface rather than loopback, so the address has to come
-/// from the config: loopback is what a hardcoded one would look like.
-#[tokio::test]
-async fn serves_on_the_configured_address() {
-    let (bound, config) = start_on_a_free_port(IpAddr::V4(Ipv4Addr::UNSPECIFIED)).await;
-    assert_eq!(
-        bound,
-        SocketAddr::new(config.bind, config.port),
-        "the listener bound the configured address, not a default",
-    );
-
-    let body = reqwest::get(format!("http://127.0.0.1:{}/", config.port))
-        .await
-        .expect("the page is served")
-        .text()
-        .await
-        .expect("the body reads");
-    assert!(
-        body.contains(&format!("listening on {bound}")),
-        "the page reports the address it bound, got: {body}",
-    );
-    assert!(
-        body.contains(&format!(
-            "enabled = {}, port = {}, bind = {}",
-            config.enabled, config.port, config.bind
-        )),
-        "the page reports what the config said, got: {body}",
-    );
-}
-
-/// The Klin path, verbatim from the sheet the marks were picked from. A
-/// literal rather than a call into the crate, so a redrawn or mistyped
-/// path fails here instead of agreeing with itself.
-const KLIN_PATH: &str = "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 \
-                         19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z";
-
-const LANES_BARS: &str = "x=\"10\" y=\"3\" width=\"4\" height=\"18\"";
 
 async fn get(config: &WebConfig, path: &str) -> (reqwest::StatusCode, String, String) {
     let response =
@@ -88,18 +76,116 @@ async fn get(config: &WebConfig, path: &str) -> (reqwest::StatusCode, String, St
     (status, content_type, response.text().await.expect("the body reads"))
 }
 
+/// The Klin path, verbatim from the sheet the marks were picked from. A
+/// literal rather than a call into the crate, so a redrawn or mistyped
+/// path fails here instead of agreeing with itself.
+const KLIN_PATH: &str = "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 \
+                         19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z";
+
+const LANES_BARS: &str = "x=\"10\" y=\"3\" width=\"4\" height=\"18\"";
+
+/// Every interface rather than loopback, so the address has to come
+/// from the config: loopback is what a hardcoded one would look like.
+#[tokio::test]
+async fn serves_on_the_configured_address() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (bound, config) = start(IpAddr::V4(Ipv4Addr::UNSPECIFIED), fleet.surface()).await;
+    assert_eq!(
+        bound,
+        SocketAddr::new(config.bind, config.port),
+        "the listener bound the configured address, not a default",
+    );
+
+    let (status, _content_type, body) = get(&config, "/").await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(
+        body.contains(&format!("this page is served on {bound}")),
+        "the page reports the address it bound, got: {body}",
+    );
+}
+
+/// The page a browser opens: one header per org, every project under it,
+/// and the fleet count in the header line.
+#[tokio::test]
+async fn the_home_lists_every_project_under_its_org() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, content_type, page) = get(&config, "/").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(content_type.starts_with("text/html"), "a browser renders it as a page");
+    for org in ["Busytools", "Personal"] {
+        assert!(page.contains(&format!(">{org}<")), "one header per org, missing {org}: {page}");
+    }
+    for project in ["forge", "busymail", "dotfiles"] {
+        assert!(page.contains(project), "every project is listed, missing {project}: {page}");
+    }
+    assert!(page.contains("3 projects"), "the header carries the project count: {page}");
+    assert!(page.contains("em-dash-sweep"), "a project's workers hang under it: {page}");
+    assert!(
+        page.contains("Sweep the corpus for banned dashes"),
+        "and its task is what the row says it is doing: {page}",
+    );
+}
+
+/// A quiet morning: projects configured, none of them started. Every row
+/// is a dormant one and the fleet count is zero, and the page is still a
+/// page.
+#[tokio::test]
+async fn a_fleet_with_nothing_started_still_draws_every_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Personal", &["dotfiles", "fitness"])])
+        .expect("the fleet builds");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains(">Personal<"), "the org is still there: {page}");
+    for project in ["dotfiles", "fitness"] {
+        assert!(page.contains(project), "and so is {project}: {page}");
+    }
+    assert!(
+        page.contains("<span class=\"n\">0</span> agents"),
+        "a fleet with nothing started counts zero: {page}",
+    );
+    assert!(page.contains("2 asleep"), "and the org says so: {page}");
+}
+
+/// The stylesheet is served beside the page, as a stylesheet.
+#[tokio::test]
+async fn the_home_serves_its_stylesheet() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, content_type, body) = get(&config, "/home.css").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(content_type.starts_with("text/css"), "a browser reads it as a stylesheet");
+    assert!(body.contains(".row"), "the stylesheet carries the row: {body}");
+}
+
 /// The mark a browser tab carries comes from `[web] mark`, so a mark
 /// chosen in `forge.toml` is the one on the tab. Catches a route that
 /// hardcodes the built-in, and one that serves the mark without a type a
 /// browser will draw.
 #[tokio::test]
 async fn the_favicon_serves_the_configured_mark_in_the_palette() {
-    let (_bound, config) =
-        start_on_a_free_port_with(IpAddr::V4(Ipv4Addr::LOCALHOST), |mut config| {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start_on_a_free_port_with(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        fleet.surface(),
+        |mut config| {
             config.mark = Some("lanes".to_owned());
             config
-        })
-        .await;
+        },
+    )
+    .await;
 
     let (status, content_type, body) = get(&config, "/favicon.svg").await;
 
@@ -120,7 +206,9 @@ async fn the_favicon_serves_the_configured_mark_in_the_palette() {
 /// it.
 #[tokio::test]
 async fn unset_names_fall_back_to_the_built_in_mark_and_palette() {
-    let (_bound, config) = start_on_a_free_port(IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let (status, _content_type, favicon) = get(&config, "/favicon.svg").await;
     assert_eq!(status, reqwest::StatusCode::OK);
@@ -139,11 +227,15 @@ async fn unset_names_fall_back_to_the_built_in_mark_and_palette() {
 /// on-by-default listener that loses a port fight has to say so.
 #[tokio::test]
 async fn a_taken_port_is_an_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
     let holder = TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let port = holder.local_addr().expect("the held address").port();
     let config = WebConfig { port, bind: IpAddr::V4(Ipv4Addr::LOCALHOST), ..WebConfig::default() };
+    let state =
+        WebState { surface: fleet.surface(), work: Arc::new(forge_web::WorkCache::new()), config };
 
-    let error = forge_web::start(config).await.expect_err("a taken port must not pass as bound");
+    let error = forge_web::start(state).await.expect_err("a taken port must not pass as bound");
 
     assert!(
         error.to_string().contains(&format!("127.0.0.1:{port}")),
@@ -157,16 +249,22 @@ async fn a_taken_port_is_an_error() {
 /// to be right about for the wrong reason.
 #[tokio::test]
 async fn disabled_binds_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
     let holder = TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let port = holder.local_addr().expect("the held address").port();
-    let config = WebConfig {
-        enabled: false,
-        port,
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        ..WebConfig::default()
+    let state = WebState {
+        surface: fleet.surface(),
+        work: Arc::new(forge_web::WorkCache::new()),
+        config: WebConfig {
+            enabled: false,
+            port,
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            ..WebConfig::default()
+        },
     };
 
-    let bound = forge_web::start(config).await.expect("turning it off is not an error");
+    let bound = forge_web::start(state).await.expect("turning it off is not an error");
 
     assert!(bound.is_none(), "a disabled server binds nothing");
 }
