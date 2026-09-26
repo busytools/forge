@@ -590,6 +590,20 @@ fn spawn_background_catalog_scan(
     }
 }
 
+/// One probe call, boxed so the task that runs it is not generic over the
+/// future's type.
+type CliVersionProbe = std::pin::Pin<Box<dyn std::future::Future<Output = CliVersionInfo> + Send>>;
+
+/// How the probe task gets a snapshot. The constructor passes the real
+/// probe; a test passes a script, so the scheduling around the probe is
+/// drivable without spawning `claude --version` or reaching npm.
+type CliVersionProber = Box<dyn Fn() -> CliVersionProbe + Send + Sync>;
+
+/// The real probe: `claude --version` and npm's `latest` dist-tag.
+fn real_cli_version_prober() -> CliVersionProber {
+    Box::new(|| Box::pin(forge_agent::env::cli_version::fetch_info()))
+}
+
 /// Kick off the claude version probe on the tokio runtime: one fetch at
 /// boot, then a re-probe every [`CLI_VERSION_REFRESH_INTERVAL`]. A caller
 /// with no runtime gets a warn and holds no version rather than a task
@@ -597,8 +611,9 @@ fn spawn_background_catalog_scan(
 fn spawn_background_cli_version_probe(
     cli_version: &Arc<Mutex<Option<CliVersionInfo>>>,
     update_tx: &UpdateFanout,
+    prober: CliVersionProber,
 ) {
-    let run = run_cli_version_probe(Arc::clone(cli_version), update_tx.clone());
+    let run = run_cli_version_probe(Arc::clone(cli_version), update_tx.clone(), prober);
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn(run);
     } else {
@@ -615,6 +630,7 @@ fn spawn_background_cli_version_probe(
 async fn run_cli_version_probe(
     cli_version: Arc<Mutex<Option<CliVersionInfo>>>,
     update_tx: UpdateFanout,
+    prober: CliVersionProber,
 ) {
     let mut interval = tokio::time::interval(CLI_VERSION_REFRESH_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -622,7 +638,7 @@ async fn run_cli_version_probe(
         // The first tick completes immediately, so this is the boot fetch;
         // later ticks only recover a transient miss.
         interval.tick().await;
-        let snapshot = forge_agent::env::cli_version::fetch_info().await;
+        let snapshot = prober().await;
         store_cli_version(&cli_version, &update_tx, snapshot);
     }
 }
@@ -861,14 +877,14 @@ fn catalog_scan_root(config_dir: &std::path::Path) -> Option<PathBuf> {
 }
 
 impl Workspace {
-    /// Builds a Workspace, kicks off the background catalog scan, and
-    /// loads `<config_dir>/forge.toml`. Errors if `forge.toml` is
-    /// missing or malformed (e.g. no `[[orgs]]` entries, no
+    /// Builds a Workspace, kicks off the background catalog scan and the
+    /// claude version probe, and loads `<config_dir>/forge.toml`. Errors if
+    /// `forge.toml` is missing or malformed (e.g. no `[[orgs]]` entries, no
     /// `[[orgs.projects]]` entries, unknown account references). No
     /// Agents are spawned on success. The session catalog starts empty
     /// and fills when the scan lands - see [`Workspace::start_catalog_scan`].
     pub fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
-        Self::new_impl(config_dir, None, true)
+        Self::new_impl(config_dir, None, true, Some(real_cli_version_prober()))
     }
 
     /// Like [`Workspace::new`] but puts forge's whole app-support base -
@@ -880,8 +896,27 @@ impl Workspace {
     /// so the catalog stays empty until a fixture asks for it.
     #[cfg(any(test, feature = "testing"))]
     pub fn new_for_test(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
+        Self::new_for_test_impl(config_dir, None)
+    }
+
+    /// [`Workspace::new_for_test`] with `prober` driving the claude version
+    /// probe in place of the real one, so a test drives the constructor's
+    /// own launch without spawning `claude --version` or reaching npm.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn new_for_test_with_cli_version_prober(
+        config_dir: PathBuf,
+        prober: CliVersionProber,
+    ) -> Result<Self, WorkspaceError> {
+        Self::new_for_test_impl(config_dir, Some(prober))
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    fn new_for_test_impl(
+        config_dir: PathBuf,
+        cli_version_prober: Option<CliVersionProber>,
+    ) -> Result<Self, WorkspaceError> {
         let app_support = config_dir.join("app-support");
-        let workspace = Self::new_impl(config_dir, Some(app_support), false)?;
+        let workspace = Self::new_impl(config_dir, Some(app_support), false, cli_version_prober)?;
         // Tests never start the listener; the boot gate reads open so
         // spawn paths are exercisable, and the I2 test flips it back to
         // closed explicitly when it needs the refusal.
@@ -917,6 +952,14 @@ impl Workspace {
         self.catalog_loaded.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Kick off the claude version probe on the tokio runtime: one fetch at
+    /// boot, then a re-probe every [`CLI_VERSION_REFRESH_INTERVAL`]. The
+    /// constructor is the only caller, and the prober it takes is what lets
+    /// a test drive this same launch.
+    fn start_cli_version_probe(&self, prober: CliVersionProber) {
+        spawn_background_cli_version_probe(&self.cli_version, &self.update_tx, prober);
+    }
+
     /// The `claude` CLI versions the core holds: what is installed on this
     /// machine and what npm publishes, both `None` until the boot probe
     /// resolves them. The same answer for every viewer, so a view reads it
@@ -933,7 +976,8 @@ impl Workspace {
     fn new_impl(
         config_dir: PathBuf,
         app_support: Option<PathBuf>,
-        auto_start_scan: bool,
+        catalog_scan: bool,
+        cli_version_prober: Option<CliVersionProber>,
     ) -> Result<Self, WorkspaceError> {
         let mut config = load_from_dir(&config_dir)?;
 
@@ -1223,7 +1267,7 @@ impl Workspace {
         let db = Arc::new(Mutex::new(db));
         let catalog_loaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let catalog_scan_started = std::sync::atomic::AtomicBool::new(false);
-        if auto_start_scan {
+        if catalog_scan {
             spawn_background_catalog_scan(
                 &catalog,
                 &db,
@@ -1234,13 +1278,8 @@ impl Workspace {
             );
         }
         // The version facts are the same for every viewer, so the core
-        // probes them once and both views read one answer. Off the test
-        // path with the catalog scan: a test's probe would really spawn
-        // `claude --version` and really hit the npm registry.
+        // probes them once and both views read one answer.
         let cli_version = Arc::new(Mutex::new(None));
-        if auto_start_scan {
-            spawn_background_cli_version_probe(&cli_version, &update_tx);
-        }
         let workspace = Self {
             config_dir,
             config,
@@ -1301,6 +1340,9 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             test_extra_projects: Mutex::new(Vec::new()),
         };
+        if let Some(prober) = cli_version_prober {
+            workspace.start_cli_version_probe(prober);
+        }
         if workspace.db.lock().is_none() {
             // One user-visible notice for the whole best-effort-persist
             // class (spinner override, durable crons, subscriptions): the
@@ -6363,6 +6405,52 @@ mod tests {
             spend: None,
             balance: None,
         }
+    }
+
+    /// A probe the test steers: a fixed snapshot, and a count of the calls
+    /// it answered, so the scheduling around the probe is observable
+    /// without a real `claude --version` or a network call.
+    fn scripted_prober(
+        calls: &Arc<std::sync::atomic::AtomicUsize>,
+        snapshot: CliVersionInfo,
+    ) -> CliVersionProber {
+        let calls = Arc::clone(calls);
+        Box::new(move || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            Box::pin(std::future::ready(snapshot.clone()))
+        })
+    }
+
+    /// The constructor's own launch is what starts the probe. Delete it and
+    /// the core reads no version for the life of the process while every
+    /// other test stays green, so nothing else notices that the feature's
+    /// only production write is gone.
+    #[tokio::test]
+    async fn the_boot_construction_starts_the_probe_and_stores_what_it_reads() {
+        let dir = make_workspace_dir();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probed = CliVersionInfo {
+            installed: Some("2.1.156".to_owned()),
+            latest: Some("2.1.201".to_owned()),
+        };
+        let workspace = Workspace::new_for_test_with_cli_version_prober(
+            dir.path().to_owned(),
+            scripted_prober(&calls, probed.clone()),
+        )
+        .expect("new");
+        let mut woken = workspace.subscribe();
+
+        let event = tokio::time::timeout(Duration::from_secs(5), woken.recv()).await;
+
+        assert!(
+            matches!(event, Ok(Some(SessionUpdate::CliVersionChanged))),
+            "the constructor's launch probed and woke the views; without that launch the core reads no version for the life of the process",
+        );
+        assert_eq!(
+            workspace.cli_version(),
+            Some(probed),
+            "and the store holds what the probe returned, not a snapshot that resolved nothing",
+        );
     }
 
     /// A probe that came back empty on one side keeps the value an earlier
