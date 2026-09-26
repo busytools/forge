@@ -101,13 +101,14 @@ fn click_intent(lifecycle: SessionLifecycleState) -> ClickIntent {
 /// the row stays unclickable with a `no usable accounts` hint.
 fn effective_click_intent(
     app: &App,
+    accounts_loaded: bool,
     project_name: &str,
     lifecycle: SessionLifecycleState,
 ) -> ClickIntent {
-    let Some(workspace) = app.workspace.as_ref() else {
+    if app.workspace.is_none() {
         return click_intent(lifecycle);
-    };
-    if !ViewSurface::new(Arc::clone(workspace)).accounts().all_loaded {
+    }
+    if !accounts_loaded {
         return ClickIntent::Block;
     }
     let Some(roster) = app.surface().map(|surface| surface.roster()) else {
@@ -518,6 +519,10 @@ fn build_picker_content(
     // One roster for the whole picker. Collecting it walks the session
     // catalog, so it stays out of the per-row loop below.
     let roster = app.surface().map(|surface| surface.roster());
+    // One account snapshot for the whole picker, for the same reason:
+    // every per-row read below wants only its `all_loaded` flag, and
+    // collecting it walks the pool and the gateway's orgs.
+    let accounts_loaded = app.surface().is_some_and(|surface| surface.accounts().all_loaded);
 
     let mut last_org: Option<String> = None;
     for (project_row_idx, row) in rows.iter().enumerate() {
@@ -536,7 +541,7 @@ fn build_picker_content(
         if selected {
             selected_flat = Some(lines.len());
         }
-        push_project_row(&mut lines, row, selected, app, width);
+        push_project_row(&mut lines, row, selected, app, accounts_loaded, width);
         if let Some(err) = &row.error {
             push_error_row(&mut lines, err, width);
         }
@@ -558,10 +563,7 @@ fn build_picker_content(
         // model for it to match on. The row stays unclickable via
         // `effective_click_intent`'s Block downgrade; the hint names
         // the one to fix.
-        if app
-            .workspace
-            .as_ref()
-            .is_some_and(|workspace| ViewSurface::new(Arc::clone(workspace)).accounts().all_loaded)
+        if accounts_loaded
             && project_view
                 .is_some_and(|project| roster.as_ref().is_some_and(|r| !r.would_bind(&project.key)))
         {
@@ -686,12 +688,13 @@ fn push_project_row(
     row: &PickerRow,
     selected: bool,
     app: &App,
+    accounts_loaded: bool,
     _area_width: u16,
 ) {
     let connector = if row.is_last_in_org { "└─" } else { "├─" };
     let (glyph, glyph_color) =
         glyph_for_row(row.lifecycle, row.has_background_work, app.active_spinner_glyph());
-    let intent = effective_click_intent(app, &row.project_name, row.lifecycle);
+    let intent = effective_click_intent(app, accounts_loaded, &row.project_name, row.lifecycle);
     // Base name style - BOLD when the row is interactive (Idle /
     // Running / Sleeping / Failed), DIM when not (Spawning waits for
     // its subprocess). Selection on a clickable row layers on its
@@ -997,13 +1000,16 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {
 fn footer_enter_label(app: &App, selected_row: Option<&PickerRow>) -> String {
     let accounts = app.workspace.as_ref().map(|w| ViewSurface::new(Arc::clone(w)).accounts());
     let gateway_error = accounts.as_ref().and_then(|a| a.gateway.bind_error.clone());
+    let accounts_loaded = accounts.as_ref().is_some_and(|a| a.all_loaded);
     let loading = accounts.is_some_and(|a| a.gateway.bind_error.is_none() && !a.all_loaded);
     if let Some(error) = gateway_error {
         format!("enter  ⛔ gateway failed: {error}")
     } else if loading {
         "enter  ⏳ loading accounts…".to_owned()
     } else {
-        match selected_row.map(|r| effective_click_intent(app, &r.project_name, r.lifecycle)) {
+        let intent = selected_row
+            .map(|r| effective_click_intent(app, accounts_loaded, &r.project_name, r.lifecycle));
+        match intent {
             Some(ClickIntent::SpawnAndWait) => "enter  start".to_owned(),
             Some(ClickIntent::Block) => "enter  ⏳ spawning…".to_owned(),
             Some(ClickIntent::Retry) => "r  retry".to_owned(),
@@ -1062,7 +1068,8 @@ pub fn pick_selected_project(app: &mut App) {
     let Some((project_name, lifecycle)) = resolve_selection(app) else {
         return;
     };
-    match effective_click_intent(app, &project_name, lifecycle) {
+    let accounts_loaded = app.surface().is_some_and(|surface| surface.accounts().all_loaded);
+    match effective_click_intent(app, accounts_loaded, &project_name, lifecycle) {
         ClickIntent::EnterChat => switch_to_project_and_focus(app, &project_name),
         ClickIntent::SpawnAndWait => spawn_project_in_background(app, &project_name),
         ClickIntent::Block | ClickIntent::Retry => {}
@@ -1294,7 +1301,9 @@ mod tests {
         app.workspace = Some(std::sync::Arc::new(workspace));
         let rows = build_picker_rows(&app);
 
-        let intent = effective_click_intent(&app, &rows[0].project_name, rows[0].lifecycle);
+        let accounts_loaded = app.surface().is_some_and(|surface| surface.accounts().all_loaded);
+        let intent =
+            effective_click_intent(&app, accounts_loaded, &rows[0].project_name, rows[0].lifecycle);
         assert_eq!(
             intent,
             ClickIntent::Block,
