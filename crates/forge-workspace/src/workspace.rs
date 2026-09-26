@@ -598,9 +598,10 @@ fn spawn_background_catalog_scan(
 /// future's type.
 type CliVersionProbe = std::pin::Pin<Box<dyn std::future::Future<Output = CliVersionInfo> + Send>>;
 
-/// How the probe task gets a snapshot. The constructor passes the real
-/// probe; a test passes a script, so the scheduling around the probe is
-/// drivable without spawning `claude --version` or reaching npm.
+/// How the probe task gets a snapshot. [`Workspace::new`] passes the real
+/// probe; every test constructor passes a script, so the scheduling around
+/// the probe is drivable without spawning `claude --version` or reaching
+/// npm.
 type CliVersionProber = Box<dyn Fn() -> CliVersionProbe + Send + Sync>;
 
 /// The real probe: `claude --version` and npm's `latest` dist-tag.
