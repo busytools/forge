@@ -282,7 +282,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Vertical layout: the identity block + picker box ride together as
     // one centered unit; the footer hint stays pinned to the last row.
-    let identity_height = identity_block_height(app);
+    // The block is built once and counted off its own lines, so a probe
+    // landing between the layout and the paint cannot make them disagree.
+    let identity = launchpad_identity_lines(app, area.width);
+    let identity_height = u16::try_from(identity.len()).unwrap_or(u16::MAX);
     let footer_height: u16 = 1;
     let footer_top = area.y + area.height.saturating_sub(footer_height);
     let available = footer_top.saturating_sub(area.y);
@@ -292,7 +295,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let block_top =
         area.y + block_top_offset(area.height, identity_height, box_height, footer_height);
-    render_identity_block(frame, area, app, block_top);
+    render_identity_block(frame, area, identity, block_top);
 
     let region = Rect {
         x: area.x + area.width.saturating_sub(picker_outer_width) / 2,
@@ -371,18 +374,23 @@ pub(super) fn account_row_visible(app: &App) -> bool {
     })
 }
 
-/// Line count for the identity block: 6 wordmark rows, the version
-/// line, the claude line, an optional update indicator, and the
-/// per-account status row (blank separator + chips) when
-/// [`account_row_visible`] says so.
-pub(super) fn identity_block_height(app: &App) -> u16 {
-    // Counted off the lines themselves rather than restated, so the
-    // layout and the paint cannot disagree about the update indicator.
-    let mut h = identity_lines(app, 0).len();
-    if account_row_visible(app) {
-        h += 2;
+/// The launchpad's identity block: the shared lines plus the per-account
+/// glyph row, built once so the height and the paint count the same lines.
+fn launchpad_identity_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let mut lines = identity_lines(app, width);
+    // Per-account glyph row, present only while some account is
+    // mid-flight - which is exactly when every project row is blocked,
+    // so this is what says why. Order matches forge.toml's
+    // `[[accounts]]` so the user can scan it left-to-right against
+    // their own mental layout.
+    if let Some(workspace) = app.workspace.as_ref()
+        && account_row_visible(app)
+    {
+        lines.push(Line::default());
+        let accounts = ViewSurface::new(Arc::clone(workspace)).accounts();
+        lines.push(centered_account_status_line(&accounts.loading, width));
     }
-    u16::try_from(h).unwrap_or(u16::MAX)
+    lines
 }
 
 /// Wordmark, version, claude version, and the update indicator when one
@@ -413,20 +421,7 @@ pub(super) fn identity_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_identity_block(frame: &mut Frame, area: Rect, app: &App, y: u16) {
-    let mut lines = identity_lines(app, area.width);
-    // Per-account glyph row, present only while some account is
-    // mid-flight - which is exactly when every project row is blocked,
-    // so this is what says why. Order matches forge.toml's
-    // `[[accounts]]` so the user can scan it left-to-right against
-    // their own mental layout.
-    if let Some(workspace) = app.workspace.as_ref()
-        && account_row_visible(app)
-    {
-        lines.push(Line::default());
-        let accounts = ViewSurface::new(Arc::clone(workspace)).accounts();
-        lines.push(centered_account_status_line(&accounts.loading, area.width));
-    }
+fn render_identity_block(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>, y: u16) {
     let block_area =
         Rect { x: area.x, y, width: area.width, height: u16::try_from(lines.len()).unwrap_or(0) };
     frame.render_widget(Paragraph::new(lines), block_area);
