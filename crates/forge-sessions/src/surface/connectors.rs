@@ -60,13 +60,27 @@ mod tests {
 
     /// Catches a field wired to the sibling connector's read, or the
     /// project scope being dropped, which would show one connector's
-    /// liveness under the other's heading.
+    /// state under the other's heading.
+    ///
+    /// The two liveness flags are seeded to opposite values on purpose:
+    /// two false-valued bools read as agreement, which is what let a
+    /// read wired to the wrong connector pass unnoticed.
     #[test]
     fn connectors_agrees_with_the_calls_it_replaces() {
         let (workspace, _dir) = crate::surface::testing::workspace_with_connector_subs();
+        workspace.seed_test_gotify_connected(true);
 
         let view = ViewSurface::new(Arc::clone(&workspace)).connectors(Some("forge"));
 
+        assert_ne!(
+            workspace.gotify_connected(),
+            workspace.slack_subscription_load_failed(),
+            "the fixture gives the two connectors' flags different values, or the comparisons below agree on a false",
+        );
+        assert_ne!(
+            view.gotify.connected, view.slack.load_failed,
+            "gotify's liveness and slack's load failure are read from different flags, not one value under both headings",
+        );
         assert_eq!(
             view.gotify.connected,
             workspace.gotify_connected(),

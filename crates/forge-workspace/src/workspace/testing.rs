@@ -312,6 +312,15 @@ impl Workspace {
         self.gateway_ready.store(ready, std::sync::atomic::Ordering::Release);
     }
 
+    /// Set the Gotify stream's connection flag, so a cross-crate test can
+    /// give the two connectors' liveness flags different values. Two
+    /// false-valued bools read as agreement, which lets a read wired to
+    /// the wrong connector pass unnoticed. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_gotify_connected(&self, connected: bool) {
+        *self.gotify_connected.lock() = connected;
+    }
+
     /// Mark `account` Ready, so a cross-crate test can render chip-bearing
     /// rows without driving the real account loader. Test-only.
     #[cfg(any(test, feature = "testing"))]
