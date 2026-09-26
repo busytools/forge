@@ -57,6 +57,12 @@ impl Fleet {
         self.workspace.emit_for_test(update);
     }
 
+    /// Hold a claude version snapshot, so a view test renders a version
+    /// line without a real `claude --version` and npm probe.
+    pub fn set_cli_version(&self, installed: Option<&str>, latest: Option<&str>) {
+        self.workspace.seed_test_cli_version(installed, latest);
+    }
+
     /// Give `project` a live lead session, registering the domain a spawn
     /// would.
     pub fn start(&self, org: &str, project: &str) -> Result<(), FixtureError> {

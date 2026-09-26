@@ -27,6 +27,7 @@ pub use dictate::DictateView;
 // A view compares the values the surface hands it, so it needs their names
 // too - re-exported here rather than reached for in the crate below, which
 // a view does not name.
+pub use forge_workspace::env::cli_version::CliVersionInfo;
 pub use forge_workspace::{DictateFailure, DictateModelState, LoadingState};
 pub use roster::Roster;
 pub use session::SessionState;
@@ -86,6 +87,14 @@ impl ViewSurface {
     pub fn workers(&self) -> Workers {
         Workers::collect(Arc::clone(&self.workspace))
     }
+
+    /// The installed and npm-published `claude` CLI versions. The same
+    /// answer for every viewer, so the core holds it and a change arrives
+    /// as `SessionUpdate::CliVersionChanged`; `None` until the boot probe
+    /// lands.
+    pub fn cli_version(&self) -> Option<CliVersionInfo> {
+        self.workspace.cli_version()
+    }
 }
 
 #[cfg(test)]
@@ -93,6 +102,27 @@ mod tests {
     use std::sync::Arc;
 
     use super::{SessionUpdate, ViewSurface};
+
+    /// The claude versions are facts about the world rather than about a
+    /// viewer, so a view reads the core's answer instead of probing for
+    /// itself: nothing probed yet reads as nothing.
+    #[tokio::test]
+    async fn the_surface_reads_the_claude_version_the_core_holds() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+
+        assert!(surface.cli_version().is_none(), "nothing probed yet reads as nothing");
+
+        workspace.seed_test_cli_version(Some("2.1.156"), Some("2.1.201"));
+        let held = surface.cli_version().expect("the core's snapshot reaches the view");
+
+        assert_eq!(
+            held.installed.as_deref(),
+            Some("2.1.156"),
+            "the verb carries the installed version the core holds",
+        );
+        assert_eq!(held.latest.as_deref(), Some("2.1.201"), "and the published one beside it");
+    }
 
     /// The mirror is the call site, not the fanout. Both verbs sit on one
     /// `UpdateFanout`, whose own test pins its two halves; what this pins

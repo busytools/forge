@@ -63,6 +63,17 @@ impl Workspace {
         let _ = self.update_tx.send(update);
     }
 
+    /// Hold a claude version snapshot, so a cross-crate test can render the
+    /// version line without a real `claude --version` and npm probe.
+    /// Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_cli_version(&self, installed: Option<&str>, latest: Option<&str>) {
+        *self.cli_version.lock() = Some(forge_agent::env::cli_version::CliVersionInfo {
+            installed: installed.map(str::to_owned),
+            latest: latest.map(str::to_owned),
+        });
+    }
+
     /// Register a fresh testing-stub agent against `key`'s
     /// `DomainSession`. Returns the matching
     /// `forge_primitives::AgentCommand` receiver so tests can assert on
@@ -214,6 +225,8 @@ impl Workspace {
             db: Arc::new(Mutex::new(None)),
             catalog_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             catalog_scan_started: std::sync::atomic::AtomicBool::new(false),
+            cli_version: Arc::new(Mutex::new(None)),
+            cli_version_probe_started: std::sync::atomic::AtomicBool::new(false),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),

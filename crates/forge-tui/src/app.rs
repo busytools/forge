@@ -1,6 +1,5 @@
 pub(crate) mod active_bucket_scope;
 mod cache_policy;
-pub(crate) mod cli_version;
 pub(crate) mod clipboard_image;
 pub(crate) mod config;
 pub(crate) mod connect;
@@ -462,7 +461,6 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         git_diff::drain_events(app);
         dictate_devices::tick(app);
         dictate_devices::drain_events(app);
-        cli_version::drain_events(app);
         process_scanner::drain_events(app);
         diff_overlay::drain_events(app);
         review_waiting::drain_events(app);
