@@ -1125,7 +1125,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "forge-agent"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1155,7 +1155,7 @@ dependencies = [
 
 [[package]]
 name = "forge-connectors"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1174,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "forge-dictate"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "cpal",
  "dirs",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "forge-gateway"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "forge-primitives"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -1230,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "forge-sdk"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "forge-sessions"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "forge-primitives",
  "forge-workspace",
@@ -1262,7 +1262,7 @@ dependencies = [
 
 [[package]]
 name = "forge-test-harness"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "async-trait",
  "forge-primitives",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tui"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "forge-web"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "axum",
  "forge-primitives",
@@ -1335,7 +1335,7 @@ dependencies = [
 
 [[package]]
 name = "forge-workspace"
-version = "1.0.87"
+version = "1.0.88"
 dependencies = [
  "anyhow",
  "async-trait",
