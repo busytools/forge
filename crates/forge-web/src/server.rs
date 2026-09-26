@@ -17,7 +17,7 @@ pub enum WebError {
 
 /// What the wiring page renders: the address it bound and the config it
 /// read.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Wiring {
     bound: SocketAddr,
     config: WebConfig,

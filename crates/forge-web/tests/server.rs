@@ -19,8 +19,8 @@ fn free_port() -> u16 {
 /// Start on a free port, retrying if the gap in `free_port` lost the race.
 async fn start_on_a_free_port(bind: IpAddr) -> (SocketAddr, WebConfig) {
     for _ in 0..8 {
-        let config = WebConfig { enabled: true, port: free_port(), bind };
-        match forge_web::start(config).await {
+        let config = WebConfig { port: free_port(), bind, ..WebConfig::default() };
+        match forge_web::start(config.clone()).await {
             Ok(Some(bound)) => return (bound, config),
             Ok(None) => panic!("an enabled config must not come back disabled"),
             // A stolen probe port: take another and try again.
@@ -67,7 +67,7 @@ async fn serves_on_the_configured_address() {
 async fn a_taken_port_is_an_error() {
     let holder = TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let port = holder.local_addr().expect("the held address").port();
-    let config = WebConfig { enabled: true, port, bind: IpAddr::V4(Ipv4Addr::LOCALHOST) };
+    let config = WebConfig { port, bind: IpAddr::V4(Ipv4Addr::LOCALHOST), ..WebConfig::default() };
 
     let error = forge_web::start(config).await.expect_err("a taken port must not pass as bound");
 
@@ -85,7 +85,12 @@ async fn a_taken_port_is_an_error() {
 async fn disabled_binds_nothing() {
     let holder = TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let port = holder.local_addr().expect("the held address").port();
-    let config = WebConfig { enabled: false, port, bind: IpAddr::V4(Ipv4Addr::LOCALHOST) };
+    let config = WebConfig {
+        enabled: false,
+        port,
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ..WebConfig::default()
+    };
 
     let bound = forge_web::start(config).await.expect("turning it off is not an error");
 

@@ -1216,11 +1216,12 @@ impl Workspace {
         self.config.ui.clone()
     }
 
-    /// Effective `[web]` settings: whether the web view starts and where
-    /// it listens. Read by the binary entry point, which starts the
-    /// server - the workspace never does.
+    /// Effective `[web]` settings: whether the web view starts, where it
+    /// listens, and which of the sets forge ships it draws with. Read by
+    /// the binary entry point, which starts the server - the workspace
+    /// never does.
     pub fn web_config(&self) -> forge_primitives::WebConfig {
-        self.config.web
+        self.config.web.clone()
     }
 
     /// The push-to-talk key from forge.toml `[dictate] bind`. Read by

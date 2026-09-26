@@ -85,6 +85,12 @@ pub enum WorkspaceError {
     WebPortTakenByGateway { path: PathBuf, port: u16 },
 
     #[error(
+        "web {key} = \"{value}\" in forge.toml at {} names nothing forge ships; this key picks by name, never by path",
+        path.display()
+    )]
+    WebNameUnknown { path: PathBuf, key: &'static str, value: String },
+
+    #[error(
         "account '{name}' in forge.toml at {} declares a base-url provider but has no base_url key",
         path.display()
     )]
