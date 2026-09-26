@@ -482,9 +482,13 @@ fn push_org(orgs: &mut Vec<OrgSection>, name: String, live: usize, rows: Project
 /// the stream sends and closes when the server says the stream is over.
 /// Nothing else on the page knows it exists, so replacing it with a
 /// library is a cut and a paste rather than an untangling.
+///
+/// `outerHTML` rather than `innerHTML`: the payload is the region element
+/// itself, so filling the region with it would nest a second one, with the
+/// same id, on the first event.
 const APP_JS: &str = "const source = new EventSource('/events');\
      source.addEventListener('fleet', (event) => {\
-     document.getElementById('home').innerHTML = event.data;\
+     document.getElementById('home').outerHTML = event.data;\
      });\
      source.addEventListener('close', () => source.close());";
 
@@ -936,8 +940,9 @@ mod tests {
         );
         assert!(!markup.contains("=&gt;"), "and nothing escaped it on the way: {markup}");
         assert!(
-            markup.contains("document.getElementById('home').innerHTML = event.data;"),
-            "the swap line is intact: {markup}",
+            markup.contains("document.getElementById('home').outerHTML = event.data;"),
+            "the swap replaces the region rather than filling it, which would nest a second: \
+             {markup}",
         );
     }
 
