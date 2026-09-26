@@ -127,6 +127,6 @@ go in `forge-agent`, multi-session orchestration goes in
 `forge-workspace`, a session record as a view sees it goes in
 `forge-sessions`, and only what the user sees goes in `forge-tui`. The
 architecture page also carries the view surface - the verbs a second
-view would read the core through. Three of them are built, `roster`,
-`session` and `workers` in `forge-sessions`, and a read only the TUI
-makes is still a plain `forge-workspace` method.
+view would read the core through. All eight are built in
+`forge-sessions`, and a read only the TUI makes is still a plain
+`forge-workspace` method.
