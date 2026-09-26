@@ -19,8 +19,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-# Self-dep, so this crate's own `#[cfg(test)]` fixtures resolve
-# `Workspace::new_for_test` and `install_db_for_test`.
-forge-workspace = { path = "../forge-workspace", features = ["testing", "test-helpers"] }
+# The surface's equivalence tests read the same workspace the TUI reads,
+# so they need `Workspace::testing_stub`, its seeding helpers, and the
+# `forge.toml` fixture `Workspace::new_for_test` builds from a tempdir.
+forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
 tempfile = { workspace = true }
+# The connectors fixture seeds durable subscriptions, which are keyed by id.
 uuid = { workspace = true }

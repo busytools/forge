@@ -237,7 +237,7 @@ impl super::App {
         // covers the rare test path that calls `set_session_id` before
         // any domain is registered.
         if let Some(ws) = self.workspace.as_ref() {
-            if ws.domain_session_for(&key).is_none() {
+            if self.surface().is_some_and(|surface| !surface.roster().has_domain(&key)) {
                 ws.register_domain_session(key.clone(), None);
             }
             ws.set_session_id_in_domain(&key, primitive_id);
@@ -274,9 +274,8 @@ impl super::App {
     ///      while a spawn's session is not in the catalog yet.
     pub fn active_project_name(&self) -> Option<String> {
         let active_key = self.active_session_key.as_ref()?;
-        if let Some(ws) = self.workspace.as_ref() {
-            let projects = ws.list_projects();
-            let refs: Vec<&forge_workspace::ProjectView> = projects.iter().collect();
+        if let Some(roster) = self.surface().map(|surface| surface.roster()) {
+            let refs: Vec<&forge_workspace::ProjectView> = roster.projects.iter().collect();
             if let Some(view) =
                 crate::ui::projects_pane::resolve_active_project_view(active_key, &refs)
             {
@@ -312,12 +311,15 @@ impl super::App {
         // At least one session is waiting: resolve names / roles. One
         // (project, role) row per live worker so the per-session lookup
         // is a map hit, not a nested per-project scan.
-        let projects = self.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+        let projects = match self.surface() {
+            Some(surface) => surface.roster().projects,
+            None => Vec::new(),
+        };
         let mut worker_index: HashMap<forge_workspace::SessionSlot, (String, String)> =
             HashMap::new();
-        if let Some(ws) = self.workspace.as_ref() {
+        if let Some(workers) = self.surface().map(|surface| surface.workers()) {
             for project in &projects {
-                for worker in ws.list_live_workers(&project.key) {
+                for worker in workers.for_project(&project.key) {
                     worker_index
                         .insert(worker.slot.clone(), (project.name.clone(), worker.label.clone()));
                 }

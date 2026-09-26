@@ -1,4 +1,4 @@
-//! The account pool as a view reads it.
+//! `accounts()`: the account pool's state.
 
 use forge_primitives::account::AccountAuth;
 use forge_primitives::usage::UsageSnapshot;

@@ -773,6 +773,10 @@ pub enum SpawnRole {
 /// responses flow back via `Command::Respond*`. The workspace stores
 /// the oneshot in `DomainSession.pending_interactions` when emitting
 /// these variants.
+///
+/// `Clone` is what lets the fan-out hand one emit to more than one
+/// subscriber, so every variant's payload must stay cloneable.
+#[derive(Clone)]
 pub enum SessionUpdate {
     /// Workspace is spawning a session (in response to
     /// `Command::SpawnProject` / `Command::SpawnSession` /

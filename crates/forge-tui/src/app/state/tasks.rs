@@ -73,8 +73,8 @@ impl App {
     /// rows.
     pub fn refresh_tasks(&mut self) {
         let own_role = self.active_session_team_role();
-        let all = match (self.active_project_name(), self.workspace.as_ref()) {
-            (Some(name), Some(ws)) => ws.tasks_for_project(&name),
+        let all = match (self.active_project_name(), self.surface()) {
+            (Some(name), Some(surface)) => surface.roster().tasks_for_project(&name),
             _ => Vec::new(),
         };
         let mut scoped: Vec<Task> = match own_role {

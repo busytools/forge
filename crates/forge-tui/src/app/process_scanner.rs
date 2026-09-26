@@ -235,7 +235,7 @@ fn apply_timer_tick(app: &mut App) {
         app.workspace.is_some(),
         "workspace unset after init (process apply_timer_tick); MVVM contract violated",
     );
-    let Some(workspace) = app.workspace.as_ref() else {
+    let Some(surface) = app.surface() else {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "process_scan_workspace_unset",
@@ -245,7 +245,7 @@ fn apply_timer_tick(app: &mut App) {
         );
         return;
     };
-    let claude_pid = workspace.claude_pid(&active_key);
+    let claude_pid = surface.roster().claude_pid(&active_key);
     let generation = session.process_scan_generation;
     let scan_in_flight = Arc::clone(&session.process_scan_in_flight);
     let extra_commands = crate::app::processes::live_local_bash_commands(session);

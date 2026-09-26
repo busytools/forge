@@ -891,7 +891,7 @@ async fn run_recording(
     mut capture: forge_dictate::Capture,
     generation: u64,
     mut stop: tokio::sync::mpsc::Receiver<bool>,
-    updates: tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
+    updates: crate::update_fanout::UpdateFanout,
 ) {
     // Take progress spans the whole take: segments settle while the
     // recording is still open, and the tally gains its total after the
@@ -968,7 +968,7 @@ async fn run_recording(
 /// total) and again after the stop (total known); the task ends when
 /// the take's segmenter closes the stream.
 async fn forward_take_progress(
-    updates: tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
+    updates: crate::update_fanout::UpdateFanout,
     key: SessionSlot,
     generation: u64,
     mut progress: Option<std::sync::mpsc::Receiver<forge_dictate::WindowProgress>>,
@@ -980,15 +980,13 @@ async fn forward_take_progress(
         tick.tick().await;
         match progress.try_recv() {
             Ok(step) => {
-                if updates
-                    .send(SessionUpdate::DictateProgress {
-                        key: key.clone(),
-                        generation,
-                        done: step.done,
-                        total: step.total,
-                    })
-                    .is_err()
-                {
+                let delivered = updates.send(SessionUpdate::DictateProgress {
+                    key: key.clone(),
+                    generation,
+                    done: step.done,
+                    total: step.total,
+                });
+                if !delivered {
                     break;
                 }
             }
@@ -1042,7 +1040,7 @@ async fn record_until_stopped(
     key: &SessionSlot,
     capture: &forge_dictate::CaptureMeter,
     stop: &mut tokio::sync::mpsc::Receiver<bool>,
-    updates: &tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
+    updates: &crate::update_fanout::UpdateFanout,
 ) -> bool {
     let mut meter = tokio::time::interval(METER_INTERVAL);
     meter.set_missed_tick_behavior(MissedTickBehavior::Skip);

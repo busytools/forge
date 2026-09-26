@@ -25,6 +25,7 @@ use crate::protocol::{Command, DispatchError, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
+use crate::update_fanout::{SubscriberRole, UpdateFanout};
 use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 
 #[cfg(any(test, feature = "testing"))]
@@ -227,15 +228,11 @@ pub struct Workspace {
     /// process ends. Set by `Command::SetDictateDevice`; a Reset
     /// clears it. Volatile, never persisted.
     pub(crate) dictate_device_pick: Mutex<Option<crate::dictate::DictateDeviceChoice>>,
-    /// Fan-in [`SessionUpdate`] sender. Cloned and handed to TUI-side
-    /// modules (slash executors, plugin install, service-status check)
-    /// via [`Self::update_sender`] so they can emit presentation
-    /// events on the same channel TUI subscribes to.
+    /// Fan-in [`SessionUpdate`] sender: every producer inside the
+    /// workspace holds a clone, and it fans each update out to whatever
+    /// subscribed at [`Self::subscribe`].
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
-    pub(crate) update_tx: mpsc::UnboundedSender<SessionUpdate>,
-    /// Single-take slot holding the matching receiver. [`Self::subscribe`]
-    /// pops it on first call; subsequent calls return `None`.
-    update_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<SessionUpdate>>>,
+    pub(crate) update_tx: UpdateFanout,
     /// Per-session [`Command`] sender map. Populated when
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
     /// key; cleared on [`Self::release_session_with_cascade`] and [`Self::shutdown`].
@@ -528,7 +525,7 @@ fn spawn_background_catalog_scan(
     catalog: &Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
     db: &Arc<Mutex<Option<crate::store::Db>>>,
     config_dir: &Path,
-    update_tx: &mpsc::UnboundedSender<SessionUpdate>,
+    update_tx: &UpdateFanout,
     loaded: &Arc<std::sync::atomic::AtomicBool>,
     started: &std::sync::atomic::AtomicBool,
 ) {
@@ -576,7 +573,7 @@ async fn run_background_catalog_scan(
     catalog: Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
     db: Arc<Mutex<Option<crate::store::Db>>>,
     config_dir: PathBuf,
-    update_tx: mpsc::UnboundedSender<SessionUpdate>,
+    update_tx: UpdateFanout,
     loaded: Arc<std::sync::atomic::AtomicBool>,
 ) {
     // The tag cache is one key space with any other scan of this config
@@ -1113,7 +1110,7 @@ impl Workspace {
         config.ui.spinner = crate::ui::resolve_spinner(state.spinner, config.ui.spinner);
 
         let gateway_port = config.gateway_port;
-        let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
+        let update_tx = UpdateFanout::default();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
         let db = Arc::new(Mutex::new(db));
@@ -1146,7 +1143,6 @@ impl Workspace {
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
             update_tx,
-            update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
@@ -2907,7 +2903,7 @@ impl Workspace {
     /// Internal accessor for the SessionUpdate fan-in sender. Used
     /// by `spawn.rs` to emit `Spawning` / `ConnectionFailed` /
     /// `FatalError` from the App-level handlers.
-    pub(crate) fn update_tx(&self) -> &mpsc::UnboundedSender<SessionUpdate> {
+    pub(crate) fn update_tx(&self) -> &UpdateFanout {
         &self.update_tx
     }
 
@@ -2968,32 +2964,54 @@ impl Workspace {
         entries.insert(0, entry);
     }
 
-    /// Single-take fan-in receiver for [`SessionUpdate`]s. Returns
-    /// `None` on subsequent calls (and logs at error level so a
-    /// second-subscriber programming error doesn't disappear into
-    /// silent data loss). forge-tui's main event loop owns the
-    /// returned `mpsc::UnboundedReceiver` and reads `SessionUpdate`
-    /// envelopes directly - this is the sole event source the App
-    /// consumes.
-    pub fn subscribe(&self) -> Option<mpsc::UnboundedReceiver<SessionUpdate>> {
-        if let Some(rx) = self.update_rx_slot.lock().take() {
-            Some(rx)
-        } else {
-            tracing::error!(
-                target: "forge_workspace::workspace",
-                "Workspace::subscribe called after the receiver was already taken - second subscriber would silently receive nothing"
-            );
-            None
-        }
+    /// Subscribe to this workspace's [`SessionUpdate`] stream. Every
+    /// caller gets its own stream, so a second view attaches beside the
+    /// first rather than being refused, and the workspace drops the
+    /// matching subscription once its receiver goes.
+    ///
+    /// A stream carries what is emitted after this call. The first
+    /// caller to attach is handed whatever the workspace emitted before
+    /// it as well, which is how a notice raised during boot reaches a
+    /// view; a caller attaching after one already has inherits no
+    /// backlog.
+    ///
+    /// The stream answers the workspace's prompts, so a permission or
+    /// question request delivered here keeps its turn alive waiting for
+    /// the reply. A consumer that only reads the stream takes
+    /// [`Self::subscribe_observer`] instead.
+    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
+        self.update_tx.subscribe(SubscriberRole::Answering)
     }
 
-    /// Clone the [`SessionUpdate`] sender. TUI-side async tasks
-    /// (plugin inventory refresh, usage refresh, slash executors,
-    /// service-status check, the input-submit cancel-emit path) hold
-    /// a clone so they can forward state into the App's event loop
-    /// the same way the workspace's `SessionTask`s do. Cloned at App
-    /// construction time and stored on `App.update_tx`.
-    pub fn update_sender(&self) -> mpsc::UnboundedSender<SessionUpdate> {
+    /// Subscribe without answering the workspace's prompts: a logger, a
+    /// mirror, anything that reads the stream but renders no prompt.
+    ///
+    /// The distinction is load-bearing rather than descriptive. A
+    /// permission, question or Slack-draft request is parked on a reply,
+    /// and the paths that raise one resolve it `Cancelled` instead when
+    /// no subscriber can answer, so that a request nobody will reply to
+    /// fails the turn rather than hanging it. A subscriber that declares
+    /// itself an observer is not counted as an answer.
+    ///
+    /// Who takes the pre-attach backlog is positional, not role-aware:
+    /// an observer subscribing before the TUI is the first caller and
+    /// takes whatever the workspace emitted beforehand, the boot notice
+    /// included. The binary's `start_*` calls all run before the TUI
+    /// attaches, so this belongs after them rather than among them.
+    ///
+    /// Nothing calls this yet. The TUI is the only frontend and it
+    /// answers, so the only observer in the tree is a test; this exists
+    /// so a consumer that reads without rendering a prompt can say so
+    /// instead of parking a turn by claiming a capability it lacks.
+    pub fn subscribe_observer(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
+        self.update_tx.subscribe(SubscriberRole::Observing)
+    }
+
+    /// Clone the workspace's [`SessionUpdate`] sender. Internal to this
+    /// crate: a view's own async work belongs on a channel of its own,
+    /// so that [`Self::subscribe`] is the whole of what the core owes a
+    /// frontend.
+    pub(crate) fn update_sender(&self) -> UpdateFanout {
         self.update_tx.clone()
     }
 
@@ -3421,9 +3439,9 @@ impl Workspace {
                     });
                 }
                 // User-action store writes routed through the command
-                // bus (MVVM: one channel pair). Synchronous inline
-                // handlers - the writes are local redb operations, and
-                // the TUI has already applied its optimistic state.
+                // bus. Synchronous inline handlers - the writes are
+                // local redb operations, and the TUI has already
+                // applied its optimistic state.
                 Command::SaveReviewThreads { project, branch, threads } => {
                     let span = tracing::info_span!(
                         "save_review_threads",
@@ -7329,6 +7347,32 @@ provider = "anthropic"
         out
     }
 
+    /// Each caller of `subscribe()` gets a stream of its own, so a second
+    /// view attaches beside the first instead of being refused the one
+    /// receiver. Catches a revert to the single-take slot, where the
+    /// second caller receives nothing.
+    #[tokio::test]
+    async fn subscribe_hands_every_caller_its_own_stream() {
+        let dir = make_workspace_dir();
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
+        let mut tui = workspace.subscribe();
+        let mut web = workspace.subscribe();
+
+        assert!(
+            workspace.update_tx().send(SessionUpdate::CatalogLoaded),
+            "a subscribed workspace delivers",
+        );
+
+        assert!(
+            matches!(tui.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            "the first subscriber receives the update",
+        );
+        assert!(
+            matches!(web.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            "the second subscriber receives the same update",
+        );
+    }
+
     /// `dispatch_workspace_prompt` is the queue-signal discriminator:
     /// an idle session receives the plain prompt and no
     /// `PromptQueuedWhileBusy`; a session with a turn in flight gets
@@ -9126,7 +9170,8 @@ provider = "anthropic"
         // immediately - exactly the post-cron-turn subprocess exit.
         let domain = workspace.domain_session_for(&key).expect("domain registered");
         let pooled_handle = domain.lock().conn.clone().expect("pooled handle on domain");
-        let (update_tx, _task_update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
+        let update_tx = UpdateFanout::default();
+        let _task_update_rx = update_tx.subscribe(SubscriberRole::Answering);
         let task = crate::session_task::SessionTask {
             key: key.clone(),
             handle: pooled_handle,
@@ -9485,7 +9530,7 @@ provider = "anthropic"
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
         let dir = forge_toml_with_two_projects();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         let caller = SessionSlot::from_str_for_test("caller-notice");
         let id = CorrelationId::new_ask();
@@ -9522,7 +9567,7 @@ provider = "anthropic"
         };
         let dir = forge_toml_with_two_projects();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         let caller = SessionSlot::from_str_for_test("caller-notice-echo");
         let id = CorrelationId::new_ask();
@@ -10197,7 +10242,7 @@ provider = "anthropic"
     async fn release_session_on_lead_cascades_workers() {
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe().expect("subscribe");
+        let mut rx = workspace.subscribe();
 
         let project = workspace.list_projects().into_iter().next().expect("forge project");
         let project_key = project.key.clone();
@@ -14531,7 +14576,7 @@ provider = "anthropic"
             Some("forge:worker:implementer"),
         );
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut update_rx = workspace.subscribe().expect("single subscriber");
+        let mut update_rx = workspace.subscribe();
         assert!(workspace.list_projects()[0].sessions.is_empty(), "catalog starts empty");
 
         workspace.start_catalog_scan();

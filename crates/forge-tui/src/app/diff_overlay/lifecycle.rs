@@ -316,8 +316,8 @@ fn resolve_active_diff_cwd(app: &App, cwd_raw: &str) -> PathBuf {
         app.workspace.is_some(),
         "workspace unset after init (diff_overlay::resolve_active_diff_cwd); MVVM contract violated",
     );
-    if let Some(workspace) = app.workspace.as_ref() {
-        workspace.git_scan_cwd_for_session(active_key, &cwd_raw_path)
+    if let Some(surface) = app.surface() {
+        surface.session(active_key, &cwd_raw_path).scan_cwd
     } else {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,

@@ -1,4 +1,4 @@
-//! Review threads and submitted reviews for one branch.
+//! `reviews()`: the review threads and submitted reviews for one branch.
 
 use forge_primitives::ReviewSet;
 use forge_primitives::review::ReviewThread;

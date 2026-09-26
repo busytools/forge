@@ -48,15 +48,16 @@ forge-test-harness ─→ primitives + sdk + workspace
   `DomainSession` + per-session `SessionTask` actors. Single TUI-facing
   facade.
 - **`forge-sessions`** - what a view needs and nothing about how it
-  renders: the session records as a view sees them, the peer envelope
-  parsing in both directions, the tool family table, and the policy
-  that folds a run of blocks. Sits between `forge-workspace` and the
-  views, so a second view attaches beside the TUI rather than
-  duplicating it. Nothing here may depend on a view. It reaches the
-  workspace for the one thing a session record cannot answer alone -
-  whether a tool's input parses into a lifecycle block - and does that
-  through `forge-workspace` rather than `forge-agent`, so the agent
-  layer stays behind the workspace facade the way it does for the TUI.
+  renders: the read surface a view uses, the session records as a view
+  sees them, the peer envelope parsing in both directions, the tool
+  family table, and the policy that folds a run of blocks. Sits between
+  `forge-workspace` and the views, so a second view attaches beside the
+  TUI rather than duplicating it. Nothing here may depend on a view. It
+  reaches the workspace for the one thing a session record cannot
+  answer alone - whether a tool's input parses into a lifecycle block -
+  and does that through `forge-workspace` rather than `forge-agent`, so
+  the agent layer stays behind the workspace facade the way it does for
+  the TUI.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
@@ -131,16 +132,18 @@ Work top-down; first match wins.
    state in `app/`.
 10. **A wire-conformance scenario?** -> `forge-test-harness`.
 
-**The view surface (designed, not built).** A view is meant to read the
-core through named verbs by subject - `roster`, `session`, `accounts`,
-`plugins`, `reviews`, `workers`, `connectors`, `dictate` - to act
-through `dispatch(Command)`, and to receive changes through
-`subscribe()`. Only the last two exist today: the TUI still calls
-`Workspace` methods directly, so `forge-tui` keeps its `forge-workspace`
-dependency and the arrow below is not yet one-way. A read a second view
+**The view surface (partially built).** A view reads the core through
+named verbs by subject - `roster`, `session`, `accounts`, `plugins`,
+`reviews`, `workers`, `connectors`, `dictate` - acts through
+`dispatch(Command)`, and receives changes through `subscribe()`. Three
+verbs exist today, `roster`, `session` and `workers` in
+`forge-sessions`, and the TUI reads its project roster, session scan
+cwd and worker registry through them. The other five are still direct
+`Workspace` calls, so `forge-tui` keeps its `forge-workspace`
+dependency and the arrow above is not yet one-way. A read a second view
 would want goes on that surface; a read only the TUI makes stays a
-plain method. Routing the direct calls through the surface is its own
-piece of work, not a prerequisite for adding to the crates.
+plain method. Routing the remaining direct calls through the surface is
+its own piece of work, not a prerequisite for adding to the crates.
 
 Legitimate splits are common (a git-diff feature touches agent +
 workspace + tui). Rule of thumb: logic/IO/subprocess -> agent;
@@ -172,16 +175,19 @@ forge-tui", so bias toward the deeper crate when unsure.
 
 ## Communication contract (MVVM)
 
-The TUI to workspace contract is **one channel pair**, single
-producer/consumer each direction:
+The TUI to workspace contract is **one entry point in each direction**:
 
 - **TUI -> workspace:** `Workspace::dispatch(Command)`. One enum, one
   entry point, every user-driven action.
 - **workspace -> TUI:** `SessionUpdate` via `Workspace::subscribe()`,
-  consumed by `App.update_rx`.
+  consumed by `App.workspace_rx`. Every caller gets a stream of its
+  own, so a second view attaches beside the TUI; a stream carries what
+  the workspace emits after that call, and the first caller to attach
+  is handed what was emitted before it as well, so a notice raised
+  during boot is not lost.
 
-That is the whole contract: no second channel, no callback hooks, no
-shared mutable state. TUI holds no `Arc<AgentHandle>`; query-style
+That is the whole contract: no callback hooks, no shared mutable state.
+TUI holds no `Arc<AgentHandle>`; query-style
 refreshes (`refresh_status_snapshot`, `refresh_context_usage`,
 `refresh_mcp_snapshot`, and friends) are direct `Workspace` methods
 rather than Command variants. `DomainSession` keeps only
@@ -203,13 +209,14 @@ the slot is still their address.
 
 **Two nuances that surprise people:**
 
-- The `SessionUpdate` channel doubles as an event bus for TUI-internal
-  async work. `App` caches the sender from `Workspace::update_sender()`
-  at construction, and four modules (`app/extensions.rs`,
-  `app/slash/executors.rs`, `app/service_status_check.rs`,
-  `app/input_submit.rs`) emit their own updates through it instead of a
-  Command round-trip. That is an implicit second contract a non-TUI
-  frontend would have to replicate.
+- The TUI has an update channel of its own for its own async work.
+  `App` mints an `update_tx` / `update_rx` pair, and four modules
+  (`app/extensions.rs`, `app/slash/executors.rs`,
+  `app/service_status_check.rs`, `app/input_submit.rs`) emit their
+  presentation events through it instead of a Command round-trip. The
+  event loop drains both feeds into the same reducer, and that pair is
+  not part of what a non-TUI frontend reproduces: that is `dispatch()`
+  and `subscribe()`.
 - `forge-workspace` is a **thin facade, not strong isolation**. The
   boundary is enforced at the dependency graph (forge-tui has no
   forge-agent dep), not by visibility: workspace wildcard-re-exports

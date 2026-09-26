@@ -197,10 +197,9 @@ impl crate::app::App {
         Some(NotifyContext {
             project: bucket.project.clone(),
             worker_label: self
-                .workspace
-                .as_ref()
-                .and_then(|ws| ws.worker_lookup_for_session(session_key))
-                .map(|(_, label, _, _)| label),
+                .surface()
+                .and_then(|surface| surface.workers().lookup(session_key))
+                .map(|worker| worker.label),
         })
     }
 }

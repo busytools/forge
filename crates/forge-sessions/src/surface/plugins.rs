@@ -1,4 +1,4 @@
-//! The plugin inventory as a view reads it.
+//! `plugins()`: the plugin inventory and update records.
 
 use forge_primitives::plugins::PluginUpdateRecord;
 

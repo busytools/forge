@@ -1,4 +1,4 @@
-//! Slack and Gotify subscription state as a view reads it.
+//! `connectors()`: the Slack and Gotify subscription state.
 
 use std::collections::BTreeMap;
 

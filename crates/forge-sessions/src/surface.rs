@@ -1,22 +1,30 @@
-//! The view surface: what a view may read from the core.
+//! The read surface a view uses: named verbs by subject, returning
+//! values that carry no terminal type.
 //!
-//! One verb per subject rather than the workspace's own methods, so a
-//! second view attaches to a contract instead of rediscovering the first
-//! view's call sites. A verb returns a snapshot built from the same
-//! internals the direct calls used, and every value in it is
-//! self-contained - no terminal type crosses.
+//! Writes stay on `Workspace::dispatch` and changes on
+//! `Workspace::subscribe`; this is the read half, so a second view
+//! attaches to the core without reading it.
 
 pub mod accounts;
 pub mod connectors;
 pub mod dictate;
 pub mod plugins;
 pub mod reviews;
+pub mod roster;
+pub mod session;
+pub mod workers;
 
+use std::path::Path;
 use std::sync::Arc;
 
+use forge_primitives::SessionSlot;
 use forge_workspace::Workspace;
 
-/// A view's handle on the core.
+pub use roster::Roster;
+pub use session::SessionState;
+pub use workers::{WorkerRef, Workers};
+
+/// A view's read handle on the core.
 pub struct ViewSurface {
     workspace: Arc<Workspace>,
 }
@@ -26,11 +34,21 @@ impl ViewSurface {
         Self { workspace }
     }
 
-    /// The workspace behind the surface. Reads go through the verbs;
-    /// this is for the dispatch and subscribe plumbing a view drives
-    /// itself.
-    pub fn workspace(&self) -> &Workspace {
-        &self.workspace
+    /// The projects, their sessions, and the per-project lists the
+    /// Projects pane renders.
+    pub fn roster(&self) -> Roster {
+        Roster::collect(Arc::clone(&self.workspace))
+    }
+
+    /// One session's operational state. `cwd_raw` is the caller's own
+    /// cwd for the session, which a git worker's worktree overrides.
+    pub fn session(&self, slot: &SessionSlot, cwd_raw: &Path) -> SessionState {
+        SessionState::collect(&self.workspace, slot, cwd_raw)
+    }
+
+    /// The live workers, per project.
+    pub fn workers(&self) -> Workers {
+        Workers::collect(Arc::clone(&self.workspace))
     }
 }
 

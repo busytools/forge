@@ -1,4 +1,4 @@
-//! Dictation's preflight state as a view reads it.
+//! `dictate()`: devices, models and preflight state.
 
 use std::path::PathBuf;
 
