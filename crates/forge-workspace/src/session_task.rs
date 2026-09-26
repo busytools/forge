@@ -1260,6 +1260,18 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // in-flight guards don't read a stale turn.
         domain.runtime_state = None;
         domain.turn_pending = false;
+        // No terminal `background_tasks_changed` follows a dead session,
+        // so the last snapshot would stand forever.
+        domain.background_work = false;
+    }
+    // The snapshot carries the whole set, so mirroring it is an
+    // assignment and an empty one clears.
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::BackgroundTasksChanged { tasks, .. },
+        ..
+    } = event
+    {
+        domain.background_work = !tasks.is_empty();
     }
     if let AgentEvent::Connected { session_id, .. } = event {
         domain.session_id = Some(SessionId::new(session_id.clone()));
@@ -3744,6 +3756,75 @@ provider = "anthropic"
         assert!(err.to_string().contains("no active session"), "the error names the drop: {err}");
         // Nothing should have been queued.
         assert!(rx.try_recv().is_err());
+    }
+
+    fn background_tasks(tasks: Vec<serde_json::Value>) -> forge_primitives::Message {
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks,
+            uuid: "u1".to_owned(),
+            session_id: "worker".to_owned(),
+        }
+    }
+
+    fn one_live_task() -> Vec<serde_json::Value> {
+        vec![serde_json::json!({
+            "task_id": "t1",
+            "task_type": "local_bash",
+            "description": "gh run watch",
+        })]
+    }
+
+    /// The session's own registry follows the CLI's snapshot, which
+    /// carries the whole set every change - so an empty one clears rather
+    /// than adding to what was there.
+    #[test]
+    fn background_work_follows_the_cli_snapshot() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "worker".to_owned(),
+            msg: background_tasks(one_live_task()),
+        });
+        assert!(
+            task.domain.lock().background_work,
+            "a snapshot naming a live task is background work",
+        );
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "worker".to_owned(),
+            msg: background_tasks(Vec::new()),
+        });
+        assert!(
+            !task.domain.lock().background_work,
+            "the whole set arrives each change, so an empty snapshot clears it",
+        );
+    }
+
+    /// The CLI never sends a terminal `background_tasks_changed` for a
+    /// session that died, so without this the registry stays true behind a
+    /// subprocess that is gone and the row spins forever.
+    #[test]
+    fn a_connection_failure_drops_background_work() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg-fail");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "worker".to_owned(),
+            msg: background_tasks(one_live_task()),
+        });
+        assert!(task.domain.lock().background_work, "precondition: the snapshot armed it");
+
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "the subprocess exited".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
+
+        assert!(
+            !task.domain.lock().background_work,
+            "a dead subprocess has no live background work, whatever the last snapshot said",
+        );
     }
 }
 

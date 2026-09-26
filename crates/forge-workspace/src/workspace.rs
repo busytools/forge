@@ -3963,6 +3963,13 @@ impl Workspace {
             .collect()
     }
 
+    /// Whether `slot`'s session has live background work. A fact about the
+    /// session rather than about a viewer, so the core holds one answer for
+    /// every view.
+    pub fn has_background_work(&self, slot: &SessionSlot) -> bool {
+        self.domain_session_for(slot).is_some_and(|domain| domain.lock().background_work)
+    }
+
     /// What `entry`'s session is doing right now. The two liveness states
     /// that need no session of their own answer here; everything else is
     /// [`Self::session_activity`].
@@ -10103,6 +10110,30 @@ mod worker_activity_tests {
             ws.session_activity(&blocked),
             L::Attention,
             "a turn in flight holding a pending interaction needs a person",
+        );
+    }
+
+    /// Background work is a fact about the session rather than about who
+    /// is looking, so the read is slot-shaped and answers from the slot's
+    /// own domain: a lead has background work too.
+    #[test]
+    fn background_work_is_read_from_the_slots_own_domain() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let absent = SessionSlot::from_str_for_test("bg-absent");
+        assert!(
+            !ws.has_background_work(&absent),
+            "a slot with no domain session has no live background work",
+        );
+
+        let live = SessionSlot::from_str_for_test("bg-live");
+        let domain = ws.register_domain_session(live.clone(), None);
+        assert!(!ws.has_background_work(&live), "a fresh domain has none");
+
+        domain.lock().background_work = true;
+        assert!(ws.has_background_work(&live), "the read answers the slot's own registry");
+        assert!(
+            !ws.has_background_work(&absent),
+            "one slot's background work must not answer for another",
         );
     }
 

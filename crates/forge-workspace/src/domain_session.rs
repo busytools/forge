@@ -62,6 +62,13 @@ pub struct DomainSession {
     /// Turn committed at `Command::Prompt` routing, ahead of the
     /// wire-lagged `runtime_state`; the guards OR it in.
     pub turn_pending: bool,
+    /// Whether the CLI last reported live background work here - the
+    /// `background_tasks_changed` snapshot, which carries the whole set
+    /// each change, so an empty one clears. Held on the session rather
+    /// than folded per view: two views always agree about it, and a
+    /// connection failure clears it because the CLI sends no terminal
+    /// snapshot for a session that died.
+    pub background_work: bool,
     /// The `/dictate` overlay's per-session normalizer-axis overrides.
     /// Set by `Command::SetDictateOverride` / `::ResetDictateOverrides`
     /// and consumed when a capture finishes into
@@ -85,6 +92,7 @@ impl DomainSession {
             spawn_wrote_row: false,
             runtime_state: None,
             turn_pending: false,
+            background_work: false,
             dictate_overrides: crate::dictate::DictateOverrides::default(),
         }
     }
