@@ -968,9 +968,9 @@ impl Workspace {
 
     /// Kick off the claude version probe on the tokio runtime: one fetch at
     /// boot, then a re-probe every [`CLI_VERSION_REFRESH_INTERVAL`]. The
-    /// constructor is the only caller, and the prober it takes is what lets
-    /// a test drive this same launch. Idempotent - a second call is a
-    /// no-op.
+    /// constructor is the only production caller, and the prober it takes
+    /// is what lets a test drive this same launch. Idempotent - a second
+    /// call is a no-op.
     fn start_cli_version_probe(&self, prober: CliVersionProber) {
         spawn_background_cli_version_probe(
             &self.cli_version_probe_started,
