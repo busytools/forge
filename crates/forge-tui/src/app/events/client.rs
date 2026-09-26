@@ -183,7 +183,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::ServiceStatus { severity, message } => {
             session::apply_session_update_service_status(app, severity, &message);
         }
-        SessionUpdate::CatalogLoaded => {
+        SessionUpdate::CatalogLoaded | SessionUpdate::CliVersionChanged => {
             app.needs_redraw = true;
         }
         SessionUpdate::FatalError(error) => {

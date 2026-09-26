@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
+use forge_agent::env::cli_version::CliVersionInfo;
 use forge_primitives::{PeerInflightStats, SDKSessionInfo};
 
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
@@ -40,6 +41,11 @@ mod testing;
 /// backoff (see `forge_gateway::AccountState`), transient 429s recover
 /// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How often the claude version probe re-runs after the boot fetch.
+/// Versions change rarely, so a few minutes is ample - the point is only
+/// to recover a transient boot failure, not to track releases tightly.
+const CLI_VERSION_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 
 /// The CLI's model-slot variables: the project's `model` key is
 /// stamped into all of them at spawn, so one model serves the main
@@ -385,6 +391,11 @@ pub struct Workspace {
     catalog_loaded: Arc<std::sync::atomic::AtomicBool>,
     /// Idempotence guard for [`Workspace::start_catalog_scan`].
     catalog_scan_started: std::sync::atomic::AtomicBool,
+    /// The installed and npm-published `claude` CLI versions, merged from
+    /// every probe so far. One answer for every viewer, so it lives here
+    /// rather than in the view that happened to probe first; `None` until
+    /// the boot probe lands.
+    cli_version: Arc<Mutex<Option<CliVersionInfo>>>,
     /// Whether the Gotify stream is currently connected. Set by the
     /// subsystem pump on `Connected` / `Disconnected`; read by the
     /// Inspector's status line.
@@ -576,6 +587,76 @@ fn spawn_background_catalog_scan(
             "no tokio runtime at construction; the catalog scan is skipped and the catalog starts empty",
         );
         loaded.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Kick off the claude version probe on the tokio runtime: one fetch at
+/// boot, then a re-probe every [`CLI_VERSION_REFRESH_INTERVAL`]. A caller
+/// with no runtime gets a warn and holds no version rather than a task
+/// nobody would run.
+fn spawn_background_cli_version_probe(
+    cli_version: &Arc<Mutex<Option<CliVersionInfo>>>,
+    update_tx: &UpdateFanout,
+) {
+    let run = run_cli_version_probe(Arc::clone(cli_version), update_tx.clone());
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(run);
+    } else {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "cli_version_probe_skipped",
+            "no tokio runtime at construction; the claude version probe is skipped and the views show no claude version this run",
+        );
+    }
+}
+
+/// The claude version probe, off the boot path. Each result is merged into
+/// the store, which wakes the views when it changed what they draw.
+async fn run_cli_version_probe(
+    cli_version: Arc<Mutex<Option<CliVersionInfo>>>,
+    update_tx: UpdateFanout,
+) {
+    let mut interval = tokio::time::interval(CLI_VERSION_REFRESH_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        // The first tick completes immediately, so this is the boot fetch;
+        // later ticks only recover a transient miss.
+        interval.tick().await;
+        let snapshot = forge_agent::env::cli_version::fetch_info().await;
+        store_cli_version(&cli_version, &update_tx, snapshot);
+    }
+}
+
+/// Merge one probe result into the store and wake the views when it moved
+/// what they draw.
+fn store_cli_version(
+    store: &Mutex<Option<CliVersionInfo>>,
+    update_tx: &UpdateFanout,
+    next: CliVersionInfo,
+) {
+    let changed = {
+        let mut held = store.lock();
+        let merged = merge_cli_version(held.as_ref(), next);
+        if held.as_ref() == Some(&merged) {
+            false
+        } else {
+            *held = Some(merged);
+            true
+        }
+    };
+    if changed {
+        let _ = update_tx.send(SessionUpdate::CliVersionChanged);
+    }
+}
+
+/// Merge a freshly-probed snapshot over the held one, keeping a
+/// previously-resolved field when the new probe came back `None` for it: a
+/// failed network probe must not wipe a `latest` an earlier one found.
+fn merge_cli_version(prev: Option<&CliVersionInfo>, next: CliVersionInfo) -> CliVersionInfo {
+    let Some(prev) = prev else { return next };
+    CliVersionInfo {
+        installed: next.installed.or_else(|| prev.installed.clone()),
+        latest: next.latest.or_else(|| prev.latest.clone()),
     }
 }
 
@@ -834,6 +915,15 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn catalog_ready(&self) -> bool {
         self.catalog_loaded.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The `claude` CLI versions the core holds: what is installed on this
+    /// machine and what npm publishes, both `None` until the boot probe
+    /// resolves them. The same answer for every viewer, so a view reads it
+    /// here rather than probing for itself. A change arrives as
+    /// [`SessionUpdate::CliVersionChanged`].
+    pub fn cli_version(&self) -> Option<CliVersionInfo> {
+        self.cli_version.lock().clone()
     }
 
     /// Shared constructor body. `app_support` supplies the app-support
@@ -1143,6 +1233,14 @@ impl Workspace {
                 &catalog_scan_started,
             );
         }
+        // The version facts are the same for every viewer, so the core
+        // probes them once and both views read one answer. Off the test
+        // path with the catalog scan: a test's probe would really spawn
+        // `claude --version` and really hit the npm registry.
+        let cli_version = Arc::new(Mutex::new(None));
+        if auto_start_scan {
+            spawn_background_cli_version_probe(&cli_version, &update_tx);
+        }
         let workspace = Self {
             config_dir,
             config,
@@ -1180,6 +1278,7 @@ impl Workspace {
             db,
             catalog_loaded,
             catalog_scan_started,
+            cli_version,
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
@@ -6264,6 +6363,95 @@ mod tests {
             spend: None,
             balance: None,
         }
+    }
+
+    /// A probe that came back empty on one side keeps the value an earlier
+    /// probe resolved: a transient failure must not blank a version the
+    /// views were already showing.
+    #[test]
+    fn an_empty_cli_version_probe_keeps_the_resolved_field() {
+        let held = CliVersionInfo {
+            installed: Some("2.1.156".to_owned()),
+            latest: Some("2.1.201".to_owned()),
+        };
+
+        let merged = merge_cli_version(
+            Some(&held),
+            CliVersionInfo { installed: Some("2.1.156".to_owned()), latest: None },
+        );
+        assert_eq!(
+            merged.latest.as_deref(),
+            Some("2.1.201"),
+            "a latest probe that failed must not wipe the latest an earlier probe found",
+        );
+
+        let merged = merge_cli_version(
+            Some(&held),
+            CliVersionInfo { installed: None, latest: Some("2.1.201".to_owned()) },
+        );
+        assert_eq!(
+            merged.installed.as_deref(),
+            Some("2.1.156"),
+            "an installed probe that failed must not wipe the version already read",
+        );
+    }
+
+    /// And a probe that did resolve a side replaces what was held, so the
+    /// keep-the-old-value rule cannot pin the views to a stale answer.
+    #[test]
+    fn a_resolved_cli_version_probe_replaces_the_held_value() {
+        let held = CliVersionInfo {
+            installed: Some("2.1.156".to_owned()),
+            latest: Some("2.1.201".to_owned()),
+        };
+        let next = CliVersionInfo {
+            installed: Some("2.1.160".to_owned()),
+            latest: Some("2.1.210".to_owned()),
+        };
+
+        assert_eq!(
+            merge_cli_version(Some(&held), next.clone()),
+            next,
+            "a probe that resolved both sides replaces both, rather than pinning the held ones",
+        );
+    }
+
+    /// Only a change wakes the views. The probe re-runs on a timer, so a
+    /// re-probe landing the same snapshot must not wake them - both views
+    /// would redraw for nothing every few minutes.
+    #[test]
+    fn only_a_changed_cli_version_wakes_the_views() {
+        let store = Mutex::new(None);
+        let update_tx = UpdateFanout::default();
+        let mut woken = update_tx.subscribe(SubscriberRole::Answering);
+        let first = CliVersionInfo { installed: Some("2.1.156".to_owned()), latest: None };
+
+        store_cli_version(&store, &update_tx, first.clone());
+        assert!(
+            matches!(woken.try_recv(), Ok(SessionUpdate::CliVersionChanged)),
+            "the first probe is a change from none",
+        );
+
+        store_cli_version(&store, &update_tx, first);
+        assert!(woken.try_recv().is_err(), "an identical re-probe is not news");
+
+        store_cli_version(
+            &store,
+            &update_tx,
+            CliVersionInfo {
+                installed: Some("2.1.156".to_owned()),
+                latest: Some("2.1.201".to_owned()),
+            },
+        );
+        assert!(
+            matches!(woken.try_recv(), Ok(SessionUpdate::CliVersionChanged)),
+            "a latest that appears where there was none is news",
+        );
+        assert_eq!(
+            store.lock().as_ref().and_then(|held| held.latest.as_deref()),
+            Some("2.1.201"),
+            "and the store holds what the last merge resolved",
+        );
     }
 
     /// Every provider logs the repair line that can actually repair

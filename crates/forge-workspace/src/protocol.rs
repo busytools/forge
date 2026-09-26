@@ -959,6 +959,10 @@ pub enum SessionUpdate {
     /// event exists to wake the render loop so session counts appear
     /// when the scan lands rather than on the next unrelated frame.
     CatalogLoaded,
+    /// A claude version probe landed and moved what the views draw. The
+    /// snapshot itself is not carried - a view reads it through
+    /// `Workspace::cli_version()`, so the event is only the wake-up.
+    CliVersionChanged,
     PluginsInventoryUpdated {
         cwd_raw: String,
         snapshot: PluginsInventorySnapshot,
@@ -1207,6 +1211,7 @@ impl SessionUpdate {
             | Self::SlackMessageAppended { key, .. } => Some(key),
             Self::ServiceStatus { .. }
             | Self::CatalogLoaded
+            | Self::CliVersionChanged
             | Self::PluginsInventoryUpdated { .. }
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
@@ -1423,6 +1428,7 @@ impl std::fmt::Debug for SessionUpdate {
                 .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
+            Self::CliVersionChanged => f.write_str("CliVersionChanged"),
         }
     }
 }
