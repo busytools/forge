@@ -397,12 +397,13 @@ pub(super) fn identity_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let dim = Style::default().fg(theme::DIM);
     let forge_line = format!("v{}", crate::FORGE_VERSION_SHORT);
     lines.push(centered_text_line(&forge_line, width, dim));
-    let claude_label = match app.cli_version_info.as_ref().and_then(|c| c.installed.as_deref()) {
+    let cli_info = app.workspace.as_ref().and_then(|workspace| workspace.cli_version());
+    let claude_label = match cli_info.as_ref().and_then(|c| c.installed.as_deref()) {
         Some(installed) => format!("claude {installed}"),
         None => "claude (unknown)".to_owned(),
     };
     lines.push(centered_text_line(&claude_label, width, dim));
-    if let Some(cli) = app.cli_version_info.as_ref()
+    if let Some(cli) = cli_info.as_ref()
         && cli.has_update()
         && let Some(latest) = cli.latest.as_deref()
     {
@@ -1895,5 +1896,45 @@ mod tests {
         // The 3-row minimum holds, but never beyond the region itself.
         assert_eq!(picker_box_height(100, 4), 3);
         assert_eq!(picker_box_height(100, 2), 2);
+    }
+
+    /// The boot line draws the version the core holds, and the update
+    /// indicator when npm publishes a newer one. The core owns the probe,
+    /// so the line follows whatever it last resolved.
+    #[test]
+    fn the_boot_line_names_the_version_the_core_holds() {
+        let app = App::test_default();
+        app.workspace
+            .as_ref()
+            .expect("a test app carries a workspace")
+            .seed_test_cli_version(Some("2.1.156"), Some("2.1.201"));
+
+        let lines: Vec<String> =
+            identity_lines(&app, 80).iter().map(std::string::ToString::to_string).collect();
+
+        assert!(
+            lines.iter().any(|line| line.contains("claude 2.1.156")),
+            "the boot line names the installed version the core holds: {lines:?}",
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("\u{2191} v2.1.201 available")),
+            "and the available version when the core says one is published: {lines:?}",
+        );
+    }
+
+    /// The negative control: a core that has resolved nothing still reads
+    /// as unknown, so the assertion above is about the snapshot and not
+    /// about the line always naming a version.
+    #[test]
+    fn the_boot_line_reads_unknown_without_a_version() {
+        let app = App::test_default();
+
+        let lines: Vec<String> =
+            identity_lines(&app, 80).iter().map(std::string::ToString::to_string).collect();
+
+        assert!(
+            lines.iter().any(|line| line.contains("claude (unknown)")),
+            "nothing resolved reads as unknown: {lines:?}",
+        );
     }
 }

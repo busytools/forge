@@ -1536,8 +1536,9 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw(forge_version),
     ]));
 
-    let cli_info = app.cli_version_info.as_ref();
+    let cli_info = app.workspace.as_ref().and_then(|workspace| workspace.cli_version());
     let installed = cli_info
+        .as_ref()
         .and_then(|i| i.installed.as_deref())
         .map_or_else(|| "\u{2014}".to_owned(), |v| format!("v{v}"));
     // Build the claude row with a width-aware right gutter so the
@@ -1552,7 +1553,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw(installed.clone()),
     ];
     let claude_prefix_width = 1 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2 + installed.chars().count();
-    if let Some(info) = cli_info
+    if let Some(info) = cli_info.as_ref()
         && info.has_update()
         && let Some(latest) = info.latest.as_deref()
     {

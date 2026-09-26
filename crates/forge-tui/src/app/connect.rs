@@ -60,7 +60,6 @@ fn create_app_impl(
     let (git_diff_event_tx, git_diff_event_rx) = std::sync::mpsc::channel();
     let (dictate_devices_tx, dictate_devices_rx) = std::sync::mpsc::channel();
     let (review_waiting_event_tx, review_waiting_event_rx) = std::sync::mpsc::channel();
-    let (cli_version_event_tx, cli_version_event_rx) = std::sync::mpsc::channel();
     let (diff_overlay_event_tx, diff_overlay_event_rx) = std::sync::mpsc::channel();
     let (usage_overlay_event_tx, usage_overlay_event_rx) = std::sync::mpsc::channel();
     let (process_scan_event_tx, process_scan_event_rx) = std::sync::mpsc::channel();
@@ -83,7 +82,6 @@ fn create_app_impl(
     let boot_cli = crate::app::extensions::UpdateCli::real();
     let boot_workspace = workspace.clone();
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
-    crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
     // Kick off the 60 s background account-usage poller. Boot
     // seeded from the redb store in `Workspace::new`; `main`
@@ -225,14 +223,11 @@ fn create_app_impl(
         dictate_devices_dirty: false,
         review_waiting_event_tx,
         review_waiting_event_rx,
-        cli_version_event_tx,
-        cli_version_event_rx,
         diff_overlay_event_tx,
         diff_overlay_event_rx,
         usage_overlay_event_tx,
         usage_overlay_event_rx,
         diff_scan_seq: 0,
-        cli_version_info: None,
         process_scan_event_tx,
         process_scan_event_rx,
         spinner_frame: 0,

@@ -503,14 +503,6 @@ pub struct App {
     /// as `git_diff_event_*` but carries `ProcessScanEvent`.
     pub process_scan_event_tx: std_mpsc::Sender<crate::app::process_scanner::ProcessScanEvent>,
     pub process_scan_event_rx: std_mpsc::Receiver<crate::app::process_scanner::ProcessScanEvent>,
-    /// Send / receive ends of the TUI-internal channel that the
-    /// `crate::app::cli_version` startup fetch task uses to hand
-    /// the merged `CliVersionInfo` snapshot back to the main loop.
-    /// One-shot in practice (single fetch at startup); the channel
-    /// stays open for the app's lifetime in case a follow-up
-    /// re-fetch is added later.
-    pub cli_version_event_tx: std_mpsc::Sender<crate::app::cli_version::CliVersionEvent>,
-    pub cli_version_event_rx: std_mpsc::Receiver<crate::app::cli_version::CliVersionEvent>,
     pub diff_overlay_event_tx: std_mpsc::Sender<crate::app::diff_overlay::DiffOverlayEvent>,
     pub diff_overlay_event_rx: std_mpsc::Receiver<crate::app::diff_overlay::DiffOverlayEvent>,
     pub usage_overlay_event_tx: std_mpsc::Sender<crate::app::usage_overlay::UsageOverlayEvent>,
@@ -521,11 +513,6 @@ pub struct App {
     /// the latest seq, so a rapid second `/diff` correctly
     /// supersedes the first instead of replaying the older result.
     pub diff_scan_seq: u64,
-    /// Latest installed-vs-published claude CLI version snapshot.
-    /// `None` until the startup fetch task lands. Rendered by the
-    /// bottom-left account panel; missing values render as DIM `-`
-    /// so the panel's row count stays constant.
-    pub cli_version_info: Option<forge_workspace::env::cli_version::CliVersionInfo>,
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
     /// Active spinner style for every animated surface (chat, input,
@@ -985,7 +972,6 @@ impl App {
         let (dictate_devices_tx, dictate_devices_rx) = std_mpsc::channel();
         let (review_waiting_tx, review_waiting_rx) = std_mpsc::channel();
         let (process_scan_tx, process_scan_rx) = std_mpsc::channel();
-        let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
         let (diff_overlay_tx, diff_overlay_rx) = std_mpsc::channel();
         let (usage_overlay_tx, usage_overlay_rx) = std_mpsc::channel();
         let pending_key = forge_workspace::SessionSlot::from_str_for_test(Self::TEST_SESSION_KEY);
@@ -1066,14 +1052,11 @@ impl App {
             review_waiting_event_rx: review_waiting_rx,
             process_scan_event_tx: process_scan_tx,
             process_scan_event_rx: process_scan_rx,
-            cli_version_event_tx: cli_version_tx,
-            cli_version_event_rx: cli_version_rx,
             diff_overlay_event_tx: diff_overlay_tx,
             diff_overlay_event_rx: diff_overlay_rx,
             usage_overlay_event_tx: usage_overlay_tx,
             usage_overlay_event_rx: usage_overlay_rx,
             diff_scan_seq: 0,
-            cli_version_info: None,
             spinner_frame: 0,
             spinner_last_advance_at: None,
             spinner_style: forge_workspace::SpinnerStyle::default(),
