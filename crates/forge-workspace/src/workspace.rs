@@ -661,12 +661,17 @@ fn store_cli_version(
     let changed = {
         let mut held = store.lock();
         let merged = merge_cli_version(held.as_ref(), next);
-        if held.as_ref() == Some(&merged) {
-            false
-        } else {
-            *held = Some(merged);
-            true
-        }
+        // A view draws the two versions, not the snapshot's presence: the
+        // first probe that resolves nothing holds a snapshot and changes
+        // nothing on screen, so it wakes nobody.
+        let held_draws = match held.as_ref() {
+            Some(held) => (held.installed.as_deref(), held.latest.as_deref()),
+            None => (None, None),
+        };
+        let merged_draws = (merged.installed.as_deref(), merged.latest.as_deref());
+        let changed = held_draws != merged_draws;
+        *held = Some(merged);
+        changed
     };
     if changed {
         let _ = update_tx.send(SessionUpdate::CliVersionChanged);
@@ -6594,6 +6599,23 @@ mod tests {
             store.lock().as_ref().and_then(|held| held.latest.as_deref()),
             Some("2.1.201"),
             "and the store holds what the last merge resolved",
+        );
+
+        // A first probe that resolved nothing holds a snapshot and draws
+        // what the views already had, so it is not news either.
+        let unresolved = Mutex::new(None);
+        store_cli_version(
+            &unresolved,
+            &update_tx,
+            CliVersionInfo { installed: None, latest: None },
+        );
+        assert!(
+            woken.try_recv().is_err(),
+            "a first probe that resolved nothing draws what the views already had",
+        );
+        assert!(
+            unresolved.lock().is_some(),
+            "and the store still holds what it read rather than dropping it",
         );
     }
 
