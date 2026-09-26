@@ -6510,12 +6510,12 @@ mod tests {
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::Acquire),
             1,
-            "so the second prober never ran",
+            "and only one probe call happened at all",
         );
         assert_eq!(
             workspace.cli_version(),
             Some(first),
-            "and the store still holds what the first probe read",
+            "the store holds the first probe's answer, which is what says the second never ran after it",
         );
     }
 
