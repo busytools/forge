@@ -7,8 +7,10 @@ use std::time::Duration;
 use axum::extract::State;
 use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
+use forge_agent::translate::state_parsing::parse_runtime_session_state;
 use forge_primitives::Message;
 use forge_primitives::cloud::service_status::ServiceIssue;
+use forge_primitives::runtime::RuntimeSessionState;
 use forge_sessions::SessionUpdate;
 use forge_sessions::surface::is_success_result;
 use futures_util::StreamExt;
@@ -75,9 +77,19 @@ impl Live {
                     self.unseen.mark_completed(key);
                     true
                 }
-                // A held prompt is answered in the session, and this is
-                // the echo that says the row is free again.
-                Message::System { subtype, .. } if subtype == "session_state_changed" => true,
+                Message::System { subtype, data, .. } if subtype == "session_state_changed" => {
+                    // Work started again, which supersedes a completion
+                    // nobody looked at. Clearing on OPEN is the real
+                    // semantic and lands with the row's route; this only
+                    // bounds the mark until then, so it cannot outlive the
+                    // turn it reported.
+                    if parse_runtime_session_state(data.get("state"))
+                        == Some(RuntimeSessionState::Running)
+                    {
+                        self.unseen.clear(key);
+                    }
+                    true
+                }
                 Message::BackgroundTasksChanged { .. } => true,
                 _ => false,
             },
@@ -86,11 +98,16 @@ impl Live {
                     Some(ServiceIssue { severity: *severity, message: message.clone() });
                 true
             }
-            // The row set, and what each row is.
-            SessionUpdate::Spawning { .. }
-            | SessionUpdate::Connected { .. }
-            | SessionUpdate::SessionReplaced { .. }
-            | SessionUpdate::ConnectionFailed { .. }
+            // The row set, and what each row is. A spawn or a replacement
+            // is a fresh occupant, whose history is not a completion this
+            // page has failed to show.
+            SessionUpdate::Spawning { key, .. }
+            | SessionUpdate::Connected { key, .. }
+            | SessionUpdate::SessionReplaced { key, .. } => {
+                self.unseen.clear(key);
+                true
+            }
+            SessionUpdate::ConnectionFailed { .. }
             | SessionUpdate::AuthRequired { .. }
             | SessionUpdate::TurnError { .. }
             | SessionUpdate::TurnCancelled { .. }
@@ -164,6 +181,81 @@ mod tests {
 
     fn appended(key: &SessionSlot, msg: Message) -> SessionUpdate {
         SessionUpdate::ChatAppended { key: key.clone(), msg }
+    }
+
+    fn session_state(state: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "session_state_changed",
+            "session_id": "s",
+            "state": state,
+        }))
+        .expect("parse a state message")
+    }
+
+    /// The diamond is bounded by the work it reported: a session that
+    /// started again, or a slot a fresh occupant took, is not an unlooked
+    /// completion. Clearing on open is the real semantic and lands with
+    /// the row's route.
+    #[test]
+    fn starting_work_again_clears_the_diamond() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+        live.apply(&appended(&slot, result_message("success", false)));
+        assert!(live.snapshot().unseen.is_unseen(&slot), "precondition: the turn armed it");
+
+        assert!(
+            live.apply(&appended(&slot, session_state("running"))),
+            "a turn starting redraws the page",
+        );
+        assert!(
+            !live.snapshot().unseen.is_unseen(&slot),
+            "and clears a completion nobody looked at",
+        );
+
+        // The same for a slot a new occupant took: its history is not a
+        // completion this page failed to show.
+        let taken = SessionSlot::lead("Org", "other");
+        live.apply(&appended(&taken, result_message("success", false)));
+        assert!(live.snapshot().unseen.is_unseen(&taken), "precondition: armed");
+
+        live.apply(&SessionUpdate::Connected {
+            key: taken.clone(),
+            session_id: forge_primitives::SessionId::new("new"),
+            cwd: "/proj".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history: Vec::new(),
+            compaction_count: 0,
+        });
+
+        assert!(
+            !live.snapshot().unseen.is_unseen(&taken),
+            "a replaced occupant starts from a clean row",
+        );
+
+        // And clearing one slot leaves the rest alone, which is the
+        // property the fold has to keep: a new turn somewhere is not news
+        // about somewhere else.
+        let untouched = SessionSlot::lead("Org", "untouched");
+        live.apply(&appended(&slot, result_message("success", false)));
+        live.apply(&appended(&untouched, result_message("success", false)));
+        live.apply(&appended(&slot, session_state("running")));
+        let unseen = live.snapshot().unseen;
+        assert!(!unseen.is_unseen(&slot), "the slot that started again is cleared");
+        assert!(unseen.is_unseen(&untouched), "and the slot that did not keeps its diamond");
     }
 
     /// Catches a diamond armed by the wrong result, and a page redrawn for
