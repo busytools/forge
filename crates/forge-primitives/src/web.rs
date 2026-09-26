@@ -2,14 +2,14 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 /// The `[web]` block of `forge.toml`: whether the HTTP server starts
 /// with forge, and where it listens.
 ///
 /// On unless it is turned off, so a restart leaves the view serving
 /// without a key being added first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebConfig {
     pub enabled: bool,
@@ -20,9 +20,8 @@ pub struct WebConfig {
     pub bind: IpAddr,
 }
 
-/// The port the web view binds when `[web] port` is absent. Must stay
-/// clear of the gateway's 8787 and of the reference spikes' 8788 and
-/// 8917, which the view is compared against while the migration runs.
+/// The port the web view binds when `[web] port` is absent. Distinct
+/// from the gateway's 8787, the other listener a boot brings up.
 pub const DEFAULT_WEB_PORT: u16 = 8790;
 
 impl Default for WebConfig {
