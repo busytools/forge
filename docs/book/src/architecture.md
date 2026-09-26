@@ -11,7 +11,7 @@ forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
 forge-sessions    ->  primitives + workspace
-forge-web         ->  primitives
+forge-web         ->  primitives + sessions
 forge-tui         ->  primitives + workspace + sessions + web
 forge-test-harness->  primitives + sdk
 ```
@@ -26,7 +26,7 @@ forge-test-harness->  primitives + sdk
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
 | `forge-sessions` | What a view needs and nothing about how it renders: the read surface a view uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, and the policy that folds a run of blocks. Holds no terminal types, so a second view attaches beside the TUI rather than duplicating it. |
-| `forge-web` | The web view: HTTP served beside the TUI, from the process that owns the sessions, with a wiring-proof page today. axum plus server-rendered markup. Never names `forge-workspace`, and starts no subsystem of its own. |
+| `forge-web` | The web view: HTTP served beside the TUI, from the process that owns the sessions. axum plus server-rendered markup, kept live by a stream the page subscribes to. Reads everything through `forge-sessions`, git plumbing included; it does not name the crates under that one, and starts no subsystem of its own. |
 | `forge-tui` | The view layer. Rendering, key and mouse handling, per-session presentation state. Ships the `forge` binary. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. Dev tooling, not in the runtime path. |
 
@@ -82,17 +82,18 @@ Work top-down; the first match wins.
 11. **A wire-conformance scenario** goes in `forge-test-harness`.
 
 **The view surface's read verbs are built.** A view reads the core
-through named verbs by subject - `roster`, `session`, `accounts`,
-`plugins`, `reviews`, `workers`, `connectors`, `dictate` - acts through
-`dispatch(Command)`, and receives changes through `subscribe()`. All
-eight exist in `forge-sessions`, and the TUI reads its project roster,
-session scan cwd, worker registry, account pool, plugin records, review
-threads, connector subscriptions and dictation state through them. What
-the migration has not reached is the write half: the five refreshes that
-ask the core for a new snapshot are still direct `Workspace` calls, so
-`forge-tui` keeps its `forge-workspace` dependency and the arrow above
-is not yet one-way. A read a second view would want goes on that
-surface; a read only the TUI makes stays a plain method.
+through named verbs by subject - `roster`, `session`, `agents`,
+`accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate` -
+and receives changes through `subscribe()`. All nine exist in
+`forge-sessions`, and the TUI reads its project roster, session scan cwd,
+worker registry, account pool, plugin records, review threads, connector
+subscriptions and dictation state through them. What the migration has
+not reached is the write half: user actions still go through
+`dispatch(Command)` on the workspace rather than a surface verb, and the
+five refreshes that ask the core for a new snapshot are still direct
+`Workspace` calls, so `forge-tui` keeps its `forge-workspace` dependency
+and the arrow above is not yet one-way. A read a second view would want
+goes on that surface; a read only the TUI makes stays a plain method.
 
 Splits across several crates are normal; a git-diff feature naturally
 touches agent, workspace and TUI. The rule of thumb is that logic, I/O

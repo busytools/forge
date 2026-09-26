@@ -73,6 +73,13 @@ impl Roster {
         self.workspace.config_dir_for(slot)
     }
 
+    /// The directory `slot`'s agent works in: its project's root, or the
+    /// worktree a git worker was forked into. `None` when forge holds no
+    /// session for the slot, which is a project nobody has started.
+    pub fn cwd_for(&self, slot: &SessionSlot) -> Option<PathBuf> {
+        self.workspace.cwd_for_session(slot).map(PathBuf::from)
+    }
+
     /// The task rows declared under the project named `project`.
     pub fn tasks_for_project(&self, project: &str) -> Vec<Task> {
         self.workspace.tasks_for_project(project)
@@ -87,6 +94,7 @@ impl Roster {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use forge_primitives::tasks::{Task, TaskStatus};
@@ -295,6 +303,47 @@ provider = "anthropic"
             roster.chip_for(&project).map(|chip| chip.account_name),
             Some("Stargate".to_owned()),
             "the chip must name the account the walk would pick"
+        );
+    }
+
+    /// Catches a cwd read that reimplements the resolution rather than
+    /// forwarding it, and one that answers the project root for a git
+    /// worker whose tree is a worktree.
+    #[test]
+    fn cwd_for_resolves_a_workers_worktree_under_its_project() {
+        let workspace = stub_workspace();
+        workspace.seed_test_project("forge", "/tmp/forge-roster-cwd");
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let roster = surface.roster();
+        let project = roster.project_named("forge").expect("seeded project").key.clone();
+
+        assert_eq!(
+            roster.cwd_for(&SessionSlot::from_str_for_test("forge-nobody")),
+            None,
+            "a slot with no session and no worker row has no working tree",
+        );
+
+        workspace.insert_live_worker(
+            &project,
+            forge_workspace::WorkerEntry {
+                label: "probe-cwd".to_owned(),
+                charter: "charter".to_owned(),
+                slot: SessionSlot::worker("TestOrg", "forge", "probe-cwd"),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "forge"),
+                needs_tag: false,
+                is_git_repo_at_spawn: true,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        assert_eq!(
+            roster.cwd_for(&SessionSlot::worker("TestOrg", "forge", "probe-cwd")),
+            Some(PathBuf::from("/tmp/forge-roster-cwd/.claude/worktrees/probe-cwd")),
+            "a git worker's tree is its worktree, so the row's branch is its own",
         );
     }
 

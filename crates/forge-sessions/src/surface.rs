@@ -6,6 +6,7 @@
 //! attaches to the core without reading it.
 
 pub mod accounts;
+pub mod agents;
 pub mod connectors;
 pub mod dictate;
 pub mod plugins;
@@ -20,6 +21,13 @@ use std::sync::Arc;
 use forge_primitives::SessionSlot;
 use forge_workspace::Workspace;
 
+pub use accounts::{AccountsView, GatewayView};
+pub use agents::{AgentRow, Agents, PendingKind};
+pub use dictate::DictateView;
+// A view compares the values the surface hands it, so it needs their names
+// too - re-exported here rather than reached for in the crate below, which
+// a view does not name.
+pub use forge_workspace::{DictateFailure, DictateModelState, LoadingState};
 pub use roster::Roster;
 pub use session::SessionState;
 pub use workers::{WorkerRef, Workers};
@@ -29,9 +37,37 @@ pub struct ViewSurface {
     workspace: Arc<Workspace>,
 }
 
+/// The update the core emits, re-exported: it is the workspace-to-view
+/// protocol already, so a view subscribes to it rather than to a second
+/// vocabulary this crate would have to keep in step.
+pub use forge_workspace::SessionUpdate;
+
+/// The wire shape a turn that finished arrives as. A view marking a
+/// completion reads the `Result` through this rather than deciding for
+/// itself which results count.
+pub fn is_success_result(is_error: bool, subtype: &str) -> bool {
+    !is_error && subtype == "success"
+}
+
 impl ViewSurface {
     pub fn new(workspace: Arc<Workspace>) -> Self {
         Self { workspace }
+    }
+
+    /// The core's own update stream, as a mirror of it. Every caller gets
+    /// a receiver of its own, so a second view attaches beside the first
+    /// rather than stealing its events.
+    ///
+    /// This is the form for a view that renders no prompt: the observer
+    /// role, and no replay of what was emitted before the caller attached,
+    /// because it reads what it needs from the read verbs when it is
+    /// asked. Both halves are deliberate and neither suits the TUI, which
+    /// is the view that DOES render prompts and answer them - moving it
+    /// onto this verb would make it an observer, and every permission and
+    /// question request would resolve `Cancelled` instead of reaching a
+    /// person. It stays on `Workspace::subscribe`.
+    pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+        self.workspace.subscribe_mirror()
     }
 
     /// The projects, their sessions, and the per-project lists the
@@ -49,6 +85,42 @@ impl ViewSurface {
     /// The live workers, per project.
     pub fn workers(&self) -> Workers {
         Workers::collect(Arc::clone(&self.workspace))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{SessionUpdate, ViewSurface};
+
+    /// The mirror is the call site, not the fanout. Both verbs sit on one
+    /// `UpdateFanout`, whose own test pins its two halves; what this pins
+    /// is which half each one calls, because repointing the surface's verb
+    /// at `Workspace::subscribe` steals the boot notice from the view that
+    /// renders prompts and every other test in the tree stays green.
+    #[tokio::test]
+    async fn a_surface_mirror_leaves_the_backlog_for_a_workspace_subscriber() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+
+        // Emitted with nothing attached, so the fanout holds it for
+        // whichever caller attaches first.
+        workspace.emit_for_test(SessionUpdate::CatalogLoaded);
+
+        let mut mirror = surface.subscribe();
+        assert!(
+            mirror.try_recv().is_err(),
+            "a view attaching through the surface takes no backlog, since the held notice \
+             belongs to the view that renders prompts",
+        );
+
+        let mut answering = workspace.subscribe();
+        assert!(
+            matches!(answering.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            "the notice held before any caller attached is still there for the workspace \
+             subscriber, which is what the mirror left it for",
+        );
     }
 }
 

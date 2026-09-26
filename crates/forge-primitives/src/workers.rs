@@ -78,9 +78,11 @@ pub struct WorkerStatus {
     /// `SessionUpdate::WorkerStatusChanged` leaves it `None` because
     /// nothing on that path reads it.
     ///
-    /// `LoggedOut` has no producer anywhere in the tree;
-    /// `AuthRequired` reaches a worker's `SessionTask` but is not
-    /// mirrored into workspace state, so it is never derived.
+    /// `LoggedOut` has no producer anywhere in the tree. `AuthRequired`
+    /// is derived, from the typed signals the CLI sends for an
+    /// authentication failure - an assistant message's error, or a retry
+    /// frame naming that class - with the `TurnError` envelope's text as
+    /// a fallback (busytools/forge#1201).
     ///
     /// Two limits inherited from the signals this reads, not from the
     /// derivation: `Running` does not tell a live turn apart from a

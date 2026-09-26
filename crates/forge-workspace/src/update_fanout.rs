@@ -64,6 +64,24 @@ impl UpdateFanout {
         rx
     }
 
+    /// Mint a subscriber that carries only what is emitted from here on,
+    /// and leaves the pre-attach backlog for whoever attaches next.
+    ///
+    /// A mirror - something that folds the stream into state of its own
+    /// and reads the rest from a snapshot when it is asked - has no use
+    /// for the backlog. Taking it would be worse than useless: the
+    /// backlog goes to the first caller, so a mirror attaching at boot
+    /// would silently take the boot notice out of the view that renders
+    /// prompts.
+    pub(crate) fn subscribe_without_backlog(
+        &self,
+        role: SubscriberRole,
+    ) -> mpsc::UnboundedReceiver<SessionUpdate> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.shared.lock().subscribers.push(Registration { tx, role });
+        rx
+    }
+
     /// Deliver `update` to every subscriber, and report whether one took
     /// it. `false` is the "no receiver" signal the single-take channel
     /// gave, which `spawn::try_emit` and `SessionTask::emit` log on; an
@@ -227,6 +245,37 @@ mod tests {
             "the first subscriber is handed the boot notice"
         );
         assert!(second.try_recv().is_err(), "the second subscriber is handed no boot backlog");
+    }
+
+    /// A mirror takes no backlog and leaves it for whoever attaches next.
+    ///
+    /// Both halves are the point. A view that folds the stream into state
+    /// of its own reads the rest from a snapshot, so replaying to it is
+    /// waste; and because the backlog goes to the FIRST caller, a mirror
+    /// attaching at boot would otherwise take the boot notice out of the
+    /// view that renders prompts. Catches either direction being changed:
+    /// a mirror pointed at the backlog-taking form, or a prompt-rendering
+    /// view pointed at the mirror's.
+    #[test]
+    fn a_mirror_takes_no_backlog_and_leaves_it_for_the_next_subscriber() {
+        let fanout = UpdateFanout::default();
+        assert!(!fanout.send(status("boot")), "nothing has attached to take it");
+
+        let mut mirror = fanout.subscribe_without_backlog(SubscriberRole::Observing);
+        assert!(
+            mirror.try_recv().is_err(),
+            "a mirror is handed nothing that was emitted before it attached",
+        );
+
+        let mut answering = fanout.subscribe(SubscriberRole::Answering);
+        assert_eq!(
+            next(&mut answering, "answering"),
+            "boot",
+            "the boot notice is still there for the view that renders prompts",
+        );
+
+        assert!(fanout.send(status("later")), "an update after both attached reaches one of them");
+        assert_eq!(next(&mut mirror, "mirror"), "later", "and the mirror carries it too");
     }
 
     /// Catches holding a role-gated update for the first subscriber. The

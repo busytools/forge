@@ -421,13 +421,27 @@ serving.
 | `enabled` | boolean | `true` | Whether the server starts with forge. `false` is the opt-out, and the TUI is identical either way. |
 | `port` | integer | `8790` | The port the server binds on `bind`, and a browser is pointed at it by hand. `0` fails the load outright (`WebPortInvalid`), and so does the gateway's own port (`WebPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the view is disabled: a stale port on a section that never binds cannot stop the boot. |
 | `bind` | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching the view from another machine means naming that machine's interface here, usually the WireGuard address, and anything public needs something in front of it. |
+| `mark` | string | unset, drawing Klin | The mark on the page header, on the browser tab and in the empty state, by name: `klin`, `lanes`, `f_slab`, `split`, `spine`, `slab`, `grid`, `clamp`, `strike`, `cascade`, `nest`, `chamfer`, `tally`, `stencil_f`, `anvil` or `spark`. A fixed set rather than a file path, so every option is one forge has drawn. |
+| `theme` | string | unset, drawing dark | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background. |
+
+A row's motion is not configurable. The TUI's spinner styles name glyph
+cycles, which is a terminal idiom the web view has none of, and its own
+marks move by state: the working mark turns in 900ms and the starting one
+in 1500ms, and that difference is how the page tells them apart.
+
+An unset name is not an error and not a fallback: it means the built-in.
+A name forge does not ship fails the load with the key and the value in
+the message (`WebNameUnknown`, `web mark = "anvilish" ... names nothing
+forge ships; this key picks by name, never by path`), because a setting
+that is quietly ignored reads as the key not working. Like the port
+checks, none of them run while the view is disabled.
 
 The server starts no subsystem of its own - no cron scheduler, no
 connector, no second gateway - so the cost of the extra view is the
-listener and the requests. The page it serves today is a wiring proof:
-it reports the address it bound and the config it read. A bind that
-fails is logged and does not stop forge; the TUI is not downstream of
-the web view.
+listener and the requests. It serves the home page: every project under
+its org, what each agent is doing, and what needs you, kept live by a
+stream the page subscribes to. A bind that fails is logged and does not
+stop forge; the TUI is not downstream of the web view.
 
 ## Unknown keys
 
@@ -529,6 +543,13 @@ thread_idle_days = 14
 
 [plugins]
 auto_update = true
+
+[web]
+enabled = true
+port = 8790
+bind = "127.0.0.1"
+mark = "klin"
+theme = "dark"
 ```
 
 ## What forge does at startup

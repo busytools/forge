@@ -9,7 +9,12 @@ description = "The web view: HTTP served beside the TUI, from the process that o
 
 [dependencies]
 forge-primitives = { workspace = true }
+# The view surface, and the only crate under it this one may name. Reads
+# of the core and of a working tree both come from here: the git plumbing
+# arrives re-exported, so nothing here reaches past the view layer.
+forge-sessions = { workspace = true }
 axum = { workspace = true }
+futures-util = { workspace = true }
 maud = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
@@ -17,6 +22,12 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
+# The stream tests build wire frames the way the workspace's own tests do:
+# from the JSON the CLI sends, not from a hand-filled struct.
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+# The view fixtures the page's own tests drive a real fleet through.
+forge-sessions = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]

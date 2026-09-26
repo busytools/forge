@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; logo directions</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.55 var(--ui);
+    -webkit-font-smoothing: antialiased;
+    padding: 0 0 1px;
+  }
+
+  .wrap { max-width: 1220px; margin: 0 auto; padding: 36px 32px 96px; }
+
+  /* ---------- page head ---------- */
+
+  h1 { font-size: 22px; font-weight: 650; letter-spacing: -.012em; }
+  h1 em { color: var(--accent); font-style: normal; }
+  .lede { color: var(--muted); max-width: 78ch; margin-top: 9px; font-size: 13.5px; }
+  .rules { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .rules span {
+    font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+    border: 1px solid var(--line); background: var(--s1);
+    border-radius: 999px; padding: 3px 10px;
+  }
+  .rules span b { color: var(--accent); font-weight: 600; }
+
+  /* ---------- palette strip ---------- */
+
+  .swatches { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; }
+  .sw { border-radius: 7px; border: 1px solid var(--line); overflow: hidden; }
+  .sw i { display: block; width: 54px; height: 26px; }
+  .sw b {
+    display: block; font-family: var(--mono); font-size: 9px; font-weight: 400;
+    color: var(--dim); padding: 3px 6px 4px; background: var(--s1);
+    letter-spacing: .02em;
+  }
+
+  /* ---------- section heads ---------- */
+
+  .band { margin-top: 40px; }
+  .band > h2 {
+    font-size: 12px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--text); padding-bottom: 9px; border-bottom: 1px solid var(--line);
+  }
+  .band > h2 span { color: var(--dim); font-weight: 400; letter-spacing: 0; text-transform: none; font-family: var(--mono); font-size: 11px; margin-left: 10px; }
+
+  /* ---------- the sheet ---------- */
+
+  .sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(452px, 1fr)); gap: 16px; margin-top: 16px; }
+
+  .card { background: var(--s1); border: 1px solid var(--line); border-radius: 12px; padding: 15px 17px 17px; }
+  .card > h3 { font-size: 13.5px; font-weight: 650; letter-spacing: -.005em; display: flex; align-items: baseline; gap: 9px; }
+  .card > h3 .n { font-family: var(--mono); font-size: 10.5px; font-weight: 400; color: var(--dim); }
+  .card > h3 .fam { margin-left: auto; font-family: var(--mono); font-size: 9.5px; font-weight: 400; color: var(--dim); letter-spacing: .04em; }
+  .idea { color: var(--muted); font-size: 12.5px; margin: 6px 0 12px; max-width: 64ch; }
+
+  .row { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; padding: 9px 0; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .tag {
+    flex: 0 0 44px; align-self: center; font-family: var(--mono); font-size: 9.5px;
+    color: var(--dim); letter-spacing: .03em;
+  }
+
+  figure { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  figcaption { font-family: var(--mono); font-size: 9px; color: var(--dim); letter-spacing: .04em; }
+
+  .mk { display: block; color: var(--accent); flex: 0 0 auto; }
+  .mk.w { color: var(--text); }
+
+  .note {
+    margin-top: 12px; padding-left: 10px; border-left: 2px solid var(--line);
+    font-size: 11.5px; color: var(--dim); max-width: 66ch;
+  }
+  .note b { color: var(--muted); font-weight: 600; }
+
+  /* ---------- header row ---------- */
+
+  .hdrow {
+    display: flex; align-items: center; gap: 34px; flex-wrap: wrap;
+    background: var(--s2); border: 1px solid var(--line); border-radius: 11px;
+    padding: 15px 20px; margin-top: 14px;
+  }
+  .hdrow.light { background: #f1f3f7; border-color: #c9cfdb; }
+  .hd { display: flex; align-items: center; gap: 9px; }
+  .hd .word { font-size: 19px; font-weight: 650; letter-spacing: -.022em; }
+  .hd .which { font-family: var(--mono); font-size: 9.5px; color: var(--dim); margin-left: 6px; }
+  .light .word { color: #12151c; }
+  .light .mk { color: #12151c; }
+  .light .which { color: #6b7484; }
+
+  /* ---------- verdict ---------- */
+
+  .picks { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 16px; }
+  .pick { background: var(--s1); border: 1px solid var(--line); border-radius: 12px; padding: 15px 17px; }
+  .pick.one { border-color: rgba(244,118,0,.42); }
+  .pick h4 { font-size: 13px; font-weight: 650; display: flex; align-items: center; gap: 10px; }
+  .pick h4 .rank { font-family: var(--mono); font-size: 10px; color: var(--accent); }
+  .pick p { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+  .drop { border-left: 2px solid var(--bad); }
+  .drop h4 .rank { color: var(--bad); }
+  code { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>forge &middot; logo directions</h1>
+  <p class="lede">
+    Sixteen marks, drawn as inline SVG in the brand palette. Each one is a
+    standalone mark, not a wordmark: it has to carry a browser tab on its own.
+    Every mark is shown at 64, 32, 24 and 16px, in accent orange and in single
+    colour, so a direction that only works large fails in front of you rather
+    than in a favicon nobody rechecks.
+  </p>
+  <div class="rules">
+    <span>reads at <b>16px</b></span>
+    <span>holds at <b>24px</b></span>
+    <span>dark first, <b>light noted</b></span>
+    <span>vector <b>svg</b>, inline, copyable</span>
+    <span>monochrome <b>safe</b></span>
+    <span><b>currentColor</b> throughout</span>
+  </div>
+
+  <div class="swatches">
+    <div class="sw"><i style="background:#04050a"></i><b>#04050a</b></div>
+    <div class="sw"><i style="background:#0d111a"></i><b>#0d111a</b></div>
+    <div class="sw"><i style="background:#141926"></i><b>#141926</b></div>
+    <div class="sw"><i style="background:#1b2130"></i><b>#1b2130</b></div>
+    <div class="sw"><i style="background:#222a3c"></i><b>#222a3c</b></div>
+    <div class="sw"><i style="background:#eaeef6"></i><b>#eaeef6</b></div>
+    <div class="sw"><i style="background:#8f98a8"></i><b>#8f98a8</b></div>
+    <div class="sw"><i style="background:#5d6675"></i><b>#5d6675</b></div>
+    <div class="sw"><i style="background:#f47600"></i><b>#f47600</b></div>
+    <div class="sw"><i style="background:#82c76b"></i><b>#82c76b</b></div>
+    <div class="sw"><i style="background:#e0683e"></i><b>#e0683e</b></div>
+    <div class="sw"><i style="background:#c9a13b"></i><b>#c9a13b</b></div>
+  </div>
+
+  <section class="band">
+    <h2>The directions <span>16 marks, four families: concept, geometry, letterform, negative space</span></h2>
+    <div class="sheet">
+
+      <!-- 01 -->
+      <article class="card">
+        <h3><span class="n">01</span>Lanes<span class="fam">concept</span></h3>
+        <p class="idea">Three bars, bottom-aligned, every one a different height: parallel sessions in flight, none of them finished. The mark is the roster at a glance.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="lanes-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="lanes-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="lanes-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="lanes-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="lanes-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="lanes-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="lanes-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="lanes-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The safest small mark here. Four units of bar on a 24 grid is 2.7px of ink at 16px, and the differing heights survive as rhythm rather than detail.</p>
+      </article>
+
+      <!-- 02 -->
+      <article class="card">
+        <h3><span class="n">02</span>Split<span class="fam">concept</span></h3>
+        <p class="idea">One block at the top, a stem, a spread bar, three legs. A lead agent and the workers it spawns, drawn as a plain org tree.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="split-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="9" y="2.5" width="6" height="4.5" rx="2"/><rect x="10.6" y="6.4" width="2.8" height="3"/><rect x="3" y="8.8" width="18" height="3" rx="1.5"/><rect x="4.25" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="10.5" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="16.75" y="11.8" width="3" height="9.7" rx="1.5"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="split-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="9" y="2.5" width="6" height="4.5" rx="2"/><rect x="10.6" y="6.4" width="2.8" height="3"/><rect x="3" y="8.8" width="18" height="3" rx="1.5"/><rect x="4.25" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="10.5" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="16.75" y="11.8" width="3" height="9.7" rx="1.5"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="split-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="9" y="2.5" width="6" height="4.5" rx="2"/><rect x="10.6" y="6.4" width="2.8" height="3"/><rect x="3" y="8.8" width="18" height="3" rx="1.5"/><rect x="4.25" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="10.5" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="16.75" y="11.8" width="3" height="9.7" rx="1.5"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="split-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="9" y="2.5" width="6" height="4.5" rx="2"/><rect x="10.6" y="6.4" width="2.8" height="3"/><rect x="3" y="8.8" width="18" height="3" rx="1.5"/><rect x="4.25" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="10.5" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="16.75" y="11.8" width="3" height="9.7" rx="1.5"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="split-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="9" y="2.5" width="6" height="4.5" rx="2"/><rect x="10.6" y="6.4" width="2.8" height="3"/><rect x="3" y="8.8" width="18" height="3" rx="1.5"/><rect x="4.25" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="10.5" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="16.75" y="11.8" width="3" height="9.7" rx="1.5"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="split-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="9" y="2.5" width="6" height="4.5" rx="2"/><rect x="10.6" y="6.4" width="2.8" height="3"/><rect x="3" y="8.8" width="18" height="3" rx="1.5"/><rect x="4.25" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="10.5" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="16.75" y="11.8" width="3" height="9.7" rx="1.5"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="split-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="9" y="2.5" width="6" height="4.5" rx="2"/><rect x="10.6" y="6.4" width="2.8" height="3"/><rect x="3" y="8.8" width="18" height="3" rx="1.5"/><rect x="4.25" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="10.5" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="16.75" y="11.8" width="3" height="9.7" rx="1.5"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="split-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="9" y="2.5" width="6" height="4.5" rx="2"/><rect x="10.6" y="6.4" width="2.8" height="3"/><rect x="3" y="8.8" width="18" height="3" rx="1.5"/><rect x="4.25" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="10.5" y="11.8" width="3" height="9.7" rx="1.5"/><rect x="16.75" y="11.8" width="3" height="9.7" rx="1.5"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">Reads as a tree at every size, but it is the busiest of the concept marks: six shapes is a lot to hold at 16px, and the stem between the block and the bar fills in.</p>
+      </article>
+
+      <!-- 03 -->
+      <article class="card">
+        <h3><span class="n">03</span>Spine<span class="fam">concept</span></h3>
+        <p class="idea">A session tree seen from the side: one spine, two branches, two nodes hanging off it. The branch is the spawn, the node is the worker.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="spine-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="4" y="2.5" width="3.5" height="19" rx="1.75"/><rect x="7.5" y="6.6" width="7" height="3" rx="1"/><rect x="14.5" y="5.1" width="6" height="6" rx="1.8"/><rect x="7.5" y="14.4" width="7" height="3" rx="1"/><rect x="14.5" y="12.9" width="6" height="6" rx="1.8"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="spine-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="4" y="2.5" width="3.5" height="19" rx="1.75"/><rect x="7.5" y="6.6" width="7" height="3" rx="1"/><rect x="14.5" y="5.1" width="6" height="6" rx="1.8"/><rect x="7.5" y="14.4" width="7" height="3" rx="1"/><rect x="14.5" y="12.9" width="6" height="6" rx="1.8"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="spine-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="4" y="2.5" width="3.5" height="19" rx="1.75"/><rect x="7.5" y="6.6" width="7" height="3" rx="1"/><rect x="14.5" y="5.1" width="6" height="6" rx="1.8"/><rect x="7.5" y="14.4" width="7" height="3" rx="1"/><rect x="14.5" y="12.9" width="6" height="6" rx="1.8"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="spine-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="4" y="2.5" width="3.5" height="19" rx="1.75"/><rect x="7.5" y="6.6" width="7" height="3" rx="1"/><rect x="14.5" y="5.1" width="6" height="6" rx="1.8"/><rect x="7.5" y="14.4" width="7" height="3" rx="1"/><rect x="14.5" y="12.9" width="6" height="6" rx="1.8"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="spine-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="4" y="2.5" width="3.5" height="19" rx="1.75"/><rect x="7.5" y="6.6" width="7" height="3" rx="1"/><rect x="14.5" y="5.1" width="6" height="6" rx="1.8"/><rect x="7.5" y="14.4" width="7" height="3" rx="1"/><rect x="14.5" y="12.9" width="6" height="6" rx="1.8"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="spine-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="4" y="2.5" width="3.5" height="19" rx="1.75"/><rect x="7.5" y="6.6" width="7" height="3" rx="1"/><rect x="14.5" y="5.1" width="6" height="6" rx="1.8"/><rect x="7.5" y="14.4" width="7" height="3" rx="1"/><rect x="14.5" y="12.9" width="6" height="6" rx="1.8"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="spine-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="4" y="2.5" width="3.5" height="19" rx="1.75"/><rect x="7.5" y="6.6" width="7" height="3" rx="1"/><rect x="14.5" y="5.1" width="6" height="6" rx="1.8"/><rect x="7.5" y="14.4" width="7" height="3" rx="1"/><rect x="14.5" y="12.9" width="6" height="6" rx="1.8"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="spine-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="4" y="2.5" width="3.5" height="19" rx="1.75"/><rect x="7.5" y="6.6" width="7" height="3" rx="1"/><rect x="14.5" y="5.1" width="6" height="6" rx="1.8"/><rect x="7.5" y="14.4" width="7" height="3" rx="1"/><rect x="14.5" y="12.9" width="6" height="6" rx="1.8"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The horizontal branches are 3 units thin, which is under 2px at 16px, but they only have to connect two masses, so the 16px form still reads as a spine with two things on it.</p>
+      </article>
+
+      <!-- 04 -->
+      <article class="card">
+        <h3><span class="n">04</span>Slab<span class="fam">concept</span></h3>
+        <p class="idea">Three plates stacked in isometric: work queued behind work. The only mark in the set that implies depth rather than a flat plane.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="slab-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><path d="M12 3.2 21 5.8 12 8.4 3 5.8Z"/><path d="M12 10.2 21 12.8 12 15.4 3 12.8Z"/><path d="M12 17.2 21 19.8 12 22.4 3 19.8Z"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="slab-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><path d="M12 3.2 21 5.8 12 8.4 3 5.8Z"/><path d="M12 10.2 21 12.8 12 15.4 3 12.8Z"/><path d="M12 17.2 21 19.8 12 22.4 3 19.8Z"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="slab-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><path d="M12 3.2 21 5.8 12 8.4 3 5.8Z"/><path d="M12 10.2 21 12.8 12 15.4 3 12.8Z"/><path d="M12 17.2 21 19.8 12 22.4 3 19.8Z"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="slab-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><path d="M12 3.2 21 5.8 12 8.4 3 5.8Z"/><path d="M12 10.2 21 12.8 12 15.4 3 12.8Z"/><path d="M12 17.2 21 19.8 12 22.4 3 19.8Z"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="slab-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><path d="M12 3.2 21 5.8 12 8.4 3 5.8Z"/><path d="M12 10.2 21 12.8 12 15.4 3 12.8Z"/><path d="M12 17.2 21 19.8 12 22.4 3 19.8Z"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="slab-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><path d="M12 3.2 21 5.8 12 8.4 3 5.8Z"/><path d="M12 10.2 21 12.8 12 15.4 3 12.8Z"/><path d="M12 17.2 21 19.8 12 22.4 3 19.8Z"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="slab-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><path d="M12 3.2 21 5.8 12 8.4 3 5.8Z"/><path d="M12 10.2 21 12.8 12 15.4 3 12.8Z"/><path d="M12 17.2 21 19.8 12 22.4 3 19.8Z"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="slab-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><path d="M12 3.2 21 5.8 12 8.4 3 5.8Z"/><path d="M12 10.2 21 12.8 12 15.4 3 12.8Z"/><path d="M12 17.2 21 19.8 12 22.4 3 19.8Z"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">At 16px the three plates merge into a single striped lozenge. It is the one mark here whose small form is honestly worse than its large form, and there is no way to fix that without dropping to two plates.</p>
+      </article>
+
+      <!-- 05 -->
+      <article class="card">
+        <h3><span class="n">05</span>Grid<span class="fam">concept</span></h3>
+        <p class="idea">Four cells, three of them outlines and one solid: the fleet, with exactly one thing running. The solid cell is the mark's whole payload, and it is a shape difference rather than a colour one, so a flatten to one colour leaves it intact.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="grid-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4.1" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="14.6" width="5.3" height="5.3" rx="1.5"/></g><rect x="4.1" y="14.6" width="5.3" height="5.3" rx="1.5" fill="currentColor"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="grid-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4.1" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="14.6" width="5.3" height="5.3" rx="1.5"/></g><rect x="4.1" y="14.6" width="5.3" height="5.3" rx="1.5" fill="currentColor"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="grid-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4.1" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="14.6" width="5.3" height="5.3" rx="1.5"/></g><rect x="4.1" y="14.6" width="5.3" height="5.3" rx="1.5" fill="currentColor"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="grid-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4.1" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="14.6" width="5.3" height="5.3" rx="1.5"/></g><rect x="4.1" y="14.6" width="5.3" height="5.3" rx="1.5" fill="currentColor"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="grid-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4.1" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="14.6" width="5.3" height="5.3" rx="1.5"/></g><rect x="4.1" y="14.6" width="5.3" height="5.3" rx="1.5" fill="currentColor"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="grid-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4.1" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="14.6" width="5.3" height="5.3" rx="1.5"/></g><rect x="4.1" y="14.6" width="5.3" height="5.3" rx="1.5" fill="currentColor"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="grid-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4.1" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="14.6" width="5.3" height="5.3" rx="1.5"/></g><rect x="4.1" y="14.6" width="5.3" height="5.3" rx="1.5" fill="currentColor"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="grid-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4.1" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="14.6" width="5.3" height="5.3" rx="1.5"/></g><rect x="4.1" y="14.6" width="5.3" height="5.3" rx="1.5" fill="currentColor"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The risk is not small size, it is the icon dictionary: four tiles is what a "dashboard" or "apps" glyph looks like everywhere else, and the one solid tile is doing all the work of separating it from that.</p>
+      </article>
+
+      <!-- 06 -->
+      <article class="card">
+        <h3><span class="n">06</span>Clamp<span class="fam">concept</span></h3>
+        <p class="idea">Two jaws and the billet between them. Work held while it is being worked on, and the most horizontal of the marks: three bands, no detail to lose.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="clamp-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="2.5" y="3" width="19" height="4" rx="2"/><rect x="6.5" y="9.5" width="11" height="5" rx="1.6"/><rect x="2.5" y="17" width="19" height="4" rx="2"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="clamp-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="2.5" y="3" width="19" height="4" rx="2"/><rect x="6.5" y="9.5" width="11" height="5" rx="1.6"/><rect x="2.5" y="17" width="19" height="4" rx="2"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="clamp-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="2.5" y="3" width="19" height="4" rx="2"/><rect x="6.5" y="9.5" width="11" height="5" rx="1.6"/><rect x="2.5" y="17" width="19" height="4" rx="2"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="clamp-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="2.5" y="3" width="19" height="4" rx="2"/><rect x="6.5" y="9.5" width="11" height="5" rx="1.6"/><rect x="2.5" y="17" width="19" height="4" rx="2"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="clamp-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="2.5" y="3" width="19" height="4" rx="2"/><rect x="6.5" y="9.5" width="11" height="5" rx="1.6"/><rect x="2.5" y="17" width="19" height="4" rx="2"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="clamp-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="2.5" y="3" width="19" height="4" rx="2"/><rect x="6.5" y="9.5" width="11" height="5" rx="1.6"/><rect x="2.5" y="17" width="19" height="4" rx="2"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="clamp-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="2.5" y="3" width="19" height="4" rx="2"/><rect x="6.5" y="9.5" width="11" height="5" rx="1.6"/><rect x="2.5" y="17" width="19" height="4" rx="2"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="clamp-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="2.5" y="3" width="19" height="4" rx="2"/><rect x="6.5" y="9.5" width="11" height="5" rx="1.6"/><rect x="2.5" y="17" width="19" height="4" rx="2"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">Widest silhouette in the set, so it owns a tab. Its failure mode is the opposite of mush: at 16px it is a stack of three bars, which is close to how a menu or a list glyph reads.</p>
+      </article>
+
+      <!-- 07 -->
+      <article class="card">
+        <h3><span class="n">07</span>Strike<span class="fam">geometry</span></h3>
+        <p class="idea">Two bars crossed: the mark a smith stamps into the work. Drawn as two rounded pills at 45 degrees so the union is one solid mass with no notch at the crossing.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="strike-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(45 12 12)"/><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(-45 12 12)"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="strike-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(45 12 12)"/><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(-45 12 12)"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="strike-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(45 12 12)"/><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(-45 12 12)"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="strike-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(45 12 12)"/><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(-45 12 12)"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="strike-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(45 12 12)"/><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(-45 12 12)"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="strike-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(45 12 12)"/><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(-45 12 12)"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="strike-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(45 12 12)"/><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(-45 12 12)"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="strike-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(45 12 12)"/><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(-45 12 12)"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The strongest geometry in the set and the cleanest at 16px, but an X is also the close button. The pill ends and the thick 4.2-unit bars are what push it toward a stamp rather than a control, and it still may not be enough.</p>
+      </article>
+
+      <!-- 08 -->
+      <article class="card">
+        <h3><span class="n">08</span>Cascade<span class="fam">geometry</span></h3>
+        <p class="idea">Three chevrons falling in step: a run of strikes, or a run of delegations, each one landing under the last.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="cascade-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><path d="M3.4 .6H20.6V3.8L12 7.4 3.4 3.8Z"/><path d="M3.4 8.6H20.6V11.8L12 15.4 3.4 11.8Z"/><path d="M3.4 16.6H20.6V19.8L12 23.4 3.4 19.8Z"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="cascade-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><path d="M3.4 .6H20.6V3.8L12 7.4 3.4 3.8Z"/><path d="M3.4 8.6H20.6V11.8L12 15.4 3.4 11.8Z"/><path d="M3.4 16.6H20.6V19.8L12 23.4 3.4 19.8Z"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="cascade-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><path d="M3.4 .6H20.6V3.8L12 7.4 3.4 3.8Z"/><path d="M3.4 8.6H20.6V11.8L12 15.4 3.4 11.8Z"/><path d="M3.4 16.6H20.6V19.8L12 23.4 3.4 19.8Z"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="cascade-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><path d="M3.4 .6H20.6V3.8L12 7.4 3.4 3.8Z"/><path d="M3.4 8.6H20.6V11.8L12 15.4 3.4 11.8Z"/><path d="M3.4 16.6H20.6V19.8L12 23.4 3.4 19.8Z"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="cascade-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><path d="M3.4 .6H20.6V3.8L12 7.4 3.4 3.8Z"/><path d="M3.4 8.6H20.6V11.8L12 15.4 3.4 11.8Z"/><path d="M3.4 16.6H20.6V19.8L12 23.4 3.4 19.8Z"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="cascade-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><path d="M3.4 .6H20.6V3.8L12 7.4 3.4 3.8Z"/><path d="M3.4 8.6H20.6V11.8L12 15.4 3.4 11.8Z"/><path d="M3.4 16.6H20.6V19.8L12 23.4 3.4 19.8Z"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="cascade-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><path d="M3.4 .6H20.6V3.8L12 7.4 3.4 3.8Z"/><path d="M3.4 8.6H20.6V11.8L12 15.4 3.4 11.8Z"/><path d="M3.4 16.6H20.6V19.8L12 23.4 3.4 19.8Z"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="cascade-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><path d="M3.4 .6H20.6V3.8L12 7.4 3.4 3.8Z"/><path d="M3.4 8.6H20.6V11.8L12 15.4 3.4 11.8Z"/><path d="M3.4 16.6H20.6V19.8L12 23.4 3.4 19.8Z"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">This is the mark I would cut. The 1.2-unit gaps between chevrons are 0.8px at 16px, so the three bands close up into one thick wedge, and it loses the rhythm that is the entire idea.</p>
+      </article>
+
+      <!-- 09 -->
+      <article class="card">
+        <h3><span class="n">09</span>Nest<span class="fam">geometry</span></h3>
+        <p class="idea">A ring inside a ring. Projects holding sessions holding work: the same shape at three scales, which is what the hierarchy actually looks like.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="nest-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3.9" y="3.9" width="16.2" height="16.2" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.8"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="nest-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3.9" y="3.9" width="16.2" height="16.2" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.8"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="nest-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3.9" y="3.9" width="16.2" height="16.2" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.8"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="nest-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3.9" y="3.9" width="16.2" height="16.2" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.8"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="nest-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3.9" y="3.9" width="16.2" height="16.2" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.8"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="nest-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3.9" y="3.9" width="16.2" height="16.2" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.8"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="nest-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3.9" y="3.9" width="16.2" height="16.2" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.8"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="nest-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3.9" y="3.9" width="16.2" height="16.2" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.8"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The inner hole closes to about 2.5px at 16px, so the small form is a dark pip in a ring. That is deliberate: the ring carries it, the hole is the reward for looking closer.</p>
+      </article>
+
+      <!-- 10 -->
+      <article class="card">
+        <h3><span class="n">10</span>Chamfer<span class="fam">geometry</span></h3>
+        <p class="idea">A billet with one corner taken off. The smallest possible statement of "this material has been worked": one flat against three rounds.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="chamfer-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" d="M7 3h9l5 5v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="chamfer-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M7 3h9l5 5v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="chamfer-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M7 3h9l5 5v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="chamfer-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 3h9l5 5v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="chamfer-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" d="M7 3h9l5 5v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="chamfer-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M7 3h9l5 5v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="chamfer-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M7 3h9l5 5v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="chamfer-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 3h9l5 5v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">One shape, no interior detail, so nothing can mush. At 16px it is a tile with a clipped corner: quiet, and the sort of mark that only becomes yours after people see it a hundred times.</p>
+      </article>
+
+      <!-- 11 -->
+      <article class="card">
+        <h3><span class="n">11</span>Tally<span class="fam">concept</span></h3>
+        <p class="idea">Four strokes and a fifth across them: work counted rather than described. A workshop ledger, and the only mark here whose subject is quantity.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="tally-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M3.5 6.5V17.5M8.5 5V19M13.5 5V19M18.5 6.5V17.5M2.4 17.2 21.6 6.8"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="tally-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M3.5 6.5V17.5M8.5 5V19M13.5 5V19M18.5 6.5V17.5M2.4 17.2 21.6 6.8"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="tally-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M3.5 6.5V17.5M8.5 5V19M13.5 5V19M18.5 6.5V17.5M2.4 17.2 21.6 6.8"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="tally-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M3.5 6.5V17.5M8.5 5V19M13.5 5V19M18.5 6.5V17.5M2.4 17.2 21.6 6.8"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="tally-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M3.5 6.5V17.5M8.5 5V19M13.5 5V19M18.5 6.5V17.5M2.4 17.2 21.6 6.8"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="tally-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M3.5 6.5V17.5M8.5 5V19M13.5 5V19M18.5 6.5V17.5M2.4 17.2 21.6 6.8"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="tally-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M3.5 6.5V17.5M8.5 5V19M13.5 5V19M18.5 6.5V17.5M2.4 17.2 21.6 6.8"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="tally-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M3.5 6.5V17.5M8.5 5V19M13.5 5V19M18.5 6.5V17.5M2.4 17.2 21.6 6.8"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The idea is the best of the sixteen and the execution is the most fragile. Five strokes in a 24 grid means the small form is a comb with a slash through it, and it needs the strokes at 3 units with the diagonal re-cut to hold.</p>
+      </article>
+
+      <!-- 12 -->
+      <article class="card">
+        <h3><span class="n">12</span>Klin<span class="fam">negative space</span></h3>
+        <p class="idea">A kiln door: a solid tile with an arched opening cut out of it. The workshop the name comes from, stated as the hole rather than the object.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="klin-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="klin-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="klin-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="klin-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="klin-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="klin-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="klin-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="klin-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The walls are 4.5 units and the opening is 9 wide by 13 tall, so at 16px you get a 6px arch in a 12px tile with nothing left to lose. <b>Light variant needed:</b> the tile is the ink, so on a light page it wants the near-black fill rather than the accent.</p>
+      </article>
+
+      <!-- 13 -->
+      <article class="card">
+        <h3><span class="n">13</span>Stencil F<span class="fam">letterform</span></h3>
+        <p class="idea">The letter as a hole. A solid tile with an F cut out of it, drawn as one path with the openings as subpaths, so it is the same shape the whole way down.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="stencilf-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" fill-rule="evenodd" d="M6.5 3h11a3.5 3.5 0 0 1 3.5 3.5v11a3.5 3.5 0 0 1-3.5 3.5h-11a3.5 3.5 0 0 1-3.5-3.5v-11a3.5 3.5 0 0 1 3.5-3.5Zm1 3.5h3.5v11h-3.5Zm3.5 0h7v3.5h-7Zm0 5h5v3.5h-5Z"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="stencilf-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" fill-rule="evenodd" d="M6.5 3h11a3.5 3.5 0 0 1 3.5 3.5v11a3.5 3.5 0 0 1-3.5 3.5h-11a3.5 3.5 0 0 1-3.5-3.5v-11a3.5 3.5 0 0 1 3.5-3.5Zm1 3.5h3.5v11h-3.5Zm3.5 0h7v3.5h-7Zm0 5h5v3.5h-5Z"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="stencilf-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" fill-rule="evenodd" d="M6.5 3h11a3.5 3.5 0 0 1 3.5 3.5v11a3.5 3.5 0 0 1-3.5 3.5h-11a3.5 3.5 0 0 1-3.5-3.5v-11a3.5 3.5 0 0 1 3.5-3.5Zm1 3.5h3.5v11h-3.5Zm3.5 0h7v3.5h-7Zm0 5h5v3.5h-5Z"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="stencilf-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" fill-rule="evenodd" d="M6.5 3h11a3.5 3.5 0 0 1 3.5 3.5v11a3.5 3.5 0 0 1-3.5 3.5h-11a3.5 3.5 0 0 1-3.5-3.5v-11a3.5 3.5 0 0 1 3.5-3.5Zm1 3.5h3.5v11h-3.5Zm3.5 0h7v3.5h-7Zm0 5h5v3.5h-5Z"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="stencilf-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" fill-rule="evenodd" d="M6.5 3h11a3.5 3.5 0 0 1 3.5 3.5v11a3.5 3.5 0 0 1-3.5 3.5h-11a3.5 3.5 0 0 1-3.5-3.5v-11a3.5 3.5 0 0 1 3.5-3.5Zm1 3.5h3.5v11h-3.5Zm3.5 0h7v3.5h-7Zm0 5h5v3.5h-5Z"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="stencilf-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" fill-rule="evenodd" d="M6.5 3h11a3.5 3.5 0 0 1 3.5 3.5v11a3.5 3.5 0 0 1-3.5 3.5h-11a3.5 3.5 0 0 1-3.5-3.5v-11a3.5 3.5 0 0 1 3.5-3.5Zm1 3.5h3.5v11h-3.5Zm3.5 0h7v3.5h-7Zm0 5h5v3.5h-5Z"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="stencilf-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" fill-rule="evenodd" d="M6.5 3h11a3.5 3.5 0 0 1 3.5 3.5v11a3.5 3.5 0 0 1-3.5 3.5h-11a3.5 3.5 0 0 1-3.5-3.5v-11a3.5 3.5 0 0 1 3.5-3.5Zm1 3.5h3.5v11h-3.5Zm3.5 0h7v3.5h-7Zm0 5h5v3.5h-5Z"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="stencilf-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" fill-rule="evenodd" d="M6.5 3h11a3.5 3.5 0 0 1 3.5 3.5v11a3.5 3.5 0 0 1-3.5 3.5h-11a3.5 3.5 0 0 1-3.5-3.5v-11a3.5 3.5 0 0 1 3.5-3.5Zm1 3.5h3.5v11h-3.5Zm3.5 0h7v3.5h-7Zm0 5h5v3.5h-5Z"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The F strokes are 3.5 units, so at 16px they are 2.3px openings: the letter is still readable in a tab, which is unusual for a negative-space mark. <b>Light variant needed</b>, same reason as Klin.</p>
+      </article>
+
+      <!-- 14 -->
+      <article class="card">
+        <h3><span class="n">14</span>F Slab<span class="fam">letterform</span></h3>
+        <p class="idea">The same letter in positive: an F built from three slabs of equal weight, terminals squared. A plate letter rather than a font letter, so it reads as something stamped.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="fslab-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="fslab-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="fslab-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="fslab-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="fslab-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="fslab-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="fslab-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="fslab-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The one mark that needs no explanation in a tab: a letter survives being 10px wide in a way no abstraction does. It is also the only direction here that is already solved elsewhere, which is the argument against it.</p>
+      </article>
+
+      <!-- 15 -->
+      <article class="card">
+        <h3><span class="n">15</span>Anvil<span class="fam">literal</span></h3>
+        <p class="idea">The cliche, drawn as a knockout because that is the only version of it that survives: a solid tile with the anvil cut away, so 16px loses the shape of the anvil, not the mark.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="anvil-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" fill-rule="evenodd" d="M6 2.5h12a3.5 3.5 0 0 1 3.5 3.5v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5Zm-.5 4.5v3.4h13V7Zm4 3.4v3.6h5v-3.6Zm-3 3.6v3.4h11V14Z"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="anvil-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" fill-rule="evenodd" d="M6 2.5h12a3.5 3.5 0 0 1 3.5 3.5v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5Zm-.5 4.5v3.4h13V7Zm4 3.4v3.6h5v-3.6Zm-3 3.6v3.4h11V14Z"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="anvil-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" fill-rule="evenodd" d="M6 2.5h12a3.5 3.5 0 0 1 3.5 3.5v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5Zm-.5 4.5v3.4h13V7Zm4 3.4v3.6h5v-3.6Zm-3 3.6v3.4h11V14Z"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="anvil-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" fill-rule="evenodd" d="M6 2.5h12a3.5 3.5 0 0 1 3.5 3.5v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5Zm-.5 4.5v3.4h13V7Zm4 3.4v3.6h5v-3.6Zm-3 3.6v3.4h11V14Z"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="anvil-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" fill-rule="evenodd" d="M6 2.5h12a3.5 3.5 0 0 1 3.5 3.5v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5Zm-.5 4.5v3.4h13V7Zm4 3.4v3.6h5v-3.6Zm-3 3.6v3.4h11V14Z"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="anvil-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" fill-rule="evenodd" d="M6 2.5h12a3.5 3.5 0 0 1 3.5 3.5v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5Zm-.5 4.5v3.4h13V7Zm4 3.4v3.6h5v-3.6Zm-3 3.6v3.4h11V14Z"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="anvil-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" fill-rule="evenodd" d="M6 2.5h12a3.5 3.5 0 0 1 3.5 3.5v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5Zm-.5 4.5v3.4h13V7Zm4 3.4v3.6h5v-3.6Zm-3 3.6v3.4h11V14Z"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="anvil-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" fill-rule="evenodd" d="M6 2.5h12a3.5 3.5 0 0 1 3.5 3.5v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5Zm-.5 4.5v3.4h13V7Zm4 3.4v3.6h5v-3.6Zm-3 3.6v3.4h11V14Z"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">At 16px the three openings are 2.1px bands, so the anvil stops being an anvil and the tile becomes a stack of stripes. It is the best anvil I could draw and it still does not earn the cliche. <b>Light variant needed.</b></p>
+      </article>
+
+      <!-- 16 -->
+      <article class="card">
+        <h3><span class="n">16</span>Spark<span class="fam">literal</span></h3>
+        <p class="idea">The other cliche: a four-point spark, drawn as one path with concave sides so it is a single silhouette rather than four strokes meeting at a point.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg id="spark-64-a" class="mk" viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" d="M12 1.5Q13.6 10.4 22.5 12 13.6 13.6 12 22.5 10.4 13.6 1.5 12 10.4 10.4 12 1.5Z"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="spark-32-a" class="mk" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M12 1.5Q13.6 10.4 22.5 12 13.6 13.6 12 22.5 10.4 13.6 1.5 12 10.4 10.4 12 1.5Z"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="spark-24-a" class="mk" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 1.5Q13.6 10.4 22.5 12 13.6 13.6 12 22.5 10.4 13.6 1.5 12 10.4 10.4 12 1.5Z"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="spark-16-a" class="mk" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 1.5Q13.6 10.4 22.5 12 13.6 13.6 12 22.5 10.4 13.6 1.5 12 10.4 10.4 12 1.5Z"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg id="spark-64-w" class="mk w" viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" d="M12 1.5Q13.6 10.4 22.5 12 13.6 13.6 12 22.5 10.4 13.6 1.5 12 10.4 10.4 12 1.5Z"/></svg><figcaption>64</figcaption></figure>
+          <figure><svg id="spark-32-w" class="mk w" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M12 1.5Q13.6 10.4 22.5 12 13.6 13.6 12 22.5 10.4 13.6 1.5 12 10.4 10.4 12 1.5Z"/></svg><figcaption>32</figcaption></figure>
+          <figure><svg id="spark-24-w" class="mk w" viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 1.5Q13.6 10.4 22.5 12 13.6 13.6 12 22.5 10.4 13.6 1.5 12 10.4 10.4 12 1.5Z"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg id="spark-16-w" class="mk w" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 1.5Q13.6 10.4 22.5 12 13.6 13.6 12 22.5 10.4 13.6 1.5 12 10.4 10.4 12 1.5Z"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The waist is 4.8 units from the centre on a 10.5-unit arm, so the arms stay fat enough to read at 16px as a diamond with bitten sides. It is a spark that works and still says nothing about forge that a hundred other sparks do not.</p>
+      </article>
+
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>In a page header <span>mark 26px, wordmark 19px / 650, system stack</span></h2>
+    <div class="hdrow">
+      <div class="hd">
+        <svg id="hd-klin" class="mk" viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg>
+        <span class="word">forge</span>
+        <span class="which">12 Klin</span>
+      </div>
+      <div class="hd">
+        <svg id="hd-lanes" class="mk" viewBox="0 0 24 24" width="26" height="26"><g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g></svg>
+        <span class="word">forge</span>
+        <span class="which">01 Lanes</span>
+      </div>
+      <div class="hd">
+        <svg id="hd-fslab" class="mk" viewBox="0 0 24 24" width="26" height="26"><g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g></svg>
+        <span class="word">forge</span>
+        <span class="which">14 F Slab</span>
+      </div>
+    </div>
+    <p class="lede" style="margin-top:14px">
+      The same three flattened to a single dark colour on a light bar. Klin and F Slab
+      are tiles, so on light they take the near-black fill and the accent becomes the
+      header's own detail; Lanes is the one that would keep the accent happily.
+    </p>
+    <div class="hdrow light">
+      <div class="hd">
+        <svg id="hdl-klin" class="mk" viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg>
+        <span class="word">forge</span>
+      </div>
+      <div class="hd">
+        <svg id="hdl-lanes" class="mk" viewBox="0 0 24 24" width="26" height="26"><g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g></svg>
+        <span class="word">forge</span>
+      </div>
+      <div class="hd">
+        <svg id="hdl-fslab" class="mk" viewBox="0 0 24 24" width="26" height="26"><g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g></svg>
+        <span class="word">forge</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>What I would pick <span>and what I would cut</span></h2>
+    <div class="picks">
+
+      <div class="pick one">
+        <h4><span class="rank">01</span>Klin</h4>
+        <p>It is the only mark that is both a solid tile and a picture, which is exactly the
+        shape a favicon wants: at 16px it is 12px of ink with a 6px arch in it, and at 64px
+        it is a kiln door. It carries the name without spelling it, it is a single path,
+        and it is the same drawing at every size. It wants a light variant, which is one
+        line of CSS.</p>
+      </div>
+
+      <div class="pick">
+        <h4><span class="rank">02</span>Lanes</h4>
+        <p>The most honest mark in the set: three sessions at three heights is what the
+        product actually is, and it is the best performer at 16px. It also survives
+        flattening and light backgrounds with nothing added. The cost is that it is
+        abstract enough to need the name beside it for a while, which is fine for a tool
+        that will only ever be seen by the person using it.</p>
+      </div>
+
+      <div class="pick">
+        <h4><span class="rank">03</span>F Slab</h4>
+        <p>The fallback if the brand needs to be read rather than recognised. A letter
+        holds a 16px tab better than any abstraction here, the slab construction keeps it
+        from looking like a borrowed typeface, and it doubles as the app icon. The
+        argument against it is the one that matters: it is the safe answer, not the
+        interesting one.</p>
+      </div>
+
+      <div class="pick drop">
+        <h4><span class="rank">CUT</span>Cascade</h4>
+        <p>I would drop it. The 1.2-unit gaps between the three chevrons are 0.8px at 16px,
+        so the bands close up and the rhythm that is the whole idea disappears: at the size
+        the mark has to work at, it is a wedge. Fixing it means dropping to two chevrons,
+        which is a different mark, and Lanes already covers "several things in flight"
+        better. Runner-up for the cut is Tally, which has the best idea here and the most
+        fragile drawing: it is worth one more pass before it is judged.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Implementation notes <span>for whichever survives</span></h2>
+    <p class="lede" style="margin-top:14px">
+       Every mark above is one inline <code>&lt;svg viewBox="0 0 24 24"&gt;</code> using
+       <code>currentColor</code>, so switching between accent and single colour is a
+       <code>color</code> change on the element and nothing else. The favicon set comes out
+       of the same geometry: render the 24 grid at 16, 32 and 48, and add a light-mode
+       <code>&lt;link rel="icon" media="(prefers-color-scheme: light)"&gt;</code> pointing
+       at the same mark with a dark fill for the two knockout marks. Nothing needs a
+       stroke scaled for size, and no mark depends on two colours to be read.
+    </p>
+  </section>
+
+</div>
+</body>
+</html>

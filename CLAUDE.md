@@ -12,7 +12,7 @@ forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + gateway
 forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
 forge-sessions   ───→ primitives + workspace
-forge-web        ───→ primitives
+forge-web        ───→ primitives + sessions
 forge-tui        ───→ primitives + workspace + sessions + web (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```
@@ -62,8 +62,10 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-web`** - the web view: HTTP served beside the TUI, in the
   process that already owns the sessions, so a second view costs a
   listener rather than a second cron scheduler. Server-rendered markup
-  over axum, a wiring-proof page today. It never names
-  `forge-workspace`: reads of the core will go through `forge-sessions`.
+  over axum, kept live by a stream the page subscribes to, with the home
+  page served today. It never names a crate under `forge-sessions`: reads
+  of the core and of a working tree both go through that crate, which
+  re-exports what a view needs.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
@@ -144,19 +146,20 @@ Work top-down; first match wins.
 11. **A wire-conformance scenario?** -> `forge-test-harness`.
 
 **The view surface's read verbs are built.** A view reads the core
-through named verbs by subject - `roster`, `session`, `accounts`,
-`plugins`, `reviews`, `workers`, `connectors`, `dictate` - acts through
-`dispatch(Command)`, and receives changes through `subscribe()`. All
-eight exist in `forge-sessions`, and the TUI reads its project roster,
-session scan cwd, worker registry, account pool, plugin records, review
-threads, connector subscriptions and dictation state through them. What
-the migration has not reached is the write half: the five refreshes that
-ask the core for a new snapshot are still direct `Workspace` calls, so
-`forge-tui` keeps its `forge-workspace` dependency and the arrow above
-is not yet one-way. A read a second view would want goes on that
-surface; a read only the TUI makes stays a plain method. Routing the
-remaining direct calls through the surface is its own piece of work, not
-a prerequisite for adding to the crates.
+through named verbs by subject - `roster`, `session`, `agents`,
+`accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate` -
+and receives changes through `subscribe()`. All nine exist in
+`forge-sessions`, and the TUI reads its project roster, session scan cwd,
+worker registry, account pool, plugin records, review threads, connector
+subscriptions and dictation state through them. What the migration has
+not reached is the write half: user actions still go through
+`dispatch(Command)` on the workspace rather than a surface verb, and the
+five refreshes that ask the core for a new snapshot are still direct
+`Workspace` calls, so `forge-tui` keeps its `forge-workspace` dependency
+and the arrow above is not yet one-way. A read a second view would want
+goes on that surface; a read only the TUI makes stays a plain method.
+Routing the remaining direct calls through the surface is its own piece
+of work, not a prerequisite for adding to the crates.
 
 Legitimate splits are common (a git-diff feature touches agent +
 workspace + tui). Rule of thumb: logic/IO/subprocess -> agent;

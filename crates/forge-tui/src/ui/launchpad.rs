@@ -1665,6 +1665,7 @@ mod tests {
             label: label.to_owned(),
             status,
             slot: SessionSlot::from_str_for_test(session.to_owned()),
+            diagnostic: None,
         }
     }
 

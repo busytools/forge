@@ -9,6 +9,13 @@ rust-version.workspace = true
 description = "What a view needs and nothing about how it renders."
 publish = false
 
+[features]
+# View fixtures for a sibling crate's `tests/`: a `ViewSurface` over a
+# stub workspace with a seeded roster, so a view test drives a real page
+# without its own manifest naming `forge-workspace`. Production builds
+# never see this code.
+testing = ["forge-workspace/testing", "forge-workspace/test-helpers"]
+
 [lints]
 workspace = true
 
@@ -17,6 +24,9 @@ forge-primitives = { workspace = true }
 forge-workspace = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+# The subscription verb hands out the workspace's own receiver, and naming
+# that type is a tokio channel.
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 # The surface's equivalence tests read the same workspace the TUI reads,

@@ -1257,6 +1257,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "uuid",
 ]
 
@@ -1326,8 +1327,12 @@ version = "1.0.88"
 dependencies = [
  "axum",
  "forge-primitives",
+ "forge-sessions",
+ "futures-util",
  "maud",
  "reqwest",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",

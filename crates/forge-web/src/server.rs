@@ -1,12 +1,35 @@
-//! The listener, and the page that proves the wiring.
+//! The listener, and the routes it serves.
 
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use forge_primitives::WebConfig;
-use maud::{DOCTYPE, Markup, html};
+use forge_sessions::surface::ViewSurface;
+use maud::{Markup, html};
+
+use crate::home::{Home, render, render_region};
+use crate::stream::{Live, events};
+use crate::work::WorkCache;
+use crate::{brand, theme};
+
+/// The stylesheet, vendored rather than read from disk: the page is served
+/// from the process, and a view that needed a file beside it would be a
+/// path to get wrong.
+const HOME_CSS: &str = include_str!("home.css");
+
+/// The vendored assets, by the name the page asks for. Each is
+/// byte-for-byte as published, with its version, source and licence
+/// recorded beside it in `assets/VENDOR.md`.
+const ASSETS: &[(&str, &str)] = &[
+    ("htmx.js", include_str!("../assets/htmx.min.js")),
+    ("htmx-sse.js", include_str!("../assets/htmx-sse.min.js")),
+    ("idiomorph.js", include_str!("../assets/idiomorph-ext.min.js")),
+];
 
 /// Why the web view is not serving.
 #[derive(Debug, thiserror::Error)]
@@ -15,12 +38,29 @@ pub enum WebError {
     Bind { addr: SocketAddr, source: std::io::Error },
 }
 
-/// What the wiring page renders: the address it bound and the config it
-/// read.
-#[derive(Clone, Copy)]
-struct Wiring {
-    bound: SocketAddr,
-    config: WebConfig,
+/// What the view serves: the core it reads, the cache it keeps, the live
+/// state its stream fills, and the config it draws with.
+pub struct WebState {
+    pub surface: Arc<ViewSurface>,
+    pub work: Arc<WorkCache>,
+    /// What the stream has told the view, which is the state no verb can
+    /// answer because it is about this viewer rather than about the core.
+    pub live: Mutex<Live>,
+    pub config: WebConfig,
+}
+
+impl WebState {
+    /// A view that has learned nothing from the stream yet.
+    pub fn new(surface: Arc<ViewSurface>, work: Arc<WorkCache>, config: WebConfig) -> Self {
+        Self { surface, work, live: Mutex::new(Live::new()), config }
+    }
+}
+
+/// What one listener holds: the state, plus the address it came up on.
+#[derive(Clone)]
+pub(crate) struct Wiring {
+    pub(crate) bound: SocketAddr,
+    pub(crate) state: Arc<WebState>,
 }
 
 /// Bind the web view and serve it on a background task.
@@ -28,17 +68,23 @@ struct Wiring {
 /// Returns the address it bound, or `None` when `[web] enabled` is
 /// false. The caller owns the failure: the view is not a prerequisite
 /// for anything, so a boot that cannot bind still boots.
-pub async fn start(config: WebConfig) -> Result<Option<SocketAddr>, WebError> {
-    if !config.enabled {
+pub async fn start(state: WebState) -> Result<Option<SocketAddr>, WebError> {
+    if !state.config.enabled {
         return Ok(None);
     }
-    let addr = SocketAddr::new(config.bind, config.port);
+    let addr = SocketAddr::new(state.config.bind, state.config.port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|source| WebError::Bind { addr, source })?;
     let bound = listener.local_addr().map_err(|source| WebError::Bind { addr, source })?;
+    let state = Arc::new(state);
+    // One folding subscription for the process, taken after the listener
+    // is up and before anything can be served. It is a mirror: it takes no
+    // backlog, so the view that renders prompts keeps the boot notice.
+    tokio::spawn(crate::stream::fold(state.surface.subscribe(), Arc::clone(&state)));
+    let wiring = Wiring { bound, state };
     tokio::spawn(async move {
-        if let Err(error) = axum::serve(listener, router(Wiring { bound, config })).await {
+        if let Err(error) = axum::serve(listener, router(wiring)).await {
             tracing::error!(
                 target: "forge_web::server",
                 event_name = "web_serve_failed",
@@ -52,28 +98,91 @@ pub async fn start(config: WebConfig) -> Result<Option<SocketAddr>, WebError> {
 }
 
 fn router(wiring: Wiring) -> Router {
-    Router::new().route("/", get(wiring_page)).with_state(wiring)
+    Router::new()
+        .route("/", get(home_page))
+        .route("/events", get(events))
+        .route("/favicon.svg", get(favicon))
+        .route("/home.css", get(home_css))
+        .route("/vendor/{file}", get(asset))
+        .with_state(wiring)
 }
 
-/// The wiring proof, and nothing else: what the listener bound and what
-/// the config asked for. The view itself replaces this page.
-async fn wiring_page(State(wiring): State<Wiring>) -> Markup {
+/// One vendored asset: the page's own scripts, as published. An unknown
+/// name is a 404 rather than an empty script, so a page asking for
+/// something that is not vendored says so where a browser can report it.
+///
+/// `no-cache` rather than a TTL, because a browser holding an old copy
+/// would report a bug in forge's code. A validator would only turn the
+/// re-fetch into a 304: there is no CDN in front of this, the files are
+/// pinned, and the three together are 66KB over loopback.
+async fn asset(Path(file): Path<String>) -> Response {
+    let Some((_, body)) = ASSETS.iter().find(|(name, _)| *name == file) else {
+        return (StatusCode::NOT_FOUND, "no such vendored asset").into_response();
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        *body,
+    )
+        .into_response()
+}
+
+/// The home, as the whole page.
+async fn home_page(State(wiring): State<Wiring>) -> Markup {
+    render(&Home {
+        surface: &wiring.state.surface,
+        work: &wiring.state.work,
+        live: &wiring.state.live,
+        bound: wiring.bound,
+        mark: wiring.state.config.mark.as_deref(),
+        theme: wiring.state.config.theme.as_deref(),
+    })
+    .await
+}
+
+/// The region the stream swaps in. The page has no composer and no
+/// `<details>`, so a wholesale replacement is the whole answer - and a
+/// swap target that held either would be the bug, not the page.
+pub(crate) async fn home_region(state: &WebState, bound: SocketAddr) -> Markup {
+    render_region(&Home {
+        surface: &state.surface,
+        work: &state.work,
+        live: &state.live,
+        bound,
+        mark: state.config.mark.as_deref(),
+        theme: state.config.theme.as_deref(),
+    })
+    .await
+}
+
+/// The stylesheet, with the same `no-cache` the scripts get: a browser
+/// holding an old sheet would report a bug in forge's code, and a page
+/// that looks wrong is harder to diagnose than one that reloads slowly.
+async fn home_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
+        HOME_CSS,
+    )
+}
+
+/// The mark, as a standalone document a browser reads from a tab. Nothing
+/// is inherited here, so the palette's accent is set on the root rather
+/// than left to a cascade.
+async fn favicon(State(wiring): State<Wiring>) -> impl IntoResponse {
+    let body = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" color="{}">{}</svg>"#,
+        theme::accent(wiring.state.config.theme.as_deref()),
+        brand::mark_path(wiring.state.config.mark.as_deref()),
+    );
+    ([(header::CONTENT_TYPE, "image/svg+xml")], body)
+}
+
+/// The palette as the page's own root variables, in every page: one place
+/// to change a theme, and no component carries a branch for it.
+pub(crate) fn root_block(theme_name: Option<&str>) -> Markup {
     html! {
-        (DOCTYPE)
-        html lang="en" {
-            head {
-                meta charset="utf-8";
-                title { "forge" }
-            }
-            body {
-                h1 { "forge web view" }
-                p { "listening on " (wiring.bound) }
-                p {
-                    "[web] enabled = " (wiring.config.enabled)
-                    ", port = " (wiring.config.port)
-                    ", bind = " (wiring.config.bind)
-                }
-            }
-        }
+        style { ":root{" (theme::root_variables(theme_name)) "}" }
     }
 }

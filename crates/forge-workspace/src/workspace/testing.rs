@@ -13,7 +13,7 @@ use crate::config::LoadedConfig;
 use crate::protocol::SessionUpdate;
 use crate::target::{ProjectKey, SessionSlot};
 use crate::update_fanout::{SubscriberRole, UpdateFanout};
-use crate::workspace::{KickRequest, PooledAgent, Workspace};
+use crate::workspace::{KickRequest, PendingInteractionKind, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
 
 #[cfg(any(test, feature = "testing"))]
@@ -47,6 +47,20 @@ impl Workspace {
     pub fn testing_stub_handle()
     -> (forge_agent::AgentHandle, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         forge_agent::Agent::testing_stub()
+    }
+
+    /// Record a slot's failed spawn, as the connection-failure path does
+    /// before it releases the session. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn record_spawn_failure_for_test(&self, slot: &SessionSlot, message: &str) {
+        self.record_spawn_failure(slot, message);
+    }
+
+    /// Push one update onto the fan-out, so a test can watch a view react
+    /// to the core without driving a session. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn emit_for_test(&self, update: SessionUpdate) {
+        let _ = self.update_tx.send(update);
     }
 
     /// Register a fresh testing-stub agent against `key`'s
@@ -182,6 +196,7 @@ impl Workspace {
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
+            spawn_failures: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
@@ -403,6 +418,27 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_usage(&self, account: &str, snapshot: forge_primitives::usage::UsageSnapshot) {
         self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);
+    }
+
+    /// Park a pending interaction on `slot`, registering its domain if it
+    /// has none, so a test can read the state a held turn produces without
+    /// driving the wire. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_pending_interaction(&self, slot: &SessionSlot, kind: PendingInteractionKind) {
+        let pending = match kind {
+            PendingInteractionKind::Question => {
+                let (tx, _rx) = tokio::sync::oneshot::channel();
+                crate::protocol::PendingInteractionSlot::Question(tx)
+            }
+            PendingInteractionKind::Permission => {
+                let (tx, _rx) = tokio::sync::oneshot::channel();
+                crate::protocol::PendingInteractionSlot::Permission(tx)
+            }
+        };
+        let domain = self
+            .domain_session_for(slot)
+            .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
+        domain.lock().pending_interactions.insert(slot.display(), pending);
     }
 
     /// Persist a dynamic-worker row directly, bypassing `agents__spawn`.

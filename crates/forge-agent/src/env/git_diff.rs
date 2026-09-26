@@ -293,6 +293,24 @@ pub async fn current_branch(cwd: &Path) -> Result<Option<String>, RepoGate> {
     Ok((name != "HEAD" && !name.is_empty()).then_some(name))
 }
 
+/// How many files `cwd`'s worktree has changed against HEAD: tracked
+/// modifications plus untracked files, one `--porcelain` line each. `Err`
+/// carries the repo gate, so a caller can tell "not a repo" from a git
+/// that would not run rather than reading either as a clean tree.
+pub async fn changed_file_count(cwd: &Path) -> Result<usize, RepoGate> {
+    match run_git(cwd, &["status", "--porcelain"]).await {
+        GitOutput::Ok(text) => Ok(text.lines().filter(|line| !line.trim().is_empty()).count()),
+        GitOutput::Empty => Ok(0),
+        GitOutput::Oversize => Err(RepoGate::ScannerFailed),
+        // Same split `rev_parse_gate` draws: a non-zero exit with `.git`
+        // still on disk is a broken checkout to report, not an absent repo.
+        GitOutput::Failed => match repo_presence(cwd).await {
+            RepoPresence::Absent => Err(RepoGate::NotARepo),
+            RepoPresence::Present | RepoPresence::Unusable => Err(RepoGate::ScannerFailed),
+        },
+    }
+}
+
 pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
     let raw_branch = match rev_parse_gate(cwd).await {
         Ok(branch) => branch,
