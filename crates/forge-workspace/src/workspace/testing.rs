@@ -226,6 +226,7 @@ impl Workspace {
             catalog_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             catalog_scan_started: std::sync::atomic::AtomicBool::new(false),
             cli_version: Arc::new(Mutex::new(None)),
+            cli_version_probe_started: std::sync::atomic::AtomicBool::new(false),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),

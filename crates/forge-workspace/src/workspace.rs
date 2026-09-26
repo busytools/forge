@@ -396,6 +396,10 @@ pub struct Workspace {
     /// rather than in the view that happened to probe first; `None` until
     /// the boot probe lands.
     cli_version: Arc<Mutex<Option<CliVersionInfo>>>,
+    /// Idempotence guard for the claude version probe: a second start
+    /// would leave two loops each spawning `claude --version` and reaching
+    /// npm.
+    cli_version_probe_started: std::sync::atomic::AtomicBool,
     /// Whether the Gotify stream is currently connected. Set by the
     /// subsystem pump on `Connected` / `Disconnected`; read by the
     /// Inspector's status line.
@@ -609,10 +613,14 @@ fn real_cli_version_prober() -> CliVersionProber {
 /// with no runtime gets a warn and holds no version rather than a task
 /// nobody would run.
 fn spawn_background_cli_version_probe(
+    started: &std::sync::atomic::AtomicBool,
     cli_version: &Arc<Mutex<Option<CliVersionInfo>>>,
     update_tx: &UpdateFanout,
     prober: CliVersionProber,
 ) {
+    if started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
     let run = run_cli_version_probe(Arc::clone(cli_version), update_tx.clone(), prober);
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn(run);
@@ -955,9 +963,15 @@ impl Workspace {
     /// Kick off the claude version probe on the tokio runtime: one fetch at
     /// boot, then a re-probe every [`CLI_VERSION_REFRESH_INTERVAL`]. The
     /// constructor is the only caller, and the prober it takes is what lets
-    /// a test drive this same launch.
+    /// a test drive this same launch. Idempotent - a second call is a
+    /// no-op.
     fn start_cli_version_probe(&self, prober: CliVersionProber) {
-        spawn_background_cli_version_probe(&self.cli_version, &self.update_tx, prober);
+        spawn_background_cli_version_probe(
+            &self.cli_version_probe_started,
+            &self.cli_version,
+            &self.update_tx,
+            prober,
+        );
     }
 
     /// The `claude` CLI versions the core holds: what is installed on this
@@ -1318,6 +1332,7 @@ impl Workspace {
             catalog_loaded,
             catalog_scan_started,
             cli_version,
+            cli_version_probe_started: std::sync::atomic::AtomicBool::new(false),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
@@ -6450,6 +6465,46 @@ mod tests {
             workspace.cli_version(),
             Some(probed),
             "and the store holds what the probe returned, not a snapshot that resolved nothing",
+        );
+    }
+
+    /// A second start is a no-op. Two loops would each spawn
+    /// `claude --version` and reach npm every five minutes, and each would
+    /// write into the store the other one reads.
+    #[tokio::test]
+    async fn a_second_cli_version_probe_start_is_a_no_op() {
+        let dir = make_workspace_dir();
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first = CliVersionInfo { installed: Some("2.1.156".to_owned()), latest: None };
+        let second = CliVersionInfo { installed: Some("2.1.100".to_owned()), latest: None };
+
+        workspace.start_cli_version_probe(scripted_prober(&calls, first.clone()));
+        workspace.start_cli_version_probe(scripted_prober(&calls, second));
+        let mut woken = workspace.subscribe();
+        let event = tokio::time::timeout(Duration::from_secs(5), woken.recv()).await;
+        assert!(
+            matches!(event, Ok(Some(SessionUpdate::CliVersionChanged))),
+            "the first start probed and woke the views",
+        );
+
+        // The second loop's first tick is immediate too, so an unguarded
+        // start lands a second snapshot and a second event within
+        // microseconds of the first.
+        let again = tokio::time::timeout(Duration::from_millis(100), woken.recv()).await;
+        assert!(
+            again.is_err(),
+            "the second start was a no-op; two loops would each spawn `claude --version` and reach npm",
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Acquire),
+            1,
+            "so the second prober never ran",
+        );
+        assert_eq!(
+            workspace.cli_version(),
+            Some(first),
+            "and the store still holds what the first probe read",
         );
     }
 
