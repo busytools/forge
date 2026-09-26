@@ -43,7 +43,9 @@ pub struct HomeView {
     /// The mark the config picked, `None` for the built-in. The region
     /// draws it, so it travels with the view rather than the request.
     pub mark: Option<String>,
-    /// The claude versions the core holds, `None` until its probe lands.
+    /// The claude versions the core holds: `None` until the first probe
+    /// lands, and a snapshot whose sides are both empty when no probe has
+    /// resolved one.
     pub cli: Option<CliVersionInfo>,
     pub band: Vec<Card>,
     pub orgs: Vec<OrgSection>,
