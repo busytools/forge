@@ -6619,9 +6619,13 @@ mod tests {
             woken.try_recv().is_err(),
             "a first probe that resolved nothing draws what the views already had",
         );
-        assert!(
-            unresolved.lock().is_some(),
-            "and the store still holds what it read rather than dropping it",
+        assert_eq!(
+            unresolved
+                .lock()
+                .as_ref()
+                .map(|held| (held.installed.as_deref(), held.latest.as_deref())),
+            Some((None, None)),
+            "the store holds what the probe read, and both sides are still empty",
         );
     }
 
