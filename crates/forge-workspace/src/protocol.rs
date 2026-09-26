@@ -960,8 +960,9 @@ pub enum SessionUpdate {
     /// when the scan lands rather than on the next unrelated frame.
     CatalogLoaded,
     /// A claude version probe landed and moved what the views draw. The
-    /// snapshot itself is not carried - a view reads it through the view
-    /// surface's `cli_version` verb, so the event is only the wake-up.
+    /// snapshot itself is not carried, so this is only the wake-up: the web
+    /// view re-reads through the surface's `cli_version` verb, the TUI
+    /// through the workspace method it still reads directly.
     CliVersionChanged,
     PluginsInventoryUpdated {
         cwd_raw: String,
