@@ -522,7 +522,6 @@ fn resolve_web(
     // is quietly ignored reads as the key not working.
     for (key, value, shipped) in [
         ("mark", web.mark.as_deref(), forge_primitives::web::MARK_NAMES),
-        ("spinner", web.spinner.as_deref(), forge_primitives::web::SPINNER_NAMES),
         ("theme", web.theme.as_deref(), forge_primitives::web::THEME_NAMES),
     ] {
         if let Some(value) = value
@@ -1175,17 +1174,12 @@ no_reset_cooldown_secs = 90
         };
         let named = |config: &crate::config::LoadedConfig, key: &str| match key {
             "mark" => config.web.mark.clone(),
-            "spinner" => config.web.spinner.clone(),
             _ => config.web.theme.clone(),
         };
 
-        // The three name keys validate the same way, so one walk covers
-        // them rather than three near-identical tests.
-        for (key, shipped, unknown) in [
-            ("mark", "klin", "anvilish"),
-            ("spinner", "braille", "brailled"),
-            ("theme", "dark", "light"),
-        ] {
+        // Both name keys validate the same way, so one walk covers them
+        // rather than two near-identical tests.
+        for (key, shipped, unknown) in [("mark", "klin", "anvilish"), ("theme", "dark", "light")] {
             let (_dir, loaded) = load(key, shipped);
             let config = loaded.expect("a shipped name loads");
             assert_eq!(
@@ -1207,23 +1201,7 @@ no_reset_cooldown_secs = 90
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("absent keys load");
         assert_eq!(config.web.mark, None, "an unset key is the built-in, not a pinned value");
-        assert_eq!(config.web.spinner, None);
         assert_eq!(config.web.theme, None);
-    }
-
-    /// The list `forge.toml` validates against is the styles that exist,
-    /// so a style added to the enum is accepted the moment it exists
-    /// rather than a name the web view silently lacks.
-    #[test]
-    fn the_shipped_spinner_names_are_the_styles_key_set() {
-        let keys: Vec<&str> =
-            crate::ui::SpinnerStyle::ALL_STYLES.iter().map(|style| style.key()).collect();
-
-        assert_eq!(
-            forge_primitives::web::SPINNER_NAMES,
-            keys.as_slice(),
-            "the shipped names must be the spinner styles, not a second list of them",
-        );
     }
 
     #[test]

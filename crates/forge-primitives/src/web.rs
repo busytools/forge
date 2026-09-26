@@ -23,8 +23,6 @@ pub struct WebConfig {
     /// never a pinned value: a commented line in a hand-authored
     /// `forge.toml` has to mean "unset".
     pub mark: Option<String>,
-    /// The spinner style, by name from [`SPINNER_NAMES`].
-    pub spinner: Option<String>,
     /// The palette, by name from [`THEME_NAMES`].
     pub theme: Option<String>,
 }
@@ -54,12 +52,6 @@ pub const MARK_NAMES: &[&str] = &[
     "spark",
 ];
 
-/// The spinner styles forge ships, by the name `[web] spinner` takes.
-/// The loader checks this against the spinner's own key set, so a style
-/// added there is a name `forge.toml` accepts rather than a second list.
-pub const SPINNER_NAMES: &[&str] =
-    &["braille", "phase_of_moon", "ember", "bars_v", "star", "sparkle"];
-
 /// The palettes forge ships, by the name `[web] theme` takes.
 pub const THEME_NAMES: &[&str] = &["dark"];
 
@@ -70,7 +62,6 @@ impl Default for WebConfig {
             port: DEFAULT_WEB_PORT,
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             mark: None,
-            spinner: None,
             theme: None,
         }
     }

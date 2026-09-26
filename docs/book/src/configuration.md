@@ -422,8 +422,12 @@ serving.
 | `port` | integer | `8790` | The port the server binds on `bind`, and a browser is pointed at it by hand. `0` fails the load outright (`WebPortInvalid`), and so does the gateway's own port (`WebPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the view is disabled: a stale port on a section that never binds cannot stop the boot. |
 | `bind` | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching the view from another machine means naming that machine's interface here, usually the WireGuard address, and anything public needs something in front of it. |
 | `mark` | string | unset, drawing Klin | The mark on the page header, on the browser tab and in the empty state, by name: `klin`, `lanes`, `f_slab`, `split`, `spine`, `slab`, `grid`, `clamp`, `strike`, `cascade`, `nest`, `chamfer`, `tally`, `stencil_f`, `anvil` or `spark`. A fixed set rather than a file path, so every option is one forge has drawn. |
-| `spinner` | string | unset | By name, from the six the TUI ships: `braille`, `phase_of_moon`, `ember`, `bars_v`, `star` or `sparkle`. |
 | `theme` | string | unset, drawing dark | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background. |
+
+A row's motion is not configurable. The TUI's spinner styles name glyph
+cycles, which is a terminal idiom the web view has none of, and its own
+marks move by state: the working mark turns in 900ms and the starting one
+in 1500ms, and that difference is how the page tells them apart.
 
 An unset name is not an error and not a fallback: it means the built-in.
 A name forge does not ship fails the load with the key and the value in
@@ -545,7 +549,6 @@ enabled = true
 port = 8790
 bind = "127.0.0.1"
 mark = "klin"
-spinner = "phase_of_moon"
 theme = "dark"
 ```
 
