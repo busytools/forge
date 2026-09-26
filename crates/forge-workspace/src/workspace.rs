@@ -6468,6 +6468,11 @@ mod tests {
             "the constructor's launch probed and woke the views; without that launch the core reads no version for the life of the process",
         );
         assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Acquire),
+            1,
+            "the boot launch probed exactly once",
+        );
+        assert_eq!(
             workspace.cli_version(),
             Some(probed),
             "and the store holds what the probe returned, not a snapshot that resolved nothing",
