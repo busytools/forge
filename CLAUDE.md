@@ -132,20 +132,20 @@ Work top-down; first match wins.
    state in `app/`.
 10. **A wire-conformance scenario?** -> `forge-test-harness`.
 
-**The view surface (partially built).** A view reads the core through
-named verbs by subject - `roster`, `session`, `accounts`, `plugins`,
-`reviews`, `workers`, `connectors`, `dictate` - acts through
+**The view surface's read verbs are built.** A view reads the core
+through named verbs by subject - `roster`, `session`, `accounts`,
+`plugins`, `reviews`, `workers`, `connectors`, `dictate` - acts through
 `dispatch(Command)`, and receives changes through `subscribe()`. All
-eight read verbs exist in `forge-sessions`, and the TUI reads its
-project roster, session scan cwd, worker registry, account pool, plugin
-records, review threads, connector subscriptions and dictation state
-through them. The refreshes that ask the core for a new snapshot are
-still direct `Workspace` calls, so `forge-tui` keeps its
-`forge-workspace` dependency and the arrow above is not yet one-way. A
-read a second view would want goes on that surface; a read only the TUI
-makes stays a plain method. Routing the remaining direct calls through
-the surface is its own piece of work, not a prerequisite for adding to
-the crates.
+eight exist in `forge-sessions`, and the TUI reads its project roster,
+session scan cwd, worker registry, account pool, plugin records, review
+threads, connector subscriptions and dictation state through them. What
+the migration has not reached is the write half: the five refreshes that
+ask the core for a new snapshot are still direct `Workspace` calls, so
+`forge-tui` keeps its `forge-workspace` dependency and the arrow above
+is not yet one-way. A read a second view would want goes on that
+surface; a read only the TUI makes stays a plain method. Routing the
+remaining direct calls through the surface is its own piece of work, not
+a prerequisite for adding to the crates.
 
 Legitimate splits are common (a git-diff feature touches agent +
 workspace + tui). Rule of thumb: logic/IO/subprocess -> agent;
