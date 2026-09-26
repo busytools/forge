@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-agent", "crates/forge-workspace", "crates/forge-sessions", "crates/forge-tui", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-agent", "crates/forge-workspace", "crates/forge-sessions", "crates/forge-web", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "1.0.87"
@@ -17,6 +17,14 @@ tokio = { version = "1.42", features = ["rt-multi-thread", "process", "io-util",
 hyper = { version = "1.9", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+# The web view's server and markup. axum rides the hyper 1.x line pinned
+# above, so the lock gains no second copy. Features are named rather than
+# defaulted: the defaults pull form, json and query support the view has
+# no use for.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+# `axum` enables `IntoResponse` for `Markup`; the view renders every page
+# through it.
+maud = { version = "0.27", features = ["axum"] }
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 serde = { version = "1", features = ["derive"] }
@@ -119,6 +127,7 @@ forge-agent = { path = "crates/forge-agent", version = "=1.0.87" }
 forge-dictate = { path = "crates/forge-dictate", version = "=1.0.87" }
 forge-workspace = { path = "crates/forge-workspace", version = "=1.0.87" }
 forge-sessions = { path = "crates/forge-sessions", version = "=1.0.87" }
+forge-web = { path = "crates/forge-web", version = "=1.0.87" }
 
 # Dev-only
 pretty_assertions = "1"

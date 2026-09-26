@@ -25,6 +25,7 @@ use forge_primitives::GotifyConfig;
 use forge_primitives::account::Provider;
 use forge_primitives::permission::PermissionMode;
 use forge_primitives::slack::SlackConfig;
+use forge_primitives::web::WebConfig;
 use serde::Deserialize;
 
 use crate::error::WorkspaceError;
@@ -65,6 +66,10 @@ struct ForgeToml {
     /// Optional `[gateway]` section - the inference listener's port.
     #[serde(default)]
     gateway: Option<GatewaySettings>,
+    /// Optional `[web]` section - the web view's listener. Absent
+    /// section means its defaults, which is on and on loopback.
+    #[serde(default)]
+    web: WebConfig,
     /// Ghost of the deleted `[workers]` section: read only so a stale
     /// synced forge.toml still carrying it warns at load instead of
     /// sitting there silently ignored.
@@ -353,6 +358,9 @@ pub(crate) struct LoadedConfig {
     pub gateway_port: u16,
     /// The gateway's rotation numbers. Absent keys keep the defaults.
     pub gateway_rotation: forge_gateway::rotation::RotationNumbers,
+    /// `[web]` section knobs. Absent section means the web view's
+    /// defaults: on, on loopback.
+    pub web: WebConfig,
 }
 
 /// The port the gateway's listener binds when `[gateway] port` is
@@ -452,6 +460,7 @@ impl LoadedConfig {
             plugins: PluginSettings::default(),
             gateway_port: DEFAULT_GATEWAY_PORT,
             gateway_rotation: forge_gateway::rotation::RotationNumbers::default(),
+            web: WebConfig::default(),
         }
     }
 }
@@ -482,6 +491,33 @@ fn read_config(config_dir: &Path) -> Result<(PathBuf, String), WorkspaceError> {
         }
         Err(e) => Err(WorkspaceError::ConfigInvalid { path, message: format!("io error: {e}") }),
     }
+}
+
+/// The `[web]` section, refusing the two ports that cannot work: 0, which
+/// is OS-assigned and so unguessable from a browser, and the gateway's
+/// own port, where the listener that binds second loses at boot.
+///
+/// A disabled view is not validated at all. Nothing will bind that port,
+/// so a stale one left in a hand-authored file is not worth refusing the
+/// boot over.
+fn resolve_web(
+    web: WebConfig,
+    gateway_port: u16,
+    path: &Path,
+) -> Result<WebConfig, WorkspaceError> {
+    if !web.enabled {
+        return Ok(web);
+    }
+    if web.port == 0 {
+        return Err(WorkspaceError::WebPortInvalid { path: path.to_path_buf() });
+    }
+    if web.port == gateway_port {
+        return Err(WorkspaceError::WebPortTakenByGateway {
+            path: path.to_path_buf(),
+            port: gateway_port,
+        });
+    }
+    Ok(web)
 }
 
 /// Load + validate `forge.toml`. Returns the parsed orgs + projects
@@ -789,6 +825,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         Some(gateway) => gateway.resolved_rotation(&path)?,
         None => forge_gateway::rotation::RotationNumbers::default(),
     };
+    let web = resolve_web(parsed.web, gateway_port, &path)?;
 
     Ok(LoadedConfig {
         projects,
@@ -801,6 +838,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         plugins: parsed.plugins,
         gateway_port,
         gateway_rotation,
+        web,
     })
 }
 
@@ -902,7 +940,9 @@ pub(crate) fn expand_home(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_primitives::web::DEFAULT_WEB_PORT;
     use std::fs;
+    use std::net::{IpAddr, Ipv4Addr};
     use tempfile::tempdir;
 
     /// Resolve a project by name for the `session_env` calls below.
@@ -1016,6 +1056,88 @@ no_reset_cooldown_secs = 90
         assert_eq!(config.gateway_rotation.streak_count, 3);
         assert_eq!(config.gateway_rotation.streak_window, Duration::from_secs(45));
         assert_eq!(config.gateway_rotation.no_reset_cooldown, Duration::from_secs(90));
+    }
+
+    /// On unless it is turned off, and on loopback: "on by default" must
+    /// not mean every machine starts listening on a network interface.
+    #[test]
+    fn web_section_defaults_to_enabled_on_loopback() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("absent section loads");
+        assert!(config.web.enabled, "the web view is on unless it is turned off");
+        assert_eq!(config.web.port, DEFAULT_WEB_PORT);
+        assert_eq!(config.web.bind, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn web_section_reads_its_keys() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[web]\nenabled = false\nport = 9100\nbind = \"10.0.0.5\"\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("section loads");
+        assert!(!config.web.enabled);
+        assert_eq!(config.web.port, 9100);
+        assert_eq!(config.web.bind, "10.0.0.5".parse::<IpAddr>().expect("ip"));
+    }
+
+    /// A section that never binds cannot stop the boot: a stale port on a
+    /// disabled view is the config's business only if something would use
+    /// it, and nothing will.
+    #[test]
+    fn a_disabled_web_section_is_not_validated() {
+        for port in [0, DEFAULT_GATEWAY_PORT] {
+            let dir = tempdir().expect("tempdir");
+            write_config(
+                dir.path(),
+                &format!("{}\n[web]\nenabled = false\nport = {port}\n", minimal_config()),
+            );
+            let config = load_from_dir(dir.path()).expect("a disabled view must not fail the load");
+            assert!(!config.web.enabled, "the section stays disabled at port {port}");
+        }
+    }
+
+    #[test]
+    fn web_section_rejects_an_unknown_key() {
+        let err = toml::from_str::<ForgeToml>("[web]\nportt = 9100\n")
+            .expect_err("a near-miss key must fail loudly");
+        assert!(err.to_string().contains("portt"), "got: {err}");
+    }
+
+    /// A browser is pointed at this port by hand, so an OS-assigned one
+    /// is unguessable rather than merely unhelpful.
+    #[test]
+    fn web_port_zero_is_refused_at_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &format!("{}\n[web]\nport = 0\n", minimal_config()));
+        let err = load_from_dir(dir.path()).expect_err("port 0 must not load");
+        assert!(
+            err.to_string().contains("web port 0"),
+            "the error names the unusable port, got: {err}",
+        );
+    }
+
+    /// Compared against the gateway's resolved port rather than its
+    /// default: whichever listener binds second loses, and the web view
+    /// being on by default means the loss reads as the web view broken.
+    #[test]
+    fn web_port_on_the_gateway_port_is_refused_at_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[gateway]\nport = 9100\n\n[web]\nport = 9100\n", minimal_config()),
+        );
+        let err = load_from_dir(dir.path()).expect_err("the gateway's port must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("9100") && message.contains("gateway"),
+            "the error names the port and what it collides with, got: {message}",
+        );
     }
 
     #[test]

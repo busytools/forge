@@ -73,6 +73,18 @@ pub enum WorkspaceError {
     GatewayRotationInvalid { path: PathBuf, key: &'static str },
 
     #[error(
+        "web port 0 in forge.toml at {} is not usable; the web view needs a port a browser can be pointed at",
+        path.display()
+    )]
+    WebPortInvalid { path: PathBuf },
+
+    #[error(
+        "web port {port} in forge.toml at {} is the port the gateway binds; the two listeners need a port each",
+        path.display()
+    )]
+    WebPortTakenByGateway { path: PathBuf, port: u16 },
+
+    #[error(
         "account '{name}' in forge.toml at {} declares a base-url provider but has no base_url key",
         path.display()
     )]

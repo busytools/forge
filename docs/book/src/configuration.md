@@ -410,6 +410,25 @@ Like `[dictate]`, an unrecognised key here fails the load rather than
 being ignored. Keys an older forge read here (`trusted_marketplaces`,
 `pins`) are rejected the same way: remove them.
 
+## `[web]`
+
+The web view: HTTP served from the process that already owns the
+sessions rather than a second one. On by default, so a restart leaves it
+serving.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Whether the server starts with forge. `false` is the opt-out, and the TUI is identical either way. |
+| `port` | integer | `8790` | The port the server binds on `bind`, and a browser is pointed at it by hand. `0` fails the load outright (`WebPortInvalid`), and so does the gateway's own port (`WebPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the view is disabled: a stale port on a section that never binds cannot stop the boot. |
+| `bind` | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching the view from another machine means naming that machine's interface here, usually the WireGuard address, and anything public needs something in front of it. |
+
+The server starts no subsystem of its own - no cron scheduler, no
+connector, no second gateway - so the cost of the extra view is the
+listener and the requests. The page it serves today is a wiring proof:
+it reports the address it bound and the config it read. A bind that
+fails is logged and does not stop forge; the TUI is not downstream of
+the web view.
+
 ## Unknown keys
 
 Every table rejects unknown fields, so a mistyped key fails the load
@@ -417,7 +436,7 @@ and names itself rather than parsing clean and meaning something else -
 a misspelled `fallback_accounts` would otherwise read as "no
 fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 `[[accounts]]`, `[[slack]]`, `[gotify]`, `[ui]`, `[gateway]`,
-`[dictate]` and `[plugins]`.
+`[dictate]`, `[plugins]` and `[web]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
@@ -540,6 +559,9 @@ picker to enter chat.
 
 `auto_start` therefore controls what is warm when you arrive, not what
 you land on.
+
+The web view comes up on `[web] bind:port` during the same boot, unless
+`[web] enabled` is false.
 
 ## Config versus state
 

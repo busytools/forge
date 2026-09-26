@@ -1207,6 +1207,13 @@ impl Workspace {
         self.config.ui.clone()
     }
 
+    /// Effective `[web]` settings: whether the web view starts and where
+    /// it listens. Read by the binary entry point, which starts the
+    /// server - the workspace never does.
+    pub fn web_config(&self) -> forge_primitives::WebConfig {
+        self.config.web
+    }
+
     /// The push-to-talk key from forge.toml `[dictate] bind`. Read by
     /// the TUI's key handler per event; config is boot-frozen so the
     /// value never changes mid-run.
@@ -11731,6 +11738,12 @@ mod worker_respawn_tests {
     /// the two answered.
     const TRANSCRIPT_ONLY_ID: &str = "660e8400-e29b-41d4-a716-4466554400aa";
 
+    /// Two fixed seconds for a test that reads the newest transcript:
+    /// the later one has to be the test's own write whatever the clock's
+    /// granularity is.
+    const TRANSCRIPT_OLDER_SECS: u64 = 1_700_000_000;
+    const TRANSCRIPT_NEWER_SECS: u64 = 1_700_000_001;
+
     /// Boot a real workspace over a one-project forge.toml and give the
     /// `steward` label both of the pointers a session can be found by: the
     /// row, which the boot wave reads and which answers the MCP resume
@@ -12126,6 +12139,15 @@ provider = "anthropic"
             ),
         )
         .expect("write tagged jsonl");
+    }
+
+    /// Pin a transcript's mtime to a fixed second, so a test that reads
+    /// the newest one does not depend on the clock's granularity.
+    fn pin_mtime(cfg: &tempfile::TempDir, run_dir: &std::path::Path, id: &str, secs: u64) {
+        let path = worker_transcript_dir(cfg, run_dir).join(format!("{id}.jsonl"));
+        let file = std::fs::File::options().write(true).open(&path).expect("open the transcript");
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            .expect("pin the transcript's mtime");
     }
 
     /// The config-dir directory claude writes `run_dir`'s sessions in.
@@ -12535,6 +12557,13 @@ provider = "anthropic"
             "550e8400-e29b-41d4-a716-4466554400ff",
             "lead",
         );
+        // The pick is by mtime, and a tie goes to the greater session id.
+        // Pin the two, so "the test's is newer" is a fact of the fixture
+        // rather than of the filesystem's clock granularity: on a coarse
+        // one both writes land in the same tick, and the tie then hands
+        // the win to the fixture's `660e...` over the test's `550e...`.
+        pin_mtime(&cfg, &project_path, TRANSCRIPT_ONLY_ID, TRANSCRIPT_OLDER_SECS);
+        pin_mtime(&cfg, &project_path, &session_id, TRANSCRIPT_NEWER_SECS);
         assert!(ws.delete_worker_row(&key, "steward").expect("delete the row"));
         ws.enable_test_dispatch_intercept();
         let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);

@@ -1,7 +1,7 @@
 # forge - project guide
 
 A Rust workspace that wraps Anthropic's `claude` CLI in a multi-session
-terminal UI. Ten crates, layered acyclically:
+terminal UI. Eleven crates, layered acyclically:
 
 ```
 forge-primitives ───── leaf (pure data, no logic)
@@ -12,7 +12,8 @@ forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + gateway
 forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
 forge-sessions   ───→ primitives + workspace
-forge-tui        ───→ primitives + workspace + sessions      (no direct agent dep)
+forge-web        ───→ primitives
+forge-tui        ───→ primitives + workspace + sessions + web (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```
 
@@ -58,6 +59,11 @@ forge-test-harness ─→ primitives + sdk + workspace
   and does that through `forge-workspace` rather than `forge-agent`, so
   the agent layer stays behind the workspace facade the way it does for
   the TUI.
+- **`forge-web`** - the web view: HTTP served beside the TUI, in the
+  process that already owns the sessions, so a second view costs a
+  listener rather than a second cron scheduler. Server-rendered markup
+  over axum, a wiring-proof page today. It never names
+  `forge-workspace`: reads of the core will go through `forge-sessions`.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
@@ -130,7 +136,12 @@ Work top-down; first match wins.
 9. **A widget, screen, key binding, mouse handler, or per-session
    presentation state?** -> `forge-tui`. Render in `ui/`, dispatch +
    state in `app/`.
-10. **A wire-conformance scenario?** -> `forge-test-harness`.
+10. **A view that is not the TUI?** (an HTTP route, its markup, its own
+    per-view state) -> `forge-web`. Sits beside `forge-tui` on the same
+    core: a read of the core goes through the view surface in
+    `forge-sessions`, never `forge-workspace`, and it starts no
+    subsystem of its own.
+11. **A wire-conformance scenario?** -> `forge-test-harness`.
 
 **The view surface (partially built).** A view reads the core through
 named verbs by subject - `roster`, `session`, `accounts`, `plugins`,
