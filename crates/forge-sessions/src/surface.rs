@@ -6,6 +6,7 @@
 //! attaches to the core without reading it.
 
 pub mod accounts;
+pub mod agents;
 pub mod connectors;
 pub mod dictate;
 pub mod plugins;

@@ -2823,10 +2823,7 @@ impl Workspace {
     /// read from the catalog row naming the id it currently runs under.
     /// `None` for a slot with no live session, or one whose transcript
     /// is not on disk yet.
-    pub(crate) fn session_last_activity(
-        &self,
-        slot: &SessionSlot,
-    ) -> Option<std::time::SystemTime> {
+    pub fn session_last_activity(&self, slot: &SessionSlot) -> Option<std::time::SystemTime> {
         let id = self.running_session_id_for(slot)?;
         self.catalog
             .lock()
