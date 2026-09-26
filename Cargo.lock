@@ -1325,9 +1325,11 @@ name = "forge-web"
 version = "1.0.88"
 dependencies = [
  "axum",
+ "forge-agent",
  "forge-primitives",
  "maud",
  "reqwest",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",

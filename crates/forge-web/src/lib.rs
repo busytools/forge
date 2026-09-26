@@ -6,5 +6,7 @@
 //! `forge-sessions`.
 
 mod server;
+mod work;
 
 pub use server::{WebError, start};
+pub use work::{WorkCache, WorkState};
