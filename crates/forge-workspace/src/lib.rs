@@ -126,6 +126,7 @@ pub use mcp::workers::types::{LiveWorkerState, WorkerEntry};
 // prefer.
 pub use forge_agent::AgentHandle;
 pub use forge_agent::client::SessionLaunchSettings;
+pub use forge_agent::session_history;
 
 // Re-export forge-agent sub-surfaces consumed by `forge-tui` so the
 // TUI crate doesn't need a direct `forge-agent` dep. Each entry below

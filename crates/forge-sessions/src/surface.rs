@@ -25,8 +25,9 @@ pub use accounts::{AccountsView, GatewayView};
 pub use agents::{AgentRow, Agents, PendingKind};
 pub use dictate::DictateView;
 // A view compares the values the surface hands it, so it needs their names
-// too - re-exported here rather than reached for in the crate below, which
+// too - re-exported here rather than reached for in the crates below, which
 // a view does not name.
+pub use forge_primitives::ConversationHistory;
 pub use forge_workspace::env::cli_version::CliVersionInfo;
 pub use forge_workspace::{DictateFailure, DictateModelState, LoadingState};
 pub use roster::Roster;
@@ -95,11 +96,35 @@ impl ViewSurface {
     pub fn cli_version(&self) -> Option<CliVersionInfo> {
         self.workspace.cli_version()
     }
+
+    /// The conversation the session at `slot` holds, read from its own
+    /// transcript on disk: the same read a resume performs, for a view
+    /// that arrived after the session was already running.
+    ///
+    /// `cwd_raw` is the session's own cwd, which a git worker's worktree
+    /// overrides. A slot with no live session reads as an empty
+    /// conversation: nothing has been written for it to read, and another
+    /// session's messages would be a wrong answer rather than a missing
+    /// one.
+    pub fn conversation(&self, slot: &SessionSlot, cwd_raw: &Path) -> ConversationHistory {
+        let Some(session_id) = self.workspace.running_session_id_for(slot) else {
+            return ConversationHistory::default();
+        };
+        forge_workspace::session_history(
+            self.workspace.config_dir(),
+            &session_id,
+            &cwd_raw.to_string_lossy(),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::Arc;
+
+    use forge_primitives::SessionSlot;
+    use forge_workspace::Workspace;
 
     use super::{SessionUpdate, ViewSurface};
 
@@ -151,6 +176,59 @@ mod tests {
             "the notice held before any caller attached is still there for the workspace \
              subscriber, which is what the mirror left it for",
         );
+    }
+
+    const SESSION_A: &str = "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45";
+    const SESSION_B: &str = "6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56";
+
+    /// Write `turns` user rows as the transcript of `session_id`, under the
+    /// project key `cwd` resolves to: where the CLI would have left them.
+    fn seed_transcript(projects: &Path, session_id: &str, turns: usize) {
+        use std::fmt::Write as _;
+        let mut body = String::new();
+        for i in 0..turns {
+            let _ = writeln!(
+                body,
+                "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"turn {i}\"}}}}"
+            );
+        }
+        std::fs::write(projects.join(format!("{session_id}.jsonl")), body).expect("write");
+    }
+
+    /// The verb reads the slot's own transcript, and a slot with no
+    /// occupant reads as empty: a view arriving before a session connects
+    /// must render an empty conversation, not another session's.
+    #[test]
+    fn conversation_reads_the_slot_and_not_a_neighbour() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _updates) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let cwd = dir.path().join("project");
+        std::fs::create_dir_all(&cwd).expect("project dir");
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        let projects = dir.path().join("projects").join(
+            forge_workspace::userdata::catalog::scan::project_key_for_directory(Some(&cwd_str)),
+        );
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        seed_transcript(&projects, SESSION_A, 2);
+        seed_transcript(&projects, SESSION_B, 3);
+
+        // One project, three seats: the neighbours differ by label rather
+        // than by project, so a read that resolves the wrong seat is the
+        // one this catches.
+        let a = SessionSlot::lead("TestOrg", "forge");
+        let b = SessionSlot::worker("TestOrg", "forge", "probe-a");
+        let idle = SessionSlot::worker("TestOrg", "forge", "asleep");
+        workspace.seed_test_running_session_id(&a, SESSION_A);
+        workspace.seed_test_running_session_id(&b, SESSION_B);
+
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let read_a = surface.conversation(&a, &cwd);
+        let read_b = surface.conversation(&b, &cwd);
+
+        assert_eq!(read_a.messages.len(), 2, "each slot reads its own transcript");
+        assert_eq!(read_b.messages.len(), 3, "and the neighbour reads its own, not this one");
+        let none = surface.conversation(&idle, &cwd);
+        assert!(none.messages.is_empty(), "no occupant reads as empty");
     }
 }
 
