@@ -43,7 +43,7 @@ pub fn map_available_commands_from_json(arr: &[Value]) -> Vec<AvailableCommand> 
 /// is `["doctor", "color", "reload-plugins"]` - so every surface adds one
 /// before it renders.
 pub fn slash_name(name: &str) -> String {
-    if name.starts_with('/') { name.to_owned() } else { format!("/{name}") }
+    if name.is_empty() || name.starts_with('/') { name.to_owned() } else { format!("/{name}") }
 }
 
 #[cfg(test)]
@@ -68,6 +68,14 @@ mod tests {
     #[test]
     fn a_name_that_already_carries_one_is_unchanged() {
         assert_eq!(slash_name("/doctor"), "/doctor");
+    }
+
+    /// An empty name is not a command, and a bare slash is not a better
+    /// answer than an empty string. No caller reaches this today - the
+    /// parser drops nameless entries - but this is shared API.
+    #[test]
+    fn an_empty_name_stays_empty() {
+        assert_eq!(slash_name(""), "");
     }
 
     /// The `system/init` shape: bare names, no descriptions, which is
