@@ -6,8 +6,6 @@
 //! rather than deriving anything: a view reads the session instead of
 //! folding the update stream a second time.
 
-use std::collections::HashMap;
-
 use forge_primitives::{CurrentModel, EffortLevel, MonitorRecord, PermissionMode, SessionSlot};
 
 use crate::surface::ViewSurface;
@@ -63,16 +61,6 @@ impl ViewSurface {
             permission_mode: held.observed_permission_mode.or(held.configured_permission_mode),
             context: held.context_usage.unwrap_or_default(),
         }
-    }
-
-    /// Which sub-agent ran which tool call, keyed by the `tool_use_id`
-    /// the sub-agent fired. This is not [`Self::subagents`], which is the
-    /// CLI's catalogue of the agent types that exist: this is the
-    /// per-call attribution of one session's own work.
-    pub fn subagent_attribution(&self, slot: &SessionSlot) -> HashMap<String, String> {
-        self.workspace
-            .domain_session_for(slot)
-            .map_or_else(HashMap::new, |domain| domain.lock().subagent_attribution.clone())
     }
 
     /// The MCP servers the session's bridge last reported, and the
@@ -243,40 +231,6 @@ mod tests {
         assert_eq!(header.permission_mode, None, "and no mode observed");
         assert_eq!(header.context, ContextUsage::default(), "and no context to report");
         assert_eq!(header.effort, EffortLevel::Max, "and forge's default level, not a blank");
-    }
-
-    /// The attribution is per session: a read that answered another
-    /// seat's would label one session's tool calls with another's
-    /// sub-agents.
-    #[test]
-    fn the_subagent_attribution_reads_the_seat_it_was_asked_about() {
-        let (workspace, _dir) = crate::surface::testing::workspace();
-        let surface = ViewSurface::new(Arc::clone(&workspace));
-        let asked = seat("forge");
-        let neighbour = seat("other");
-        workspace
-            .register_domain_session(asked.clone(), None)
-            .lock()
-            .subagent_attribution
-            .insert("tu-asked".to_owned(), "Explore".to_owned());
-        workspace
-            .register_domain_session(neighbour.clone(), None)
-            .lock()
-            .subagent_attribution
-            .insert("tu-neighbour".to_owned(), "code-reviewer".to_owned());
-
-        let held = surface.subagent_attribution(&asked);
-
-        assert_eq!(
-            held.get("tu-asked").map(String::as_str),
-            Some("Explore"),
-            "the seat's own attribution is what comes back",
-        );
-        assert_eq!(held.len(), 1, "and only its own, rather than the fleet's");
-        assert!(
-            surface.subagent_attribution(&seat("never-started")).is_empty(),
-            "a seat with no session attributes nothing",
-        );
     }
 
     /// The MCP set is the session's own, and a failure replaces the set

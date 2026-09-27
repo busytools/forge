@@ -1469,8 +1469,8 @@ fn clear_runtime_identity(domain: &mut DomainSession) {
 }
 
 /// The facts this event carries that a view other than the TUI reads
-/// through the view surface: the hook observation's three, the two
-/// bridge snapshots, the resolved model, and the monitor set.
+/// through the view surface: the hook observation's mode and effort, the
+/// two bridge snapshots, the resolved model, and the monitor set.
 ///
 /// One source, two readers: each fact is folded from the same event the
 /// `SessionUpdate` for it is built from, so the held copy cannot drift
@@ -1481,7 +1481,6 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
         // its hook mirrors describe a session that is gone, and its
         // bridge snapshots describe subprocesses that went with it.
         clear_runtime_identity(domain);
-        domain.subagent_attribution.clear();
         domain.current_model = Some(current_model.clone());
         domain.available_models.clone_from(available_models);
         // A monitor started before this process did is in the transcript
@@ -1506,15 +1505,7 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
     if matches!(event, AgentEvent::ConnectionFailed { .. } | AgentEvent::AuthRequired { .. }) {
         clear_runtime_identity(domain);
     }
-    if let AgentEvent::HookObservation {
-        tool_use_id,
-        permission_mode,
-        effort,
-        agent_id,
-        agent_type,
-        ..
-    } = event
-    {
+    if let AgentEvent::HookObservation { permission_mode, effort, .. } = event {
         if let Some(mode) =
             permission_mode.as_deref().and_then(forge_primitives::PermissionMode::from_wire)
         {
@@ -1525,9 +1516,6 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
         if let Some(level) = effort.as_deref().and_then(forge_primitives::EffortLevel::from_stored)
         {
             domain.observed_effort = Some(level);
-        }
-        if let (Some(id), Some(_), Some(kind)) = (tool_use_id, agent_id, agent_type) {
-            domain.subagent_attribution.insert(id.clone(), kind.clone());
         }
     }
     if let AgentEvent::McpSnapshot { servers, error, .. } = event {
@@ -4297,11 +4285,6 @@ provider = "anthropic"
             Some(forge_primitives::EffortLevel::Xhigh),
             "and its effort level",
         );
-        assert_eq!(
-            domain.subagent_attribution.get("tu-1").map(String::as_str),
-            Some("Explore"),
-            "and the tool_use the sub-agent fired, against its type",
-        );
     }
 
     /// A level the CLI spells differently is a level forge cannot name,
@@ -4469,7 +4452,6 @@ provider = "anthropic"
 
         assert_eq!(domain.observed_permission_mode, None, "the dead run's mode does not stand");
         assert_eq!(domain.observed_effort, None, "nor its effort");
-        assert!(domain.subagent_attribution.is_empty(), "nor its sub-agent attributions");
         assert_eq!(domain.mcp_servers, None, "nor the servers it had connected");
         assert_eq!(domain.context_usage, None, "nor the context it had filled");
     }
