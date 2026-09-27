@@ -1152,6 +1152,11 @@ async fn the_pane_state_crosses_the_swapped_region() {
         "the boxes hold their state across a swap only by sitting outside the region: {page}",
     );
 
+    assert!(
+        page.contains("htmx:beforeSwap"),
+        "and the swap carries what a reader opened or closed across itself: {page}",
+    );
+
     let mut reads = sheet.match_indices(":checked").peekable();
     assert!(reads.peek().is_some(), "the sheet reads the boxes");
     for (at, _) in reads {

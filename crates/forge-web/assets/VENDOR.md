@@ -73,3 +73,12 @@ rather than filling it. `morph:outerHTML` keeps the swap from resetting DOM
 state inside the region; the page has none today, and the rule from the
 spike is that no swap target may contain the composer or a `<details>`,
 which is where that would start to matter.
+
+Measured on the session page, which has both now: a swap target holding
+`<details>` loses which of them the reader opened, because idiomorph sets
+attributes and `open` is one of them, so every collapse re-opens on the next
+swap - every ten seconds on a working session. The session page keeps the
+state in a handler of its own (`DETAIL_STATE`, `session.rs`): it records
+`open` by position before the swap and puts it back after. Position is
+enough because the region appends rather than reorders. The composer is
+still outside the target, which is why it survives on its own.

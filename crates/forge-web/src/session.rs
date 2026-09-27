@@ -51,6 +51,23 @@ use crate::work::WorkState;
 const RAIL_TOGGLE: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>"#;
 const INSPECTOR_TOGGLE: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>"#;
 
+/// The one piece of state a swap would otherwise lose: which sections the
+/// reader has open.
+///
+/// Idiomorph sets attributes and has no case for `open`, and the attribute is
+/// reflected, so a section someone collapsed re-opens on the next swap, which
+/// on a working session is every ten seconds. The state is kept by position,
+/// because the region's own order is stable: it appends, it does not reorder.
+const DETAIL_STATE: &str = r"
+let open = [];
+document.addEventListener('htmx:beforeSwap', () => {
+  open = Array.from(document.querySelectorAll('#session-body details'), (d) => d.open);
+});
+document.addEventListener('htmx:afterSwap', () => {
+  document.querySelectorAll('#session-body details').forEach((d, i) => {
+    d.open = open[i] === undefined ? d.open : open[i];
+  });
+});";
 /// What the route found for a slot.
 pub enum Found {
     /// The seat is in the roster, so it has a page: one page draws both a
@@ -210,6 +227,7 @@ async fn shell(
                 script src="/vendor/htmx.js" {}
                 script src="/vendor/htmx-sse.js" {}
                 script src="/vendor/idiomorph.js" {}
+                script { (PreEscaped(DETAIL_STATE)) }
             }
         }
     }
