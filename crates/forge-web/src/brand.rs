@@ -89,7 +89,11 @@ mod tests {
     /// the built-in is one the shipped list offers.
     #[test]
     fn the_built_in_mark_is_an_unset_name() {
-        assert_eq!(mark_path(None), mark_path(Some(DEFAULT_MARK)));
+        assert_eq!(
+            mark_path(None),
+            mark_path(Some(DEFAULT_MARK)),
+            "an unset key has to draw what `{DEFAULT_MARK}` draws, or the unset default and the name are two different marks",
+        );
         assert!(
             MARK_NAMES.contains(&DEFAULT_MARK),
             "the built-in has to be a name forge.toml accepts, or nothing could name it",

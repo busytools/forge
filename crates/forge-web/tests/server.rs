@@ -471,10 +471,22 @@ async fn unset_names_fall_back_to_the_built_in_mark_and_palette() {
 
 /// The home mockup draws the mark the page draws, so the side-by-side is a
 /// comparison between two drawings of one mark rather than of two marks.
-#[test]
-fn the_home_mockup_draws_the_mark_the_page_draws() {
-    assert!(MOCK_HOME.contains(PANES_DIVIDER), "the mockup's panes divider");
-    assert!(MOCK_HOME.contains(PANES_SOLID), "and its solid pane");
+/// Both sides are read: the mockup as a document, the page as it is served,
+/// because a comparison against one of them is not the comparison this
+/// names.
+#[tokio::test]
+async fn the_home_mockup_draws_the_mark_the_page_draws() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    for (side, drawn) in [("page", page.as_str()), ("mockup", MOCK_HOME)] {
+        assert!(drawn.contains(PANES_DIVIDER), "the {side}'s panes divider");
+        assert!(drawn.contains(PANES_SOLID), "and the {side}'s solid pane");
+    }
 }
 
 /// The mockups draw the faces the view ships. A reference and a built page
