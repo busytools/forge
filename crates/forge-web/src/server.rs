@@ -119,9 +119,7 @@ async fn session_page(
     Path((org, project, label)): Path<(String, String, String)>,
 ) -> Response {
     match crate::session::page(&wiring.state, wiring.bound, &org, &project, &label).await {
-        crate::session::Found::Open(page) | crate::session::Found::Waking(page) => {
-            page.into_response()
-        }
+        crate::session::Found::Page(page) => page.into_response(),
         crate::session::Found::Absent => {
             (StatusCode::NOT_FOUND, "no session slot by that name").into_response()
         }

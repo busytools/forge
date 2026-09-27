@@ -36,11 +36,10 @@ const INSPECTOR_TOGGLE: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="c
 
 /// What the route found for a slot.
 pub enum Found {
-    /// The seat is in the roster and something is running behind it.
-    Open(Markup),
-    /// The seat is in the roster; nothing is behind it yet, so the page
-    /// waits rather than refusing.
-    Waking(Markup),
+    /// The seat is in the roster, so it has a page: one page draws both a
+    /// session that is up and a seat nothing is running behind, and only the
+    /// chat column tells them apart.
+    Page(Markup),
     /// No seat by that name.
     Absent,
 }
@@ -107,8 +106,7 @@ pub async fn page(
     };
     // One walk of the core per page: the roster and the agents the route
     // already holds are the two the page draws from.
-    let page = shell(&context(state, bound), &slot, &roster, &agents).await;
-    if roster.has_agent(&slot) { Found::Open(page) } else { Found::Waking(page) }
+    Found::Page(shell(&context(state, bound), &slot, &roster, &agents).await)
 }
 
 /// The pieces both pages read the core through, which are the home's own:
