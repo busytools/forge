@@ -1,9 +1,10 @@
 //! What a view needs and nothing about how it renders.
 //!
 //! Holds the read surface a view uses, the peer envelope parsing and the
-//! outbound peer calls, the tool family table, the session records a view
-//! renders, and the policy that folds a run of blocks. The reducers that
-//! derive those records are still in the TUI.
+//! outbound peer calls, the tool family table, the transcript fold that
+//! turns a conversation's wire messages into the units a view draws, and
+//! the policy that folds a run of blocks. The reducers that derive the
+//! TUI's session records are still in the TUI.
 
 pub mod envelope;
 pub mod family;
@@ -13,6 +14,7 @@ pub mod peer_outbound;
 pub mod surface;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod transcript;
 
 /// The core's update protocol, as a view reads it. It is the same type the
 /// same call hands the TUI, so nothing here wraps or renames it.

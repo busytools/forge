@@ -20,7 +20,9 @@ use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
 ///
 /// The `session_id` field on each Message is left empty; the caller
 /// (`forge_sdk_worker::spawn_session`) is responsible for stamping the
-/// correct id before emitting `AgentEvent::Connected`.
+/// correct id before emitting `AgentEvent::Connected`. The row's `uuid`
+/// is carried across when it has one: it is the id the same message
+/// arrives under on the wire, so a reader can tell the two apart.
 pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
     let mut out: Vec<Message> = Vec::new();
 
@@ -31,6 +33,11 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
         let entry_type = entry_record.get("type").and_then(Value::as_str).unwrap_or("");
         let parent_tool_use_id =
             entry_record.get("parent_tool_use_id").and_then(Value::as_str).map(str::to_owned);
+        let uuid = entry_record
+            .get("uuid")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
         let Some(message_value) = entry_record.get("message") else {
             continue;
         };
@@ -64,7 +71,7 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
                     session_id: String::new(),
                     parent_tool_use_id,
                     error: None,
-                    uuid: None,
+                    uuid: uuid.clone(),
                 });
             }
             "user" => {
@@ -83,7 +90,7 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
                     message: envelope,
                     session_id: String::new(),
                     parent_tool_use_id,
-                    uuid: None,
+                    uuid,
                     tool_use_result: None,
                 });
             }

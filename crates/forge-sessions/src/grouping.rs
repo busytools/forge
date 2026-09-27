@@ -7,6 +7,7 @@ use crate::envelope::{PeerInboundKind, detect_inbound};
 use crate::family::{ToolFamily, tool_family, tool_label};
 use crate::model::MessageBlock;
 use crate::model::ToolCallInfo;
+use crate::model::tool_call_info::is_ask_question_tool_name;
 use crate::peer_outbound::{PeerOutboundKind, detect_outbound};
 
 /// True when `block` breaks a group-run when encountered. Run-breakers
@@ -52,27 +53,33 @@ pub fn is_run_breaker(block: &MessageBlock) -> bool {
     if tc.hidden {
         return false;
     }
-    // An answered AskUserQuestion un-hides (the record at answer time
-    // flips it visible) and renders the question -> answer card, so it
-    // breaks runs like any bespoke-render tool.
-    if tc.is_ask_question_tool() {
-        return true;
-    }
-    if is_edit_tool(&tc.sdk_tool_name) {
-        return true;
-    }
     let has_diff =
         tc.content.iter().any(|c| matches!(c, crate::model::agent::RenderToolCallContent::Diff(_)));
     if has_diff {
         return true;
     }
-    if renders_as_lifecycle_block(tc) {
+    is_run_breaker_tool(&tc.sdk_tool_name, tc.raw_input.as_ref())
+}
+
+/// [`is_run_breaker`]'s render-class arms, from what the wire carries:
+/// the tool's name and its input. The arms that read what the live
+/// pipeline attached - a call's `content` and its `hidden` flag - stay in
+/// `is_run_breaker`, and are what a transcript that was never rendered
+/// cannot have.
+pub fn is_run_breaker_tool(sdk_tool_name: &str, input: Option<&serde_json::Value>) -> bool {
+    // An answered AskUserQuestion un-hides (the record at answer time
+    // flips it visible) and renders the question -> answer card, so it
+    // breaks runs like any bespoke-render tool.
+    if is_ask_question_tool_name(sdk_tool_name) {
         return true;
     }
-    if is_peer_block_render_tool(&tc.sdk_tool_name) {
+    if is_edit_tool(sdk_tool_name) {
         return true;
     }
-    false
+    if renders_as_lifecycle_block_parts(sdk_tool_name, input) {
+        return true;
+    }
+    is_peer_block_render_tool(sdk_tool_name)
 }
 
 /// Mutation tools by name. Always-break belt-and-suspenders covering
@@ -88,13 +95,22 @@ fn is_edit_tool(sdk_tool_name: &str) -> bool {
 /// standard tool card and must behave like one - collapsible, clickable,
 /// carrying its own affordance.
 pub fn renders_as_lifecycle_block(tc: &ToolCallInfo) -> bool {
+    renders_as_lifecycle_block_parts(&tc.sdk_tool_name, tc.raw_input.as_ref())
+}
+
+/// [`renders_as_lifecycle_block`] from the name and input alone, for a
+/// caller reading a transcript.
+pub(crate) fn renders_as_lifecycle_block_parts(
+    sdk_tool_name: &str,
+    input: Option<&serde_json::Value>,
+) -> bool {
     // Name first, then the parse, and never build the lines: this runs
     // from `pointer_shape_at` on every mouse-move and from the render
     // and measure paths, so it must not allocate to answer a yes/no.
-    let Some(input) = tc.raw_input.as_ref() else {
+    let Some(input) = input else {
         return false;
     };
-    tc.sdk_tool_name == "Monitor"
+    sdk_tool_name == "Monitor"
         && forge_workspace::user_interaction::parse_monitor_input(input).is_some()
 }
 
@@ -102,7 +118,7 @@ pub fn renders_as_lifecycle_block(tc: &ToolCallInfo) -> bool {
 /// `crate::peer_outbound::detect_outbound` (rather than the standard tool
 /// card). Name-based because `detect_outbound` matches by
 /// `sdk_tool_name` literal. Mirror its match set exactly.
-fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
+pub(crate) fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
     // The four retired names below are replay-only, matching what a
     // transcript recorded before the rename holds; see `detect_outbound`.
     matches!(
@@ -165,7 +181,7 @@ impl KindSummary {
     /// first appearance. Every kind keeps one resolved target per call
     /// (uncapped) so the render can nest one child row per instance.
     pub fn tally(&mut self, tc: &ToolCallInfo) {
-        let (row, label) = family_row_label(&tc.sdk_tool_name);
+        let (row, label) = wire_row(&tc.sdk_tool_name);
         self.tally_resolved(row, label, family_target(tc), false);
     }
 
@@ -199,11 +215,25 @@ impl KindSummary {
 /// same-family tools (Grep / Glob / LS) merge into one line; a tool with
 /// no family keeps its own label. `mcp__<server>__*` keys by server so
 /// each server gets its own line.
-fn family_row_label(sdk_tool_name: &str) -> (KindRow, String) {
+/// The row a call's siblings summarise under, and the word that row draws,
+/// resolved from the wire's name alone: each `mcp__<server>__*` server keys
+/// as itself, a mutation keys as its own `edit` row, and everything else
+/// keys by its family.
+///
+/// The class comes back beside the label because a view picks its glyph
+/// from the class, and a label alone cannot tell a server named `read` from
+/// the read family. A view reading a transcript needs this wire-level half
+/// precisely because it has no rendered call to resolve a row from.
+pub(crate) fn wire_row(sdk_tool_name: &str) -> (KindRow, String) {
     if let Some((server, _)) = mcp_parts(sdk_tool_name) {
         return (KindRow::Mcp, server.to_owned());
     }
     let family = tool_family(sdk_tool_name);
+    if is_edit_tool(sdk_tool_name) {
+        // The word the fold's own model draws. The TUI never asks for this
+        // row: it breaks a run on a mutation instead of folding one.
+        return (KindRow::Family(family), "edit".to_owned());
+    }
     (KindRow::Family(family), family.kind_label().to_owned())
 }
 
@@ -465,20 +495,26 @@ impl GroupId {
 /// Non-ToolCall blocks are skipped (the partitioner never emits a
 /// Group containing them, but the helper stays defensive).
 pub fn aggregate_run_status(blocks: &[MessageBlock]) -> crate::model::agent::ToolCallStatus {
+    aggregate_call_status(blocks.iter().filter_map(|block| match block {
+        MessageBlock::ToolCall(tc) if !tc.hidden => Some(tc.status),
+        _ => None,
+    }))
+}
+
+/// The status a run of calls summarises under, by the same priority
+/// [`aggregate_run_status`] reads off a run of blocks.
+pub fn aggregate_call_status(
+    statuses: impl Iterator<Item = crate::model::agent::ToolCallStatus>,
+) -> crate::model::agent::ToolCallStatus {
     use crate::model::agent::ToolCallStatus;
     let mut any_failed = false;
     let mut any_pending = false;
-    for block in blocks {
-        if let MessageBlock::ToolCall(tc) = block {
-            if tc.hidden {
-                continue;
-            }
-            match tc.status {
-                ToolCallStatus::InProgress => return ToolCallStatus::InProgress,
-                ToolCallStatus::Failed | ToolCallStatus::Killed => any_failed = true,
-                ToolCallStatus::Pending => any_pending = true,
-                ToolCallStatus::Completed => {}
-            }
+    for status in statuses {
+        match status {
+            ToolCallStatus::InProgress => return ToolCallStatus::InProgress,
+            ToolCallStatus::Failed | ToolCallStatus::Killed => any_failed = true,
+            ToolCallStatus::Pending => any_pending = true,
+            ToolCallStatus::Completed => {}
         }
     }
     if any_failed {

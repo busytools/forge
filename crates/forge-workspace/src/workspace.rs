@@ -2141,6 +2141,13 @@ impl Workspace {
         crate::config::forge_data_dir(&self.config_dir).join("forge.toml")
     }
 
+    /// The config dir this workspace owns: `forge.toml`'s parent dir, and
+    /// the dir every session's child runs under, so a session's transcript
+    /// lives in its `projects/` tree.
+    pub fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
     /// Per-model dictation progress for the preflight screen. Empty
     /// `models` means `[dictate] enabled` is false and preflight has no
     /// Dictation section to draw.
@@ -2990,8 +2997,11 @@ impl Workspace {
     }
 
     /// The id the session at `slot` runs under, when this process holds
-    /// it live. `None` for a slot with no pooled session.
-    pub(crate) fn running_session_id_for(&self, slot: &SessionSlot) -> Option<String> {
+    /// it live. `None` for a slot with no pooled session. This is the
+    /// slot's occupant rather than a snapshot of when a caller last
+    /// heard about it, so a read that has to name the id now - a
+    /// transcript path, a CLI argument - asks here.
+    pub fn running_session_id_for(&self, slot: &SessionSlot) -> Option<String> {
         self.pool.lock().get(slot).map(|entry| entry.session_id.clone())
     }
 

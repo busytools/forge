@@ -425,9 +425,23 @@ impl Workspace {
         self.gateway.bindings.bind(key.org(), key.project(), &session_id, account);
     }
 
-    /// Store `snapshot` as `account`'s cached usage, so a cross-crate
-    /// test can render the panel's 5h / 7d bars without a probe.
-    /// Test-only.
+    /// Pool `key` under `session_id`, so a cross-crate test can read the
+    /// transcript that id names. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_running_session_id(&self, key: &SessionSlot, session_id: &str) {
+        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        self.pool.lock().insert(
+            key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("TestAccount".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: session_id.to_owned(),
+            },
+        );
+    }
+
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_usage(&self, account: &str, snapshot: forge_primitives::usage::UsageSnapshot) {
         self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);

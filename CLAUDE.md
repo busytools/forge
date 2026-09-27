@@ -51,10 +51,11 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-sessions`** - what a view needs and nothing about how it
   renders: the read surface a view uses, the session records as a view
   sees them, the peer envelope parsing in both directions, the tool
-  family table, and the policy that folds a run of blocks. Sits between
-  `forge-workspace` and the views, so a second view attaches beside the
-  TUI rather than duplicating it. Nothing here may depend on a view. It
-  reaches the workspace for the one thing a session record cannot
+  family table, the policy that folds a run of blocks, and the transcript
+  fold that turns a conversation's messages into the units a view draws.
+  Sits between `forge-workspace` and the views, so a second view attaches
+  beside the TUI rather than duplicating it. Nothing here may depend on a
+  view. It reaches the workspace for the one thing a session record cannot
   answer alone - whether a tool's input parses into a lifecycle block -
   and does that through `forge-workspace` rather than `forge-agent`, so
   the agent layer stays behind the workspace facade the way it does for
@@ -148,9 +149,10 @@ Work top-down; first match wins.
 **The view surface's read verbs are built.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
-`cli_version` - and receives changes through `subscribe()`. All ten
-exist in `forge-sessions`, and the TUI reads its project roster, session
-scan cwd, worker registry, account pool, plugin records, review threads,
+`cli_version`, `conversation` - and receives changes through
+`subscribe()`. All eleven exist in `forge-sessions`, and the TUI reads
+its project roster, session scan cwd, worker registry, account pool,
+plugin records, review threads,
 connector subscriptions and dictation state through them; the web view
 reads the claude version through the tenth. What the migration has
 not reached is the write half: user actions still go through

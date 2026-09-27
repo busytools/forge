@@ -40,3 +40,15 @@ pub mod userdata;
 pub use agent::{Agent, AgentError, AgentHandle};
 pub use client::{AgentEvent, SessionLaunchSettings};
 pub use forge_primitives::permission::PermissionMode;
+
+/// The messages a session's transcript holds and the compactions it
+/// records. The same read the spawn performs, available for a session
+/// that is already running, so a view arriving late loads the
+/// conversation without the core retaining a copy of it.
+pub fn session_history(
+    config_dir: &std::path::Path,
+    session_id: &str,
+    cwd: &str,
+) -> forge_primitives::ConversationHistory {
+    forge_sdk_worker::load_history_messages(config_dir, session_id, cwd, session_id)
+}
