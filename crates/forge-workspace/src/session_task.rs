@@ -1307,6 +1307,13 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // after a login swap they came from another account's config dir.
         domain.available_commands.clear();
         domain.available_agents.clear();
+        // The agent catalogue is read from the first init of a turn, and
+        // a swap that ends no turn - a mid-turn `/new`, a reconnect after
+        // a login - never sees the Result that re-arms it. Left armed it
+        // would drop the new occupant's own init and keep the list empty
+        // for a whole turn, which is the state clearing the two above is
+        // meant to end.
+        domain.agents_emitted_this_turn = false;
         // It connected, so it is not waiting to be let in.
         domain.awaiting_login = false;
     }
@@ -3706,8 +3713,13 @@ provider = "anthropic"
     /// occupant's first message. The TUI clears both on the same event,
     /// and after a login swap the stale list came from another account's
     /// config dir - another session's data, not a late one.
+    ///
+    /// The refill is half the property: a swap that ends no turn - a
+    /// mid-turn `/new`, a reconnect after a login - never sees the
+    /// `Result` that re-arms the agent read, so the new occupant's own
+    /// init has to be the thing that fills the catalogue back in.
     #[test]
-    fn a_new_occupant_advertises_no_catalogues() {
+    fn a_new_occupant_advertises_no_catalogues_until_its_own_init() {
         let mut domain = empty_domain();
         apply_event_to_domain(&mut domain, &sdk_message(init_frame(&["/help"], &["reviewer"])));
 
@@ -3718,6 +3730,14 @@ provider = "anthropic"
             "the previous occupant's command list does not stand",
         );
         assert!(domain.available_agents.is_empty(), "nor the agent catalogue it advertised");
+
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame(&["/newhelp"], &["newagent"])));
+
+        let commands: Vec<&str> =
+            domain.available_commands.iter().map(|c| c.name.as_str()).collect();
+        let agents: Vec<&str> = domain.available_agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(commands, vec!["/newhelp"], "the new occupant's own init refills the commands");
+        assert_eq!(agents, vec!["newagent"], "and the catalogue, without waiting a turn");
     }
 
     /// A `system/init` frame, which is where the CLI advertises both
