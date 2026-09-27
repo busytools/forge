@@ -789,10 +789,10 @@ fn symbols(html: &str) -> std::collections::BTreeMap<String, String> {
 }
 
 /// The `--fs-*` tokens a stylesheet declares, by name.
-fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
-    let mut out = std::collections::BTreeMap::new();
-    let without_comments = css
-        .split("/*")
+/// A stylesheet with its comments taken out, so a scan reads declarations
+/// rather than prose: a comment may name a token the sheet never declares.
+fn strip_comments(css: &str) -> String {
+    css.split("/*")
         .enumerate()
         .map(|(nth, chunk)| {
             if nth == 0 {
@@ -801,7 +801,12 @@ fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
                 chunk.split_once("*/").map_or(String::new(), |(_, rest)| rest.to_owned())
             }
         })
-        .collect::<String>();
+        .collect()
+}
+
+fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let without_comments = strip_comments(css);
     for declaration in without_comments.split(';') {
         let Some((key, value)) = declaration.split_once(':') else {
             continue;
@@ -1015,8 +1020,12 @@ async fn the_page_draws_with_the_built_in_pair() {
 
     assert!(page.contains("--ui:\"Inter\""), "the injected stack is the webfont: {page}");
     assert!(page.contains("--mono:\"Fira Code\""), "for code as well: {page}");
-    assert!(!sheet.contains("--ui:"), "and the sheet declares no stack to outrank it: {sheet}");
-    assert!(!sheet.contains("--mono:"), "neither one: {sheet}");
+    // Declarations rather than the file's text: the comment above the
+    // block names both tokens, so a whole-file search would fire on a
+    // rewording and point at the cascade for a bug that is not there.
+    let declared = strip_comments(&sheet);
+    assert!(!declared.contains("--ui:"), "and the sheet declares no stack to outrank it: {sheet}");
+    assert!(!declared.contains("--mono:"), "neither one: {sheet}");
 }
 
 /// `[web] font = "system"` is the opt-out: the same page draws the OS
