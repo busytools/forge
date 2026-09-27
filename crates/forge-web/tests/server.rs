@@ -642,8 +642,10 @@ async fn the_inspector_summarises_from_the_core() {
 
     let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
 
-    assert!(page.contains(">git</span>") || page.contains("git"), "the section renders: {page}");
-    assert!(page.contains("8 files"), "and its summary counts the core's own read: {page}");
+    assert!(
+        page.contains("<span class=\"c2\">main \u{b7} 8 files</span>"),
+        "the section renders with its summary: {page}",
+    );
     assert!(page.contains("file-0.txt"), "and the body lists the files behind that count: {page}");
 }
 
