@@ -76,6 +76,13 @@ impl ViewSurface {
     /// The cap is the caller's here for the same reason it is on
     /// [`FileIndex::visible`]: a dropdown and a page want different ones.
     ///
+    /// This caps the RESULT, not a viewport, so a caller that wants every
+    /// row reachable passes a limit at least as wide as the table. The
+    /// TUI's own caller passes its candidate cap of two hundred and
+    /// scrolls a ten-row window over those; ten is the window, not the
+    /// cap, and a caller passing ten here gets the top ten and no way to
+    /// reach row eleven.
+    ///
     /// A query below two characters matches nothing, which is what keeps
     /// `:D` and `10:30` from opening a picker.
     pub fn emoji(query: &str, limit: usize) -> Vec<&'static Emoji> {
@@ -152,7 +159,7 @@ mod tests {
         assert_eq!(
             ranked.first().map(|e| e.name),
             Some("smile"),
-            "the shortest prefix match leads: {:?}",
+            "the first prefix match leads, alphabetically: {:?}",
             ranked.iter().map(|e| e.name).collect::<Vec<_>>(),
         );
         assert_eq!(

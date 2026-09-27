@@ -663,6 +663,11 @@ mod tests {
     /// The renderer carried only geometry units, so a dropped row or a
     /// one-cell shift in what the composer's data feeds a dropdown was
     /// invisible to the suite. This captures one whole dropdown frame.
+    ///
+    /// Two limits, both inherent to a capture: empty rows are dropped, so
+    /// the box's vertical position is not covered, and the expected rows
+    /// name the table's `:sm` contents, so a new shortcode matching `sm`
+    /// turns this red for a benign reason.
     #[test]
     fn the_emoji_picker_renders_the_rows_its_table_feeds_it() {
         use ratatui::Terminal;
