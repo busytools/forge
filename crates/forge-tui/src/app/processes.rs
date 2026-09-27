@@ -141,6 +141,7 @@ pub fn collect_active_processes(app: &App, claimed_pids: &HashSet<u32>) -> Proce
         return ProcessCollection { rows: Vec::new() };
     };
     let wire_alive = wire_alive_tool_calls(session);
+    let snapshot = app.active_process_snapshot();
 
     let mut rows: Vec<ProcessRow> = Vec::new();
 
@@ -155,7 +156,7 @@ pub fn collect_active_processes(app: &App, claimed_pids: &HashSet<u32>) -> Proce
         rows.extend(background_bash_rows(
             &session.background_tasks,
             &command_by_task_id,
-            session.process_snapshot.as_ref(),
+            snapshot.as_ref(),
         ));
     }
 
@@ -164,12 +165,26 @@ pub fn collect_active_processes(app: &App, claimed_pids: &HashSet<u32>) -> Proce
     // intentionally dropped (the OS walk is the truth of what is
     // RUNNING). A forge cron is a registration and lives in the
     // SCHEDULES section, not here.
-    if let Some(snapshot) = session.process_snapshot.as_ref() {
+    if let Some(snapshot) = snapshot.as_ref() {
         rows.extend(rows_from_os_snapshot(snapshot, &wire_alive, claimed_pids));
     }
 
     rows.truncate(PROCESSES_MAX);
     ProcessCollection { rows }
+}
+
+impl App {
+    /// The active session's last OS walk.
+    ///
+    /// The walk's answer belongs to the session rather than to this view,
+    /// so the scanner stores it there and every view reads it back
+    /// instead of keeping a copy that can disagree.
+    pub(crate) fn active_process_snapshot(
+        &self,
+    ) -> Option<forge_workspace::env::processes::ProcessSnapshot> {
+        let key = self.active_session_key.as_ref()?;
+        self.surface()?.processes(key)
+    }
 }
 
 /// The session's live wire tool calls to overlay onto the OS scan. Two

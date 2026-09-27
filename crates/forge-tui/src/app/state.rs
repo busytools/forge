@@ -1117,12 +1117,17 @@ impl App {
 impl App {
     /// Test-only: stamp a process snapshot on the active session so
     /// `collect_active_processes` can be exercised end-to-end with a
-    /// populated OS scan.
+    /// populated OS scan. The walk lives on the session, which the test
+    /// App's stub workspace holds.
     pub(crate) fn set_active_process_snapshot_for_test(
         &mut self,
         snapshot: forge_workspace::env::processes::ProcessSnapshot,
     ) {
-        self.active_bucket_mut().expect("active session").process_snapshot = Some(snapshot);
+        let key = self.active_session_key.clone().expect("active session");
+        self.workspace
+            .as_ref()
+            .expect("the test App holds a workspace")
+            .store_process_snapshot(&key, Some(snapshot));
     }
 }
 

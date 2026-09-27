@@ -365,15 +365,15 @@ pub struct UiSession {
     /// on `active_session_key` change.
     pub git_diff_last_refreshed_at: Option<std::time::Instant>,
 
-    // ---- Process snapshot (Inspector PROCESSES section, OS walk) ----
-    /// Latest sysinfo-walk snapshot of claude's descendant tree.
-    /// `None` until the first scan completes. Mirrors `git_diff_snapshot`
-    /// but holds OS-level process state instead of git state.
-    pub process_snapshot: Option<forge_workspace::env::processes::ProcessSnapshot>,
+    // ---- Process scan (Inspector PROCESSES section, OS walk) ----
     /// Generation epoch for the process scanner. Bumped alongside
     /// `git_diff_generation` when a Connected delivers a changed cwd,
     /// so a scan kicked off against the old `claude_pid` is dropped
     /// if it lands after the swap.
+    ///
+    /// The walk's own answer is not kept here: it belongs to the
+    /// session, so a view reads it through the surface
+    /// (`ViewSurface::processes`).
     pub process_scan_generation: u64,
     /// In-flight scan guard. `request_refresh` short-circuits when
     /// already `true`.
@@ -896,7 +896,6 @@ impl UiSession {
             git_diff_generation: 0,
             git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             git_diff_last_refreshed_at: None,
-            process_snapshot: None,
             process_scan_generation: 0,
             process_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             process_last_refreshed_at: None,
