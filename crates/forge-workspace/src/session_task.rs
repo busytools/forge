@@ -1424,7 +1424,18 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // entry shape changed under us, and storing it would wipe the
         // list; a legitimately empty one clears it.
         let drift = parsed.is_empty() && !commands.is_empty();
-        if !drift {
+        if drift {
+            // A view reading the surface alone would otherwise lose the
+            // signal the TUI's own copy of this guard logs.
+            tracing::warn!(
+                target: "forge_workspace::session_task",
+                slot = %domain.key.display(),
+                event_name = "commands_changed_parse_empty",
+                message = "commands_changed carried entries but none parsed; likely wire drift, keeping prior list",
+                outcome = "skipped",
+                entry_count = commands.len(),
+            );
+        } else {
             domain.available_commands = parsed;
         }
     }
@@ -3705,6 +3716,48 @@ provider = "anthropic"
 
     fn sdk_message(msg: forge_primitives::Message) -> AgentEvent {
         AgentEvent::SdkMessage { session_id: "s".to_owned(), msg }
+    }
+
+    /// A `commands_changed` payload carrying entries that parse to none
+    /// means the CLI's entry shape changed under us. Storing it would
+    /// wipe the list, and `/help` with it, for every view reading
+    /// through this, so the prior one stands.
+    #[test]
+    fn an_unparseable_commands_changed_payload_keeps_the_retained_commands() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame(&["/help"], &[])));
+
+        apply_event_to_domain(
+            &mut domain,
+            &sdk_message(forge_primitives::Message::CommandsChanged {
+                commands: vec![serde_json::json!({"no_name": "x"}), serde_json::json!(7)],
+                uuid: "cmd-uuid".to_owned(),
+                session_id: "s".to_owned(),
+            }),
+        );
+
+        let commands: Vec<&str> =
+            domain.available_commands.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(commands, vec!["/help"], "the prior list stands rather than being wiped");
+    }
+
+    /// An empty payload is a real answer - a plugin uninstall - and it
+    /// clears.
+    #[test]
+    fn an_empty_commands_changed_payload_clears_the_retained_commands() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame(&["/help"], &[])));
+
+        apply_event_to_domain(
+            &mut domain,
+            &sdk_message(forge_primitives::Message::CommandsChanged {
+                commands: Vec::new(),
+                uuid: "cmd-uuid".to_owned(),
+                session_id: "s".to_owned(),
+            }),
+        );
+
+        assert!(domain.available_commands.is_empty(), "an empty payload clears the list");
     }
 
     /// A `Connected` in the same seat is a NEW OCCUPANT, and it has
