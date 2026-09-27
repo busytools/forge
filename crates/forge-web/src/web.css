@@ -386,6 +386,9 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .wk:hover { background: rgba(27,33,48,.4); border-radius: 0 8px 8px 0; }
 .wk .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A worker's mark is a step down from its project's: the size is what makes
+   the indent read as nesting rather than as another project. */
+.wk .dot { width: 8px; height: 8px; flex: 0 0 8px; }
 /* The reason a row is in this group, on every row that has one. */
 .why { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   padding: 0 10px 6px 34px; display: flex; align-items: center; gap: 7px; }
