@@ -1053,7 +1053,7 @@ docs: Render the message body into rows.</div>
     </div>
 
       <!-- ===== the live half: a turn in flight, replayed in place ===== -->
-      <div class="livebar">
+      <div class="livebar" data-mock-ignore>
         <span class="lt">live turn</span>
         <span class="dim">a turn actually running, so the states can be judged moving rather than described</span>
         <button class="rp" id="replay">replay</button>
@@ -1139,7 +1139,7 @@ docs: Render the message body into rows.</div>
       </div>
 
     <div class="composer">
-      <div class="cstates">
+      <div class="cstates" data-mock-ignore>
         <span class="cl">composer</span>
         <button class="cs on" data-cs="idle">idle</button>
         <button class="cs" data-cs="typing">typing</button>
