@@ -420,6 +420,10 @@ pub struct SessionTurnState {
 }
 
 /// Lifecycle status of a Monitor (`Monitor` tool_use).
+///
+/// A view keeps a monitor section while any of its monitors is running:
+/// once every one of them is terminal the set is dropped rather than left
+/// standing empty, in the terminal and in the core alike.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorStatus {
     /// Monitor is active. Persistent monitors stay `Running` until
