@@ -97,6 +97,17 @@ impl Fleet {
         Ok(())
     }
 
+    /// Give `slot` the core's own record of a spawn that failed, as the
+    /// connection-failure path leaves one.
+    pub fn fail_spawn(&self, org: &str, project: &str, label: &str, reason: &str) {
+        let slot = if label == "lead" {
+            SessionSlot::lead(org, project)
+        } else {
+            SessionSlot::worker(org, project, label)
+        };
+        self.workspace.record_spawn_failure_for_test(&slot, reason);
+    }
+
     /// Hold `slot` on a pending interaction, the way a session that has
     /// asked a person for something reads.
     pub fn seed_test_pending_interaction(&self, slot: &SessionSlot, kind: PendingKind) {

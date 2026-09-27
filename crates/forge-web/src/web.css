@@ -402,6 +402,8 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .hold { display: flex; align-items: center; gap: 9px; color: var(--accent);
   font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
 .hold .sub { color: var(--dim); }
+/* A seat nothing is running on is not work in flight: it says so quietly. */
+.hold.off { color: var(--muted); }
 
 /* ---------- inspector: one collapsed section per subject ---------- */
 

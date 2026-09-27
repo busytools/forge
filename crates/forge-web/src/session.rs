@@ -183,7 +183,9 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
                             span .mono .dim { (slot.org()) }
                             span .facts { (account_chip(&accounts, chip.as_deref())) }
                         }
-                        div .conv { (chat_body(waking)) }
+                        div .conv {
+                            (chat_body(waking, row.and_then(|row| row.reason.as_deref())))
+                        }
                     }
                     aside .rail .right {
                         div .banner {
@@ -742,16 +744,20 @@ fn mode_of(target: &SlackSubscriptionTarget) -> &'static str {
 }
 
 /// What the chat column says while the conversation itself is not there
-/// yet: the seat is connecting, and that is the whole of what is known.
-fn chat_body(waking: bool) -> Markup {
+/// yet: the seat's own state, and why when the core recorded a reason.
+///
+/// It claims nothing about a spawn. This page cannot start a session, so a
+/// line saying one is coming would be a promise no code keeps, and a seat
+/// whose spawn failed would carry a failure mark above a line saying it is
+/// connecting.
+fn chat_body(waking: bool, reason: Option<&str>) -> Markup {
     if !waking {
         return Markup::default();
     }
     html! {
-        div .hold {
-            span .ring {}
-            "connecting\u{2026}"
-            span .sub { "nothing is running on this seat yet" }
+        div .hold .off {
+            "not running"
+            span .sub { (reason.unwrap_or("this seat has no session behind it")) }
         }
     }
 }

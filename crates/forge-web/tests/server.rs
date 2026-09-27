@@ -502,11 +502,11 @@ async fn an_unknown_slot_is_not_found() {
     );
 }
 
-/// A slot in the roster whose lead is not running spawns and waits. It is
-/// NOT a 404: the seat exists, its occupant does not yet, and the TUI
-/// connects you the same way.
+/// A slot in the roster whose lead is not running opens its page. It is NOT
+/// a 404: the seat exists, its occupant does not, and the page says which of
+/// the two it is rather than claiming a connection nothing is making.
 #[tokio::test]
-async fn a_sleeping_slot_spawns_rather_than_404s() {
+async fn a_sleeping_slot_opens_rather_than_404ing() {
     let dir = tempfile::tempdir().expect("tempdir");
     // dotfiles is declared and nothing has ever run in it: the sleeping
     // project the home draws a Start row for.
@@ -516,7 +516,25 @@ async fn a_sleeping_slot_spawns_rather_than_404s() {
     let (status, _content_type, page) = get(&config, "/session/Personal/dotfiles/lead").await;
 
     assert_eq!(status, reqwest::StatusCode::OK, "a sleeping seat renders, it does not 404");
-    assert!(page.contains("connecting"), "and says it is waking: {page}");
+    assert!(page.contains("not running"), "and says what the seat is: {page}");
+    assert!(!page.contains("connecting"), "without claiming a connection nothing is making: {page}");
+}
+
+/// A seat whose spawn failed carries the reason the core recorded, which is
+/// the same diagnostic the home renders: a failure mark over a page that
+/// says nothing about the failure is a page that lost it.
+#[tokio::test]
+async fn a_failed_seat_carries_the_reason_the_core_recorded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.fail_spawn("Busytools", "forge", "lead", "the subprocess exited");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "a failed seat is still its own page");
+    assert!(page.contains("the subprocess exited"), "carrying the reason: {page}");
 }
 
 /// The home's project rows link here. Without this the page has no entry
