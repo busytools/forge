@@ -2,7 +2,7 @@
 
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -12,6 +12,7 @@ use forge_primitives::Message;
 use forge_primitives::SessionSlot;
 use forge_primitives::runtime::RuntimeSessionState;
 use forge_sessions::SessionUpdate;
+use forge_sessions::model::LiveTurn;
 use forge_sessions::surface::is_success_result;
 use futures_util::StreamExt;
 use futures_util::stream::{self, Stream};
@@ -151,22 +152,17 @@ pub async fn session_events(
     let receiver = wiring.state.surface.subscribe();
     let cwd = wiring.state.surface.roster().cwd_for(&slot);
     let conversation = crate::session::read_conversation(&wiring.state.surface, &slot, cwd).await;
-    let turn_started = crate::session::turn_in_flight(&conversation);
-
+    // The opening event draws the read, which carries no turn in flight: the
+    // connection arms its own clock off the first running state it hears.
     let opening = {
-        let region = crate::session::session_region(
-            &wiring.state,
-            wiring.bound,
-            &slot,
-            &conversation,
-            turn_started,
-        )
-        .await;
+        let region =
+            crate::session::session_region(&wiring.state, wiring.bound, &slot, &conversation, None)
+                .await;
         stream::once(
             async move { Ok(Event::default().event(SESSION_EVENT).data(region.into_string())) },
         )
     };
-    let updates = session_updates(receiver, wiring, slot, conversation, turn_started);
+    let updates = session_updates(receiver, wiring, slot, conversation, LiveTurn::default());
     let stream = opening.chain(updates).chain(stream::once(async {
         Ok(Event::default().event(CLOSE_EVENT).data("the core's stream ended"))
     }));
@@ -185,15 +181,15 @@ fn session_updates(
     wiring: Wiring,
     slot: SessionSlot,
     conversation: Vec<Message>,
-    turn_started: Option<SystemTime>,
+    live: LiveTurn,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + TICK, TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     stream::unfold(
-        (receiver, wiring, slot, conversation, turn_started, tick),
-        |(mut receiver, wiring, slot, conversation, turn_started, mut tick)| async move {
+        (receiver, wiring, slot, conversation, live, tick),
+        |(mut receiver, wiring, slot, conversation, live, mut tick)| async move {
             let mut conversation = conversation;
-            let mut turn_started = turn_started;
+            let mut live = live;
             loop {
                 let redraw = tokio::select! {
                     update = receiver.recv() => {
@@ -205,7 +201,7 @@ fn session_updates(
                         if let SessionUpdate::ChatAppended { key, msg } = &update
                             && key == &slot
                         {
-                            crate::session::arm_turn_clock(msg, &mut turn_started);
+                            crate::session::apply_to_live_turn(msg, &mut live);
                         }
                         appended || fleet
                     }
@@ -219,14 +215,11 @@ fn session_updates(
                     wiring.bound,
                     &slot,
                     &conversation,
-                    turn_started,
+                    Some(&live),
                 )
                 .await;
                 let event = Event::default().event(SESSION_EVENT).data(region.into_string());
-                return Some((
-                    Ok(event),
-                    (receiver, wiring, slot, conversation, turn_started, tick),
-                ));
+                return Some((Ok(event), (receiver, wiring, slot, conversation, live, tick)));
             }
         },
     )

@@ -1003,52 +1003,48 @@ async fn a_message_the_read_did_not_carry_is_appended() {
     );
 }
 
-/// A finished turn draws its row: the wall clock the CLI recorded for that
-/// turn, the tokens it reported, and the session cost it had reached.
+/// A finished turn draws its row and the body behind it: the wall clock the
+/// CLI recorded for that turn, the tokens it reported, and the session cost
+/// it had reached, with what the row has no room for behind the fold.
 ///
 /// The result frame arrives on the stream rather than in the transcript the
-/// scan reads: the scan keeps conversation rows, and a result is not one.
+/// scan reads: the scan keeps conversation rows, and a result is not one. It
+/// is the capture's own frame, so every figure below is one the CLI wrote.
 #[tokio::test]
-async fn a_settled_turn_draws_its_row() {
+async fn a_settled_turn_draws_its_row_and_its_body() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
     fleet.start("Busytools", "forge").expect("forge is declared");
     fleet.install_agent("Busytools", "forge", "lead");
     fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let settled = captured_results("monitor_persistent_stream").pop().expect("the captured turn");
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
     fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
-        msg: serde_json::from_value(serde_json::json!({
-            "type": "result",
-            "subtype": "success",
-            "is_error": false,
-            "num_turns": 3,
-            "duration_ms": 75000,
-            "duration_api_ms": 900_000,
-            "session_id": "s",
-            "total_cost_usd": 4.82,
-            "usage": {
-                "input_tokens": 4231,
-                "output_tokens": 1102,
-                "cache_read_input_tokens": 108_442,
-                "cache_creation_input_tokens": 3180,
-            },
-        }))
-        .expect("a result frame"),
+        msg: settled,
     });
     let region = next_session_event(stream).await.expect("the settled turn redraws the region");
 
-    assert!(region.contains("1m 15s"), "the turn's own wall clock: {region}");
-    assert!(region.contains("4.2k\u{2191} 1.1k\u{2193}"), "and what it used: {region}");
-    assert!(region.contains("3.1k written"), "including what it wrote to the cache: {region}");
+    assert!(region.contains("class=\"turninfo\""), "the settled row: {region}");
+    assert!(region.contains("41.0s"), "the turn's own wall clock: {region}");
+    assert!(region.contains("14\u{2191} 1.7k\u{2193}"), "and what it used: {region}");
+    assert!(region.contains("93% cached"), "how much of the input the cache served: {region}");
+    assert!(region.contains("7.0k written"), "including what it wrote to the cache: {region}");
     assert!(
-        region.contains("$4.82 cumulative"),
+        region.contains("$0.16 cumulative"),
         "and the session cost, named as the running total it is: {region}",
     );
-    // The row has no body yet, so it carries no affordance promising one.
-    assert!(!region.contains("expand"), "no chip promises a body that is not there: {region}");
+    assert!(region.contains("<b>api</b>40.7s"), "the api time it split out: {region}");
+    assert!(region.contains("<b>local</b>0.3s tools + hooks"), "and what was left: {region}");
+    assert!(region.contains("<b>out</b>1,711"), "the body's counts are the exact ones: {region}");
+    assert!(region.contains("<b>cache</b>102,194 read"), "both sides of the cache: {region}");
+    assert!(region.contains("<span class=\"tog\"></span>"), "the chip that opens it: {region}");
+    assert!(
+        region.contains("93% of input served from cache"),
+        "and the share spelled out: {region}",
+    );
 }
 
 /// An update for another slot does not redraw this page: the same stream
@@ -1241,4 +1237,66 @@ async fn disabled_binds_nothing() {
     let bound = forge_web::start(state).await.expect("turning it off is not an error");
 
     assert!(bound.is_none(), "a disabled server binds nothing");
+}
+
+/// The `result` frames of one captured baseline, as the wire sent them.
+///
+/// A capture rather than a frame written to match the row: the numbers the
+/// turn body derives - an API clock that counts up across the session, a
+/// compaction that reports every counter at zero - only exist on real
+/// traffic, and a fixture would restate the reading it is meant to check.
+fn captured_results(name: &str) -> Vec<forge_primitives::Message> {
+    let baselines =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../forge-test-harness/baselines/sdk");
+    let file = std::fs::read_dir(&baselines)
+        .expect("the baseline directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.join(format!("{name}.jsonl")).is_file())
+        .expect("a baseline directory holding that capture")
+        .join(format!("{name}.jsonl"));
+    let raw = std::fs::read_to_string(file).expect("the capture");
+    let results: Vec<forge_primitives::Message> = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|envelope| envelope["dir"] == "in")
+        .filter(|envelope| {
+            serde_json::from_str::<serde_json::Value>(envelope["line"].as_str().unwrap_or_default())
+                .is_ok_and(|frame| frame["type"] == "result")
+        })
+        .map(|envelope| {
+            serde_json::from_str(envelope["line"].as_str().expect("the frame text"))
+                .expect("a result frame the decoder takes")
+        })
+        .collect();
+    assert!(!results.is_empty(), "the capture holds a result frame to read");
+    results
+}
+
+/// A frame that reports nothing shows nothing. The compaction's result
+/// carries every counter at zero and an API clock of zero, and a zero where
+/// a measurement belongs reads as one; the row it leaves is dashes, with the
+/// clock it does have standing beside them.
+#[tokio::test]
+async fn a_frame_that_reports_nothing_draws_no_zeroes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let compaction = captured_results("compact").pop().expect("the captured compaction");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: compaction,
+    });
+    let region = next_session_event(stream).await.expect("the frame redraws the region");
+
+    assert!(region.contains("45.2s"), "the clock the frame does carry: {region}");
+    assert!(region.contains("<b>api</b>-"), "the one it does not reads as a dash: {region}");
+    assert!(!region.contains("<b>api</b>0.0s"), "and never as a zero: {region}");
+    assert!(!region.contains("<b>in</b>0"), "no zero stands in for a count: {region}");
+    assert!(!region.contains("0 written"), "not in the collapsed row's own chips either: {region}");
 }

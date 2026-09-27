@@ -10,7 +10,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Instant, SystemTime};
 
 use forge_primitives::Message;
 use forge_primitives::SessionLifecycleState;
@@ -25,7 +25,10 @@ use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{ChunkContent, CronEntry, CronKind, ToolCallContent};
 use forge_sessions::family::ToolFamily;
 use forge_sessions::grouping::KindRow;
-use forge_sessions::model::{AnsweredQuestion, ToolCallStatus};
+use forge_sessions::model::{
+    AnsweredQuestion, LiveTurn, LiveUsage, ToolCallStatus, TurnInfo, format_token_count_grouped,
+    format_token_count_short, format_turn_duration,
+};
 use forge_sessions::surface::connectors::{GotifyView, SlackView};
 use forge_sessions::surface::{
     AccountsView, Agents, LoadingState, PendingKind, Roster, ViewSurface,
@@ -107,45 +110,47 @@ pub async fn page(
     let roster = state.surface.roster();
     let agents = state.surface.agents();
     let messages = read_conversation(&state.surface, &slot, roster.cwd_for(&slot)).await;
-    // The page's first render is before any stream is attached, so it has no
-    // turn clock of its own: the stream's opening event follows at once and
-    // carries one when a turn is in flight.
-    let turn_started = turn_in_flight(&messages);
-    Found::Page(
-        shell(&context(state, bound), &slot, &messages, turn_started, &roster, &agents).await,
+    // The page's first render is before any stream is attached, so it draws
+    // no turn row: the stream's opening event follows at once, and it is the
+    // connection that holds the clock.
+    Found::Page(shell(&context(state, bound), &slot, &messages, None, &roster, &agents).await)
+}
+
+/// True for the frame that says a turn started.
+fn is_running_state(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::System { subtype, data, .. }
+            if subtype == "session_state_changed"
+                && forge_sessions::translate::state_parsing::parse_runtime_session_state(
+                    data.get("state"),
+                ) == Some(RuntimeSessionState::Running)
     )
 }
 
-/// Arm or disarm a turn clock from a message that reports a session state:
-/// the running state arms it, and a settled turn disarms it.
+/// Fold one streamed message into the live turn: a running state starts it,
+/// a settled turn clears it, and an assistant frame adds the input-side
+/// counts it carries. Repeat frames for one message overwrite rather than
+/// add, which is what keeps a re-sent frame from double-counting.
 ///
-/// The clock is set when the message arrives, not when the page renders: a
-/// clock read at render time always says the turn began just now.
-pub(crate) fn arm_turn_clock(msg: &Message, started: &mut Option<SystemTime>) {
+/// The stream is the only writer. The read the connection opens with keeps
+/// conversation rows alone, so neither the result that settles a turn nor
+/// the state frame that starts one reaches it: a transcript can say what a
+/// turn did, and never that one is running.
+pub(crate) fn apply_to_live_turn(msg: &Message, live: &mut LiveTurn) {
     match msg {
-        Message::System { subtype, data, .. } if subtype == "session_state_changed" => {
-            *started = match forge_sessions::translate::state_parsing::parse_runtime_session_state(
-                data.get("state"),
-            ) {
-                Some(RuntimeSessionState::Running) => Some(SystemTime::now()),
-                _ => None,
-            };
+        Message::System { .. } if is_running_state(msg) => live.start(Instant::now()),
+        Message::System { subtype, .. } if subtype == "session_state_changed" => {
+            *live = LiveTurn::default();
         }
-        Message::Result { .. } => *started = None,
+        Message::Result { .. } => *live = LiveTurn::default(),
+        Message::Assistant { message: envelope, .. } => {
+            if let Some(usage) = &envelope.usage {
+                live.record(envelope.id.clone(), live_usage(usage));
+            }
+        }
         _ => {}
     }
-}
-
-/// Whether the conversation the page just read ends on a turn still running.
-/// A page opened mid-turn draws its turn row from the moment it attached,
-/// because a turn's start is not in the transcript: the count is honest
-/// about what it measures, and the next turn's is exact.
-pub(crate) fn turn_in_flight(messages: &[Message]) -> Option<SystemTime> {
-    let mut started = None;
-    for msg in messages {
-        arm_turn_clock(msg, &mut started);
-    }
-    started
 }
 
 /// The pieces both pages read the core through, which are the home's own:
@@ -168,7 +173,7 @@ async fn shell(
     home: &Home<'_>,
     slot: &SessionSlot,
     messages: &[Message],
-    turn_started: Option<SystemTime>,
+    live_turn: Option<&LiveTurn>,
     roster: &Roster,
     agents: &Agents,
 ) -> Markup {
@@ -198,7 +203,7 @@ async fn shell(
                 input type="checkbox" id="l" hidden;
                 input type="checkbox" id="r" hidden;
                 div #live sse-swap="session" hx-swap="morph:outerHTML" hx-target="#session-body" {
-                    (columns(home, slot, messages, turn_started, roster, agents).await)
+                    (columns(home, slot, messages, live_turn, roster, agents).await)
                 }
                 script src="/vendor/htmx.js" {}
                 script src="/vendor/htmx-sse.js" {}
@@ -216,12 +221,12 @@ pub(crate) async fn session_region(
     bound: SocketAddr,
     slot: &SessionSlot,
     conversation: &[Message],
-    turn_started: Option<SystemTime>,
+    live_turn: Option<&LiveTurn>,
 ) -> Markup {
     let home = context(state, bound);
     let roster = state.surface.roster();
     let agents = state.surface.agents();
-    columns(&home, slot, conversation, turn_started, &roster, &agents).await
+    columns(&home, slot, conversation, live_turn, &roster, &agents).await
 }
 
 /// The seat a route names, when the roster holds it. A project's own lead
@@ -250,7 +255,7 @@ async fn columns(
     home: &Home<'_>,
     slot: &SessionSlot,
     messages: &[Message],
-    turn_started: Option<SystemTime>,
+    live_turn: Option<&LiveTurn>,
     roster: &Roster,
     agents: &Agents,
 ) -> Markup {
@@ -303,8 +308,11 @@ async fn columns(
                             &units,
                             roster.cwd_for(slot).as_deref(),
                         ))
-                        @if !waking {
-                            (turn_row(messages, turn_started))
+                        // A turn in flight draws its row where the settled
+                        // one will land, so the settle replaces the row
+                        // rather than moving it.
+                        @if let Some(live) = live_turn.filter(|live| live.started_at.is_some()) {
+                            (turn_report_row(&live_report(live, Instant::now()), true))
                         }
                     }
                 }
@@ -971,6 +979,7 @@ fn unit_markup(unit: &ChatUnit, cwd: Option<&Path>) -> Markup {
         ChatUnit::PeerCard(card) => peer_card(card),
         ChatUnit::MessagingGroup { cards } => messaging_group(cards),
         ChatUnit::Notice(notice) => notice_row(notice),
+        ChatUnit::TurnReport(info) => turn_report_row(info, false),
         // A user turn is the block around its work, drawn by `conversation`.
         ChatUnit::UserTurn { text } => html! { div .mine { (text) } },
     }
@@ -1221,123 +1230,152 @@ fn first_line(text: &str) -> String {
     text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().to_owned()
 }
 
-/// One settled turn's numbers, as the CLI wrote them.
-struct TurnReport {
-    duration_ms: u64,
-    usage: Option<Usage>,
-    cost: Option<f64>,
-}
-
-/// The turn row: what a turn did, under the work it did it with. A turn in
-/// flight counts from when it started; a settled one reports what the CLI
-/// wrote when it ended.
+/// A settled turn's row: what it did, under the work it did it with. The row
+/// and its body draw the record the fold read from the CLI's own frame, so
+/// both fields a view shows are the shipped ones rather than a second
+/// reading of the wire.
 ///
-/// `duration_ms` is the turn's own wall clock. The API split is not drawn:
-/// `duration_api_ms` on the wire is session-cumulative, not per-turn, so the
-/// obvious subtraction reports negative local time on every turn after the
-/// first. `num_turns` is not drawn either - it counts the agentic iterations
-/// of one request, not the session's turns.
-///
-/// A usage block that is absent or all zero is the CLI attributing nothing
-/// rather than measuring zero, so its numbers are left out instead of
-/// claiming a turn that used no tokens.
-fn turn_row(messages: &[Message], started: Option<SystemTime>) -> Markup {
-    if let Some(started) = started {
-        let elapsed = SystemTime::now().duration_since(started).unwrap_or_default();
-        return html! {
-            details .turninfo {
-                summary {
-                    span .ring {}
-                    span { (elapsed_of(elapsed)) }
-                    span .tog { "live" }
-                }
-            }
-        };
-    }
-    let Some(report) = settled_turn(messages) else {
-        return Markup::default();
-    };
-    let usage = report.usage.as_ref();
-    let tokens = usage.map_or_else(Vec::new, turn_tokens);
-    let cached = usage.map_or(0, cached_share);
+/// The collapsed row drops a field it does not have; the body holds its place
+/// with a dash. Neither ever writes a zero for an absent value: the CLI
+/// attributing nothing arrives as a zero block, and a zero here reads as a
+/// measurement.
+fn turn_report_row(info: &TurnInfo, live: bool) -> Markup {
     html! {
         details .turninfo {
             summary {
-                span { "\u{21A9}" }
-                span { (elapsed_of(Duration::from_millis(report.duration_ms))) }
-                @for field in &tokens {
-                    span .sep { "\u{b7}" }
-                    span { (field) }
+                @if live {
+                    span .ring {}
+                } @else {
+                    span { "\u{21A9}" }
                 }
-                @if cached > 0 {
+                span { (format_turn_duration(info.elapsed_ms())) }
+                @if let Some(tokens) = turn_token_field(info) {
                     span .sep { "\u{b7}" }
-                    span { (cached) "% cached" }
+                    span { (tokens) }
                 }
-                @if let Some(cost) = report.cost {
+                @if let Some(pct) = info.cache_hit_percent() {
+                    span .sep { "\u{b7}" }
+                    span { (pct) "% cached" }
+                }
+                @if let Some(written) = counted(info.cache_written_tokens) {
+                    span .sep { "\u{b7}" }
+                    span { (format_token_count_short(written)) " written" }
+                }
+                @if let Some(cost) = info.session_cost_usd {
                     span .sep { "\u{b7}" }
                     span { (money(cost)) " cumulative" }
                 }
+                span .tog {}
+            }
+            div .tibody { (turn_body(info)) }
+        }
+    }
+}
+
+/// The body behind an expanded row, in the mockup's two columns. A cell with
+/// nothing behind it is a dash, except the cache sentence, which is dropped
+/// rather than reading as broken.
+fn turn_body(info: &TurnInfo) -> Markup {
+    let dash = || "-".to_owned();
+    html! {
+        span .l { b { "ended" } (info.ended_at_local.clone().unwrap_or_else(dash)) }
+        span .n { b { "model" } (info.model.clone().unwrap_or_else(dash)) }
+        span .l { b { "elapsed" } (format_turn_duration(info.elapsed_ms())) }
+        span .n {
+            b { "api" }
+            (info.api_ms.map_or_else(dash, format_turn_duration))
+        }
+        span .l {
+            b { "local" }
+            @match info.local_ms() {
+                Some(local) => { (format_turn_duration(local)) " tools + hooks" }
+                None => { "-" }
             }
         }
-    }
-}
-
-/// The last settled turn the conversation holds, and nothing for a
-/// conversation that has not had one.
-fn settled_turn(messages: &[Message]) -> Option<TurnReport> {
-    messages.iter().rev().find_map(|msg| match msg {
-        Message::Result { duration_ms, usage, total_cost_usd, .. } => {
-            Some(TurnReport { duration_ms: *duration_ms, usage: *usage, cost: *total_cost_usd })
+        span .n {}
+        span .l {
+            b { "thinking" }
+            @match info.thinking_tokens {
+                Some(tokens) => { (format_token_count_grouped(tokens)) " est" }
+                None => { "-" }
+            }
         }
-        _ => None,
-    })
-}
-
-/// The token counts a turn's usage block carries. Empty when the block is
-/// all zero, which is the CLI attributing nothing rather than measuring.
-fn turn_tokens(usage: &Usage) -> Vec<String> {
-    let total = usage.input_tokens
-        + usage.output_tokens
-        + usage.cache_read_input_tokens
-        + usage.cache_creation_input_tokens;
-    if total == 0 {
-        return Vec::new();
-    }
-    let mut out = vec![format!(
-        "{}\u{2191} {}\u{2193}",
-        compact(usage.input_tokens),
-        compact(usage.output_tokens)
-    )];
-    if usage.cache_creation_input_tokens > 0 {
-        out.push(format!("{} written", compact(usage.cache_creation_input_tokens)));
-    }
-    out
-}
-
-/// How much of a turn's input the prompt cache served, as a whole percent.
-fn cached_share(usage: &Usage) -> u64 {
-    let billed =
-        usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
-    (usage.cache_read_input_tokens * 100).checked_div(billed).unwrap_or(0)
-}
-
-/// A count as the mockup writes one: thousands to one decimal.
-fn compact(count: u64) -> String {
-    if count >= 1_000 {
-        let tenths = count / 100;
-        format!("{}.{}k", tenths / 10, tenths % 10)
-    } else {
-        count.to_string()
+        span .n {}
+        span .l { b { "in" } (counted(info.input_tokens).map_or_else(dash, format_token_count_grouped)) }
+        span .n { b { "out" } (counted(info.output_tokens).map_or_else(dash, format_token_count_grouped)) }
+        span .l {
+            b { "cache" }
+            @match counted(info.cache_read_tokens) {
+                Some(read) => { (format_token_count_grouped(read)) " read" }
+                None => { "-" }
+            }
+        }
+        span .n {
+            b { "wrote" }
+            (counted(info.cache_written_tokens).map_or_else(dash, format_token_count_grouped))
+        }
+        @if let Some(pct) = info.cache_hit_percent() {
+            span .n .wide { (pct) "% of input served from cache" }
+        }
+        span .l {
+            b { "session" }
+            @match info.session_cost_usd {
+                Some(cost) => { (money(cost)) " cumulative" }
+                None => { "-" }
+            }
+        }
+        span .n {}
     }
 }
 
-/// A duration as the mockup writes one.
-fn elapsed_of(elapsed: Duration) -> String {
-    let seconds = elapsed.as_secs();
-    match seconds {
-        0..=59 => format!("{seconds}s"),
-        60..=3599 => format!("{}m {:02}s", seconds / 60, seconds % 60),
-        _ => format!("{}h {:02}m", seconds / 3600, (seconds % 3600) / 60),
+/// A count worth printing, or nothing: a zero from the wire is "not
+/// attributed" rather than a measurement, and a `0` in the place of one
+/// reads as a real reading. The compaction frame is the shape that carries
+/// them, with every counter at zero.
+fn counted(n: Option<u64>) -> Option<u64> {
+    n.filter(|n| *n > 0)
+}
+
+/// The `4.2k↑ 1.1k↓` pair, or just the input side while the turn is still
+/// running: a mid-turn output count is a streaming placeholder rather than a
+/// count, so there is nothing to show yet.
+fn turn_token_field(info: &TurnInfo) -> Option<String> {
+    let input = format_token_count_short(counted(info.input_tokens)?);
+    match counted(info.output_tokens) {
+        Some(output) => {
+            Some(format!("{input}\u{2191} {}\u{2193}", format_token_count_short(output)))
+        }
+        None => Some(format!("{input}\u{2191}")),
+    }
+}
+
+/// The record a turn still in flight can honestly report: its clock, and the
+/// input-side counts its frames have carried. Output and cost are absent by
+/// design - an assistant frame's output count is a streaming placeholder,
+/// and the cost arrives with the result - so the collapsed row drops them and
+/// the body holds their places with dashes, which is what keeps the body the
+/// same height across the settle.
+fn live_report(live: &LiveTurn, now: Instant) -> TurnInfo {
+    let totals = live.totals();
+    TurnInfo {
+        started_at: live.started_at,
+        elapsed_secs: live
+            .started_at
+            .map_or(0, |started| now.saturating_duration_since(started).as_secs()),
+        input_tokens: totals.map(|usage| usage.input_tokens),
+        cache_read_tokens: totals.map(|usage| usage.cache_read_tokens),
+        cache_written_tokens: totals.map(|usage| usage.cache_written_tokens),
+        ..TurnInfo::default()
+    }
+}
+
+/// A frame's input-side usage, in the shape the live turn accumulates. The
+/// output side is deliberately not read.
+fn live_usage(usage: &Usage) -> LiveUsage {
+    LiveUsage {
+        input_tokens: usage.input_tokens,
+        cache_read_tokens: usage.cache_read_input_tokens,
+        cache_written_tokens: usage.cache_creation_input_tokens,
     }
 }
 
