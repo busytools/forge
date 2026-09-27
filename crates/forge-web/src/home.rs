@@ -29,9 +29,11 @@ pub struct Home<'a> {
     pub live: &'a Mutex<Live>,
     /// The address this page is served from.
     pub bound: SocketAddr,
-    /// The mark and palette the config picked. `None` is the built-in.
+    /// The mark, palette and typefaces the config picked. `None` is the
+    /// built-in set.
     pub mark: Option<&'a str>,
     pub theme: Option<&'a str>,
+    pub font: Option<&'a str>,
 }
 
 /// The page's own view of the fleet.
@@ -215,7 +217,7 @@ pub(crate) fn state_of_agent(agent: &AgentRow, unseen: &Unseen) -> State {
 
 /// Gather the fleet and render it.
 pub async fn render(home: &Home<'_>) -> Markup {
-    page(&view_of(home).await, home.theme)
+    page(&view_of(home).await, home.theme, home.font)
 }
 
 /// Gather the fleet and render the region the stream swaps in.
@@ -546,11 +548,11 @@ fn push_org(orgs: &mut Vec<OrgSection>, name: String, live: usize, rows: Project
 }
 
 /// The page. Pure: everything it draws comes from `view`.
-fn page(view: &HomeView, theme_name: Option<&str>) -> Markup {
+fn page(view: &HomeView, theme_name: Option<&str>, font_name: Option<&str>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
-            (crate::server::page_head("forge \u{b7} home", theme_name))
+            (crate::server::page_head("forge \u{b7} home", theme_name, font_name))
             // The stream, wired by attributes: htmx opens it, swaps the
             // `fleet` event's payload into the region, and closes on the
             // server's own `close` event rather than reconnecting to a
@@ -800,7 +802,7 @@ mod tests {
     }
 
     fn render(view: &HomeView) -> String {
-        page(view, None).into_string()
+        page(view, None, None).into_string()
     }
 
     fn empty() -> HomeView {
@@ -1060,13 +1062,22 @@ mod tests {
         );
     }
 
-    /// A fleet with nothing in it is the empty state, not a blank page.
+    /// A fleet with nothing in it is the empty state, not a blank page. It
+    /// is the third place a mark resolves, and the check is scoped to its
+    /// own panel: the header draws the same mark from the same field, so a
+    /// search over the whole page is satisfied by the header whatever this
+    /// panel does.
     #[test]
     fn an_empty_fleet_draws_the_empty_state() {
         let markup = render(&empty());
 
         assert!(markup.contains("No projects yet"), "a fresh install gets a page: {markup}");
         assert!(markup.contains("[[orgs.projects]]"), "and a way out of it: {markup}");
+        let panel = markup.split_once("class=\"empty\"").expect("the page draws the empty state").1;
+        assert!(
+            panel.contains(crate::brand::mark_path(None)),
+            "the empty state draws the mark the view ships, not one of its own: {markup}",
+        );
     }
 
     /// Catches a relative time that never rolls over, and one that answers

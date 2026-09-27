@@ -224,6 +224,7 @@ fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
         bound,
         mark: state.config.mark.as_deref(),
         theme: state.config.theme.as_deref(),
+        font: state.config.font.as_deref(),
     }
 }
 
@@ -249,6 +250,7 @@ async fn shell(
                     if slot.label() == "lead" { slot.project() } else { slot.label() },
                 ),
                 home.theme,
+                home.font,
             ))
             // The checkboxes are the pane state: CSS-only, so a collapsed
             // pane needs no script. Checked is COLLAPSED.

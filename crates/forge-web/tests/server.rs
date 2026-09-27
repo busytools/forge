@@ -132,11 +132,13 @@ async fn get(config: &WebConfig, path: &str) -> (reqwest::StatusCode, String, St
     (status, content_type, response.text().await.expect("the body reads"))
 }
 
-/// The Klin path, verbatim from the sheet the marks were picked from. A
+/// The two paths of the built-in mark, verbatim from the sheet `panes` was
+/// sourced off: the divider between the panes, and the solid left pane. A
 /// literal rather than a call into the crate, so a redrawn or mistyped
 /// path fails here instead of agreeing with itself.
-const KLIN_PATH: &str = "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 \
-                         19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z";
+const PANES_DIVIDER: &str = "M13.6 3.2V20.8";
+
+const PANES_SOLID: &str = "M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z";
 
 const LANES_BARS: &str = "x=\"10\" y=\"3\" width=\"4\" height=\"18\"";
 
@@ -449,7 +451,7 @@ async fn the_favicon_serves_the_configured_mark_in_the_palette() {
     );
 }
 
-/// Unset keys are the built-ins: Klin on the tab, and the dark palette
+/// Unset keys are the built-ins: panes on the tab, and the dark palette
 /// as the page's own root variables rather than a stylesheet's copy of
 /// it.
 #[tokio::test]
@@ -460,7 +462,10 @@ async fn unset_names_fall_back_to_the_built_in_mark_and_palette() {
 
     let (status, _content_type, favicon) = get(&config, "/favicon.svg").await;
     assert_eq!(status, reqwest::StatusCode::OK);
-    assert!(favicon.contains(KLIN_PATH), "the default mark is Klin, got: {favicon}");
+    assert!(
+        favicon.contains(PANES_DIVIDER) && favicon.contains(PANES_SOLID),
+        "the default mark is panes, the sheet's own drawing, got: {favicon}",
+    );
 
     let (status, _content_type, page) = get(&config, "/").await;
     assert_eq!(status, reqwest::StatusCode::OK);
@@ -468,6 +473,47 @@ async fn unset_names_fall_back_to_the_built_in_mark_and_palette() {
         page.contains("--accent:#f47600"),
         "the page carries the palette as its root variables, got: {page}",
     );
+}
+
+/// The home mockup draws the mark the page draws, so the side-by-side is a
+/// comparison between two drawings of one mark rather than of two marks.
+/// Both sides are read: the mockup as a document, the page as it is served,
+/// because a comparison against one of them is not the comparison this
+/// names.
+#[tokio::test]
+async fn the_home_mockup_draws_the_mark_the_page_draws() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    for (side, drawn) in [("page", page.as_str()), ("mockup", MOCK_HOME)] {
+        assert!(drawn.contains(PANES_DIVIDER), "the {side}'s panes divider");
+        assert!(drawn.contains(PANES_SOLID), "and the {side}'s solid pane");
+    }
+}
+
+/// The mockups draw the faces the view ships. A reference and a built page
+/// in different typefaces is a difference to explain rather than act on,
+/// which is the opposite of what a mockup is for.
+#[test]
+fn the_mockups_draw_the_faces_the_view_ships() {
+    let built_in = forge_web::theme::font_variables(None).expect("the built-in pair");
+    for (mockup, sheet) in [
+        ("web-home.html", MOCK_HOME),
+        ("web-session.html", MOCK),
+        ("web-composer.html", MOCK_COMPOSER),
+    ] {
+        for token in ["--ui:", "--mono:"] {
+            assert_eq!(
+                first_family(sheet, token),
+                first_family(built_in, token),
+                "{mockup} draws a different face than the view ships for {token}",
+            );
+        }
+    }
 }
 
 /// The route serves a real page for a real slot, with all three columns.
@@ -778,6 +824,15 @@ async fn a_git_section_with_nothing_behind_it_starts_closed() {
 /// mockup wins".
 const MOCK: &str = include_str!("../../../docs/mockups/web-session.html");
 
+/// The home's mockup, read for the same reason: it is what the home is held
+/// against, and the mark and the typefaces are the two things it draws that
+/// the page has to match.
+const MOCK_HOME: &str = include_str!("../../../docs/mockups/web-home.html");
+
+/// The composer's mockup: a specimen read state by state against the built
+/// page, so its faces are read as closely as its states.
+const MOCK_COMPOSER: &str = include_str!("../../../docs/mockups/web-composer.html");
+
 /// The `<symbol>` elements of a document, by id, carrying their attribute
 /// text. Enough to catch a hand-copied sprite drifting: a path or an
 /// attribute that differs fails, and the id names which one.
@@ -795,11 +850,10 @@ fn symbols(html: &str) -> std::collections::BTreeMap<String, String> {
     out
 }
 
-/// The `--fs-*` tokens a stylesheet declares, by name.
-fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
-    let mut out = std::collections::BTreeMap::new();
-    let without_comments = css
-        .split("/*")
+/// A stylesheet with its comments taken out, so a scan reads declarations
+/// rather than prose: a comment may name a token the sheet never declares.
+fn strip_comments(css: &str) -> String {
+    css.split("/*")
         .enumerate()
         .map(|(nth, chunk)| {
             if nth == 0 {
@@ -808,7 +862,24 @@ fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
                 chunk.split_once("*/").map_or(String::new(), |(_, rest)| rest.to_owned())
             }
         })
-        .collect::<String>();
+        .collect()
+}
+
+/// The first family a stylesheet's `token` declaration names, unquoted: the
+/// one a browser draws with, the rest being the fallback chain.
+fn first_family(css: &str, token: &str) -> String {
+    css.split_once(token)
+        .and_then(|(_, rest)| rest.split([',', ';']).next())
+        .unwrap_or_default()
+        .trim()
+        .trim_matches('"')
+        .to_owned()
+}
+
+/// The `--fs-*` tokens a stylesheet declares, by name.
+fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let without_comments = strip_comments(css);
     for declaration in without_comments.split(';') {
         let Some((key, value)) = declaration.split_once(':') else {
             continue;
@@ -1915,4 +1986,100 @@ async fn a_frame_that_reports_nothing_draws_no_zeroes() {
     assert!(!region.contains("<b>api</b>0.0s"), "and never as a zero: {region}");
     assert!(!region.contains("<b>in</b>0"), "no zero stands in for a count: {region}");
     assert!(!region.contains("0 written"), "not in the collapsed row's own chips either: {region}");
+}
+
+/// The page draws with the built-in pair, and the sheet declares neither
+/// stack of its own. The absence is the load-bearing half: the injected
+/// block is emitted before the link, so a stack in the sheet's own `:root`
+/// would win on document order at equal specificity and the page would
+/// draw the OS face with nothing reporting it.
+#[tokio::test]
+async fn the_page_draws_with_the_built_in_pair() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/").await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    assert!(page.contains("--ui:\"Inter\""), "the injected stack is the webfont: {page}");
+    assert!(page.contains("--mono:\"Fira Code\""), "for code as well: {page}");
+    // Declarations rather than the file's text: the comment above the
+    // block names both tokens, so a whole-file search would fire on a
+    // rewording and point at the cascade for a bug that is not there.
+    let declared = strip_comments(&sheet);
+    assert!(!declared.contains("--ui:"), "and the sheet declares no stack to outrank it: {sheet}");
+    assert!(!declared.contains("--mono:"), "neither one: {sheet}");
+}
+
+/// `[web] font = "system"` is the opt-out: the same page draws the OS
+/// stacks instead, which is the whole of what the key selects.
+#[tokio::test]
+async fn the_font_key_opts_out_to_the_system_stack() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) =
+        start_on_a_free_port_with(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface(), |config| {
+            WebConfig { font: Some("system".to_owned()), ..config }
+        })
+        .await;
+
+    let (_status, _content_type, page) = get(&config, "/").await;
+
+    assert!(page.contains("--ui:system-ui"), "the OS stack is what `system` draws: {page}");
+    assert!(page.contains("--mono:ui-monospace"), "and its own mono face: {page}");
+    assert!(!page.contains("\"Inter\""), "with the webfont not asked for at all: {page}");
+}
+
+/// The two faces are served, at the path the sheet names: the request is
+/// built from the sheet's own `url(...)`, so a renamed route fails here
+/// rather than as a browser quietly falling back to the OS face.
+#[tokio::test]
+async fn the_faces_the_sheet_asks_for_are_served() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    let sources: Vec<&str> = sheet
+        .split("@font-face")
+        .skip(1)
+        .filter_map(|block| block.split_once("url(\""))
+        .filter_map(|(_, rest)| rest.split('"').next())
+        .collect();
+    assert_eq!(sources.len(), 3, "a source per face: {sources:?}");
+
+    for src in sources {
+        let response =
+            reqwest::get(format!("http://127.0.0.1:{}{src}", config.port)).await.expect("served");
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "{src} is what the sheet asks for");
+        assert_eq!(
+            response.headers()["cache-control"],
+            "no-cache",
+            "{src} must not be held stale by a browser",
+        );
+        let content_type = response.headers()["content-type"].to_str().expect("readable");
+        assert!(
+            content_type.starts_with("font/woff2"),
+            "{src} labelled {content_type} is refused by the browser",
+        );
+        let body = response.bytes().await.expect("the body reads");
+        assert!(body.starts_with(b"wOF2"), "{src} is a woff2 and not a rename of something else");
+    }
+}
+
+/// A name that is not a vendored face is a 404, and the scripts are not
+/// reachable as fonts: each route looks its own set up, so a wrong name
+/// says so rather than being served under the wrong type.
+#[tokio::test]
+async fn a_name_that_is_not_a_vendored_face_is_not_found() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, _body) = get(&config, "/fonts/absent.woff2").await;
+    assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "a face that is not vendored says so");
+
+    let (status, _content_type, _body) = get(&config, "/fonts/htmx.js").await;
+    assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "and a script is not served as a font");
 }

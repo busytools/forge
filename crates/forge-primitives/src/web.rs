@@ -25,6 +25,10 @@ pub struct WebConfig {
     pub mark: Option<String>,
     /// The palette, by name from [`THEME_NAMES`].
     pub theme: Option<String>,
+    /// The typefaces, by name from [`FONT_NAMES`]. `None` is the built-in
+    /// pair - Inter for prose, Fira Code for code - shipped beside the
+    /// view rather than left to whatever the OS has.
+    pub font: Option<String>,
 }
 
 /// The port the web view binds when `[web] port` is absent. Distinct
@@ -34,26 +38,28 @@ pub const DEFAULT_WEB_PORT: u16 = 8790;
 /// The marks forge ships, by the name `[web] mark` takes - a bounded set
 /// rather than a path, so every option is one forge has drawn.
 pub const MARK_NAMES: &[&str] = &[
+    "panes",
     "klin",
     "lanes",
     "f_slab",
     "split",
     "spine",
-    "slab",
     "grid",
     "clamp",
     "strike",
-    "cascade",
     "nest",
     "chamfer",
     "tally",
     "stencil_f",
-    "anvil",
-    "spark",
 ];
 
 /// The palettes forge ships, by the name `[web] theme` takes.
 pub const THEME_NAMES: &[&str] = &["dark"];
+
+/// The typeface sets forge ships, by the name `[web] font` takes. The
+/// built-in pair has no name of its own: an unset key draws it, and the
+/// one name here is the opt-out to the stacks the OS already has.
+pub const FONT_NAMES: &[&str] = &["system"];
 
 impl Default for WebConfig {
     fn default() -> Self {
@@ -63,6 +69,7 @@ impl Default for WebConfig {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             mark: None,
             theme: None,
+            font: None,
         }
     }
 }

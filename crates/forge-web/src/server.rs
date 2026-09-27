@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use forge_primitives::WebConfig;
 use forge_sessions::surface::ViewSurface;
-use maud::{Markup, html};
+use maud::{Markup, PreEscaped, html};
 
 use crate::home::{Home, render, render_region};
 use crate::stream::{Live, events, session_events};
@@ -23,13 +23,22 @@ use crate::{brand, theme};
 /// copy of a row, a mark or a palette is the defect rule 21 names.
 const WEB_CSS: &str = include_str!("web.css");
 
-/// The vendored assets, by the name the page asks for. Each is
+/// The vendored scripts, by the name the page asks for. Each is
 /// byte-for-byte as published, with its version, source and licence
 /// recorded beside it in `assets/VENDOR.md`.
-const ASSETS: &[(&str, &str)] = &[
-    ("htmx.js", include_str!("../assets/htmx.min.js")),
-    ("htmx-sse.js", include_str!("../assets/htmx-sse.min.js")),
-    ("idiomorph.js", include_str!("../assets/idiomorph-ext.min.js")),
+const SCRIPTS: &[(&str, &[u8])] = &[
+    ("htmx.js", include_bytes!("../assets/htmx.min.js")),
+    ("htmx-sse.js", include_bytes!("../assets/htmx-sse.min.js")),
+    ("idiomorph.js", include_bytes!("../assets/idiomorph-ext.min.js")),
+];
+
+/// The vendored faces, by the name the sheet's `@font-face` asks for, with
+/// the same record in `assets/VENDOR.md`. Bytes rather than `include_str!`,
+/// which needs valid UTF-8 and a woff2 is not text.
+const FONTS: &[(&str, &[u8])] = &[
+    ("InterVariable.woff2", include_bytes!("../assets/fonts/InterVariable.woff2")),
+    ("FiraCode-Regular.woff2", include_bytes!("../assets/fonts/FiraCode-Regular.woff2")),
+    ("FiraCode-Medium.woff2", include_bytes!("../assets/fonts/FiraCode-Medium.woff2")),
 ];
 
 /// Why the web view is not serving.
@@ -109,6 +118,7 @@ fn router(wiring: Wiring) -> Router {
         .route("/favicon.svg", get(favicon))
         .route("/web.css", get(web_css))
         .route("/vendor/{file}", get(asset))
+        .route("/fonts/{file}", get(font))
         .with_state(wiring)
 }
 
@@ -129,25 +139,33 @@ async fn session_page(
     }
 }
 
-/// One vendored asset: the page's own scripts, as published. An unknown
-/// name is a 404 rather than an empty script, so a page asking for
-/// something that is not vendored says so where a browser can report it.
-///
+/// One vendored script: the page's own, as published. An unknown name is a
+/// 404 rather than an empty script, so a page asking for something that is
+/// not vendored says so where a browser can report it.
+async fn asset(Path(file): Path<String>) -> Response {
+    vendored(SCRIPTS, "text/javascript; charset=utf-8", &file)
+}
+
+/// One vendored face, typed as one: a browser refuses a font handed to it
+/// as JavaScript, and the two sets are looked up apart so a script asked
+/// for as a font is missing rather than mislabelled.
+async fn font(Path(file): Path<String>) -> Response {
+    vendored(FONTS, "font/woff2", &file)
+}
+
 /// `no-cache` rather than a TTL, because a browser holding an old copy
 /// would report a bug in forge's code. A validator would only turn the
 /// re-fetch into a 304: there is no CDN in front of this, the files are
-/// pinned, and the three together are 66KB over loopback.
-async fn asset(Path(file): Path<String>) -> Response {
-    let Some((_, body)) = ASSETS.iter().find(|(name, _)| *name == file) else {
+/// pinned, and the whole set is a little over 600KiB over loopback.
+fn vendored(
+    table: &'static [(&'static str, &'static [u8])],
+    content_type: &'static str,
+    file: &str,
+) -> Response {
+    let Some((_, body)) = table.iter().find(|(name, _)| *name == file) else {
         return (StatusCode::NOT_FOUND, "no such vendored asset").into_response();
     };
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        *body,
-    )
+    ([(header::CONTENT_TYPE, content_type), (header::CACHE_CONTROL, "no-cache")], *body)
         .into_response()
 }
 
@@ -160,6 +178,7 @@ async fn home_page(State(wiring): State<Wiring>) -> Markup {
         bound: wiring.bound,
         mark: wiring.state.config.mark.as_deref(),
         theme: wiring.state.config.theme.as_deref(),
+        font: wiring.state.config.font.as_deref(),
     })
     .await
 }
@@ -175,6 +194,7 @@ pub(crate) async fn home_region(state: &WebState, bound: SocketAddr) -> Markup {
         bound,
         mark: state.config.mark.as_deref(),
         theme: state.config.theme.as_deref(),
+        font: state.config.font.as_deref(),
     })
     .await
 }
@@ -201,24 +221,36 @@ async fn favicon(State(wiring): State<Wiring>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "image/svg+xml")], body)
 }
 
-/// The palette as the page's own root variables, in every page: one place
-/// to change a theme, and no component carries a branch for it.
-pub(crate) fn root_block(theme_name: Option<&str>) -> Markup {
+/// The palette and the font stack as the page's own root variables, in
+/// every page: one place to change a theme or a typeface, and no component
+/// carries a branch for either. A font name the loader would have refused
+/// contributes nothing, so the page draws in the browser's own default
+/// rather than in a set nobody asked for.
+pub(crate) fn root_block(theme_name: Option<&str>, font_name: Option<&str>) -> Markup {
+    // Unescaped, because this is CSS: `&quot;` inside a `<style>` is
+    // literal text rather than a quote, and both stacks quote a family
+    // name. Every value comes from a name checked against a fixed list.
     html! {
-        style { ":root{" (theme::root_variables(theme_name)) "}" }
+        style {
+            (PreEscaped(format!(
+                ":root{{{}{}}}",
+                theme::root_variables(theme_name),
+                theme::font_variables(font_name).unwrap_or_default(),
+            )))
+        }
     }
 }
 
 /// The head every page carries: the same metadata, the same one sheet, the
 /// same tab mark. Only the title differs by caller, so a second copy is how
 /// the two would come to disagree about what a page loads.
-pub(crate) fn page_head(title: &str, theme_name: Option<&str>) -> Markup {
+pub(crate) fn page_head(title: &str, theme_name: Option<&str>, font_name: Option<&str>) -> Markup {
     html! {
         head {
             meta charset="utf-8";
             meta name="viewport" content="width=device-width, initial-scale=1";
             title { (title) }
-            (root_block(theme_name))
+            (root_block(theme_name, font_name))
             link rel="stylesheet" href="/web.css";
             link rel="icon" href="/favicon.svg" type="image/svg+xml";
         }
