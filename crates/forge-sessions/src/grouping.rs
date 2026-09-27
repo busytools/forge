@@ -227,9 +227,9 @@ fn family_row_label(sdk_tool_name: &str) -> (KindRow, String) {
 
 /// The row a call's siblings summarise under, resolved from the wire's name
 /// alone: each `mcp__<server>__*` server keys as itself, a mutation keys as
-/// `edit`, and everything else keys by its family word. The half of
-/// [`family_row_label`] that needs no rendered call, because a view reading
-/// a transcript has none.
+/// `edit`, and everything else keys by its family word. The wire-level half
+/// of the row policy, which a view reading a transcript needs precisely
+/// because it has no rendered call to resolve a row from.
 pub fn wire_row_label(sdk_tool_name: &str) -> String {
     if let Some((server, _)) = mcp_parts(sdk_tool_name) {
         return server.to_owned();
