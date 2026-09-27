@@ -623,43 +623,10 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
     }
 }
 
-/// Extract a renderable text string from a `queued_command` block's
-/// `prompt` field. Wire shape for `prompt` is `Value` so it could be
-/// a plain string, OR a content-block array for multi-modal inputs
-/// (e.g. text + image). For the latter, walk the inner blocks and
-/// concatenate the text content. Image/document blocks render as
-/// `[image]` / `[document]` placeholders so the user sees something
-/// rather than blank.
-///
-/// This is invoked twice - once for the user-content walker (live
-/// mid-turn / replay), once for the assistant-content walker (edge
-/// case).
-pub(super) fn extract_queued_command_text(prompt: &Value) -> String {
-    if let Some(s) = prompt.as_str() {
-        return s.to_owned();
-    }
-    let Some(blocks) = prompt.as_array() else {
-        // Object or other - render as JSON literal so the user can
-        // see SOMETHING. Should never hit in practice.
-        return serde_json::to_string(prompt).unwrap_or_else(|_| String::from("[unrenderable]"));
-    };
-    let mut parts = Vec::new();
-    for block in blocks {
-        let Some(obj) = block.as_object() else { continue };
-        match obj.get("type").and_then(Value::as_str) {
-            Some("text") => {
-                if let Some(t) = obj.get("text").and_then(Value::as_str) {
-                    parts.push(t.to_owned());
-                }
-            }
-            Some("image") => parts.push(String::from("[image]")),
-            Some("document") => parts.push(String::from("[document]")),
-            Some(other) => parts.push(format!("[{other}]")),
-            None => {}
-        }
-    }
-    parts.join("\n")
-}
+/// The text a `queued_command` block's `prompt` renders as. Shared with
+/// the conversation fold, which reads the same policy from
+/// [`forge_sessions::transcript`], so the two cannot drift apart.
+pub(super) use forge_sessions::transcript::queued_command_text as extract_queued_command_text;
 
 /// Process a `queued_command` content-block.
 ///
@@ -1002,44 +969,18 @@ fn handle_compact_boundary(app: &mut App, trigger: &str, pre_tokens: u64) {
     );
 }
 
-/// Parse a `slash_commands` / `commands` array into `AvailableCommand`s.
-/// Entries are either bare name strings (the `system/init`
-/// `slash_commands` shape) or `{name, description, argumentHint}`
-/// objects (the `commands_changed` shape); both flow through here so
-/// init and the live refresh share one boundary. Non-string / nameless
-/// entries are skipped; an empty `argumentHint` collapses to `None`.
-fn available_commands_from_json(arr: &[Value]) -> Vec<forge_primitives::AvailableCommand> {
-    arr.iter()
-        .filter_map(|entry| {
-            if let Some(name) = entry.as_str() {
-                if name.is_empty() {
-                    return None;
-                }
-                return Some(forge_primitives::AvailableCommand {
-                    name: name.to_owned(),
-                    description: String::new(),
-                    input_hint: None,
-                });
-            }
-            let obj = entry.as_object()?;
-            let name = obj.get("name")?.as_str().filter(|s| !s.is_empty())?.to_owned();
-            let description =
-                obj.get("description").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let input_hint = obj
-                .get("argumentHint")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned);
-            Some(forge_primitives::AvailableCommand { name, description, input_hint })
-        })
-        .collect()
-}
-
 /// Build `AvailableCommandsUpdate` from System(init).slash_commands.
+///
+/// The core keeps the same two catalogues off the same frames, for the
+/// views that read them through the view surface. The parser is one
+/// function, in `forge_workspace::translate`; the policy around it - the
+/// once-per-turn read below and the drift guard on `commands_changed` -
+/// is deliberately a second live copy until this view is removed, and
+/// goes with it.
 fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(arr) = record.get("slash_commands").and_then(Value::as_array) else { return };
-    let commands = available_commands_from_json(arr);
+    let commands = forge_workspace::translate::commands::map_available_commands_from_json(arr);
     if commands.is_empty() {
         return;
     }
@@ -1737,7 +1678,7 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
 /// init-time seed.
 fn handle_commands_changed(app: &mut App, msg: Message) {
     let Message::CommandsChanged { commands, .. } = msg else { return };
-    let parsed = available_commands_from_json(&commands);
+    let parsed = forge_workspace::translate::commands::map_available_commands_from_json(&commands);
     // Drift guard: a non-empty payload that parses to
     // nothing means the CLI's command-entry shape changed under us.
     // Applying it would silently wipe the `/` dropdown + `/help`, so
@@ -2771,54 +2712,6 @@ mod assistant_lifecycle_gate_tests {
             "replayed assistant message must NOT flip lifecycle - that's what \
              leaves the Projects pane spinner stuck after a launchpad resume",
         );
-    }
-}
-
-#[cfg(test)]
-mod queued_command_tests {
-    use super::extract_queued_command_text;
-    use serde_json::json;
-
-    #[test]
-    fn plain_string_prompt_round_trips() {
-        let prompt = json!("Q1, let's give.");
-        assert_eq!(extract_queued_command_text(&prompt), "Q1, let's give.");
-    }
-
-    #[test]
-    fn multi_block_prompt_concatenates_text_blocks() {
-        // Multi-modal queued input: text + image.
-        let prompt = json!([
-            {"type": "text", "text": "look at this"},
-            {"type": "image", "source": {"type": "base64", "data": "..."}},
-        ]);
-        assert_eq!(extract_queued_command_text(&prompt), "look at this\n[image]");
-    }
-
-    #[test]
-    fn unknown_inner_block_type_renders_as_placeholder() {
-        // Forward-compat: unrecognised inner block types render as
-        // `[<type>]` placeholders so the user sees something.
-        let prompt = json!([
-            {"type": "text", "text": "hi"},
-            {"type": "future_block_type", "payload": "..."},
-        ]);
-        assert_eq!(extract_queued_command_text(&prompt), "hi\n[future_block_type]");
-    }
-
-    #[test]
-    fn empty_array_returns_empty_string() {
-        let prompt = json!([]);
-        assert_eq!(extract_queued_command_text(&prompt), "");
-    }
-
-    #[test]
-    fn non_array_non_string_falls_back_to_json_literal() {
-        // Object shape - render as JSON literal so the user sees
-        // something rather than blank.
-        let prompt = json!({"weird": "shape"});
-        let out = extract_queued_command_text(&prompt);
-        assert!(out.contains("weird"));
     }
 }
 
@@ -4475,37 +4368,6 @@ mod commands_changed_tests {
             .find(|c| c.name == "gateway-upgrade")
             .expect("gateway");
         assert_eq!(gateway.input_hint, None, "empty argumentHint collapses to None");
-    }
-
-    #[test]
-    fn helper_handles_both_string_and_object_shapes() {
-        use super::available_commands_from_json;
-        // init `slash_commands` shape: bare name strings -> name-only
-        // commands (the pre-refactor init behaviour).
-        let from_strings = available_commands_from_json(&[json!("audit"), json!("resume")]);
-        assert_eq!(from_strings.len(), 2);
-        assert_eq!(from_strings[0].name, "audit");
-        assert_eq!(from_strings[0].description, "");
-        assert_eq!(from_strings[0].input_hint, None);
-        // commands_changed shape: objects; nameless / scalar entries drop.
-        let from_objects = available_commands_from_json(&[
-            json!({"name": "x", "description": "d", "argumentHint": "<a>"}),
-            json!({"description": "no name"}),
-            json!(42),
-        ]);
-        assert_eq!(from_objects.len(), 1, "nameless / scalar entries skipped");
-        assert_eq!(from_objects[0].name, "x");
-        assert_eq!(from_objects[0].description, "d");
-        assert_eq!(from_objects[0].input_hint.as_deref(), Some("<a>"));
-        // Empty names are degenerate (a blank, un-selectable dropdown
-        // row) - skipped in both the string and object shapes.
-        let empties = available_commands_from_json(&[
-            json!(""),
-            json!({"name": "", "description": "blank"}),
-            json!({"name": "real"}),
-        ]);
-        assert_eq!(empties.len(), 1, "empty-name entries skipped in both shapes");
-        assert_eq!(empties[0].name, "real");
     }
 
     #[test]

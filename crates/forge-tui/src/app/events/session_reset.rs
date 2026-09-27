@@ -113,6 +113,14 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     if let Some(agents) = app.available_agents_mut() {
         agents.clear();
     }
+    // The agent catalogue is read from the first `system/init` of a turn,
+    // and a new occupant arrives on a swap that ends no turn - a mid-turn
+    // `/new`, a reconnect after a login. Left armed the guard would drop
+    // the new occupant's own init and leave the list empty for a whole
+    // turn. `apply_connected_presentation`'s background arm clears the
+    // same three for the sessions this path cannot reach, and the core
+    // clears its copy on the same event, so every view refills at once.
+    app.with_turn_state_mut(|state| state.agents_emitted_this_turn = false);
     app.config.overlay = None;
 }
 
@@ -2016,6 +2024,42 @@ mod tests {
         let bucket = app.sessions.get(&active).expect("active bucket after reset");
         assert!(bucket.background_tasks.is_empty(), "roster cleared on reset too");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared on reset too");
+    }
+
+    /// A new occupant has advertised nothing, and it must be able to
+    /// advertise: the agent catalogue is read from the first
+    /// `system/init` of a turn, and a swap that ends no turn would leave
+    /// the read armed and the list empty for a whole turn.
+    #[test]
+    fn reset_for_new_session_disarms_the_catalogue_read() {
+        use super::reset_for_new_session;
+        use crate::agent::model;
+
+        let mut app = App::test_default();
+        {
+            let bucket = app.active_bucket_mut().expect("active bucket");
+            bucket.available_commands = vec![model::AvailableCommand::new("/help", "Open help")];
+            bucket.available_agents = vec![model::AvailableAgent::new("reviewer", "Review code")];
+        }
+        app.with_turn_state_mut(|state| state.agents_emitted_this_turn = true);
+
+        reset_for_new_session(
+            &mut app,
+            model::SessionId::new("reset-target"),
+            model::CurrentModel::new("m", "m", "m"),
+            None,
+            false,
+        );
+
+        assert!(
+            app.available_commands().is_some_and(<[_]>::is_empty),
+            "the previous occupant's command list does not stand",
+        );
+        assert!(app.available_agents().is_some_and(<[_]>::is_empty), "nor its agent catalogue");
+        assert!(
+            !app.with_turn_state(|state| state.agents_emitted_this_turn),
+            "and the read is armed again, so the new occupant's own init lands",
+        );
     }
 
     /// A respawn whose update carries no pinned model must clear the

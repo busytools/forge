@@ -128,7 +128,7 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
                 }
                 ContentBlock::QueuedCommand { prompt, .. } => {
                     flush(&mut run, &mut units);
-                    units.push(ChatUnit::UserTurn { text: queued_text(prompt) });
+                    units.push(ChatUnit::UserTurn { text: queued_command_text(prompt) });
                 }
                 ContentBlock::ToolUse { id, name, input }
                 | ContentBlock::ServerToolUse { id, name, input } => {
@@ -179,10 +179,12 @@ fn is_standalone_call(sdk_tool_name: &str, input: Option<&serde_json::Value>) ->
         || renders_as_lifecycle_block_parts(sdk_tool_name, input)
 }
 
-/// The text a queued prompt carries. The wire shape is a string for a
-/// typed prompt and a content-block array for a multi-modal one, where
-/// only the text blocks are the words the user typed.
-fn queued_text(prompt: &serde_json::Value) -> String {
+/// The text a `queued_command` block carries: a plain string for a typed
+/// prompt, or a content-block array for a multi-modal one, where only the
+/// text blocks are the words the user typed and every other block renders
+/// as a `[type]` placeholder so the reader sees something rather than a
+/// blank.
+pub fn queued_command_text(prompt: &serde_json::Value) -> String {
     if let Some(text) = prompt.as_str() {
         return text.to_owned();
     }
@@ -671,5 +673,50 @@ mod tests {
         assert!(!outbound.inbound, "the call the session made reads as outbound");
         assert_eq!(outbound.peer, "forge", "and names the seat it went to");
         assert_eq!(outbound.body, "did it land?", "with what it asked");
+    }
+}
+
+/// One policy for the text a `queued_command` block carries: the fold
+/// above reads it, and so does the TUI's own message walker.
+#[cfg(test)]
+mod queued_command_tests {
+    use super::queued_command_text;
+    use serde_json::json;
+
+    #[test]
+    fn plain_string_prompt_round_trips() {
+        let prompt = json!("Q1, let's give.");
+        assert_eq!(queued_command_text(&prompt), "Q1, let's give.");
+    }
+
+    #[test]
+    fn multi_block_prompt_concatenates_text_blocks() {
+        let prompt = json!([
+            {"type": "text", "text": "look at this"},
+            {"type": "image", "source": {"type": "base64", "data": "..."}},
+        ]);
+        assert_eq!(queued_command_text(&prompt), "look at this\n[image]");
+    }
+
+    #[test]
+    fn unknown_inner_block_type_renders_as_placeholder() {
+        let prompt = json!([
+            {"type": "text", "text": "hi"},
+            {"type": "future_block_type", "payload": "..."},
+        ]);
+        assert_eq!(queued_command_text(&prompt), "hi\n[future_block_type]");
+    }
+
+    #[test]
+    fn empty_array_returns_empty_string() {
+        let prompt = json!([]);
+        assert_eq!(queued_command_text(&prompt), "");
+    }
+
+    #[test]
+    fn non_array_non_string_falls_back_to_json_literal() {
+        let prompt = json!({"weird": "shape"});
+        let out = queued_command_text(&prompt);
+        assert!(out.contains("weird"), "an unrenderable shape still shows something: {out}");
     }
 }

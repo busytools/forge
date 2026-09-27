@@ -168,7 +168,7 @@ pub fn refresh_from_file_index(app: &mut App) {
     let query_snapshot = app.mention().map(|m| m.query.clone());
     let candidates_snapshot = match (app.file_index(), query_snapshot) {
         (Some(index), Some(q)) if q.chars().count() >= MIN_QUERY_CHARS => {
-            Some(file_index::visible_candidates(&index.entries, &q))
+            Some(index.index.visible(&q, crate::app::MAX_CANDIDATES))
         }
         _ => None,
     };
@@ -578,7 +578,11 @@ mod tests {
             },
         ];
 
-        file_index::rank_and_truncate_candidates(&mut candidates, "rs");
+        forge_sessions::file_index::rank_and_truncate_candidates(
+            &mut candidates,
+            "rs",
+            crate::app::MAX_CANDIDATES,
+        );
 
         assert_eq!(candidates[0].rel_path, "src/rs-helper.rs");
     }

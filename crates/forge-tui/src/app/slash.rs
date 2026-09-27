@@ -84,9 +84,7 @@ fn parse(text: &str) -> Option<ParsedSlash<'_>> {
     Some(ParsedSlash { name, args: parts.collect() })
 }
 
-fn normalize_slash_name(name: &str) -> String {
-    if name.starts_with('/') { name.to_owned() } else { format!("/{name}") }
-}
+use forge_workspace::translate::commands::slash_name as normalize_slash_name;
 
 pub(crate) fn push_system_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();

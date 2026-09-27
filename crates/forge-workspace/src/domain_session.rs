@@ -1,19 +1,25 @@
 //! Workspace-side per-session state.
 //!
-//! Holds only what workspace itself needs: routing metadata
-//! (`AgentHandle` slot, claude-issued `session_id`) and the
-//! pending-interaction mailbox. Operational state TUI renders
-//! (lifecycle, cwd, account info) lives on
-//! `forge_tui::app::session::UiSession`, not duplicated here - the
-//! lone exception is [`DomainSession::runtime_state`], the one turn
-//! signal the workspace needs authoritatively for its worker-liveness
-//! and prompt-interception guards.
+//! Holds what workspace itself needs: routing metadata (`AgentHandle`
+//! slot, claude-issued `session_id`), the pending-interaction mailbox,
+//! and the facts every view reads through the view surface. The rest of
+//! the operational state a view renders (lifecycle, cwd, account info)
+//! lives on the view's own session record.
+//!
+//! Two classes are held here rather than folded per view. The turn
+//! signal [`DomainSession::runtime_state`] is the one the workspace needs
+//! authoritatively for its worker-liveness and prompt-interception
+//! guards, and [`DomainSession::background_work`],
+//! [`DomainSession::available_commands`] and
+//! [`DomainSession::available_agents`] are held so a view arriving late
+//! reads them from the core. The last two are an intermediate state: the
+//! TUI folds its own copy until it is removed.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use forge_agent::AgentHandle;
-use forge_primitives::{RuntimeSessionState, SessionId};
+use forge_primitives::{AvailableAgent, AvailableCommand, RuntimeSessionState, SessionId};
 
 use crate::SessionSlot;
 use crate::protocol::PendingInteractionSlot;
@@ -87,6 +93,26 @@ pub struct DomainSession {
     /// `NormalizeOptions`. Session-scoped and volatile: dies with the
     /// session, never persisted.
     pub dictate_overrides: crate::dictate::DictateOverrides,
+    /// The slash commands the CLI last advertised for this session, from
+    /// the `system/init` frame's `slash_commands` and from
+    /// `commands_changed`. Held here so a view that arrived after the
+    /// turn started reads the list through the view surface, rather than
+    /// waiting a whole turn for the next frame.
+    ///
+    /// This is an intermediate state of a migration, not a settled rule.
+    /// The TUI still folds its own copy from the same frames and calls
+    /// neither verb, so the same policy runs in both places until it is
+    /// removed; what is shared today is the parser, not the gate or the
+    /// drift guard around it.
+    pub available_commands: Vec<AvailableCommand>,
+    /// The subagents the CLI last advertised, from the same init frame's
+    /// `agents`, on the same terms as [`Self::available_commands`].
+    pub available_agents: Vec<AvailableAgent>,
+    /// Whether this turn's `system/init` has already been read for the
+    /// agent catalogue. The first init of a turn carries it and a
+    /// re-fire inside the same turn repeats it, so the read arms once per
+    /// turn - the rule the TUI's own walker applies.
+    pub agents_emitted_this_turn: bool,
 }
 
 impl DomainSession {
@@ -107,6 +133,9 @@ impl DomainSession {
             background_work: false,
             awaiting_login: false,
             dictate_overrides: crate::dictate::DictateOverrides::default(),
+            available_commands: Vec::new(),
+            available_agents: Vec::new(),
+            agents_emitted_this_turn: false,
         }
     }
 

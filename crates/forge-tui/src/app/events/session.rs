@@ -110,6 +110,21 @@ fn apply_connected_presentation(
             bucket.current_model = Some(current_model);
             bucket.mode = mode;
             bucket.available_models = available_models;
+            // A new occupant has advertised nothing, and the read that
+            // fills its agent catalogue is per turn. The active arm above
+            // clears both through `reset_for_new_session`, which this path
+            // does not reach - the same gap the `SessionReplaced` caller
+            // closes for its own neighbours. Left set, the outgoing
+            // occupant's lists stand and the incoming one's `agents` init
+            // is dropped for a whole turn.
+            bucket.available_commands.clear();
+            bucket.available_agents.clear();
+            bucket.turn_state.agents_emitted_this_turn = false;
+            // The active arm writes this unconditionally on the same
+            // event, and for the same reason: a respawn that pins no
+            // model must not leave the outgoing occupant's request
+            // labelling the incoming one.
+            bucket.turn_state.requested_model_id = None;
         }
         set_bucket_lifecycle_state(app, session_key, SessionLifecycleState::Idle);
         // Mirror session_id onto the workspace's DomainSession so
@@ -1340,6 +1355,51 @@ mod connected_log_tests {
         assert!(
             log.contains("claude-opus-5"),
             "the log must carry the connecting session's model; got: {log}"
+        );
+    }
+
+    /// A background connect is a new occupant in that bucket, and the
+    /// active arm's `reset_for_new_session` does not reach it. Left
+    /// uncleared, the outgoing occupant's catalogues stand and the
+    /// incoming one's `agents` init is dropped for a whole turn, because
+    /// the read is per turn.
+    #[test]
+    fn a_background_connect_clears_the_catalogues_and_re_arms_the_read() {
+        let mut app = App::test_default();
+        let focused = SessionSlot::from_str_for_test("focused-uuid");
+        app.sessions.insert(focused.clone(), UiSession::new(focused.clone(), "test-project"));
+        app.active_session_key = Some(focused);
+
+        let worker = SessionSlot::from_str_for_test("worker-uuid");
+        let mut worker_bucket = UiSession::new(worker.clone(), "test-project");
+        worker_bucket.available_commands =
+            vec![model::AvailableCommand::new("/old", "The outgoing occupant's")];
+        worker_bucket.available_agents =
+            vec![model::AvailableAgent::new("oldagent", "The outgoing occupant's")];
+        worker_bucket.turn_state.agents_emitted_this_turn = true;
+        app.sessions.insert(worker.clone(), worker_bucket);
+
+        apply_connected_presentation(
+            &mut app,
+            &worker,
+            model::SessionId::new("worker-uuid"),
+            "/Users/vedhavyas/Projects/companies".to_owned(),
+            model::CurrentModel::new("claude-opus-5", "opus", "Opus"),
+            Vec::new(),
+            None,
+            &[],
+            false,
+        );
+
+        let bucket = app.sessions.get(&worker).expect("the worker bucket");
+        assert!(
+            bucket.available_commands.is_empty(),
+            "the outgoing occupant's command list does not stand",
+        );
+        assert!(bucket.available_agents.is_empty(), "nor its agent catalogue");
+        assert!(
+            !bucket.turn_state.agents_emitted_this_turn,
+            "and the read is armed again, so the incoming occupant's own init lands",
         );
     }
 
