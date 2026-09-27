@@ -665,6 +665,98 @@ async fn the_inspector_lists_the_projects_tasks_and_schedules() {
     assert!(page.contains("recurring"), "named for what kind it is: {page}");
 }
 
+/// The files are grouped by directory even though the scan returns them
+/// ordered by how much each changed: a directory's heading is drawn once,
+/// wherever in that order its files land.
+#[tokio::test]
+async fn the_git_section_groups_a_directory_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    // `a/` holds two files of different sizes with `b/`'s between them, so
+    // the scan's size order is a/wide, b/mid, a/narrow.
+    repo_of_sizes(
+        dir.path().join("forge").as_path(),
+        &[("a/wide.txt", 9), ("b/mid.txt", 5), ("a/narrow.txt", 1)],
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(
+        page.matches("<div class=\"dir\">a/</div>").count(),
+        1,
+        "a directory's heading is drawn once: {page}",
+    );
+    for file in ["wide.txt", "mid.txt", "narrow.txt"] {
+        assert!(page.contains(file), "{file} is listed: {page}");
+    }
+}
+
+/// The section's summary counts what its own body lists, so a file the
+/// body does not carry cannot inflate the count into a truncation note
+/// that is not true.
+#[tokio::test]
+async fn the_git_section_summary_counts_what_it_lists() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    let repo = dir.path().join("forge");
+    repo_with(repo.as_path(), 3);
+    // Untracked, so the working tree's own count includes it and the diff
+    // the section lists cannot.
+    std::fs::write(repo.join("untracked.txt"), "new\n").expect("write");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains("3 files"), "the summary counts the three it lists: {page}");
+    assert!(!page.contains("4 files"), "and not the untracked one it cannot: {page}");
+    assert_eq!(page.matches("<div class=\"file\">").count(), 3, "three files are listed: {page}");
+}
+
+/// A worker's own page is served, not only its lead's: the home links
+/// every row it draws, and a link into a 404 is worse than no link.
+#[tokio::test]
+async fn a_workers_own_page_serves() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) =
+        get(&config, "/session/Busytools/forge/em-dash-sweep").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "a worker's seat is a page too");
+    assert!(
+        page.contains("<span class=\"nm\">em-dash-sweep</span>"),
+        "and the header names the worker rather than its project: {page}",
+    );
+}
+
+/// A project's name can hold a slash - the mock's own roster has one - so
+/// the route's segment escaping has to survive the round trip: the home
+/// links the escaped form, and the route decodes it back to one segment.
+#[tokio::test]
+async fn a_project_name_with_a_slash_addresses_the_page() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Personal", &["companies/steward"])])
+        .expect("the fleet builds");
+    fleet.start("Personal", "companies/steward").expect("the project is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) =
+        get(&config, "/session/Personal/companies%2Fsteward/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "the escaped name addresses one segment: {page}");
+    assert!(page.contains("companies/steward"), "and the page names the project: {page}");
+
+    let (_status, _content_type, home) = get(&config, "/").await;
+    assert!(
+        home.contains("/session/Personal/companies%2Fsteward/lead"),
+        "the home links the escaped form: {home}",
+    );
+}
+
 /// A repository at `dir` with one commit and `changed` tracked files moved
 /// in it. `git init -b` needs git 2.28 and CI runs 2.25, so HEAD is
 /// pointed by `symbolic-ref` instead.
@@ -681,6 +773,29 @@ fn repo_with(dir: &Path, changed: usize) {
     git(dir, &["commit", "-qm", "init"]);
     for n in 0..changed {
         std::fs::write(dir.join(format!("file-{n}.txt")), "one\ntwo\n").expect("modify");
+    }
+}
+
+/// A repository at `dir` whose one commit carries `files`, each then grown
+/// by its own number of lines: the scan orders its list by total changes,
+/// so the sizes decide the order the section meets them in.
+fn repo_of_sizes(dir: &Path, files: &[(&str, usize)]) {
+    git(dir, &["init", "-q"]);
+    git(dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    git(dir, &["config", "user.email", "t@e.com"]);
+    git(dir, &["config", "user.name", "T"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    for (path, _) in files {
+        let file = dir.join(path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).expect("a directory for the file");
+        }
+        std::fs::write(&file, "one\n").expect("write");
+    }
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "init"]);
+    for (path, added) in files {
+        std::fs::write(dir.join(path), format!("one\n{}", "grown\n".repeat(*added))).expect("grow");
     }
 }
 

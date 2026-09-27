@@ -507,12 +507,19 @@ pub(crate) fn place_of(work: Option<&WorkState>) -> String {
     let Some(work) = work else {
         return String::new();
     };
-    let files = match work.changed {
+    branch_and_files(work.branch.as_deref(), work.changed)
+}
+
+/// A branch and a count as one line, shared by the home's rows and the
+/// inspector's git section: the two draw the same fact, and a second
+/// formatter is how they would come to disagree about it.
+pub(crate) fn branch_and_files(branch: Option<&str>, changed: Option<usize>) -> String {
+    let files = match changed {
         Some(0) | None => String::new(),
         Some(1) => "1 file".to_owned(),
         Some(count) => format!("{count} files"),
     };
-    match (work.branch.as_deref(), files.is_empty()) {
+    match (branch, files.is_empty()) {
         (None, true) => String::new(),
         (None, false) => files,
         (Some(branch), true) => branch.to_owned(),

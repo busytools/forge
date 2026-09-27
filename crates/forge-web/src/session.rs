@@ -13,8 +13,8 @@ use std::time::SystemTime;
 use forge_primitives::SessionLifecycleState;
 use forge_primitives::SessionSlot;
 use forge_primitives::account::AccountAuth;
-use forge_primitives::git::GitIssueRef;
-use forge_primitives::git_diff::{GitDiffFile, GitDiffSnapshot, LayerState};
+use forge_primitives::git::{GitBranch, GitIssueRef};
+use forge_primitives::git_diff::{GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState};
 use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{CronEntry, CronKind};
@@ -460,12 +460,30 @@ fn section(open: bool, glyph: &str, name: &str, summary: &str, body: &Markup) ->
 /// The git section: the branch the session's tree is on and what moved in
 /// it, the pull request that tree belongs to, and the files themselves.
 fn git_section(work: &WorkState, diff: Option<&GitDiffSnapshot>) -> Markup {
-    let summary = crate::home::place_of(Some(work));
-    let body = match diff {
-        Some(diff) => git_body(work, diff),
-        None => Markup::default(),
+    let (summary, body) = match diff {
+        Some(diff) => (git_summary(diff), git_body(work, diff)),
+        None => (String::new(), Markup::default()),
     };
     section(true, "\u{2387}", "git", &summary, &body)
+}
+
+/// The section's line: the branch, and how many files the body below it
+/// lists. Both come from the one scan, so the count cannot describe a
+/// different read than the list does. The working tree's own count is a
+/// different read again - it includes untracked files, which a diff
+/// cannot show - and deriving this line from it would put a number over a
+/// list that does not match it.
+fn git_summary(diff: &GitDiffSnapshot) -> String {
+    let branch = match &diff.branch {
+        GitBranch::Named(name) => Some(name.as_str()),
+        GitBranch::Detached => Some("detached"),
+        GitBranch::NoRepo | GitBranch::Unknown => None,
+    };
+    let files = match &diff.worktree {
+        LayerState::Populated(stats) => Some(stats.total_files),
+        LayerState::Clean | LayerState::ScanFailed => None,
+    };
+    crate::home::branch_and_files(branch, files)
 }
 
 /// What has moved, the PR it belongs to, and the files by directory. The
@@ -496,7 +514,9 @@ fn git_body(work: &WorkState, diff: &GitDiffSnapshot) -> Markup {
                 }
             }
         }
-        @if files.is_empty() {
+        @if let Some(note) = layer_note(&diff.worktree) {
+            div .kv { span .k { (note) } }
+        } @else if files.is_empty() {
             @if let Some(line) = crate::home::gate_line(work.gate) {
                 div .kv { span .k { (line) } }
             }
@@ -520,21 +540,32 @@ fn git_body(work: &WorkState, diff: &GitDiffSnapshot) -> Markup {
     }
 }
 
+/// What the section says about a layer that is not listing files. A scan
+/// that failed is the one state that would otherwise read as a clean tree:
+/// the branch is there, no file is listed, and nothing says why.
+fn layer_note(layer: &LayerState<GitDiffStats>) -> Option<&'static str> {
+    match layer {
+        LayerState::ScanFailed => Some("its changes could not be read"),
+        LayerState::Clean | LayerState::Populated(_) => None,
+    }
+}
+
 /// The issues an open PR closes, in the order the scan returned them.
 fn closes_of(issues: &[GitIssueRef]) -> String {
     issues.iter().map(|issue| format!("#{}", issue.number)).collect::<Vec<_>>().join(" ")
 }
 
 /// The files by the directory they sit in, in the order the scan returned
-/// them: the paths arrive sorted, so one heading covers each directory's
-/// run.
+/// them. The scan orders by how much each file changed, so one directory's
+/// files need not arrive together: the heading is drawn where the
+/// directory first appears, and its later files join it there.
 fn by_dir(files: &[GitDiffFile]) -> Vec<(&str, Vec<&GitDiffFile>)> {
     let mut groups: Vec<(&str, Vec<&GitDiffFile>)> = Vec::new();
     for file in files {
         let dir = file.path.rsplit_once('/').map_or("", |(dir, _)| dir);
-        match groups.last_mut() {
-            Some((name, group)) if *name == dir => group.push(file),
-            _ => groups.push((dir, vec![file])),
+        match groups.iter_mut().find(|(name, _)| *name == dir) {
+            Some((_, group)) => group.push(file),
+            None => groups.push((dir, vec![file])),
         }
     }
     groups
@@ -841,4 +872,28 @@ fn auth_word(auth: AccountAuth) -> &'static str {
 
 fn money(amount: f64) -> String {
     format!("${amount:.2}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failed scan says so, and the two states that are not failures say
+    /// nothing. The failure is the one a reader cannot otherwise tell from
+    /// a clean tree: the branch draws, no file is listed, and no line
+    /// explains the absence.
+    ///
+    /// A unit test rather than a served page because a fixture cannot make
+    /// `git diff --numstat` fail while `git status` succeeds, which is what
+    /// reaching this state needs.
+    #[test]
+    fn a_failed_scan_says_so() {
+        assert_eq!(layer_note(&LayerState::ScanFailed), Some("its changes could not be read"));
+        assert_eq!(layer_note(&LayerState::Clean), None, "a clean tree has nothing to explain");
+        assert_eq!(
+            layer_note(&LayerState::Populated(GitDiffStats::default())),
+            None,
+            "a scan that ran and found nothing is not a failure",
+        );
+    }
 }
