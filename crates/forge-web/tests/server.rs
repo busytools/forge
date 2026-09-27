@@ -788,11 +788,10 @@ fn symbols(html: &str) -> std::collections::BTreeMap<String, String> {
     out
 }
 
-/// The `--fs-*` tokens a stylesheet declares, by name.
-fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
-    let mut out = std::collections::BTreeMap::new();
-    let without_comments = css
-        .split("/*")
+/// A stylesheet with its comments taken out, so a scan reads declarations
+/// rather than prose: a comment may name a token the sheet never declares.
+fn strip_comments(css: &str) -> String {
+    css.split("/*")
         .enumerate()
         .map(|(nth, chunk)| {
             if nth == 0 {
@@ -801,7 +800,13 @@ fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
                 chunk.split_once("*/").map_or(String::new(), |(_, rest)| rest.to_owned())
             }
         })
-        .collect::<String>();
+        .collect()
+}
+
+/// The `--fs-*` tokens a stylesheet declares, by name.
+fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let without_comments = strip_comments(css);
     for declaration in without_comments.split(';') {
         let Some((key, value)) = declaration.split_once(':') else {
             continue;
@@ -997,4 +1002,100 @@ async fn disabled_binds_nothing() {
     let bound = forge_web::start(state).await.expect("turning it off is not an error");
 
     assert!(bound.is_none(), "a disabled server binds nothing");
+}
+
+/// The page draws with the built-in pair, and the sheet declares neither
+/// stack of its own. The absence is the load-bearing half: the injected
+/// block is emitted before the link, so a stack in the sheet's own `:root`
+/// would win on document order at equal specificity and the page would
+/// draw the OS face with nothing reporting it.
+#[tokio::test]
+async fn the_page_draws_with_the_built_in_pair() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/").await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    assert!(page.contains("--ui:\"Inter\""), "the injected stack is the webfont: {page}");
+    assert!(page.contains("--mono:\"Fira Code\""), "for code as well: {page}");
+    // Declarations rather than the file's text: the comment above the
+    // block names both tokens, so a whole-file search would fire on a
+    // rewording and point at the cascade for a bug that is not there.
+    let declared = strip_comments(&sheet);
+    assert!(!declared.contains("--ui:"), "and the sheet declares no stack to outrank it: {sheet}");
+    assert!(!declared.contains("--mono:"), "neither one: {sheet}");
+}
+
+/// `[web] font = "system"` is the opt-out: the same page draws the OS
+/// stacks instead, which is the whole of what the key selects.
+#[tokio::test]
+async fn the_font_key_opts_out_to_the_system_stack() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) =
+        start_on_a_free_port_with(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface(), |config| {
+            WebConfig { font: Some("system".to_owned()), ..config }
+        })
+        .await;
+
+    let (_status, _content_type, page) = get(&config, "/").await;
+
+    assert!(page.contains("--ui:system-ui"), "the OS stack is what `system` draws: {page}");
+    assert!(page.contains("--mono:ui-monospace"), "and its own mono face: {page}");
+    assert!(!page.contains("\"Inter\""), "with the webfont not asked for at all: {page}");
+}
+
+/// The two faces are served, at the path the sheet names: the request is
+/// built from the sheet's own `url(...)`, so a renamed route fails here
+/// rather than as a browser quietly falling back to the OS face.
+#[tokio::test]
+async fn the_faces_the_sheet_asks_for_are_served() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    let sources: Vec<&str> = sheet
+        .split("@font-face")
+        .skip(1)
+        .filter_map(|block| block.split_once("url(\""))
+        .filter_map(|(_, rest)| rest.split('"').next())
+        .collect();
+    assert_eq!(sources.len(), 3, "a source per face: {sources:?}");
+
+    for src in sources {
+        let response =
+            reqwest::get(format!("http://127.0.0.1:{}{src}", config.port)).await.expect("served");
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "{src} is what the sheet asks for");
+        assert_eq!(
+            response.headers()["cache-control"],
+            "no-cache",
+            "{src} must not be held stale by a browser",
+        );
+        let content_type = response.headers()["content-type"].to_str().expect("readable");
+        assert!(
+            content_type.starts_with("font/woff2"),
+            "{src} labelled {content_type} is refused by the browser",
+        );
+        let body = response.bytes().await.expect("the body reads");
+        assert!(body.starts_with(b"wOF2"), "{src} is a woff2 and not a rename of something else");
+    }
+}
+
+/// A name that is not a vendored face is a 404, and the scripts are not
+/// reachable as fonts: each route looks its own set up, so a wrong name
+/// says so rather than being served under the wrong type.
+#[tokio::test]
+async fn a_name_that_is_not_a_vendored_face_is_not_found() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, _body) = get(&config, "/fonts/absent.woff2").await;
+    assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "a face that is not vendored says so");
+
+    let (status, _content_type, _body) = get(&config, "/fonts/htmx.js").await;
+    assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "and a script is not served as a font");
 }

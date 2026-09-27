@@ -523,6 +523,7 @@ fn resolve_web(
     for (key, value, shipped) in [
         ("mark", web.mark.as_deref(), forge_primitives::web::MARK_NAMES),
         ("theme", web.theme.as_deref(), forge_primitives::web::THEME_NAMES),
+        ("font", web.font.as_deref(), forge_primitives::web::FONT_NAMES),
     ] {
         if let Some(value) = value
             && !shipped.contains(&value)
@@ -1174,12 +1175,15 @@ no_reset_cooldown_secs = 90
         };
         let named = |config: &crate::config::LoadedConfig, key: &str| match key {
             "mark" => config.web.mark.clone(),
+            "font" => config.web.font.clone(),
             _ => config.web.theme.clone(),
         };
 
-        // Both name keys validate the same way, so one walk covers them
-        // rather than two near-identical tests.
-        for (key, shipped, unknown) in [("mark", "klin", "anvilish"), ("theme", "dark", "light")] {
+        // Every name key validates the same way, so one walk covers them
+        // rather than three near-identical tests.
+        for (key, shipped, unknown) in
+            [("mark", "klin", "anvilish"), ("theme", "dark", "light"), ("font", "system", "comic")]
+        {
             let (_dir, loaded) = load(key, shipped);
             let config = loaded.expect("a shipped name loads");
             assert_eq!(
@@ -1202,6 +1206,7 @@ no_reset_cooldown_secs = 90
         let config = load_from_dir(dir.path()).expect("absent keys load");
         assert_eq!(config.web.mark, None, "an unset key is the built-in, not a pinned value");
         assert_eq!(config.web.theme, None);
+        assert_eq!(config.web.font, None, "and the built-in pair is what an unset font draws");
     }
 
     #[test]
