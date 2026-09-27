@@ -179,8 +179,12 @@ pub(crate) fn apply_to_live_turn(msg: &Message, live: &mut LiveTurn) {
             *live = LiveTurn::default();
         }
         Message::Result { .. } => *live = LiveTurn::default(),
-        Message::ThinkingTokens { estimated_tokens, .. } => {
-            live.thinking_tokens = Some(*estimated_tokens);
+        // Summed from the delta, the terminal's own rule: the wire's counter
+        // restarts at each thinking block, so the absolute field would step
+        // backwards at every new block.
+        Message::ThinkingTokens { estimated_tokens_delta, .. } => {
+            let delta = u64::try_from(*estimated_tokens_delta).unwrap_or(0);
+            live.thinking_tokens = Some(live.thinking_tokens.unwrap_or(0).saturating_add(delta));
         }
         Message::Assistant { message: envelope, .. } => {
             if let Some(usage) = &envelope.usage {

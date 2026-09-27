@@ -142,11 +142,14 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     let mut model: Option<String> = None;
     let mut thinking: Option<u64> = None;
     for message in messages {
-        // What the turn has thought so far. The result carries no estimate of
-        // its own, so the frames before it are the only place a settled row
-        // can read one.
-        if let Message::ThinkingTokens { estimated_tokens, .. } = message {
-            thinking = Some(*estimated_tokens);
+        // What the turn has thought so far, summed from the frame deltas: the
+        // wire's running counter restarts at every thinking block, so the
+        // absolute field understates any turn that thought more than once.
+        // The result carries no estimate of its own, so the frames before it
+        // are the only place a settled row can read one.
+        if let Message::ThinkingTokens { estimated_tokens_delta, .. } = message {
+            let delta = u64::try_from(*estimated_tokens_delta).unwrap_or(0);
+            thinking = Some(thinking.unwrap_or(0).saturating_add(delta));
             continue;
         }
         // A settled turn's row, which the view draws under the work it
@@ -1401,6 +1404,25 @@ mod tests {
 
     fn is_result(msg: &Message) -> bool {
         matches!(msg, Message::Result { .. })
+    }
+
+    /// The wire's thinking counter restarts at every thinking block, so a
+    /// turn's estimate is the sum of its deltas. This capture is the shape:
+    /// its counter reaches 161, starts again at 50, and ends at 349, and the
+    /// seven blocks it carried are 510 tokens of thinking. Reading the
+    /// absolute field reports 349 and a counter that moves backwards at the
+    /// restart.
+    #[test]
+    fn a_turn_that_thought_twice_reports_every_block() {
+        let reported = render_units(&captured("exit_plan_mode"))
+            .into_iter()
+            .find_map(|unit| match unit {
+                ChatUnit::TurnReport(info) => Some(info.thinking_tokens),
+                _ => None,
+            })
+            .expect("the capture has a settled turn");
+
+        assert_eq!(reported, Some(510), "every block the turn thought, not the last one");
     }
 
     /// A question answered with a note and nothing picked. The CLI records

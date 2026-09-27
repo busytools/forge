@@ -1220,17 +1220,50 @@ async fn a_replacement_draws_the_history_it_carries() {
     );
 }
 
-/// A turn's thinking estimate, as the CLI reports it frame by frame.
-fn thinking_frame(tokens: u64) -> forge_primitives::Message {
+/// One thinking block's worth of estimate, as the CLI reports it: the delta
+/// is what a turn's total is summed from, so one frame here is one block, and
+/// each block carries the uuid that makes it its own frame.
+fn thinking_frame(nth: u64, tokens: u64) -> forge_primitives::Message {
     serde_json::from_value(serde_json::json!({
         "type": "system",
         "subtype": "thinking_tokens",
         "estimated_tokens": tokens,
-        "estimated_tokens_delta": 100,
-        "uuid": "think-1",
+        "estimated_tokens_delta": tokens,
+        "uuid": format!("think-{nth}"),
         "session_id": "s",
     }))
     .expect("a thinking frame")
+}
+
+/// Two blocks in one turn, the second restarting the wire's counter the way
+/// it does at every block boundary: the row sums them rather than reading the
+/// counter, which would step backwards.
+#[tokio::test]
+async fn the_live_row_sums_every_thinking_block() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    for msg in [
+        running_frame(),
+        thinking_frame(1, 161),
+        thinking_frame(2, 189),
+    ] {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: SessionSlot::lead("Busytools", "forge"),
+            msg,
+        });
+    }
+    let region = nth_session_event(stream, 4).await.expect("the frames redraw the region");
+
+    assert!(
+        region.contains("thinking 350"),
+        "the blocks sum rather than the last block standing alone: {region}",
+    );
 }
 
 /// The state frame that says a turn began, which is what arms the row's clock.
@@ -1256,7 +1289,7 @@ async fn the_live_row_counts_the_thinking_estimate() {
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    for msg in [running_frame(), thinking_frame(434)] {
+    for msg in [running_frame(), thinking_frame(1, 434)] {
         fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
             key: SessionSlot::lead("Busytools", "forge"),
             msg,
@@ -1282,7 +1315,7 @@ async fn the_settled_row_keeps_the_estimate_in_its_body() {
     let settled = captured_results("multi_turn").pop().expect("the captured turn");
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    for msg in [thinking_frame(434), settled] {
+    for msg in [thinking_frame(1, 434), settled] {
         fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
             key: SessionSlot::lead("Busytools", "forge"),
             msg,
