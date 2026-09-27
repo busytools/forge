@@ -520,6 +520,8 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   .app { grid-template-columns: minmax(0,1fr); }
   .sess { flex-wrap: wrap; gap: 8px; }
   .sess .facts { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
+  /* Wrapped, the dots between the facts are noise rather than separators. */
+  .sess .facts .sep { display: none; }
   .sess .tog-r { order: 0; }
   .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
   .rail.left, .rail.right { display: none; }
@@ -578,6 +580,7 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   font-style: normal;
   font-display: swap;
 }
+
 /* ---------- the session header's facts, and the four sections a view
    reads from the session itself: subagents, mcp servers, processes,
    monitors ---------- */
@@ -601,6 +604,11 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 /* A section body's own note. The home's is a failure line and is scoped
    to its own list. */
 .sb .note { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 4px 0 0; }
+
+/* A section body's row is one line, the way the terminal draws the same
+   row: the key takes the shrinking, so a command long enough to wrap fits
+   by shortening rather than by pushing its value onto a second line. */
+.sb .kv .v { flex: none; }
 
 /* A card: one monitor, or one sub-agent, with its own head and body. */
 .sb .sa { border: 1px solid var(--line); border-radius: 10px; background: var(--s1); padding: 0 0 1px; }
