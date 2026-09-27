@@ -476,6 +476,18 @@ details.msg[open] > summary .arw { color: var(--teal); }
 
 /* A delivery keeps the lines it arrived with: its body is often a second
    line under the header the envelope carries. */
+.turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base);
+  color: var(--dim); }
+/* Wrap between fields, never inside one: a broken token pair reads as two
+   numbers rather than as in and out. */
+.turninfo > summary { list-style: none; display: flex; align-items: center; gap: 8px;
+  cursor: pointer; flex-wrap: wrap; row-gap: 2px; }
+.turninfo > summary > span { white-space: nowrap; }
+.turninfo > summary::-webkit-details-marker { display: none; }
+.turninfo .sep { opacity: .5; }
+.turninfo .tog { color: var(--muted); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0 8px; font-size: var(--fs-data); }
+
 .notice { margin: 10px 0; padding: 9px 13px; border-radius: 9px; font-size: var(--fs-prose);
   white-space: pre-line; }
 .notice .sev { font-weight: 700; margin-right: 7px; }

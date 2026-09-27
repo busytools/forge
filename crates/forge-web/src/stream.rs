@@ -2,12 +2,14 @@
 
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use axum::extract::State;
-use axum::response::Sse;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive};
+use axum::response::{IntoResponse, Response, Sse};
 use forge_primitives::Message;
+use forge_primitives::SessionSlot;
 use forge_primitives::runtime::RuntimeSessionState;
 use forge_sessions::SessionUpdate;
 use forge_sessions::surface::is_success_result;
@@ -22,6 +24,9 @@ use crate::unseen::Unseen;
 /// The name the page listens for. One region, one event: the page has no
 /// interactive state to preserve, so a wholesale swap is the whole answer.
 const FLEET_EVENT: &str = "fleet";
+
+/// The same, for the session page's own stream.
+const SESSION_EVENT: &str = "session";
 
 /// The event that says the stream is over. The browser reconnects a
 /// stream that just ends, so the page closes this one when it hears it.
@@ -125,6 +130,165 @@ impl Live {
             // not show.
             _ => false,
         }
+    }
+}
+
+/// The session page's own stream: its own subscription and its own baseline
+/// read, taken in that order.
+///
+/// The order is the design and it is the opposite of the obvious one.
+/// Subscribe first, then read: the read is the baseline the stream is
+/// applied on top of, so a message may be in both and is dropped by id when
+/// it is. Reading first loses whatever arrived in between, and no later
+/// read brings it back.
+pub async fn session_events(
+    State(wiring): State<Wiring>,
+    Path((org, project, label)): Path<(String, String, String)>,
+) -> Response {
+    let Some(slot) = crate::session::seat(&wiring.state.surface, &org, &project, &label) else {
+        return (StatusCode::NOT_FOUND, "no session slot by that name").into_response();
+    };
+    let receiver = wiring.state.surface.subscribe();
+    let cwd = wiring.state.surface.roster().cwd_for(&slot);
+    let conversation = crate::session::read_conversation(&wiring.state.surface, &slot, cwd).await;
+    let turn_started = crate::session::turn_in_flight(&conversation);
+
+    let opening = {
+        let region = crate::session::session_region(
+            &wiring.state,
+            wiring.bound,
+            &slot,
+            &conversation,
+            turn_started,
+        )
+        .await;
+        stream::once(
+            async move { Ok(Event::default().event(SESSION_EVENT).data(region.into_string())) },
+        )
+    };
+    let updates = session_updates(receiver, wiring, slot, conversation, turn_started);
+    let stream = opening.chain(updates).chain(stream::once(async {
+        Ok(Event::default().event(CLOSE_EVENT).data("the core's stream ended"))
+    }));
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(20))).into_response()
+}
+
+/// One event per update that changes this session, or per tick, carrying
+/// the region the page swaps in.
+///
+/// The conversation the connection holds is what makes a read per update
+/// unnecessary: it is the baseline read plus everything the stream has
+/// appended since, and a re-read per event would walk the transcript again
+/// every time.
+fn session_updates(
+    receiver: UnboundedReceiver<SessionUpdate>,
+    wiring: Wiring,
+    slot: SessionSlot,
+    conversation: Vec<Message>,
+    turn_started: Option<SystemTime>,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + TICK, TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    stream::unfold(
+        (receiver, wiring, slot, conversation, turn_started, tick),
+        |(mut receiver, wiring, slot, conversation, turn_started, mut tick)| async move {
+            let mut conversation = conversation;
+            let mut turn_started = turn_started;
+            loop {
+                let redraw = tokio::select! {
+                    update = receiver.recv() => {
+                        let update = update?;
+                        // The rail and the inspector draw the fleet, so an
+                        // update they redraw for redraws this page too.
+                        let fleet = Live::lock(&wiring.state.live).apply(&update);
+                        let appended = append(&update, &slot, &mut conversation);
+                        if let SessionUpdate::ChatAppended { key, msg } = &update
+                            && key == &slot
+                        {
+                            crate::session::arm_turn_clock(msg, &mut turn_started);
+                        }
+                        appended || fleet
+                    }
+                    _ = tick.tick() => true,
+                };
+                if !redraw {
+                    continue;
+                }
+                let region = crate::session::session_region(
+                    &wiring.state,
+                    wiring.bound,
+                    &slot,
+                    &conversation,
+                    turn_started,
+                )
+                .await;
+                let event = Event::default().event(SESSION_EVENT).data(region.into_string());
+                return Some((
+                    Ok(event),
+                    (receiver, wiring, slot, conversation, turn_started, tick),
+                ));
+            }
+        },
+    )
+}
+
+/// Fold one update into the connection's conversation, answering whether
+/// the page has to be redrawn.
+///
+/// A message the read already carried is dropped: the read is the baseline
+/// and the stream is applied on top of it, so anything in both is already
+/// drawn. The identity is the message's own id, which the transcript row and
+/// the wire frame share.
+///
+/// The prompts the workspace injects are the one class this cannot settle.
+/// A cron fire, a Gotify delivery, a Slack bundle or a peer comm reaches the
+/// stream as text alone and reaches the read as the envelope-wrapped row the
+/// CLI persisted, with no id shared between them, so a delivery that lands
+/// during the read is drawn twice until the page reloads. Accepted
+/// deliberately: the duplicate is a repeated line, while a rule that matched
+/// on the body would drop a message someone really did send twice.
+fn append(update: &SessionUpdate, slot: &SessionSlot, conversation: &mut Vec<Message>) -> bool {
+    let SessionUpdate::ChatAppended { key, msg } = update else {
+        return false;
+    };
+    if key != slot {
+        return false;
+    }
+    match message_id(msg) {
+        Some(id) if conversation.iter().any(|held| message_id(held) == Some(id)) => false,
+        _ => {
+            conversation.push(msg.clone());
+            true
+        }
+    }
+}
+
+/// The id a streamed message carries, when it carries one.
+fn message_id(msg: &Message) -> Option<&str> {
+    match msg {
+        Message::Assistant { uuid, .. } | Message::User { uuid, .. } => uuid.as_deref(),
+        Message::TaskStarted { uuid, .. }
+        | Message::TaskUpdated { uuid, .. }
+        | Message::TaskProgress { uuid, .. }
+        | Message::TaskNotification { uuid, .. }
+        | Message::ThinkingTokens { uuid, .. }
+        | Message::TurnDuration { uuid, .. }
+        | Message::StopHookSummary { uuid, .. }
+        | Message::BackgroundTasksChanged { uuid, .. }
+        | Message::CommandsChanged { uuid, .. }
+        | Message::HookStarted { uuid, .. }
+        | Message::HookResponse { uuid, .. }
+        | Message::HookProgress { uuid, .. }
+        | Message::Notification { uuid, .. }
+        | Message::PermissionDenied { uuid, .. }
+        | Message::CompactBoundary { uuid, .. }
+        | Message::RateLimitEvent { uuid, .. }
+        | Message::Result { uuid: Some(uuid), .. } => Some(uuid),
+        Message::Result { uuid: None, .. }
+        | Message::System { .. }
+        | Message::StreamEvent { .. }
+        | Message::Error { .. }
+        | Message::Unknown { .. } => None,
     }
 }
 

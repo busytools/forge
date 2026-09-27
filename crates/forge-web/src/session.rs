@@ -10,13 +10,16 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
+use forge_primitives::Message;
 use forge_primitives::SessionLifecycleState;
 use forge_primitives::SessionSlot;
 use forge_primitives::account::AccountAuth;
 use forge_primitives::git::{GitBranch, GitIssueRef};
 use forge_primitives::git_diff::{GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState};
+use forge_primitives::messages::Usage;
+use forge_primitives::runtime::RuntimeSessionState;
 use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{ChunkContent, CronEntry, CronKind, ToolCallContent};
@@ -96,29 +99,53 @@ pub async fn page(
     project: &str,
     label: &str,
 ) -> Found {
-    let surface = &state.surface;
-    let roster = surface.roster();
-    let agents = surface.agents();
-    let Some(seat) = roster.projects.iter().find(|seat| seat.org == org && seat.name == project)
-    else {
+    let Some(slot) = seat(&state.surface, org, project, label) else {
         return Found::Absent;
     };
-    // A project declares one seat of its own that exists whether or not it
-    // has ever run; a worker is a seat only while the roster can name it.
-    let slot = if label == "lead" {
-        SessionSlot::lead(org, project)
-    } else {
-        let named = agents.for_project(&seat.key).iter().any(|row| row.label == label)
-            || surface.workers().for_project(&seat.key).iter().any(|row| row.label == label);
-        if !named {
-            return Found::Absent;
+    // One walk of the core per page: the roster and the agents the page
+    // draws from.
+    let roster = state.surface.roster();
+    let agents = state.surface.agents();
+    let messages = read_conversation(&state.surface, &slot, roster.cwd_for(&slot)).await;
+    // The page's first render is before any stream is attached, so it has no
+    // turn clock of its own: the stream's opening event follows at once and
+    // carries one when a turn is in flight.
+    let turn_started = turn_in_flight(&messages);
+    Found::Page(
+        shell(&context(state, bound), &slot, &messages, turn_started, &roster, &agents).await,
+    )
+}
+
+/// Arm or disarm a turn clock from a message that reports a session state:
+/// the running state arms it, and a settled turn disarms it.
+///
+/// The clock is set when the message arrives, not when the page renders: a
+/// clock read at render time always says the turn began just now.
+pub(crate) fn arm_turn_clock(msg: &Message, started: &mut Option<SystemTime>) {
+    match msg {
+        Message::System { subtype, data, .. } if subtype == "session_state_changed" => {
+            *started = match forge_sessions::translate::state_parsing::parse_runtime_session_state(
+                data.get("state"),
+            ) {
+                Some(RuntimeSessionState::Running) => Some(SystemTime::now()),
+                _ => None,
+            };
         }
-        SessionSlot::worker(org, project, label)
-    };
-    // One walk of the core per page: the roster and the agents the route
-    // already holds are the two the page draws from.
-    let units = read_conversation(&state.surface, &slot, roster.cwd_for(&slot)).await;
-    Found::Page(shell(&context(state, bound), &slot, &units, &roster, &agents).await)
+        Message::Result { .. } => *started = None,
+        _ => {}
+    }
+}
+
+/// Whether the conversation the page just read ends on a turn still running.
+/// A page opened mid-turn draws its turn row from the moment it attached,
+/// because a turn's start is not in the transcript: the count is honest
+/// about what it measures, and the next turn's is exact.
+pub(crate) fn turn_in_flight(messages: &[Message]) -> Option<SystemTime> {
+    let mut started = None;
+    for msg in messages {
+        arm_turn_clock(msg, &mut started);
+    }
+    started
 }
 
 /// The pieces both pages read the core through, which are the home's own:
@@ -140,10 +167,94 @@ fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
 async fn shell(
     home: &Home<'_>,
     slot: &SessionSlot,
-    units: &[ChatUnit],
+    messages: &[Message],
+    turn_started: Option<SystemTime>,
     roster: &Roster,
     agents: &Agents,
 ) -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            (crate::server::page_head(
+                &format!(
+                    "forge \u{b7} {} \u{b7} {}",
+                    slot.project(),
+                    if slot.label() == "lead" { slot.project() } else { slot.label() },
+                ),
+                home.theme,
+            ))
+            // The checkboxes are the pane state: CSS-only, so a collapsed
+            // pane needs no script and a reload does not forget it while
+            // the page is open. Checked is COLLAPSED.
+            //
+            // The stream is wired by attributes, as the home's is: htmx
+            // opens it, swaps the `session` event's payload into the region,
+            // and closes on the server's own `close` event. The listener
+            // sits on a wrapper the payload never replaces, because htmx
+            // re-processes what it swaps in and a listener on the region
+            // itself would register one more per event.
+            body hx-ext="sse, morph" sse-connect=(events_path(slot)) sse-close="close" {
+                (icons::sprite())
+                input type="checkbox" id="l" hidden;
+                input type="checkbox" id="r" hidden;
+                div #live sse-swap="session" hx-swap="morph:outerHTML" hx-target="#session-body" {
+                    (columns(home, slot, messages, turn_started, roster, agents).await)
+                }
+                script src="/vendor/htmx.js" {}
+                script src="/vendor/htmx-script.js" {}
+                script src="/vendor/idiomorph.js" {}
+            }
+        }
+    }
+}
+
+/// The region the stream swaps in: the same markup the page opened with,
+/// drawn from the conversation the connection holds rather than a fresh
+/// read, because a read per update is a disk walk per update.
+pub(crate) async fn session_region(
+    state: &WebState,
+    bound: SocketAddr,
+    slot: &SessionSlot,
+    conversation: &[Message],
+    turn_started: Option<SystemTime>,
+) -> Markup {
+    let home = context(state, bound);
+    let roster = state.surface.roster();
+    let agents = state.surface.agents();
+    columns(&home, slot, conversation, turn_started, &roster, &agents).await
+}
+
+/// The seat a route names, when the roster holds it. A project's own lead
+/// seat exists whether or not it has ever run; a worker's exists only while
+/// the roster can name it.
+pub(crate) fn seat(
+    surface: &ViewSurface,
+    org: &str,
+    project: &str,
+    label: &str,
+) -> Option<SessionSlot> {
+    let roster = surface.roster();
+    let agents = surface.agents();
+    let found = roster.projects.iter().find(|seat| seat.org == org && seat.name == project)?;
+    if label == "lead" {
+        return Some(SessionSlot::lead(org, project));
+    }
+    let named = agents.for_project(&found.key).iter().any(|row| row.label == label)
+        || surface.workers().for_project(&found.key).iter().any(|row| row.label == label);
+    named.then(|| SessionSlot::worker(org, project, label))
+}
+
+/// The page's three columns, which the first render and every swap both
+/// draw.
+async fn columns(
+    home: &Home<'_>,
+    slot: &SessionSlot,
+    messages: &[Message],
+    turn_started: Option<SystemTime>,
+    roster: &Roster,
+    agents: &Agents,
+) -> Markup {
+    let units = transcript::render_units(messages);
     let live = Live::lock(home.live).snapshot();
     let accounts = home.surface.accounts();
     let row = agents.all().iter().find(|row| &row.slot == slot);
@@ -163,60 +274,55 @@ async fn shell(
     let waking = !roster.has_agent(slot);
 
     html! {
-        (DOCTYPE)
-        html lang="en" {
-            (crate::server::page_head(
-                &format!("forge \u{b7} {} \u{b7} {name}", slot.project()),
-                home.theme,
-            ))
-            // The checkboxes are the pane state: CSS-only, so a collapsed
-            // pane needs no script and a reload does not forget it while
-            // the page is open. Checked is COLLAPSED.
-            body {
-                (icons::sprite())
-                input type="checkbox" id="l" hidden;
-                input type="checkbox" id="r" hidden;
-                div .app {
-                    aside .rail .left {
-                        div .banner {
-                            span .t { "projects" }
-                            span .n .ml { (fleet_count(roster)) }
-                        }
-                        div .scroll { (rail(home, roster, agents, slot).await) }
+    div #session-body {
+        div .app {
+                aside .rail .left {
+                    div .banner {
+                        span .t { "projects" }
+                        span .n .ml { (fleet_count(roster)) }
                     }
-                    main .chat {
-                        div .sess {
-                            label .pane-tog .tog-l for="l" title="projects" {
-                                (PreEscaped(RAIL_TOGGLE))
-                            }
-                            label .pane-tog .tog-r for="r" title="inspector" {
-                                (PreEscaped(INSPECTOR_TOGGLE))
-                            }
-                            span .dot .(mark_of(state)) {}
-                            span .nm { (name) }
-                            span .mono .dim { (slot.org()) }
-                            span .facts { (account_chip(&accounts, chip.as_deref())) }
+                    div .scroll { (rail(home, roster, agents, slot).await) }
+                }
+                main .chat {
+                    div .sess {
+                        label .pane-tog .tog-l for="l" title="projects" {
+                            (PreEscaped(RAIL_TOGGLE))
                         }
-                        div .conv {
-                            (chat_body(
-                                waking,
-                                row.and_then(|row| row.reason.as_deref()),
-                                units,
-                                roster.cwd_for(slot).as_deref(),
-                            ))
+                        label .pane-tog .tog-r for="r" title="inspector" {
+                            (PreEscaped(INSPECTOR_TOGGLE))
+                        }
+                        span .dot .(mark_of(state)) {}
+                        span .nm { (name) }
+                        span .mono .dim { (slot.org()) }
+                        span .facts { (account_chip(&accounts, chip.as_deref())) }
+                    }
+                    div .conv {
+                        (chat_body(
+                            waking,
+                            row.and_then(|row| row.reason.as_deref()),
+                            &units,
+                            roster.cwd_for(slot).as_deref(),
+                        ))
+                        @if !waking {
+                            (turn_row(messages, turn_started))
                         }
                     }
-                    aside .rail .right {
-                        div .banner {
-                            span .t { "inspector" }
-                            span .n .ml { (slot.project()) }
-                        }
-                        div .scroll { (inspector(home, roster, slot).await) }
+                }
+                aside .rail .right {
+                    div .banner {
+                        span .t { "inspector" }
+                        span .n .ml { (slot.project()) }
                     }
+                    div .scroll { (inspector(home, roster, slot).await) }
                 }
             }
         }
     }
+}
+
+/// The page's own stream: a slot's region, one connection per tab.
+fn events_path(slot: &SessionSlot) -> String {
+    format!("{}/events", href(slot))
 }
 
 /// The projects rail: every declared project, grouped by the strongest
@@ -802,23 +908,20 @@ fn chat_body(waking: bool, reason: Option<&str>, units: &[ChatUnit], cwd: Option
     conversation(units, cwd)
 }
 
-/// A session's conversation, read and folded off the reactor: the read walks
-/// a whole transcript on the calling thread, and a handler that waits for it
-/// stalls every other request.
-async fn read_conversation(
+/// A session's conversation, read off the reactor: the read walks a whole
+/// transcript on the calling thread, and a handler that waits for it stalls
+/// every other request.
+pub(crate) async fn read_conversation(
     surface: &Arc<ViewSurface>,
     slot: &SessionSlot,
     cwd: Option<PathBuf>,
-) -> Vec<ChatUnit> {
+) -> Vec<Message> {
     let surface = Arc::clone(surface);
     let slot = slot.clone();
     let cwd = cwd.unwrap_or_default();
-    tokio::task::spawn_blocking(move || {
-        let history = surface.conversation(&slot, &cwd);
-        transcript::render_units(&history.messages)
-    })
-    .await
-    .unwrap_or_default()
+    tokio::task::spawn_blocking(move || surface.conversation(&slot, &cwd).messages)
+        .await
+        .unwrap_or_default()
 }
 
 /// The conversation, as the fold's units read: the user's own turns on their
@@ -1116,6 +1219,127 @@ fn notice_row(notice: &Notice) -> Markup {
 /// mockup's own rule, and a message can be any length.
 fn first_line(text: &str) -> String {
     text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().to_owned()
+}
+
+/// One settled turn's numbers, as the CLI wrote them.
+struct TurnReport {
+    duration_ms: u64,
+    usage: Option<Usage>,
+    cost: Option<f64>,
+}
+
+/// The turn row: what a turn did, under the work it did it with. A turn in
+/// flight counts from when it started; a settled one reports what the CLI
+/// wrote when it ended.
+///
+/// `duration_ms` is the turn's own wall clock. The API split is not drawn:
+/// `duration_api_ms` on the wire is session-cumulative, not per-turn, so the
+/// obvious subtraction reports negative local time on every turn after the
+/// first. `num_turns` is not drawn either - it counts the agentic iterations
+/// of one request, not the session's turns.
+///
+/// A usage block that is absent or all zero is the CLI attributing nothing
+/// rather than measuring zero, so its numbers are left out instead of
+/// claiming a turn that used no tokens.
+fn turn_row(messages: &[Message], started: Option<SystemTime>) -> Markup {
+    if let Some(started) = started {
+        let elapsed = SystemTime::now().duration_since(started).unwrap_or_default();
+        return html! {
+            details .turninfo {
+                summary {
+                    span .ring {}
+                    span { (elapsed_of(elapsed)) }
+                    span .tog { "live" }
+                }
+            }
+        };
+    }
+    let Some(report) = settled_turn(messages) else {
+        return Markup::default();
+    };
+    let usage = report.usage.as_ref();
+    let tokens = usage.map_or_else(Vec::new, turn_tokens);
+    let cached = usage.map_or(0, cached_share);
+    html! {
+        details .turninfo {
+            summary {
+                span { "\u{21A9}" }
+                span { (elapsed_of(Duration::from_millis(report.duration_ms))) }
+                @for field in &tokens {
+                    span .sep { "\u{b7}" }
+                    span { (field) }
+                }
+                @if cached > 0 {
+                    span .sep { "\u{b7}" }
+                    span { (cached) "% cached" }
+                }
+                @if let Some(cost) = report.cost {
+                    span .sep { "\u{b7}" }
+                    span { (money(cost)) " cumulative" }
+                }
+                span .tog { "expand" }
+            }
+        }
+    }
+}
+
+/// The last settled turn the conversation holds, and nothing for a
+/// conversation that has not had one.
+fn settled_turn(messages: &[Message]) -> Option<TurnReport> {
+    messages.iter().rev().find_map(|msg| match msg {
+        Message::Result { duration_ms, usage, total_cost_usd, .. } => {
+            Some(TurnReport { duration_ms: *duration_ms, usage: *usage, cost: *total_cost_usd })
+        }
+        _ => None,
+    })
+}
+
+/// The token counts a turn's usage block carries. Empty when the block is
+/// all zero, which is the CLI attributing nothing rather than measuring.
+fn turn_tokens(usage: &Usage) -> Vec<String> {
+    let total = usage.input_tokens
+        + usage.output_tokens
+        + usage.cache_read_input_tokens
+        + usage.cache_creation_input_tokens;
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut out = vec![format!(
+        "{}\u{2191} {}\u{2193}",
+        compact(usage.input_tokens),
+        compact(usage.output_tokens)
+    )];
+    if usage.cache_creation_input_tokens > 0 {
+        out.push(format!("{} written", compact(usage.cache_creation_input_tokens)));
+    }
+    out
+}
+
+/// How much of a turn's input the prompt cache served, as a whole percent.
+fn cached_share(usage: &Usage) -> u64 {
+    let billed =
+        usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+    (usage.cache_read_input_tokens * 100).checked_div(billed).unwrap_or(0)
+}
+
+/// A count as the mockup writes one: thousands to one decimal.
+fn compact(count: u64) -> String {
+    if count >= 1_000 {
+        let tenths = count / 100;
+        format!("{}.{}k", tenths / 10, tenths % 10)
+    } else {
+        count.to_string()
+    }
+}
+
+/// A duration as the mockup writes one.
+fn elapsed_of(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m {:02}s", seconds / 60, seconds % 60),
+        _ => format!("{}h {:02}m", seconds / 3600, (seconds % 3600) / 60),
+    }
 }
 
 /// How many projects have a session behind them, out of how many are

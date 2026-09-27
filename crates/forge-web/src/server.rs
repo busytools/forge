@@ -13,7 +13,7 @@ use forge_sessions::surface::ViewSurface;
 use maud::{Markup, html};
 
 use crate::home::{Home, render, render_region};
-use crate::stream::{Live, events};
+use crate::stream::{Live, events, session_events};
 use crate::work::WorkCache;
 use crate::{brand, theme};
 
@@ -102,6 +102,9 @@ fn router(wiring: Wiring) -> Router {
     Router::new()
         .route("/", get(home_page))
         .route("/session/{org}/{project}/{label}", get(session_page))
+        // A session's own stream, beside its page: the page swaps the region
+        // this sends, and the home's `/events` stays the fleet's.
+        .route("/session/{org}/{project}/{label}/events", get(session_events))
         .route("/events", get(events))
         .route("/favicon.svg", get(favicon))
         .route("/web.css", get(web_css))

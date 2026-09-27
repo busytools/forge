@@ -68,7 +68,13 @@ async fn start_on_a_free_port_with(
 
 /// Open the page's stream, which stays open.
 async fn open_stream(config: &WebConfig) -> reqwest::Response {
-    let url = format!("http://127.0.0.1:{}/events", config.port);
+    open_stream_at(config, "/events").await
+}
+
+/// [`open_stream`] for a stream that is not the fleet's: a session page has
+/// one of its own.
+async fn open_stream_at(config: &WebConfig, path: &str) -> reqwest::Response {
+    let url = format!("http://127.0.0.1:{}{path}", config.port);
     let response = tokio::time::timeout(std::time::Duration::from_secs(5), reqwest::get(url))
         .await
         .expect("the stream opens within five seconds")
@@ -914,6 +920,179 @@ async fn an_empty_conversation_draws_no_skeleton() {
     assert!(!page.contains("class=\"kind\""), "no group is drawn for nothing: {page}");
     assert!(!page.contains("class=\"mine\""), "and no turn either: {page}");
     assert!(!page.contains("not running"), "the seat is running, so it does not say otherwise");
+}
+
+/// A turn the wire carries, with the id the transcript row shares.
+fn user_frame(uuid: &str, text: &str) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "user",
+        "uuid": uuid,
+        "message": { "role": "user", "content": text },
+        "session_id": "s",
+    }))
+    .expect("a user frame")
+}
+
+/// The live half: the read is the baseline and the stream is applied on top
+/// of it, so a message that arrives in the overlap is in both halves and the
+/// page drops the stream's copy because the read already carries its id.
+#[tokio::test]
+async fn a_message_the_read_carried_is_not_appended_twice() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"user","uuid":"u-1","message":{"role":"user","content":"make the call tree the default"}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+    assert!(page.contains("make the call tree the default"), "precondition: the read drew it");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    // The opening event is the read, and the same row then arrives on the
+    // stream: that overlap is what the ordering makes possible. A second
+    // message follows it, so the payload below is the region as the page
+    // holds it once both have been through.
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: user_frame("u-1", "make the call tree the default"),
+    });
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: user_frame("u-3", "and the one after it"),
+    });
+    let second = next_session_event(stream).await.expect("the second message redraws the region");
+
+    assert!(second.contains("and the one after it"), "the new message is drawn: {second}");
+    assert_eq!(
+        second.matches("make the call tree the default").count(),
+        1,
+        "and the read's copy is the only copy of it the region carries: {second}",
+    );
+}
+
+/// A message that arrived entirely after the read is appended, which is the
+/// other half of the same rule.
+#[tokio::test]
+async fn a_message_the_read_did_not_carry_is_appended() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: user_frame("u-2", "a turn nobody had read"),
+    });
+    let region = next_session_event(stream).await.expect("the message redraws the region");
+
+    assert!(
+        region.contains("a turn nobody had read"),
+        "the stream's own message is drawn: {region}",
+    );
+}
+
+/// A finished turn draws its row: the wall clock the CLI recorded for that
+/// turn, the tokens it reported, and the session cost it had reached.
+///
+/// The result frame arrives on the stream rather than in the transcript the
+/// scan reads: the scan keeps conversation rows, and a result is not one.
+#[tokio::test]
+async fn a_settled_turn_draws_its_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "num_turns": 3,
+            "duration_ms": 75000,
+            "duration_api_ms": 900_000,
+            "session_id": "s",
+            "total_cost_usd": 4.82,
+            "usage": {
+                "input_tokens": 4231,
+                "output_tokens": 1102,
+                "cache_read_input_tokens": 108_442,
+                "cache_creation_input_tokens": 3180,
+            },
+        }))
+        .expect("a result frame"),
+    });
+    let region = next_session_event(stream).await.expect("the settled turn redraws the region");
+
+    assert!(region.contains("1m 15s"), "the turn's own wall clock: {region}");
+    assert!(region.contains("4.2k\u{2191} 1.1k\u{2193}"), "and what it used: {region}");
+    assert!(region.contains("3.1k written"), "including what it wrote to the cache: {region}");
+    assert!(
+        region.contains("$4.82 cumulative"),
+        "and the session cost, named as the running total it is: {region}",
+    );
+}
+
+/// An update for another slot does not redraw this page: the same stream
+/// carries every session, and a page that swapped on all of them would
+/// re-render a conversation nobody changed.
+#[tokio::test]
+async fn an_update_for_another_slot_does_not_swap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "busymail"),
+        msg: user_frame("u-9", "a message for another session"),
+    });
+
+    assert!(
+        next_session_event_within(stream, std::time::Duration::from_millis(300)).await.is_none(),
+        "another slot's message is not this page's news",
+    );
+}
+
+/// The next region the stream sends, whenever it comes.
+async fn next_session_event(response: reqwest::Response) -> Option<String> {
+    next_session_event_within(response, std::time::Duration::from_secs(5)).await
+}
+
+/// The next region the stream sends, or `None` when none arrives in time: a
+/// stream that should stay quiet is as much a property as one that speaks.
+async fn next_session_event_within(
+    response: reqwest::Response,
+    within: std::time::Duration,
+) -> Option<String> {
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut seen = String::new();
+    loop {
+        let chunk = tokio::time::timeout(within, stream.next()).await.ok()??;
+        seen.push_str(&String::from_utf8_lossy(&chunk.ok()?));
+        // The buffer holds every event so far, opening one included: the
+        // region under test is the last of them.
+        if seen.matches("event: session").count() >= 2 {
+            return seen.rsplit("event: session").next().map(str::to_owned);
+        }
+    }
 }
 
 /// A worker's own page is served, not only its lead's: the home links
