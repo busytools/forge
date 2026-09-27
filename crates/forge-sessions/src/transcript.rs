@@ -225,14 +225,25 @@ fn inbound_unit(text: &str) -> Option<ChatUnit> {
         | PeerInboundKind::Reply { from, body, .. } => {
             Some(ChatUnit::PeerCard(PeerCard { peer: from, body, inbound: true }))
         }
-        PeerInboundKind::Gotify { app, title, message, .. } => Some(notice(
-            NoticeSeverity::Info,
-            "gotify",
-            &format!("app '{app}': {title}\n{message}"),
-        )),
+        PeerInboundKind::Gotify { app, title, message, priority } => {
+            let severity = if priority >= GOTIFY_ELEVATED_PRIORITY {
+                NoticeSeverity::Warning
+            } else {
+                NoticeSeverity::Info
+            };
+            Some(notice(
+                severity,
+                "gotify",
+                &format!("app '{app}' \u{b7} priority {priority}: {title}\n{message}"),
+            ))
+        }
         PeerInboundKind::Cron { prompt } => Some(notice(NoticeSeverity::Info, "cron", &prompt)),
-        PeerInboundKind::Slack { channel, body, .. } => {
-            Some(notice(NoticeSeverity::Info, "slack", &format!("{channel}: {body}")))
+        PeerInboundKind::Slack { workspace, channel, author, body } => {
+            let head = match author {
+                Some(author) => format!("{workspace} \u{b7} {channel} \u{b7} {author}"),
+                None => format!("{workspace} \u{b7} {channel}"),
+            };
+            Some(notice(NoticeSeverity::Info, "slack", &format!("{head}: {body}")))
         }
         PeerInboundKind::DeliveryFailure { target, org, reason } => Some(notice(
             NoticeSeverity::Warning,
@@ -246,6 +257,12 @@ fn inbound_unit(text: &str) -> Option<ChatUnit> {
         )),
     }
 }
+
+/// A Gotify delivery at or above this priority reads as a warning rather
+/// than as information. The same number is the TUI's cue for the same row,
+/// where it is private: a divergence here shows up as the two views giving
+/// one delivery different severities.
+const GOTIFY_ELEVATED_PRIORITY: u8 = 5;
 
 /// A notice, with its text trimmed: a Gotify envelope's message is often
 /// empty and would otherwise leave a bare newline under the title.
@@ -495,27 +512,51 @@ mod tests {
     /// header inside a bubble the user never typed.
     #[test]
     fn an_external_envelope_is_a_notice_and_not_a_turn() {
-        let delivered = user(vec![ContentBlock::Text {
-            text: "[Gotify - app 'watcher', priority 5]\n\ndeploy finished".to_owned(),
+        let quiet = user(vec![ContentBlock::Text {
+            text: "[Gotify - app 'watcher', priority 3]\n\ndeploy finished".to_owned(),
+        }]);
+        let loud = user(vec![ContentBlock::Text {
+            text: "[Gotify - app 'ci', priority 9]\n\nbuild failed".to_owned(),
+        }]);
+        let slack = user(vec![ContentBlock::Text {
+            text: "[Slack - workspace 'Busytools', #forge] id ts\n\nsteward: the gate is green\n"
+                .to_owned(),
         }]);
         let failed = user(vec![ContentBlock::Text {
             text: "[Ask id=q-1 to agent 'companies' (org 'Busytools') failed to deliver: channel closed]"
                 .to_owned(),
         }]);
 
-        let units = render_units(&[delivered, failed]);
+        let units = render_units(&[quiet, loud, slack, failed]);
 
-        let ChatUnit::Notice(delivered) = &units[0] else {
+        let ChatUnit::Notice(quiet) = &units[0] else {
             panic!("a notice");
         };
-        assert_eq!(delivered.severity, NoticeSeverity::Info, "a delivery is not a failure");
-        assert_eq!(delivered.source, "gotify", "and says where it came from");
+        assert_eq!(quiet.severity, NoticeSeverity::Info, "a quiet delivery is information");
+        assert_eq!(quiet.source, "gotify", "and says where it came from");
+        assert!(quiet.text.contains("deploy finished"), "carrying its own words: {}", quiet.text);
         assert!(
-            delivered.text.contains("deploy finished"),
-            "carrying the notification's own words: {}",
-            delivered.text,
+            quiet.text.contains("priority 3"),
+            "and the priority it arrived at: {}",
+            quiet.text
         );
-        let ChatUnit::Notice(failed) = &units[1] else {
+
+        let ChatUnit::Notice(loud) = &units[1] else {
+            panic!("a notice");
+        };
+        assert_eq!(loud.severity, NoticeSeverity::Warning, "an elevated priority is a warning");
+
+        let ChatUnit::Notice(slack) = &units[2] else {
+            panic!("a notice");
+        };
+        assert_eq!(slack.source, "slack", "a Slack bundle says so");
+        assert!(
+            slack.text.contains("Busytools") && slack.text.contains("steward"),
+            "and keeps the workspace and author its header draws: {}",
+            slack.text,
+        );
+
+        let ChatUnit::Notice(failed) = &units[3] else {
             panic!("a notice");
         };
         assert_eq!(failed.severity, NoticeSeverity::Warning, "a failed delivery is");
