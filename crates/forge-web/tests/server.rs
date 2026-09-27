@@ -2314,48 +2314,223 @@ async fn the_header_states_the_launched_effort_before_a_hook_reports() {
     );
 }
 
-/// The subagents section draws the session's own attribution - which agent
-/// type ran which tool call - rather than the CLI's catalogue of agent
-/// types that exist.
-#[tokio::test]
-async fn the_subagents_section_draws_the_sessions_attribution() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let fleet = fleet(dir.path());
-    let lead = SessionSlot::lead("Busytools", "forge");
-    fleet.seed_view_facts(
-        &lead,
-        ViewFacts {
-            subagent_attribution: [
-                ("tu-1".to_owned(), "Explore".to_owned()),
-                ("tu-2".to_owned(), "Explore".to_owned()),
-                ("tu-3".to_owned(), "code-reviewer".to_owned()),
-            ]
-            .into_iter()
-            .collect(),
-            ..ViewFacts::default()
+/// One assistant frame carrying a single tool call, from the instance named
+/// by `parent` and from the session itself when it is `None`.
+fn call_frame(
+    id: &str,
+    name: &str,
+    input: &serde_json::Value,
+    parent: Option<&str>,
+) -> forge_primitives::Message {
+    let mut frame = serde_json::json!({
+        "type": "assistant",
+        "uuid": format!("u-{id}"),
+        "message": {
+            "id": "msg_1",
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [{"type": "tool_use", "id": id, "name": name, "input": input}],
         },
-    );
+        "session_id": "s",
+    });
+    if let Some(parent) = parent {
+        frame["parent_tool_use_id"] = serde_json::Value::String(parent.to_owned());
+    }
+    serde_json::from_value(frame).expect("an assistant frame carrying one call")
+}
+
+/// A page opened after the instance ran draws no card for it. Its transcript
+/// holds the dispatch and the CLI's launch acknowledgement and nothing else:
+/// the rows that report an end are system rows the scan does not keep, and
+/// the instance's own frames live in a sidechain file this read does not
+/// open. Nothing says whether it is over, so the page says nothing rather
+/// than a check mark under work that may still be running.
+#[tokio::test]
+async fn a_dispatch_whose_transcript_says_nothing_is_not_drawn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","uuid":"u-1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_a","name":"Task","input":{"description":"cli-version","subagent_type":"Explore","prompt":"land it"}}]}}"#,
+                r#"{"type":"user","uuid":"u-2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_a","content":[{"type":"text","text":"Async agent launched successfully. (This tool result is internal metadata, never quote or paste any part of it, including the agentId below.)\nagentId: a5f83c2a9b88e4db5"}]}]}}"#,
+                r#"{"type":"assistant","uuid":"u-3","message":{"id":"m2","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_b","name":"Task","input":{"description":"web-session-review","subagent_type":"Explore","prompt":"review it"}}]}}"#,
+                r#"{"type":"user","uuid":"u-4","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_b","content":[{"type":"text","text":"Async agent launched successfully. (This tool result is internal metadata, never quote or paste any part of it, including the agentId below.)\nagentId: b6f93d3c0b99e5ea6"}]}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
 
-    assert!(page.contains("href=\"#i-subagents\""), "the section renders: {page}");
-    assert!(page.contains("Explore"), "naming an agent type that ran work: {page}");
-    assert!(page.contains("code-reviewer"), "and the other one: {page}");
     assert!(
-        page.contains("The only surface subagents have"),
-        "with the note the drawing puts under the section: {page}",
+        !page.contains("href=\"#i-subagents\""),
+        "a launch acknowledgement is not evidence the instance is over: {page}",
     );
-    assert!(page.contains("2 calls"), "with how much work each ran: {page}");
     assert!(
-        page.contains("<span class=\"v\">1 call</span>"),
-        "and a count of one read as one rather than as one calls: {page}",
+        !page.contains("<span class=\"nm\">cli-version</span>"),
+        "and nothing claims the instance either way: {page}",
     );
-    let busiest = page.find("Explore").expect("the busiest type is listed");
-    let rest = page.find("code-reviewer").expect("and the other is too");
+}
+
+/// A running instance draws its own calls under it, in the order it fired
+/// them, each named by the tool and what it was aimed at.
+#[tokio::test]
+async fn a_running_instance_draws_its_own_calls() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let key = SessionSlot::lead("Busytools", "forge");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: key.clone(),
+        msg: call_frame(
+            "toolu_a",
+            "Task",
+            &serde_json::json!({"description": "web-session-review", "subagent_type": "Explore"}),
+            None,
+        ),
+    });
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: key.clone(),
+        msg: call_frame(
+            "toolu_a1",
+            "Read",
+            &serde_json::json!({"file_path": "/srv/docs/book/src/ui/chat.md"}),
+            Some("toolu_a"),
+        ),
+    });
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key,
+        msg: call_frame(
+            "toolu_a2",
+            "Bash",
+            &serde_json::json!({"command": "cargo nextest run -p forge-web"}),
+            Some("toolu_a"),
+        ),
+    });
+
+    let region = event_carrying(stream, "Bash cargo nextest run -p forge-web").await;
+
     assert!(
-        busiest < rest,
-        "the types come in the order of how much they ran, not the map's own: {page}",
+        region.contains("<span class=\"nm\">web-session-review</span>"),
+        "the card is named for its instance: {region}",
+    );
+    assert!(region.contains("running \u{b7} 2 tools"), "and says what it is doing: {region}");
+    assert!(
+        region.contains("<span class=\"c2\">1 running</span>"),
+        "and the section states how much of the session is running: {region}",
+    );
+    assert!(
+        region.contains(
+            "<div class=\"tt\"><svg class=\"ic tg\"><use href=\"#i-read\"></svg> Read \
+             /srv/docs/book/src/ui/chat.md</div>"
+        ),
+        "a call's row draws the tool's own icon and its title, which is what the \
+         per-call row is for: {region}",
+    );
+    assert!(
+        region.contains(
+            "<div class=\"tt\"><svg class=\"ic tg\"><use href=\"#i-bash\"></svg> Bash \
+             cargo nextest run -p forge-web</div>"
+        ),
+        "and the second row draws the second tool's icon rather than the first's: {region}",
+    );
+    let read = region.find("Read /srv/docs/book/src/ui/chat.md").expect("its first call draws");
+    let bash = region.find("Bash cargo nextest run -p forge-web").expect("and its second draws");
+    assert!(read < bash, "in the order the instance fired them: {region}");
+    assert!(
+        !region.contains("<div class=\"settled\">"),
+        "a running instance is not drawn as a settled one: {region}",
+    );
+}
+
+/// The card states when an instance settled, from the instant the CLI's own
+/// roster stamped on the frame that ended it - rather than an age counted
+/// from whenever the page happened to load - and counts the one call the
+/// instance made as one tool rather than one tools.
+#[tokio::test]
+async fn a_settled_instance_states_when_it_settled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let key = SessionSlot::lead("Busytools", "forge");
+    let ended_ms = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .expect("the clock is past the epoch")
+        .as_millis()
+        .saturating_sub(12 * 60 * 1000);
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: key.clone(),
+        msg: call_frame(
+            "toolu_a",
+            "Task",
+            &serde_json::json!({"description": "cli-version", "subagent_type": "Explore"}),
+            None,
+        ),
+    });
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: key.clone(),
+        msg: call_frame(
+            "toolu_a1",
+            "Read",
+            &serde_json::json!({"file_path": "/srv/docs/manual.md"}),
+            Some("toolu_a"),
+        ),
+    });
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: key.clone(),
+        msg: serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t-a",
+            "description": "cli-version",
+            "uuid": "u-start",
+            "session_id": "s",
+            "tool_use_id": "toolu_a",
+        }))
+        .expect("a task_started frame"),
+    });
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key,
+        msg: serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "t-a",
+            "patch": {"status": "completed", "end_time": ended_ms},
+            "uuid": "u-upd",
+            "session_id": "s",
+        }))
+        .expect("a task_updated frame carrying an end time"),
+    });
+
+    let region = event_carrying(stream, "settled 12m").await;
+
+    assert!(
+        region.contains("<span class=\"n\">1 tool \u{b7} settled 12m</span>"),
+        "the card counts one call as one tool and states how long ago it settled: {region}",
+    );
+    assert!(
+        region.contains("<div class=\"settled\">"),
+        "and draws the settled card rather than a live tail: {region}",
+    );
+    assert!(
+        region.contains("<span class=\"c2\">0 running</span>"),
+        "and the section counts what is still running rather than what it holds: {region}",
     );
 }
 

@@ -18,6 +18,7 @@ pub mod grouping;
 pub mod model;
 pub mod monitor;
 pub mod peer_outbound;
+pub mod subagents;
 pub mod surface;
 #[cfg(feature = "testing")]
 pub mod testing;
