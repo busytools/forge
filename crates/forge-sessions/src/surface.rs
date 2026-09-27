@@ -102,20 +102,32 @@ impl ViewSurface {
     /// that arrived after the session was already running.
     ///
     /// Subscribe first, then call this. The read is the baseline the stream
-    /// is applied on top of, so a message that lands during the read is in
-    /// both, and a view resolves that by dropping the stream's copy when the
-    /// read already carries its id; reading first would instead lose whatever
-    /// arrived in between, and no later read brings it back. An echoed typed
-    /// prompt carries no id on either side, so that copy is not matched and
-    /// can show twice.
+    /// is applied on top of, so a message may be in both: a view resolves
+    /// that by dropping the stream's copy when the read already carries its
+    /// id, and reading first instead would lose whatever arrived in between,
+    /// which no later read brings back.
+    ///
+    /// The one class the two halves cannot reconcile by id is the prompts
+    /// the workspace injects. A cron, a Gotify delivery, a Slack bundle or a
+    /// peer comm reaches the stream as text alone (`CronPromptAppended`,
+    /// `GotifyNotificationAppended`, `SlackMessageAppended`) and reaches this
+    /// read as the envelope-wrapped row the CLI persisted, with no id shared
+    /// between them, so a view holding both has to match on the envelope's
+    /// source and body instead.
+    ///
+    /// This reads a whole transcript off disk on the calling thread, with no
+    /// size cap: a real session costs milliseconds, and the largest
+    /// transcript on this machine 2.5 s in a release build. A caller must
+    /// offload it rather than run it in a handler, the way this project's
+    /// other async work does with a spawned task on its own channel.
     ///
     /// `cwd_raw` is the session's own cwd, which a git worker's worktree
-    /// overrides. An empty `cwd_raw` resolves to the slot's recorded path
-    /// rather than being passed on, because a read given no directory walks
-    /// every project on disk for the file name. A slot with no live session,
-    /// or one whose cwd no record places, reads as an empty conversation:
-    /// another session's messages would be a wrong answer rather than a
-    /// missing one.
+    /// overrides. An empty `cwd_raw` resolves to the slot's recorded path,
+    /// because the read's no-directory arm walks every `projects/` directory
+    /// for the first file named after the session: that pays the walk per
+    /// call and takes whichever copy of the same session it meets first. A
+    /// slot with no live session, or one whose cwd no record places, reads as
+    /// an empty conversation.
     pub fn conversation(&self, slot: &SessionSlot, cwd_raw: &Path) -> ConversationHistory {
         let Some(session_id) = self.workspace.running_session_id_for(slot) else {
             return ConversationHistory::default();
@@ -293,9 +305,9 @@ mod tests {
     }
 
     /// A slot whose cwd no record places reads as empty, and not as whatever
-    /// a walk of every project happened to find: given no directory, the
-    /// scan answers with the first `<session_id>.jsonl` on disk, which can
-    /// belong to something else entirely.
+    /// a walk of every project happened to find: given no directory, the scan
+    /// answers with the first `<session_id>.jsonl` on disk, which here is
+    /// another project directory's copy of the same session.
     #[test]
     fn conversation_does_not_scan_every_project_for_an_empty_cwd() {
         let dir = tempfile::tempdir().expect("tempdir");
