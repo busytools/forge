@@ -7,9 +7,11 @@
 //! reads the core through the view surface: this module holds no state of
 //! its own.
 
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::time::SystemTime;
 
+use forge_primitives::PermissionMode;
 use forge_primitives::SessionLifecycleState;
 use forge_primitives::SessionSlot;
 use forge_primitives::account::AccountAuth;
@@ -17,8 +19,13 @@ use forge_primitives::git::{GitBranch, GitIssueRef};
 use forge_primitives::git_diff::{GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState};
 use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
 use forge_primitives::tasks::{Task, TaskStatus};
-use forge_primitives::{CronEntry, CronKind};
+use forge_primitives::{
+    CronEntry, CronKind, McpServerConnectionStatus, MonitorRecord, MonitorStatus,
+};
 use forge_sessions::surface::connectors::{GotifyView, SlackView};
+use forge_sessions::surface::inspector::{
+    McpServers, ProcessEntry, ProcessSnapshot, SessionHeader,
+};
 use forge_sessions::surface::{AccountsView, Agents, LoadingState, PendingKind, Roster};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
@@ -144,6 +151,7 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Ag
         .and_then(|seat| roster.chip_for(&seat.key))
         .map(|chip| chip.account_name);
     let waking = !roster.has_agent(slot);
+    let header = home.surface.header(slot);
 
     html! {
         (DOCTYPE)
@@ -179,7 +187,10 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Ag
                             span .dot .(mark_of(state)) {}
                             span .nm { (name) }
                             span .mono .dim { (slot.org()) }
-                            span .facts { (account_chip(&accounts, chip.as_deref())) }
+                            span .facts {
+                                (header_facts(&header))
+                                (account_chip(&accounts, chip.as_deref()))
+                            }
                         }
                         div .conv {
                             (chat_body(waking, row.and_then(|row| row.reason.as_deref())))
@@ -195,6 +206,62 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Ag
                 }
             }
         }
+    }
+}
+
+/// The header's four facts: the model the session resolved, the effort it
+/// runs at, the mode a hook observed and how full its context is. An
+/// unstated one draws a dash rather than dropping the fact, so the header
+/// keeps its shape from the moment a seat opens.
+fn header_facts(header: &SessionHeader) -> Markup {
+    let model = header.model.as_ref().map_or_else(
+        || "\u{2014}".to_owned(),
+        |model| {
+            if model.display_name_long.is_empty() {
+                model.resolved_id.clone()
+            } else {
+                model.display_name_long.clone()
+            }
+        },
+    );
+    let mode = header
+        .permission_mode
+        .map(|mode| (mode.as_wire(), format!("perm {}", perm_class(mode)).trim_end().to_owned()));
+    let percent = header.context.percent;
+    html! {
+        span { span .fk { "model" } " " span .v { (model) } }
+        span .sep { "\u{b7}" }
+        span { span .fk { "effort" } " " span .v { (header.effort.as_stored()) } }
+        span .sep { "\u{b7}" }
+        span {
+            span .fk { "mode" } " "
+            @match mode {
+                Some((wire, class)) => span .(class) { (wire) },
+                None => span .perm { "\u{2014}" },
+            }
+        }
+        span .sep { "\u{b7}" }
+        span .cm {
+            span .fk { "ctx" }
+            span .tk { span .fl style=(format!("width:{}%", percent.unwrap_or(0))) {} }
+            span .v {
+                @match percent {
+                    Some(percent) => (format!("{percent}%")),
+                    None => "\u{2014}",
+                }
+            }
+        }
+    }
+}
+
+/// The class a permission mode's chip carries, so the colour says how much
+/// the session is allowed to do without being asked.
+fn perm_class(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Auto | PermissionMode::AcceptEdits => "auto",
+        PermissionMode::Plan => "plan",
+        PermissionMode::BypassPermissions => "bypass",
+        PermissionMode::Ask | PermissionMode::DontAsk => "",
     }
 }
 
@@ -414,6 +481,10 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
     let tasks = roster.tasks_for_project(slot.project());
     let crons = roster.crons_for_project(slot.project());
     let connectors = home.surface.connectors(Some(slot.project()));
+    let attributed = home.surface.subagent_attribution(slot);
+    let servers = home.surface.mcp_servers(slot);
+    let walk = home.surface.processes(slot);
+    let monitors = home.surface.monitors(slot);
 
     html! {
         @if let Some(work) = &work {
@@ -421,6 +492,9 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
         }
         @if !tasks.is_empty() {
             (tasks_section(&tasks))
+        }
+        @if !attributed.is_empty() {
+            (subagents_section(&attributed))
         }
         @if !crons.is_empty() {
             (schedules_section(&crons))
@@ -433,6 +507,212 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
         {
             (slack_section(&connectors.slack))
         }
+        @if let Some(servers) = &servers {
+            @if !servers.servers.is_empty() || servers.error.is_some() {
+                (mcp_section(servers))
+            }
+        }
+
+        @if let Some(walk) = walk.as_ref().filter(|walk| !walk.processes.is_empty()) {
+            (processes_section(walk))
+        }
+        @if !monitors.is_empty() {
+            (monitors_section(&monitors))
+        }
+    }
+}
+
+/// The subagents section: which agent type ran which of this session's
+/// tool calls.
+///
+/// This is the session's own attribution, not the CLI's catalogue of the
+/// agent types that exist: a session that has had no sub-agent run has
+/// nothing here, whether or not it could offer one.
+fn subagents_section(attributed: &HashMap<String, String>) -> Markup {
+    let mut per_type: Vec<(&str, usize)> = Vec::new();
+    for agent_type in attributed.values() {
+        match per_type.iter_mut().find(|(name, _)| name == agent_type) {
+            Some((_, calls)) => *calls += 1,
+            None => per_type.push((agent_type.as_str(), 1)),
+        }
+    }
+    per_type.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+    let types = per_type.len();
+    let body = html! {
+        @for (agent_type, calls) in &per_type {
+            div .kv {
+                span .k { (agent_type) }
+                span .v { (call_count(*calls)) }
+            }
+        }
+    };
+    section(false, "subagents", "subagents", &types.to_string(), &body)
+}
+
+/// How much work one agent type ran, counted so that one reads as one.
+fn call_count(calls: usize) -> String {
+    if calls == 1 { "1 call".to_owned() } else { format!("{calls} calls") }
+}
+
+/// The MCP servers this session's bridge reported, with the reason a read
+/// that failed came back empty rather than reading as nothing configured.
+fn mcp_section(servers: &McpServers) -> Markup {
+    let summary = if servers.servers.is_empty() {
+        "failed".to_owned()
+    } else {
+        servers.servers.len().to_string()
+    };
+    let body = html! {
+        @for server in &servers.servers {
+            div .kv {
+                span .k { (server.name) }
+                span .v { (connection_label(server.status)) }
+            }
+        }
+        @if let Some(error) = &servers.error {
+            div .note { (error) }
+        }
+    };
+    section(false, "mcp", "mcp servers", &summary, &body)
+}
+
+/// What a server's connection state reads as, in the page's words rather
+/// than the wire's.
+fn connection_label(status: McpServerConnectionStatus) -> &'static str {
+    match status {
+        McpServerConnectionStatus::Connected => "connected",
+        McpServerConnectionStatus::Failed => "failed",
+        McpServerConnectionStatus::NeedsAuth => "needs sign-in",
+        McpServerConnectionStatus::Pending => "connecting",
+        McpServerConnectionStatus::Disabled => "disabled",
+    }
+}
+
+/// The processes section: claude's descendant tree, a row each, with the
+/// tree's shape carried by the row's indent.
+fn processes_section(walk: &ProcessSnapshot) -> Markup {
+    let count = walk.processes.len();
+    let tree = process_tree(walk);
+    let body = html! {
+        @for (entry, depth) in tree {
+            div .kv {
+                span .k {
+                    @for _ in 0..depth { (PreEscaped("&nbsp;&nbsp;")) }
+                    (entry.name)
+                }
+                span .v { (format!("{} \u{b7} {}", memory_label(entry.memory_bytes), entry.pid)) }
+            }
+        }
+    };
+    section(false, "processes", "processes", &count.to_string(), &body)
+}
+
+/// The walk as a tree: every row with how deep it sits, parents before
+/// their children, and the walk's own order within a sibling group.
+///
+/// The scan returns entries by memory rather than by parentage, so drawing
+/// them in that order would indent a row under whatever happened to come
+/// before it. A row whose parent the walk did not carry is a root of its
+/// own, which is what makes a partial snapshot still list everything in
+/// it.
+fn process_tree(walk: &ProcessSnapshot) -> Vec<(&ProcessEntry, usize)> {
+    let mut children_of: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
+    let mut present: HashSet<u32> = HashSet::new();
+    for entry in &walk.processes {
+        children_of.entry(entry.parent_pid).or_default().push(entry);
+        present.insert(entry.pid);
+    }
+
+    let mut placed: HashSet<u32> = HashSet::new();
+    let mut tree = Vec::with_capacity(walk.processes.len());
+    for entry in &walk.processes {
+        if !present.contains(&entry.parent_pid) && placed.insert(entry.pid) {
+            walk_subtree(entry, 0, &children_of, &mut placed, &mut tree);
+        }
+    }
+    // A pid cycle reaches no root, and neither does a subtree hanging off
+    // one. Every row is still drawn, once.
+    for entry in &walk.processes {
+        if placed.insert(entry.pid) {
+            walk_subtree(entry, 0, &children_of, &mut placed, &mut tree);
+        }
+    }
+    tree
+}
+
+/// One row and its descendants. `placed` is what stops a cycle: a pid the
+/// walk already drew is not drawn again.
+fn walk_subtree<'a>(
+    entry: &'a ProcessEntry,
+    depth: usize,
+    children_of: &HashMap<u32, Vec<&'a ProcessEntry>>,
+    placed: &mut HashSet<u32>,
+    tree: &mut Vec<(&'a ProcessEntry, usize)>,
+) {
+    tree.push((entry, depth));
+    for child in children_of.get(&entry.pid).into_iter().flatten() {
+        if placed.insert(child.pid) {
+            walk_subtree(child, depth + 1, children_of, placed, tree);
+        }
+    }
+}
+
+/// Resident memory, in the unit the reader thinks in. Integer arithmetic
+/// all the way down, and the same units the TUI's own row uses, so the two
+/// views read the same tree the same way.
+fn memory_label(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes < KB {
+        format!("{bytes} B")
+    } else if bytes < MB {
+        format!("{} KB", bytes / KB)
+    } else if bytes < GB {
+        format!("{} MB", bytes / MB)
+    } else {
+        format!("{}.{} GB", bytes / GB, (bytes % GB) / (GB / 10))
+    }
+}
+
+/// The monitors section. Monitors live here and not in the chat, so this
+/// is the only surface that says what a session is watching.
+fn monitors_section(monitors: &[MonitorRecord]) -> Markup {
+    let running = monitors.iter().filter(|monitor| !monitor.status.is_terminal()).count();
+    let summary = format!("{running} running");
+    let body = html! {
+        @for monitor in monitors {
+            div .sa {
+                div .sh {
+                    @if monitor.status.is_terminal() {
+                        span .st { (icons::icon("check", "")) }
+                    } @else {
+                        span .st { span .ring style="width:8px;height:8px" {} }
+                    }
+                    (icons::icon("monitors", "gl"))
+                    span .nm { (&monitor.description) }
+                    span .n { (monitor_label(monitor)) }
+                }
+                @if monitor.status.is_terminal() {
+                    div .settled { "settled - its output stays in the transcript" }
+                } @else {
+                    div .tt { span .tg { "$" } " " (&monitor.command) }
+                }
+            }
+        }
+    };
+    section(false, "monitors", "monitors", &summary, &body)
+}
+
+/// The trailing word on a monitor's own row: how it ended, or what it is
+/// while it runs.
+fn monitor_label(monitor: &MonitorRecord) -> String {
+    match monitor.status {
+        MonitorStatus::Running if monitor.persistent => "persistent".to_owned(),
+        MonitorStatus::Running => "running".to_owned(),
+        MonitorStatus::Completed => "completed".to_owned(),
+        MonitorStatus::Stopped => "stopped".to_owned(),
+        MonitorStatus::TimedOut => "timed out".to_owned(),
     }
 }
 

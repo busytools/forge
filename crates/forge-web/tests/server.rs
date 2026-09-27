@@ -7,10 +7,13 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::Arc;
 
-use forge_primitives::SessionSlot;
-use forge_primitives::WebConfig;
+use forge_primitives::McpServerStatus;
+use forge_primitives::{
+    CurrentModel, EffortLevel, MonitorRecord, MonitorStatus, PermissionMode, SessionSlot, WebConfig,
+};
+use forge_sessions::surface::inspector::{ContextUsage, McpServers, ProcessEntry, ProcessSnapshot};
 use forge_sessions::surface::{PendingKind, ViewSurface};
-use forge_sessions::testing::Fleet;
+use forge_sessions::testing::{Fleet, ViewFacts};
 use forge_web::WebState;
 
 /// A port to hand the server: bind one, read it, let it go. Something
@@ -1004,6 +1007,287 @@ async fn disabled_binds_nothing() {
     assert!(bound.is_none(), "a disabled server binds nothing");
 }
 
+/// The header states the session's own facts, which no update stream
+/// carries: the model it resolved, the effort it runs at, the mode a hook
+/// observed and how full its context is.
+#[tokio::test]
+async fn the_header_states_the_sessions_own_facts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            model: Some(CurrentModel::new("claude-opus-5-5", "Opus 5.5", "Claude Opus 5.5")),
+            observed_effort: Some(EffortLevel::High),
+            permission_mode: Some(PermissionMode::BypassPermissions),
+            context: Some(ContextUsage { percent: Some(41), max_tokens: Some(200_000) }),
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains(">model<"), "the header names the model: {page}");
+    assert!(page.contains("Opus 5.5"), "and states which one: {page}");
+    assert!(page.contains(">effort<"), "it names the effort: {page}");
+    assert!(page.contains("high"), "and states the level the session runs at: {page}");
+    assert!(page.contains(">mode<"), "it names the mode: {page}");
+    assert!(page.contains("bypassPermissions"), "and states which one a hook saw: {page}");
+    assert!(page.contains(">ctx<"), "it names the context reading: {page}");
+    assert!(page.contains("41%"), "and states how full the window is: {page}");
+}
+
+/// A session whose hook has not fired yet still has an effort, because
+/// forge launched it at one: a header that went blank there would be wrong
+/// about every session between its spawn and its first tool call.
+#[tokio::test]
+async fn the_header_states_the_launched_effort_before_a_hook_reports() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts { configured_effort: Some(EffortLevel::Xhigh), ..ViewFacts::default() },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("xhigh"),
+        "a session no hook has reported on states the level it was launched at: {page}",
+    );
+}
+
+/// The subagents section draws the session's own attribution - which agent
+/// type ran which tool call - rather than the CLI's catalogue of agent
+/// types that exist.
+#[tokio::test]
+async fn the_subagents_section_draws_the_sessions_attribution() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            subagent_attribution: [
+                ("tu-1".to_owned(), "Explore".to_owned()),
+                ("tu-2".to_owned(), "Explore".to_owned()),
+                ("tu-3".to_owned(), "code-reviewer".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains("href=\"#i-subagents\""), "the section renders: {page}");
+    assert!(page.contains("Explore"), "naming an agent type that ran work: {page}");
+    assert!(page.contains("code-reviewer"), "and the other one: {page}");
+    assert!(page.contains("2 calls"), "with how much work each ran: {page}");
+    assert!(
+        page.contains("<span class=\"v\">1 call</span>"),
+        "and a count of one read as one rather than as one calls: {page}",
+    );
+    let busiest = page.find("Explore").expect("the busiest type is listed");
+    let rest = page.find("code-reviewer").expect("and the other is too");
+    assert!(
+        busiest < rest,
+        "the types come in the order of how much they ran, not the map's own: {page}",
+    );
+}
+
+/// The MCP section lists the session's own servers - MCP is configured per
+/// session, not per account - under a count of what is behind it.
+#[tokio::test]
+async fn the_mcp_section_lists_the_sessions_servers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            mcp: Some(McpServers {
+                servers: vec![mcp_server("forge"), mcp_server("context7")],
+                error: None,
+            }),
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains("href=\"#i-mcp\""), "the section renders: {page}");
+    assert!(page.contains("forge"), "naming the server it holds: {page}");
+    assert!(page.contains("context7"), "and the one beside it: {page}");
+    assert!(page.contains("<span class=\"c2\">2</span>"), "under a count of them: {page}");
+}
+
+/// A failed MCP read says so rather than rendering a session with no
+/// servers: the snapshot carries an empty list, and an empty list with no
+/// reason reads as "nothing configured".
+#[tokio::test]
+async fn a_failed_mcp_read_states_why_it_is_empty() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            mcp: Some(McpServers {
+                servers: Vec::new(),
+                error: Some("the CLI refused".to_owned()),
+            }),
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains("the CLI refused"), "the reason the read failed is drawn: {page}");
+}
+
+/// The processes section draws the walk the core holds: what is running,
+/// what it is under, its pid and the memory it holds.
+#[tokio::test]
+async fn the_processes_section_draws_the_walk() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            process_snapshot: Some(ProcessSnapshot {
+                // The scan returns entries by memory, descending, so a
+                // child holding more than its parent is listed before it:
+                // the section has to draw the tree, not that order.
+                processes: vec![
+                    process(4244, 4242, "big-rustc", "rustc --crate-name forge_web", 900),
+                    process(4242, 4000, "cargo", "cargo nextest run", 412),
+                    process(4243, 4242, "cc", "cc -O2 -o build/obj.o", 88),
+                ],
+                scanned_at: std::time::SystemTime::UNIX_EPOCH,
+            }),
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains("href=\"#i-processes\""), "the section renders: {page}");
+    assert!(page.contains("<span class=\"k\">cargo</span>"), "naming what is running: {page}");
+    assert!(
+        page.contains("<span class=\"k\">&nbsp;&nbsp;cc</span>"),
+        "and its child, indented under it: {page}",
+    );
+    assert!(page.contains("412 MB"), "with the memory it holds: {page}");
+    assert!(page.contains("4242"), "and the pid it runs under: {page}");
+    assert!(page.contains("<span class=\"c2\">3</span>"), "under a count of the rows: {page}");
+    let cargo = page.find("<span class=\"k\">cargo</span>").expect("the parent is listed");
+    let child = page.find("<span class=\"k\">&nbsp;&nbsp;cc</span>").expect("the child is listed");
+    assert!(cargo < child, "a parent is drawn before the child it indents: {page}");
+    let heavy = page.find("big-rustc").expect("the heavier child is listed");
+    assert!(
+        cargo < heavy,
+        "and a child heavier than its parent still follows it, rather than the scan's order: {page}",
+    );
+}
+
+/// The monitors section is where monitors live: the chat does not carry
+/// them, so a running monitor with nothing drawing it would be invisible.
+#[tokio::test]
+async fn the_monitors_section_draws_the_live_set() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            monitors: vec![
+                MonitorRecord {
+                    tool_use_id: "tu-live".to_owned(),
+                    task_id: Some("t-live".to_owned()),
+                    description: "ci-watch".to_owned(),
+                    command: "gh run watch 18234567".to_owned(),
+                    persistent: true,
+                    timeout_ms: 0,
+                    status: MonitorStatus::Running,
+                    output_file: None,
+                },
+                MonitorRecord {
+                    tool_use_id: "tu-done".to_owned(),
+                    task_id: Some("t-done".to_owned()),
+                    description: "deploy-gate".to_owned(),
+                    command: "gh run watch 2".to_owned(),
+                    persistent: false,
+                    timeout_ms: 0,
+                    status: MonitorStatus::Completed,
+                    output_file: None,
+                },
+            ],
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains("href=\"#i-monitors\""), "the section renders: {page}");
+    assert!(page.contains("ci-watch"), "naming the monitor: {page}");
+    assert!(page.contains("gh run watch 18234567"), "and the command it watches: {page}");
+    assert!(page.contains("persistent"), "and whether it outlives its event: {page}");
+    assert!(page.contains("1 running"), "under a count of what is still live: {page}");
+    assert!(page.contains("deploy-gate"), "with the settled one listed too: {page}");
+}
+
+/// A snapshot that came back with no servers and no failure is a session
+/// with nothing configured, not a read that failed: the section stays
+/// away rather than drawing a row that says nothing.
+#[tokio::test]
+async fn an_empty_mcp_snapshot_draws_no_section() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts { mcp: Some(McpServers::default()), ..ViewFacts::default() },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        !page.contains("href=\"#i-mcp\""),
+        "a session with no servers has no section to draw: {page}",
+    );
+}
+
+/// None of the four invents content: a session that has reported nothing
+/// draws no section, rather than an empty one saying it has.
+#[tokio::test]
+async fn the_four_sections_are_absent_when_the_session_reports_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    for icon in ["i-subagents", "i-mcp", "i-processes", "i-monitors"] {
+        assert!(
+            !page.contains(&format!("href=\"#{icon}\"")),
+            "no {icon} section without anything behind it: {page}",
+        );
+    }
+}
+
 /// The page draws with the built-in pair, and the sheet declares neither
 /// stack of its own. The absence is the load-bearing half: the injected
 /// block is emitted before the link, so a stack in the sheet's own `:root`
@@ -1098,4 +1382,19 @@ async fn a_name_that_is_not_a_vendored_face_is_not_found() {
 
     let (status, _content_type, _body) = get(&config, "/fonts/htmx.js").await;
     assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "and a script is not served as a font");
+}
+
+fn mcp_server(name: &str) -> McpServerStatus {
+    serde_json::from_value(serde_json::json!({ "name": name, "status": "connected" }))
+        .expect("an MCP server status")
+}
+
+fn process(pid: u32, parent_pid: u32, name: &str, command: &str, memory_mb: u64) -> ProcessEntry {
+    ProcessEntry {
+        pid,
+        parent_pid,
+        name: name.to_owned(),
+        command: command.to_owned(),
+        memory_bytes: memory_mb * 1024 * 1024,
+    }
 }
