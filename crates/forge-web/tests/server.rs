@@ -863,6 +863,10 @@ async fn the_type_scale_is_the_mocks() {
 /// A conversation with a run of tool calls renders the run's count and the
 /// families it met, with each call's own target under its family and the
 /// assistant's prose above it. This is the model the mockup was built on.
+///
+/// Three calls across two families, so the header's count is the calls
+/// rather than the families: one call per family would read the same either
+/// way.
 #[tokio::test]
 async fn the_conversation_renders_the_run_and_its_families() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -880,6 +884,7 @@ async fn the_conversation_renders_the_run_and_its_families() {
                 r#"{"type":"assistant","message":{"id":"msg_2","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/family.rs"}}]}}"#,
                 r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"pub enum ToolFamily {}"}]}}"#,
                 r#"{"type":"assistant","message":{"id":"msg_3","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_2","name":"Grep","input":{"pattern":"KindRow"}}]}}"#,
+                r#"{"type":"assistant","message":{"id":"msg_4","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_3","name":"Read","input":{"file_path":"/tmp/grouping.rs"}}]}}"#,
             ],
         )
         .expect("the transcript is written");
@@ -888,10 +893,14 @@ async fn the_conversation_renders_the_run_and_its_families() {
     let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
 
     assert_eq!(status, reqwest::StatusCode::OK);
-    assert!(page.contains("2 tool calls"), "the run's own count heads it: {page}");
+    assert!(page.contains("3 tool calls"), "every call in the run, not one per family: {page}");
     assert!(page.contains(">read</span>"), "and the families it met: {page}");
-    assert!(page.contains(">search</span>"), "in the order it met them: {page}");
+    assert!(page.contains(">search</span>"), "the run's second: {page}");
+    let read = page.find(">read</span>").expect("the read family");
+    let search = page.find(">search</span>").expect("the search family");
+    assert!(read < search, "drawn in the order it met them: {page}");
     assert!(page.contains("family.rs"), "with each call's own target: {page}");
+    assert!(page.contains("grouping.rs"), "including the second of a family: {page}");
     assert!(
         page.contains("Reading the grouping code first."),
         "and the prose the assistant wrote above it: {page}",
@@ -917,6 +926,11 @@ async fn an_empty_conversation_draws_no_skeleton() {
     let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
 
     assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(
+        page.contains("class=\"chat\""),
+        "the page is the session's own, so an absence below is an empty conversation \
+         rather than a page that never loaded: {page}",
+    );
     assert!(!page.contains("class=\"kind\""), "no group is drawn for nothing: {page}");
     assert!(!page.contains("class=\"mine\""), "and no turn either: {page}");
     assert!(!page.contains("not running"), "the seat is running, so it does not say otherwise");
