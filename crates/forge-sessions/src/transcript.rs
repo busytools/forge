@@ -431,6 +431,39 @@ mod tests {
         );
     }
 
+    /// The whole standalone-call predicate, pinned from both sides: the
+    /// three classes the fold draws on their own - a Monitor's lifecycle
+    /// row, a question waiting on a person, a peer block - and the mutation
+    /// it now folds. Re-borrowing the TUI's predicate, or dropping an arm,
+    /// fails here rather than in a rendered page.
+    #[test]
+    fn only_the_calls_the_mockup_draws_alone_break_the_run() {
+        let monitor = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_monitor".to_owned(),
+            name: "Monitor".to_owned(),
+            input: serde_json::json!({"description": "watch the deploy", "command": "tail -f log"}),
+        }]);
+        let question = tool_call_named("AskUserQuestion");
+        let peer = tool_call_named("mcp__forge__agents__tell");
+        let edit = tool_call("edit");
+        let read = tool_call_at("read", 9);
+
+        // A breaker on either side of a run: three units, the middle one
+        // drawn alone.
+        for breaker in [monitor, question, peer] {
+            let units = render_units(&[read.clone(), breaker, read.clone()]);
+            assert_eq!(units.len(), 3, "the run splits around a call drawn on its own");
+            assert!(
+                matches!(&units[1], ChatUnit::ToolCall(_) | ChatUnit::PeerCard(_)),
+                "and that call is the unit in the middle",
+            );
+        }
+
+        // The mutation does not break it: one group, with the edit inside.
+        let units = render_units(&[read.clone(), edit, read]);
+        assert_eq!(units.len(), 1, "a mutation folds into the run instead");
+    }
+
     /// Two MCP servers are two rows, not one `tool` row. The mockup draws
     /// each server as its own family, and a server's name is only known at
     /// runtime, which is why the row carries a label rather than a family.
