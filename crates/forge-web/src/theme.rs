@@ -11,7 +11,8 @@ pub const DEFAULT_THEME: &str = "dark";
 
 /// The built-in pair, shipped beside the view: Inter is a variable font
 /// over `wght 100-900`, so the scale interpolates rather than snapping to
-/// a static Bold, and Fira Code's ligatures ride `calt`.
+/// a static Bold, and Fira Code carries the two weights the mockups load,
+/// its ligatures riding `calt`.
 const BUILT_IN_FONT: &str = concat!(
     r#"--ui:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;"#,
     r#"--mono:"Fira Code",ui-monospace,Menlo,monospace;"#,
@@ -196,7 +197,7 @@ mod tests {
             .filter_map(|(_, rest)| rest.split(';').next())
             .map(|value| value.trim().trim_matches('"'))
             .collect();
-        assert_eq!(declared.len(), 2, "the sheet declares both faces: {declared:?}");
+        assert_eq!(declared.len(), 3, "the sheet declares every vendored face: {declared:?}");
 
         let built_in = font_variables(None);
         let ui =

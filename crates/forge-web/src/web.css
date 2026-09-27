@@ -61,7 +61,7 @@ header.top {
    act on, so it carries the amber the TUI uses for the same notice. */
 .versions .upd { color: var(--warn); }
 .totals { margin-left: auto; font-family: var(--mono); font-size: 13.5px; color: var(--muted); }
-.totals .n { color: var(--text); font-weight: 600; }
+.totals .n { color: var(--text); font-weight: 500; }
 
 /* ---------- system band ---------- */
 
@@ -551,9 +551,9 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 
 /* ---------- the built-in typefaces ---------- */
 
-/* The two faces [web] font's built-in set names. `font-weight` is the axis
-   range rather than one value: a single one makes 650 snap to a
-   synthesized Bold. */
+/* The faces [web] font's built-in set names, which are the mockups' own
+   weights. `font-weight` is the axis range rather than one value on Inter:
+   a single one makes 650 snap to a synthesized Bold. */
 
 @font-face {
   font-family: "Inter";
@@ -567,6 +567,14 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   font-family: "Fira Code";
   src: url("/fonts/FiraCode-Regular.woff2") format("woff2");
   font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Fira Code";
+  src: url("/fonts/FiraCode-Medium.woff2") format("woff2");
+  font-weight: 500;
   font-style: normal;
   font-display: swap;
 }

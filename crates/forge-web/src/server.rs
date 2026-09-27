@@ -38,6 +38,7 @@ const SCRIPTS: &[(&str, &[u8])] = &[
 const FONTS: &[(&str, &[u8])] = &[
     ("InterVariable.woff2", include_bytes!("../assets/fonts/InterVariable.woff2")),
     ("FiraCode-Regular.woff2", include_bytes!("../assets/fonts/FiraCode-Regular.woff2")),
+    ("FiraCode-Medium.woff2", include_bytes!("../assets/fonts/FiraCode-Medium.woff2")),
 ];
 
 /// Why the web view is not serving.

@@ -1054,7 +1054,7 @@ async fn the_faces_the_sheet_asks_for_are_served() {
         .filter_map(|block| block.split_once("url(\""))
         .filter_map(|(_, rest)| rest.split('"').next())
         .collect();
-    assert_eq!(sources.len(), 2, "a source per face: {sources:?}");
+    assert_eq!(sources.len(), 3, "a source per face: {sources:?}");
 
     for src in sources {
         let response =

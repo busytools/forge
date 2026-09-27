@@ -11,6 +11,7 @@ is patched.
 | `idiomorph-ext.min.js` | [idiomorph](https://www.npmjs.com/package/idiomorph) | 0.8.0 | 0BSD |
 | `fonts/InterVariable.woff2` | [Inter](https://github.com/rsms/inter) | 4.1 | OFL 1.1 |
 | `fonts/FiraCode-Regular.woff2` | [Fira Code](https://github.com/tonsky/FiraCode) | 6.2 | OFL 1.1 |
+| `fonts/FiraCode-Medium.woff2` | [Fira Code](https://github.com/tonsky/FiraCode) | 6.2 | OFL 1.1 |
 
 All three scripts are Zero-Clause BSD: use, copy, modify and distribute
 for any purpose, with or without fee. Each package ships its own copy of
@@ -21,7 +22,10 @@ Both faces are SIL Open Font License 1.1, which travels with the font:
 upstream texts, byte for byte. Inter is a variable font over `wght
 100-900` with an `opsz` axis, and the `font-weight: 100 900` in its
 `@font-face` is what lets the type scale reach a weight between the
-static ones instead of snapping to a synthesized Bold.
+static ones instead of snapping to a synthesized Bold. Fira Code is the
+two weights the mockups ask Google Fonts for, regular and medium, which
+is every weight the sheet asks of it. A rule wanting a third would get a
+synthesized bold, which in a monospace is worse than either real weight.
 
 ## Where each came from, and how to update it
 
@@ -33,7 +37,7 @@ curl -sL https://registry.npmjs.org/idiomorph/-/idiomorph-<version>.tgz | tar xz
 curl -sSL -o InterVariable.woff2 https://raw.githubusercontent.com/rsms/inter/v4.1/docs/font-files/InterVariable.woff2
 curl -sSL -o Inter-LICENSE.txt  https://raw.githubusercontent.com/rsms/inter/v4.1/LICENSE.txt
 curl -sSL -o Fira_Code_v6.2.zip https://github.com/tonsky/FiraCode/releases/download/6.2/Fira_Code_v6.2.zip
-unzip Fira_Code_v6.2.zip woff2/FiraCode-Regular.woff2
+unzip Fira_Code_v6.2.zip woff2/FiraCode-Regular.woff2 woff2/FiraCode-Medium.woff2
 curl -sSL -o FiraCode-LICENSE.txt https://raw.githubusercontent.com/tonsky/FiraCode/6.2/LICENSE
 ```
 
@@ -71,6 +75,7 @@ d6fdc75f204e6bdefa99b69bf1e6d4ac69b8a364f77929f45c13476b4000f717  htmx.min.js
 693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3  fonts/InterVariable.woff2
 262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a  fonts/Inter-LICENSE.txt
 a6ce59520b90e15d7062ffef214f94c8add5a4085c0bbb1683602ef227a4d1fe  fonts/FiraCode-Regular.woff2
+0e04bafb989ea46e840a581e49557b229662a00021493a5744c595d0882adf28  fonts/FiraCode-Medium.woff2
 1d41e10031ab125302780a05ec4c91d218e47db0c7e37cf315cce5e608cdc25c  fonts/FiraCode-LICENSE.txt
 ```
 
