@@ -118,7 +118,6 @@ header.top {
 }
 .band .dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
 .band .dot.off { background: var(--dim); }
-.band .dot.live { background: var(--accent); box-shadow: 0 0 7px rgba(244,118,0,.6); }
 .band .dot.bad { background: var(--bad); box-shadow: 0 0 7px rgba(224,104,62,.5); }
 .band .dot.warn { background: var(--warn); }
 
