@@ -181,7 +181,7 @@ impl KindSummary {
     /// first appearance. Every kind keeps one resolved target per call
     /// (uncapped) so the render can nest one child row per instance.
     pub fn tally(&mut self, tc: &ToolCallInfo) {
-        let (row, label) = family_row_label(&tc.sdk_tool_name);
+        let (row, label) = wire_row(&tc.sdk_tool_name);
         self.tally_resolved(row, label, family_target(tc), false);
     }
 
@@ -215,31 +215,26 @@ impl KindSummary {
 /// same-family tools (Grep / Glob / LS) merge into one line; a tool with
 /// no family keeps its own label. `mcp__<server>__*` keys by server so
 /// each server gets its own line.
-fn family_row_label(sdk_tool_name: &str) -> (KindRow, String) {
-    let label = wire_row_label(sdk_tool_name);
-    let row = if mcp_parts(sdk_tool_name).is_some() {
-        KindRow::Mcp
-    } else {
-        KindRow::Family(tool_family(sdk_tool_name))
-    };
-    (row, label)
-}
-
-/// The row a call's siblings summarise under, resolved from the wire's name
-/// alone: each `mcp__<server>__*` server keys as itself, a mutation keys as
-/// `edit`, and everything else keys by its family word. The wire-level half
-/// of the row policy, which a view reading a transcript needs precisely
-/// because it has no rendered call to resolve a row from.
-pub fn wire_row_label(sdk_tool_name: &str) -> String {
+/// The row a call's siblings summarise under, and the word that row draws,
+/// resolved from the wire's name alone: each `mcp__<server>__*` server keys
+/// as itself, a mutation keys as its own `edit` row, and everything else
+/// keys by its family.
+///
+/// The class comes back beside the label because a view picks its glyph
+/// from the class, and a label alone cannot tell a server named `read` from
+/// the read family. A view reading a transcript needs this wire-level half
+/// precisely because it has no rendered call to resolve a row from.
+pub(crate) fn wire_row(sdk_tool_name: &str) -> (KindRow, String) {
     if let Some((server, _)) = mcp_parts(sdk_tool_name) {
-        return server.to_owned();
+        return (KindRow::Mcp, server.to_owned());
     }
+    let family = tool_family(sdk_tool_name);
     if is_edit_tool(sdk_tool_name) {
         // The word the fold's own model draws. The TUI never asks for this
         // row: it breaks a run on a mutation instead of folding one.
-        return "edit".to_owned();
+        return (KindRow::Family(family), "edit".to_owned());
     }
-    tool_family(sdk_tool_name).kind_label().to_owned()
+    (KindRow::Family(family), family.kind_label().to_owned())
 }
 
 /// Tree row data for one inbound envelope: the row it summarises under, the

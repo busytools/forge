@@ -20,8 +20,8 @@ use forge_primitives::{ContentBlock, Message};
 use crate::envelope::{PeerInboundKind, detect_inbound};
 use crate::family::tool_label;
 use crate::grouping::{
-    aggregate_call_status, is_peer_block_render_tool, renders_as_lifecycle_block_parts,
-    wire_row_label,
+    KindRow, aggregate_call_status, is_peer_block_render_tool, renders_as_lifecycle_block_parts,
+    wire_row,
 };
 use crate::model::ToolCallStatus;
 use crate::model::tool_call_info::is_ask_question_tool_name;
@@ -57,8 +57,12 @@ pub enum ChatUnit {
 /// One family's calls inside a group.
 #[derive(Debug, Clone)]
 pub struct FamilyLeaves {
-    /// The row the group draws for them: a family word, an MCP server's own
-    /// name, or `edit` for a mutation.
+    /// The class the row belongs to, which is what a view picks its glyph
+    /// from. A label alone cannot tell a server named `read` from the read
+    /// family.
+    pub row: KindRow,
+    /// The word the row draws: a family word, an MCP server's own name, or
+    /// `edit` for a mutation.
     pub label: String,
     pub calls: Vec<ToolLeaf>,
 }
@@ -109,7 +113,7 @@ pub struct PeerCard {
 pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     let results = result_statuses(messages);
     let mut units: Vec<ChatUnit> = Vec::new();
-    let mut run: Vec<(String, ToolLeaf)> = Vec::new();
+    let mut run: Vec<((KindRow, String), ToolLeaf)> = Vec::new();
     for message in messages {
         let (assistant, content) = match message {
             Message::Assistant { message: envelope, .. } => (true, envelope.content.as_slice()),
@@ -147,7 +151,7 @@ fn push_call(
     name: &str,
     input: &serde_json::Value,
     results: &HashMap<String, ToolCallStatus>,
-    run: &mut Vec<(String, ToolLeaf)>,
+    run: &mut Vec<((KindRow, String), ToolLeaf)>,
     units: &mut Vec<ChatUnit>,
 ) {
     if let Some(card) = outbound_card(name, input) {
@@ -157,7 +161,7 @@ fn push_call(
         flush(run, units);
         units.push(ChatUnit::ToolCall(leaf(id, name, input, results)));
     } else {
-        run.push((wire_row_label(name), leaf(id, name, input, results)));
+        run.push((wire_row(name), leaf(id, name, input, results)));
     }
 }
 
@@ -297,17 +301,17 @@ fn result_statuses(messages: &[Message]) -> HashMap<String, ToolCallStatus> {
 
 /// Close the run being built, if it has one, as one group: the rows it met
 /// in first-appearance order, and the status its calls summarise under.
-fn flush(run: &mut Vec<(String, ToolLeaf)>, units: &mut Vec<ChatUnit>) {
+fn flush(run: &mut Vec<((KindRow, String), ToolLeaf)>, units: &mut Vec<ChatUnit>) {
     if run.is_empty() {
         return;
     }
     let calls = std::mem::take(run);
     let status = aggregate_call_status(calls.iter().map(|(_, leaf)| leaf.status));
     let mut families: Vec<FamilyLeaves> = Vec::new();
-    for (label, leaf) in calls {
-        match families.iter_mut().find(|row| row.label == label) {
-            Some(row) => row.calls.push(leaf),
-            None => families.push(FamilyLeaves { label, calls: vec![leaf] }),
+    for ((row, label), leaf) in calls {
+        match families.iter_mut().find(|family| family.row == row && family.label == label) {
+            Some(family) => family.calls.push(leaf),
+            None => families.push(FamilyLeaves { row, label, calls: vec![leaf] }),
         }
     }
     units.push(ChatUnit::ToolGroup { families, status });
@@ -317,6 +321,8 @@ fn flush(run: &mut Vec<(String, ToolLeaf)>, units: &mut Vec<ChatUnit>) {
 mod tests {
     use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
 
+    use crate::family::ToolFamily;
+    use crate::grouping::KindRow;
     use crate::model::ToolCallStatus;
 
     use super::{ChatUnit, NoticeSeverity, render_units};
@@ -413,6 +419,16 @@ mod tests {
         let named: Vec<&str> = families.iter().map(|row| row.label.as_str()).collect();
         assert_eq!(named, ["read", "edit"], "with the mockup's own word for a mutation");
         assert_eq!(families[1].calls.len(), 1, "and the edit under that row");
+        assert_eq!(
+            families[0].row,
+            KindRow::Family(ToolFamily::Read),
+            "each row carries the class a view picks its glyph from",
+        );
+        assert_eq!(
+            families[1].row,
+            KindRow::Family(ToolFamily::Own("Edit")),
+            "so the edit row reads as a class of its own, not as the generic tool row",
+        );
     }
 
     /// Two MCP servers are two rows, not one `tool` row. The mockup draws
@@ -430,6 +446,13 @@ mod tests {
         };
         let named: Vec<&str> = families.iter().map(|row| row.label.as_str()).collect();
         assert_eq!(named, ["playwright", "forge"], "one row per server, in first-appearance order");
+        let classes: Vec<KindRow> = families.iter().map(|row| row.row).collect();
+        assert_eq!(
+            classes,
+            [KindRow::Mcp, KindRow::Mcp],
+            "and each says it is a server rather than a family, so a view tells them from a \
+             family row that happens to share the word",
+        );
     }
 
     /// An envelope that is not agent traffic is not the user's own turn: a
