@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::messages::Message;
+
 /// Account / subscription info the CLI emits in the session-init
 /// payload. Mirrors the shape `client.initial_session_data()["account"]`
 /// would deserialize to. All fields are optional because the CLI omits
@@ -137,6 +139,20 @@ pub struct SessionMessage {
 pub struct SessionHistory {
     /// User / assistant turns, in file order.
     pub messages: Vec<SessionMessage>,
+    /// `compact_boundary` rows seen in the transcript.
+    pub compaction_count: u32,
+}
+
+/// A session transcript's messages synthesized into wire shape, plus the
+/// compaction count recovered from the same pass over the file.
+///
+/// The count cannot be derived from `messages`: a `compact_boundary` row
+/// is `type: "system"` and is never synthesized.
+#[derive(Debug, Default)]
+pub struct ConversationHistory {
+    /// User / assistant turns, in file order, each stamped with the
+    /// session it was read for.
+    pub messages: Vec<Message>,
     /// `compact_boundary` rows seen in the transcript.
     pub compaction_count: u32,
 }

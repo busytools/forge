@@ -117,7 +117,7 @@ pub use permissions::{
 };
 pub use project_key::ProjectKey;
 pub use public_types::{
-    AccountInfo, ContextUsageResponse, ForgeAccountIdentity, McpServerConfig,
+    AccountInfo, ContextUsageResponse, ConversationHistory, ForgeAccountIdentity, McpServerConfig,
     McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpSetServersResponse,
     McpStatusResponse, McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations,
     SandboxNetworkConfig, SandboxSettings, SessionHistory, SessionMessage, SessionMessageKind,
