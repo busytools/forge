@@ -626,7 +626,7 @@ async fn the_inspector_summarises_from_the_core() {
 
     assert!(page.contains(">git</span>") || page.contains("git"), "the section renders: {page}");
     assert!(page.contains("8 files"), "and its summary counts the core's own read: {page}");
-    assert!(page.contains("file-0.txt"), "and the body lists the files behind that count: {page}",);
+    assert!(page.contains("file-0.txt"), "and the body lists the files behind that count: {page}");
 }
 
 /// A section with nothing behind it renders without inventing content. A
