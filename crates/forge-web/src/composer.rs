@@ -511,12 +511,16 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
     let Some((trigger, query)) = trigger_of(draft) else {
         return Markup::default();
     };
+    // What the header counts is where the list comes from - a cap, or the
+    // size of the table behind it - and never how many rows survived the
+    // query, so a short list reads as filtered rather than as the whole set.
     let (icon, title, cap, rows) = match trigger {
         Trigger::Command => {
             let commands = home.surface.slash_commands(slot);
             let count = commands.len();
             let rows: Vec<Markup> = commands
                 .iter()
+                .filter(|command| matches_query(&[&command.name, &command.description], query))
                 .map(|command| row(&command.name, &command.description, None, query))
                 .collect();
             ("tool", "commands".to_owned(), count.to_string(), rows)
@@ -535,6 +539,7 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
             let agents = home.surface.subagents(slot);
             let rows: Vec<Markup> = agents
                 .iter()
+                .filter(|agent| matches_query(&[&agent.name, &agent.description], query))
                 .take(AGENT_ROWS)
                 .map(|agent| row(&agent.name, &agent.description, None, query))
                 .collect();
@@ -552,6 +557,11 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
             ("smile", "emoji".to_owned(), format!("{count} shortcodes"), rows)
         }
     };
+    // Nothing matched, so there is nothing to open on: a popover with only
+    // a header would read as a list that lost its rows.
+    if rows.is_empty() {
+        return Markup::default();
+    }
     html! {
         div .ac {
             div .h {
@@ -567,6 +577,13 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
             }
         }
     }
+}
+
+/// Whether a row's own text is what has been typed. A list is filtered and
+/// never left whole, or a query would look like it did nothing.
+fn matches_query(fields: &[&str], query: &str) -> bool {
+    let query = query.to_lowercase();
+    fields.iter().any(|field| field.to_lowercase().contains(&query))
 }
 
 /// One row of a list: what the row is, the marked span the list matched on,

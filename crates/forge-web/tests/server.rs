@@ -1270,6 +1270,50 @@ async fn the_ampersand_opens_the_subagent_list() {
     assert!(page.contains("Bump the pinned CLI"), "with what the surface holds for it: {page}");
 }
 
+/// A list is what the query matched, not the whole set with the query
+/// ignored: a command that does not carry what was typed is not offered,
+/// and the header still counts where the list came from rather than how
+/// many rows survived.
+#[tokio::test]
+async fn a_query_filters_the_list_it_opened() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.advertise(
+        &SessionSlot::lead("Busytools", "forge"),
+        vec![
+            forge_primitives::AvailableCommand::new("model", "Switch model"),
+            forge_primitives::AvailableCommand::new("memory", "Edit project memory"),
+            forge_primitives::AvailableCommand::new("compact", "Compact conversation context"),
+        ],
+        Vec::new(),
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "/mem").await;
+
+    assert!(page.contains("/<em>mem</em>ory"), "the row that carries the query is offered: {page}");
+    assert!(!page.contains("Compact conversation context"), "and one that does not is not: {page}");
+    assert!(page.contains(">3<"), "while the header counts the list the rows came from: {page}");
+}
+
+/// A query nothing carries opens nothing, rather than a popover holding a
+/// header and no rows.
+#[tokio::test]
+async fn a_query_that_matches_nothing_opens_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.advertise(
+        &SessionSlot::lead("Busytools", "forge"),
+        vec![forge_primitives::AvailableCommand::new("model", "Switch model")],
+        Vec::new(),
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "/zzz").await;
+
+    assert!(!page.contains("class=\"ac\""), "nothing matched, so nothing opened: {page}");
+}
+
 /// An empty draft is the resting state: the placeholder, no popover, and
 /// nothing that reads as a command being typed.
 #[tokio::test]
@@ -1335,6 +1379,10 @@ async fn the_session_page_carries_the_composer() {
 
     assert!(page.contains("id=\"comp\""), "the session page carries the composer: {page}");
     assert!(page.contains("id=\"draft\""), "with the box the reader types in: {page}");
+    assert!(
+        page.contains("/vendor/htmx.js"),
+        "and loads the script the box asks its own list with: {page}",
+    );
 }
 
 /// A slot the roster does not hold has no composer either: the route

@@ -205,6 +205,11 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Ag
                         div .scroll { (inspector(home, roster, slot).await) }
                     }
                 }
+                // The composer is what asks for this: typing in the box
+                // fetches the region its list opens in. The stream's own
+                // extensions are not here yet, so the page swaps nothing
+                // else.
+                script src="/vendor/htmx.js" {}
             }
         }
     }
