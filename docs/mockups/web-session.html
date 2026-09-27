@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>forge &middot; session</title>
+<!-- For the design artifact only: production vendors the woff2 into
+     forge-web/assets and picks it by name from [web] font. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Fira+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -23,12 +28,16 @@
     --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
     --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
     --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5);
-    --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
-    --mono: ui-monospace, Menlo, monospace;
-    /* One type scale, so a size says what a thing IS. Prose is what you
-       read; a row is data; meta is a label on data. */
-    --fs-prose: 17px; --fs-group: 14px; --fs-row: 13px;
-    --fs-meta: 12.5px; --fs-label: 11.5px;
+    --ui: "Fira Sans", system-ui, -apple-system, sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    /* One type scale, anchored on the home: 15.5 is its body and 13.5 its
+       mono, so nothing here goes below what that surface already uses.
+       Prose is what you read; a row is data; a label sits on data. */
+    /* The home uses 13.5 for a timestamp beside a 15.5 name. Here the
+       rows ARE what you read, so a row takes the base size and secondary
+       detail takes the data size. */
+    --fs-prose: 17px; --fs-base: 15.5px; --fs-group: 15.5px;
+    --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
     --ins: 10px; --rail-l: 312px; --rail-r: 366px;
   }
 
@@ -41,8 +50,16 @@
     background-attachment: fixed;
     color: var(--text); font-family: var(--ui); font-size: var(--fs-prose);
     line-height: 1.62; -webkit-font-smoothing: antialiased;
+    /* Fira Code's ligatures ride the calt feature; harmless to Fira Sans. */
+    font-variant-ligatures: contextual; font-feature-settings: "calt" 1;
   }
   .mono { font-family: var(--mono); }
+  /* One icon rule for the whole page: a sprite reference inherits the
+     colour of whatever row it sits in, so nothing draws its own. */
+  .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block; }
+  /* One chevron, turned by the open state, on every disclosure on the page. */
+  .arw { transition: transform .12s ease; }
+  details[open] > summary .arw { transform: rotate(90deg); }
   .dim { color: var(--dim); }
 
   /* ---------- panes: checked is COLLAPSED, and the handle lives in the
@@ -92,34 +109,34 @@
   .rail .scroll::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
   .rail .scroll::-webkit-scrollbar-track { background: transparent; }
   .banner { display: flex; align-items: center; gap: 8px; padding: 13px 12px 9px; }
-  .banner .t { font-size: 11px; font-weight: 700; letter-spacing: .12em;
+  .banner .t { font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
     text-transform: uppercase; color: var(--accent); }
-  .banner .n { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  .banner .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .banner .n.ml { margin-left: auto; }
 
   /* ---------- projects ---------- */
-  .state { padding: 12px 8px 4px; font-size: 11px; font-weight: 700;
+  .state { padding: 12px 8px 4px; font-size: var(--fs-label); font-weight: 700;
     letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
   .state.needs { color: var(--warn); }
   .pj { border-radius: 10px; margin: 1px 0; }
   .pj:hover { background: rgba(27,33,48,.5); }
   .pj.cur { background: rgba(244,118,0,.1); box-shadow: inset 0 0 0 1px rgba(244,118,0,.35); }
   .pr { display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; }
-  .pr .nm { font-size: 14px; font-weight: 600; flex: none; white-space: nowrap; }
-  .pr .org { font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+  .pr .nm { font-size: var(--fs-base); font-weight: 600; flex: none; white-space: nowrap; }
+  .pr .org { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
     flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .pr .age { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  .pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
-    font-family: var(--mono); font-size: 12px; line-height: 1.5;
+    font-family: var(--mono); font-size: var(--fs-data); line-height: 1.5;
     border-radius: 5px; padding: 0 5px; cursor: pointer; }
   .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
   .pj.cur .pr .nm { color: var(--accent); }
   .wk { display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 34px; cursor: pointer; }
   .wk:hover { background: rgba(27,33,48,.4); border-radius: 0 8px 8px 0; }
-  .wk .nm { font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+  .wk .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
     flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* The reason a row is in this group, on every row that has one. */
-  .why { font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+  .why { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
     padding: 0 10px 6px 34px; display: flex; align-items: center; gap: 7px; }
   .why.bad { color: var(--bad); }
 
@@ -129,14 +146,14 @@
   main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .sess { display: flex; align-items: center; gap: 12px; padding: 2px 0 12px;
     flex-wrap: wrap; row-gap: 8px; }
-  .sess .nm { font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
+  .sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; }
   .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
-    font-family: var(--mono); font-size: 13px; color: var(--dim); }
+    font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .sess .facts > span { white-space: nowrap; }
   .sess .facts .v { color: var(--muted); }
   /* Every setting reads label-then-value, so the line is one kind of thing.
      The mode is the TUI's permission badge, in the TUI's own colours. */
-  .sess .facts .fk { color: var(--dim); font-size: 11.5px; }
+  .sess .facts .fk { color: var(--dim); font-size: var(--fs-data); }
   .sess .facts .sep { color: #2b3448; }
   .perm { color: var(--dim); }
   .perm.auto { color: var(--warn); }
@@ -148,7 +165,7 @@
 
   details.acct { position: relative; }
   details.acct > summary { list-style: none; cursor: pointer; display: flex; align-items: center;
-    gap: 7px; font-family: var(--mono); font-size: 13px; color: var(--muted);
+    gap: 7px; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
     border: 1px solid var(--line); border-radius: 99px; padding: 2px 11px; }
   details.acct > summary::-webkit-details-marker { display: none; }
   details.acct > summary:hover { border-color: #2e3850; color: var(--text); }
@@ -157,20 +174,20 @@
     background: var(--s1); border: 1px solid rgba(34,42,60,.95); border-radius: 14px;
     padding: 13px 15px; box-shadow: 0 24px 60px rgba(0,0,0,.6); }
   .pop .hd { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
-  .pop .hd .nm { font-size: 15px; font-weight: 650; color: var(--accent); }
-  .pop .hd .st { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--ok); }
+  .pop .hd .nm { font-size: var(--fs-group); font-weight: 650; color: var(--accent); }
+  .pop .hd .st { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--ok); }
   .kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
-    font-family: var(--mono); font-size: var(--fs-row); }
+    font-family: var(--mono); font-size: var(--fs-data); }
   .kv .k { color: var(--dim); }
   .kv .v { color: var(--muted); text-align: right; }
   .kv .v.a { color: var(--accent); }
   .pop hr { border: 0; height: 1px; background: var(--line); margin: 9px 0 7px; }
   .bar { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
-  .bar .lb { font-family: var(--mono); font-size: 12px; color: var(--dim); width: 26px; }
+  .bar .lb { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); width: 26px; }
   .bar .tk { flex: 1; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
   .bar .fl { height: 100%; background: var(--accent); }
-  .bar .pc { font-family: var(--mono); font-size: 11.5px; color: var(--muted); width: 34px; text-align: right; }
-  .bar .eta { font-family: var(--mono); font-size: 11px; color: var(--dim); width: 60px; text-align: right; }
+  .bar .pc { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); width: 34px; text-align: right; }
+  .bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px; text-align: right; }
 
   .conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable; }
   .conv::-webkit-scrollbar { width: 8px; }
@@ -193,74 +210,62 @@
   .kind > summary:hover { background: rgba(27,33,48,.45); }
   /* The aggregate: enough to know the run has a failure in it, never a
      substitute for the per-call status that says which one. */
-  .kind > summary .st { width: 13px; flex: 0 0 13px; text-align: center; color: var(--ok); }
+  .kind > summary .st { color: var(--ok); }
   .kind > summary .st.err { color: var(--bad); }
   .kind > summary .nm { font-weight: 700; white-space: nowrap; }
-  .kind > summary .arw { margin-left: auto; color: var(--dim); font-size: 11px; }
+  .kind > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-label); }
   .kind[open] > summary .arw { color: var(--accent); }
   .leaves { padding: 0 0 6px 4px; }
-  /* One family inside a group: a label, and its calls on their own lane
-     behind a rail, so what is a group and what is a call never reads alike. */
+  /* One family inside a group: a label, and its calls indented behind a
+     rail so what is a group and what is a call never reads alike. */
   .knd { display: flex; align-items: center; gap: 8px; padding: 9px 8px 3px;
-    font-family: var(--mono); font-size: var(--fs-row); }
+    font-family: var(--mono); font-size: var(--fs-base); }
   .knd .gl { width: 16px; flex: 0 0 16px; color: var(--dim); }
   .knd .nm { color: var(--muted); font-weight: 700; }
   .knd .c { color: var(--dim); }
 
   /* one call, opening on its own */
-  details.leaf { margin-left: 22px; border-left: 1px solid #232b3d; }
+  details.leaf { margin-left: 15px; }
   details.leaf > summary { list-style: none; display: flex; align-items: center; gap: 8px;
-    padding: 3px 9px 3px 12px; border-radius: 0 7px 7px 0; cursor: pointer;
-    font-family: var(--mono); font-size: var(--fs-row); color: var(--muted); }
+    padding: 4px 9px 4px 14px; border-radius: 0 7px 7px 0; cursor: pointer;
+    font-family: var(--mono); font-size: var(--fs-base); color: var(--muted); }
   details.leaf > summary::-webkit-details-marker { display: none; }
   details.leaf > summary:hover { background: rgba(27,33,48,.4); }
   /* Every call carries its own status; the group's is only the roll-up. */
-  details.leaf > summary .st { width: 13px; flex: 0 0 13px; text-align: center; color: var(--ok); }
+  details.leaf > summary .st { color: var(--ok); }
   details.leaf > summary .st.err { color: var(--bad); }
   details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  details.leaf > summary .arw { margin-left: auto; color: var(--dim); font-size: 10px;
-    flex: none; }
+  details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
   details.leaf:hover > summary .arw { color: var(--muted); }
   details.leaf[open] > summary { color: var(--text); }
   details.leaf[open] > summary .arw { color: var(--accent); }
 
-  /* a call that stands alone (a run-breaker: diff tools, Monitor, peers) */
-  .rb { margin: 7px 0; }
-  .rb > summary { display: flex; align-items: center; gap: 9px; list-style: none;
-    padding: 4px 6px; border-radius: 8px; cursor: pointer;
-    font-family: var(--mono); font-size: 13px; }
-  .rb > summary::-webkit-details-marker { display: none; }
-  .rb > summary:hover { background: rgba(27,33,48,.45); }
-  .rb > summary .st { width: 12px; flex: 0 0 12px; color: var(--ok); }
-  .rb > summary .gl { width: 15px; flex: 0 0 15px; color: var(--muted); }
-  .rb > summary .nm { font-weight: 700; color: var(--text); white-space: nowrap; }
-  .rb > summary .ti { color: var(--muted); overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; }
-  .rb > summary .dl { margin-left: auto; color: var(--accent); font-size: 12px; }
-
+  /* A call that stands alone and breaks the run: a peer block, an
+     unanswered question, or a lifecycle call such as a Monitor. An edit is
+     NOT one of these - it is a family inside the group, drawn above. */
   .body { margin: 3px 0 6px 27px; }
   .code { border: 1px solid var(--line); border-radius: 9px;
     background: var(--s2); overflow: hidden; }
-  .code .lang { font-family: var(--mono); font-size: 11px; color: var(--dim);
+  .code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     padding: 5px 12px; border-bottom: 1px solid var(--line); }
-  .code pre { font-family: var(--mono); font-size: var(--fs-row); padding: 8px 12px;
+  .code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 8px 12px;
     white-space: pre; overflow-x: auto; line-height: 1.55; }
   .k { color: #c9a13b; } .s { color: #8fd07a; } .c2 { color: var(--dim); font-style: italic; }
   .f { color: #8fb4e0; }
 
-  .term { font-family: var(--mono); font-size: var(--fs-row); color: var(--muted);
+  .term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
     border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
     white-space: pre-wrap; overflow-x: auto; }
   .term .pfx { color: var(--dim); }
   .term .sum { color: var(--ok); }
-  .searchhit { font-family: var(--mono); font-size: var(--fs-row); padding: 3px 0 3px 13px;
+  .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
     margin: 4px 0; border-left: 1px solid var(--line); }
   .searchhit .ln { color: var(--accent); }
   .searchhit .fl { color: var(--muted); }
   .searchhit .hit { color: var(--warn); }
 
   .dif { border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
-    font-family: var(--mono); font-size: var(--fs-row); }
+    font-family: var(--mono); font-size: var(--fs-data); }
   .dif .h { color: var(--teal); background: var(--s2); padding: 4px 12px; }
   .dif .ln { display: grid; grid-template-columns: 44px 1fr; }
   .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
@@ -273,7 +278,7 @@
   /* peer traffic */
   .peer { display: flex; align-items: center; gap: 9px; padding: 7px 12px; border-radius: 9px;
     border: 1px solid rgba(78,201,201,.28); background: rgba(78,201,201,.06);
-    font-family: var(--mono); font-size: 12.5px; margin: 6px 0; }
+    font-family: var(--mono); font-size: var(--fs-base); margin: 6px 0; }
   .peer .dir { color: var(--teal); flex: none; }
   .peer .from { color: var(--text); font-weight: 700; flex: none; }
   .peer .txt { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -281,44 +286,46 @@
   details.msg { border: 1px solid rgba(78,201,201,.22); border-radius: 10px; margin: 7px 0;
     background: rgba(78,201,201,.03); }
   details.msg > summary { list-style: none; display: flex; align-items: center; gap: 9px;
-    padding: 8px 12px; cursor: pointer; font-family: var(--mono); font-size: 13px; }
+    padding: 8px 12px; cursor: pointer; font-family: var(--mono); font-size: var(--fs-group); }
   details.msg > summary::-webkit-details-marker { display: none; }
   details.msg > summary:hover { background: rgba(78,201,201,.06); }
   details.msg > summary .c { font-weight: 700; }
-  details.msg > summary .arw { margin-left: auto; color: var(--dim); font-size: 11px; }
+  details.msg > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-label); }
   details.msg[open] > summary .arw { color: var(--teal); }
   .msgbody { padding: 0 12px 10px; }
-  .mkind { font-family: var(--mono); font-size: 12.5px; padding: 5px 0 2px; }
-  .mkind .kb { font-weight: 700; }
-  .mkind .dir { color: var(--teal); }
-  .mleaf { font-family: var(--mono); font-size: 12.5px; color: var(--dim);
-    padding: 1px 0 1px 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mleaf .who { color: var(--muted); }
+  .mmsg { display: flex; align-items: center; gap: 9px; padding: 3px 0;
+    font-family: var(--mono); font-size: var(--fs-base); min-width: 0; }
+  .mmsg .dir { color: var(--teal); }
+  .mmsg .kb { color: var(--muted); font-weight: 700; flex: none; }
+  .mmsg .who { color: var(--text); flex: none; }
+  .mmsg .txt { color: var(--dim); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
 
   /* an answered question survives the dock clearing */
   .card { margin: 8px 0; padding: 2px 0; }
-  .card .q { display: flex; align-items: baseline; gap: 9px; font-size: 14px; color: var(--muted); }
+  .card .q { display: flex; align-items: baseline; gap: 9px; padding-left: 34px;
+    font-size: var(--fs-base); color: var(--muted); }
   .card .q .qm { color: var(--accent); font-weight: 700; flex: none; }
   .card .a { display: flex; align-items: baseline; gap: 8px; padding-left: 24px;
-    font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+    font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
   .card .a .am { color: var(--dim); }
   .card .a .picked { color: var(--ok); }
   .card .a .typed { color: var(--text); font-weight: 700; }
 
-  .notice { margin: 10px 0; padding: 9px 13px; border-radius: 9px; font-size: 14px; }
+  .notice { margin: 10px 0; padding: 9px 13px; border-radius: 9px; font-size: var(--fs-prose); }
   .notice .sev { font-weight: 700; margin-right: 7px; }
   .notice.info { border: 1px solid var(--line); color: var(--dim); }
   .notice.warn { border: 1px solid rgba(201,161,59,.35); background: rgba(201,161,59,.07); color: var(--warn); }
   .notice.err { border: 1px solid rgba(224,104,62,.35); background: rgba(224,104,62,.07); color: var(--bad); }
 
   .compacting { display: flex; align-items: center; gap: 9px; color: var(--accent);
-    font-family: var(--mono); font-size: 13px; margin: 10px 0 2px; }
+    font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
   .hooks { display: flex; align-items: center; gap: 8px; margin: 4px 0;
-    font-family: var(--mono); font-size: 12.5px; color: var(--dim); cursor: pointer; }
+    font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
   .hooks:hover { color: var(--muted); }
-  .hooks .tog { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; font-size: 11px; }
+  .hooks .tog { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; font-size: var(--fs-label); }
 
-  .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
    numbers rather than as in and out. */
   .turninfo > summary { list-style: none; display: flex; align-items: center; gap: 8px;
@@ -327,43 +334,150 @@
   .turninfo > summary::-webkit-details-marker { display: none; }
   .turninfo .sep { opacity: .5; }
   .turninfo .tog { color: var(--muted); border: 1px solid var(--line);
-    border-radius: 6px; padding: 0 8px; font-size: 11.5px; }
+    border-radius: 6px; padding: 0 8px; font-size: var(--fs-data); }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
-    font-family: var(--mono); font-size: var(--fs-meta); }
+    font-family: var(--mono); font-size: var(--fs-data); }
   .tibody .l, .tibody .n { color: var(--muted); }
   .tibody .wide { grid-column: 1 / -1; }
   .tibody b { color: var(--dim); font-weight: 400; display: inline-block; width: 78px; }
 
-  .composer { padding: 4px 0 2px; }
-  .box { border: 1px solid rgba(244,118,0,.4); border-radius: 14px; padding: 12px 14px;
-    background: linear-gradient(180deg, rgba(20,25,38,.7), rgba(13,17,26,.76));
-    backdrop-filter: blur(10px); box-shadow: 0 12px 34px rgba(0,0,0,.4); }
-  .box:focus-within { border-color: var(--accent); }
-  .box .row { display: flex; align-items: flex-start; gap: 10px; }
-  .box .pr { color: var(--accent); font-family: var(--mono); font-size: 13px; padding-top: 3px; }
-  .box textarea { flex: 1; background: none; border: none; outline: none; resize: none;
-    color: var(--text); font-family: var(--ui); font-size: 16px; line-height: 1.5; min-height: 24px; }
-  .box textarea::placeholder { color: var(--dim); }
+  /* ---------- the live turn: a turn actually in flight ---------- */
+  .livebar { display: flex; align-items: center; gap: 10px; margin: 8px 0 2px;
+    padding-left: 12px; font-family: var(--mono); font-size: var(--fs-data); }
+  .livebar .lt { color: var(--accent); font-weight: 700; letter-spacing: .08em;
+    text-transform: uppercase; font-size: var(--fs-label); }
+  .livebar .rp { color: var(--muted); border: 1px solid var(--line); border-radius: 7px;
+    padding: 1px 10px; cursor: pointer; background: none; font-family: inherit;
+    font-size: var(--fs-data); }
+  .livebar .rp:hover { color: var(--text); border-color: #2e3850; }
+  /* A beat is hidden until its moment, then takes its own space. */
+  .beat { display: none; }
+  .beat.on { display: block; }
+  .caret { display: inline-block; width: 7px; height: 1.05em; margin-left: 2px;
+    background: var(--accent); vertical-align: text-bottom;
+    animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .streaming { color: var(--text); white-space: pre-wrap; }
+  /* A call that has started but not landed: the row reads as in flight. */
+  .leaf.running > summary { color: var(--text); }
+  .leaf.running .tn::after { content: ""; }
 
+  .composer { padding: 4px 0 2px; }
+  /* One slot, several states. The chips pick which one the box is in. */
+  .cstates { display: flex; align-items: center; gap: 6px; padding-left: 2px;
+    margin-bottom: 7px; flex-wrap: wrap; }
+  .cstates .cl { font-family: var(--mono); font-size: var(--fs-label);
+    letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
+    margin-right: 4px; }
+  .cs { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    border: 1px solid var(--line); border-radius: 99px; padding: 1px 10px;
+    background: none; cursor: pointer; }
+  .cs:hover { color: var(--muted); border-color: #2e3850; }
+  .cs.on { color: var(--accent); border-color: rgba(244,118,0,.45);
+    background: rgba(244,118,0,.1); }
+  .cst { display: none; }
+  .cst.on { display: block; }
+
+  .mbox { border: 1.5px solid rgba(244,118,0,.45); border-radius: 16px;
+    background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
+    backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
+    padding: 11px 14px; display: flex; flex-direction: column; gap: 8px;
+    transition: border-color .3s ease; }
+  .mbox.rec { border-color: #b06a2a; }
+  .mbox.tr { border-color: var(--blue); }
+  .mline { display: flex; align-items: flex-start; gap: 10px; }
+  .mtxt { flex: 1; min-width: 0; font-size: var(--fs-prose); line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word; }
+  .mph { color: var(--dim); font-style: italic; }
+  .mslash { color: #d79ae0; }
+  .mcaret { display: inline-block; width: 7px; height: 1.05em; background: var(--accent);
+    vertical-align: text-bottom; animation: blink 1s steps(1) infinite; }
+  .msend { color: var(--accent); padding-top: 3px; }
+  .mfoot { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); }
+  .mk { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
+
+  .mdict { display: flex; align-items: center; gap: 11px;
+    font-family: var(--mono); font-size: var(--fs-data); }
+  .mdot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+    animation: pulse 1.05s ease-in-out infinite; flex: none; }
+  .mdot.tr { background: var(--blue); animation: none; }
+  .mt { color: var(--accent); }
+  .mdb { color: #ffb058; }
+  .mt.tr, .mdb.tr { color: var(--dim); }
+  .mlbl, .mesc { color: var(--dim); }
+  .mesc { margin-left: auto; }
+  /* The meter is a scrolling history: each cell is one past sample, newest
+     at the right, flowing left. Two copies of the shape translate by half. */
+  .mwave { height: 22px; flex: 1; min-width: 0; overflow: hidden; }
+  .wtr { display: flex; align-items: flex-end; gap: 2px; height: 100%;
+    width: max-content; animation: flow 2.6s linear infinite; }
+  .wtr i { flex: 0 0 4px; border-radius: 1px; background: var(--s3); }
+  .wtr i.mid { background: #ab6100; }
+  .wtr i.hot { background: #ffb058; }
+  .mwave.tr .wtr { animation: none; }
+  .mwave.tr .wtr i { background: #26354a; }
+  .mwave.tr .wtr i.mid { background: #2f486d; }
+  .mwave.tr .wtr i.hot { background: #365582; }
+  @keyframes flow { to { transform: translateX(-50%); } }
+  .mnotice { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+
+  .mac { border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    background: rgba(13,17,26,.96); box-shadow: 0 18px 44px rgba(0,0,0,.5);
+    margin-bottom: 8px; }
+  .mah { display: flex; align-items: center; padding: 8px 13px;
+    border-bottom: 1px solid var(--line); font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); letter-spacing: .06em;
+    text-transform: uppercase; }
+  .mah .n { margin-left: auto; }
+  .mai { display: flex; align-items: center; gap: 10px; padding: 5px 13px;
+    font-family: var(--mono); font-size: var(--fs-base); }
+  .mai .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
+  .mai .p { color: var(--text); }
+  .mai .p em { font-style: normal; color: var(--accent); }
+  .mai .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
+  .mai.sel { background: rgba(244,118,0,.09); }
+
+  /* The box morphed into a prompt: same slot, so your eye is already here. */
+  .mdock { border: 1.5px solid rgba(244,118,0,.75); border-radius: 16px;
+    background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86));
+    box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 15px 17px;
+    display: flex; flex-direction: column; gap: 11px; }
+  .mdhead { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
+  .mdhead .t { font-weight: 650; color: var(--text); font-family: var(--mono); }
+  .mdhead .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data); }
+  .mopts { display: flex; flex-direction: column; gap: 1px; }
+  .mopt { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
+    border-radius: 9px; font-size: var(--fs-base); cursor: pointer; }
+  .mopt .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
+  .mopt .ic { color: var(--dim); }
+  .mopt .ic.ok { color: var(--ok); }
+  .mopt .ic.no { color: var(--bad); }
+  .mopt .ic.ed { color: var(--blue); }
+  .mopt .lbl { color: var(--dim); }
+  .mopt.sel { background: rgba(244,118,0,.1); }
+  .mopt.sel .lbl { color: var(--text); font-weight: 600; }
+  .mkeys { display: flex; gap: 14px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); padding-left: 31px; }
   /* ---------- inspector ---------- */
   .sec { border-bottom: 1px solid rgba(34,42,60,.55); }
   .sec:last-child { border-bottom: 0; }
   details.sec > summary { list-style: none; display: flex; align-items: center; gap: 10px;
-    padding: 11px 14px; font-size: 11px; font-weight: 700; letter-spacing: .12em;
+    padding: 11px 14px; font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
     text-transform: uppercase; color: var(--muted); cursor: pointer; }
   details.sec > summary::-webkit-details-marker { display: none; }
   details.sec > summary:hover { background: rgba(27,33,48,.4); }
   details.sec > summary .gl { color: var(--dim); }
-  details.sec > summary .c2 { color: var(--dim); font-family: var(--mono); font-size: 11.5px;
+  details.sec > summary .c2 { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
     letter-spacing: 0; text-transform: none; font-weight: 400;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  details.sec > summary .arw { margin-left: auto; color: var(--dim); font-size: 12px; }
+  details.sec > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
   details.sec[open] > summary .arw { color: var(--accent); }
   details.sec[open] > summary { border-bottom: 1px solid var(--line); }
   .sb { padding: 10px 14px 14px; }
   .file { display: flex; align-items: center; gap: 8px; padding: 2px 0;
-    font-family: var(--mono); font-size: var(--fs-row); }
+    font-family: var(--mono); font-size: var(--fs-data); }
   .file .p { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     cursor: pointer; }
   .file .p:hover { color: var(--accent); }
@@ -371,33 +485,33 @@
   .file .st.a { color: var(--ok); }
   .file .pm { margin-left: auto; color: var(--ok); }
   .file .mm { color: var(--bad); }
-  .dir { font-family: var(--mono); font-size: 12px; color: var(--dim); padding: 5px 0 1px; }
+  .dir { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 5px 0 1px; }
 
   .tk { display: flex; align-items: flex-start; gap: 9px; padding: 5px 0; }
   .tk .b { width: 3px; align-self: stretch; border-radius: 99px; background: var(--s3); flex: none; }
   .tk.now .b { background: var(--accent); }
   .tk.done .b { background: var(--ok); }
   .tk.blocked .b { background: var(--warn); }
-  .tk .s { font-size: 13px; color: var(--muted); }
+  .tk .s { font-size: var(--fs-base); color: var(--muted); }
   .tk.done .s { color: var(--dim); text-decoration: line-through; }
-  .tk .meta { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin-top: 1px; }
+  .tk .meta { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); margin-top: 1px; }
   .tk .meta b { color: var(--muted); font-weight: 500; }
 
   .sa { border: 1px solid var(--line); border-radius: 10px; background: rgba(13,17,26,.5);
     margin: 6px 0; overflow: hidden; }
   .sa .sh { display: flex; align-items: center; gap: 9px; padding: 8px 12px;
-    font-family: var(--mono); font-size: 12.5px; min-width: 0; }
-  .sa .sh .st { width: 12px; flex: 0 0 12px; color: var(--ok); }
+    font-family: var(--mono); font-size: var(--fs-data); min-width: 0; }
+  .sa .sh .st { color: var(--ok); }
   .sa .sh .gl { color: var(--violet); }
   .sa .sh .nm { color: var(--accent); font-weight: 700; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
-  .sa .sh .n { margin-left: auto; color: var(--dim); font-size: 11.5px;
+  .sa .sh .n { margin-left: auto; color: var(--dim); font-size: var(--fs-data);
     white-space: nowrap; flex: none; }
-  .sa .tt { font-family: var(--mono); font-size: 12px; color: var(--dim); padding: 0 12px 3px 12px; }
+  .sa .tt { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 0 12px 3px 12px; }
   .sa .tt .tg { color: var(--muted); }
-  .sa .settled { font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+  .sa .settled { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
     padding: 0 12px 9px; font-style: italic; }
-  .sa .note { font-size: 11.5px; color: var(--dim); padding: 0 12px 9px; }
+  .sa .note { font-size: var(--fs-data); color: var(--dim); padding: 0 12px 9px; }
 
   /* ---------- the diff page ---------- */
   #diff { display: none; }
@@ -406,34 +520,34 @@
     background: var(--bg); }
   .ph { display: flex; align-items: center; gap: 14px; padding: 12px 22px;
     border-bottom: 1px solid var(--line); background: rgba(8,10,16,.75); }
-  .ph .ttl { font-size: 15px; font-weight: 650; }
-  .ph .sub { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .ph .ttl { font-size: var(--fs-group); font-weight: 650; }
+  .ph .sub { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .ph .x { margin-left: auto; cursor: pointer; color: var(--muted); font-family: var(--mono);
-    font-size: 12.5px; border: 1px solid var(--line); border-radius: 7px; padding: 3px 11px; }
+    font-size: var(--fs-data); border: 1px solid var(--line); border-radius: 7px; padding: 3px 11px; }
   .ph .x:hover { color: var(--text); border-color: #2e3850; }
   .pbody { flex: 1; display: grid; grid-template-columns: 264px minmax(0,1fr); overflow: hidden; }
   .prail { border-right: 1px solid var(--line); overflow-y: auto; padding: 12px 10px; }
-  .prail .h { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  .prail .h { font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
     color: var(--accent); padding: 4px 6px 8px; }
   .prail .f { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 7px;
-    font-family: var(--mono); font-size: 12.5px; cursor: pointer; }
+    font-family: var(--mono); font-size: var(--fs-data); cursor: pointer; }
   .prail .f:hover { background: rgba(27,33,48,.5); }
   .prail .f.cur { background: rgba(244,118,0,.1); }
   .prail .f .m { width: 12px; flex: 0 0 12px; color: var(--accent); }
   .prail .f .m.a { color: var(--ok); }
   .prail .f .p { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .prail .f .c { margin-left: auto; color: var(--accent); font-size: 11.5px; }
+  .prail .f .c { margin-left: auto; color: var(--accent); font-size: var(--fs-data); }
   .pmain { overflow-y: auto; padding: 16px 22px 40px; grid-column: 2; }
   .fhead { display: flex; align-items: center; gap: 10px; padding: 9px 12px; margin-bottom: 10px;
     background: var(--s2); border: 1px solid var(--line); border-radius: 9px;
-    font-family: var(--mono); font-size: 12.5px; }
+    font-family: var(--mono); font-size: var(--fs-data); }
   .fhead .path { font-weight: 700; color: var(--text); }
   .fhead .badge { color: var(--accent); border: 1px solid rgba(244,118,0,.35);
-    border-radius: 99px; padding: 0 8px; font-size: 11px; }
+    border-radius: 99px; padding: 0 8px; font-size: var(--fs-label); }
   .fhead .pm { margin-left: auto; color: var(--ok); }
   .fhead .mm { color: var(--bad); }
   .pdiff { border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
-    font-family: var(--mono); font-size: 12.5px; }
+    font-family: var(--mono); font-size: var(--fs-data); }
   .pdiff .h { color: var(--teal); background: var(--s2); padding: 5px 12px; }
   .pdiff .ln { display: grid; grid-template-columns: 56px 1fr; }
   .pdiff .ln .n { color: var(--dim); text-align: right; padding-right: 12px; user-select: none; }
@@ -443,7 +557,7 @@
   .pdiff .ln.a .n { background: var(--add-bg); color: var(--ok); }
   .pdiff .ln.d .n { background: var(--del-bg); color: var(--bad); }
   .pfoot { border-top: 1px solid var(--line); padding: 9px 22px; font-family: var(--mono);
-    font-size: 12px; color: var(--dim); display: flex; gap: 8px; }
+    font-size: var(--fs-data); color: var(--dim); display: flex; gap: 8px; }
   .pfoot .key { color: var(--accent); }
   .pfoot .sep { padding: 0 8px; opacity: .5; }
 
@@ -471,6 +585,37 @@
 </style>
 </head>
 <body>
+
+<!-- One sprite, referenced by every icon on the page. Lucide, MIT: the
+     web-native set, so no character-cell glyph from the TUI's table
+     survives here. Production vendors the same paths. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-read" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="i-bash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 4 4-4 4"/><path d="M13 16h6"/></symbol>
+  <symbol id="i-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.5 9h17M3.5 15h17"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/></symbol>
+  <symbol id="i-lsp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></symbol>
+  <symbol id="i-skill" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></symbol>
+  <symbol id="i-toolsearch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></symbol>
+  <symbol id="i-mcp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="7" x="3" y="3" rx="2"/><rect width="18" height="7" x="3" y="14" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></symbol>
+  <symbol id="i-tool" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-git" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
+  <symbol id="i-tasks" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8M13 12h8M13 18h8"/></symbol>
+  <symbol id="i-subagents" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M12 8V4H8"/><path d="M9 14h.01M15 14h.01"/></symbol>
+  <symbol id="i-monitors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 8-4-16-3 8H2"/></symbol>
+  <symbol id="i-schedules" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-gotify" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 6 2 7 2 7H4s2-1 2-7"/><path d="M10.5 20a2 2 0 0 0 3 0"/></symbol>
+  <symbol id="i-slack" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-processes" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="12" height="12" x="6" y="6" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+  <symbol id="i-question" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9a3 3 0 1 1 4 2.8c-.7.4-1 .9-1 1.7v.5"/><path d="M12 18h.01"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></symbol>
+  <symbol id="i-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4v9a3 3 0 0 0 3 3h12"/><path d="m15 12 3 4-3 4"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4v9a3 3 0 0 1-3 3H6"/><path d="m9 12-3 4 3 4"/></symbol>
+</svg>
 
 <input type="checkbox" id="l" hidden>
 <input type="checkbox" id="r" hidden>
@@ -618,20 +763,20 @@
 
         <details class="kind" open>
           <summary>
-            <span class="st err">&#10007;</span>
-            <span class="nm">17 tool calls</span>
-            <span class="arw">&#9662;</span>
+            <svg class="ic st err"><use href="#i-x"/></svg>
+            <span class="nm">23 tool calls</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg>
           </summary>
           <div class="leaves">
-            <div class="knd"><span class="gl">&#10022;</span><span class="nm">skill</span></div>
+            <div class="knd"><svg class="ic gl"><use href="#i-skill"/></svg><span class="nm">skill</span></div>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">pr-review-loop &#183; PR #1204</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">pr-review-loop &#183; PR #1204</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">4 reviewers on disjoint axes &#183; 3 rounds max</div></div>
             </details>
 
-            <div class="knd"><span class="gl">&#11034;</span><span class="nm">read</span></div>
+            <div class="knd"><svg class="ic gl"><use href="#i-read"/></svg><span class="nm">read</span></div>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">crates/forge-sessions/src/family.rs</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-sessions/src/family.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="code">
                   <div class="lang">rust</div>
@@ -647,7 +792,7 @@
               </div>
             </details>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">crates/forge-sessions/src/grouping.rs</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-sessions/src/grouping.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="code">
                   <div class="lang">rust</div>
@@ -658,7 +803,7 @@
               </div>
             </details>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">crates/forge-tui/src/ui/tool_call/group.rs</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-tui/src/ui/tool_call/group.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="code">
                   <div class="lang">rust</div>
@@ -666,10 +811,17 @@
                 </div>
               </div>
             </details>
-
-            <div class="knd"><span class="gl">&#8981;</span><span class="nm">search</span></div>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">"render_group_summary" &#183; 3 files</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">docs/book/src/ui/chat.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="term">## Tool-call grouping (L2 / L1 / L0)
+Consecutive tool calls between two user messages fold into one group.</div>
+              </div>
+            </details>
+
+            <div class="knd"><svg class="ic gl"><use href="#i-search"/></svg><span class="nm">search</span></div>
+            <details class="leaf">
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">"render_group_summary" &#183; 3 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="searchhit"><span class="ln">142:</span> <span class="fl">crates/forge-sessions/src/grouping.rs</span>
 <span class="hit">render_group_summary</span>(unit, width)</div>
@@ -678,16 +830,59 @@
               </div>
             </details>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">"KindLine" &#183; 2 files</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">"KindLine" &#183; 2 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="searchhit"><span class="ln">31:</span> <span class="fl">crates/forge-sessions/src/family.rs</span>
 <span class="k">pub struct</span> <span class="hit">KindLine</span> {</div>
               </div>
             </details>
 
-            <div class="knd"><span class="gl">&#9654;</span><span class="nm">bash</span></div>
+            <div class="knd"><svg class="ic gl"><use href="#i-edit"/></svg><span class="nm">edit</span></div>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-web/src/home.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dif">
+                  <div class="h">@@ -30,7 +30,9 @@</div>
+                  <div class="ln"><span class="n">30</span><span class="l">.row .what a {</span></div>
+                  <div class="ln"><span class="n">31</span><span class="l">  font-family: var(--mono); color: var(--accent);</span></div>
+                  <div class="ln d"><span class="n">32</span><span class="l">- text-decoration: none; flex: none;</span></div>
+                  <div class="ln a"><span class="n">33</span><span class="l">+ text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
+                  <div class="ln a"><span class="n">34</span><span class="l">+ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
+                  <div class="ln"><span class="n">35</span><span class="l">}</span></div>
+                </div>
+              </div>
+            </details>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-web/src/home.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dif">
+                  <div class="h">@@ -561,7 +561,15 @@ fn region(view: &amp;HomeView) -&gt; Markup {</div>
+                  <div class="ln d"><span class="n">563</span><span class="l">-                 div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }</span></div>
+                  <div class="ln a"><span class="n">564</span><span class="l">+                 div .versions {</span></div>
+                  <div class="ln a"><span class="n">565</span><span class="l">+                     b { "v" (env!("CARGO_PKG_VERSION")) }</span></div>
+                  <div class="ln a"><span class="n">566</span><span class="l">+                     @if let Some(installed) = view.cli.as_ref().and_then(|cli| cli.installed.as_deref()) {</span></div>
+                  <div class="ln a"><span class="n">567</span><span class="l">+                         " \u{b7} claude " (installed)</span></div>
+                  <div class="ln"><span class="n">568</span><span class="l">                      }</span></div>
+                </div>
+              </div>
+            </details>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-sessions/src/surface.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dif">
+                  <div class="h">@@ -92,6 +92,12 @@ impl ViewSurface&lt;'_&gt; {</div>
+                  <div class="ln"><span class="n">92</span><span class="l">     /// [`SessionUpdate::CliVersionChanged`].</span></div>
+                  <div class="ln a"><span class="n">93</span><span class="l">+    pub fn cli_version(&amp;self) -&gt; Option&lt;CliVersionInfo&gt; {</span></div>
+                  <div class="ln a"><span class="n">94</span><span class="l">+        self.workspace.cli_version()</span></div>
+                  <div class="ln a"><span class="n">95</span><span class="l">+    }</span></div>
+                  <div class="ln"><span class="n">96</span><span class="l"> }</span></div>
+                </div>
+              </div>
+            </details>
+
+            <div class="knd"><svg class="ic gl"><use href="#i-bash"/></svg><span class="nm">bash</span></div>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">run the full workspace gate, then the feature-config build</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">run the full workspace gate, then the feature-config build</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="term"><span class="pfx">$</span> just check
    Compiling forge-primitives v1.0.90
@@ -697,146 +892,105 @@
               </div>
             </details>
             <details class="leaf">
-              <summary><span class="st"><span class="ring"></span></span><span class="tn">cargo nextest run -p forge-web</span><span class="arw">&#9656;</span></summary>
+              <summary><span class="st"><span class="ring"></span></span><span class="tn">cargo nextest run -p forge-web</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="term"><span class="pfx">$</span> cargo nextest run -p forge-web
     Starting 42 tests across 3 binaries</div>
               </div>
             </details>
-
-            <div class="knd"><span class="gl">&#8853;</span><span class="nm">web</span></div>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">docs.rs/ratatui/latest/ratatui/widgets/struct.List.html</span><span class="arw">&#9656;</span></summary>
+              <summary><span class="st"><span class="ring"></span></span><span class="tn">just check-feature-configs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="term"><span class="pfx">$</span> just check-feature-configs
+    Starting fmt-check...</div>
+              </div>
+            </details>
+
+            <div class="knd"><svg class="ic gl"><use href="#i-web"/></svg><span class="nm">web</span></div>
+            <details class="leaf">
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">docs.rs/ratatui/latest/ratatui/widgets/struct.List.html</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="term">List &#183; ratatui 0.29.0
 A widget that renders a scrollable list of items.</div>
               </div>
             </details>
 
-            <div class="knd"><span class="gl">&#9881;</span><span class="nm">lsp</span></div>
+            <div class="knd"><svg class="ic gl"><use href="#i-lsp"/></svg><span class="nm">lsp</span></div>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">hover &#183; crates/forge-tui/src/ui/message.rs</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">hover &#183; crates/forge-tui/src/ui/message.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="term">fn <span class="f">render_body</span>(&amp;self, area: <span class="f">Rect</span>) -&gt; <span class="f">Vec</span>&lt;<span class="f">Line</span>&gt;
 docs: Render the message body into rows.</div>
               </div>
             </details>
 
-            <div class="knd"><span class="gl">&#9672;</span><span class="nm">playwright</span></div>
+            <div class="knd"><svg class="ic gl"><use href="#i-mcp"/></svg><span class="nm">playwright</span></div>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">browser_navigate</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">browser_navigate</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">http://127.0.0.1:8765/web-session.html &#183; forge &#183; session</div></div>
             </details>
             <details class="leaf">
-              <summary><span class="st err">&#10007;</span><span class="tn">browser_click &#183; label[for="diff"]</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">browser_click &#183; label[for="diff"]</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term"><span class="err">Timeout 5000ms exceeded waiting for the element to be stable</span></div></div>
             </details>
 
-            <div class="knd"><span class="gl">&#9672;</span><span class="nm">forge</span></div>
+            <div class="knd"><svg class="ic gl"><use href="#i-mcp"/></svg><span class="nm">forge</span></div>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">agents__list</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">agents__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">15 projects &#183; 1 live worker on forge</div></div>
             </details>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">tasks__list</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">tasks__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">2 tasks in flight</div></div>
             </details>
             <details class="leaf">
-              <summary><span class="st"><span class="ring"></span></span><span class="tn">agents__ask &#183; cli-version</span><span class="arw">&#9656;</span></summary>
+              <summary><span class="st"><span class="ring"></span></span><span class="tn">agents__ask &#183; cli-version</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">q-7f3a92e0 &#183; inflight</div></div>
             </details>
-
-            <div class="knd"><span class="gl">&#8984;</span><span class="nm">toolsearch</span></div>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">select:TaskStop</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">tasks__update</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="term">cli-version &#183; in_progress</div></div>
+            </details>
+
+            <div class="knd"><svg class="ic gl"><use href="#i-toolsearch"/></svg><span class="nm">toolsearch</span></div>
+            <details class="leaf">
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">select:TaskStop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">Found KillShell, BashOutput</div></div>
             </details>
 
-            <div class="knd"><span class="gl">&#9675;</span><span class="nm">tool</span></div>
+            <div class="knd"><svg class="ic gl"><use href="#i-tool"/></svg><span class="nm">tool</span></div>
             <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">mcp__forge__cron__list</span><span class="arw">&#9656;</span></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">mcp__forge__cron__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">[] &#183; no crons registered</div></div>
             </details>
           </div>
         </details>
 
-        <!-- a run-breaker: the diff tools never fold into a group, and an
-             edit opens by default -->
-        <details class="rb" open>
-          <summary>
-            <span class="st">&#10003;</span><span class="gl">&#9634;</span>
-            <span class="nm">Edit</span>
-            <span class="ti">crates/forge-web/src/home.css (+12, -4)</span>
-          </summary>
-          <div class="body">
-            <div class="dif">
-              <div class="h">@@ -30,7 +30,9 @@</div>
-              <div class="ln"><span class="n">30</span><span class="l">.row .what a {</span></div>
-              <div class="ln"><span class="n">31</span><span class="l">  font-family: var(--mono); color: var(--accent);</span></div>
-              <div class="ln d"><span class="n">32</span><span class="l">- text-decoration: none; flex: none;</span></div>
-              <div class="ln a"><span class="n">33</span><span class="l">+ text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
-              <div class="ln a"><span class="n">34</span><span class="l">+ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
-              <div class="ln"><span class="n">35</span><span class="l">}</span></div>
-            </div>
-          </div>
-        </details>
-
-        <!-- the break the Edit made: the next tool call starts a new run,
-             and it runs to the end of the turn -->
-        <details class="kind" open>
-          <summary>
-            <span class="st">&#10003;</span>
-            <span class="nm">3 tool calls</span>
-            <span class="arw">&#9662;</span>
-          </summary>
-          <div class="leaves">
-            <div class="knd"><span class="gl">&#9654;</span><span class="nm">bash</span></div>
-            <details class="leaf">
-              <summary><span class="st"><span class="ring"></span></span><span class="tn">just check</span><span class="arw">&#9656;</span></summary>
-              <div class="body">
-                <div class="term"><span class="pfx">$</span> just check
-    Starting fmt-check...</div>
-              </div>
-            </details>
-
-            <div class="knd"><span class="gl">&#11034;</span><span class="nm">read</span></div>
-            <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">docs/book/src/ui/chat.md</span><span class="arw">&#9656;</span></summary>
-              <div class="body">
-                <div class="term">## Tool-call grouping (L2 / L1 / L0)
-Consecutive tool calls between two user messages fold into one group.</div>
-              </div>
-            </details>
-
-            <div class="knd"><span class="gl">&#9672;</span><span class="nm">forge</span></div>
-            <details class="leaf">
-              <summary><span class="st">&#10003;</span><span class="tn">tasks__update</span><span class="arw">&#9656;</span></summary>
-              <div class="body"><div class="term">cli-version &#183; in_progress</div></div>
-            </details>
-          </div>
-        </details>
-
         <div class="card">
-          <div class="q"><span class="qm">?</span>How should an answered question survive the dock clearing?</div>
+          <div class="q"><svg class="ic qm"><use href="#i-question"/></svg>How should an answered question survive the dock clearing?</div>
           <div class="a"><span class="am">&#8594;</span><span class="picked">Clean answered-card</span></div>
           <div class="a"><span class="am">&#8594;</span><span class="am">you typed:</span>
             <span class="typed">"and keep the multiSelect case too"</span></div>
         </div>
 
-        <div class="peer"><span class="dir">&#10549;</span>
+        <div class="peer"><svg class="ic dir"><use href="#i-in"/></svg>
           <span class="from">companies</span>
           <span class="txt">is the cron issue filed? the wake dies on the 2nd</span></div>
 
         <details class="msg" open>
-          <summary><span class="st">&#10003;</span>
+          <summary><svg class="ic st"><use href="#i-check"/></svg>
             <span class="c">3 messages</span>
-            <span class="arw">&#9662;</span></summary>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
           <div class="msgbody">
-            <div class="mkind"><span class="dir">&#10549;</span> <span class="kb">message</span></div>
-            <div class="mleaf"><span class="who">steward</span> &#183; IT IMPORTED. The window is lost&#8230;</div>
-            <div class="mleaf"><span class="who">planner</span> &#183; picking up the migration now&#8230;</div>
-            <div class="mkind"><span class="dir">&#10549;</span> <span class="kb">reply</span></div>
-            <div class="mleaf"><span class="who">tester</span> &#183; take the render half, I&#39;ll take the partition&#8230;</div>
+            <div class="mmsg"><svg class="ic dir"><use href="#i-in"/></svg>
+              <span class="kb">message</span><span class="who">steward</span>
+              <span class="txt">IT IMPORTED. The window is lost&#8230;</span></div>
+            <div class="mmsg"><svg class="ic dir"><use href="#i-in"/></svg>
+              <span class="kb">message</span><span class="who">planner</span>
+              <span class="txt">picking up the migration now&#8230;</span></div>
+            <div class="mmsg"><svg class="ic dir"><use href="#i-in"/></svg>
+              <span class="kb">reply</span><span class="who">tester</span>
+              <span class="txt">take the render half, I&#39;ll take the partition&#8230;</span></div>
           </div>
         </details>
 
@@ -887,11 +1041,187 @@ Consecutive tool calls between two user messages fold into one group.</div>
       </div>
     </div>
 
+      <!-- ===== the live half: a turn in flight, replayed in place ===== -->
+      <div class="livebar" data-mock-ignore>
+        <span class="lt">live turn</span>
+        <span class="dim">a turn actually running, so the states can be judged moving rather than described</span>
+        <button class="rp" id="replay">replay</button>
+      </div>
+
+      <div class="mine" id="lv-prompt">Add the live-turn states to the mock: text streaming, calls landing one at a time, the row counting up.</div>
+
+      <div class="work" id="live">
+        <div class="beat" data-beat="1">
+          <div class="prose"><p><span class="streaming" id="lv-t1"></span><span class="caret" id="lv-c1"></span></p></div>
+        </div>
+
+        <div class="beat" data-beat="2">
+          <details class="kind" open>
+            <summary>
+              <span class="st" id="lv-gst"><span class="ring"></span></span>
+              <span class="nm" id="lv-gcount">1 tool call</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg>
+            </summary>
+            <div class="leaves">
+              <div class="beat" data-beat="2">
+                <div class="knd"><svg class="ic gl"><use href="#i-read"/></svg><span class="nm">read</span></div>
+                <details class="leaf" id="lv-a">
+                  <summary><span class="st" id="lv-a-st"><span class="ring"></span></span>
+                    <span class="tn">crates/forge-sessions/src/family.rs</span>
+                    <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+                  <div class="body"><div class="code"><div class="lang">rust</div>
+                    <pre><span class="k">pub enum</span> <span class="f">ToolFamily</span> { <span class="f">Read</span>, <span class="f">Search</span>, <span class="f">Bash</span>, <span class="f">Web</span>, <span class="f">Lsp</span> }</pre></div></div>
+                </details>
+              </div>
+
+              <div class="beat" data-beat="3">
+                <div class="knd"><svg class="ic gl"><use href="#i-search"/></svg><span class="nm">search</span></div>
+                <details class="leaf" id="lv-b">
+                  <summary><span class="st" id="lv-b-st"><span class="ring"></span></span>
+                    <span class="tn">"render_group_summary"</span>
+                    <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+                  <div class="body"><div class="searchhit"><span class="ln">142:</span>
+                    <span class="fl">crates/forge-sessions/src/grouping.rs</span></div></div>
+                </details>
+              </div>
+
+              <div class="beat" data-beat="4">
+                <div class="knd"><svg class="ic gl"><use href="#i-bash"/></svg><span class="nm">bash</span></div>
+                <details class="leaf" id="lv-c">
+                  <summary><span class="st" id="lv-c-st"><span class="ring"></span></span>
+                    <span class="tn">just check</span>
+                    <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+                  <div class="body"><div class="term"><span class="pfx">$</span> just check
+   Compiling forge-sessions v1.0.91
+    Running unittests...</div></div>
+                </details>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div class="beat" data-beat="5">
+          <div class="compacting"><span class="ring"></span>Compacting context...</div>
+        </div>
+
+        <div class="beat" data-beat="6">
+          <div class="prose"><p><span class="streaming" id="lv-t2"></span><span class="caret" id="lv-c2"></span></p></div>
+        </div>
+
+        <div class="beat" data-beat="7">
+          <details class="turninfo" open>
+            <summary>
+              <span id="lv-mark"><span class="ring"></span></span>
+              <span id="lv-time">0.4s</span><span class="sep">&#183;</span>
+              <span id="lv-think">thinking 434</span><span class="sep">&#183;</span>
+              <span id="lv-tok">4.2k&#8593;</span><span class="sep">&#183;</span>
+              <span>93% cached</span><span class="sep">&#183;</span>
+              <span>3.1k written</span>
+              <span class="tog">expand</span>
+            </summary>
+          </details>
+        </div>
+
+        <div class="beat" data-beat="8">
+          <div class="hooks"><span>&#8627; hook summary &#183; 2 actions</span><span class="tog">expand</span></div>
+        </div>
+      </div>
+
     <div class="composer">
-      <div class="box"><div class="row">
-        <span class="pr">&#10148;</span>
-        <textarea rows="1" placeholder="Type a message..."></textarea>
-      </div></div>
+      <div class="cstates" data-mock-ignore>
+        <span class="cl">composer</span>
+        <button class="cs on" data-cs="idle">idle</button>
+        <button class="cs" data-cs="typing">typing</button>
+        <button class="cs" data-cs="cmds">/ commands</button>
+        <button class="cs" data-cs="rec">recording</button>
+        <button class="cs" data-cs="tr">transcribing</button>
+        <button class="cs" data-cs="notice">notice</button>
+        <button class="cs" data-cs="ask">permission</button>
+      </div>
+
+      <div class="comp" id="comp">
+        <!-- idle -->
+        <div class="cst" data-cs="idle">
+          <div class="mbox">
+            <div class="mline"><span class="mtxt mph">Type a message&#8230;</span></div>
+          </div>
+        </div>
+
+        <!-- typing -->
+        <div class="cst" data-cs="typing">
+          <div class="mbox">
+            <div class="mline"><span class="mtxt">Fix the flaky retry test and run the gate<span class="mcaret"></span></span>
+              <span class="msend"><svg class="ic"><use href="#i-send"/></svg></span></div>
+            <div class="mfoot"><span class="mk">&#8679;&#9166;</span> newline<span class="mk">&#9166;</span> send</div>
+          </div>
+        </div>
+
+        <!-- slash autocomplete, anchored above the box -->
+        <div class="cst" data-cs="cmds">
+          <div class="mac">
+            <div class="mah"><span>commands</span><span class="n">12</span></div>
+            <div class="mai sel"><span class="cur">&#9656;</span><span class="p">/<em>m</em>odel</span><span class="d">Switch model</span></div>
+            <div class="mai"><span class="cur"></span><span class="p">/co<em>m</em>pact</span><span class="d">Compact conversation context</span></div>
+            <div class="mai"><span class="cur"></span><span class="p">/co<em>m</em>poser</span><span class="d">Show composer states</span></div>
+          </div>
+          <div class="mbox">
+            <div class="mline"><span class="mtxt"><span class="mslash">/m</span><span class="mcaret"></span></span>
+              <span class="msend"><svg class="ic"><use href="#i-send"/></svg></span></div>
+          </div>
+        </div>
+
+        <!-- recording -->
+        <div class="cst" data-cs="rec">
+          <div class="mbox rec">
+            <div class="mdict"><span class="mdot"></span><span class="mt">0:07</span>
+              <span class="mdb">-18 dB</span>
+              <span class="mwave">
+              </span>
+              <span class="mlbl">listening</span>
+              <span class="mesc">esc cancel</span></div>
+            <div class="mline"><span class="mtxt mph">Type a message&#8230;</span></div>
+          </div>
+        </div>
+
+        <!-- transcribing -->
+        <div class="cst" data-cs="tr">
+          <div class="mbox tr">
+            <div class="mdict"><span class="mdot tr"></span><span class="mt tr">0:07</span>
+              <span class="mdb tr">-18 dB</span>
+              <span class="mwave tr">
+              </span>
+              <span class="mlbl">transcribing 2/6</span>
+              <span class="mesc">esc cancel</span></div>
+            <div class="mline"><span class="mtxt">fix the flaky retry test and&#8230;<span class="mcaret"></span></span></div>
+          </div>
+        </div>
+
+        <!-- a dictation notice, which wins the row -->
+        <div class="cst" data-cs="notice">
+          <div class="mbox">
+            <div class="mnotice">nothing above -50 dBFS in 4s &#183; loudest was -38.2 &#183; try again</div>
+            <div class="mline"><span class="mtxt mph">Type a message&#8230;</span></div>
+          </div>
+        </div>
+
+        <!-- the box morphed into a permission prompt -->
+        <div class="cst" data-cs="ask">
+          <div class="mdock">
+            <div class="mdhead"><span class="t">Bash</span>
+              <span class="q">git push origin polish/rate-limit-chip-softer-34</span></div>
+            <div class="mopts">
+              <div class="mopt sel"><span class="cur">&#9656;</span><svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow once</span></div>
+              <div class="mopt"><span class="cur"></span><svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow always for Bash &#183; git push *</span></div>
+              <div class="mopt"><span class="cur"></span><svg class="ic ed"><use href="#i-edit"/></svg><span class="lbl">Allow with edits</span></div>
+              <div class="mopt"><span class="cur"></span><svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
+              <div class="mopt"><span class="cur"></span><svg class="ic"><use href="#i-dots"/></svg><span class="lbl">Tell Claude something else</span></div>
+            </div>
+            <div class="mkeys"><span><span class="mk">&#8593;&#8595;</span> select</span>
+              <span><span class="mk">&#9166;</span> confirm</span>
+              <span><span class="mk">esc</span> reject</span></div>
+          </div>
+        </div>
+      </div>
     </div>
   </main>
 
@@ -904,9 +1234,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
     <div class="scroll">
 
       <details class="sec" open>
-        <summary><span class="gl">&#9095;</span> git
+        <summary><svg class="ic gl"><use href="#i-git"/></svg> git
           <span class="c2">web-home-layout &#183; 8 files</span>
-          <span class="arw">&#9662;</span></summary>
+          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         <div class="sb">
           <div class="kv"><span class="k">PR #1203</span><span class="v a">&#8594; closes #1200</span></div>
           <div class="kv" style="padding-top:6px"><span class="k">uncommitted</span>
@@ -931,9 +1261,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
       </details>
 
       <details class="sec">
-        <summary><span class="gl">&#10003;</span> tasks
+        <summary><svg class="ic gl"><use href="#i-tasks"/></svg> tasks
           <span class="c2">2 of 7</span>
-          <span class="arw">&#9656;</span></summary>
+          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         <div class="sb">
           <div class="tk now"><span class="b"></span><span>
             <div class="s">Land the Claude version on the core</div>
@@ -954,32 +1284,32 @@ Consecutive tool calls between two user messages fold into one group.</div>
       </details>
 
       <details class="sec">
-        <summary><span class="gl">&#9671;</span> subagents
+        <summary><svg class="ic gl"><use href="#i-subagents"/></svg> subagents
           <span class="c2">1 running</span>
-          <span class="arw">&#9656;</span></summary>
+          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         <div class="sb">
           <div class="note">The only surface subagents have - the chat suppresses them.</div>
           <div class="sa">
-            <div class="sh"><span class="st">&#10003;</span><span class="gl">&#9671;</span>
+            <div class="sh"><svg class="ic st"><use href="#i-check"/></svg><svg class="ic gl"><use href="#i-subagents"/></svg>
               <span class="nm">cli-version</span><span class="n">7 tools &#183; settled 3m</span></div>
             <div class="settled">settled - open to read its four most recent calls</div>
           </div>
           <div class="sa">
             <div class="sh"><span class="st"><span class="ring" style="width:8px;height:8px"></span></span>
-              <span class="gl">&#9671;</span>
+              <svg class="ic gl"><use href="#i-subagents"/></svg>
               <span class="nm">web-session-review</span><span class="n">running &#183; 4 tools</span></div>
-            <div class="tt"><span class="tg">&#11034;</span> Read docs/book/src/ui/chat.md</div>
-            <div class="tt"><span class="tg">&#9634;</span> Edit docs/mockups/web-session.html</div>
-            <div class="tt"><span class="tg">&#9654;</span> Bash cargo nextest run -p forge-web</div>
-            <div class="tt"><span class="tg">&#8981;</span> Grep "subagent" crates/forge-tui</div>
+            <div class="tt"><svg class="ic tg"><use href="#i-read"/></svg> Read docs/book/src/ui/chat.md</div>
+            <div class="tt"><svg class="ic tg"><use href="#i-edit"/></svg> Edit docs/mockups/web-session.html</div>
+            <div class="tt"><svg class="ic tg"><use href="#i-bash"/></svg> Bash cargo nextest run -p forge-web</div>
+            <div class="tt"><svg class="ic tg"><use href="#i-search"/></svg> Grep "subagent" crates/forge-tui</div>
           </div>
         </div>
       </details>
 
       <details class="sec">
-        <summary><span class="gl">&#9684;</span> schedules
+        <summary><svg class="ic gl"><use href="#i-schedules"/></svg> schedules
           <span class="c2">4</span>
-          <span class="arw">&#9656;</span></summary>
+          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         <div class="sb">
           <div class="kv"><span class="k">&#9200; weekly bench</span>
             <span class="v">Sat 10:30 &#183; recurring</span></div>
@@ -993,9 +1323,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
       </details>
 
       <details class="sec">
-        <summary><span class="gl">&#9672;</span> gotify
+        <summary><svg class="ic gl"><use href="#i-gotify"/></svg> gotify
           <span class="c2">connected</span>
-          <span class="arw">&#9656;</span></summary>
+          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         <div class="sb">
           <div class="kv"><span class="k">apps</span><span class="v">homelab, alerts</span></div>
           <div class="kv"><span class="k">priority</span><span class="v">&gt;=4</span></div>
@@ -1003,9 +1333,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
       </details>
 
       <details class="sec">
-        <summary><span class="gl">&#9671;</span> slack
+        <summary><svg class="ic gl"><use href="#i-slack"/></svg> slack
           <span class="c2">2 workspaces</span>
-          <span class="arw">&#9656;</span></summary>
+          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         <div class="sb">
           <div class="kv"><span class="k">Trust Machines</span><span class="v">connected</span></div>
           <div class="kv"><span class="k">&nbsp;&nbsp;#granite-staging-alerts</span>
@@ -1017,9 +1347,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
       </details>
 
       <details class="sec">
-        <summary><span class="gl">&#9638;</span> mcp servers
+        <summary><svg class="ic gl"><use href="#i-mcp"/></svg> mcp servers
           <span class="c2">2</span>
-          <span class="arw">&#9656;</span></summary>
+          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         <div class="sb">
           <div class="kv"><span class="k">forge &#183; session</span><span class="v">24 tools</span></div>
           <div class="kv"><span class="k">context7 &#183; sdk</span><span class="v">2 tools</span></div>
@@ -1027,9 +1357,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
       </details>
 
       <details class="sec">
-        <summary><span class="gl">&#9654;</span> processes
+        <summary><svg class="ic gl"><use href="#i-processes"/></svg> processes
           <span class="c2">3</span>
-          <span class="arw">&#9656;</span></summary>
+          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         <div class="sb">
           <div class="kv"><span class="k">cargo nextest run</span><span class="v">412 MB &#183; 8842</span></div>
           <div class="kv"><span class="k">&nbsp;&nbsp;cargo</span><span class="v">settled</span></div>
@@ -1039,22 +1369,22 @@ Consecutive tool calls between two user messages fold into one group.</div>
       </details>
 
       <details class="sec">
-        <summary><span class="gl">&#9673;</span> monitors
+        <summary><svg class="ic gl"><use href="#i-monitors"/></svg> monitors
           <span class="c2">1 running</span>
-          <span class="arw">&#9656;</span></summary>
+          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         <div class="sb">
           <div class="sa">
             <div class="sh"><span class="st"><span class="ring" style="width:8px;height:8px"></span></span>
-              <span class="gl">&#9673;</span>
+              <svg class="ic gl"><use href="#i-monitors"/></svg>
               <span class="nm">ci-watch</span><span class="n">persistent</span></div>
             <div class="tt"><span class="tg">$</span> gh run watch 18234567</div>
             <div class="tt"><span class="tg">&#9679;</span> build &#183; in_progress</div>
-            <div class="tt"><span class="tg">&#10003;</span> lint &#183; success</div>
+            <div class="tt"><svg class="ic tg"><use href="#i-check"/></svg> lint &#183; success</div>
             <div class="tt"><span class="tg">&#9679;</span> deploy &#183; queued</div>
-            <div class="tt"><span class="tg">&#9675;</span> notify &#183; queued</div>
+            <div class="tt"><svg class="ic tg"><use href="#i-tool"/></svg> notify &#183; queued</div>
           </div>
           <div class="sa">
-            <div class="sh"><span class="st">&#10003;</span><span class="gl">&#9673;</span>
+            <div class="sh"><svg class="ic st"><use href="#i-check"/></svg><svg class="ic gl"><use href="#i-monitors"/></svg>
               <span class="nm">deploy-gate</span><span class="n">completed 12m</span></div>
             <div class="settled">settled - its output stays in the transcript</div>
           </div>
@@ -1090,7 +1420,7 @@ Consecutive tool calls between two user messages fold into one group.</div>
       <div class="pdiff">
         <div class="h">@@ -30,7 +30,9 @@ .row .what a {</div>
         <div class="ln"><span class="n">30</span><span class="l">.row .what a {</span></div>
-        <div class="ln"><span class="n">31</span><span class="l">  font-family: var(--mono); font-size: 11.5px;</span></div>
+        <div class="ln"><span class="n">31</span><span class="l">  font-family: var(--mono); font-size: var(--fs-data);</span></div>
         <div class="ln d"><span class="n">32</span><span class="l">-  text-decoration: none; flex: none;</span></div>
         <div class="ln a"><span class="n">33</span><span class="l">+  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
         <div class="ln a"><span class="n">34</span><span class="l">+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
@@ -1113,5 +1443,120 @@ Consecutive tool calls between two user messages fold into one group.</div>
   </div>
 </div>
 
+<script>
+(function () {
+  const live = document.getElementById('live');
+  if (!live) return;
+  const $ = (id) => document.getElementById(id);
+  const beats = () => Array.from(live.querySelectorAll('.beat'));
+  const TICK = '<span class="ring"></span>';
+  const OK = '<svg class="ic st"><use href="#i-check"/></svg>';
+  const T1 = 'Reading the grouping code first, then I will land the change and run the gate.';
+  const T2 = 'The family table is where this belongs, so the count and the kinds come from one place.';
+
+  let timers = [], clock = null, t0 = 0;
+
+  function at(ms, fn) { timers.push(setTimeout(fn, ms)); }
+
+  function reveal(n) {
+    beats().forEach((b) => { if (+b.dataset.beat <= n) b.classList.add('on'); });
+  }
+
+  function stream(node, caret, text, ms, done) {
+    const start = performance.now();
+    (function step(now) {
+      const p = Math.min(1, (now - start) / ms);
+      node.textContent = text.slice(0, Math.round(text.length * p));
+      if (p < 1) return requestAnimationFrame(step);
+      node.textContent = text;
+      if (caret) caret.style.display = 'none';
+      if (done) done();
+    })(start);
+  }
+
+  function elapsed(s) {
+    if (s < 60) return s.toFixed(1) + 's';
+    return Math.floor(s / 60) + 'm ' + String(Math.floor(s % 60)).padStart(2, '0') + 's';
+  }
+
+  function play() {
+    timers.forEach(clearTimeout); timers = [];
+    if (clock) { clearInterval(clock); clock = null; }
+    beats().forEach((b) => b.classList.remove('on'));
+    ['lv-t1', 'lv-t2'].forEach((id) => { $(id).textContent = ''; });
+    ['lv-c1', 'lv-c2'].forEach((id) => { $(id).style.display = ''; });
+    ['lv-a-st', 'lv-b-st', 'lv-c-st'].forEach((id) => { $(id).innerHTML = TICK; });
+    $('lv-gst').innerHTML = TICK;
+    $('lv-gcount').textContent = '1 tool call';
+    $('lv-mark').innerHTML = TICK;
+    $('lv-time').textContent = '0.4s';
+    $('lv-think').style.display = '';
+    $('lv-tok').textContent = '4.2k↑';
+
+    at(200, () => { reveal(1); stream($('lv-t1'), $('lv-c1'), T1, 1300); });
+    at(1500, () => { reveal(2); t0 = performance.now();
+      clock = setInterval(() => {
+        $('lv-time').textContent = elapsed((performance.now() - t0) / 1000);
+      }, 100);
+    });
+    at(2700, () => { $('lv-a-st').innerHTML = OK; reveal(3); $('lv-gcount').textContent = '2 tool calls'; });
+    at(3900, () => { $('lv-b-st').innerHTML = OK; reveal(4); $('lv-gcount').textContent = '3 tool calls'; });
+    at(5300, () => { $('lv-c-st').innerHTML = OK; $('lv-gst').innerHTML = OK; });
+    at(5600, () => { reveal(5); });
+    at(6900, () => { reveal(6); stream($('lv-t2'), $('lv-c2'), T2, 1100); });
+    at(8000, () => { reveal(7); });
+    at(9200, () => {
+      if (clock) { clearInterval(clock); clock = null; }
+      $('lv-mark').innerHTML = '&#8617;';
+      $('lv-time').textContent = elapsed((performance.now() - t0) / 1000);
+      $('lv-think').style.display = 'none';
+      $('lv-tok').textContent = '4.2k↑ 1.1k↓';
+      reveal(8);
+    });
+  }
+
+  document.getElementById('replay').addEventListener('click', play);
+  play();
+})();
+</script>
+<script>
+/* The composer lives in one slot and changes state. The chips pick the
+   state; idle is the default so the bar is never blank. */
+(function () {
+  var comp = document.getElementById('comp');
+  if (!comp) return;
+  function show(name) {
+    comp.querySelectorAll('.cst').forEach(function (s) {
+      s.classList.toggle('on', s.dataset.cs === name);
+    });
+    document.querySelectorAll('.cs').forEach(function (b) {
+      b.classList.toggle('on', b.dataset.cs === name);
+    });
+  }
+  document.querySelectorAll('.cs').forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.cs); });
+  });
+  show('idle');
+
+  /* The dictation meter is a history of levels, so it is drawn from a shape
+     and scrolls as one track rather than being typed out twice. */
+  var SHAPE = [12,26,48,72,94,64,40,26,14,10,30,54,78,96,70,46,28,14,10,
+               22,44,66,50,34,20,12];
+  document.querySelectorAll('.mwave').forEach(function (w) {
+    var track = document.createElement('span');
+    track.className = 'wtr';
+    for (var pass = 0; pass < 2; pass++) {
+      SHAPE.forEach(function (h) {
+        var b = document.createElement('i');
+        b.style.height = h + '%';
+        if (h >= 70) { b.className = 'hot'; }
+        else if (h >= 40) { b.className = 'mid'; }
+        track.appendChild(b);
+      });
+    }
+    w.appendChild(track);
+  });
+})();
+</script>
 </body>
 </html>

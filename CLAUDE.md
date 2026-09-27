@@ -51,10 +51,11 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-sessions`** - what a view needs and nothing about how it
   renders: the read surface a view uses, the session records as a view
   sees them, the peer envelope parsing in both directions, the tool
-  family table, and the policy that folds a run of blocks. Sits between
-  `forge-workspace` and the views, so a second view attaches beside the
-  TUI rather than duplicating it. Nothing here may depend on a view. It
-  reaches the workspace for the one thing a session record cannot
+  family table, the policy that folds a run of blocks, and the transcript
+  fold that turns a conversation's messages into the units a view draws.
+  Sits between `forge-workspace` and the views, so a second view attaches
+  beside the TUI rather than duplicating it. Nothing here may depend on a
+  view. It reaches the workspace for the one thing a session record cannot
   answer alone - whether a tool's input parses into a lifecycle block -
   and does that through `forge-workspace` rather than `forge-agent`, so
   the agent layer stays behind the workspace facade the way it does for
@@ -149,9 +150,10 @@ Work top-down; first match wins.
 **The view surface's read verbs are built.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
-`cli_version` - and receives changes through `subscribe()`. All ten
-exist in `forge-sessions`, and the TUI reads its project roster, session
-scan cwd, worker registry, account pool, plugin records, review threads,
+`cli_version`, `conversation` - and receives changes through
+`subscribe()`. All eleven exist in `forge-sessions`, and the TUI reads
+its project roster, session scan cwd, worker registry, account pool,
+plugin records, review threads,
 connector subscriptions and dictation state through them; the web view
 reads the claude version through the tenth. What the migration has
 not reached is the write half: user actions still go through
@@ -715,11 +717,23 @@ inspected.
     - **The review test:** could the NEXT page be written by reusing this
       one's pieces, or would it copy them? A second copy of a row or a
       mark is a finding, not a style choice.
-    - **Prefer upstream to building.** A maintained script vendored into
-      `forge-web/assets` or a maintained crate beats writing either,
-      because the maintenance we avoid is the point. `pulldown-cmark` for
-      markdown and `syntect` for highlighting are the two already chosen
-      for the session page.
+    - **Prefer upstream to building, and verify what is pulled in.** A
+      maintained script vendored into `forge-web/assets` or a maintained
+      crate beats writing either, because the maintenance we avoid is the
+      point - the size of the web ecosystem is the reason this is a web
+      view at all. `pulldown-cmark` for markdown and `syntect` for
+      highlighting are the two already chosen for the session page.
+      **But upstream does not mean anything on npm:** a dependency nobody
+      maintains is worse than the fifty lines it replaced, because it is
+      fifty lines that cannot be fixed here. Before adding one, check it
+      is genuinely maintained - a real release history rather than one
+      commit, an issue tracker that gets answered, a version that is not
+      years behind - and say in the pull request what was checked. A
+      single maintainer is fine and often right; dormant is not. Ved's
+      words: *"we don't want to rely on random things. We want to verify,
+      see how well it is maintained, and all that stuff... it needs to be
+      genuinely good."* Reach for the framework before the helper, and
+      hand-roll only what nothing maintains.
     - **Keeping all the information is not in tension with this.** A
       session page shows everything a session has - context, git and PR,
       tasks, MCP servers, processes, subagents, schedules - because

@@ -493,19 +493,16 @@ async fn emit_connected(
     }
 }
 
-/// Replayable history for a resumed session plus the compaction count
-/// its transcript records - the only place that count survives a resume.
-struct ResumedHistory {
-    messages: Vec<forge_primitives::Message>,
-    compaction_count: u32,
-}
-
-fn load_history_messages(
+/// Replay from `prev_session_id`'s transcript, stamped with
+/// `session_id`, plus the compaction count that transcript records - the
+/// only place the count survives a resume. [`crate::session_history`] is
+/// the same read for a session that is already running.
+pub(crate) fn load_history_messages(
     config_dir: &Path,
     prev_session_id: &str,
     cwd: &str,
     session_id: &str,
-) -> ResumedHistory {
+) -> forge_primitives::ConversationHistory {
     let dir = if cwd.is_empty() { None } else { Some(cwd) };
     let history =
         crate::userdata::catalog::scan::get_session_messages(config_dir, prev_session_id, dir);
@@ -520,6 +517,7 @@ fn load_history_messages(
             };
             serde_json::json!({
                 "type": kind,
+                "uuid": m.uuid,
                 "message": m.message,
                 "parent_tool_use_id": m.parent_tool_use_id,
             })
@@ -537,7 +535,7 @@ fn load_history_messages(
             _ => {}
         }
     }
-    ResumedHistory { messages: synthesized, compaction_count }
+    forge_primitives::ConversationHistory { messages: synthesized, compaction_count }
 }
 
 async fn list_recent_sessions(
@@ -2232,6 +2230,108 @@ mod tests {
 
         assert_eq!(resumed.compaction_count, 3, "three boundaries reach the Connected event");
         assert_eq!(resumed.messages.len(), 3, "and the three turns still replay");
+    }
+
+    /// The on-demand read is the same route the spawn uses, for a
+    /// session that is already running: its own id in both positions.
+    #[test]
+    fn session_history_reads_a_running_session_by_its_own_id() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let session_id = "8c1f0b3a-5d2e-4f47-9a6b-0c5e7d81b244";
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let jsonl = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"first\"}}\n\
+                     {\"type\":\"assistant\",\"message\":{\"id\":\"msg_01\",\"role\":\"assistant\",\"model\":\"claude-opus-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]}}\n";
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
+
+        let read = crate::session_history(config_dir.path(), session_id, "");
+
+        assert_eq!(read.messages.len(), 2, "the running session's own transcript reads back");
+        assert_eq!(read.compaction_count, 0, "and its compaction count comes with it");
+        let stamped: Vec<&str> = read
+            .messages
+            .iter()
+            .map(|m| match m {
+                forge_primitives::Message::Assistant { session_id, .. }
+                | forge_primitives::Message::User { session_id, .. } => session_id.as_str(),
+                other => panic!("unexpected synthesized variant: {other:?}"),
+            })
+            .collect();
+        assert_eq!(stamped, [session_id, session_id], "and every message carries its own id");
+    }
+
+    /// A slot with no transcript yet reads as empty, and does not fall
+    /// back to a neighbour's. A view can ask before a session has ever
+    /// connected: an error there is a blank page, and another session's
+    /// messages are a wrong one.
+    #[test]
+    fn session_history_of_a_slot_with_no_transcript_is_empty() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let neighbour = "1d4e7a90-2b6c-4c33-8f10-9ab6d2c40e51";
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        std::fs::write(
+            project_dir.join(format!("{neighbour}.jsonl")),
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"not yours\"}}\n",
+        )
+        .expect("write");
+
+        let absent =
+            crate::session_history(config_dir.path(), "77aa5c18-6f39-4b1e-9d4c-3e2b8a70f95c", "");
+
+        assert!(absent.messages.is_empty(), "no transcript reads as empty, not as an error");
+        assert_eq!(absent.compaction_count, 0, "and carries no count");
+    }
+
+    /// The read carries each row's own message id. It is the only key a
+    /// view has for matching a message it also received on the
+    /// subscription, and dropping it leaves the two impossible to
+    /// reconcile.
+    #[test]
+    fn session_history_carries_each_rows_message_id() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let session_id = "b41c8e07-6a2d-4f95-83b1-7d09c2ea5f68";
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let jsonl = "{\"type\":\"user\",\"uuid\":\"row-one\",\"message\":{\"role\":\"user\",\"content\":\"first\"}}\n\
+                     {\"type\":\"assistant\",\"uuid\":\"row-two\",\"message\":{\"id\":\"msg_01\",\"role\":\"assistant\",\"model\":\"claude-opus-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]}}\n";
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
+
+        let read = crate::session_history(config_dir.path(), session_id, "");
+
+        let carried: Vec<Option<&str>> = read
+            .messages
+            .iter()
+            .map(|m| match m {
+                forge_primitives::Message::Assistant { uuid, .. }
+                | forge_primitives::Message::User { uuid, .. } => uuid.as_deref(),
+                other => panic!("unexpected synthesized variant: {other:?}"),
+            })
+            .collect();
+        assert_eq!(carried, [Some("row-one"), Some("row-two")], "each row's id reaches the read");
+    }
+
+    /// A transcript whose last line was cut mid-write keeps everything
+    /// before it. The file is appended while a session runs, so this is
+    /// the normal state of a file being read at the wrong instant, not
+    /// corruption.
+    #[test]
+    fn session_history_skips_a_truncated_trailing_line() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let session_id = "3e7b9d21-4c58-4a6f-b0d3-5c81e29f7a46";
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        // Two whole entries, then the front of a third with no closing
+        // brace and no trailing newline, the way an interrupted append
+        // leaves one.
+        let jsonl = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"first\"}}\n\
+                     {\"type\":\"assistant\",\"message\":{\"id\":\"msg_01\",\"role\":\"assistant\",\"model\":\"claude-opus-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]}}\n\
+                     {\"type\":\"assistant\",\"message\":{\"id\":\"msg_02\",\"role\":\"assistant\",\"model\":\"claude-opus-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"thi";
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
+
+        let read = crate::session_history(config_dir.path(), session_id, "");
+
+        assert_eq!(read.messages.len(), 2, "the two complete entries survive the partial one");
     }
 
     /// The CLI is told the session's id on exactly one flag. Both
