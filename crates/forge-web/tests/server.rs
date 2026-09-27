@@ -1087,6 +1087,54 @@ async fn a_settled_turn_draws_its_row_and_its_body() {
     );
 }
 
+/// A cron fire is drawn as the turn it is. The session's model is handed the
+/// prompt on its own stdin and the CLI does not echo it back, so the wire
+/// carries nothing a page could draw; the workspace announces the delivery as
+/// a typed update instead, and the turn is forged from that.
+#[tokio::test]
+async fn a_cron_delivery_is_drawn_as_the_turn_it_is() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::CronPromptAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        text: "the nightly sweep is due".to_owned(),
+    });
+    let region = next_session_event(stream).await.expect("the delivery redraws the region");
+
+    assert!(region.contains("the nightly sweep is due"), "the fired prompt is drawn: {region}");
+    assert!(
+        region.contains("class=\"notice"),
+        "as the block a delivery arrives in, not as a turn somebody wrote: {region}",
+    );
+}
+
+/// The slot guard reads all three parts of a slot. The same org and project
+/// with another seat is another seat: a worker's message is not its lead's
+/// news, and the stream carries every session in the fleet.
+#[tokio::test]
+async fn a_workers_message_does_not_redraw_the_leads_page() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::worker("Busytools", "forge", "em-dash-sweep"),
+        msg: user_frame("u-10", "a message for the seat beside it"),
+    });
+
+    assert!(
+        nth_session_event_within(stream, 2, std::time::Duration::from_millis(300)).await.is_none(),
+        "the worker's seat is not this page",
+    );
+}
+
 /// An update for another slot does not redraw this page: the same stream
 /// carries every session, and a page that swapped on all of them would
 /// re-render a conversation nobody changed.

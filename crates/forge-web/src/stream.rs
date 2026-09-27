@@ -233,14 +233,21 @@ fn session_updates(
 /// drawn. The identity is the message's own id, which the transcript row and
 /// the wire frame share.
 ///
-/// The prompts the workspace injects are the one class this cannot settle.
-/// A cron fire, a Gotify delivery, a Slack bundle or a peer comm reaches the
-/// stream as text alone and reaches the read as the envelope-wrapped row the
-/// CLI persisted, with no id shared between them, so a delivery that lands
-/// during the read is drawn twice until the page reloads. Accepted
-/// deliberately: the duplicate is a repeated line, while a rule that matched
-/// on the body would drop a message someone really did send twice.
+/// A delivery the workspace injected draws as a turn of its own, forged from
+/// the update rather than read off the wire: the CLI does not echo a prompt
+/// it was handed on stdin, so the assistant would otherwise answer something
+/// nobody saw.
+///
+/// The read does carry the row the CLI persisted, so a delivery that lands
+/// while the read is in flight is drawn from both and repeats until the page
+/// reloads. Accepted deliberately: the duplicate is a repeated line, while a
+/// rule that matched on the body would drop a message someone really did send
+/// twice.
 fn append(update: &SessionUpdate, slot: &SessionSlot, conversation: &mut Vec<Message>) -> bool {
+    if let Some(turn) = forge_sessions::delivery::delivery_turn(update, slot) {
+        conversation.push(turn);
+        return true;
+    }
     let SessionUpdate::ChatAppended { key, msg } = update else {
         return false;
     };
