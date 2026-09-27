@@ -7,6 +7,7 @@
 //! reads the core through the view surface: this module holds no state of
 //! its own.
 
+use std::cell::Cell;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -52,20 +53,36 @@ const RAIL_TOGGLE: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="curren
 const INSPECTOR_TOGGLE: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>"#;
 
 /// The one piece of state a swap would otherwise lose: which sections the
-/// reader has open.
+/// reader has opened and closed.
 ///
-/// Idiomorph sets attributes and has no case for `open`, and the attribute is
-/// reflected, so a section someone collapsed re-opens on the next swap, which
-/// on a working session is every ten seconds. The state is kept by position,
-/// because the region's own order is stable: it appends, it does not reorder.
+/// Idiomorph writes attributes and has no case for `open`, one of them, so a
+/// section someone collapsed re-opens on the next swap, and on a working
+/// session that is every ten seconds. The state is what the reader decided,
+/// kept against the `data-k` each section carries: the region appends, so an
+/// element's position among its siblings moves while its key does not.
+///
+/// Only the reader's own clicks are recorded, and measured against a browser
+/// rather than reasoned about: the state cannot be snapshotted before the
+/// swap, because htmx's SSE extension swaps its payload itself and fires no
+/// `htmx:beforeSwap` for one; and it cannot be read off the `toggle` event,
+/// because the swap's own attribute write fires one too, so a section the
+/// reader never touched records itself as closed.
 const DETAIL_STATE: &str = r"
-let open = [];
-document.addEventListener('htmx:beforeSwap', () => {
-  open = Array.from(document.querySelectorAll('#session-body details'), (d) => d.open);
-});
+const decided = new Map();
+document.addEventListener('click', (event) => {
+  const summary = event.target.closest('summary');
+  const section = summary && summary.parentElement;
+  if (section instanceof HTMLDetailsElement && section.dataset.k) {
+    // The click's own default action flips it a moment after this, so the
+    // state worth keeping is the one it lands in rather than the one it
+    // left.
+    setTimeout(() => decided.set(section.dataset.k, section.open), 0);
+  }
+}, true);
 document.addEventListener('htmx:afterSwap', () => {
-  document.querySelectorAll('#session-body details').forEach((d, i) => {
-    d.open = open[i] === undefined ? d.open : open[i];
+  document.querySelectorAll('#session-body details[data-k]').forEach((section) => {
+    const want = decided.get(section.dataset.k);
+    if (want !== undefined) section.open = want;
   });
 });";
 
@@ -336,7 +353,7 @@ async fn columns(
                         // one will land, so the settle replaces the row
                         // rather than moving it.
                         @if let Some(live) = live_turn.filter(|live| live.started_at.is_some()) {
-                            (turn_report_row(&live_report(live, Instant::now()), true))
+                            (turn_report_row(&live_report(live, Instant::now()), true, "turn-live"))
                         }
                     }
                 }
@@ -600,7 +617,7 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
 /// closed section and an open one draw the same sprite.
 fn section(open: bool, icon_name: &str, name: &str, summary: &str, body: &Markup) -> Markup {
     html! {
-        details .sec open[open] {
+        details .sec open[open] data-k=(format!("sec-{name}")) {
             summary {
                 (icons::icon(icon_name, "gl"))
                 (name)
@@ -969,13 +986,14 @@ pub(crate) async fn read_conversation(
 /// The conversation, as the fold's units read: the user's own turns on their
 /// own, and everything the assistant did in one work block after each.
 fn conversation(units: &[ChatUnit], cwd: Option<&Path>) -> Markup {
+    let rows = Cell::new(0usize);
     html! {
         @for turn in turns(units) {
             @match turn {
                 Turn::Mine(text) => div .mine { (text) },
                 Turn::Work(work) => div .work {
                     @for unit in work {
-                        (unit_markup(unit, cwd))
+                        (unit_markup(unit, cwd, &rows))
                     }
                 },
             }
@@ -1005,7 +1023,7 @@ fn turns(units: &[ChatUnit]) -> Vec<Turn<'_>> {
 }
 
 /// One unit of work.
-fn unit_markup(unit: &ChatUnit, cwd: Option<&Path>) -> Markup {
+fn unit_markup(unit: &ChatUnit, cwd: Option<&Path>, rows: &Cell<usize>) -> Markup {
     match unit {
         ChatUnit::AssistantText { text } => html! { div .prose { (prose(text)) } },
         ChatUnit::ToolGroup { families, status } => tool_group(families, *status, cwd),
@@ -1013,7 +1031,13 @@ fn unit_markup(unit: &ChatUnit, cwd: Option<&Path>) -> Markup {
         ChatUnit::PeerCard(card) => peer_card(card),
         ChatUnit::MessagingGroup { cards } => messaging_group(cards),
         ChatUnit::Notice(notice) => notice_row(notice),
-        ChatUnit::TurnReport(info) => turn_report_row(info, false),
+        ChatUnit::TurnReport(info) => {
+            let nth = rows.get();
+            rows.set(nth + 1);
+            // A settled row is named for its place in the conversation: it
+            // carries no id of its own, and the rows before it do not move.
+            turn_report_row(info, false, &format!("turn-{nth}"))
+        }
         // A user turn is the block around its work, drawn by `conversation`.
         ChatUnit::UserTurn { text } => html! { div .mine { (text) } },
     }
@@ -1046,8 +1070,12 @@ fn status_icon(status: ToolCallStatus) -> Markup {
 /// family with its calls indented under it.
 fn tool_group(families: &[FamilyLeaves], status: ToolCallStatus, cwd: Option<&Path>) -> Markup {
     let calls: usize = families.iter().map(|family| family.calls.len()).sum();
+    // The run keeps the key of the call it opened with: the calls after it
+    // are appended, so what identifies the run does not move.
+    let first = families.iter().find_map(|family| family.calls.first());
+    let key = format!("kind-{}", first.map_or("empty", |call| call.id.as_str()));
     html! {
-        details .kind open {
+        details .kind open data-k=(key) {
             summary {
                 (status_icon(status))
                 span .nm { (calls) " tool " @if calls == 1 { "call" } @else { "calls" } }
@@ -1073,7 +1101,7 @@ fn tool_group(families: &[FamilyLeaves], status: ToolCallStatus, cwd: Option<&Pa
 /// other call waits to be asked.
 fn leaf_row(leaf: &ToolLeaf, open: bool, cwd: Option<&Path>) -> Markup {
     html! {
-        details .leaf open[open] {
+        details .leaf open[open] data-k=(format!("leaf-{}", leaf.id)) {
             summary {
                 (status_icon(leaf.status))
                 span .tn { (call_target(leaf, cwd)) }
@@ -1223,8 +1251,11 @@ fn peer_card(card: &PeerCard) -> Markup {
 /// A run of two or more peer messages: a count over one row per message,
 /// each with its own kind and direction.
 fn messaging_group(cards: &[PeerCard]) -> Markup {
+    let key = cards
+        .first()
+        .map_or_else(|| "msg-empty".to_owned(), |card| format!("msg-{}-{}", card.peer, card.body));
     html! {
-        details .msg open {
+        details .msg open data-k=(key) {
             summary {
                 (icons::icon("check", "st"))
                 span .c { (cards.len()) " messages" }
@@ -1275,11 +1306,11 @@ fn first_line(text: &str) -> String {
 /// with a dash. Neither ever writes a zero for an absent value: the CLI
 /// attributing nothing arrives as a zero block, and a zero here reads as a
 /// measurement.
-fn turn_report_row(info: &TurnInfo, live: bool) -> Markup {
+fn turn_report_row(info: &TurnInfo, live: bool, key: &str) -> Markup {
     let info = attributed_usage(info);
     let info = &info;
     html! {
-        details .turninfo {
+        details .turninfo data-k=(key) {
             summary {
                 @if live {
                     span .ring {}

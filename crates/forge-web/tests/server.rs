@@ -657,7 +657,7 @@ async fn the_inspector_summarises_from_the_core() {
         "the section renders with its summary: {page}",
     );
     assert!(
-        page.contains("<details class=\"sec\" open>"),
+        page.contains("<details class=\"sec\" open data-k=\"sec-git\">"),
         "and opens on the changes it holds: {page}",
     );
     assert!(page.contains("file-0.txt"), "and the body lists the files behind that count: {page}");
@@ -1154,9 +1154,15 @@ async fn the_pane_state_crosses_the_swapped_region() {
     );
 
     assert!(
-        page.contains("htmx:beforeSwap"),
+        page.contains("htmx:afterSwap"),
         "and the swap carries what a reader opened or closed across itself: {page}",
     );
+    // The handler keeps that state by key, so a section without one is a
+    // section whose state the next swap drops.
+    for block in page.split("<details").skip(1) {
+        let head = block.split('>').next().unwrap_or_default();
+        assert!(head.contains("data-k="), "every section carries a key: <details{head}>");
+    }
 
     let mut reads = sheet.match_indices(":checked").peekable();
     assert!(reads.peek().is_some(), "the sheet reads the boxes");
