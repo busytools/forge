@@ -659,4 +659,63 @@ mod tests {
         assert!(is_active(&app));
         assert_eq!(compute_height(&app), 3);
     }
+
+    /// The renderer carried only geometry units, so a dropped row or a
+    /// one-cell shift in what the composer's data feeds a dropdown was
+    /// invisible to the suite. This captures one whole dropdown frame.
+    #[test]
+    fn the_emoji_picker_renders_the_rows_its_table_feeds_it() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+
+        let (width, height) = (100u16, 30u16);
+        let mut app = App::test_default();
+        for ch in "ship it :sm".chars() {
+            app.paste_burst.on_non_char_key(std::time::Instant::now());
+            crate::app::events::handle_terminal_event(
+                &mut app,
+                crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(ch),
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+            );
+        }
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| super::render(frame, Rect::new(0, 25, width, 3), &app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text = (0..height)
+            .map(|y| {
+                let row: String = (0..width)
+                    .map(|x| {
+                        buffer
+                            .cell((x, y))
+                            .map_or(' ', |cell| cell.symbol().chars().next().unwrap_or(' '))
+                    })
+                    .collect();
+                row.trim_end().to_owned()
+            })
+            .filter(|row| !row.is_empty())
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        assert_eq!(
+            text,
+            [
+                "           ╭ Emoji ───────────────────────────────────────────────────╮",
+                "           │ ▸ 😄   :smile:                                            │",
+                "           │   😃   :smiley:                                           │",
+                "           │   😏   :smirk:                                            │",
+                "           │   🙂   :slightly_smiling_face:                            │",
+                "           │   😅   :sweat_smile:                                      │",
+                "           ╰──────────────────────────────────────────────────────────╯",
+            ]
+            .join("\n"),
+            "the picker's whole frame, as rendered",
+        );
+    }
 }
