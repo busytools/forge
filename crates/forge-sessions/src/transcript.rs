@@ -3,9 +3,9 @@
 //! The TUI partitions one message's blocks at a time, and a run of tool
 //! calls spans messages - a call and its result are two of them - so this
 //! walks the whole conversation and folds it in one pass. The rules it
-//! folds by are not restated here: the row a call summarises under
-//! ([`crate::grouping::wire_row_label`]), the status a run summarises
-//! under ([`crate::grouping::aggregate_call_status`]) and the peer parsers
+//! folds by are not restated here: the row a call summarises under (the
+//! wire-level row policy in `grouping`), the status a run summarises under
+//! ([`crate::grouping::aggregate_call_status`]) and the peer parsers
 //! ([`crate::envelope`], [`crate::peer_outbound`]) are the ones the TUI
 //! already groups by.
 //!
