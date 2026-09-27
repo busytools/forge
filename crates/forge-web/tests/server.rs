@@ -788,7 +788,6 @@ fn symbols(html: &str) -> std::collections::BTreeMap<String, String> {
     out
 }
 
-/// The `--fs-*` tokens a stylesheet declares, by name.
 /// A stylesheet with its comments taken out, so a scan reads declarations
 /// rather than prose: a comment may name a token the sheet never declares.
 fn strip_comments(css: &str) -> String {
@@ -804,6 +803,7 @@ fn strip_comments(css: &str) -> String {
         .collect()
 }
 
+/// The `--fs-*` tokens a stylesheet declares, by name.
 fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
     let without_comments = strip_comments(css);
