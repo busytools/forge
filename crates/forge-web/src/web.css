@@ -606,9 +606,13 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 .sb .note { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 4px 0 0; }
 
 /* A section body's row is one line, the way the terminal draws the same
-   row: the key takes the shrinking, so a command long enough to wrap fits
-   by shortening rather than by pushing its value onto a second line. */
-.sb .kv .v { flex: none; }
+   row, and neither half can push the row past the rail. Both shorten with
+   an ellipsis when the row is too narrow for both, and the value shortens
+   first because a name or a command is what the row is about: a reason
+   long enough to want the whole rail leaves the name its third. */
+.sb .kv .k { flex: 1 1 auto; min-width: 35%; }
+.sb .kv .v { flex: 0 4 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* A card: one monitor, or one sub-agent, with its own head and body. */
 .sb .sa { border: 1px solid var(--line); border-radius: 10px; background: var(--s1); padding: 0 0 1px; }
