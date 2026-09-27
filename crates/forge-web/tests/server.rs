@@ -763,6 +763,93 @@ async fn a_git_section_with_nothing_behind_it_starts_closed() {
     );
 }
 
+/// The mockup, read here rather than by a human: it is the specification the
+/// page is built from, and a pin against it is the mechanical form of "the
+/// mockup wins".
+const MOCK: &str = include_str!("../../../docs/mockups/web-session.html");
+
+/// The `<symbol>` elements of a document, by id, carrying their attribute
+/// text. Enough to catch a hand-copied sprite drifting: a path or an
+/// attribute that differs fails, and the id names which one.
+fn symbols(html: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for chunk in html.split("<symbol ").skip(1) {
+        let Some((attrs, _)) = chunk.split_once("</symbol>") else {
+            continue;
+        };
+        let Some(id) = attrs.split("id=\"").nth(1).and_then(|rest| rest.split('"').next()) else {
+            continue;
+        };
+        out.insert(id.to_owned(), attrs.trim_end().to_owned());
+    }
+    out
+}
+
+/// The `--fs-*` tokens a stylesheet declares, by name.
+fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let without_comments = css
+        .split("/*")
+        .enumerate()
+        .map(|(nth, chunk)| {
+            if nth == 0 {
+                chunk.to_owned()
+            } else {
+                chunk.split_once("*/").map_or(String::new(), |(_, rest)| rest.to_owned())
+            }
+        })
+        .collect::<String>();
+    for declaration in without_comments.split(';') {
+        let Some((key, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.starts_with("--fs-") {
+            out.insert(key.to_owned(), value.trim().to_owned());
+        }
+    }
+    out
+}
+
+/// Every symbol the mockup defines is the symbol the page draws, attribute
+/// for attribute. The sprite is a hand-copied block with nothing else
+/// comparing it, which is how a stroke width drifted once already.
+#[tokio::test]
+async fn the_sprite_is_the_mocks_sprite() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    let want = symbols(MOCK);
+    let got = symbols(&page);
+
+    assert!(!want.is_empty(), "the mockup's sprite is what this pins the page against");
+    assert_eq!(got.len(), want.len(), "the page draws every symbol the mockup defines");
+    for (id, attrs) in &want {
+        assert_eq!(got.get(id).map(String::as_str), Some(attrs.as_str()), "the page's {id}");
+    }
+}
+
+/// The sheet's type scale is the mockup's, token for token: the scale is
+/// what a page's text says a thing is, and the mockup is where it was
+/// settled.
+#[tokio::test]
+async fn the_type_scale_is_the_mocks() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    let want = scale_tokens(MOCK);
+    let got = scale_tokens(&sheet);
+
+    assert!(!want.is_empty(), "the mockup declares the scale this pins the sheet against");
+    for (token, value) in &want {
+        assert_eq!(got.get(token).map(String::as_str), Some(value.as_str()), "the sheet's {token}");
+    }
+}
+
 /// A worker's own page is served, not only its lead's: the home links
 /// every row it draws, and a link into a 404 is worse than no link.
 #[tokio::test]
