@@ -1201,6 +1201,36 @@ async fn the_processes_section_draws_the_walk() {
     );
 }
 
+/// The walk is only ever taken for the session a view is looking at, so a
+/// slot nobody is looking at serves whatever was last left there. The
+/// rows say how old that is, because a tree from an hour ago drawn the
+/// same way as one from a second ago is a wrong answer rather than an
+/// old one.
+#[tokio::test]
+async fn the_processes_section_states_the_age_of_the_walk() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            process_snapshot: Some(ProcessSnapshot {
+                processes: vec![process(4242, 4000, "cargo", "cargo nextest run", 412)],
+                scanned_at: std::time::SystemTime::now() - std::time::Duration::from_secs(120),
+            }),
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("walked 2m ago"),
+        "the rows say when the walk behind them was taken: {page}",
+    );
+}
+
 /// The monitors section is where monitors live: the chat does not carry
 /// them, so a running monitor with nothing drawing it would be invisible.
 #[tokio::test]

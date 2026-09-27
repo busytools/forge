@@ -593,6 +593,7 @@ fn connection_label(status: McpServerConnectionStatus) -> &'static str {
 fn processes_section(walk: &ProcessSnapshot) -> Markup {
     let count = walk.processes.len();
     let tree = process_tree(walk);
+    let walked = walked_note(walk.scanned_at);
     let body = html! {
         @for (entry, depth) in tree {
             div .kv {
@@ -603,8 +604,21 @@ fn processes_section(walk: &ProcessSnapshot) -> Markup {
                 span .v { (format!("{} \u{b7} {}", memory_label(entry.memory_bytes), entry.pid)) }
             }
         }
+        div .note { (walked) }
     };
     section(false, "processes", "processes", &count.to_string(), &body)
+}
+
+/// When the walk behind these rows was taken. The walk is only ever
+/// performed for the session a view is looking at, so a slot nobody is
+/// looking at serves the last tree left on it, and rows from an hour ago
+/// drawn exactly like rows from a second ago would be a wrong answer
+/// rather than an old one.
+fn walked_note(scanned_at: SystemTime) -> String {
+    match crate::home::elapsed_label(scanned_at).as_str() {
+        "now" => "walked just now".to_owned(),
+        age => format!("walked {age} ago"),
+    }
 }
 
 /// The walk as a tree: every row with how deep it sits, parents before
