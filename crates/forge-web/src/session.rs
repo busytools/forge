@@ -125,12 +125,7 @@ fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
 /// The page. One page for both outcomes: the columns are as real for a
 /// seat nothing is running behind as for one that is up, and only the chat
 /// column says which of the two it is looking at.
-async fn shell(
-    home: &Home<'_>,
-    slot: &SessionSlot,
-    roster: &Roster,
-    agents: &Agents,
-) -> Markup {
+async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Agents) -> Markup {
     let live = Live::lock(home.live).snapshot();
     let accounts = home.surface.accounts();
     let row = agents.all().iter().find(|row| &row.slot == slot);
@@ -460,11 +455,7 @@ fn section(open: bool, icon_name: &str, name: &str, summary: &str, body: &Markup
 /// it, the pull request that tree belongs to, and the files themselves.
 fn git_section(work: &WorkState, diff: Option<&GitDiffSnapshot>) -> Markup {
     let (open, summary, body) = match diff {
-        Some(diff) => (
-            git_has_body(work, diff),
-            git_summary(diff),
-            git_body(work, diff),
-        ),
+        Some(diff) => (git_has_body(work, diff), git_summary(diff), git_body(work, diff)),
         None => (false, String::new(), Markup::default()),
     };
     section(open, "git", "git", &summary, &body)

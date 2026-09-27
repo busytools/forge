@@ -517,7 +517,10 @@ async fn a_sleeping_slot_opens_rather_than_404ing() {
 
     assert_eq!(status, reqwest::StatusCode::OK, "a sleeping seat renders, it does not 404");
     assert!(page.contains("not running"), "and says what the seat is: {page}");
-    assert!(!page.contains("connecting"), "without claiming a connection nothing is making: {page}");
+    assert!(
+        !page.contains("connecting"),
+        "without claiming a connection nothing is making: {page}"
+    );
 }
 
 /// A seat whose spawn failed carries the reason the core recorded, which is
@@ -744,8 +747,7 @@ async fn the_git_section_summary_counts_what_it_lists() {
 #[tokio::test]
 async fn a_git_section_with_nothing_behind_it_starts_closed() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let fleet =
-        Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
     fleet.start("Busytools", "forge").expect("forge is declared");
     let repo = dir.path().join("forge");
     repo_with(repo.as_path(), 3);
