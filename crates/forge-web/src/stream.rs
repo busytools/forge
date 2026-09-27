@@ -197,13 +197,21 @@ fn session_updates(
                         // The rail and the inspector draw the fleet, so an
                         // update they redraw for redraws this page too.
                         let fleet = Live::lock(&wiring.state.live).apply(&update);
+                        let replaced = replacement(&update, &slot);
+                        let handed_over = replaced.is_some();
+                        if let Some(history) = replaced {
+                            // A new occupant brings its own history, and the
+                            // clock the old one was counting on goes with it.
+                            conversation = history;
+                            live = LiveTurn::default();
+                        }
                         let appended = append(&update, &slot, &mut conversation);
                         if let SessionUpdate::ChatAppended { key, msg } = &update
                             && key == &slot
                         {
                             crate::session::apply_to_live_turn(msg, &mut live);
                         }
-                        appended || fleet
+                        appended || fleet || handed_over
                     }
                     _ = tick.tick() => true,
                 };
@@ -233,6 +241,24 @@ fn session_updates(
 /// drawn. The identity is the message's own id, which the transcript row and
 /// the wire frame share.
 ///
+/// The conversation a replacement hands over, when it is this seat's.
+///
+/// A resume or a `/new` puts another occupant in the slot and the page's copy
+/// is the one that just left, so the region has to be drawn from the history
+/// the update carries instead. A `Connected` carries one only where the seat
+/// was already running, and an empty history there leaves the read's own
+/// conversation alone: a page opened on a seat nothing was behind has nothing
+/// to replace.
+fn replacement(update: &SessionUpdate, slot: &SessionSlot) -> Option<Vec<Message>> {
+    match update {
+        SessionUpdate::SessionReplaced { key, history, .. } if key == slot => Some(history.clone()),
+        SessionUpdate::Connected { key, history, .. } if key == slot && !history.is_empty() => {
+            Some(history.clone())
+        }
+        _ => None,
+    }
+}
+
 /// A delivery the workspace injected draws as a turn of its own, forged from
 /// the update rather than read off the wire: the CLI does not echo a prompt
 /// it was handed on stdin, so the assistant would otherwise answer something

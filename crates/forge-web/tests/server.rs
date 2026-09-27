@@ -1131,6 +1131,48 @@ async fn a_settled_turn_draws_its_row_and_its_body() {
     );
 }
 
+/// A resume or a `/new` puts another occupant in the slot, and the history
+/// that arrives with it is the conversation the reader is owed. The page's
+/// own copy belongs to the seat that just left, so the region is drawn from
+/// the update when it carries one.
+#[tokio::test]
+async fn a_replacement_draws_the_history_it_carries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"user","uuid":"u-out","message":{"role":"user","content":"the seat before it left"}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::SessionReplaced {
+        key: SessionSlot::lead("Busytools", "forge"),
+        session_id: forge_primitives::SessionId::new("session-2"),
+        cwd: String::new(),
+        current_model: forge_primitives::CurrentModel::new("claude-opus-5", "opus", "Opus 5"),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![user_frame("u-in", "the turn the new occupant resumes")],
+        compaction_count: 0,
+    });
+    let region = next_session_event(stream).await.expect("the replacement redraws the region");
+
+    assert!(region.contains("the turn the new occupant resumes"), "the history it carries: {region}");
+    assert!(
+        !region.contains("the seat before it left"),
+        "and not the conversation that belonged to the seat it replaced: {region}",
+    );
+}
+
 /// A zero inside a block that does carry counters is a measurement rather
 /// than an absence. The captured frame spent nothing on cache reads and
 /// 13,939 on cache writes, so the read cell says zero while the row around it
