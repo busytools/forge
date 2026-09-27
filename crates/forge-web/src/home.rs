@@ -109,6 +109,8 @@ pub struct ProjectRows {
 
 /// One row: the same shape for a lead and for a worker.
 pub struct Row {
+    /// The seat the row draws, which is what its link addresses.
+    pub slot: SessionSlot,
     pub state: State,
     pub name: String,
     /// The branch the agent's tree is on, and how much has moved in it.
@@ -143,8 +145,8 @@ pub struct TaskCell {
 }
 
 /// What a row starts from, before its working tree is read.
-struct Seed<'a> {
-    slot: &'a SessionSlot,
+pub(crate) struct Seed<'a> {
+    pub(crate) slot: &'a SessionSlot,
     name: String,
     state: State,
     pending: Option<PendingKind>,
@@ -154,7 +156,11 @@ struct Seed<'a> {
 }
 
 impl Seed<'_> {
-    fn from_agent<'a>(agent: &'a AgentRow, task: Option<&'a Task>, unseen: &Unseen) -> Seed<'a> {
+    pub(crate) fn from_agent<'a>(
+        agent: &'a AgentRow,
+        task: Option<&'a Task>,
+        unseen: &Unseen,
+    ) -> Seed<'a> {
         Seed {
             slot: &agent.slot,
             name: agent.label.clone(),
@@ -174,7 +180,7 @@ impl Seed<'_> {
 ///   work even after the turn that started it settled;
 /// - a turn that finished while this view was not showing the session is
 ///   the one state that answers "what changed while I was away".
-fn state_of_agent(agent: &AgentRow, unseen: &Unseen) -> State {
+pub(crate) fn state_of_agent(agent: &AgentRow, unseen: &Unseen) -> State {
     match agent.lifecycle {
         SessionLifecycleState::Idle if agent.has_background_work => {
             State::Lifecycle(SessionLifecycleState::Running)
@@ -453,12 +459,13 @@ fn refusal(has_model: bool, would_bind: bool) -> Option<&'static str> {
 /// One row, with its working tree out of the cache. The roster is passed
 /// in rather than collected here: it walks the project catalog, and a walk
 /// per row is the per-row-loop trap the view surface's own notes name.
-async fn row_for(home: &Home<'_>, roster: &Roster, seed: Seed<'_>) -> Row {
+pub(crate) async fn row_for(home: &Home<'_>, roster: &Roster, seed: Seed<'_>) -> Row {
     let work = match roster.cwd_for(seed.slot) {
         Some(cwd) => Some(home.work.snapshot(seed.slot, cwd.as_path()).await),
         None => None,
     };
     Row {
+        slot: seed.slot.clone(),
         state: seed.state,
         name: seed.name,
         place: place_of(work.as_ref()),
@@ -522,7 +529,7 @@ fn page(view: &HomeView, theme_name: Option<&str>) -> Markup {
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "forge \u{b7} home" }
                 (root_block(theme_name))
-                link rel="stylesheet" href="/home.css";
+                link rel="stylesheet" href="/web.css";
                 link rel="icon" href="/favicon.svg" type="image/svg+xml";
             }
             // The stream, wired by attributes: htmx opens it, swaps the
@@ -653,7 +660,11 @@ fn row(row: &Row, refused: Option<&'static str>) -> Markup {
     html! {
         div .row .(mark.class) {
             span .dot .(mark.dot) {}
-            span .name { (&row.name) }
+            // The name is the link rather than the row: a row can carry an
+            // artifact anchor, and an anchor inside an anchor is not HTML.
+            span .name {
+                a href=(crate::session::href(&row.slot)) { (&row.name) }
+            }
             span .where { (&row.place) }
             span .what {
                 @if let Some(pending) = row.pending {
@@ -753,6 +764,7 @@ mod tests {
 
     fn row_of(state: State) -> Row {
         Row {
+            slot: SessionSlot::lead("Org", "forge"),
             state,
             name: "forge".to_owned(),
             place: String::new(),

@@ -1,13 +1,14 @@
 //! The web view: an HTTP view beside the TUI, in the same process, so the
 //! cron scheduler and the connectors start once rather than twice.
 //!
-//! It serves the home page and nothing else so far. Everything it reads
-//! comes through `forge-sessions`, which re-exports the git plumbing and
-//! the wire parsers a view needs: it names no crate under that one.
+//! It serves the home and a session, both over `forge-sessions`, which
+//! re-exports the git plumbing and the wire parsers a view needs: it names
+//! no crate under that one.
 
 pub mod brand;
 mod home;
 mod server;
+mod session;
 mod stream;
 pub mod theme;
 mod unseen;

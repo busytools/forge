@@ -393,18 +393,21 @@ async fn the_vendored_scripts_are_served() {
     );
 }
 
-/// The stylesheet is served beside the page, as a stylesheet.
+/// The stylesheet is served beside the page, as a stylesheet, and it is
+/// the one sheet both pages link: a second copy of a row or a mark is the
+/// defect rule 21 names.
 #[tokio::test]
-async fn the_home_serves_its_stylesheet() {
+async fn the_pages_serve_the_one_stylesheet() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
-    let (status, content_type, body) = get(&config, "/home.css").await;
+    let (status, content_type, body) = get(&config, "/web.css").await;
 
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(content_type.starts_with("text/css"), "a browser reads it as a stylesheet");
-    assert!(body.contains(".row"), "the stylesheet carries the row: {body}");
+    assert!(body.contains(".row"), "the sheet carries the home's row: {body}");
+    assert!(body.contains(".rail"), "and the session page's rail: {body}");
 }
 
 /// The mark a browser tab carries comes from `[web] mark`, so a mark
@@ -457,6 +460,85 @@ async fn unset_names_fall_back_to_the_built_in_mark_and_palette() {
     assert!(
         page.contains("--accent:#f47600"),
         "the page carries the palette as its root variables, got: {page}",
+    );
+}
+
+/// The route serves a real page for a real slot, with all three columns.
+#[tokio::test]
+async fn the_session_page_serves_all_three_columns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(content_type.starts_with("text/html"), "a browser renders it as a page");
+    assert!(page.contains("projects"), "the rail renders: {page}");
+    assert!(page.contains("inspector"), "the inspector renders: {page}");
+    assert!(page.contains("/web.css"), "and the page links the one stylesheet: {page}");
+}
+
+/// An unknown slot is a 404, not an empty shell that looks like a session.
+/// A shell would read as a session with nothing in it, which is a wrong
+/// answer rather than a missing one.
+#[tokio::test]
+async fn an_unknown_slot_is_not_found() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, _page) = get(&config, "/session/Nobody/nothing/lead").await;
+    assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "an unknown slot is a 404");
+
+    // The project is declared and the seat it names is not one of its own:
+    // a project's roster names its lead and its workers, and nobody else.
+    let (status, _content_type, _page) = get(&config, "/session/Busytools/forge/cli-version").await;
+    assert_eq!(
+        status,
+        reqwest::StatusCode::NOT_FOUND,
+        "a label the project's roster does not hold is a 404 like any other unknown seat",
+    );
+}
+
+/// A slot in the roster whose lead is not running spawns and waits. It is
+/// NOT a 404: the seat exists, its occupant does not yet, and the TUI
+/// connects you the same way.
+#[tokio::test]
+async fn a_sleeping_slot_spawns_rather_than_404s() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // dotfiles is declared and nothing has ever run in it: the sleeping
+    // project the home draws a Start row for.
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Personal/dotfiles/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "a sleeping seat renders, it does not 404");
+    assert!(page.contains("connecting"), "and says it is waking: {page}");
+}
+
+/// The home's project rows link here. Without this the page has no entry
+/// point, and a page nothing points at is one nobody opens.
+#[tokio::test]
+async fn the_home_links_to_the_session_page() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/").await;
+
+    assert!(
+        page.contains("/session/Busytools/forge/lead"),
+        "a project's lead row links into the page: {page}",
+    );
+    assert!(
+        page.contains("/session/Busytools/forge/em-dash-sweep"),
+        "and so does a worker's row, under its own label: {page}",
+    );
+    assert!(
+        page.contains("/session/Personal/dotfiles/lead"),
+        "including the one a project nobody has started carries: {page}",
     );
 }
 

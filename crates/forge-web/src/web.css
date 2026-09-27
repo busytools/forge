@@ -1,8 +1,9 @@
-/* The home page's stylesheet.
-   Taken from the mock at docs/mockups/web-home.html, minus the states
-   reference panel, which is a design artifact rather than a page. The
-   palette is not here: the server injects it as the page's own :root
-   from [web] theme, so a theme is one place to change. */
+/* The web view's one stylesheet, which both pages link: the home from
+   docs/mockups/web-home.html and the session page from
+   docs/mockups/web-session.html. The palette is not here: the server
+   injects it as the page's own :root from [web] theme, so a theme is one
+   place to change, and a second copy of a row, a mark or a palette is the
+   defect rule 21 names. */
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -10,6 +11,11 @@
   --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, Menlo, monospace;
   --r: 10px;
+  /* One type scale, so a size says what a thing IS. Prose is what you
+     read; a row is data; meta is a label on data. */
+  --fs-prose: 17px; --fs-group: 14px; --fs-row: 13px;
+  --fs-meta: 12.5px; --fs-label: 11.5px;
+  --ins: 10px; --rail-l: 312px; --rail-r: 366px;
   /* one line per entity: state | name | where | what | when.
      no action column - the whole row is the target.
      name and where are capped because their content is short; the surplus
@@ -81,18 +87,46 @@ header.top {
    ever show a notice under a label it does not own. It comes back with a
    read over a stored probe result. */
 
-.dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
-.dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
-.dot.off { background: var(--dim); }
-.dot.live { background: var(--accent); box-shadow: 0 0 7px rgba(244,118,0,.6); }
-.dot.bad { background: var(--bad); box-shadow: 0 0 7px rgba(224,104,62,.5); }
-.dot.warn { background: var(--warn); }
+/* ---------- the state mark: one shape per meaning, never colour alone ----------
+   Shared by the rail, the session header and the home's rows, so a state
+   that needs a new shape adds an arm here rather than a mark of its own. */
 
-/* the mark inside a row: one shape per meaning, never colour alone.
-   scoped to .row so the band keeps its plain dots. */
+.dot { width: 11px; height: 11px; flex: 0 0 11px; }
+.dot.live { border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 900ms linear infinite; }
+.dot.idle { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--accent); }
+.dot.unseen { background: var(--ok); clip-path: polygon(50% 2%, 98% 50%, 50% 98%, 2% 50%); }
+.dot.needs { background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%);
+  animation: pulse 1500ms ease-in-out infinite; }
+.dot.off { width: 9px; height: 9px; flex: 0 0 9px; border: 1.4px solid var(--dim); border-radius: 50%; }
+.dot.failed { background: var(--bad);
+  clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
+
+/* The work spinner is the RING: the mark for work in flight, wherever it
+   is drawn. */
+.ring { width: 10px; height: 10px; display: inline-block; border-radius: 50%;
+  border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
+  animation: spin 900ms linear infinite; }
+
+/* The system band's marks are flat discs: a card says how a service is,
+   not what state a session is in. Sized down from the shared mark, and
+   reset so none of its shapes reach here. */
+.band .dot {
+  width: 7px; height: 7px; flex: 0 0 7px; border: 0; border-radius: 50%;
+  background: none; box-shadow: none; opacity: 1; animation: none;
+}
+.band .dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
+.band .dot.off { background: var(--dim); }
+.band .dot.live { background: var(--accent); box-shadow: 0 0 7px rgba(244,118,0,.6); }
+.band .dot.bad { background: var(--bad); box-shadow: 0 0 7px rgba(224,104,62,.5); }
+.band .dot.warn { background: var(--warn); }
+
+/* the mark inside a row: the shared shapes, with the row's own reset so a
+   state that is not a ring cannot inherit the ring's border or spin. */
 .row .dot {
   width: 11px; height: 11px; flex: 0 0 11px;
-  border-radius: 0; background: none; box-shadow: none; opacity: 1;
+  border: 0; border-radius: 0; background: none; box-shadow: none; opacity: 1;
+  animation: none;
 }
 .row.running .dot, .row.spawning .dot {
   border-radius: 50%;
@@ -130,6 +164,8 @@ header.top {
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 
 @media (prefers-reduced-motion: reduce) {
+  .dot.live, .ring { animation: none; border-color: var(--accent); }
+  .dot.needs { animation: none; }
   .row.running .dot { animation: none; border-color: var(--accent); }
   .row.spawning .dot { animation: none; border-color: var(--muted); }
   .row.needs .dot, .row.auth .dot { animation: none; }
@@ -173,6 +209,10 @@ header.top {
   min-width: 0; font-size: 15.5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* The row's name is where it goes, so it is a link; it keeps the row's own
+   look and shows itself on hover. */
+.row .name a { color: inherit; text-decoration: none; }
+.row .name a:hover { text-decoration: underline; }
 .row .where, .row .when {
   font-family: var(--mono); font-size: 13.5px; color: var(--dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -254,6 +294,122 @@ header.top {
   font-family: var(--mono); font-size: 11.5px; color: var(--muted);
   background: var(--s2); border: 1px solid var(--line);
   border-radius: 4px; padding: 1px 5px;
+}
+
+/* ---------- the session page: three columns over one sheet ----------
+   Taken from the mock at docs/mockups/web-session.html. A pane collapses
+   to nothing, and the handle that brings it back lives in the chat header
+   rather than on the pane's edge, so a collapsed column leaves no edge
+   behind and its control stays clickable. */
+
+.app {
+  display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr) var(--rail-r);
+  gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden;
+  font-size: var(--fs-prose);
+}
+/* checked is COLLAPSED */
+#l:checked ~ .app { --rail-l: 0px; }
+#r:checked ~ .app { --rail-r: 0px; }
+#l:checked ~ .app .rail.left, #r:checked ~ .app .rail.right { display: none; }
+.pane-tog { display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
+  color: var(--muted); border: 1px solid transparent; }
+.pane-tog:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
+.pane-tog svg { width: 16px; height: 16px; display: block; }
+/* Both handles sit with the title on a phone; on a wide screen the
+   inspector's goes to the far right, past the facts. */
+.sess .tog-r { order: 99; }
+#l:checked ~ .app .pane-tog.tog-l, #r:checked ~ .app .pane-tog.tog-r {
+  color: var(--accent); background: rgba(244,118,0,.1); border-color: rgba(244,118,0,.3); }
+
+.rail { display: flex; flex-direction: column; overflow: hidden; border-radius: 16px;
+  border: 1px solid rgba(34,42,60,.9);
+  background: linear-gradient(180deg, rgba(20,25,38,.62), rgba(9,12,20,.74));
+  backdrop-filter: blur(14px) saturate(120%);
+  box-shadow: 0 18px 48px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.03); }
+/* An appearing scrollbar must not shift the layout under the pointer. */
+.rail .scroll { overflow-y: auto; flex: 1; padding: 0 8px 12px; scrollbar-gutter: stable; }
+.rail .scroll::-webkit-scrollbar { width: 8px; }
+.rail .scroll::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+.rail .scroll::-webkit-scrollbar-track { background: transparent; }
+.banner { display: flex; align-items: center; gap: 8px; padding: 13px 12px 9px; }
+.banner .t { font-size: 11px; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--accent); }
+.banner .n { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+.banner .n.ml { margin-left: auto; }
+
+/* The chat column. min-height:0 or the column refuses to shrink below its
+   content and the composer is pushed past the viewport, where
+   overflow:hidden eats it. */
+main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.sess { display: flex; align-items: center; gap: 12px; padding: 2px 0 12px;
+  flex-wrap: wrap; row-gap: 8px; }
+.sess .nm { font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
+.sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
+  font-family: var(--mono); font-size: 13px; color: var(--dim); }
+.conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable; }
+.conv::-webkit-scrollbar { width: 8px; }
+.conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+.conv::-webkit-scrollbar-track { background: transparent; }
+/* a line whose work is in flight, the ring in front of it */
+.hold { display: flex; align-items: center; gap: 9px; color: var(--accent);
+  font-family: var(--mono); font-size: 13px; margin: 10px 0 2px; }
+.hold .sub { color: var(--dim); }
+
+/* the account chip, and the popover it opens on what the poller knows */
+details.acct { position: relative; }
+details.acct > summary { list-style: none; cursor: pointer; display: flex; align-items: center;
+  gap: 7px; font-family: var(--mono); font-size: 13px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 99px; padding: 2px 11px; }
+details.acct > summary::-webkit-details-marker { display: none; }
+details.acct > summary:hover { border-color: #2e3850; color: var(--text); }
+details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--accent); }
+.pop { position: absolute; right: 0; top: calc(100% + 10px); width: 320px; z-index: 20;
+  background: var(--s1); border: 1px solid rgba(34,42,60,.95); border-radius: 14px;
+  padding: 13px 15px; box-shadow: 0 24px 60px rgba(0,0,0,.6);
+  text-transform: none; letter-spacing: 0; }
+.pop .hd { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+.pop .hd .nm { font-size: 15px; font-weight: 650; color: var(--accent); }
+.pop .hd .st { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--ok); }
+.pop .hd .st.wait { color: var(--warn); }
+.pop .hd .st.bad { color: var(--bad); }
+.kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
+  font-family: var(--mono); font-size: var(--fs-row); }
+.kv .k { color: var(--dim); }
+.kv .v { color: var(--muted); text-align: right; }
+.pop hr { border: 0; height: 1px; background: var(--line); margin: 9px 0 7px; }
+.bar { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
+.bar .lb { font-family: var(--mono); font-size: 12px; color: var(--dim); width: 26px; }
+.bar .tk { flex: 1; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+.bar .fl { height: 100%; background: var(--accent); }
+.bar .pc { font-family: var(--mono); font-size: 11.5px; color: var(--muted); width: 34px;
+  text-align: right; }
+.bar .eta { font-family: var(--mono); font-size: 11px; color: var(--dim); width: 60px;
+  text-align: right; }
+
+/* ---------- narrow: the session page loses its columns ----------
+   Below 1280 the inspector stops being a column and becomes a sheet over
+   the chat when its handle asks for it, so the handle the header draws is
+   never a control that does nothing. */
+
+@media (max-width: 1280px) {
+  .app { grid-template-columns: var(--rail-l) minmax(0,1fr); }
+  .rail.right { display: none; }
+  #r:checked ~ .app .rail.right {
+    display: flex; position: fixed; inset: 0; z-index: 40; border-radius: 0;
+  }
+}
+
+@media (max-width: 980px) {
+  .app { grid-template-columns: minmax(0,1fr); }
+  .sess { flex-wrap: wrap; gap: 8px; }
+  .sess .facts { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
+  .sess .tog-r { order: 0; }
+  .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
+  .rail.left, .rail.right { display: none; }
+  #l:checked ~ .app .rail.left { display: flex; }
+  #r:checked ~ .app .rail.right { display: flex; }
+  #l:checked ~ .app, #r:checked ~ .app { --rail-l: 0px; --rail-r: 0px; }
 }
 
 /* ---------- narrow: a phone is a client too ---------- */

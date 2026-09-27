@@ -17,10 +17,11 @@ use crate::stream::{Live, events};
 use crate::work::WorkCache;
 use crate::{brand, theme};
 
-/// The stylesheet, vendored rather than read from disk: the page is served
-/// from the process, and a view that needed a file beside it would be a
-/// path to get wrong.
-const HOME_CSS: &str = include_str!("home.css");
+/// The stylesheet, vendored rather than read from disk: the pages are
+/// served from the process, and a view that needed a file beside it would
+/// be a path to get wrong. One sheet for both pages, because a second
+/// copy of a row, a mark or a palette is the defect rule 21 names.
+const WEB_CSS: &str = include_str!("web.css");
 
 /// The vendored assets, by the name the page asks for. Each is
 /// byte-for-byte as published, with its version, source and licence
@@ -100,11 +101,31 @@ pub async fn start(state: WebState) -> Result<Option<SocketAddr>, WebError> {
 fn router(wiring: Wiring) -> Router {
     Router::new()
         .route("/", get(home_page))
+        .route("/session/{org}/{project}/{label}", get(session_page))
         .route("/events", get(events))
         .route("/favicon.svg", get(favicon))
-        .route("/home.css", get(home_css))
+        .route("/web.css", get(web_css))
         .route("/vendor/{file}", get(asset))
         .with_state(wiring)
+}
+
+/// The route the home's rows point at, in its three outcomes: the page for
+/// a seat with something running behind it, the waking page for a seat in
+/// the roster whose occupant is not up yet, and a 404 for a slot the
+/// roster does not name at all. A shell would read as a session with
+/// nothing in it, which is a wrong answer rather than a missing one.
+async fn session_page(
+    State(wiring): State<Wiring>,
+    Path((org, project, label)): Path<(String, String, String)>,
+) -> Response {
+    match crate::session::page(&wiring.state, wiring.bound, &org, &project, &label).await {
+        crate::session::Found::Open(page) | crate::session::Found::Waking(page) => {
+            page.into_response()
+        }
+        crate::session::Found::Absent => {
+            (StatusCode::NOT_FOUND, "no session slot by that name").into_response()
+        }
+    }
 }
 
 /// One vendored asset: the page's own scripts, as published. An unknown
@@ -160,10 +181,10 @@ pub(crate) async fn home_region(state: &WebState, bound: SocketAddr) -> Markup {
 /// The stylesheet, with the same `no-cache` the scripts get: a browser
 /// holding an old sheet would report a bug in forge's code, and a page
 /// that looks wrong is harder to diagnose than one that reloads slowly.
-async fn home_css() -> impl IntoResponse {
+async fn web_css() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/css; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
-        HOME_CSS,
+        WEB_CSS,
     )
 }
 
