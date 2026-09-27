@@ -1240,6 +1240,8 @@ fn first_line(text: &str) -> String {
 /// attributing nothing arrives as a zero block, and a zero here reads as a
 /// measurement.
 fn turn_report_row(info: &TurnInfo, live: bool) -> Markup {
+    let info = attributed_usage(info);
+    let info = &info;
     html! {
         details .turninfo {
             summary {
@@ -1257,7 +1259,7 @@ fn turn_report_row(info: &TurnInfo, live: bool) -> Markup {
                     span .sep { "\u{b7}" }
                     span { (pct) "% cached" }
                 }
-                @if let Some(written) = counted(info.cache_written_tokens) {
+                @if let Some(written) = info.cache_written_tokens {
                     span .sep { "\u{b7}" }
                     span { (format_token_count_short(written)) " written" }
                 }
@@ -1301,18 +1303,18 @@ fn turn_body(info: &TurnInfo) -> Markup {
             }
         }
         span .n {}
-        span .l { b { "in" } (counted(info.input_tokens).map_or_else(dash, format_token_count_grouped)) }
-        span .n { b { "out" } (counted(info.output_tokens).map_or_else(dash, format_token_count_grouped)) }
+        span .l { b { "in" } (info.input_tokens.map_or_else(dash, format_token_count_grouped)) }
+        span .n { b { "out" } (info.output_tokens.map_or_else(dash, format_token_count_grouped)) }
         span .l {
             b { "cache" }
-            @match counted(info.cache_read_tokens) {
+            @match info.cache_read_tokens {
                 Some(read) => { (format_token_count_grouped(read)) " read" }
                 None => { "-" }
             }
         }
         span .n {
             b { "wrote" }
-            (counted(info.cache_written_tokens).map_or_else(dash, format_token_count_grouped))
+            (info.cache_written_tokens.map_or_else(dash, format_token_count_grouped))
         }
         @if let Some(pct) = info.cache_hit_percent() {
             span .n .wide { (pct) "% of input served from cache" }
@@ -1328,20 +1330,38 @@ fn turn_body(info: &TurnInfo) -> Markup {
     }
 }
 
-/// A count worth printing, or nothing: a zero from the wire is "not
-/// attributed" rather than a measurement, and a `0` in the place of one
-/// reads as a real reading. The compaction frame is the shape that carries
-/// them, with every counter at zero.
-fn counted(n: Option<u64>) -> Option<u64> {
-    n.filter(|n| *n > 0)
+/// The record with an unattributed usage block dropped, which is the rule the
+/// TUI applies before it stamps a turn: one filter over the whole block, and
+/// every counter written through as it came.
+///
+/// The distinction matters at a single counter. A frame whose counters are
+/// all zero is the CLI saying it has nothing to attribute, and a compaction
+/// result is that shape; a real zero inside a block that does carry counters
+/// is a measurement, and prints as one.
+fn attributed_usage(info: &TurnInfo) -> TurnInfo {
+    let nothing = info.input_tokens.unwrap_or(0) == 0
+        && info.output_tokens.unwrap_or(0) == 0
+        && info.cache_read_tokens.unwrap_or(0) == 0
+        && info.cache_written_tokens.unwrap_or(0) == 0;
+    if nothing {
+        TurnInfo {
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_tokens: None,
+            cache_written_tokens: None,
+            ..info.clone()
+        }
+    } else {
+        info.clone()
+    }
 }
 
 /// The `4.2k↑ 1.1k↓` pair, or just the input side while the turn is still
 /// running: a mid-turn output count is a streaming placeholder rather than a
 /// count, so there is nothing to show yet.
 fn turn_token_field(info: &TurnInfo) -> Option<String> {
-    let input = format_token_count_short(counted(info.input_tokens)?);
-    match counted(info.output_tokens) {
+    let input = format_token_count_short(info.input_tokens?);
+    match info.output_tokens {
         Some(output) => {
             Some(format!("{input}\u{2191} {}\u{2193}", format_token_count_short(output)))
         }

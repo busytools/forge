@@ -1131,6 +1131,32 @@ async fn a_settled_turn_draws_its_row_and_its_body() {
     );
 }
 
+/// A zero inside a block that does carry counters is a measurement rather
+/// than an absence. The captured frame spent nothing on cache reads and
+/// 13,939 on cache writes, so the read cell says zero while the row around it
+/// stands.
+#[tokio::test]
+async fn a_zero_inside_a_real_usage_block_is_drawn_as_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let frame = captured_results("set_model").pop().expect("the captured turn");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: frame,
+    });
+    let region = next_session_event(stream).await.expect("the turn redraws the region");
+
+    assert!(region.contains("<b>cache</b>0 read"), "the zero it did spend: {region}");
+    assert!(region.contains("<b>wrote</b>13,939"), "beside the count it did spend: {region}");
+    assert!(region.contains("13k written"), "and the row's own chip keeps it: {region}");
+}
+
 /// A cron fire is drawn as the turn it is. The session's model is handed the
 /// prompt on its own stdin and the CLI does not echo it back, so the wire
 /// carries nothing a page could draw; the workspace announces the delivery as
@@ -1435,6 +1461,7 @@ async fn a_frame_that_reports_nothing_draws_no_zeroes() {
     let region = next_session_event(stream).await.expect("the frame redraws the region");
 
     assert!(region.contains("45.2s"), "the clock the frame does carry: {region}");
+    assert!(!region.contains("0 read"), "and no zero where a count would go: {region}");
     assert!(region.contains("<b>api</b>-"), "the one it does not reads as a dash: {region}");
     assert!(!region.contains("<b>api</b>0.0s"), "and never as a zero: {region}");
     assert!(!region.contains("<b>in</b>0"), "no zero stands in for a count: {region}");
