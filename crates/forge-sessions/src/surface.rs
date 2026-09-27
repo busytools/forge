@@ -101,6 +101,11 @@ impl ViewSurface {
     /// transcript on disk: the same read a resume performs, for a view
     /// that arrived after the session was already running.
     ///
+    /// Call it BEFORE subscribing: this read is the baseline, and the
+    /// stream carries only what happens after the caller attaches, so a
+    /// caller that subscribes first reintroduces the overlap the ordering
+    /// removes.
+    ///
     /// `cwd_raw` is the session's own cwd, which a git worker's worktree
     /// overrides. A slot with no live session reads as an empty
     /// conversation: nothing has been written for it to read, and another
