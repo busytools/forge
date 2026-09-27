@@ -6,6 +6,11 @@
 //! have no session in them at all: the emoji table and the file walk are
 //! view-side data, so `forge-sessions` owns both and no view keeps a
 //! copy.
+//!
+//! The tests here read the two session facts through a fixture that
+//! writes the core's fields directly, so they pin the reads and not the
+//! keeping: whether the init frame and `commands_changed` retain anything
+//! at all is pinned by `forge-workspace`'s session-task tests.
 
 use std::path::Path;
 
@@ -16,16 +21,28 @@ use crate::file_index::FileIndex;
 use crate::surface::ViewSurface;
 
 impl ViewSurface {
-    /// The slash commands the CLI last advertised for `slot`. Empty for a
-    /// seat whose session has not connected, and for one whose CLI
-    /// advertised none.
+    /// The slash commands the CLI last advertised for `slot`, named as
+    /// they are typed. Empty for a seat whose session has not connected,
+    /// and for one whose CLI advertised none.
     ///
     /// The core retains them from the init frame each turn and from
     /// `commands_changed`, so a view that arrived after the turn started
     /// reads them here rather than waiting a whole turn for the next
     /// frame.
+    ///
+    /// The wire carries the names bare, so the leading slash is added
+    /// here: a caller renders `name` as it comes back. Forge's own
+    /// commands are not in this list - a view that renders the `/`
+    /// dropdown needs those too, and they are still the TUI's (#1213).
     pub fn slash_commands(&self, slot: &SessionSlot) -> Vec<AvailableCommand> {
-        self.workspace.available_commands_for(slot)
+        self.workspace
+            .available_commands_for(slot)
+            .into_iter()
+            .map(|command| AvailableCommand {
+                name: forge_workspace::translate::commands::slash_name(&command.name),
+                ..command
+            })
+            .collect()
     }
 
     /// The subagents the CLI last advertised for `slot`, retained by the
@@ -40,8 +57,13 @@ impl ViewSurface {
     ///
     /// This walks the whole tree on the calling thread, the way
     /// [`Self::conversation`] reads a whole transcript: a caller offloads
-    /// it rather than running it in a handler. Gitignore is respected,
-    /// which is the default the TUI's own preference starts from.
+    /// it rather than running it in a handler.
+    ///
+    /// Gitignore is always respected here. The TUI reads the user's own
+    /// preference for that out of the CLI settings document, so a session
+    /// with it turned off shows ignored files in one view and not the
+    /// other; passing the preference in is a core-side read this does not
+    /// have yet (#1214).
     ///
     /// No `self`: nothing here is a fact about the core, so the two reads
     /// that need no session are reached at the surface rather than
@@ -50,12 +72,16 @@ impl ViewSurface {
         FileIndex::scan(root, true)
     }
 
-    /// The emoji a `:query` matches, best first, on the same terms as
-    /// [`Self::file_index`]. A query below two characters matches
-    /// nothing, which is what keeps `:D` and `10:30` from opening a
-    /// picker.
-    pub fn emoji(query: &str) -> Vec<&'static Emoji> {
-        emoji::matches(query)
+    /// The emoji a `:query` matches, best first, at most `limit` of them.
+    /// The cap is the caller's here for the same reason it is on
+    /// [`FileIndex::visible`]: a dropdown and a page want different ones.
+    ///
+    /// A query below two characters matches nothing, which is what keeps
+    /// `:D` and `10:30` from opening a picker.
+    pub fn emoji(query: &str, limit: usize) -> Vec<&'static Emoji> {
+        let mut matches = emoji::matches(query);
+        matches.truncate(limit);
+        matches
     }
 }
 
@@ -81,13 +107,17 @@ mod tests {
 
         workspace.seed_test_advertised_catalogues(
             &slot(),
-            vec![forge_primitives::AvailableCommand::new("/help", "Open help")],
+            vec![forge_primitives::AvailableCommand::new("help", "Open help")],
             Vec::new(),
         );
 
         let commands = surface.slash_commands(&slot());
         assert_eq!(commands.len(), 1, "the seat's own list reaches the view");
-        assert_eq!(commands[0].name, "/help");
+        assert_eq!(
+            commands[0].name, "/help",
+            "and named as it is typed, which is not how the wire carries it",
+        );
+        assert_eq!(commands[0].description, "Open help", "the rest of the entry comes through");
         assert!(
             surface.slash_commands(&SessionSlot::lead("TestOrg", "nothing")).is_empty(),
             "and a seat with no declaration reads as empty rather than sharing one",
@@ -117,7 +147,7 @@ mod tests {
     /// session at all, and it ranks the way the TUI's picker does.
     #[test]
     fn emoji_ranks_a_query_the_way_the_picker_does() {
-        let ranked = ViewSurface::emoji("sm");
+        let ranked = ViewSurface::emoji("sm", 10);
 
         assert_eq!(
             ranked.first().map(|e| e.name),
@@ -125,7 +155,12 @@ mod tests {
             "the shortest prefix match leads: {:?}",
             ranked.iter().map(|e| e.name).collect::<Vec<_>>(),
         );
-        assert!(ViewSurface::emoji("").is_empty(), "and a bare `:` holds nothing back");
+        assert_eq!(
+            ViewSurface::emoji("sm", 2).len(),
+            2,
+            "and the caller's cap is the one that bites"
+        );
+        assert!(ViewSurface::emoji("", 10).is_empty(), "a bare `:` holds nothing back");
     }
 
     /// The file index is walked on demand over the same walker the TUI
