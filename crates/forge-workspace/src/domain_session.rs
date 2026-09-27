@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use forge_agent::AgentHandle;
 use forge_primitives::{
-    AvailableAgent, AvailableCommand, CurrentModel, EffortLevel, McpServerStatus, MonitorRecord,
-    PermissionMode, RuntimeSessionState, SessionId,
+    AvailableAgent, AvailableCommand, AvailableModel, CurrentModel, EffortLevel, McpServerStatus,
+    MonitorRecord, PermissionMode, RuntimeSessionState, SessionId,
 };
 
 use crate::SessionSlot;
@@ -148,6 +148,10 @@ pub struct DomainSession {
     /// still answers with the level it is running at rather than none.
     /// `Max` when the launch asked for nothing, which is forge's default.
     pub configured_effort: EffortLevel,
+    /// The permission mode forge stamped into the same launch settings,
+    /// on the same terms: the answer until a hook reports one. `None`
+    /// when the launch pinned none.
+    pub configured_permission_mode: Option<PermissionMode>,
     /// Hook-observed sub-agent attribution: the `tool_use_id` a
     /// sub-agent fired, against the agent type that fired it.
     pub subagent_attribution: HashMap<String, String>,
@@ -159,9 +163,15 @@ pub struct DomainSession {
     /// The model the session resolved to, from its connect and from
     /// every later init frame that names a different one.
     pub current_model: Option<CurrentModel>,
-    /// The monitors this session has running or has finished, folded
-    /// from the wire: the `Monitor` tool call, the task id the CLI
-    /// assigns it, and the transition that settles it.
+    /// The model catalogue the connect resolved against, kept so a frame
+    /// naming another model can be resolved the same way the connect's own
+    /// name was rather than falling back to the raw id.
+    pub available_models: Vec<AvailableModel>,
+    /// The monitors this session has running, and the ones that settled
+    /// while it did, folded from the wire: the `Monitor` tool call, the
+    /// task id the CLI assigns it, and the transition that settles it.
+    /// The set drains once every entry in it is terminal, so a session
+    /// that ran a monitor and stopped drawing one holds none.
     pub monitors: Vec<MonitorRecord>,
     /// The last OS-level walk of the session's process tree. The scan
     /// runs on a view's tick rather than here, so this is the most
@@ -193,10 +203,12 @@ impl DomainSession {
             observed_permission_mode: None,
             observed_effort: None,
             configured_effort: EffortLevel::Max,
+            configured_permission_mode: None,
             subagent_attribution: HashMap::new(),
             mcp_servers: None,
             context_usage: None,
             current_model: None,
+            available_models: Vec::new(),
             monitors: Vec::new(),
             process_snapshot: None,
         }
@@ -238,6 +250,26 @@ pub(crate) fn configured_effort_from_settings(
         .and_then(serde_json::Value::as_str)
         .and_then(EffortLevel::from_stored)
         .unwrap_or(EffortLevel::Max)
+}
+
+/// The mode a spawn asked for, read back from the same launch settings
+/// the effort comes from.
+///
+/// `None` when the launch pinned nothing and when it pinned a mode forge
+/// cannot name: unlike effort there is no default to fall back on here,
+/// because the CLI's own default is not a forge setting.
+pub(crate) fn configured_permission_mode_from_settings(
+    settings: &crate::SessionLaunchSettings,
+) -> Option<PermissionMode> {
+    settings
+        .settings
+        .as_ref()
+        .and_then(|document| document.get(crate::SessionLaunchSettings::PERMISSIONS_KEY))
+        .and_then(|permissions| {
+            permissions.get(crate::SessionLaunchSettings::PERMISSIONS_DEFAULT_MODE_KEY)
+        })
+        .and_then(serde_json::Value::as_str)
+        .and_then(PermissionMode::from_wire)
 }
 
 /// The CLI settings key a session's effort is stamped under. One const,
@@ -300,6 +332,52 @@ mod tests {
             configured_effort_from_settings(&settings),
             EffortLevel::Max,
             "a level forge cannot read falls back rather than failing",
+        );
+    }
+
+    /// The mode a spawn asked for, read back from the same launch
+    /// settings. Forge stamps its effective default here, so a session
+    /// whose hook has not fired yet still names the mode it was launched
+    /// in rather than nothing.
+    #[test]
+    fn a_launch_that_pins_a_mode_names_that_mode() {
+        let settings = crate::SessionLaunchSettings {
+            settings: Some(serde_json::json!({ "permissions": { "defaultMode": "plan" } })),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_permission_mode_from_settings(&settings),
+            Some(PermissionMode::Plan),
+            "the mode the launch stamped is the mode the session runs in",
+        );
+    }
+
+    /// A launch that pinned nothing says so rather than naming a mode
+    /// forge did not choose.
+    #[test]
+    fn a_launch_that_pins_no_mode_names_none() {
+        let settings = crate::SessionLaunchSettings::default();
+
+        assert_eq!(
+            configured_permission_mode_from_settings(&settings),
+            None,
+            "no pin is no answer, rather than a mode forged from nothing",
+        );
+    }
+
+    /// A mode forge cannot name is a mode it cannot report.
+    #[test]
+    fn an_unreadable_launch_mode_names_none() {
+        let settings = crate::SessionLaunchSettings {
+            settings: Some(serde_json::json!({ "permissions": { "defaultMode": "yolo" } })),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_permission_mode_from_settings(&settings),
+            None,
+            "a mode forge cannot read is not guessed at",
         );
     }
 }

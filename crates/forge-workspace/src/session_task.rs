@@ -1451,17 +1451,21 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
 }
 
 /// Drop every fact that describes one run of a session: the hook's mode
-/// and effort, the model it resolved, and the three snapshots that
-/// describe a subprocess tree. The sub-agent attribution and the monitor
-/// set are not here - both outlive the run they came from, and the TUI
-/// keeps them for the same reason.
+/// and effort, the model it resolved, and the two bridge snapshots that
+/// describe a subprocess tree.
+///
+/// This mirrors the view's own reset on the same events, so what it holds
+/// is what a view draws. Three facts are deliberately not here, because
+/// the view's reset does not touch them either: the sub-agent attribution
+/// and the monitor set outlive the run they came from, and the process
+/// walk is cleared where a view learns the cwd moved, which is its own
+/// path rather than this one.
 fn clear_runtime_identity(domain: &mut DomainSession) {
     domain.observed_permission_mode = None;
     domain.observed_effort = None;
     domain.current_model = None;
     domain.mcp_servers = None;
     domain.context_usage = None;
-    domain.process_snapshot = None;
 }
 
 /// The facts this event carries that a view other than the TUI reads
@@ -1472,21 +1476,26 @@ fn clear_runtime_identity(domain: &mut DomainSession) {
 /// `SessionUpdate` for it is built from, so the held copy cannot drift
 /// from the streamed one.
 fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
-    if let AgentEvent::Connected { current_model, history_updates, .. } = event {
+    if let AgentEvent::Connected { current_model, available_models, history_updates, .. } = event {
         // A replacement occupant inherits nothing the last one held:
         // its hook mirrors describe a session that is gone, and its
         // bridge snapshots describe subprocesses that went with it.
         clear_runtime_identity(domain);
         domain.subagent_attribution.clear();
         domain.current_model = Some(current_model.clone());
+        domain.available_models.clone_from(available_models);
         // A monitor started before this process did is in the transcript
         // the connect carries, so the same fold runs over it: a view
         // opening the session sees the monitor rather than nothing.
         domain.monitors.clear();
         if let Some(history) = history_updates {
             for msg in history {
-                fold_monitor(domain, msg);
+                fold_monitor(domain, msg, MonitorOrigin::Transcript);
             }
+            // A transcript's monitors are all settled, so the seed drains in
+            // the one call: a resumed session shows no section rather than a
+            // row per monitor it ever ran.
+            drain_settled_monitors(domain);
         }
     }
     // The two events that end a run leave the session with no runtime
@@ -1534,8 +1543,41 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
         });
     }
     if let AgentEvent::SdkMessage { msg, .. } = event {
-        fold_monitor(domain, msg);
+        fold_monitor(domain, msg, MonitorOrigin::Wire);
+        if let forge_primitives::Message::System { subtype, data, .. } = msg
+            && subtype == "init"
+        {
+            reconcile_model_from_init(domain, data);
+        }
     }
+}
+
+/// Take the model a turn's `system/init` names, which is how a switch
+/// reaches a reader: `/model` re-fires the frame with the model the turn
+/// runs under, and the frame arrives at the head of every turn besides.
+///
+/// A frame naming the model the session is already on changes nothing, so
+/// a session that did not switch keeps the name its connect resolved
+/// rather than being renamed to the CLI's own spelling of the same model.
+fn reconcile_model_from_init(domain: &mut DomainSession, data: &serde_json::Value) {
+    let Some(model_id) = data.get("model").and_then(serde_json::Value::as_str).map(str::trim)
+    else {
+        return;
+    };
+    if model_id.is_empty()
+        || domain.current_model.as_ref().is_some_and(|held| held.resolved_id == model_id)
+    {
+        return;
+    }
+    // No requested id: the pin forge stamped described the model the
+    // session connected on, and the CLI has just named a different one, so
+    // the CLI's own answer is what names this model.
+    domain.current_model = Some(crate::session_lifecycle::resolve_current_model_from_inputs(
+        model_id,
+        None,
+        None,
+        &domain.available_models,
+    ));
 }
 
 /// The status a terminal `task_updated` names, in the vocabulary the
@@ -1550,6 +1592,21 @@ fn monitor_status_from_wire(status: &str) -> Option<forge_primitives::MonitorSta
     }
 }
 
+/// Which side of the session a monitor was folded from, which decides the
+/// state it starts in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonitorOrigin {
+    /// The live wire, where a `Monitor` tool call means the monitor runs
+    /// until a command frame settles it.
+    Wire,
+    /// The transcript a connect carries. It holds no lifecycle frame - the
+    /// replay synthesizer emits user and assistant messages only - so a
+    /// monitor found here is one whose task is over as far as this process
+    /// can tell, and nothing that follows can settle it, because every
+    /// settlement is keyed on the task id a transcript cannot carry.
+    Transcript,
+}
+
 /// Fold one wire message into the session's monitor set: the `Monitor`
 /// tool call that starts one, the task id the CLI assigns it, and the
 /// lifecycle message that settles it.
@@ -1557,7 +1614,11 @@ fn monitor_status_from_wire(status: &str) -> Option<forge_primitives::MonitorSta
 /// The CLI's task ids are what the terminal transitions are keyed by,
 /// so a record's `task_id` is what lets a later `task_updated` find it
 /// at all.
-fn fold_monitor(domain: &mut DomainSession, msg: &forge_primitives::Message) {
+fn fold_monitor(
+    domain: &mut DomainSession,
+    msg: &forge_primitives::Message,
+    origin: MonitorOrigin,
+) {
     match msg {
         forge_primitives::Message::Assistant { message, .. } => {
             for block in &message.content {
@@ -1573,6 +1634,10 @@ fn fold_monitor(domain: &mut DomainSession, msg: &forge_primitives::Message) {
                 if domain.monitors.iter().any(|held| &held.tool_use_id == id) {
                     continue;
                 }
+                let status = match origin {
+                    MonitorOrigin::Wire => forge_primitives::MonitorStatus::Running,
+                    MonitorOrigin::Transcript => forge_primitives::MonitorStatus::Completed,
+                };
                 domain.monitors.push(forge_primitives::MonitorRecord {
                     tool_use_id: id.clone(),
                     task_id: None,
@@ -1580,7 +1645,7 @@ fn fold_monitor(domain: &mut DomainSession, msg: &forge_primitives::Message) {
                     command: parsed.command,
                     persistent: parsed.persistent,
                     timeout_ms: parsed.timeout_ms,
-                    status: forge_primitives::MonitorStatus::Running,
+                    status,
                     output_file: None,
                 });
             }
@@ -1612,8 +1677,22 @@ fn fold_monitor(domain: &mut DomainSession, msg: &forge_primitives::Message) {
                 forge_primitives::TaskNotificationStatus::Unknown => return,
             };
             settle_monitor(domain, task_id, status, Some(output_file.clone()));
+            // The notification is the last frame a monitor sends, so it is
+            // where the set drains once nothing in it is running: the same
+            // rule the terminal applies, so a session that ran a monitor an
+            // hour ago draws no section in either view.
+            drain_settled_monitors(domain);
         }
         _ => {}
+    }
+}
+
+/// Drop the monitor set once every entry in it is terminal.
+fn drain_settled_monitors(domain: &mut DomainSession) {
+    if !domain.monitors.is_empty()
+        && domain.monitors.iter().all(|monitor| monitor.status.is_terminal())
+    {
+        domain.monitors.clear();
     }
 }
 
@@ -3919,6 +3998,16 @@ provider = "anthropic"
         }
     }
 
+    fn init_frame_naming_the_model(model: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s",
+            "model": model,
+        }))
+        .expect("parse an init frame naming a model")
+    }
+
     fn mcp_server(name: &str) -> forge_primitives::McpServerStatus {
         serde_json::from_value(serde_json::json!({ "name": name, "status": "connected" }))
             .expect("parse an MCP server status")
@@ -3970,6 +4059,20 @@ provider = "anthropic"
             "session_id": "s",
         }))
         .expect("parse a task_updated")
+    }
+
+    fn task_notification(task_id: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": task_id,
+            "status": "completed",
+            "output_file": "/tmp/forge-test-monitor.out",
+            "summary": "Monitor stream ended",
+            "uuid": "u-note",
+            "session_id": "s",
+        }))
+        .expect("parse a task_notification")
     }
 
     /// A `commands_changed` payload carrying entries that parse to none
@@ -4269,6 +4372,51 @@ provider = "anthropic"
         );
     }
 
+    /// The CLI names the model each turn runs under at the head of the
+    /// turn, and that frame is how a mid-session switch reaches a reader:
+    /// after `/model` the terminal's own row moves, and a read that only
+    /// listened at connect would go on naming the model the session left.
+    #[test]
+    fn the_model_follows_a_later_turns_init_frame() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &connected_event("uuid-1", "/proj"));
+        apply_event_to_domain(
+            &mut domain,
+            &sdk_message(init_frame_naming_the_model("claude-opus-5-5")),
+        );
+
+        assert_eq!(
+            domain.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+            Some("claude-opus-5-5"),
+            "the model the turn runs under is the model the session is said to be on",
+        );
+    }
+
+    /// The frame arrives at the head of every turn, including the turns
+    /// that changed nothing, so a session that is not switching keeps the
+    /// name it resolved at connect rather than being renamed to the CLI's
+    /// own spelling of it.
+    #[test]
+    fn an_init_frame_naming_the_same_model_keeps_the_resolved_name() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &connected_event("uuid-1", "/proj"));
+        domain.current_model = Some(forge_primitives::CurrentModel {
+            requested_id: Some("Opus (1M context)".to_owned()),
+            resolved_id: "claude".to_owned(),
+            display_name_short: "Opus (1M context)".to_owned(),
+            display_name_long: "Opus (1M context)".to_owned(),
+            ..forge_primitives::CurrentModel::new("claude", "claude", "claude")
+        });
+
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame_naming_the_model("claude")));
+
+        assert_eq!(
+            domain.current_model.as_ref().map(|model| model.display_name_long.as_str()),
+            Some("Opus (1M context)"),
+            "a turn that switched nothing does not rename the session",
+        );
+    }
+
     /// A replacement occupant inherits none of the last one's facts: the
     /// hook mirrors describe a session that is gone, and the process tree
     /// belonged to a subprocess that exited with it.
@@ -4338,10 +4486,6 @@ provider = "anthropic"
         domain.mcp_servers = Some(crate::domain_session::McpServers::default());
         domain.context_usage =
             Some(crate::domain_session::ContextUsage { percent: Some(10), max_tokens: None });
-        domain.process_snapshot = Some(forge_agent::env::processes::ProcessSnapshot {
-            processes: Vec::new(),
-            scanned_at: std::time::SystemTime::UNIX_EPOCH,
-        });
         domain
     }
 
@@ -4351,9 +4495,31 @@ provider = "anthropic"
         assert_eq!(domain.current_model, None, "{why} leaves no model standing");
         assert_eq!(domain.context_usage, None, "{why} leaves no context reading standing");
         assert_eq!(domain.mcp_servers, None, "{why} leaves no server snapshot standing");
+    }
+
+    /// The process walk is not a fact of the run that ended: a view goes on
+    /// painting the last tree it was given after a failed connection, so
+    /// the read has to go on serving it. It is cleared where a view learns
+    /// the cwd moved, which is that path's job and not this one's.
+    #[test]
+    fn a_dead_connection_keeps_the_process_walk() {
+        let mut domain = empty_domain();
+        domain.process_snapshot = Some(forge_agent::env::processes::ProcessSnapshot {
+            processes: Vec::new(),
+            scanned_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::ConnectionFailed {
+                message: "reader died".to_owned(),
+                kind: SpawnFailureKind::Unclassified,
+            },
+        );
+
         assert!(
-            domain.process_snapshot.is_none(),
-            "{why} leaves no process tree standing, since the tree went with it",
+            domain.process_snapshot.is_some(),
+            "the walk describes a tree a view is still painting, so it stays readable",
         );
     }
 
@@ -4403,28 +4569,93 @@ provider = "anthropic"
     }
 
     /// A monitor that was already running before this process started is
-    /// in the transcript the connect carries, so the fold runs over it
-    /// too: a view opening the session later sees the monitor rather
-    /// than an empty section.
+    /// in the transcript the connect carries, and the transcript carries
+    /// no lifecycle frame at all: the replay synthesizer emits user and
+    /// assistant messages and nothing else. So a seeded entry is settled
+    /// on arrival - one seeded running could never be settled, because
+    /// every settlement is keyed on the task id the transcript cannot
+    /// carry.
     #[test]
-    fn a_resumed_sessions_history_seeds_the_monitor_set() {
+    fn a_monitor_folded_from_a_transcript_is_seeded_settled() {
         let mut domain = empty_domain();
-        let mut connected = connected_event("uuid-1", "/proj");
-        if let AgentEvent::Connected { history_updates, .. } = &mut connected {
-            *history_updates = Some(vec![
-                monitor_tool_use("tu-mon", "ci-watch"),
-                task_started("t-1", Some("tu-mon")),
-                task_updated("t-1", "completed"),
-            ]);
-        }
 
-        apply_event_to_domain(&mut domain, &connected);
+        fold_monitor(
+            &mut domain,
+            &monitor_tool_use("tu-mon", "ci-watch"),
+            MonitorOrigin::Transcript,
+        );
 
         assert_eq!(domain.monitors.len(), 1, "the transcript's monitor is seeded");
         assert_eq!(
             domain.monitors[0].status,
             forge_primitives::MonitorStatus::Completed,
-            "settled the way the transcript left it, not left falsely running",
+            "settled rather than left falsely running forever",
+        );
+        assert_eq!(
+            domain.monitors[0].task_id, None,
+            "with no task id, which is why nothing could ever settle it",
+        );
+    }
+
+    /// A live tool call is not settled: its task is running and the
+    /// command frames that settle it are still to come.
+    #[test]
+    fn a_monitor_folded_from_the_wire_is_seeded_running() {
+        let mut domain = empty_domain();
+
+        fold_monitor(&mut domain, &monitor_tool_use("tu-mon", "ci-watch"), MonitorOrigin::Wire);
+
+        assert_eq!(
+            domain.monitors[0].status,
+            forge_primitives::MonitorStatus::Running,
+            "a call on the live wire is running until the command says otherwise",
+        );
+    }
+
+    /// The monitor set drains once every entry is terminal, which is what
+    /// the terminal does: a session that ran a monitor an hour ago shows
+    /// no section, not a section with nothing to say.
+    #[test]
+    fn the_monitor_set_drains_once_every_entry_is_terminal() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-a", "ci-watch")));
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-b", "deploy-gate")));
+        apply_event_to_domain(&mut domain, &sdk_message(task_started("t-a", Some("tu-a"))));
+        apply_event_to_domain(&mut domain, &sdk_message(task_started("t-b", Some("tu-b"))));
+
+        apply_event_to_domain(&mut domain, &sdk_message(task_updated("t-a", "completed")));
+        assert_eq!(
+            domain.monitors.len(),
+            2,
+            "one settled monitor keeps the section, holding its tail"
+        );
+
+        apply_event_to_domain(&mut domain, &sdk_message(task_notification("t-b")));
+
+        assert!(
+            domain.monitors.is_empty(),
+            "every entry terminal drains the set rather than leaving an empty section",
+        );
+    }
+
+    /// The same drain runs over a transcript's seed, so a resumed session
+    /// whose monitors were all over shows none of them.
+    #[test]
+    fn a_resumed_sessions_history_leaves_no_live_monitor() {
+        let mut domain = empty_domain();
+        let mut connected = connected_event("uuid-1", "/proj");
+        if let AgentEvent::Connected { history_updates, .. } = &mut connected {
+            *history_updates = Some(vec![
+                monitor_tool_use("tu-mon", "ci-watch"),
+                monitor_tool_use("tu-other", "deploy-gate"),
+            ]);
+        }
+
+        apply_event_to_domain(&mut domain, &connected);
+
+        assert!(
+            domain.monitors.is_empty(),
+            "a transcript cannot say a monitor is still running, so none of them are drawn",
         );
     }
 

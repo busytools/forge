@@ -1837,6 +1837,11 @@ impl Workspace {
         // not reported one yet still answers with the level it runs at.
         domain_arc.lock().configured_effort =
             crate::domain_session::configured_effort_from_settings(&settings);
+        // The mode, the same way: forge stamps its effective default into
+        // the launch settings, so this is the mode the session was spawned
+        // in rather than a guess.
+        domain_arc.lock().configured_permission_mode =
+            crate::domain_session::configured_permission_mode_from_settings(&settings);
         // Carry the row's provenance the same way: the tag-write
         // rollback runs long after this spawn returned and needs to know
         // whether the row it would delete is this spawn's to take.

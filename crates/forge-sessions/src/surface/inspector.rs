@@ -29,10 +29,11 @@ pub struct SessionHeader {
     /// a session that has not used a tool yet still runs at some level
     /// and a header that showed nothing there would be wrong.
     pub effort: EffortLevel,
-    /// The permission mode a hook last observed. `None` until one fires:
-    /// unlike effort there is no configured level to fall back to, since
-    /// what the CLI runs at is its own default until something changes
-    /// it, and that default is not a forge setting.
+    /// The permission mode the session runs in: the hook-observed mode
+    /// when one has fired, else the level its launch stamped, which forge
+    /// always writes from its own effective default. `None` only when the
+    /// launch pinned nothing and no hook has reported, which is a session
+    /// nothing has started.
     pub permission_mode: Option<PermissionMode>,
     /// How full the context window is, from the bridge's last answer.
     pub context: ContextUsage,
@@ -57,7 +58,7 @@ impl ViewSurface {
         SessionHeader {
             model: held.current_model.clone(),
             effort: held.observed_effort.unwrap_or(held.configured_effort),
-            permission_mode: held.observed_permission_mode,
+            permission_mode: held.observed_permission_mode.or(held.configured_permission_mode),
             context: held.context_usage.unwrap_or_default(),
         }
     }
@@ -87,12 +88,21 @@ impl ViewSurface {
     /// The walk is driven by whoever owns the tick that performs it and
     /// the core holds its answer, so this neither performs one nor waits
     /// for the next: a slot nothing has walked reads as `None`.
+    ///
+    /// The snapshot carries the instant it was taken, and a view draws it:
+    /// a walk is only ever taken for the session a view is looking at, so
+    /// the answer here can be arbitrarily old and must not be drawn as
+    /// though it were taken now.
     pub fn processes(&self, slot: &SessionSlot) -> Option<ProcessSnapshot> {
         self.workspace.process_snapshot(slot)
     }
 
-    /// The monitors the session has running or has finished, folded from
-    /// the wire.
+    /// The monitors the session has running, and the ones that settled
+    /// while it did, folded from the wire.
+    ///
+    /// Empty when nothing is running, however many monitors have been and
+    /// gone: the set drains once every entry in it is terminal, which is
+    /// the rule the terminal applies to its own copy.
     pub fn monitors(&self, slot: &SessionSlot) -> Vec<MonitorRecord> {
         self.workspace
             .domain_session_for(slot)
@@ -172,9 +182,49 @@ mod tests {
             EffortLevel::High,
             "a session whose hook has not fired reports the level it was launched at",
         );
+    }
+
+    /// The mode has the same shape as the effort: a session that has not
+    /// used a tool yet was still launched in a mode, and a header that
+    /// went blank there would be wrong about every session between its
+    /// spawn and its first tool call.
+    #[test]
+    fn the_mode_the_header_reports_falls_back_to_the_launch_mode() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let lead = seat("forge");
+        let domain = workspace.register_domain_session(lead.clone(), None);
+        domain.lock().configured_permission_mode = Some(PermissionMode::Plan);
+
+        let header = surface.header(&lead);
+
         assert_eq!(
-            header.permission_mode, None,
-            "and the mode, which has no configured fallback, stays unstated",
+            header.permission_mode,
+            Some(PermissionMode::Plan),
+            "a session whose hook has not fired reports the mode it was launched in",
+        );
+    }
+
+    /// The hook is the higher-fidelity source, so it stands over the
+    /// launch's own answer once it has something to say.
+    #[test]
+    fn an_observed_mode_stands_over_the_launch_mode() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let lead = seat("forge");
+        let domain = workspace.register_domain_session(lead.clone(), None);
+        {
+            let mut held = domain.lock();
+            held.configured_permission_mode = Some(PermissionMode::Plan);
+            held.observed_permission_mode = Some(PermissionMode::BypassPermissions);
+        }
+
+        let header = surface.header(&lead);
+
+        assert_eq!(
+            header.permission_mode,
+            Some(PermissionMode::BypassPermissions),
+            "the mode a hook saw is the mode the session is in",
         );
     }
 
