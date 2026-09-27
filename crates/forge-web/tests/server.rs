@@ -126,11 +126,13 @@ async fn get(config: &WebConfig, path: &str) -> (reqwest::StatusCode, String, St
     (status, content_type, response.text().await.expect("the body reads"))
 }
 
-/// The Klin path, verbatim from the sheet the marks were picked from. A
+/// The two paths of the built-in mark, verbatim from the sheet `panes` was
+/// sourced off: the divider between the panes, and the solid left pane. A
 /// literal rather than a call into the crate, so a redrawn or mistyped
 /// path fails here instead of agreeing with itself.
-const KLIN_PATH: &str = "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 \
-                         19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z";
+const PANES_DIVIDER: &str = "M13.6 3.2V20.8";
+
+const PANES_SOLID: &str = "M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z";
 
 const LANES_BARS: &str = "x=\"10\" y=\"3\" width=\"4\" height=\"18\"";
 
@@ -443,7 +445,7 @@ async fn the_favicon_serves_the_configured_mark_in_the_palette() {
     );
 }
 
-/// Unset keys are the built-ins: Klin on the tab, and the dark palette
+/// Unset keys are the built-ins: panes on the tab, and the dark palette
 /// as the page's own root variables rather than a stylesheet's copy of
 /// it.
 #[tokio::test]
@@ -454,7 +456,10 @@ async fn unset_names_fall_back_to_the_built_in_mark_and_palette() {
 
     let (status, _content_type, favicon) = get(&config, "/favicon.svg").await;
     assert_eq!(status, reqwest::StatusCode::OK);
-    assert!(favicon.contains(KLIN_PATH), "the default mark is Klin, got: {favicon}");
+    assert!(
+        favicon.contains(PANES_DIVIDER) && favicon.contains(PANES_SOLID),
+        "the default mark is panes, the sheet's own drawing, got: {favicon}",
+    );
 
     let (status, _content_type, page) = get(&config, "/").await;
     assert_eq!(status, reqwest::StatusCode::OK);
@@ -462,6 +467,31 @@ async fn unset_names_fall_back_to_the_built_in_mark_and_palette() {
         page.contains("--accent:#f47600"),
         "the page carries the palette as its root variables, got: {page}",
     );
+}
+
+/// The home mockup draws the mark the page draws, so the side-by-side is a
+/// comparison between two drawings of one mark rather than of two marks.
+#[test]
+fn the_home_mockup_draws_the_mark_the_page_draws() {
+    assert!(MOCK_HOME.contains(PANES_DIVIDER), "the mockup's panes divider");
+    assert!(MOCK_HOME.contains(PANES_SOLID), "and its solid pane");
+}
+
+/// The mockups draw the faces the view ships. A reference and a built page
+/// in different typefaces is a difference to explain rather than act on,
+/// which is the opposite of what a mockup is for.
+#[test]
+fn the_mockups_draw_the_faces_the_view_ships() {
+    let built_in = forge_web::theme::font_variables(None).expect("the built-in pair");
+    for (mockup, sheet) in [("web-home.html", MOCK_HOME), ("web-session.html", MOCK)] {
+        for token in ["--ui:", "--mono:"] {
+            assert_eq!(
+                first_family(sheet, token),
+                first_family(built_in, token),
+                "{mockup} draws a different face than the view ships for {token}",
+            );
+        }
+    }
 }
 
 /// The route serves a real page for a real slot, with all three columns.
@@ -771,6 +801,11 @@ async fn a_git_section_with_nothing_behind_it_starts_closed() {
 /// mockup wins".
 const MOCK: &str = include_str!("../../../docs/mockups/web-session.html");
 
+/// The home's mockup, read for the same reason: it is what the home is held
+/// against, and the mark and the typefaces are the two things it draws that
+/// the page has to match.
+const MOCK_HOME: &str = include_str!("../../../docs/mockups/web-home.html");
+
 /// The `<symbol>` elements of a document, by id, carrying their attribute
 /// text. Enough to catch a hand-copied sprite drifting: a path or an
 /// attribute that differs fails, and the id names which one.
@@ -801,6 +836,17 @@ fn strip_comments(css: &str) -> String {
             }
         })
         .collect()
+}
+
+/// The first family a stylesheet's `token` declaration names, unquoted: the
+/// one a browser draws with, the rest being the fallback chain.
+fn first_family(css: &str, token: &str) -> String {
+    css.split_once(token)
+        .and_then(|(_, rest)| rest.split([',', ';']).next())
+        .unwrap_or_default()
+        .trim()
+        .trim_matches('"')
+        .to_owned()
 }
 
 /// The `--fs-*` tokens a stylesheet declares, by name.

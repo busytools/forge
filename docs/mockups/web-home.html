@@ -4,7 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>forge &middot; home</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23f47600' fill-rule='evenodd' d='M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@100..900&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -12,8 +15,8 @@
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
     --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
     --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
-    --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
-    --mono: ui-monospace, Menlo, monospace;
+    --ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
     --r: 10px;
     /* one line per entity: state | name | where | what | when.
        no action column - the whole row is the target. */
@@ -363,7 +366,7 @@
 
   <header class="top">
     <div class="brand">
-      <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg></span>
+      <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
       <span class="word">forge</span>
     </div>
     <div class="versions"><b>v1.0.88</b> &middot; claude 2.1.280 &middot; <span class="upd">&uarr; v2.1.290 available</span></div>
@@ -697,7 +700,7 @@
     <div class="cat">
       <h4>nothing configured <span class="why">a fresh install, before any project exists</span></h4>
       <div class="empty">
-        <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/></svg></span>
+        <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
         <p class="t">No projects yet</p>
         <p class="d">Projects come from <code>forge.toml</code>. Add an <code>[[orgs.projects]]</code> entry pointing at a repository, and it appears here.</p>
       </div>

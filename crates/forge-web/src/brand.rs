@@ -4,9 +4,11 @@
 //! so switching between the accent and a single colour is a `color` change
 //! on the caller and nothing else.
 
-/// The mark drawn when no name is set: a solid tile with an arched kiln
-/// door knocked out of the bottom.
-pub const DEFAULT_MARK: &str = "klin";
+/// The mark drawn when no name is set: a frame split into two uneven panes
+/// with the left one solid.
+pub const DEFAULT_MARK: &str = "panes";
+
+const PANES: &str = r#"<g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/>"#;
 
 const KLIN: &str = r#"<path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.5 19v-8.5a4.5 4.5 0 0 1 9 0V22h-9Z"/>"#;
 
@@ -14,6 +16,7 @@ const KLIN: &str = r#"<path fill="currentColor" fill-rule="evenodd" d="M5 3h14a2
 /// throughout so the caller's `color` decides what the mark is drawn in.
 pub fn mark_path(name: Option<&str>) -> &'static str {
     match name {
+        Some("klin") => KLIN,
         Some("lanes") => {
             r#"<g fill="currentColor"><rect x="2.5" y="8.5" width="4" height="12.5" rx="2"/><rect x="10" y="3" width="4" height="18" rx="2"/><rect x="17.5" y="12" width="4" height="9" rx="2"/></g>"#
         }
@@ -23,9 +26,6 @@ pub fn mark_path(name: Option<&str>) -> &'static str {
         Some("spine") => {
             r#"<g fill="currentColor"><rect x="4" y="2.5" width="3.5" height="19" rx="1.75"/><rect x="7.5" y="6.6" width="7" height="3" rx="1"/><rect x="14.5" y="5.1" width="6" height="6" rx="1.8"/><rect x="7.5" y="14.4" width="7" height="3" rx="1"/><rect x="14.5" y="12.9" width="6" height="6" rx="1.8"/></g>"#
         }
-        Some("slab") => {
-            r#"<g fill="currentColor"><path d="M12 3.2 21 5.8 12 8.4 3 5.8Z"/><path d="M12 10.2 21 12.8 12 15.4 3 12.8Z"/><path d="M12 17.2 21 19.8 12 22.4 3 19.8Z"/></g>"#
-        }
         Some("grid") => {
             r#"<g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4.1" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="4.1" width="5.3" height="5.3" rx="1.5"/><rect x="14.6" y="14.6" width="5.3" height="5.3" rx="1.5"/></g><rect x="4.1" y="14.6" width="5.3" height="5.3" rx="1.5" fill="currentColor"/>"#
         }
@@ -34,9 +34,6 @@ pub fn mark_path(name: Option<&str>) -> &'static str {
         }
         Some("strike") => {
             r#"<g fill="currentColor"><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(45 12 12)"/><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(-45 12 12)"/></g>"#
-        }
-        Some("cascade") => {
-            r#"<g fill="currentColor"><path d="M3.4 .6H20.6V3.8L12 7.4 3.4 3.8Z"/><path d="M3.4 8.6H20.6V11.8L12 15.4 3.4 11.8Z"/><path d="M3.4 16.6H20.6V19.8L12 23.4 3.4 19.8Z"/></g>"#
         }
         Some("nest") => {
             r#"<g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3.9" y="3.9" width="16.2" height="16.2" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.8"/></g>"#
@@ -53,16 +50,10 @@ pub fn mark_path(name: Option<&str>) -> &'static str {
         Some("f_slab") => {
             r#"<g fill="currentColor"><rect x="4" y="3.5" width="16" height="4.5" rx="1.4"/><rect x="4" y="10.5" width="11" height="4.5" rx="1.4"/><rect x="4" y="3.5" width="4.5" height="17" rx="1.4"/></g>"#
         }
-        Some("anvil") => {
-            r#"<path fill="currentColor" fill-rule="evenodd" d="M6 2.5h12a3.5 3.5 0 0 1 3.5 3.5v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5Zm-.5 4.5v3.4h13V7Zm4 3.4v3.6h5v-3.6Zm-3 3.6v3.4h11V14Z"/>"#
-        }
-        Some("spark") => {
-            r#"<path fill="currentColor" d="M12 1.5Q13.6 10.4 22.5 12 13.6 13.6 12 22.5 10.4 13.6 1.5 12 10.4 10.4 12 1.5Z"/>"#
-        }
-        // `klin`, an unset name, and any name outside the list all draw the
+        // `panes`, an unset name, and any name outside the list all draw the
         // built-in: the loader refuses the last at boot, so this is the
         // renderer's backstop rather than a fallback path.
-        _ => KLIN,
+        _ => PANES,
     }
 }
 
