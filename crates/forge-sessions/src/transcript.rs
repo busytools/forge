@@ -138,14 +138,23 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     let mut peers: Vec<PeerCard> = Vec::new();
     let mut prev_api: Option<u64> = None;
     let mut model: Option<String> = None;
+    let mut thinking: Option<u64> = None;
     for message in messages {
+        // What the turn has thought so far. The result carries no estimate of
+        // its own, so the frames before it are the only place a settled row
+        // can read one.
+        if let Message::ThinkingTokens { estimated_tokens, .. } = message {
+            thinking = Some(*estimated_tokens);
+            continue;
+        }
         // A settled turn's row, which the view draws under the work it
         // accounts for. It arrives as a message of its own rather than as a
         // block, so it ends the run the calls before it built.
         if let Message::Result { .. } = message {
             flush(&mut run, &mut units);
             flush_peers(&mut peers, &mut units);
-            if let Some(info) = turn_report(message, model.as_deref(), &mut prev_api) {
+            if let Some(mut info) = turn_report(message, model.as_deref(), &mut prev_api) {
+                info.thinking_tokens = thinking.take();
                 units.push(ChatUnit::TurnReport(info));
             }
             continue;

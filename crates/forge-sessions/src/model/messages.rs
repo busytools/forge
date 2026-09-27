@@ -133,6 +133,10 @@ pub struct TurnInfo {
 #[derive(Debug, Clone, Default)]
 pub struct LiveTurn {
     pub started_at: Option<Instant>,
+    /// The turn's estimate so far, from the thinking frames it carried.
+    /// The result carries none of its own, so this is the only place a live
+    /// row can read one.
+    pub thinking_tokens: Option<u64>,
     by_message: std::collections::HashMap<String, LiveUsage>,
 }
 
@@ -151,6 +155,7 @@ impl LiveTurn {
     /// Begin a new turn, discarding the previous turn's frames.
     pub fn start(&mut self, at: Instant) {
         self.started_at = Some(at);
+        self.thinking_tokens = None;
         self.by_message.clear();
     }
 

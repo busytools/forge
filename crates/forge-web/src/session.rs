@@ -161,6 +161,9 @@ pub(crate) fn apply_to_live_turn(msg: &Message, live: &mut LiveTurn) {
             *live = LiveTurn::default();
         }
         Message::Result { .. } => *live = LiveTurn::default(),
+        Message::ThinkingTokens { estimated_tokens, .. } => {
+            live.thinking_tokens = Some(*estimated_tokens);
+        }
         Message::Assistant { message: envelope, .. } => {
             if let Some(usage) = &envelope.usage {
                 live.record(envelope.id.clone(), live_usage(usage));
@@ -1271,6 +1274,13 @@ fn turn_report_row(info: &TurnInfo, live: bool) -> Markup {
                     span { "\u{21A9}" }
                 }
                 span { (format_turn_duration(info.elapsed_ms())) }
+                // The estimate belongs to a turn still running: once the
+                // result lands its billed counts take the row, and the body
+                // is where the estimate stays.
+                @if let Some(thinking) = live.then_some(info.thinking_tokens).flatten() {
+                    span .sep { "\u{b7}" }
+                    span { "thinking " (format_token_count_short(thinking)) }
+                }
                 @if let Some(tokens) = turn_token_field(info) {
                     span .sep { "\u{b7}" }
                     span { (tokens) }
@@ -1402,6 +1412,7 @@ fn live_report(live: &LiveTurn, now: Instant) -> TurnInfo {
         elapsed_secs: live
             .started_at
             .map_or(0, |started| now.saturating_duration_since(started).as_secs()),
+        thinking_tokens: live.thinking_tokens,
         input_tokens: totals.map(|usage| usage.input_tokens),
         cache_read_tokens: totals.map(|usage| usage.cache_read_tokens),
         cache_written_tokens: totals.map(|usage| usage.cache_written_tokens),

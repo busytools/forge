@@ -1210,6 +1210,83 @@ async fn a_replacement_draws_the_history_it_carries() {
     );
 }
 
+/// A turn's thinking estimate, as the CLI reports it frame by frame.
+fn thinking_frame(tokens: u64) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "thinking_tokens",
+        "estimated_tokens": tokens,
+        "estimated_tokens_delta": 100,
+        "uuid": "think-1",
+        "session_id": "s",
+    }))
+    .expect("a thinking frame")
+}
+
+/// The state frame that says a turn began, which is what arms the row's clock.
+fn running_frame() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "session_state_changed",
+        "state": "running",
+        "uuid": "state-1",
+        "session_id": "s",
+    }))
+    .expect("a state frame")
+}
+
+/// The live row counts the estimate while the turn runs.
+#[tokio::test]
+async fn the_live_row_counts_the_thinking_estimate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    for msg in [running_frame(), thinking_frame(434)] {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: SessionSlot::lead("Busytools", "forge"),
+            msg,
+        });
+    }
+    let region = nth_session_event(stream, 3).await.expect("the frames redraw the region");
+
+    assert!(region.contains("class=\"ring\""), "the row is the live one: {region}");
+    assert!(region.contains("thinking 434"), "and it carries the estimate: {region}");
+}
+
+/// Once the result lands the estimate leaves the row and stays in the body:
+/// the row gives its width to the billed counts, and the body holds what the
+/// turn thought.
+#[tokio::test]
+async fn the_settled_row_keeps_the_estimate_in_its_body() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let settled = captured_results("multi_turn").pop().expect("the captured turn");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    for msg in [thinking_frame(434), settled] {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: SessionSlot::lead("Busytools", "forge"),
+            msg,
+        });
+    }
+    let region = nth_session_event(stream, 3).await.expect("the frames redraw the region");
+
+    assert!(region.contains("<b>thinking</b>434 est"), "the body keeps it: {region}");
+    assert!(
+        !region.contains("thinking 434"),
+        "and the row does not, now that the billed counts are there: {region}",
+    );
+}
+
 /// A zero inside a block that does carry counters is a measurement rather
 /// than an absence. The captured frame spent nothing on cache reads and
 /// 13,939 on cache writes, so the read cell says zero while the row around it
