@@ -216,6 +216,71 @@ impl TurnInfo {
     }
 }
 
+/// A turn's clock as the turn row writes it: one decimal below a minute,
+/// then minutes and seconds, then hours.
+pub fn format_turn_duration(ms: u64) -> String {
+    const SEC: u64 = 1_000;
+    const MIN: u64 = 60 * SEC;
+    const HOUR: u64 = 60 * MIN;
+    if ms < MIN {
+        // One decimal, e.g. 12_400 ms -> "12.4s".
+        let whole = ms / SEC;
+        let tenths = (ms % SEC) / 100;
+        return format!("{whole}.{tenths}s");
+    }
+    if ms < HOUR {
+        let minutes = ms / MIN;
+        let seconds = (ms % MIN) / SEC;
+        return format!("{minutes}m {seconds:02}s");
+    }
+    let hours = ms / HOUR;
+    let minutes = (ms % HOUR) / MIN;
+    let seconds = (ms % MIN) / SEC;
+    format!("{hours}h {minutes:02}m {seconds:02}s")
+}
+
+/// A token count as the collapsed rows write it: thousands and millions to
+/// one decimal below ten of each, integers above, truncated rather than
+/// rounded.
+pub fn format_token_count_short(n: u64) -> String {
+    const K: u64 = 1_000;
+    const M: u64 = 1_000_000;
+    if n < K {
+        return n.to_string();
+    }
+    if n < M {
+        // < 10k -> one decimal (e.g. 1.2k, 9.9k); >= 10k -> integer
+        // (e.g. 15k, 999k). Truncation via integer division keeps
+        // the chip readable - 1199 reads as 1.1k not 1.2k.
+        if n < 10 * K {
+            let whole = n / K;
+            let tenths = (n / (K / 10)) % 10;
+            return format!("{whole}.{tenths}k");
+        }
+        return format!("{}k", n / K);
+    }
+    if n < 10 * M {
+        let whole = n / M;
+        let tenths = (n / (M / 10)) % 10;
+        return format!("{whole}.{tenths}M");
+    }
+    format!("{}M", n / M)
+}
+
+/// A token count as the expanded body writes it, with its thousands
+/// separated.
+pub fn format_token_count_grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 impl ChatMessage {
     pub fn new(role: MessageRole, blocks: Vec<MessageBlock>) -> Self {
         Self {
