@@ -475,6 +475,7 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 .kv .k { color: var(--dim); min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
 .kv .v { color: var(--muted); text-align: right; }
+.kv .v.a { color: var(--accent); }
 .pop hr { border: 0; height: 1px; background: var(--line); margin: 9px 0 7px; }
 .bar { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
 .bar .lb { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); width: 26px; }
