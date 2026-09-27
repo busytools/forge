@@ -583,8 +583,8 @@ async fn the_rail_groups_by_state_and_names_what_is_pending() {
 }
 
 /// A worker row and a lead row are the same object, so both carry a close
-/// chip. This was a defect on the mock - the worker's chip had no rule at
-/// all and fell back to the browser's default size - so it is pinned.
+/// chip: a chip the sheet styles for one and not the other is the defect
+/// this pins.
 #[tokio::test]
 async fn a_worker_row_carries_the_same_close_chip_as_a_lead() {
     let dir = tempfile::tempdir().expect("tempdir");
