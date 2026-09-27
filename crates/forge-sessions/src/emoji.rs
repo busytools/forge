@@ -325,12 +325,14 @@ mod tests {
     }
 
     /// The case the composer's own autocomplete is read against: `:sm`
-    /// leads with `:smile:`, and the substring matches follow.
+    /// ranks every shortcode that starts with the query ahead of one that
+    /// merely contains it. `smile` leads among the prefix matches because
+    /// it is first alphabetically, which is the documented tie-break.
     #[test]
-    fn a_prefix_query_leads_with_its_shortest_prefix_match() {
+    fn a_prefix_match_ranks_ahead_of_a_substring_match() {
         let ranked = matches("sm");
         let names: Vec<&str> = ranked.iter().map(|e| e.name).collect();
-        assert_eq!(names.first(), Some(&"smile"), "the shortest prefix match leads: {names:?}");
+        assert_eq!(names.first(), Some(&"smile"), "the first prefix match leads: {names:?}");
         assert!(
             names.iter().position(|n| *n == "sweat_smile").is_some_and(|at| at > 2),
             "and a substring match ranks behind every prefix one: {names:?}",
