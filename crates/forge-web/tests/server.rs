@@ -611,6 +611,95 @@ async fn the_rail_marks_the_current_project() {
     );
 }
 
+/// A section renders its summary from real data, and the summary is a
+/// fact rather than a label: a git section with eight changed files says
+/// eight.
+#[tokio::test]
+async fn the_inspector_summarises_from_the_core() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    repo_with(dir.path().join("forge").as_path(), 8);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains(">git</span>") || page.contains("git"), "the section renders: {page}");
+    assert!(page.contains("8 files"), "and its summary counts the core's own read: {page}");
+    assert!(page.contains("file-0.txt"), "and the body lists the files behind that count: {page}",);
+}
+
+/// A section with nothing behind it renders without inventing content. A
+/// fixture with no connectors configured must not report one connected.
+#[tokio::test]
+async fn an_empty_section_does_not_invent_content() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(!page.contains("workspaces"), "no slack content without slack: {page}");
+    assert!(!page.contains("connected"), "and nothing claims a connection: {page}");
+}
+
+/// The tasks and schedules sections read the project's own store rows, so
+/// what the core holds is what the page lists, under the section's own
+/// counting summary.
+#[tokio::test]
+async fn the_inspector_lists_the_projects_tasks_and_schedules() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.add_cron("forge", "stand-up").expect("forge is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("Sweep the corpus for banned dashes"),
+        "the task the store holds is listed: {page}",
+    );
+    assert!(page.contains("of 1"), "under its own done-of-total summary: {page}");
+    assert!(page.contains("stand-up"), "and so is the project's cron: {page}");
+    assert!(page.contains("recurring"), "named for what kind it is: {page}");
+}
+
+/// A repository at `dir` with one commit and `changed` tracked files moved
+/// in it. `git init -b` needs git 2.28 and CI runs 2.25, so HEAD is
+/// pointed by `symbolic-ref` instead.
+fn repo_with(dir: &Path, changed: usize) {
+    git(dir, &["init", "-q"]);
+    git(dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    git(dir, &["config", "user.email", "t@e.com"]);
+    git(dir, &["config", "user.name", "T"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    for n in 0..changed {
+        std::fs::write(dir.join(format!("file-{n}.txt")), "one\n").expect("write");
+    }
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "init"]);
+    for n in 0..changed {
+        std::fs::write(dir.join(format!("file-{n}.txt")), "one\ntwo\n").expect("modify");
+    }
+}
+
+/// Spawn git the way the product does, scrub included: a fixture that
+/// skipped the scrub answers about a foreign repository when the suite
+/// runs under a git hook.
+fn git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
 /// A port something else holds is an error rather than a silent no-op:
 /// the caller is what tells the user the view is not serving, and an
 /// on-by-default listener that loses a port fight has to say so.

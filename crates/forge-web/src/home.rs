@@ -318,7 +318,7 @@ fn owned_by(task: &Task, label: &str) -> bool {
 /// A task's artifact is a PR URL or a path, and either would push the
 /// row's other cells off a narrow screen, so a PR URL reads `PR 148` and
 /// a path reads its file name.
-fn artifact_label(artifact: &str) -> String {
+pub(crate) fn artifact_label(artifact: &str) -> String {
     let trimmed = artifact.trim_end_matches('/');
     let mut parts = trimmed.rsplit('/');
     let last = parts.next().unwrap_or("");
@@ -339,12 +339,19 @@ fn artifact_label(artifact: &str) -> String {
 /// finished task, and the row would show it under a state column saying
 /// running. The TUI sorts in-progress first for the same reason.
 fn task_for<'a>(tasks: &'a [Task], label: &str) -> Option<&'a Task> {
-    tasks.iter().filter(|task| owned_by(task, label)).min_by_key(|task| match task.status {
+    tasks.iter().filter(|task| owned_by(task, label)).min_by_key(|task| status_rank(task.status))
+}
+
+/// How close to done a task is, in-progress first. The order a store
+/// happens to return is insertion order within a run and key order across
+/// a restart, which is not the order a person reads tasks in.
+pub(crate) fn status_rank(status: TaskStatus) -> u8 {
+    match status {
         TaskStatus::InProgress => 0,
         TaskStatus::Blocked => 1,
         TaskStatus::Pending => 2,
         TaskStatus::Completed => 3,
-    })
+    }
 }
 
 /// The four cards. Each is quiet until its own state says otherwise.
@@ -496,7 +503,7 @@ pub(crate) async fn row_for(home: &Home<'_>, roster: &Roster, seed: Seed<'_>) ->
 
 /// The `where` cell: the branch the tree is on, and what has moved in it.
 /// Empty when the directory is not a repository, or is not there.
-fn place_of(work: Option<&WorkState>) -> String {
+pub(crate) fn place_of(work: Option<&WorkState>) -> String {
     let Some(work) = work else {
         return String::new();
     };
@@ -513,7 +520,7 @@ fn place_of(work: Option<&WorkState>) -> String {
     }
 }
 
-fn chip_for(status: TaskStatus) -> &'static str {
+pub(crate) fn chip_for(status: TaskStatus) -> &'static str {
     match status {
         TaskStatus::Pending => "pending",
         TaskStatus::InProgress => "in progress",
@@ -706,7 +713,7 @@ fn row(row: &Row, refused: Option<&'static str>) -> Markup {
 
 /// What a row says when its working directory is not there to read. `InRepo`
 /// is the row that has nothing to explain, and says nothing.
-fn gate_line(gate: Gate) -> Option<&'static str> {
+pub(crate) fn gate_line(gate: Gate) -> Option<&'static str> {
     match gate {
         Gate::InRepo => None,
         Gate::NotARepository => Some("not a git repository, so there is no branch to show"),

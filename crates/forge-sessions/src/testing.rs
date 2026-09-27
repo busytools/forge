@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
 use forge_primitives::tasks::{Task, TaskStatus};
+use forge_primitives::{CronEntry, CronId, CronKind};
 use forge_workspace::{ProjectKey, Workspace};
 
 use crate::SessionUpdate;
@@ -124,6 +125,23 @@ impl Fleet {
             estimate: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+        Ok(())
+    }
+
+    /// Declare a durable cron under `project`, firing a day out so a view
+    /// renders it as a schedule rather than as an overdue one.
+    pub fn add_cron(&self, project: &str, prompt: &str) -> Result<(), FixtureError> {
+        self.workspace.seed_test_cron(CronEntry {
+            id: CronId::from(prompt),
+            project_name: project.to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: prompt.to_owned(),
+            description: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
+            team_role: None,
         });
         Ok(())
     }

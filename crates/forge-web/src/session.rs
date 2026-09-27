@@ -8,16 +8,24 @@
 //! its own.
 
 use std::net::SocketAddr;
+use std::time::SystemTime;
 
 use forge_primitives::SessionLifecycleState;
 use forge_primitives::SessionSlot;
 use forge_primitives::account::AccountAuth;
+use forge_primitives::git::GitIssueRef;
+use forge_primitives::git_diff::{GitDiffFile, GitDiffSnapshot, LayerState};
+use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
+use forge_primitives::tasks::{Task, TaskStatus};
+use forge_primitives::{CronEntry, CronKind};
+use forge_sessions::surface::connectors::{GotifyView, SlackView};
 use forge_sessions::surface::{AccountsView, LoadingState, PendingKind, Roster};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::home::{Home, Row, Seed, State};
 use crate::server::{WebState, root_block};
 use crate::stream::Live;
+use crate::work::WorkState;
 
 /// The handle that brings the projects rail back, and the one that brings
 /// the inspector back. Both live with the title so they stay clickable
@@ -184,7 +192,7 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
                             span .t { "inspector" }
                             span .n .ml { (slot.project()) }
                         }
-                        div .scroll {}
+                        div .scroll { (inspector(home, &roster, slot).await) }
                     }
                 }
             }
@@ -394,6 +402,314 @@ fn waiting_on(pending: PendingKind) -> String {
         PendingKind::Permission => "a permission prompt is waiting",
     }
     .to_owned()
+}
+
+/// The inspector: one section per subject, each collapsed to a name and a
+/// summary and opening in place. A section is drawn when there is
+/// something behind it - a project with no tasks has no tasks section -
+/// because a section that is always there says nothing when it is empty.
+async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Markup {
+    let (work, diff) = match roster.cwd_for(slot) {
+        Some(cwd) => {
+            (Some(home.work.snapshot(slot, &cwd).await), Some(home.work.diff(slot, &cwd).await))
+        }
+        None => (None, None),
+    };
+    let tasks = roster.tasks_for_project(slot.project());
+    let crons = roster.crons_for_project(slot.project());
+    let connectors = home.surface.connectors(Some(slot.project()));
+
+    html! {
+        @if let Some(work) = &work {
+            (git_section(work, diff.as_ref()))
+        }
+        @if !tasks.is_empty() {
+            (tasks_section(&tasks))
+        }
+        @if !crons.is_empty() {
+            (schedules_section(&crons))
+        }
+        @if connectors.gotify.connected || !connectors.gotify.subscriptions.is_empty() {
+            (gotify_section(&connectors.gotify))
+        }
+        @if !connectors.slack.connected_workspaces.is_empty()
+            || !connectors.slack.subscriptions.is_empty()
+        {
+            (slack_section(&connectors.slack))
+        }
+    }
+}
+
+/// One section: a name, a summary of what is behind it, and the body it
+/// opens on. The arrow is drawn for the state the section starts in, so a
+/// closed section does not show the open one's mark.
+fn section(open: bool, glyph: &str, name: &str, summary: &str, body: &Markup) -> Markup {
+    html! {
+        details .sec open[open] {
+            summary {
+                span .gl { (glyph) }
+                (name)
+                span .c2 { (summary) }
+                span .arw { @if open { "\u{25BE}" } @else { "\u{25B8}" } }
+            }
+            div .sb { (body) }
+        }
+    }
+}
+
+/// The git section: the branch the session's tree is on and what moved in
+/// it, the pull request that tree belongs to, and the files themselves.
+fn git_section(work: &WorkState, diff: Option<&GitDiffSnapshot>) -> Markup {
+    let summary = crate::home::place_of(Some(work));
+    let body = match diff {
+        Some(diff) => git_body(work, diff),
+        None => Markup::default(),
+    };
+    section(true, "\u{2387}", "git", &summary, &body)
+}
+
+/// What has moved, the PR it belongs to, and the files by directory. The
+/// per-file status the mock draws is not here: the scan reports numstat,
+/// not `M`/`A`.
+fn git_body(work: &WorkState, diff: &GitDiffSnapshot) -> Markup {
+    let stats = match &diff.worktree {
+        LayerState::Populated(stats) => Some(stats),
+        LayerState::Clean | LayerState::ScanFailed => None,
+    };
+    let files = stats.map_or(&[][..], |stats| stats.files.as_slice());
+    html! {
+        @if let Some(pr) = &diff.pr {
+            div .kv {
+                span .k { "PR #" (pr.number) }
+                @if !diff.closes.is_empty() {
+                    span .v .a { "\u{2192} closes " (closes_of(&diff.closes)) }
+                }
+            }
+        }
+        @if let Some(stats) = stats {
+            div .kv {
+                span .k { "uncommitted" }
+                span .v {
+                    span .pm { "+" (stats.total_added) }
+                    " "
+                    span .mm { "\u{2212}" (stats.total_removed) }
+                }
+            }
+        }
+        @if files.is_empty() {
+            @if let Some(line) = crate::home::gate_line(work.gate) {
+                div .kv { span .k { (line) } }
+            }
+        } @else {
+            @for (dir, files) in by_dir(files) {
+                @if !dir.is_empty() {
+                    div .dir { (dir) "/" }
+                }
+                @for file in files {
+                    div .file {
+                        span .p { (file_name(&file.path)) }
+                        span .pm { "+" (file.added) }
+                        span .mm { "\u{2212}" (file.removed) }
+                    }
+                }
+            }
+            @if let Some(stats) = stats.filter(|stats| files.len() < stats.total_files) {
+                div .dir { "\u{2026}and " (stats.total_files - files.len()) " more" }
+            }
+        }
+    }
+}
+
+/// The issues an open PR closes, in the order the scan returned them.
+fn closes_of(issues: &[GitIssueRef]) -> String {
+    issues.iter().map(|issue| format!("#{}", issue.number)).collect::<Vec<_>>().join(" ")
+}
+
+/// The files by the directory they sit in, in the order the scan returned
+/// them: the paths arrive sorted, so one heading covers each directory's
+/// run.
+fn by_dir(files: &[GitDiffFile]) -> Vec<(&str, Vec<&GitDiffFile>)> {
+    let mut groups: Vec<(&str, Vec<&GitDiffFile>)> = Vec::new();
+    for file in files {
+        let dir = file.path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        match groups.last_mut() {
+            Some((name, group)) if *name == dir => group.push(file),
+            _ => groups.push((dir, vec![file])),
+        }
+    }
+    groups
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit_once('/').map_or(path, |(_, name)| name)
+}
+
+/// The tasks section: what the project holds, in the order a person reads
+/// them rather than the order the store returns them.
+fn tasks_section(tasks: &[Task]) -> Markup {
+    let done = tasks.iter().filter(|task| task.status == TaskStatus::Completed).count();
+    let mut ordered: Vec<&Task> = tasks.iter().collect();
+    ordered.sort_by_key(|task| crate::home::status_rank(task.status));
+    let body = html! {
+        @for task in ordered {
+            div class=(task_class(task.status)) {
+                span .b {}
+                span {
+                    div .s { (&task.subject) }
+                    div .meta {
+                        @if let Some(owner) = &task.owner {
+                            b { (owner.label()) } " \u{b7} "
+                        }
+                        (task_meta(task))
+                    }
+                }
+            }
+        }
+    };
+    section(false, "\u{2713}", "tasks", &format!("{done} of {}", tasks.len()), &body)
+}
+
+fn task_class(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::InProgress => "tk now",
+        TaskStatus::Completed => "tk done",
+        TaskStatus::Blocked => "tk blocked",
+        TaskStatus::Pending => "tk",
+    }
+}
+
+/// A task's facts besides its owner: how far along it is, what it
+/// produced, and how long it was thought to take.
+fn task_meta(task: &Task) -> String {
+    let mut parts = vec![crate::home::chip_for(task.status).to_owned()];
+    if let Some(artifact) = &task.artifact {
+        parts.push(crate::home::artifact_label(artifact));
+    }
+    if let Some(estimate) = &task.estimate {
+        parts.push(estimate.clone());
+    }
+    parts.join(" \u{b7} ")
+}
+
+/// The schedules section: the durable crons that fire into this project,
+/// with when each one is next due.
+fn schedules_section(crons: &[CronEntry]) -> Markup {
+    let body = html! {
+        @for cron in crons {
+            div .kv {
+                span .k { "\u{23F0} " (cron_label(cron)) }
+                span .v { (until_of(cron.next_fire)) " \u{b7} " (kind_of(&cron.kind)) }
+            }
+        }
+    };
+    section(false, "\u{25D4}", "schedules", &crons.len().to_string(), &body)
+}
+
+/// What a schedule is called: its own description, else the first line of
+/// the prompt it fires.
+fn cron_label(cron: &CronEntry) -> String {
+    cron.description
+        .clone()
+        .or_else(|| cron.prompt.lines().next().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+fn kind_of(kind: &CronKind) -> &'static str {
+    match kind {
+        CronKind::Recurring(_) => "recurring",
+        CronKind::Once(_) => "one-shot",
+    }
+}
+
+/// How long until `at`. A time the clock has already passed is due rather
+/// than a countdown into the past.
+fn until_of(at: SystemTime) -> String {
+    let Ok(remaining) = at.duration_since(SystemTime::now()) else {
+        return "due now".to_owned();
+    };
+    match remaining.as_secs() {
+        0..=59 => "in a minute".to_owned(),
+        seconds if seconds < 3600 => format!("in {}m", seconds / 60),
+        seconds if seconds < 86_400 => format!("in {}h", seconds / 3600),
+        seconds => format!("in {}d", seconds / 86_400),
+    }
+}
+
+/// The gotify section: the stream's liveness and what this project is
+/// subscribed to on it.
+fn gotify_section(view: &GotifyView) -> Markup {
+    let summary = if view.connected { "connected" } else { "not connected" };
+    let body = html! {
+        @for sub in &view.subscriptions {
+            div .kv {
+                span .k { (sub.applications.join(", ")) }
+                span .v { (priority_of(sub.min_priority)) }
+            }
+        }
+    };
+    section(false, "\u{25C8}", "gotify", summary, &body)
+}
+
+fn priority_of(priority: Option<u8>) -> String {
+    priority.map_or_else(|| "any priority".to_owned(), |floor| format!(">={floor}"))
+}
+
+/// The slack section: one row per workspace, and one per subscription
+/// under it.
+fn slack_section(view: &SlackView) -> Markup {
+    let mut workspaces: Vec<&str> = view.connected_workspaces.keys().map(String::as_str).collect();
+    for sub in &view.subscriptions {
+        if !workspaces.contains(&sub.workspace.as_str()) {
+            workspaces.push(&sub.workspace);
+        }
+    }
+    let summary =
+        format!("{} workspace{}", workspaces.len(), if workspaces.len() == 1 { "" } else { "s" });
+    let body = html! {
+        @for workspace in &workspaces {
+            div .kv {
+                span .k { (workspace) }
+                span .v {
+                    @if view.connected_workspaces.get(*workspace).copied().unwrap_or(false) {
+                        "connected"
+                    } @else {
+                        "not connected"
+                    }
+                }
+            }
+            @for sub in view.subscriptions.iter().filter(|sub| sub.workspace == *workspace) {
+                div .kv {
+                    span .k { "\u{a0}\u{a0}" (target_of(&sub.target)) }
+                    span .v { (mode_of(&sub.target)) }
+                }
+            }
+        }
+    };
+    section(false, "\u{25C7}", "slack", &summary, &body)
+}
+
+/// What a Slack subscription watches: a conversation by its name, or the
+/// class it covers.
+fn target_of(target: &SlackSubscriptionTarget) -> String {
+    match target {
+        SlackSubscriptionTarget::DirectMessages => "direct messages".to_owned(),
+        SlackSubscriptionTarget::Mentions => "mentions anywhere".to_owned(),
+        SlackSubscriptionTarget::Conversation { id, name, .. } => {
+            name.clone().unwrap_or_else(|| id.clone())
+        }
+    }
+}
+
+/// What a Slack subscription lets through.
+fn mode_of(target: &SlackSubscriptionTarget) -> &'static str {
+    match target {
+        SlackSubscriptionTarget::DirectMessages => "every message",
+        SlackSubscriptionTarget::Mentions => "mentions only",
+        SlackSubscriptionTarget::Conversation { mode, .. } => match mode {
+            SlackWatchMode::All => "every message",
+            SlackWatchMode::MentionsOnly => "mentions only",
+        },
+    }
 }
 
 /// What the chat column says while the conversation itself is not there
