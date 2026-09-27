@@ -770,6 +770,12 @@ pub(crate) fn when_of(state: State, last_activity: Option<SystemTime>) -> String
     let Some(at) = last_activity else {
         return "now".to_owned();
     };
+    elapsed_label(at)
+}
+
+/// How long ago `at` was, in the shortest unit that reads: `now` under a
+/// minute, then minutes, hours or days.
+pub(crate) fn elapsed_label(at: SystemTime) -> String {
     let elapsed = SystemTime::now().duration_since(at).unwrap_or(Duration::ZERO);
     match elapsed.as_secs() {
         0..60 => "now".to_owned(),

@@ -520,6 +520,8 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   .app { grid-template-columns: minmax(0,1fr); }
   .sess { flex-wrap: wrap; gap: 8px; }
   .sess .facts { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
+  /* Wrapped, the dots between the facts are noise rather than separators. */
+  .sess .facts .sep { display: none; }
   .sess .tog-r { order: 0; }
   .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
   .rail.left, .rail.right { display: none; }
@@ -578,3 +580,50 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   font-style: normal;
   font-display: swap;
 }
+
+/* ---------- the session header's facts, and the four sections a view
+   reads from the session itself: subagents, mcp servers, processes,
+   monitors ---------- */
+
+.sess .facts .fk { color: var(--dim); font-size: var(--fs-data); }
+.sess .facts > span { white-space: nowrap; }
+.sess .facts .sep { color: var(--line); }
+
+/* The palette carries no blue, so plan mode takes the accent: the chips
+   have to stay apart from each other more than they have to match the
+   TUI's own colours. */
+.perm { color: var(--dim); }
+.perm.auto { color: var(--warn); }
+.perm.plan { color: var(--accent); }
+.perm.bypass { color: var(--bad); }
+
+.cm { display: flex; align-items: center; gap: 7px; }
+.cm .tk { width: 76px; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+.cm .fl { height: 100%; background: var(--accent); }
+
+/* A section body's own note. The home's is a failure line and is scoped
+   to its own list. */
+.sb .note { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 4px 0 0; }
+
+/* A section body's row is one line, the way the terminal draws the same
+   row, and neither half can push the row past the rail. Both shorten with
+   an ellipsis when the row is too narrow for both, and the value shortens
+   first because a name or a command is what the row is about: a reason
+   long enough to want the whole rail leaves the name its third. */
+.sb .kv .k { flex: 1 1 auto; min-width: 35%; }
+.sb .kv .v { flex: 0 4 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A card: one monitor, or one sub-agent, with its own head and body. */
+.sb .sa { border: 1px solid var(--line); border-radius: 10px; background: var(--s1); padding: 0 0 1px; }
+.sb .sa + .sa { margin-top: 8px; }
+.sb .sa .sh { display: flex; align-items: center; gap: 9px; padding: 8px 12px; }
+.sb .sa .sh .st { color: var(--ok); }
+.sb .sa .sh .gl { color: var(--accent); }
+.sb .sa .sh .nm { color: var(--accent); font-weight: 700; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.sb .sa .sh .n { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
+.sb .sa .tt { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 0 12px 3px; }
+.sb .sa .tt .tg { color: var(--muted); }
+.sb .sa .settled { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+  padding: 0 12px 9px; }

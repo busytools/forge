@@ -10,6 +10,7 @@ pub mod agents;
 pub mod composer;
 pub mod connectors;
 pub mod dictate;
+pub mod inspector;
 pub mod plugins;
 pub mod reviews;
 pub mod roster;
