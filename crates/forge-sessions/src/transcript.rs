@@ -523,9 +523,14 @@ struct Recorded {
 ///
 /// `prev_api` is the session-cumulative API clock at the previous result:
 /// the wire counts it up across the session, so this turn's figure is the
-/// delta, and a value below the previous one means the counter restarted and
-/// is already per-turn. A resulting zero is "not attributed" rather than
-/// "took no time", so it is left absent.
+/// delta. Without a previous result there is no delta to take, and the
+/// cumulative field is the session's clock rather than this turn's, so the
+/// figure is left absent: a fold cannot tell a session's first result from
+/// one it joined mid-flight, and a read that keeps conversation rows alone
+/// always joins mid-flight. A value below the previous one means the counter
+/// restarted and is already per-turn, which leaves nothing to subtract
+/// either. A resulting zero is "not attributed" rather than "took no time",
+/// so it is absent for the same reason.
 fn turn_report(
     message: &Message,
     model: Option<&str>,
@@ -537,13 +542,13 @@ fn turn_report(
     };
     let api_ms = match *prev_api {
         Some(prev) if *duration_api_ms >= prev => duration_api_ms.checked_sub(prev),
-        _ => Some(*duration_api_ms),
+        _ => None,
     };
     *prev_api = Some(*duration_api_ms);
     Some(TurnInfo {
         duration_ms: Some(*duration_ms),
         api_ms: api_ms.filter(|ms| *ms > 0),
-        model: model.map(str::to_owned),
+        model: model.filter(|name| !name.is_empty()).map(str::to_owned),
         input_tokens: usage.as_ref().map(|usage| usage.input_tokens),
         output_tokens: usage.as_ref().map(|usage| usage.output_tokens),
         cache_read_tokens: usage.as_ref().map(|usage| usage.cache_read_input_tokens),
@@ -1293,6 +1298,11 @@ mod tests {
     /// 3171 ms of API time at the second one is 1281 ms of it for that turn -
     /// and the last carries an unattributed zero, which is a frame that
     /// measured nothing rather than a turn that took no time.
+    ///
+    /// The first result has no previous one to subtract, so its figure is
+    /// absent rather than the session's whole clock: a fold cannot know
+    /// whether the list it was handed starts at the session's beginning, and
+    /// on this page it never does.
     #[test]
     fn a_settled_turn_reports_its_own_api_time() {
         let reported: Vec<Option<u64>> = render_units(&captured("compact"))
@@ -1305,9 +1315,39 @@ mod tests {
 
         assert_eq!(
             reported,
-            [Some(1_890), Some(1_281), Some(1_158), Some(1_383), Some(1_381), Some(1_336), None],
-            "the deltas the captured clock works out to, and nothing for the zero",
+            [None, Some(1_281), Some(1_158), Some(1_383), Some(1_381), Some(1_336), None],
+            "the deltas the captured clock works out to, and nothing where there is no anchor",
         );
+    }
+
+    /// A fold handed a mid-session stretch of results reports nothing for the
+    /// first one, which is the shape this page always gives it: the read
+    /// keeps conversation rows alone, so the results the fold sees start
+    /// wherever the page attached. Taking the cumulative field there would
+    /// report the session's clock as one turn's.
+    #[test]
+    fn a_fold_that_joins_mid_session_reports_nothing_for_its_first_result() {
+        let results: Vec<Message> = captured("compact").into_iter().filter(is_result).collect();
+        assert_eq!(results.len(), 7, "the capture holds the seven results this walks");
+        // The third result onward: the page joins a session, it does not
+        // start one.
+        let reported: Vec<Option<u64>> = render_units(&results[2..])
+            .into_iter()
+            .filter_map(|unit| match unit {
+                ChatUnit::TurnReport(info) => Some(info.api_ms),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            reported,
+            [None, Some(1_383), Some(1_381), Some(1_336), None],
+            "the first figure is unknown, and the ones after it are still deltas",
+        );
+    }
+
+    fn is_result(msg: &Message) -> bool {
+        matches!(msg, Message::Result { .. })
     }
 }
 

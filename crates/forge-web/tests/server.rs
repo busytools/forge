@@ -1003,6 +1003,43 @@ async fn a_message_the_read_did_not_carry_is_appended() {
     );
 }
 
+/// The API clock the wire sends counts up across the session, so a row draws
+/// the delta from the result before it. Two captured results where the
+/// second's cumulative 3375 ms is 1278 ms of its own against a 1284 ms wall
+/// clock, and the first has nothing before it to subtract, so its own figure
+/// is unknown rather than the session's whole clock.
+#[tokio::test]
+async fn a_turn_row_draws_its_own_api_time_rather_than_the_sessions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    for result in captured_results("multi_turn") {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: SessionSlot::lead("Busytools", "forge"),
+            msg: result,
+        });
+    }
+    let region = nth_session_event(stream, 3).await.expect("both results redraw the region");
+
+    assert!(region.contains("<b>api</b>1.2s"), "the turn's own api time: {region}");
+    assert!(!region.contains("<b>api</b>3.4s"), "not the clock the session had reached: {region}");
+    assert!(
+        !region.contains("<b>api</b>2.0s"),
+        "and the first turn has nothing to subtract, so it reports none of the clock \
+         rather than all of it: {region}",
+    );
+    assert!(region.contains("<b>elapsed</b>2.1s"), "its own wall clock is still there: {region}");
+    assert!(
+        region.contains("<b>local</b>0.0s tools + hooks"),
+        "and the split that follows from it: {region}",
+    );
+}
+
 /// A finished turn draws its row and the body behind it: the wall clock the
 /// CLI recorded for that turn, the tokens it reported, and the session cost
 /// it had reached, with what the row has no room for behind the fold.
@@ -1036,8 +1073,11 @@ async fn a_settled_turn_draws_its_row_and_its_body() {
         region.contains("$0.16 cumulative"),
         "and the session cost, named as the running total it is: {region}",
     );
-    assert!(region.contains("<b>api</b>40.7s"), "the api time it split out: {region}");
-    assert!(region.contains("<b>local</b>0.3s tools + hooks"), "and what was left: {region}");
+    // One result and nothing before it: the API clock on the wire is the
+    // session's, so this turn's share of it is unknown, and the local figure
+    // is the split that needs it.
+    assert!(region.contains("<b>api</b>-"), "no anchor, so no turn api time: {region}");
+    assert!(region.contains("<b>local</b>-"), "and nothing to split out of the clock: {region}");
     assert!(region.contains("<b>out</b>1,711"), "the body's counts are the exact ones: {region}");
     assert!(region.contains("<b>cache</b>102,194 read"), "both sides of the cache: {region}");
     assert!(region.contains("<span class=\"tog\"></span>"), "the chip that opens it: {region}");
@@ -1063,20 +1103,30 @@ async fn an_update_for_another_slot_does_not_swap() {
     });
 
     assert!(
-        next_session_event_within(stream, std::time::Duration::from_millis(300)).await.is_none(),
+        nth_session_event_within(stream, 2, std::time::Duration::from_millis(300)).await.is_none(),
         "another slot's message is not this page's news",
     );
 }
 
-/// The next region the stream sends, whenever it comes.
+/// The region that follows the connection's opening one, whenever it comes.
 async fn next_session_event(response: reqwest::Response) -> Option<String> {
-    next_session_event_within(response, std::time::Duration::from_secs(5)).await
+    nth_session_event(response, 2).await
 }
 
-/// The next region the stream sends, or `None` when none arrives in time: a
-/// stream that should stay quiet is as much a property as one that speaks.
-async fn next_session_event_within(
+/// The region of the `nth` event the stream sends, counting the opening one
+/// as the first, or `None` when it does not arrive in time: a stream that
+/// should stay quiet is as much a property as one that speaks.
+///
+/// The count is the caller's, because a buffer holding several regions has
+/// no way to say which one the caller meant.
+async fn nth_session_event(response: reqwest::Response, nth: usize) -> Option<String> {
+    nth_session_event_within(response, nth, std::time::Duration::from_secs(5)).await
+}
+
+/// The region of the `nth` event, or `None` when it does not arrive in time.
+async fn nth_session_event_within(
     response: reqwest::Response,
+    nth: usize,
     within: std::time::Duration,
 ) -> Option<String> {
     use futures_util::StreamExt;
@@ -1085,9 +1135,7 @@ async fn next_session_event_within(
     loop {
         let chunk = tokio::time::timeout(within, stream.next()).await.ok()??;
         seen.push_str(&String::from_utf8_lossy(&chunk.ok()?));
-        // The buffer holds every event so far, opening one included: the
-        // region under test is the last of them.
-        if seen.matches("event: session").count() >= 2 {
+        if seen.matches("event: session").count() >= nth {
             return seen.rsplit("event: session").next().map(str::to_owned);
         }
     }
