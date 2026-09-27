@@ -1638,6 +1638,35 @@ async fn a_command_leads_its_own_output() {
     );
 }
 
+/// A command with no description is named by the row above, so the prompt
+/// line under it would be the same words twice.
+#[tokio::test]
+async fn a_command_the_row_already_names_is_not_drawn_twice() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"just check"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"    Finished in 41.2s"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains(">just check</span>"), "the row names the command: {page}");
+    assert_eq!(page.matches("just check").count(), 1, "and the body does not say it again: {page}");
+    assert!(page.contains("Finished in 41.2s"), "while the output it wrote is still drawn: {page}");
+}
+
 /// A command whose description ends in an extension is still a command: its
 /// output is its own lines under the prompt, not a code block, and the
 /// command it ran is drawn.

@@ -1593,10 +1593,11 @@ fn text_body(leaf: &ToolLeaf, text: &str) -> Markup {
     } else {
         html! {
             div .term {
-                // The command a call ran leads its output: a call with a
-                // description shows that as its title, so this is the only
-                // place the command itself is drawn.
-                @if let Some(command) = &leaf.command {
+                // The command a call ran leads its output, unless the row
+                // above already names it: a call with a description shows
+                // the description as its title, and a call without one has
+                // the command there, so drawing both would repeat it.
+                @if let Some(command) = leaf.command.as_deref().filter(|it| *it != leaf.title) {
                     span .pfx { "$" }
                     " " (command) "\n"
                 }
