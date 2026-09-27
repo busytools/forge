@@ -27,8 +27,17 @@ pub enum PeerOutboundKind {
 /// lifecycle and roster calls that render as standard tool cards
 /// rather than as agent comms.
 pub fn detect_outbound(tc: &crate::model::ToolCallInfo) -> Option<PeerOutboundKind> {
-    let raw = tc.raw_input.as_ref()?;
-    match tc.sdk_tool_name.as_str() {
+    detect_outbound_call(&tc.sdk_tool_name, tc.raw_input.as_ref()?)
+}
+
+/// [`detect_outbound`] from what the wire carries - the tool's name and
+/// the input it was called with - for a caller that reads a transcript
+/// rather than a rendered block.
+pub fn detect_outbound_call(
+    sdk_tool_name: &str,
+    raw: &serde_json::Value,
+) -> Option<PeerOutboundKind> {
+    match sdk_tool_name {
         "mcp__forge__agents__ask" => {
             let target = address(raw)?;
             let body = raw.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_owned();

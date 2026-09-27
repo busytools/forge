@@ -13,6 +13,7 @@ pub mod peer_outbound;
 pub mod surface;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod transcript;
 
 /// The core's update protocol, as a view reads it. It is the same type the
 /// same call hands the TUI, so nothing here wraps or renames it.
