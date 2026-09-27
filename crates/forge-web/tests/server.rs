@@ -1047,6 +1047,8 @@ async fn a_settled_turn_draws_its_row() {
         region.contains("$4.82 cumulative"),
         "and the session cost, named as the running total it is: {region}",
     );
+    // The row has no body yet, so it carries no affordance promising one.
+    assert!(!region.contains("expand"), "no chip promises a body that is not there: {region}");
 }
 
 /// An update for another slot does not redraw this page: the same stream

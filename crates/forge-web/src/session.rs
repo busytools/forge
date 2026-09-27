@@ -1277,7 +1277,6 @@ fn turn_row(messages: &[Message], started: Option<SystemTime>) -> Markup {
                     span .sep { "\u{b7}" }
                     span { (money(cost)) " cumulative" }
                 }
-                span .tog { "expand" }
             }
         }
     }
