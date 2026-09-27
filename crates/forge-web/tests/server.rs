@@ -483,7 +483,11 @@ fn the_home_mockup_draws_the_mark_the_page_draws() {
 #[test]
 fn the_mockups_draw_the_faces_the_view_ships() {
     let built_in = forge_web::theme::font_variables(None).expect("the built-in pair");
-    for (mockup, sheet) in [("web-home.html", MOCK_HOME), ("web-session.html", MOCK)] {
+    for (mockup, sheet) in [
+        ("web-home.html", MOCK_HOME),
+        ("web-session.html", MOCK),
+        ("web-composer.html", MOCK_COMPOSER),
+    ] {
         for token in ["--ui:", "--mono:"] {
             assert_eq!(
                 first_family(sheet, token),
@@ -805,6 +809,10 @@ const MOCK: &str = include_str!("../../../docs/mockups/web-session.html");
 /// against, and the mark and the typefaces are the two things it draws that
 /// the page has to match.
 const MOCK_HOME: &str = include_str!("../../../docs/mockups/web-home.html");
+
+/// The composer's mockup: a specimen read state by state against the built
+/// page, so its faces are read as closely as its states.
+const MOCK_COMPOSER: &str = include_str!("../../../docs/mockups/web-composer.html");
 
 /// The `<symbol>` elements of a document, by id, carrying their attribute
 /// text. Enough to catch a hand-copied sprite drifting: a path or an
