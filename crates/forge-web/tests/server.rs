@@ -72,7 +72,13 @@ async fn start_on_a_free_port_with(
 
 /// Open the page's stream, which stays open.
 async fn open_stream(config: &WebConfig) -> reqwest::Response {
-    let url = format!("http://127.0.0.1:{}/events", config.port);
+    open_stream_at(config, "/events").await
+}
+
+/// [`open_stream`] for a stream that is not the fleet's: a session page has
+/// one of its own.
+async fn open_stream_at(config: &WebConfig, path: &str) -> reqwest::Response {
+    let url = format!("http://127.0.0.1:{}{path}", config.port);
     let response = tokio::time::timeout(std::time::Duration::from_secs(5), reqwest::get(url))
         .await
         .expect("the stream opens within five seconds")
@@ -567,6 +573,7 @@ async fn a_sleeping_slot_opens_rather_than_404ing() {
 
     assert_eq!(status, reqwest::StatusCode::OK, "a sleeping seat renders, it does not 404");
     assert!(page.contains("not running"), "and says what the seat is: {page}");
+    assert!(!page.contains("class=\"kind\""), "and draws no chat skeleton under it: {page}");
     assert!(
         !page.contains("connecting"),
         "without claiming a connection nothing is making: {page}"
@@ -700,7 +707,7 @@ async fn the_inspector_summarises_from_the_core() {
         "the section renders with its summary: {page}",
     );
     assert!(
-        page.contains("<details class=\"sec\" open>"),
+        page.contains("<details class=\"sec\" open data-k=\"sec-git\">"),
         "and opens on the changes it holds: {page}",
     );
     assert!(page.contains("file-0.txt"), "and the body lists the files behind that count: {page}");
@@ -941,6 +948,1040 @@ async fn the_type_scale_is_the_mocks() {
     }
 }
 
+/// Every declaration block a stylesheet makes for one selector, whitespace
+/// collapsed so the mockup's formatting and the sheet's compare.
+///
+/// Every one, not the first: a rule that agrees with the mockup at one width
+/// and overrides it at another is exactly what a first-block reader misses.
+fn blocks_for(css: &str, selector: &str) -> Vec<String> {
+    let needle = format!("{selector} {{");
+    let mut at = 0;
+    let mut out = Vec::new();
+    while let Some(found) = css[at..].find(&needle) {
+        let start = at + found + needle.len() - 1;
+        let rest = &css[start..];
+        let close = rest.find('}').unwrap_or_else(|| panic!("{selector} never closes"));
+        out.push(rest[1..close].split_whitespace().collect::<Vec<_>>().join(" "));
+        at = start + close;
+    }
+    assert!(!out.is_empty(), "no rule for {selector}");
+    out
+}
+
+/// The class names inside the element carrying `class="outer"`, in the order
+/// they appear there.
+fn classes_within(html: &str, outer: &str) -> Vec<String> {
+    let marker = format!("class=\"{outer}\"");
+    let start = html.find(&marker).unwrap_or_else(|| panic!("no {outer}")).to_owned();
+    let rest = &html[start..];
+    let end = rest.find("</div>").unwrap_or(rest.len());
+    let body = &rest[..end];
+    let mut out = Vec::new();
+    for chunk in body.split("class=\"").skip(1) {
+        if let Some(name) = chunk.split('"').next()
+            && name != outer
+            && !out.iter().any(|seen| seen == name)
+        {
+            out.push(name.to_owned());
+        }
+    }
+    out
+}
+
+/// The turn body's grid is the mockup's: the declarations, in every block the
+/// sheet writes them in, and the class names its own markup carries.
+///
+/// It rendered as one run-on line with every label fused to its value until
+/// the sheet was given these, and nothing in the suite noticed: the fields
+/// were all present and every one of them was asserted. A rename takes the
+/// grid away again the same way, which is why the names are compared too.
+#[tokio::test]
+async fn the_turn_body_grid_is_the_mocks() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    // Every block the sheet writes, against every block the mockup writes:
+    // a width override is legitimate where the drawing carries it too, and
+    // an invented one is not.
+    for selector in [".tibody", ".tibody .l, .tibody .n", ".tibody .wide", ".tibody b"] {
+        let want = blocks_for(MOCK, selector);
+        for block in blocks_for(&sheet, selector) {
+            assert!(
+                want.contains(&block),
+                "the sheet's {selector} draws {block}, which the mockup does not",
+            );
+        }
+    }
+}
+
+/// The reader takes every block a selector is written in, which is what
+/// makes an override visible to it. It is pinned here because no shipped
+/// fixture writes a compared selector twice, so a reader that took the first
+/// block would pass everything the sheet has today.
+#[test]
+fn the_grid_reader_reads_every_block_a_selector_is_written_in() {
+    let sheet = ".tibody { display: grid; }\n\
+                 @media (max-width: 600px) { .tibody { display: block; } }";
+
+    let blocks = blocks_for(sheet, ".tibody");
+
+    assert_eq!(blocks.len(), 2, "both of them, so an override cannot hide behind the first");
+    assert!(
+        blocks.contains(&"display: block;".to_owned()),
+        "including the one that undoes the grid: {blocks:?}",
+    );
+}
+
+/// A conversation with a run of tool calls renders the run's count and the
+/// families it met, with each call's own target under its family and the
+/// assistant's prose above it. This is the model the mockup was built on.
+///
+/// Three calls across two families, so the header's count is the calls
+/// rather than the families: one call per family would read the same either
+/// way.
+#[tokio::test]
+async fn the_conversation_renders_the_run_and_its_families() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"user","message":{"role":"user","content":"make the call tree the default"}}"#,
+                r#"{"type":"assistant","message":{"id":"msg_1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"Reading the grouping code first."}]}}"#,
+                r#"{"type":"assistant","message":{"id":"msg_2","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/family.rs"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"pub enum ToolFamily {}"}]}}"#,
+                r#"{"type":"assistant","message":{"id":"msg_3","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_2","name":"Grep","input":{"pattern":"KindRow"}}]}}"#,
+                r#"{"type":"assistant","message":{"id":"msg_4","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_3","name":"Read","input":{"file_path":"/tmp/grouping.rs"}}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains("3 tool calls"), "every call in the run, not one per family: {page}");
+    assert!(page.contains(">read</span>"), "and the families it met: {page}");
+    assert!(page.contains(">search</span>"), "the run's second: {page}");
+    let read = page.find(">read</span>").expect("the read family");
+    let search = page.find(">search</span>").expect("the search family");
+    assert!(read < search, "drawn in the order it met them: {page}");
+    assert!(page.contains("family.rs"), "with each call's own target: {page}");
+    assert!(page.contains("grouping.rs"), "including the second of a family: {page}");
+    assert!(
+        page.contains("Reading the grouping code first."),
+        "and the prose the assistant wrote above it: {page}",
+    );
+    assert!(
+        page.contains("make the call tree the default"),
+        "and the turn the user wrote, on its own: {page}",
+    );
+}
+
+/// A conversation with nothing in it draws no skeleton. A chat frame with no
+/// rows reads as a session that has nothing to say, which is a different
+/// page from one whose session has not started.
+#[tokio::test]
+async fn an_empty_conversation_draws_no_skeleton() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(
+        page.contains("class=\"chat\""),
+        "the page is the session's own, so an absence below is an empty conversation \
+         rather than a page that never loaded: {page}",
+    );
+    assert!(!page.contains("class=\"kind\""), "no group is drawn for nothing: {page}");
+    assert!(!page.contains("class=\"mine\""), "and no turn either: {page}");
+    assert!(
+        !page.contains("class=\"work\""),
+        "and no work block for a tail that is not there: twelve pixels of one would \
+         push the conversation down: {page}",
+    );
+    assert!(!page.contains("not running"), "the seat is running, so it does not say otherwise");
+}
+
+/// A turn the wire carries, with the id the transcript row shares.
+fn user_frame(uuid: &str, text: &str) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "user",
+        "uuid": uuid,
+        "message": { "role": "user", "content": text },
+        "session_id": "s",
+    }))
+    .expect("a user frame")
+}
+
+/// The live half: the read is the baseline and the stream is applied on top
+/// of it, so a message that arrives in the overlap is in both halves and the
+/// page drops the stream's copy because the read already carries its id.
+#[tokio::test]
+async fn a_message_the_read_carried_is_not_appended_twice() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"user","uuid":"u-1","message":{"role":"user","content":"make the call tree the default"}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+    assert!(page.contains("make the call tree the default"), "precondition: the read drew it");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    // The opening event is the read, and the same row then arrives on the
+    // stream: that overlap is what the ordering makes possible. A second
+    // message follows it, so the payload below is the region as the page
+    // holds it once both have been through.
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: user_frame("u-1", "make the call tree the default"),
+    });
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: user_frame("u-3", "and the one after it"),
+    });
+    let second = next_session_event(stream).await.expect("the second message redraws the region");
+
+    assert!(second.contains("and the one after it"), "the new message is drawn: {second}");
+    assert_eq!(
+        second.matches("make the call tree the default").count(),
+        1,
+        "and the read's copy is the only copy of it the region carries: {second}",
+    );
+}
+
+/// A message that arrived entirely after the read is appended, which is the
+/// other half of the same rule.
+#[tokio::test]
+async fn a_message_the_read_did_not_carry_is_appended() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: user_frame("u-2", "a turn nobody had read"),
+    });
+    let region = next_session_event(stream).await.expect("the message redraws the region");
+
+    assert!(
+        region.contains("a turn nobody had read"),
+        "the stream's own message is drawn: {region}",
+    );
+}
+
+/// The API clock the wire sends counts up across the session, so a row draws
+/// the delta from the result before it. Two captured results where the
+/// second's cumulative 3375 ms is 1278 ms of its own against a 1284 ms wall
+/// clock, and the first has nothing before it to subtract, so its own figure
+/// is unknown rather than the session's whole clock.
+#[tokio::test]
+async fn a_turn_row_draws_its_own_api_time_rather_than_the_sessions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    for result in captured_results("multi_turn") {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: SessionSlot::lead("Busytools", "forge"),
+            msg: result,
+        });
+    }
+    let region = nth_session_event(stream, 3).await.expect("both results redraw the region");
+
+    assert!(region.contains("<b>api</b>1.2s"), "the turn's own api time: {region}");
+    assert!(!region.contains("<b>api</b>3.4s"), "not the clock the session had reached: {region}");
+    assert!(
+        !region.contains("<b>api</b>2.0s"),
+        "and the first turn has nothing to subtract, so it reports none of the clock \
+         rather than all of it: {region}",
+    );
+    assert!(region.contains("<b>elapsed</b>2.1s"), "its own wall clock is still there: {region}");
+    assert!(
+        region.contains("<b>local</b>0.0s tools + hooks"),
+        "and the split that follows from it: {region}",
+    );
+}
+
+/// A finished turn draws its row and the body behind it: the wall clock the
+/// CLI recorded for that turn, the tokens it reported, and the session cost
+/// it had reached, with what the row has no room for behind the fold.
+///
+/// The result frame arrives on the stream rather than in the transcript the
+/// scan reads: the scan keeps conversation rows, and a result is not one. It
+/// is the capture's own frame, so every figure below is one the CLI wrote.
+#[tokio::test]
+async fn a_settled_turn_draws_its_row_and_its_body() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let settled = captured_results("monitor_persistent_stream").pop().expect("the captured turn");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: settled,
+    });
+    let region = next_session_event(stream).await.expect("the settled turn redraws the region");
+
+    assert!(region.contains("class=\"turninfo\""), "the settled row: {region}");
+    assert!(region.contains("41.0s"), "the turn's own wall clock: {region}");
+    assert!(region.contains("14\u{2191} 1.7k\u{2193}"), "and what it used: {region}");
+    assert!(region.contains("93% cached"), "how much of the input the cache served: {region}");
+    assert!(region.contains("7.0k written"), "including what it wrote to the cache: {region}");
+    assert!(
+        region.contains("$0.16 cumulative"),
+        "and the session cost, named as the running total it is: {region}",
+    );
+    // One result and nothing before it: the API clock on the wire is the
+    // session's, so this turn's share of it is unknown, and the local figure
+    // is the split that needs it.
+    assert!(region.contains("<b>api</b>-"), "no anchor, so no turn api time: {region}");
+    assert!(region.contains("<b>local</b>-"), "and nothing to split out of the clock: {region}");
+    assert!(region.contains("<b>out</b>1,711"), "the body's counts are the exact ones: {region}");
+    assert!(region.contains("<b>cache</b>102,194 read"), "both sides of the cache: {region}");
+    assert!(region.contains("<span class=\"tog\"></span>"), "the chip that opens it: {region}");
+    assert_eq!(
+        classes_within(&region, "tibody"),
+        classes_within(MOCK, "tibody"),
+        "and the body's cells are the mockup's, by name",
+    );
+    assert!(
+        region.contains("93% of input served from cache"),
+        "and the share spelled out: {region}",
+    );
+}
+
+/// The pane handles are two halves that have to meet: the boxes outside the
+/// region the stream swaps, and rules that cross that region to the app they
+/// size. Both were wrong at once, so every handle did nothing and the rail
+/// and the inspector were unreachable below the widths that hide them.
+#[tokio::test]
+async fn the_pane_state_crosses_the_swapped_region() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    let wrapper = page.find("id=\"live\"").expect("the wrapper the payload never replaces");
+    let region = page.find("id=\"session-body\"").expect("the region the payload replaces");
+    let boxes = page.find("id=\"l\"").expect("the projects box");
+    assert!(
+        wrapper < boxes && boxes < region,
+        "the boxes hold their state across a swap only by sitting outside the region: {page}",
+    );
+
+    assert!(
+        page.contains("htmx:afterSwap"),
+        "and the swap carries what a reader opened or closed across itself: {page}",
+    );
+    // The handler keeps that state by key, so a section without one is a
+    // section whose state the next swap drops.
+    for block in page.split("<details").skip(1) {
+        let head = block.split('>').next().unwrap_or_default();
+        assert!(head.contains("data-k="), "every section carries a key: <details{head}>");
+    }
+
+    let mut reads = sheet.match_indices(":checked").peekable();
+    assert!(reads.peek().is_some(), "the sheet reads the boxes");
+    for (at, _) in reads {
+        assert!(
+            sheet[at..].starts_with(":checked ~ #session-body"),
+            "every rule that reads a box crosses the region to reach the app: {}",
+            &sheet[at..(at + 60).min(sheet.len())],
+        );
+    }
+}
+
+/// A resume or a `/new` puts another occupant in the slot, and the history
+/// that arrives with it is the conversation the reader is owed. The page's
+/// own copy belongs to the seat that just left, so the region is drawn from
+/// the update when it carries one.
+#[tokio::test]
+async fn a_replacement_draws_the_history_it_carries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"user","uuid":"u-out","message":{"role":"user","content":"the seat before it left"}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::SessionReplaced {
+        key: SessionSlot::lead("Busytools", "forge"),
+        session_id: forge_primitives::SessionId::new("session-2"),
+        cwd: String::new(),
+        current_model: forge_primitives::CurrentModel::new("claude-opus-5", "opus", "Opus 5"),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![user_frame("u-in", "the turn the new occupant resumes")],
+        compaction_count: 0,
+    });
+    let region = next_session_event(stream).await.expect("the replacement redraws the region");
+
+    assert!(
+        region.contains("the turn the new occupant resumes"),
+        "the history it carries: {region}"
+    );
+    assert!(
+        !region.contains("the seat before it left"),
+        "and not the conversation that belonged to the seat it replaced: {region}",
+    );
+}
+
+/// One thinking block's worth of estimate, as the CLI reports it: the delta
+/// is what a turn's total is summed from, so one frame here is one block, and
+/// each block carries the uuid that makes it its own frame.
+fn thinking_frame(nth: u64, tokens: u64) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "thinking_tokens",
+        "estimated_tokens": tokens,
+        "estimated_tokens_delta": tokens,
+        "uuid": format!("think-{nth}"),
+        "session_id": "s",
+    }))
+    .expect("a thinking frame")
+}
+
+/// Two blocks in one turn, the second restarting the wire's counter the way
+/// it does at every block boundary: the row sums them rather than reading the
+/// counter, which would step backwards.
+#[tokio::test]
+async fn the_live_row_sums_every_thinking_block() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    for msg in [running_frame(), thinking_frame(1, 161), thinking_frame(2, 189)] {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: SessionSlot::lead("Busytools", "forge"),
+            msg,
+        });
+    }
+    // Read until the estimate the two blocks add up to, rather than for a
+    // fixed number of events: the page's stream carries whatever else
+    // redraws it, so a count is a claim about traffic rather than about the
+    // row.
+    let region =
+        read_until(stream, "the live row's estimate", &|seen| seen.contains("thinking 350")).await;
+
+    assert!(
+        region.contains("thinking 350"),
+        "the blocks sum rather than the last block standing alone: {region}",
+    );
+}
+
+/// The state frame that says a turn began, which is what arms the row's clock.
+fn running_frame() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "session_state_changed",
+        "state": "running",
+        "uuid": "state-1",
+        "session_id": "s",
+    }))
+    .expect("a state frame")
+}
+
+/// The live row draws inside the work block the settled row will land in,
+/// not in a block of its own. That is what keeps it still: a block of its
+/// own sits a block padding lower, so the row moves down by twelve pixels
+/// the moment the turn settles, under the reader's cursor.
+#[tokio::test]
+async fn the_live_row_draws_where_the_settled_one_will_land() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/src/lib.rs"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"one\ntwo"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: running_frame(),
+    });
+    let region = next_session_event(stream).await.expect("the state redraws the region");
+
+    let row = region.find("data-k=\"turn-live\"").expect("the live row is drawn");
+    let block = region[..row].rfind("class=\"work\"").expect("a work block above it");
+    assert!(
+        region[block..row].contains("class=\"kind\""),
+        "the live row shares the block with the work the turn did: {}",
+        &region[block..row],
+    );
+    assert!(
+        !region[..row].trim_end().ends_with("class=\"work\">"),
+        "rather than opening a block of its own for itself: {}",
+        &region[block..row],
+    );
+}
+
+/// The live row counts the estimate while the turn runs.
+#[tokio::test]
+async fn the_live_row_counts_the_thinking_estimate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    for msg in [running_frame(), thinking_frame(1, 434)] {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: SessionSlot::lead("Busytools", "forge"),
+            msg,
+        });
+    }
+    let region = nth_session_event(stream, 3).await.expect("the frames redraw the region");
+
+    assert!(region.contains("class=\"ring\""), "the row is the live one: {region}");
+    assert!(region.contains("thinking 434"), "and it carries the estimate: {region}");
+}
+
+/// Once the result lands the estimate leaves the row and stays in the body:
+/// the row gives its width to the billed counts, and the body holds what the
+/// turn thought.
+#[tokio::test]
+async fn the_settled_row_keeps_the_estimate_in_its_body() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let settled = captured_results("multi_turn").pop().expect("the captured turn");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    for msg in [thinking_frame(1, 434), settled] {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: SessionSlot::lead("Busytools", "forge"),
+            msg,
+        });
+    }
+    let region = nth_session_event(stream, 3).await.expect("the frames redraw the region");
+
+    assert!(region.contains("<b>thinking</b>434 est"), "the body keeps it: {region}");
+    assert!(
+        !region.contains("thinking 434"),
+        "and the row does not, now that the billed counts are there: {region}",
+    );
+}
+
+/// A zero inside a block that does carry counters is a measurement rather
+/// than an absence. The captured frame spent nothing on cache reads and
+/// 13,939 on cache writes, so the read cell says zero while the row around it
+/// stands.
+#[tokio::test]
+async fn a_zero_inside_a_real_usage_block_is_drawn_as_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let frame = captured_results("set_model").pop().expect("the captured turn");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: frame,
+    });
+    let region = next_session_event(stream).await.expect("the turn redraws the region");
+
+    assert!(region.contains("<b>cache</b>0 read"), "the zero it did spend: {region}");
+    assert!(region.contains("<b>wrote</b>13,939"), "beside the count it did spend: {region}");
+    assert!(region.contains("13k written"), "and the row's own chip keeps it: {region}");
+}
+
+/// A mutation's leaf draws the edit glyph and starts open, which is what the
+/// fold's one `edit` row feeds. Both are decided in the view, and reverting
+/// either to the four tool names behind that row leaves every mutation's
+/// leaf collapsed and generic, which is what the mockup forbids.
+#[tokio::test]
+async fn a_mutation_leaf_draws_the_edit_glyph_and_starts_open() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_9","name":"Edit","input":{"file_path":"/tmp/src/lib.rs","old_string":"one","new_string":"two"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"the file has been updated"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(
+        page.contains("<div class=\"knd\"><svg class=\"ic gl\"><use href=\"#i-edit\">"),
+        "the family row draws the mutation's glyph: {page}",
+    );
+    assert!(
+        page.contains("<details class=\"leaf\" open data-k=\"leaf-toolu_9\">"),
+        "and its own leaf opens on the diff without being asked: {page}",
+    );
+}
+
+/// A source file a call read is drawn as the mockup draws it: a code block
+/// with its language named and its tokens classed, rather than the file as
+/// plain rows.
+#[tokio::test]
+async fn a_source_file_is_drawn_highlighted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/src/family.rs"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"/// The group a call belongs to.\npub enum ToolFamily {\n    Read,\n}"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains("class=\"code\""), "the block the mockup draws: {page}");
+    assert!(page.contains("<div class=\"lang\">rust</div>"), "naming its language: {page}");
+    assert!(page.contains("<span class=\"k\">"), "with its keywords classed: {page}");
+    assert!(page.contains("ToolFamily"), "and the file's own text: {page}");
+}
+
+/// A command's own line leads its output. The call's title is the
+/// description when it carries one, so without this the command it ran is
+/// drawn nowhere at all.
+#[tokio::test]
+async fn a_command_leads_its_own_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"just check","description":"run the gates"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"   Compiling forge-web v1.0.91\n    Finished in 41.2s"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(
+        page.contains("<span class=\"pfx\">$</span> just check"),
+        "the command, under its own prompt: {page}",
+    );
+    assert!(page.contains("Finished in 41.2s"), "and the output it wrote below it: {page}");
+    assert!(
+        page.contains("run the gates"),
+        "while the row above still names the call by its description: {page}",
+    );
+}
+
+/// A command with no description is named by the row above, so the prompt
+/// line under it would be the same words twice.
+#[tokio::test]
+async fn a_command_the_row_already_names_is_not_drawn_twice() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"just check"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"    Finished in 41.2s"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains(">just check</span>"), "the row names the command: {page}");
+    assert_eq!(page.matches("just check").count(), 1, "and the body does not say it again: {page}");
+    assert!(page.contains("Finished in 41.2s"), "while the output it wrote is still drawn: {page}");
+}
+
+/// A command whose description ends in an extension is still a command: its
+/// output is its own lines under the prompt, not a code block, and the
+/// command it ran is drawn.
+#[tokio::test]
+async fn a_command_whose_description_looks_like_a_path_is_still_a_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"just check","description":"regen the fixtures in spec.rs"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"    Finished in 41.2s"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(
+        page.contains("<span class=\"pfx\">$</span> just check"),
+        "the command is drawn, not hidden behind a title that reads as a path: {page}",
+    );
+    assert!(
+        !page.contains("class=\"code\""),
+        "and its output is not drawn as a source file: {page}",
+    );
+}
+
+/// A search call's hits are drawn one row each: the line number, the file,
+/// and the line with the pattern marked.
+#[tokio::test]
+async fn a_search_result_is_drawn_as_its_hits() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"KindRow"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"crates/forge-sessions/src/grouping.rs:184: pub fn kind_row(x: KindRow)"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains("class=\"searchhit\""), "the row a hit draws on: {page}");
+    assert!(page.contains("<span class=\"ln\">184:</span>"), "with its line number: {page}");
+    assert!(
+        page.contains("<span class=\"fl\">crates/forge-sessions/src/grouping.rs</span>"),
+        "and the file it is in: {page}",
+    );
+    assert!(
+        page.contains("pub fn kind_row(x: <span class=\"hit\">KindRow</span>)"),
+        "the line it sits in, with the pattern marked and the rest left as it came: {page}",
+    );
+}
+
+/// A turn's hooks collapse to the chip the mockup draws, with what each one
+/// ran and how long it took behind it.
+#[tokio::test]
+async fn a_turns_hooks_are_drawn_as_the_chip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    // Built as the decoder's typed variant rather than from JSON: the wire
+    // reaches this one through the subtype dispatch, not through serde.
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: forge_primitives::Message::StopHookSummary {
+            actions: 2,
+            hook_infos: vec![
+                forge_primitives::messages::StopHookInfo {
+                    command: "just fmt".to_owned(),
+                    duration_ms: Some(1400),
+                },
+                forge_primitives::messages::StopHookInfo {
+                    command: "just check".to_owned(),
+                    duration_ms: Some(62000),
+                },
+            ],
+            has_output: true,
+            level: "suggestion".to_owned(),
+            prevented_continuation: false,
+            stop_reason: String::new(),
+            tool_use_id: String::new(),
+            parent_tool_use_id: None,
+            session_id: "s".to_owned(),
+            uuid: "hooks-1".to_owned(),
+        },
+    });
+    let region = next_session_event(stream).await.expect("the frame redraws the region");
+
+    assert!(region.contains("class=\"hooks\""), "the chip: {region}");
+    assert!(region.contains("hook summary \u{b7} 2 actions"), "with its count: {region}");
+    assert!(region.contains("just fmt \u{b7} 1.4s"), "and what each one ran: {region}");
+    assert!(region.contains("just check \u{b7} 1m 02s"), "with how long it took: {region}");
+}
+
+/// A compaction in flight says so, from the session's own status frame, and
+/// stops saying so when the frame says it ended.
+#[tokio::test]
+async fn a_compaction_in_flight_says_so() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    let key = SessionSlot::lead("Busytools", "forge");
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: key.clone(),
+        msg: serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "status",
+            "status": "compacting",
+            "uuid": "status-1",
+            "session_id": "s",
+        }))
+        .expect("a status frame"),
+    });
+    // An unrelated update follows the status, and the region read is the one
+    // after both. A compaction runs for minutes while anything else may land
+    // in between, so a flag that lived for one redraw would flash the line
+    // and take it away at the tick.
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key,
+        msg: user_frame("u-1", "a message while the compaction runs"),
+    });
+    let region = nth_session_event(stream, 3).await.expect("both updates redraw the region");
+
+    assert!(
+        region.contains("a message while the compaction runs"),
+        "precondition: the unrelated update is the later of the two: {region}",
+    );
+    assert!(
+        region.contains("Compacting context"),
+        "and the compaction is still running, so the line is still drawn: {region}",
+    );
+}
+
+/// The line goes when the session says the compaction ended, which is the
+/// status frame's null rather than a second frame that never comes.
+#[tokio::test]
+async fn a_compaction_that_ended_stops_saying_so() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    let key = SessionSlot::lead("Busytools", "forge");
+    for (uuid, status) in
+        [("status-1", serde_json::json!("compacting")), ("status-2", serde_json::json!(null))]
+    {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: key.clone(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "status",
+                "status": status,
+                "uuid": uuid,
+                "session_id": "s",
+            }))
+            .expect("a status frame"),
+        });
+    }
+    let region = nth_session_event(stream, 3).await.expect("both statuses redraw the region");
+
+    assert!(!region.contains("Compacting context"), "the line is gone once it ended: {region}");
+}
+
+/// A cron fire is drawn as the turn it is. The session's model is handed the
+/// prompt on its own stdin and the CLI does not echo it back, so the wire
+/// carries nothing a page could draw; the workspace announces the delivery as
+/// a typed update instead, and the turn is forged from that.
+#[tokio::test]
+async fn a_cron_delivery_is_drawn_as_the_turn_it_is() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::CronPromptAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        text: "the nightly sweep is due".to_owned(),
+    });
+    let region = next_session_event(stream).await.expect("the delivery redraws the region");
+
+    assert!(region.contains("the nightly sweep is due"), "the fired prompt is drawn: {region}");
+    assert!(
+        region.contains("class=\"notice"),
+        "as the block a delivery arrives in, not as a turn somebody wrote: {region}",
+    );
+}
+
+/// The slot guard reads all three parts of a slot. The same org and project
+/// with another seat is another seat: a worker's message is not its lead's
+/// news, and the stream carries every session in the fleet.
+#[tokio::test]
+async fn a_workers_message_does_not_redraw_the_leads_page() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::worker("Busytools", "forge", "em-dash-sweep"),
+        msg: user_frame("u-10", "a message for the seat beside it"),
+    });
+
+    assert!(
+        nth_session_event_within(stream, 2, std::time::Duration::from_millis(300)).await.is_none(),
+        "the worker's seat is not this page",
+    );
+}
+
+/// An update for another slot does not redraw this page: the same stream
+/// carries every session, and a page that swapped on all of them would
+/// re-render a conversation nobody changed.
+#[tokio::test]
+async fn an_update_for_another_slot_does_not_swap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "busymail"),
+        msg: user_frame("u-9", "a message for another session"),
+    });
+
+    assert!(
+        nth_session_event_within(stream, 2, std::time::Duration::from_millis(300)).await.is_none(),
+        "another slot's message is not this page's news",
+    );
+}
+
+/// The region that follows the connection's opening one, whenever it comes.
+async fn next_session_event(response: reqwest::Response) -> Option<String> {
+    nth_session_event(response, 2).await
+}
+
+/// The region of the `nth` event the stream sends, counting the opening one
+/// as the first, or `None` when it does not arrive in time: a stream that
+/// should stay quiet is as much a property as one that speaks.
+///
+/// The count is the caller's, because a buffer holding several regions has
+/// no way to say which one the caller meant.
+async fn nth_session_event(response: reqwest::Response, nth: usize) -> Option<String> {
+    nth_session_event_within(response, nth, std::time::Duration::from_secs(5)).await
+}
+
+/// The region of the `nth` event, or `None` when it does not arrive in time.
+async fn nth_session_event_within(
+    response: reqwest::Response,
+    nth: usize,
+    within: std::time::Duration,
+) -> Option<String> {
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut seen = String::new();
+    loop {
+        let chunk = tokio::time::timeout(within, stream.next()).await.ok()??;
+        seen.push_str(&String::from_utf8_lossy(&chunk.ok()?));
+        if seen.matches("event: session").count() >= nth {
+            return seen.rsplit("event: session").next().map(str::to_owned);
+        }
+    }
+}
+
 /// A worker's own page is served, not only its lead's: the home links
 /// every row it draws, and a link into a 404 is worse than no link.
 #[tokio::test]
@@ -1085,6 +2126,73 @@ async fn disabled_binds_nothing() {
     let bound = forge_web::start(state).await.expect("turning it off is not an error");
 
     assert!(bound.is_none(), "a disabled server binds nothing");
+}
+
+/// The `result` frames of one captured baseline, as the wire sent them.
+///
+/// A capture rather than a frame written to match the row: the numbers the
+/// turn body derives - an API clock that counts up across the session, a
+/// compaction that reports every counter at zero - only exist on real
+/// traffic, and a fixture would restate the reading it is meant to check.
+fn captured_results(name: &str) -> Vec<forge_primitives::Message> {
+    let baselines =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../forge-test-harness/baselines/sdk");
+    // The version directory is named for the CLI the capture came from, so
+    // the capture is what identifies it: two directories holding the same
+    // name would make this walk pick by directory order.
+    let holding: Vec<std::path::PathBuf> = std::fs::read_dir(&baselines)
+        .expect("the baseline directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.join(format!("{name}.jsonl")).is_file())
+        .collect();
+    assert_eq!(holding.len(), 1, "one captured version holds {name}");
+    let raw =
+        std::fs::read_to_string(holding[0].join(format!("{name}.jsonl"))).expect("the capture");
+    let results: Vec<forge_primitives::Message> = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|envelope| envelope["dir"] == "in")
+        .filter(|envelope| {
+            serde_json::from_str::<serde_json::Value>(envelope["line"].as_str().unwrap_or_default())
+                .is_ok_and(|frame| frame["type"] == "result")
+        })
+        .map(|envelope| {
+            serde_json::from_str(envelope["line"].as_str().expect("the frame text"))
+                .expect("a result frame the decoder takes")
+        })
+        .collect();
+    assert!(!results.is_empty(), "the capture holds a result frame to read");
+    results
+}
+
+/// A frame that reports nothing shows nothing. The compaction's result
+/// carries every counter at zero and an API clock of zero, and a zero where
+/// a measurement belongs reads as one; the row it leaves is dashes, with the
+/// clock it does have standing beside them.
+#[tokio::test]
+async fn a_frame_that_reports_nothing_draws_no_zeroes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let compaction = captured_results("compact").pop().expect("the captured compaction");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: compaction,
+    });
+    let region = next_session_event(stream).await.expect("the frame redraws the region");
+
+    assert!(region.contains("45.2s"), "the clock the frame does carry: {region}");
+    assert!(!region.contains("0 read"), "and no zero where a count would go: {region}");
+    assert!(region.contains("<b>api</b>-"), "the one it does not reads as a dash: {region}");
+    assert!(!region.contains("<b>api</b>0.0s"), "and never as a zero: {region}");
+    assert!(!region.contains("<b>in</b>0"), "no zero stands in for a count: {region}");
+    assert!(!region.contains("0 written"), "not in the collapsed row's own chips either: {region}");
 }
 
 /// The header states the session's own facts, which no update stream

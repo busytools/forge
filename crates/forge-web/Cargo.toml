@@ -16,9 +16,16 @@ forge-sessions = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
 maud = { workspace = true }
+# The assistant's prose is markdown, and a session's own words are the one
+# place a page renders text it did not compose.
+pulldown-cmark = { workspace = true }
+# A source file a call read or wrote is drawn highlighted, into the four
+# token classes the mockup names.
+syntect = { workspace = true }
 # The composer reads a tool call's own input to say what a prompt is about,
 # an MCP server's config blob names the scope a server with none reads, and
-# the wire frames the tests build are JSON.
+# the status frame's own shape is worth reading for the one field that says a
+# compaction is running.
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }

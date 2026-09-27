@@ -113,3 +113,21 @@ rather than filling it. `morph:outerHTML` keeps the swap from resetting DOM
 state inside the region; the page has none today, and the rule from the
 spike is that no swap target may contain the composer or a `<details>`,
 which is where that would start to matter.
+
+Measured on the session page, which has both now: a section the reader
+collapsed re-opens on the next swap, every ten seconds on a working session,
+because the payload carries `open` and the morph writes it. The session page
+keeps what the reader decided in a handler of its own (`DETAIL_STATE`,
+`session.rs`), recorded from the clicks themselves against the `data-k` each
+section carries, and puts it back after each swap.
+
+Two shapes were measured and rejected before that one. Recording the open
+sections before the swap does not work: htmx's SSE extension swaps its
+payload itself and fires no `htmx:beforeSwap` for one, so the snapshot is
+always empty and every section closes instead. Reading the `toggle` event
+does not either: the swap's own attribute write fires one, so a section
+nobody touched records itself as closed. Both looked right and were wrong in
+a browser.
+
+The composer is still outside the target, which is why it survives on its
+own.

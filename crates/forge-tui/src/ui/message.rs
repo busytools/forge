@@ -381,31 +381,11 @@ impl<'a> MessageRenderContext<'a> {
     }
 }
 
-/// Format a milliseconds duration for the expanded `stop_hook_summary`
-/// rows (`append_stop_hook_summary`). Buckets:
-///   - `< 60_000` ms -> one-decimal seconds (`12.4s`).
-///   - `60_000..3_600_000` -> integer `Xm Ys` (`1m 04s`).
-///   - `>= 3_600_000` -> `Xh Ym Zs` (`1h 02m 04s`).
-pub fn format_turn_duration(ms: u64) -> String {
-    const SEC: u64 = 1_000;
-    const MIN: u64 = 60 * SEC;
-    const HOUR: u64 = 60 * MIN;
-    if ms < MIN {
-        // One decimal, e.g. 12_400 ms -> "12.4s".
-        let whole = ms / SEC;
-        let tenths = (ms % SEC) / 100;
-        return format!("{whole}.{tenths}s");
-    }
-    if ms < HOUR {
-        let minutes = ms / MIN;
-        let seconds = (ms % MIN) / SEC;
-        return format!("{minutes}m {seconds:02}s");
-    }
-    let hours = ms / HOUR;
-    let minutes = (ms % HOUR) / MIN;
-    let seconds = (ms % MIN) / SEC;
-    format!("{hours}h {minutes:02}m {seconds:02}s")
-}
+/// The turn row's formatting, shared with the web view so a settled turn
+/// reads the same in both.
+pub use forge_sessions::model::{
+    format_token_count_grouped, format_token_count_short, format_turn_duration,
+};
 
 /// Test entry over [`Self::render_message_with_copy_rows`] for callers
 /// that only want the rows.
@@ -715,20 +695,6 @@ fn turn_info_expanded_rows(info: &TurnInfo) -> Vec<Line<'static>> {
 /// One `label value   label value` row of the expanded body.
 fn turn_info_pair(left_label: &str, left: &str, right_label: &str, right: &str) -> String {
     format!("    {left_label:<10}{left:<16}{right_label:<8}{right}")
-}
-
-/// Thousands-grouped token count for the expanded body, where the
-/// exact number is the point (`108,442`).
-fn format_token_count_grouped(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
 }
 
 /// #273: Render a `Message::StopHookSummary` as a collapsed
@@ -2501,43 +2467,6 @@ fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
         SystemSeverity::Error => ("Error", theme::STATUS_ERROR),
     };
     Line::from(Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)))
-}
-
-/// #273: Format a token count with k / M abbreviation. Threshold
-/// rules:
-///   - < 1_000 -> bare integer (`0`, `42`, `999`).
-///   - 1_000..1_000_000 -> `Nk` or `N.Nk` (one decimal), e.g.
-///     `1199 -> 1.1k`, `15_000 -> 15k`, `999_999 -> 999k`.
-///   - >= 1_000_000 -> `NM` or `N.NM`, e.g. `1_500_000 -> 1.5M`.
-///
-/// The integer / one-decimal split caps a count at 4 visible chars
-/// (`1.4M`, `999k`, `999`), so a field on the collapsed turn info row
-/// does not widen with the turn's token volume. The row's own width
-/// still changes as it sheds fields; what this stops is a field
-/// growing under one.
-pub fn format_token_count_short(n: u64) -> String {
-    const K: u64 = 1_000;
-    const M: u64 = 1_000_000;
-    if n < K {
-        return n.to_string();
-    }
-    if n < M {
-        // < 10k -> one decimal (e.g. 1.2k, 9.9k); >= 10k -> integer
-        // (e.g. 15k, 999k). Truncation via integer division keeps
-        // the chip readable - 1199 reads as 1.1k not 1.2k.
-        if n < 10 * K {
-            let whole = n / K;
-            let tenths = (n / (K / 10)) % 10;
-            return format!("{whole}.{tenths}k");
-        }
-        return format!("{}k", n / K);
-    }
-    if n < 10 * M {
-        let whole = n / M;
-        let tenths = (n / (M / 10)) % 10;
-        return format!("{whole}.{tenths}M");
-    }
-    format!("{}M", n / M)
 }
 
 fn compacting_line(ch: char) -> Line<'static> {

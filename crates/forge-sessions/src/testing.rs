@@ -48,7 +48,14 @@ pub struct ViewFacts {
 pub struct Fleet {
     surface: Arc<ViewSurface>,
     workspace: Arc<Workspace>,
+    /// Where the workspace's store and the CLI's transcripts live, which a
+    /// transcript fixture has to write into.
+    config_dir: std::path::PathBuf,
 }
+
+/// The session id a seeded transcript belongs to. One per fleet is enough:
+/// a test that needs two reads two slots against their own files.
+const SEEDED_SESSION: &str = "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45";
 
 impl Fleet {
     /// A fleet whose `forge.toml` declares one project per name under each
@@ -63,7 +70,11 @@ impl Fleet {
         // app-support base, so a fixture gets a durable layer without
         // opening a second handle on the same file.
         let workspace = Arc::new(Workspace::new_for_test(config_dir.to_owned())?);
-        Ok(Self { surface: Arc::new(ViewSurface::new(Arc::clone(&workspace))), workspace })
+        Ok(Self {
+            surface: Arc::new(ViewSurface::new(Arc::clone(&workspace))),
+            workspace,
+            config_dir: config_dir.to_owned(),
+        })
     }
 
     /// The surface, which keeps the workspace alive on its own.
@@ -114,6 +125,45 @@ impl Fleet {
         );
         self.workspace.register_domain_session(SessionSlot::worker(org, project, label), None);
         Ok(())
+    }
+
+    /// Write a session's transcript, where the CLI would have left it, and
+    /// register `slot` as the session that owns it. `rows` are the JSONL
+    /// lines themselves, so a fixture writes the wire shapes it means.
+    pub fn seed_transcript(
+        &self,
+        org: &str,
+        project: &str,
+        label: &str,
+        rows: &[&str],
+    ) -> Result<(), FixtureError> {
+        let slot = if label == "lead" {
+            SessionSlot::lead(org, project)
+        } else {
+            SessionSlot::worker(org, project, label)
+        };
+        let cwd = self
+            .workspace
+            .cwd_for_session(&slot)
+            .ok_or_else(|| format!("{project} holds no session for {label}"))?;
+        let key = forge_workspace::userdata::catalog::scan::project_key_for_directory(Some(&cwd));
+        let dir = self.config_dir.join("projects").join(key);
+        std::fs::create_dir_all(&dir)?;
+        self.workspace.seed_test_running_session_id(&slot, SEEDED_SESSION);
+        std::fs::write(dir.join(format!("{SEEDED_SESSION}.jsonl")), rows.join("\n"))?;
+        Ok(())
+    }
+
+    /// Give `slot` a live agent, which is what makes a view treat the seat as
+    /// running rather than as one nothing is behind. A stub: the commands a
+    /// view sends it are read by nobody.
+    pub fn install_agent(&self, org: &str, project: &str, label: &str) {
+        let slot = if label == "lead" {
+            SessionSlot::lead(org, project)
+        } else {
+            SessionSlot::worker(org, project, label)
+        };
+        let _commands = self.workspace.install_testing_stub(&slot);
     }
 
     /// Give `slot` the core's own record of a spawn that failed, as the

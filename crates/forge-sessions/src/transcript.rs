@@ -11,20 +11,24 @@
 //!
 //! Where it differs from the TUI it is because the mockup draws something
 //! else: a mutation folds as an `edit` family instead of breaking the run,
-//! and an envelope that is not agent traffic is a notice instead of a turn.
+//! an envelope that is not agent traffic is a notice instead of a turn, a
+//! question the assistant asked is a card rather than a call, and a Monitor
+//! is not in the conversation at all.
 
 use std::collections::HashMap;
 
-use forge_primitives::{ContentBlock, Message};
+use forge_primitives::messages::StopHookInfo;
+use forge_primitives::{ContentBlock, Message, ToolCallContent};
 
 use crate::envelope::{PeerInboundKind, detect_inbound};
-use crate::family::tool_label;
+use crate::family::{ToolFamily, tool_label};
 use crate::grouping::{
-    KindRow, aggregate_call_status, is_peer_block_render_tool, renders_as_lifecycle_block_parts,
-    wire_row,
+    CallParts, KindRow, aggregate_call_status, family_target, is_edit_tool, wire_row,
 };
-use crate::model::ToolCallStatus;
-use crate::model::tool_call_info::is_ask_question_tool_name;
+use crate::model::tool_call_info::{
+    AnsweredQuestion, is_ask_question_tool_name, is_monitor_tool_name,
+};
+use crate::model::{ToolCallStatus, TurnInfo};
 use crate::peer_outbound::{PeerOutboundKind, detect_outbound_call};
 
 /// One thing a view draws, in the order the conversation produced it.
@@ -34,10 +38,6 @@ pub enum ChatUnit {
     UserTurn { text: String },
     /// Prose the assistant wrote.
     AssistantText { text: String },
-    /// One tool call drawn on its own, because it does not fold into a
-    /// run: a peer block, a lifecycle row, or a question waiting on a
-    /// person.
-    ToolCall(ToolLeaf),
     /// A maximal run of consecutive tool calls, drawn as one group.
     ToolGroup {
         /// The families the run met, in first-appearance order, each with
@@ -46,12 +46,38 @@ pub enum ChatUnit {
         /// What the run's header reports.
         status: ToolCallStatus,
     },
+    /// A question the assistant asked and a person answered, as the
+    /// mockup draws it: the question, what was picked, and what was typed.
+    /// One unit per call, one pair per question it asked.
+    QuestionCard { asked: Vec<AnsweredQuestion> },
     /// A peer message the conversation holds: one it sent, or one it
     /// received.
     PeerCard(PeerCard),
+    /// A run of two or more consecutive peer messages, drawn as one group
+    /// with a count. The threshold is the TUI's: a lone message is the card
+    /// it is, and two are a group.
+    MessagingGroup { cards: Vec<PeerCard> },
     /// A line the conversation carries that nobody typed: an external
     /// delivery, a scheduled fire, or a failure the workspace reported.
     Notice(Notice),
+    /// What the turn's hooks did, drawn as the chip the terminal draws: the
+    /// count, and one row per hook behind it. The wire sends none of these
+    /// when no hook fired.
+    Hooks {
+        /// The frame's own id, which is what a view keys the row's open
+        /// state on.
+        key: String,
+        actions: u32,
+        infos: Vec<StopHookInfo>,
+    },
+    /// What a settled turn did, as the view's own row draws it: the turn's
+    /// wall clock, its API time, and the tokens and cost the CLI reported.
+    /// The web view's row is this, built from the result frame the fold
+    /// reads; the terminal builds the same record from the live stream, so
+    /// the two draw one type rather than a copy each. `ended_at_local` is
+    /// the field they differ on: the wire carries none, so the terminal
+    /// stamps it off its own clock and this side leaves it absent.
+    TurnReport(TurnInfo),
 }
 
 /// One family's calls inside a group.
@@ -95,7 +121,15 @@ pub struct ToolLeaf {
     pub label: &'static str,
     /// The tool's title: the file, command or query it names.
     pub title: String,
+    /// The command a call ran, when it ran one. Separate from the title
+    /// because a call that carries a description shows that as its title,
+    /// and the command it actually ran would otherwise appear nowhere.
+    pub command: Option<String>,
     pub status: ToolCallStatus,
+    /// What the row opens on: the diff a mutation carries in its input, and
+    /// whatever the call's result put beside it, in the shapes the shared
+    /// builder resolves. Empty for a call that has not come back yet.
+    pub content: Vec<ToolCallContent>,
 }
 
 /// A peer message, as the envelope it arrived in or the call that sent
@@ -107,14 +141,61 @@ pub struct PeerCard {
     pub body: String,
     /// True when it arrived rather than was sent.
     pub inbound: bool,
+    /// What kind of traffic it is, which the group draws as its rows:
+    /// `question`, `message` or `reply` inbound, `ask` or `tell` outbound.
+    /// The direction survives in [`Self::inbound`]; this is the kind, and
+    /// the two are not the same question.
+    pub kind: &'static str,
 }
 
 /// Fold a conversation into the units a view draws.
 pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     let results = result_statuses(messages);
+    let answers = question_answers(messages);
     let mut units: Vec<ChatUnit> = Vec::new();
     let mut run: Vec<((KindRow, String), ToolLeaf)> = Vec::new();
+    let mut peers: Vec<PeerCard> = Vec::new();
+    let mut prev_api: Option<u64> = None;
+    let mut model: Option<String> = None;
+    let mut thinking: Option<u64> = None;
     for message in messages {
+        // What the turn's hooks did. A frame reporting none of them draws
+        // nothing, which is the terminal's rule too.
+        if let Message::StopHookSummary { actions, hook_infos, uuid, .. } = message {
+            if *actions > 0 {
+                units.push(ChatUnit::Hooks {
+                    key: uuid.clone(),
+                    actions: *actions,
+                    infos: hook_infos.clone(),
+                });
+            }
+            continue;
+        }
+        // What the turn has thought so far, summed from the frame deltas: the
+        // wire's running counter restarts at every thinking block, so the
+        // absolute field understates any turn that thought more than once.
+        // The result carries no estimate of its own, so the frames before it
+        // are the only place a settled row can read one.
+        if let Message::ThinkingTokens { estimated_tokens_delta, .. } = message {
+            let delta = u64::try_from(*estimated_tokens_delta).unwrap_or(0);
+            thinking = Some(thinking.unwrap_or(0).saturating_add(delta));
+            continue;
+        }
+        // A settled turn's row, which the view draws under the work it
+        // accounts for. It arrives as a message of its own rather than as a
+        // block, so it ends the run the calls before it built.
+        if let Message::Result { .. } = message {
+            flush(&mut run, &mut units);
+            flush_peers(&mut peers, &mut units);
+            if let Some(mut info) = turn_report(message, model.as_deref(), &mut prev_api) {
+                info.thinking_tokens = thinking.take();
+                units.push(ChatUnit::TurnReport(info));
+            }
+            continue;
+        }
+        if let Message::Assistant { message: envelope, .. } = message {
+            model = Some(envelope.model.clone());
+        }
         let (assistant, content) = match message {
             Message::Assistant { message: envelope, .. } => (true, envelope.content.as_slice()),
             Message::User { message: envelope, .. } => (false, envelope.content.as_slice()),
@@ -122,17 +203,35 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
         };
         for block in content {
             match block {
-                ContentBlock::Text { text } => {
-                    flush(&mut run, &mut units);
-                    units.push(text_unit(assistant, text));
-                }
+                ContentBlock::Text { text } => match text_unit(assistant, text) {
+                    TextUnit::Peer(card) => {
+                        flush(&mut run, &mut units);
+                        peers.push(card);
+                    }
+                    TextUnit::Unit(unit) => {
+                        flush(&mut run, &mut units);
+                        flush_peers(&mut peers, &mut units);
+                        units.push(unit);
+                    }
+                },
                 ContentBlock::QueuedCommand { prompt, .. } => {
-                    flush(&mut run, &mut units);
-                    units.push(ChatUnit::UserTurn { text: queued_command_text(prompt) });
+                    let text = queued_command_text(prompt);
+                    // A queued prompt can be the words a person typed into a
+                    // question's free-text field, in which case it belongs on
+                    // the card. A card that already carries what was typed
+                    // leaves it as the turn it is: the same words twice is
+                    // worse than a turn.
+                    if !absorb_typed(&mut units, &text) {
+                        flush(&mut run, &mut units);
+                        flush_peers(&mut peers, &mut units);
+                        units.push(ChatUnit::UserTurn { text });
+                    }
                 }
                 ContentBlock::ToolUse { id, name, input }
                 | ContentBlock::ServerToolUse { id, name, input } => {
-                    push_call(id, name, input, &results, &mut run, &mut units);
+                    push_call(
+                        id, name, input, &results, &answers, &mut run, &mut peers, &mut units,
+                    );
                 }
                 // A result is not a unit of its own: it is what the call
                 // it answers already carries.
@@ -141,42 +240,173 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
         }
     }
     flush(&mut run, &mut units);
+    flush_peers(&mut peers, &mut units);
     units
 }
 
-/// Add one call to the conversation: a peer card, a run-breaker drawn on
-/// its own, or a member of the run being built.
+/// Add one call to the conversation: a peer card, a question's card, a
+/// run-breaker drawn on its own, or a member of the run being built.
+///
+/// A Monitor is none of these: it is dropped. The inspector owns monitors
+/// and the chat draws nothing for one, so a row here would put a watcher in
+/// the conversation and name it under a family of its own.
 fn push_call(
     id: &str,
     name: &str,
     input: &serde_json::Value,
-    results: &HashMap<String, ToolCallStatus>,
+    results: &HashMap<String, Recorded>,
+    answers: &HashMap<String, serde_json::Value>,
     run: &mut Vec<((KindRow, String), ToolLeaf)>,
+    peers: &mut Vec<PeerCard>,
     units: &mut Vec<ChatUnit>,
 ) {
+    if is_monitor_tool_name(name) {
+        return;
+    }
     if let Some(card) = outbound_card(name, input) {
         flush(run, units);
-        units.push(ChatUnit::PeerCard(card));
-    } else if is_standalone_call(name, Some(input)) {
+        peers.push(card);
+    } else if is_ask_question_tool_name(name) {
         flush(run, units);
-        units.push(ChatUnit::ToolCall(leaf(id, name, input, results)));
+        flush_peers(peers, units);
+        units.push(question_card(id, input, answers));
     } else {
-        run.push((wire_row(name), leaf(id, name, input, results)));
+        flush_peers(peers, units);
+        run.push((family_row(name), leaf(id, name, input, results)));
     }
 }
 
-/// True when the fold draws a call on its own instead of folding it into a
-/// run: a peer block, a question waiting on a person, or a Monitor's
-/// lifecycle row.
+/// The row a call folds under. A mutation folds under one `edit` family
+/// whatever tool it was, which is what the mockup draws: the wire's own
+/// answer gives each of the four mutation tools a row of its own, so
+/// `Edit, Write, Edit` would draw two rows both labelled `edit` and the
+/// second one out of order.
+fn family_row(sdk_tool_name: &str) -> (KindRow, String) {
+    if is_edit_tool(sdk_tool_name) {
+        return (KindRow::Family(ToolFamily::Own("edit")), "edit".to_owned());
+    }
+    wire_row(sdk_tool_name)
+}
+
+/// The card a question draws: each question the call asked, with what the
+/// person picked and what they typed.
 ///
-/// This is the fold's own predicate rather than `grouping::is_run_breaker_tool`,
-/// which is the TUI's: that one also breaks on a mutation, because the TUI
-/// opens a diff on its own, while the mockup draws an `edit` family inside
-/// the run with its leaves open.
-fn is_standalone_call(sdk_tool_name: &str, input: Option<&serde_json::Value>) -> bool {
-    is_ask_question_tool_name(sdk_tool_name)
-        || is_peer_block_render_tool(sdk_tool_name)
-        || renders_as_lifecycle_block_parts(sdk_tool_name, input)
+/// The answer is recorded on the result row the CLI writes beside the tool
+/// result (`tool_use_result.answers`, keyed by the question's own text), and
+/// a value matching none of the question's option labels is what was typed
+/// rather than picked. A question nobody answered is still a card: what was
+/// asked is worth drawing without it.
+fn question_card(
+    id: &str,
+    input: &serde_json::Value,
+    answers: &HashMap<String, serde_json::Value>,
+) -> ChatUnit {
+    let recorded = answers.get(id);
+    let asked = input
+        .get("questions")
+        .and_then(serde_json::Value::as_array)
+        .map(|questions| {
+            questions.iter().map(|question| answered_question(question, recorded)).collect()
+        })
+        .unwrap_or_default();
+    ChatUnit::QuestionCard { asked }
+}
+
+/// One question of a call, with its answer.
+fn answered_question(
+    question: &serde_json::Value,
+    recorded: Option<&serde_json::Value>,
+) -> AnsweredQuestion {
+    let text =
+        question.get("question").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+    let labels: Vec<&str> = question
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|option| option.get("label").and_then(serde_json::Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut picked_labels = Vec::new();
+    let mut typed_note = None;
+    for value in answer_values(recorded, &text) {
+        if labels.contains(&value.as_str()) {
+            picked_labels.push(value);
+        } else if typed_note.is_none() {
+            typed_note = Some(value);
+        }
+    }
+    // A note beside a picked option arrives in its own map, keyed the same
+    // way: the two shapes are one answer, and neither is the whole of it.
+    if typed_note.is_none() {
+        typed_note = recorded
+            .and_then(|result| result.get("annotations"))
+            .and_then(|annotations| annotations.get(&text))
+            .and_then(|annotation| annotation.get("notes"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|note| !note.is_empty())
+            .map(str::to_owned);
+    }
+    AnsweredQuestion { question: text, picked_labels, typed_note }
+}
+
+/// What was answered for `question`: a string, or the array a multi-select
+/// answer arrives as.
+fn answer_values(recorded: Option<&serde_json::Value>, question: &str) -> Vec<String> {
+    let Some(value) = recorded
+        .and_then(|result| result.get("answers"))
+        .and_then(serde_json::Value::as_object)
+        .and_then(|answers| answers.get(question))
+    else {
+        return Vec::new();
+    };
+    let out: Vec<String> = match value {
+        serde_json::Value::String(text) => vec![text.clone()],
+        serde_json::Value::Array(items) => {
+            items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect()
+        }
+        _ => Vec::new(),
+    };
+    // An empty answer is the CLI's "nothing picked" rather than something
+    // said, and counting it as an answer is what loses the note beside it.
+    out.into_iter().filter(|value| !value.is_empty()).collect()
+}
+
+/// Every question's recorded answer, by the call it belongs to.
+fn question_answers(messages: &[Message]) -> HashMap<String, serde_json::Value> {
+    let mut out = HashMap::new();
+    for message in messages {
+        let Message::User { message: envelope, tool_use_result, .. } = message else {
+            continue;
+        };
+        let Some(recorded) = tool_use_result else {
+            continue;
+        };
+        for block in &envelope.content {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                out.insert(tool_use_id.clone(), recorded.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Hand a queued prompt to the question card it answers, when the card has
+/// a question with nothing typed beside it yet. `false` when there is no
+/// such card, so the caller draws the prompt as the turn it is.
+fn absorb_typed(units: &mut [ChatUnit], text: &str) -> bool {
+    let Some(ChatUnit::QuestionCard { asked }) = units.last_mut() else {
+        return false;
+    };
+    match asked.iter_mut().find(|pair| pair.typed_note.is_none()) {
+        Some(pair) => {
+            pair.typed_note = Some(text.to_owned());
+            true
+        }
+        None => false,
+    }
 }
 
 /// The text a `queued_command` block carries: a plain string for a typed
@@ -204,14 +434,27 @@ pub fn queued_command_text(prompt: &serde_json::Value) -> String {
         .join("\n")
 }
 
+/// What one text block turns into. A peer card is not a unit yet: the run
+/// of them it belongs to has to be collected before the group it may become
+/// is known.
+enum TextUnit {
+    Peer(PeerCard),
+    Unit(ChatUnit),
+}
+
 /// One text block: the user's own turn, or the assistant's - unless it is
 /// an envelope, which arrives as the user turn's prose.
-fn text_unit(assistant: bool, text: &str) -> ChatUnit {
+fn text_unit(assistant: bool, text: &str) -> TextUnit {
     if !assistant && let Some(unit) = inbound_unit(text) {
-        return unit;
+        return match unit {
+            ChatUnit::PeerCard(card) => TextUnit::Peer(card),
+            other => TextUnit::Unit(other),
+        };
     }
     let text = text.to_owned();
-    if assistant { ChatUnit::AssistantText { text } } else { ChatUnit::UserTurn { text } }
+    let unit =
+        if assistant { ChatUnit::AssistantText { text } } else { ChatUnit::UserTurn { text } };
+    TextUnit::Unit(unit)
 }
 
 /// The unit an envelope carries. A peer comms envelope is a card; every
@@ -222,10 +465,14 @@ fn text_unit(assistant: bool, text: &str) -> ChatUnit {
 /// a silent turn.
 fn inbound_unit(text: &str) -> Option<ChatUnit> {
     match detect_inbound(text)? {
-        PeerInboundKind::Question { from, body, .. }
-        | PeerInboundKind::Message { from, body, .. }
-        | PeerInboundKind::Reply { from, body, .. } => {
-            Some(ChatUnit::PeerCard(PeerCard { peer: from, body, inbound: true }))
+        PeerInboundKind::Question { from, body, .. } => {
+            Some(ChatUnit::PeerCard(PeerCard { peer: from, body, inbound: true, kind: "question" }))
+        }
+        PeerInboundKind::Message { from, body, .. } => {
+            Some(ChatUnit::PeerCard(PeerCard { peer: from, body, inbound: true, kind: "message" }))
+        }
+        PeerInboundKind::Reply { from, body, .. } => {
+            Some(ChatUnit::PeerCard(PeerCard { peer: from, body, inbound: true, kind: "reply" }))
         }
         PeerInboundKind::Gotify { app, title, message, priority } => {
             let severity = if priority >= GOTIFY_ELEVATED_PRIORITY {
@@ -274,45 +521,158 @@ fn notice(severity: NoticeSeverity, source: &'static str, text: &str) -> ChatUni
 
 /// The card an outbound peer call draws, if it is one.
 fn outbound_card(name: &str, input: &serde_json::Value) -> Option<PeerCard> {
-    let (peer, body) = match detect_outbound_call(name, input)? {
-        PeerOutboundKind::Ask { target, body } | PeerOutboundKind::Tell { target, body } => {
-            (target, body)
-        }
+    let (peer, body, kind) = match detect_outbound_call(name, input)? {
+        PeerOutboundKind::Ask { target, body } => (target, body, "ask"),
+        PeerOutboundKind::Tell { target, body } => (target, body, "tell"),
     };
-    Some(PeerCard { peer, body, inbound: false })
+    Some(PeerCard { peer, body, inbound: false, kind })
 }
 
-/// One call as a transcript holds it: the wire's name and input, the
-/// title the shared call builder resolves, and the status its result
-/// recorded. A call with no result yet reads as `Pending`, which is what
-/// the resume path hands the TUI for the same file.
+/// One call as a transcript holds it: the wire's name and input, the title
+/// and content the shared call builder resolves, and what its result
+/// recorded. A call with no result yet reads as `Pending`, which is what the
+/// resume path hands the TUI for the same file.
 fn leaf(
     id: &str,
     name: &str,
     input: &serde_json::Value,
-    results: &HashMap<String, ToolCallStatus>,
+    results: &HashMap<String, Recorded>,
 ) -> ToolLeaf {
+    let mut call = forge_workspace::tooling::create_tool_call(id, name, input, None);
+    let recorded = results.get(id);
+    let (status, content) = match recorded {
+        Some(recorded) => {
+            // The result's own shapes ride the shared builder rather than a
+            // second reader here: it is what the TUI draws the same rows
+            // from, and two readers would drift. The builder resolves the
+            // input's own body too - an edit's diff arrives in the input -
+            // so its answer is the whole of what the row opens on.
+            let fields = forge_workspace::tooling::build_tool_result_fields(
+                recorded.status == ToolCallStatus::Failed,
+                recorded.content.as_ref(),
+                Some(&call),
+                recorded.result.as_ref(),
+            );
+            (fields.status.unwrap_or(recorded.status), fields.content.unwrap_or_default())
+        }
+        // A call that has not come back yet still carries what its own input
+        // says: an edit's diff is in the call, not in the result.
+        None => (ToolCallStatus::Pending, std::mem::take(&mut call.content)),
+    };
     ToolLeaf {
         id: id.to_owned(),
         label: tool_label(name),
-        title: forge_workspace::tooling::create_tool_call(id, name, input, None).title,
-        status: results.get(id).copied().unwrap_or(ToolCallStatus::Pending),
+        // What the row names, resolved the way the terminal's own tree
+        // resolves it: a search call's target is its pattern, a read's is
+        // its path, and a call the builders have no target for keeps the
+        // title the CLI gave it. The CLI's title is the tool's own name for
+        // some calls, which a view that strips a label from it draws blank.
+        title: family_target(CallParts { name, input: Some(input), title: &call.title })
+            .unwrap_or_else(|| call.title.clone()),
+        command: input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+            .map(str::to_owned),
+        status,
+        content,
     }
 }
 
+/// What one call's result recorded: the status it settled at, the row's own
+/// content, and the CLI's record beside it. All three are what the shared
+/// result builder reads.
+struct Recorded {
+    status: ToolCallStatus,
+    content: Option<serde_json::Value>,
+    result: Option<serde_json::Value>,
+}
+
+/// One settled turn's report, from the frame that recorded it.
+///
+/// `prev_api` is the session-cumulative API clock at the previous result:
+/// the wire counts it up across the session, so this turn's figure is the
+/// delta. Without a previous result there is no delta to take, and the
+/// cumulative field is the session's clock rather than this turn's, so the
+/// figure is left absent: a fold cannot tell a session's first result from
+/// one it joined mid-flight, and a read that keeps conversation rows alone
+/// always joins mid-flight. A value below the previous one means the counter
+/// restarted and is already per-turn, which leaves nothing to subtract
+/// either. A resulting zero is "not attributed" rather than "took no time",
+/// so it is absent for the same reason.
+fn turn_report(
+    message: &Message,
+    model: Option<&str>,
+    prev_api: &mut Option<u64>,
+) -> Option<TurnInfo> {
+    let Message::Result { duration_ms, duration_api_ms, total_cost_usd, usage, .. } = message
+    else {
+        return None;
+    };
+    let api_ms = match *prev_api {
+        Some(prev) if *duration_api_ms >= prev => duration_api_ms.checked_sub(prev),
+        _ => None,
+    };
+    *prev_api = Some(*duration_api_ms);
+    Some(TurnInfo {
+        duration_ms: Some(*duration_ms),
+        api_ms: api_ms.filter(|ms| *ms > 0),
+        model: model.filter(|name| !name.is_empty()).map(str::to_owned),
+        input_tokens: usage.as_ref().map(|usage| usage.input_tokens),
+        output_tokens: usage.as_ref().map(|usage| usage.output_tokens),
+        cache_read_tokens: usage.as_ref().map(|usage| usage.cache_read_input_tokens),
+        cache_written_tokens: usage.as_ref().map(|usage| usage.cache_creation_input_tokens),
+        session_cost_usd: *total_cost_usd,
+        ..TurnInfo::default()
+    })
+}
+
 /// Every tool result the conversation holds, by the call it answers.
-fn result_statuses(messages: &[Message]) -> HashMap<String, ToolCallStatus> {
+///
+/// Two shapes, and both have to be read: an ordinary call's result is a
+/// user turn, while a server-side tool's (`web_search`, `advisor`) arrives
+/// inline in the assistant message that made the call. Reading only the
+/// user turns leaves a server tool pending for good and holds its group's
+/// aggregate there with it.
+fn result_statuses(messages: &[Message]) -> HashMap<String, Recorded> {
     let mut out = HashMap::new();
     for message in messages {
-        let Message::User { message: envelope, .. } = message else {
-            continue;
-        };
-        for block in &envelope.content {
-            if let ContentBlock::ToolResult { tool_use_id, is_error, .. } = block {
-                let status =
-                    if *is_error { ToolCallStatus::Failed } else { ToolCallStatus::Completed };
-                out.insert(tool_use_id.clone(), status);
+        match message {
+            Message::User { message: envelope, tool_use_result, .. } => {
+                for block in &envelope.content {
+                    if let ContentBlock::ToolResult { tool_use_id, content, is_error } = block {
+                        let status = if *is_error {
+                            ToolCallStatus::Failed
+                        } else {
+                            ToolCallStatus::Completed
+                        };
+                        out.insert(
+                            tool_use_id.clone(),
+                            Recorded {
+                                status,
+                                content: Some(content.clone()),
+                                result: tool_use_result.clone(),
+                            },
+                        );
+                    }
+                }
             }
+            Message::Assistant { message: envelope, .. } => {
+                for block in &envelope.content {
+                    if let ContentBlock::ServerToolResult { tool_use_id, content } = block {
+                        out.insert(
+                            tool_use_id.clone(),
+                            Recorded {
+                                status: ToolCallStatus::Completed,
+                                content: Some(content.clone()),
+                                result: None,
+                            },
+                        );
+                    }
+                }
+            }
+            _ => {}
         }
     }
     out
@@ -336,9 +696,22 @@ fn flush(run: &mut Vec<((KindRow, String), ToolLeaf)>, units: &mut Vec<ChatUnit>
     units.push(ChatUnit::ToolGroup { families, status });
 }
 
+/// Close the peer run being collected, if it has one: two or more messages
+/// are one group with a count, and one is the card it is.
+fn flush_peers(peers: &mut Vec<PeerCard>, units: &mut Vec<ChatUnit>) {
+    let mut cards = std::mem::take(peers);
+    match cards.len() {
+        0 => {}
+        1 => units.push(ChatUnit::PeerCard(cards.remove(0))),
+        _ => units.push(ChatUnit::MessagingGroup { cards }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
+    use forge_primitives::{
+        AssistantEnvelope, ChunkContent, ContentBlock, Message, ToolCallContent, UserEnvelope,
+    };
 
     use crate::family::ToolFamily;
     use crate::grouping::KindRow;
@@ -445,35 +818,109 @@ mod tests {
         );
         assert_eq!(
             families[1].row,
-            KindRow::Family(ToolFamily::Own("Edit")),
+            KindRow::Family(ToolFamily::Own("edit")),
             "so the edit row reads as a class of its own, not as the generic tool row",
         );
     }
 
-    /// The whole standalone-call predicate, pinned from both sides: the
-    /// three classes the fold draws on their own - a Monitor's lifecycle
-    /// row, a question waiting on a person, a peer block - and the mutation
-    /// it now folds. Re-borrowing the TUI's predicate, or dropping an arm,
-    /// fails here rather than in a rendered page.
+    /// Every mutation folds under the one `edit` row, whatever tool it was.
+    /// The wire's own answer gives each of the four tools a row of its own,
+    /// which draws two rows both labelled `edit`, with the second one out of
+    /// order behind the first.
     #[test]
-    fn only_the_calls_the_mockup_draws_alone_break_the_run() {
+    fn every_mutation_folds_under_one_row() {
+        let messages = tool_call_messages(&["edit", "Write", "edit", "MultiEdit"]);
+        let units = render_units(&messages);
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+
+        assert_eq!(families.len(), 1, "one row, not one per tool name");
+        assert_eq!(families[0].label, "edit");
+        assert_eq!(families[0].calls.len(), 4, "with every mutation under it, in order");
+        let ids: Vec<&str> = families[0].calls.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["toolu_edit_0", "toolu_Write_1", "toolu_edit_2", "toolu_MultiEdit_3"],
+            "and in the order they ran",
+        );
+    }
+
+    /// A Monitor is not in the conversation at all: the inspector owns it,
+    /// and the mockup draws nothing for it in the chat. Folded as a row, the
+    /// page shows a watcher beside the calls it is watching, under a family
+    /// that has no name of its own.
+    ///
+    /// It is dropped without breaking the run it sat inside: the reader sees
+    /// the calls around it as the one run they are, since nothing is drawn
+    /// between them.
+    #[test]
+    fn a_monitor_is_not_in_the_conversation() {
         let monitor = assistant(vec![ContentBlock::ToolUse {
             id: "toolu_monitor".to_owned(),
             name: "Monitor".to_owned(),
             input: serde_json::json!({"description": "watch the deploy", "command": "tail -f log"}),
         }]);
+        let messages = [tool_call_at("read", 0), monitor, tool_call_at("read", 1)];
+
+        let units = render_units(&messages);
+
+        assert_eq!(units.len(), 1, "the run it sat inside is still one unit");
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        assert_eq!(families.len(), 1, "with no row for the monitor");
+        assert_eq!(families[0].calls.len(), 2, "and both reads under their own");
+    }
+
+    /// A run of peer messages is ONE group with a count, which is how the
+    /// TUI folds it and what the mockup draws; a lone message stays the
+    /// card it is. Folded as separate cards, a burst of peer traffic reads
+    /// as a wall of frames with nothing saying they arrived together.
+    #[test]
+    fn a_run_of_peer_messages_is_one_group() {
+        let steward = peer_message("t-1", "steward", "IT IMPORTED. The window is lost");
+        let planner = peer_message("t-2", "planner", "picking up the migration now");
+
+        let units = render_units(&[steward, planner]);
+
+        assert_eq!(units.len(), 1, "two consecutive peer messages are one unit");
+        let ChatUnit::MessagingGroup { cards } = &units[0] else {
+            panic!("a messaging group");
+        };
+        assert_eq!(cards.len(), 2, "carrying both of them");
+        assert_eq!(cards[0].peer, "steward", "in the order the conversation produced them");
+        assert_eq!(cards[1].peer, "planner", "and each keeps its own words");
+        assert_eq!(cards[1].body, "picking up the migration now");
+
+        let alone = render_units(&[peer_message("t-3", "tester", "take the render half")]);
+        assert!(
+            matches!(alone[0], ChatUnit::PeerCard(_)),
+            "a lone message is the card it is, with no group around it",
+        );
+    }
+
+    /// The two classes the mockup draws outside a run - a question waiting
+    /// on a person and a peer block - split it, and the mutation does not:
+    /// an edit is a family inside the group with its leaves open.
+    #[test]
+    fn only_the_calls_the_mockup_draws_alone_break_the_run() {
         let question = tool_call_named("AskUserQuestion");
-        let peer = tool_call_named("mcp__forge__agents__tell");
+        let peer = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_peer".to_owned(),
+            name: "mcp__forge__agents__tell".to_owned(),
+            input: serde_json::json!({"project": "companies", "message": "did it land?"}),
+        }]);
         let edit = tool_call("edit");
         let read = tool_call_at("read", 9);
 
         // A breaker on either side of a run: three units, the middle one
         // drawn alone.
-        for breaker in [monitor, question, peer] {
+        for breaker in [question, peer] {
             let units = render_units(&[read.clone(), breaker, read.clone()]);
             assert_eq!(units.len(), 3, "the run splits around a call drawn on its own");
             assert!(
-                matches!(&units[1], ChatUnit::ToolCall(_) | ChatUnit::PeerCard(_)),
+                matches!(&units[1], ChatUnit::PeerCard(_) | ChatUnit::QuestionCard { .. }),
                 "and that call is the unit in the middle",
             );
         }
@@ -574,6 +1021,112 @@ mod tests {
         assert_eq!(units.len(), 3, "the prose splits the run in two");
     }
 
+    /// A peer message that arrived as the user turn's prose, the way the
+    /// scan hands an inbound envelope to a reader.
+    fn peer_message(id: &str, from: &str, body: &str) -> Message {
+        user(vec![ContentBlock::Text {
+            text: format!("[Message id={id} from agent '{from}' (org 'Busytools')]\n\n{body}"),
+        }])
+    }
+
+    /// A question the assistant asked and a person answered. The fold draws
+    /// the mockup's card rather than a bare tool call: the question, what the
+    /// person picked, and what they typed.
+    ///
+    /// The answer is recorded on the result row the CLI wrote
+    /// (`tool_use_result.answers`, keyed by the question's own text), and a
+    /// value that matches none of the question's options is what was typed
+    /// rather than picked.
+    #[test]
+    fn an_answered_question_is_a_card() {
+        let asked = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_q".to_owned(),
+            name: "AskUserQuestion".to_owned(),
+            input: serde_json::json!({"questions": [{
+                "question": "Which colour do you prefer?",
+                "header": "Colour",
+                "multiSelect": false,
+                "options": [{"label": "Red"}, {"label": "Blue"}, {"label": "Green"}],
+            }]}),
+        }]);
+        let answered = user_answered(
+            "toolu_q",
+            serde_json::json!({
+                "questions": [{"question": "Which colour do you prefer?"}],
+                "answers": {"Which colour do you prefer?": "Blue"},
+            }),
+        );
+
+        let units = render_units(&[asked, answered]);
+
+        let ChatUnit::QuestionCard { asked } = &units[0] else {
+            panic!("a question card");
+        };
+        assert_eq!(asked.len(), 1, "one pair for the one question the call asked");
+        assert_eq!(asked[0].question, "Which colour do you prefer?", "carrying the question");
+        assert_eq!(asked[0].picked_labels, ["Blue"], "and what was picked");
+        assert_eq!(asked[0].typed_note, None, "with nothing typed this time");
+    }
+
+    /// What the person typed lands on the card too, whether the CLI recorded
+    /// it as a free-text answer or as the note beside a picked option. A
+    /// question whose answer matches no option is the typed one.
+    #[test]
+    fn a_typed_answer_lands_on_the_card() {
+        let asked = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_q".to_owned(),
+            name: "AskUserQuestion".to_owned(),
+            input: serde_json::json!({"questions": [{
+                "question": "Which colour do you prefer?",
+                "header": "Colour",
+                "multiSelect": true,
+                "options": [{"label": "Red"}, {"label": "Blue"}],
+            }]}),
+        }]);
+        let answered = user_answered(
+            "toolu_q",
+            serde_json::json!({
+                "answers": {"Which colour do you prefer?": ["Red", "and keep the green case too"]},
+            }),
+        );
+
+        let units = render_units(&[asked, answered]);
+
+        let ChatUnit::QuestionCard { asked } = &units[0] else {
+            panic!("a question card");
+        };
+        assert_eq!(asked[0].picked_labels, ["Red"], "the option that matches a label is the pick");
+        assert_eq!(
+            asked[0].typed_note.as_deref(),
+            Some("and keep the green case too"),
+            "and the value that matches none of them is what was typed",
+        );
+    }
+
+    /// A question nobody answered is still a card: the fold shows what was
+    /// asked, with nothing picked, rather than the tool call's own row.
+    #[test]
+    fn an_unanswered_question_is_a_card_without_an_answer() {
+        let asked = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_q".to_owned(),
+            name: "AskUserQuestion".to_owned(),
+            input: serde_json::json!({"questions": [{
+                "question": "Which colour do you prefer?",
+                "options": [{"label": "Red"}],
+            }]}),
+        }]);
+        let unanswered = user_answered("toolu_q", serde_json::json!({"answers": {}}));
+
+        let units = render_units(&[asked, unanswered]);
+
+        let ChatUnit::QuestionCard { asked } = &units[0] else {
+            panic!("a question card");
+        };
+        assert_eq!(asked[0].question, "Which colour do you prefer?", "the question is drawn");
+        assert!(asked[0].picked_labels.is_empty(), "with nothing picked");
+        assert_eq!(asked[0].typed_note, None, "and nothing typed");
+    }
+
     /// A user turn carrying `content`.
     fn user(content: Vec<ContentBlock>) -> Message {
         Message::User {
@@ -593,6 +1146,27 @@ mod tests {
             command_mode: Some("prompt".to_owned()),
             source_uuid: None,
         }])
+    }
+
+    /// The result row for a question, as the CLI writes it: the tool result,
+    /// and beside it the record of what was answered.
+    fn user_answered(tool_use_id: &str, recorded: serde_json::Value) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: tool_use_id.to_owned(),
+                    content: serde_json::Value::String(
+                        "Your questions have been answered".to_owned(),
+                    ),
+                    is_error: false,
+                }],
+            },
+            session_id: "session".to_owned(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: Some(recorded),
+        }
     }
 
     /// The result the tool at `tool_use_id` came back with.
@@ -643,10 +1217,122 @@ mod tests {
         assert_eq!(*status, ToolCallStatus::Failed, "and the run reports the failure it holds");
     }
 
+    /// A call carries what its row opens on: the result's own content,
+    /// resolved by the same builder the TUI draws the same rows from. A leaf
+    /// with no body is a row that expands to nothing.
+    #[test]
+    fn a_leaf_carries_what_its_result_put_beside_it() {
+        let messages = [tool_call("bash"), tool_result("toolu_bash_0", false)];
+
+        let units = render_units(&messages);
+
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        let leaf = &families[0].calls[0];
+        let text: String = leaf
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                ToolCallContent::Content { content: ChunkContent::Text { text } } => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains("output"), "the row opens on the result's own words: {text}");
+    }
+
+    /// A mutation, as the wire carries one: its diff is in the call's own
+    /// input.
+    fn edit_call() -> Message {
+        assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_edit".to_owned(),
+            name: "Edit".to_owned(),
+            input: serde_json::json!({
+                "file_path": "crates/forge-web/src/home.css",
+                "old_string": "  text-decoration: none; flex: none;",
+                "new_string": "  text-decoration: none; flex: 0 1 auto;",
+            }),
+        }])
+    }
+
+    fn diffs_in(leaf: &super::ToolLeaf) -> usize {
+        leaf.content
+            .iter()
+            .filter(|content| matches!(content, ToolCallContent::Diff { .. }))
+            .count()
+    }
+
+    /// A mutation carries its diff from the input alone, which is what the
+    /// mockup draws open by default: the edit family's leaves are the one
+    /// row that shows its body without being asked.
+    #[test]
+    fn a_mutation_carries_its_diff() {
+        let units = render_units(&[edit_call()]);
+
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        assert_eq!(
+            diffs_in(&families[0].calls[0]),
+            1,
+            "the edit's row carries the diff its input describes",
+        );
+    }
+
+    /// A mutation that has come back carries ONE diff, not two: the result
+    /// builder resolves the input's body as well, so a leaf that also kept
+    /// the call's own content would draw the same diff twice.
+    #[test]
+    fn a_mutation_that_came_back_carries_one_diff() {
+        let units = render_units(&[edit_call(), tool_result("toolu_edit", false)]);
+
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        let call = &families[0].calls[0];
+        assert_eq!(call.status, ToolCallStatus::Completed, "the result settles it");
+        assert_eq!(diffs_in(call), 1, "and its body is one diff, not two");
+    }
+
+    /// A server-side tool's result arrives inline in the assistant message
+    /// that made the call, not as a user turn. Reading only the user turns
+    /// leaves a `web_search` row pending for good, and holds its group's
+    /// aggregate at `Pending` with it.
+    #[test]
+    fn a_server_tool_result_settles_its_call() {
+        let call = assistant(vec![ContentBlock::ServerToolUse {
+            id: "srvtoolu_1".to_owned(),
+            name: "web_search".to_owned(),
+            input: serde_json::json!({"query": "ratatui list widget"}),
+        }]);
+        let result = assistant(vec![ContentBlock::ServerToolResult {
+            tool_use_id: "srvtoolu_1".to_owned(),
+            content: serde_json::json!({"type": "web_search_result"}),
+        }]);
+
+        let units = render_units(&[call, result]);
+
+        let ChatUnit::ToolGroup { families, status } = &units[0] else {
+            panic!("a tool group");
+        };
+        assert_eq!(
+            families[0].calls[0].status,
+            ToolCallStatus::Completed,
+            "the server tool's own result settles it",
+        );
+        assert_eq!(*status, ToolCallStatus::Completed, "and the run it is in with it");
+    }
+
     /// Peer traffic is a card on both sides: an envelope that arrived as
     /// the user turn's prose, and a call the session made. Folded as a
     /// turn or a tool call, the page would show the protocol instead of
     /// the message.
+    ///
+    /// Each is rendered alone: two in a row are the group that
+    /// [`a_run_of_peer_messages_is_one_group`] pins, which is a different
+    /// question from what one message is.
     #[test]
     fn peer_traffic_is_a_card_and_not_a_turn_or_a_call() {
         let arrived = user(vec![ContentBlock::Text {
@@ -659,20 +1345,148 @@ mod tests {
             input: serde_json::json!({"project": "forge", "prompt": "did it land?"}),
         }]);
 
-        let units = render_units(&[arrived, sent]);
-
-        let ChatUnit::PeerCard(inbound) = &units[0] else {
+        let inbound = render_units(&[arrived]);
+        let ChatUnit::PeerCard(inbound) = &inbound[0] else {
             panic!("a peer card");
         };
         assert!(inbound.inbound, "the envelope that arrived reads as inbound");
         assert_eq!(inbound.peer, "companies", "and names who sent it");
         assert_eq!(inbound.body, "is the cron issue filed?", "with what it said");
-        let ChatUnit::PeerCard(outbound) = &units[1] else {
+
+        let outbound = render_units(&[sent]);
+        let ChatUnit::PeerCard(outbound) = &outbound[0] else {
             panic!("a peer card");
         };
         assert!(!outbound.inbound, "the call the session made reads as outbound");
         assert_eq!(outbound.peer, "forge", "and names the seat it went to");
         assert_eq!(outbound.body, "did it land?", "with what it asked");
+    }
+
+    /// The decoded inbound frames of one captured baseline, in order.
+    ///
+    /// A capture rather than a fixture: the API clock counts up across the
+    /// session on real traffic, and a hand-built row would only restate the
+    /// reading it is meant to check.
+    fn captured(name: &str) -> Vec<Message> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../forge-test-harness/baselines/sdk");
+        // The version directory is named for the CLI the capture came from,
+        // so the capture is what identifies it: two directories holding the
+        // same name would make this walk pick by directory order.
+        let holding: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("the baseline directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.join(format!("{name}.jsonl")).is_file())
+            .collect();
+        assert_eq!(holding.len(), 1, "one captured version holds {name}");
+        let raw =
+            std::fs::read_to_string(holding[0].join(format!("{name}.jsonl"))).expect("the capture");
+        raw.lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|envelope| envelope["dir"] == "in")
+            .filter_map(|envelope| envelope["line"].as_str().map(str::to_owned))
+            .filter_map(|line| serde_json::from_str::<Message>(&line).ok())
+            .collect()
+    }
+
+    /// A settled turn's row reports what that turn used, not what the
+    /// session had reached. The capture's results are really cumulative -
+    /// 3171 ms of API time at the second one is 1281 ms of it for that turn -
+    /// and the last carries an unattributed zero, which is a frame that
+    /// measured nothing rather than a turn that took no time.
+    ///
+    /// The first result has no previous one to subtract, so its figure is
+    /// absent rather than the session's whole clock: a fold cannot know
+    /// whether the list it was handed starts at the session's beginning, and
+    /// on this page it never does.
+    #[test]
+    fn a_settled_turn_reports_its_own_api_time() {
+        let reported: Vec<Option<u64>> = render_units(&captured("compact"))
+            .into_iter()
+            .filter_map(|unit| match unit {
+                ChatUnit::TurnReport(info) => Some(info.api_ms),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            reported,
+            [None, Some(1_281), Some(1_158), Some(1_383), Some(1_381), Some(1_336), None],
+            "the deltas the captured clock works out to, and nothing where there is no anchor",
+        );
+    }
+
+    /// A fold handed a mid-session stretch of results reports nothing for the
+    /// first one, which is the shape this page always gives it: the read
+    /// keeps conversation rows alone, so the results the fold sees start
+    /// wherever the page attached. Taking the cumulative field there would
+    /// report the session's clock as one turn's.
+    #[test]
+    fn a_fold_that_joins_mid_session_reports_nothing_for_its_first_result() {
+        let results: Vec<Message> = captured("compact").into_iter().filter(is_result).collect();
+        assert_eq!(results.len(), 7, "the capture holds the seven results this walks");
+        // The third result onward: the page joins a session, it does not
+        // start one.
+        let reported: Vec<Option<u64>> = render_units(&results[2..])
+            .into_iter()
+            .filter_map(|unit| match unit {
+                ChatUnit::TurnReport(info) => Some(info.api_ms),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            reported,
+            [None, Some(1_383), Some(1_381), Some(1_336), None],
+            "the first figure is unknown, and the ones after it are still deltas",
+        );
+    }
+
+    fn is_result(msg: &Message) -> bool {
+        matches!(msg, Message::Result { .. })
+    }
+
+    /// The wire's thinking counter restarts at every thinking block, so a
+    /// turn's estimate is the sum of its deltas. This capture is the shape:
+    /// its counter reaches 161, starts again at 50, and ends at 349, and the
+    /// seven blocks it carried are 510 tokens of thinking. Reading the
+    /// absolute field reports 349 and a counter that moves backwards at the
+    /// restart.
+    #[test]
+    fn a_turn_that_thought_twice_reports_every_block() {
+        let reported = render_units(&captured("exit_plan_mode"))
+            .into_iter()
+            .find_map(|unit| match unit {
+                ChatUnit::TurnReport(info) => Some(info.thinking_tokens),
+                _ => None,
+            })
+            .expect("the capture has a settled turn");
+
+        assert_eq!(reported, Some(510), "every block the turn thought, not the last one");
+    }
+
+    /// A question answered with a note and nothing picked. The CLI records
+    /// the note under the result's `annotations` and leaves the answer empty,
+    /// so an empty answer is no answer and the note is what was said.
+    #[test]
+    fn a_note_beside_an_empty_answer_is_what_was_said() {
+        let units = render_units(&captured("question_notes_only_response"));
+        let asked = units
+            .iter()
+            .find_map(|unit| match unit {
+                ChatUnit::QuestionCard { asked } => Some(asked),
+                _ => None,
+            })
+            .expect("the capture asks a question");
+
+        assert_eq!(asked[0].question, "Which colour do you prefer?");
+        assert!(asked[0].picked_labels.is_empty(), "nothing was picked");
+        assert_eq!(
+            asked[0].typed_note.as_deref(),
+            Some("test feedback from forge unified-prompt harness"),
+            "and the note beside the empty answer is what the card carries",
+        );
     }
 }
 

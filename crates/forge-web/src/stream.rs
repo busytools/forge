@@ -4,12 +4,15 @@ use std::convert::Infallible;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use axum::extract::State;
-use axum::response::Sse;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive};
+use axum::response::{IntoResponse, Response, Sse};
 use forge_primitives::Message;
+use forge_primitives::SessionSlot;
 use forge_primitives::runtime::RuntimeSessionState;
 use forge_sessions::SessionUpdate;
+use forge_sessions::model::LiveTurn;
 use forge_sessions::surface::is_success_result;
 use futures_util::StreamExt;
 use futures_util::stream::{self, Stream};
@@ -23,6 +26,9 @@ use crate::unseen::Unseen;
 /// The name the page listens for. One region, one event: the page has no
 /// interactive state to preserve, so a wholesale swap is the whole answer.
 const FLEET_EVENT: &str = "fleet";
+
+/// The same, for the session page's own stream.
+const SESSION_EVENT: &str = "session";
 
 /// The event that says the stream is over. The browser reconnects a
 /// stream that just ends, so the page closes this one when it hears it.
@@ -133,6 +139,207 @@ impl Live {
             // not show.
             _ => false,
         }
+    }
+}
+
+/// The session page's own stream: its own subscription and its own baseline
+/// read, taken in that order.
+///
+/// The order is the design and it is the opposite of the obvious one.
+/// Subscribe first, then read: the read is the baseline the stream is
+/// applied on top of, so a message may be in both and is dropped by id when
+/// it is. Reading first loses whatever arrived in between, and no later
+/// read brings it back.
+pub async fn session_events(
+    State(wiring): State<Wiring>,
+    Path((org, project, label)): Path<(String, String, String)>,
+) -> Response {
+    let Some(slot) = crate::session::seat(&wiring.state.surface, &org, &project, &label) else {
+        return (StatusCode::NOT_FOUND, "no session slot by that name").into_response();
+    };
+    let receiver = wiring.state.surface.subscribe();
+    let cwd = wiring.state.surface.roster().cwd_for(&slot);
+    let conversation = crate::session::read_conversation(&wiring.state.surface, &slot, cwd).await;
+    // The opening event draws the read, which carries no turn in flight: the
+    // connection arms its own clock off the first running state it hears.
+    let opening = {
+        let region = crate::session::session_region(
+            &wiring.state,
+            wiring.bound,
+            &slot,
+            &conversation,
+            None,
+            false,
+        )
+        .await;
+        stream::once(
+            async move { Ok(Event::default().event(SESSION_EVENT).data(region.into_string())) },
+        )
+    };
+    let updates = session_updates(receiver, wiring, slot, conversation, LiveTurn::default());
+    let stream = opening.chain(updates).chain(stream::once(async {
+        Ok(Event::default().event(CLOSE_EVENT).data("the core's stream ended"))
+    }));
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(20))).into_response()
+}
+
+/// One event per update that changes this session, or per tick, carrying
+/// the region the page swaps in.
+///
+/// The conversation the connection holds is what makes a read per update
+/// unnecessary: it is the baseline read plus everything the stream has
+/// appended since, and a re-read per event would walk the transcript again
+/// every time.
+fn session_updates(
+    receiver: UnboundedReceiver<SessionUpdate>,
+    wiring: Wiring,
+    slot: SessionSlot,
+    conversation: Vec<Message>,
+    live: LiveTurn,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + TICK, TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    stream::unfold(
+        // The compaction flag rides the carried state with the conversation
+        // and the live turn. A local inside the step would be rebuilt false
+        // on every yielded region, so the line would go at the next tick
+        // rather than when the session said the compaction ended.
+        (receiver, wiring, slot, conversation, live, false, tick),
+        |(mut receiver, wiring, slot, conversation, live, mut compacting, mut tick)| async move {
+            let mut conversation = conversation;
+            let mut live = live;
+            loop {
+                let redraw = tokio::select! {
+                    update = receiver.recv() => {
+                        let update = update?;
+                        // The rail and the inspector draw the fleet, so an
+                        // update they redraw for redraws this page too.
+                        let fleet = Live::lock(&wiring.state.live).apply(&update);
+                        let replaced = replacement(&update, &slot);
+                        let handed_over = replaced.is_some();
+                        if let Some(history) = replaced {
+                            // A new occupant brings its own history, and the
+                            // clock the old one was counting on goes with it.
+                            conversation = history;
+                            live = LiveTurn::default();
+                        }
+                        let appended = append(&update, &slot, &mut conversation);
+                        if let SessionUpdate::ChatAppended { key, msg } = &update
+                            && key == &slot
+                        {
+                            crate::session::apply_to_live_turn(msg, &mut live);
+                            if let Some(state) = crate::session::compaction_state(msg) {
+                                compacting = state;
+                            }
+                        }
+                        appended || fleet || handed_over
+                    }
+                    _ = tick.tick() => true,
+                };
+                if !redraw {
+                    continue;
+                }
+                let region = crate::session::session_region(
+                    &wiring.state,
+                    wiring.bound,
+                    &slot,
+                    &conversation,
+                    Some(&live),
+                    compacting,
+                )
+                .await;
+                let event = Event::default().event(SESSION_EVENT).data(region.into_string());
+                return Some((
+                    Ok(event),
+                    (receiver, wiring, slot, conversation, live, compacting, tick),
+                ));
+            }
+        },
+    )
+}
+
+/// The conversation a replacement hands over, when it is this seat's.
+///
+/// A resume or a `/new` puts another occupant in the slot and the page's copy
+/// is the one that just left, so the region has to be drawn from the history
+/// the update carries instead. A `Connected` carries one only where the seat
+/// was already running, and an empty history there leaves the read's own
+/// conversation alone: a page opened on a seat nothing was behind has nothing
+/// to replace.
+fn replacement(update: &SessionUpdate, slot: &SessionSlot) -> Option<Vec<Message>> {
+    match update {
+        SessionUpdate::SessionReplaced { key, history, .. } if key == slot => Some(history.clone()),
+        SessionUpdate::Connected { key, history, .. } if key == slot && !history.is_empty() => {
+            Some(history.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Fold one update into the connection's conversation, answering whether the
+/// page has to be redrawn.
+///
+/// A message the read already carried is dropped: the read is the baseline
+/// and the stream is applied on top of it, so anything in both is already
+/// drawn. The identity is the message's own id, which the transcript row and
+/// the wire frame share.
+///
+/// A delivery the workspace injected draws as a turn of its own, forged from
+/// the update rather than read off the wire: the CLI does not echo a prompt
+/// it was handed on stdin, so the assistant would otherwise answer something
+/// nobody saw.
+///
+/// The read does carry the row the CLI persisted, so a delivery that lands
+/// while the read is in flight is drawn from both and repeats until the page
+/// reloads. Accepted deliberately: the duplicate is a repeated line, while a
+/// rule that matched on the body would drop a message someone really did send
+/// twice.
+fn append(update: &SessionUpdate, slot: &SessionSlot, conversation: &mut Vec<Message>) -> bool {
+    if let Some(turn) = forge_sessions::delivery::delivery_turn(update, slot) {
+        conversation.push(turn);
+        return true;
+    }
+    let SessionUpdate::ChatAppended { key, msg } = update else {
+        return false;
+    };
+    if key != slot {
+        return false;
+    }
+    match message_id(msg) {
+        Some(id) if conversation.iter().any(|held| message_id(held) == Some(id)) => false,
+        _ => {
+            conversation.push(msg.clone());
+            true
+        }
+    }
+}
+
+/// The id a streamed message carries, when it carries one.
+fn message_id(msg: &Message) -> Option<&str> {
+    match msg {
+        Message::Assistant { uuid, .. } | Message::User { uuid, .. } => uuid.as_deref(),
+        Message::TaskStarted { uuid, .. }
+        | Message::TaskUpdated { uuid, .. }
+        | Message::TaskProgress { uuid, .. }
+        | Message::TaskNotification { uuid, .. }
+        | Message::ThinkingTokens { uuid, .. }
+        | Message::TurnDuration { uuid, .. }
+        | Message::StopHookSummary { uuid, .. }
+        | Message::BackgroundTasksChanged { uuid, .. }
+        | Message::CommandsChanged { uuid, .. }
+        | Message::HookStarted { uuid, .. }
+        | Message::HookResponse { uuid, .. }
+        | Message::HookProgress { uuid, .. }
+        | Message::Notification { uuid, .. }
+        | Message::PermissionDenied { uuid, .. }
+        | Message::CompactBoundary { uuid, .. }
+        | Message::RateLimitEvent { uuid, .. }
+        | Message::Result { uuid: Some(uuid), .. } => Some(uuid),
+        Message::Result { uuid: None, .. }
+        | Message::System { .. }
+        | Message::StreamEvent { .. }
+        | Message::Error { .. }
+        | Message::Unknown { .. } => None,
     }
 }
 
