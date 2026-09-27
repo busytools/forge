@@ -441,8 +441,8 @@ connector, no second gateway - so the cost of the extra view is the
 listener and the requests. It serves the home - every project under its
 org, what each agent is doing, and what needs you, kept live by a stream
 the page subscribes to - and a page per session at
-`/session/{org}/{project}/{label}`, with that session's projects rail
-and inspector. A bind that fails is logged and does not stop forge; the
+`/session/{org}/{project}/{label}`, with that session's projects rail,
+chat column and inspector. A bind that fails is logged and does not stop forge; the
 TUI is not downstream of the web view.
 
 ## Unknown keys
