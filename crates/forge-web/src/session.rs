@@ -384,12 +384,11 @@ fn pane_markup(pane: &Pane) -> Markup {
 
 /// The close chip every row carries. Nothing in this view can close a
 /// session yet - that is the dispatch path, which lands separately - so the
-/// chip is drawn unavailable with the reason rather than as a control that
-/// does nothing when it is clicked.
+/// chip is drawn unavailable rather than as a control that does nothing when
+/// it is clicked.
 fn close_chip() -> Markup {
     html! {
-        span .x aria-disabled="true"
-             title="closing a session from here needs the dispatch path, which lands separately" {
+        span .x aria-disabled="true" title="closing a session is not available yet" {
             "\u{2715}"
         }
     }
