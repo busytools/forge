@@ -22,11 +22,12 @@ pulldown-cmark = { workspace = true }
 # A source file a call read or wrote is drawn highlighted, into the four
 # token classes the mockup names.
 syntect = { workspace = true }
+# An MCP server's config blob, which is where the scope a server with no
+# configured one reads is named, and the status frame's own shape, read for
+# the one field that says a compaction is running.
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
-# The status frame's own shape, read for the one field that says a compaction
-# is running.
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

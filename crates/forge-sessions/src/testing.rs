@@ -24,6 +24,25 @@ use crate::surface::{PendingKind, ViewSurface};
 /// What a fixture hands back when it cannot build what was asked for.
 pub type FixtureError = Box<dyn std::error::Error + Send + Sync>;
 
+/// The facts a session holds that no update stream carries, for a view's
+/// fixture to seed. Every field is what the session reports: leaving one
+/// out is a session that has not reported it.
+#[derive(Default)]
+pub struct ViewFacts {
+    pub model: Option<forge_primitives::CurrentModel>,
+    /// The effort a hook observed, which a session reports only once it
+    /// has used a tool.
+    pub observed_effort: Option<forge_primitives::EffortLevel>,
+    /// The effort the launch stamped, which stands until a hook reports.
+    pub configured_effort: Option<forge_primitives::EffortLevel>,
+    pub permission_mode: Option<forge_primitives::PermissionMode>,
+    pub context: Option<forge_workspace::ContextUsage>,
+    pub mcp: Option<forge_workspace::McpServers>,
+    pub process_snapshot: Option<forge_workspace::env::processes::ProcessSnapshot>,
+    pub monitors: Vec<forge_primitives::MonitorRecord>,
+    pub subagent_attribution: std::collections::HashMap<String, String>,
+}
+
 /// A view surface over a stub workspace, plus the seeding a test needs to
 /// put a roster in front of it.
 pub struct Fleet {
@@ -214,6 +233,31 @@ impl Fleet {
         let path = self.project_view(project)?.path.to_string_lossy().into_owned();
         self.workspace.record_connected_session(&path, session_id, None);
         Ok(())
+    }
+
+    /// Hold `facts` on `slot`'s session, as the events that carry them
+    /// would: the header's four, the MCP snapshot, the process walk, the
+    /// monitor set and the sub-agent attribution.
+    ///
+    /// A field left out is a fact the session has not reported, which is
+    /// its own state rather than an empty one.
+    pub fn seed_view_facts(&self, slot: &SessionSlot, facts: ViewFacts) {
+        let domain = self
+            .workspace
+            .domain_session_for(slot)
+            .unwrap_or_else(|| self.workspace.register_domain_session(slot.clone(), None));
+        let mut held = domain.lock();
+        held.current_model = facts.model;
+        held.observed_effort = facts.observed_effort;
+        if let Some(effort) = facts.configured_effort {
+            held.configured_effort = effort;
+        }
+        held.observed_permission_mode = facts.permission_mode;
+        held.context_usage = facts.context;
+        held.mcp_servers = facts.mcp;
+        held.process_snapshot = facts.process_snapshot;
+        held.monitors = facts.monitors;
+        held.subagent_attribution = facts.subagent_attribution;
     }
 
     fn project_view(&self, project: &str) -> Result<forge_workspace::ProjectView, FixtureError> {

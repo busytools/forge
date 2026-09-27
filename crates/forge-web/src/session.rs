@@ -8,12 +8,14 @@
 //! its own.
 
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use forge_primitives::Message;
+use forge_primitives::PermissionMode;
 use forge_primitives::SessionLifecycleState;
 use forge_primitives::SessionSlot;
 use forge_primitives::account::AccountAuth;
@@ -23,7 +25,10 @@ use forge_primitives::messages::{StopHookInfo, Usage};
 use forge_primitives::runtime::RuntimeSessionState;
 use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
 use forge_primitives::tasks::{Task, TaskStatus};
-use forge_primitives::{ChunkContent, CronEntry, CronKind, ToolCallContent};
+use forge_primitives::{
+    ChunkContent, CronEntry, CronKind, McpServerConnectionStatus, McpServerStatus, MonitorRecord,
+    MonitorStatus, ToolCallContent,
+};
 use forge_sessions::family::ToolFamily;
 use forge_sessions::grouping::KindRow;
 use forge_sessions::model::{
@@ -31,6 +36,9 @@ use forge_sessions::model::{
     format_token_count_short, format_turn_duration,
 };
 use forge_sessions::surface::connectors::{GotifyView, SlackView};
+use forge_sessions::surface::inspector::{
+    McpServers, ProcessEntry, ProcessSnapshot, SessionHeader, basename_exe, extract_inner_command,
+};
 use forge_sessions::surface::{
     AccountsView, Agents, LoadingState, PendingKind, Roster, ViewSurface,
 };
@@ -39,6 +47,7 @@ use forge_sessions::transcript::{
     ChatUnit, FamilyLeaves, Notice, NoticeSeverity, PeerCard, ToolLeaf,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
+use serde_json::Value;
 
 use crate::home::{Home, Row, Seed, State};
 use crate::icons;
@@ -360,6 +369,7 @@ async fn columns(
             }
         }
     });
+    let header = home.surface.header(slot);
 
     html! {
     div #session-body {
@@ -385,7 +395,10 @@ async fn columns(
                         span .dot .(mark_of(state)) {}
                         span .nm { (name) }
                         span .mono .dim { (slot.org()) }
-                        span .facts { (account_chip(&accounts, chip.as_deref())) }
+                        span .facts {
+                            (header_facts(&header))
+                            (account_chip(&accounts, chip.as_deref()))
+                        }
                     }
                     div .conv {
                         (chat_body(
@@ -413,6 +426,62 @@ async fn columns(
 /// The page's own stream: a slot's region, one connection per tab.
 fn events_path(slot: &SessionSlot) -> String {
     format!("{}/events", href(slot))
+}
+
+/// The header's four facts: the model the session resolved, the effort it
+/// runs at, the mode a hook observed and how full its context is. An
+/// unstated one draws a dash rather than dropping the fact, so the header
+/// keeps its shape from the moment a seat opens.
+fn header_facts(header: &SessionHeader) -> Markup {
+    let model = header.model.as_ref().map_or_else(
+        || "\u{2014}".to_owned(),
+        |model| {
+            if model.display_name_long.is_empty() {
+                model.resolved_id.clone()
+            } else {
+                model.display_name_long.clone()
+            }
+        },
+    );
+    let mode = header
+        .permission_mode
+        .map(|mode| (mode.as_wire(), format!("perm {}", perm_class(mode)).trim_end().to_owned()));
+    let percent = header.context.percent;
+    html! {
+        span { span .fk { "model" } " " span .v { (model) } }
+        span .sep { "\u{b7}" }
+        span { span .fk { "effort" } " " span .v { (header.effort.as_stored()) } }
+        span .sep { "\u{b7}" }
+        span {
+            span .fk { "mode" } " "
+            @match mode {
+                Some((wire, class)) => span .(class) { (wire) },
+                None => span .perm { "\u{2014}" },
+            }
+        }
+        span .sep { "\u{b7}" }
+        span .cm {
+            span .fk { "ctx" }
+            span .tk { span .fl style=(format!("width:{}%", percent.unwrap_or(0))) {} }
+            span .v {
+                @match percent {
+                    Some(percent) => (format!("{percent}%")),
+                    None => "\u{2014}",
+                }
+            }
+        }
+    }
+}
+
+/// The class a permission mode's chip carries, so the colour says how much
+/// the session is allowed to do without being asked.
+fn perm_class(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Auto | PermissionMode::AcceptEdits => "auto",
+        PermissionMode::Plan => "plan",
+        PermissionMode::BypassPermissions => "bypass",
+        PermissionMode::Ask | PermissionMode::DontAsk => "",
+    }
 }
 
 /// The projects rail: every declared project, grouped by the strongest
@@ -631,6 +700,10 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
     let tasks = roster.tasks_for_project(slot.project());
     let crons = roster.crons_for_project(slot.project());
     let connectors = home.surface.connectors(Some(slot.project()));
+    let attributed = home.surface.subagent_attribution(slot);
+    let servers = home.surface.mcp_servers(slot);
+    let walk = home.surface.processes(slot);
+    let monitors = home.surface.monitors(slot);
 
     html! {
         @if let Some(work) = &work {
@@ -638,6 +711,9 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
         }
         @if !tasks.is_empty() {
             (tasks_section(&tasks))
+        }
+        @if !attributed.is_empty() {
+            (subagents_section(&attributed))
         }
         @if !crons.is_empty() {
             (schedules_section(&crons))
@@ -650,6 +726,276 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
         {
             (slack_section(&connectors.slack))
         }
+        @if let Some(servers) = &servers {
+            @if !servers.servers.is_empty() || servers.error.is_some() {
+                (mcp_section(servers))
+            }
+        }
+
+        @if let Some(walk) = walk.as_ref().filter(|walk| !walk.processes.is_empty()) {
+            (processes_section(walk))
+        }
+        @if !monitors.is_empty() {
+            (monitors_section(&monitors))
+        }
+    }
+}
+
+/// The subagents section: which agent type ran which of this session's
+/// tool calls.
+///
+/// This is the session's own attribution, not the CLI's catalogue of the
+/// agent types that exist: a session that has had no sub-agent run has
+/// nothing here, whether or not it could offer one.
+fn subagents_section(attributed: &HashMap<String, String>) -> Markup {
+    let mut per_type: Vec<(&str, usize)> = Vec::new();
+    for agent_type in attributed.values() {
+        match per_type.iter_mut().find(|(name, _)| name == agent_type) {
+            Some((_, calls)) => *calls += 1,
+            None => per_type.push((agent_type.as_str(), 1)),
+        }
+    }
+    per_type.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+    let types = per_type.len();
+    let body = html! {
+        @for (agent_type, calls) in &per_type {
+            div .kv {
+                span .k { (agent_type) }
+                span .v { (call_count(*calls)) }
+            }
+        }
+        div .note { "The only surface subagents have - the chat suppresses them." }
+    };
+    section(false, "subagents", "subagents", &types.to_string(), &body)
+}
+
+/// How much work one agent type ran, counted so that one reads as one.
+fn call_count(calls: usize) -> String {
+    if calls == 1 { "1 call".to_owned() } else { format!("{calls} calls") }
+}
+
+/// The MCP servers this session's bridge reported, with the reason a read
+/// that failed came back empty rather than reading as nothing configured.
+fn mcp_section(servers: &McpServers) -> Markup {
+    let summary = if servers.servers.is_empty() {
+        "failed".to_owned()
+    } else {
+        servers.servers.len().to_string()
+    };
+    let body = html! {
+        @for server in &servers.servers {
+            div .kv {
+                span .k { (server.name) " \u{b7} " (scope_label(server)) }
+                span .v { (mcp_state(server)) }
+            }
+        }
+        @if let Some(error) = &servers.error {
+            div .note { (error) }
+        }
+    };
+    section(false, "mcp", "mcp servers", &summary, &body)
+}
+
+/// The scope a server is configured in, which is what its config blob names
+/// rather than where its process runs. The terminal's own row reads it the
+/// same way, so a server that reports no scope reads as the session's.
+fn scope_label(server: &McpServerStatus) -> String {
+    if let Some(scope) = server.scope.as_deref() {
+        return scope.to_owned();
+    }
+    match server.config.as_ref().and_then(|config| config.get("type")).and_then(Value::as_str) {
+        Some("sdk") => "sdk".to_owned(),
+        _ => "session".to_owned(),
+    }
+}
+
+/// What the row says in its value column: how many tools the server offers
+/// when it is up, and why it is not when it is not. The rule is the
+/// terminal's own; the words are this view's, and two of the five read
+/// differently because a page has room for them and a pane of rows does
+/// not.
+fn mcp_state(server: &McpServerStatus) -> String {
+    match server.status {
+        McpServerConnectionStatus::Connected => server
+            .tools
+            .as_ref()
+            .map_or_else(|| "connected".to_owned(), |tools| tool_summary(tools.len())),
+        McpServerConnectionStatus::Failed => server
+            .error
+            .as_deref()
+            .map(str::trim)
+            .filter(|error| !error.is_empty())
+            .unwrap_or("failed")
+            .to_owned(),
+        McpServerConnectionStatus::NeedsAuth => "needs sign-in".to_owned(),
+        McpServerConnectionStatus::Pending => "connecting".to_owned(),
+        McpServerConnectionStatus::Disabled => "disabled".to_owned(),
+    }
+}
+
+/// How many tools a server offers, counted so that one reads as one.
+fn tool_summary(count: usize) -> String {
+    match count {
+        0 => "no tools".to_owned(),
+        1 => "1 tool".to_owned(),
+        count => format!("{count} tools"),
+    }
+}
+
+/// The processes section: claude's descendant tree, a row each, with the
+/// tree's shape carried by the row's indent.
+fn processes_section(walk: &ProcessSnapshot) -> Markup {
+    let count = walk.processes.len();
+    let tree = process_tree(walk);
+    let walked = walked_note(walk.scanned_at);
+    let body = html! {
+        @for (entry, depth) in tree {
+            div .kv {
+                span .k {
+                    @for _ in 0..depth { (PreEscaped("&nbsp;&nbsp;")) }
+                    (process_headline(entry))
+                }
+                span .v { (format!("{} \u{b7} {}", memory_label(entry.memory_bytes), entry.pid)) }
+            }
+        }
+        div .note { (walked) }
+    };
+    section(false, "processes", "processes", &count.to_string(), &body)
+}
+
+/// What a row calls its process: the command it is running, with the
+/// executable's path stripped, and the command a shell wrapper wraps rather
+/// than its own chrome. The OS name alone says nothing about which node
+/// process it is, which is why the terminal's own row draws this.
+fn process_headline(entry: &ProcessEntry) -> String {
+    let command = entry.command.trim();
+    if let Some(inner) = extract_inner_command(&entry.command) {
+        return basename_exe(&inner);
+    }
+    if command.is_empty() {
+        return if entry.name.is_empty() { "(process)".to_owned() } else { entry.name.clone() };
+    }
+    basename_exe(command)
+}
+
+/// When the walk behind these rows was taken. The walk is only ever
+/// performed for the session a view is looking at, so a slot nobody is
+/// looking at serves the last tree left on it, and rows from an hour ago
+/// drawn exactly like rows from a second ago would be a wrong answer
+/// rather than an old one.
+fn walked_note(scanned_at: SystemTime) -> String {
+    match crate::home::elapsed_label(scanned_at).as_str() {
+        "now" => "walked just now".to_owned(),
+        age => format!("walked {age} ago"),
+    }
+}
+
+/// The walk as a tree: every row with how deep it sits, parents before
+/// their children, and the walk's own order within a sibling group.
+///
+/// The scan returns entries by memory rather than by parentage, so drawing
+/// them in that order would indent a row under whatever happened to come
+/// before it. A row whose parent the walk did not carry is a root of its
+/// own, which is what makes a partial snapshot still list everything in
+/// it.
+fn process_tree(walk: &ProcessSnapshot) -> Vec<(&ProcessEntry, usize)> {
+    let mut children_of: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
+    let mut present: HashSet<u32> = HashSet::new();
+    for entry in &walk.processes {
+        children_of.entry(entry.parent_pid).or_default().push(entry);
+        present.insert(entry.pid);
+    }
+
+    let mut placed: HashSet<u32> = HashSet::new();
+    let mut tree = Vec::with_capacity(walk.processes.len());
+    for entry in &walk.processes {
+        if !present.contains(&entry.parent_pid) && placed.insert(entry.pid) {
+            walk_subtree(entry, 0, &children_of, &mut placed, &mut tree);
+        }
+    }
+    // A pid cycle reaches no root, and neither does a subtree hanging off
+    // one. Every row is still drawn, once.
+    for entry in &walk.processes {
+        if placed.insert(entry.pid) {
+            walk_subtree(entry, 0, &children_of, &mut placed, &mut tree);
+        }
+    }
+    tree
+}
+
+/// One row and its descendants. `placed` is what stops a cycle: a pid the
+/// walk already drew is not drawn again.
+fn walk_subtree<'a>(
+    entry: &'a ProcessEntry,
+    depth: usize,
+    children_of: &HashMap<u32, Vec<&'a ProcessEntry>>,
+    placed: &mut HashSet<u32>,
+    tree: &mut Vec<(&'a ProcessEntry, usize)>,
+) {
+    tree.push((entry, depth));
+    for child in children_of.get(&entry.pid).into_iter().flatten() {
+        if placed.insert(child.pid) {
+            walk_subtree(child, depth + 1, children_of, placed, tree);
+        }
+    }
+}
+
+/// Resident memory, in the unit the reader thinks in. Integer arithmetic
+/// all the way down, and the same units the TUI's own row uses, so the two
+/// views read the same tree the same way.
+fn memory_label(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes < KB {
+        format!("{bytes} B")
+    } else if bytes < MB {
+        format!("{} KB", bytes / KB)
+    } else if bytes < GB {
+        format!("{} MB", bytes / MB)
+    } else {
+        format!("{}.{} GB", bytes / GB, (bytes % GB) / (GB / 10))
+    }
+}
+
+/// The monitors section. Monitors live here and not in the chat, so this
+/// is the only surface that says what a session is watching.
+fn monitors_section(monitors: &[MonitorRecord]) -> Markup {
+    let running = monitors.iter().filter(|monitor| !monitor.status.is_terminal()).count();
+    let summary = format!("{running} running");
+    let body = html! {
+        @for monitor in monitors {
+            div .sa {
+                div .sh {
+                    @if monitor.status.is_terminal() {
+                        (icons::icon("check", "st"))
+                    } @else {
+                        span .st { span .ring style="width:8px;height:8px" {} }
+                    }
+                    (icons::icon("monitors", "gl"))
+                    span .nm { (&monitor.description) }
+                    span .n { (monitor_label(monitor)) }
+                }
+                @if monitor.status.is_terminal() {
+                    div .settled { "settled - its output stays in the transcript" }
+                } @else {
+                    div .tt { span .tg { "$" } " " (&monitor.command) }
+                }
+            }
+        }
+    };
+    section(false, "monitors", "monitors", &summary, &body)
+}
+
+/// The trailing word on a monitor's own row: how it ended, or what it is
+/// while it runs.
+fn monitor_label(monitor: &MonitorRecord) -> String {
+    match monitor.status {
+        MonitorStatus::Running if monitor.persistent => "persistent".to_owned(),
+        MonitorStatus::Running => "running".to_owned(),
+        MonitorStatus::Completed => "completed".to_owned(),
+        MonitorStatus::Stopped => "stopped".to_owned(),
+        MonitorStatus::TimedOut => "timed out".to_owned(),
     }
 }
 

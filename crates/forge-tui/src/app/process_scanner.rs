@@ -189,7 +189,7 @@ fn apply_snapshot_ready(
     generation: u64,
     snapshot: ProcessSnapshot,
 ) {
-    let Some(session) = app.sessions.get_mut(key) else {
+    let Some(session) = app.sessions.get(key) else {
         tracing::trace!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "process_scan_event_dropped",
@@ -213,8 +213,15 @@ fn apply_snapshot_ready(
         );
         return;
     }
-    session.process_snapshot = Some(snapshot);
-    session.process_last_refreshed_at = Some(Instant::now());
+    // The walk's answer belongs to the session rather than to this view:
+    // a second view reads the same tree through the surface instead of
+    // walking the OS again.
+    if let Some(workspace) = app.workspace.as_ref() {
+        workspace.store_process_snapshot(key, Some(snapshot));
+    }
+    if let Some(session) = app.sessions.get_mut(key) {
+        session.process_last_refreshed_at = Some(Instant::now());
+    }
     app.needs_redraw = true;
 }
 

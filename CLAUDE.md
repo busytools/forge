@@ -151,12 +151,18 @@ Work top-down; first match wins.
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
 `cli_version`, `conversation`, `slash_commands`, `subagents`, `emoji`,
-`file_index` - and receives changes through
-`subscribe()`. All fifteen exist in `forge-sessions`, and the TUI reads
+`file_index`, `header`, `subagent_attribution`, `mcp_servers`,
+`processes`, `monitors` - and receives changes through
+`subscribe()`. All twenty exist in `forge-sessions`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
-connector subscriptions and dictation state through them; the web view
-reads the claude version through the tenth. What the migration has
+connector subscriptions, dictation state and the session's process walk
+through them; the web view reads its project roster and agent rows, the
+account pool, the worker registry, connector subscriptions and dictation
+state through those, the claude version through the tenth, and its
+session header and inspector through the last five. `subagents` is the
+CLI's catalogue of the agent types that exist; `subagent_attribution` is
+the per-session record of which of them ran which tool call. What the migration has
 not reached is the write half: user actions still go through
 `dispatch(Command)` on the workspace rather than a surface verb, and the
 five refreshes that ask the core for a new snapshot are still direct
