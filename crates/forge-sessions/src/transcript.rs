@@ -307,13 +307,16 @@ fn answer_values(recorded: Option<&serde_json::Value>, question: &str) -> Vec<St
     else {
         return Vec::new();
     };
-    match value {
+    let out: Vec<String> = match value {
         serde_json::Value::String(text) => vec![text.clone()],
         serde_json::Value::Array(items) => {
             items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect()
         }
         _ => Vec::new(),
-    }
+    };
+    // An empty answer is the CLI's "nothing picked" rather than something
+    // said, and counting it as an answer is what loses the note beside it.
+    out.into_iter().filter(|value| !value.is_empty()).collect()
 }
 
 /// Every question's recorded answer, by the call it belongs to.
@@ -1348,6 +1351,29 @@ mod tests {
 
     fn is_result(msg: &Message) -> bool {
         matches!(msg, Message::Result { .. })
+    }
+
+    /// A question answered with a note and nothing picked. The CLI records
+    /// the note under the result's `annotations` and leaves the answer empty,
+    /// so an empty answer is no answer and the note is what was said.
+    #[test]
+    fn a_note_beside_an_empty_answer_is_what_was_said() {
+        let units = render_units(&captured("question_notes_only_response"));
+        let asked = units
+            .iter()
+            .find_map(|unit| match unit {
+                ChatUnit::QuestionCard { asked } => Some(asked),
+                _ => None,
+            })
+            .expect("the capture asks a question");
+
+        assert_eq!(asked[0].question, "Which colour do you prefer?");
+        assert!(asked[0].picked_labels.is_empty(), "nothing was picked");
+        assert_eq!(
+            asked[0].typed_note.as_deref(),
+            Some("test feedback from forge unified-prompt harness"),
+            "and the note beside the empty answer is what the card carries",
+        );
     }
 }
 
