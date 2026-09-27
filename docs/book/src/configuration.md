@@ -423,6 +423,7 @@ serving.
 | `bind` | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching the view from another machine means naming that machine's interface here, usually the WireGuard address, and anything public needs something in front of it. |
 | `mark` | string | unset, drawing Klin | The mark on the page header, on the browser tab and in the empty state, by name: `klin`, `lanes`, `f_slab`, `split`, `spine`, `slab`, `grid`, `clamp`, `strike`, `cascade`, `nest`, `chamfer`, `tally`, `stencil_f`, `anvil` or `spark`. A fixed set rather than a file path, so every option is one forge has drawn. |
 | `theme` | string | unset, drawing dark | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background. |
+| `font` | string | unset, drawing Inter for prose and Fira Code for code | The typefaces, by name. Both are vendored, served from the process and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
 
 A row's motion is not configurable. The TUI's spinner styles name glyph
 cycles, which is a terminal idiom the web view has none of, and its own
