@@ -147,12 +147,12 @@ pub struct TaskCell {
 /// What a row starts from, before its working tree is read.
 pub(crate) struct Seed<'a> {
     pub(crate) slot: &'a SessionSlot,
-    name: String,
-    state: State,
-    pending: Option<PendingKind>,
-    reason: Option<String>,
-    task: Option<&'a Task>,
-    last_activity: Option<SystemTime>,
+    pub(crate) name: String,
+    pub(crate) state: State,
+    pub(crate) pending: Option<PendingKind>,
+    pub(crate) reason: Option<String>,
+    pub(crate) task: Option<&'a Task>,
+    pub(crate) last_activity: Option<SystemTime>,
 }
 
 impl Seed<'_> {
@@ -170,6 +170,30 @@ impl Seed<'_> {
             task,
             last_activity: agent.last_activity,
         }
+    }
+}
+
+/// The seed a project nobody has started gets: asleep if anything ever ran
+/// in it, never-started if nothing has. The two draw differently, and a
+/// forge restart leaves every project in the first case, so reading the
+/// lifecycle alone would call the whole fleet new.
+pub(crate) fn dormant_seed(
+    slot: &SessionSlot,
+    name: String,
+    last_ran: Option<SystemTime>,
+) -> Seed<'_> {
+    Seed {
+        slot,
+        name,
+        state: if last_ran.is_some() {
+            State::Lifecycle(SessionLifecycleState::Sleeping)
+        } else {
+            State::NeverStarted
+        },
+        pending: None,
+        reason: None,
+        task: None,
+        last_activity: last_ran,
     }
 }
 
@@ -219,19 +243,8 @@ async fn view_of(home: &Home<'_>) -> HomeView {
         // differently, and a restart puts every project in the first case,
         // so reading the lifecycle alone would call the whole fleet new.
         let last_ran = project.sessions.iter().filter_map(|view| view.last_activity).max();
-        let dormant = Seed {
-            slot: &SessionSlot::lead(&project.org, &project.name),
-            name: project.name.clone(),
-            state: if last_ran.is_some() {
-                State::Lifecycle(SessionLifecycleState::Sleeping)
-            } else {
-                State::NeverStarted
-            },
-            pending: None,
-            reason: None,
-            task: None,
-            last_activity: last_ran,
-        };
+        let lead_slot = SessionSlot::lead(&project.org, &project.name);
+        let dormant = dormant_seed(&lead_slot, project.name.clone(), last_ran);
 
         let (lead, workers) = match rows.split_first() {
             Some((head, rest)) => {
@@ -742,7 +755,7 @@ fn state_of(state: State) -> Mark {
 /// How long ago the session last wrote. A project nothing has run in is
 /// `never`; a live session with no transcript yet has only just started,
 /// which is `now` rather than an absence.
-fn when_of(state: State, last_activity: Option<SystemTime>) -> String {
+pub(crate) fn when_of(state: State, last_activity: Option<SystemTime>) -> String {
     if state == State::NeverStarted {
         return "never".to_owned();
     }

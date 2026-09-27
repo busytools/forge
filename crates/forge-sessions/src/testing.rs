@@ -18,7 +18,7 @@ use forge_primitives::tasks::{Task, TaskStatus};
 use forge_workspace::{ProjectKey, Workspace};
 
 use crate::SessionUpdate;
-use crate::surface::ViewSurface;
+use crate::surface::{PendingKind, ViewSurface};
 
 /// What a fixture hands back when it cannot build what was asked for.
 pub type FixtureError = Box<dyn std::error::Error + Send + Sync>;
@@ -94,6 +94,12 @@ impl Fleet {
         );
         self.workspace.register_domain_session(SessionSlot::worker(org, project, label), None);
         Ok(())
+    }
+
+    /// Hold `slot` on a pending interaction, the way a session that has
+    /// asked a person for something reads.
+    pub fn seed_test_pending_interaction(&self, slot: &SessionSlot, kind: PendingKind) {
+        self.workspace.seed_test_pending_interaction(slot, kind);
     }
 
     /// Declare a task under `project`, held by the session labelled

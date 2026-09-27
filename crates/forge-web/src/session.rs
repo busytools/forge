@@ -9,12 +9,13 @@
 
 use std::net::SocketAddr;
 
+use forge_primitives::SessionLifecycleState;
 use forge_primitives::SessionSlot;
 use forge_primitives::account::AccountAuth;
-use forge_sessions::surface::{AccountsView, LoadingState, Roster};
+use forge_sessions::surface::{AccountsView, LoadingState, PendingKind, Roster};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
-use crate::home::{Home, State};
+use crate::home::{Home, Row, Seed, State};
 use crate::server::{WebState, root_block};
 use crate::stream::Live;
 
@@ -50,13 +51,18 @@ pub(crate) fn href(slot: &SessionSlot) -> String {
 /// mock's own `companies/steward` does - and an unescaped one would
 /// address four segments rather than three.
 fn segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 out.push(char::from(byte));
             }
-            other => out.push_str(&format!("%{other:02X}")),
+            other => {
+                out.push('%');
+                out.push(char::from(HEX[usize::from(other >> 4)]));
+                out.push(char::from(HEX[usize::from(other & 0x0F)]));
+            }
         }
     }
     out
@@ -90,15 +96,15 @@ pub async fn page(
         SessionSlot::worker(org, project, label)
     };
     if roster.has_agent(&slot) {
-        Found::Open(open_page(state, bound, &slot).await)
+        Found::Open(shell(&context(state, bound), &slot).await)
     } else {
-        Found::Waking(waking_page(state, bound, &slot))
+        Found::Waking(shell(&context(state, bound), &slot).await)
     }
 }
 
 /// The pieces both pages read the core through, which are the home's own:
 /// one view context per page, over the same surface, cache and live state.
-fn context<'a>(state: &'a WebState, bound: SocketAddr) -> Home<'a> {
+fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
     Home {
         surface: &state.surface,
         work: &state.work,
@@ -109,27 +115,17 @@ fn context<'a>(state: &'a WebState, bound: SocketAddr) -> Home<'a> {
     }
 }
 
-/// A seat with a session behind it.
-async fn open_page(state: &WebState, bound: SocketAddr, slot: &SessionSlot) -> Markup {
-    shell(&context(state, bound), slot)
-}
-
-/// A seat with nothing behind it yet. The page is the same page: the
-/// columns are as real as they are for a running session, and the chat
-/// column says what it is waiting for rather than drawing an empty
-/// conversation.
-fn waking_page(state: &WebState, bound: SocketAddr, slot: &SessionSlot) -> Markup {
-    shell(&context(state, bound), slot)
-}
-
-/// The page. Pure: everything it draws comes from the surface.
-fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
+/// The page. One page for both outcomes: the columns are as real for a
+/// seat nothing is running behind as for one that is up, and only the chat
+/// column says which of the two it is looking at.
+async fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
     let live = Live::lock(home.live).snapshot();
     let roster = home.surface.roster();
     let agents = home.surface.agents();
     let accounts = home.surface.accounts();
     let row = agents.all().iter().find(|row| &row.slot == slot);
-    let state = row.map_or(State::NeverStarted, |row| crate::home::state_of_agent(row, &live.unseen));
+    let state =
+        row.map_or(State::NeverStarted, |row| crate::home::state_of_agent(row, &live.unseen));
     // A lead's row is its project, the way the home names it; a worker's is
     // its own label.
     let name = if slot.label() == "lead" { slot.project() } else { slot.label() };
@@ -166,7 +162,7 @@ fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
                             span .t { "projects" }
                             span .n .ml { (fleet_count(&roster)) }
                         }
-                        div .scroll {}
+                        div .scroll { (rail(home, &roster, slot).await) }
                     }
                     main .chat {
                         div .sess {
@@ -194,6 +190,210 @@ fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
             }
         }
     }
+}
+
+/// The projects rail: every declared project, grouped by the strongest
+/// state among its own rows, with its workers under it.
+async fn rail(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Markup {
+    let unseen = Live::lock(home.live).snapshot().unseen;
+    let agents = home.surface.agents();
+    let mut groups: [Vec<Pane>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+
+    for project in &roster.projects {
+        let rows = agents.for_project(&project.key);
+        let lead_slot = SessionSlot::lead(&project.org, &project.name);
+        // A project nobody has started is a row of its own rather than
+        // nothing at all: the home draws the same one.
+        let lead_seed = if let Some(agent) = rows.first() {
+            let mut seed = Seed::from_agent(agent, None, &unseen);
+            seed.name.clone_from(&project.name);
+            seed
+        } else {
+            let last_ran = project.sessions.iter().filter_map(|view| view.last_activity).max();
+            crate::home::dormant_seed(&lead_slot, project.name.clone(), last_ran)
+        };
+        let lead = crate::home::row_for(home, roster, lead_seed).await;
+        let mut workers = Vec::new();
+        for agent in rows.iter().skip(1) {
+            workers.push(
+                crate::home::row_for(home, roster, Seed::from_agent(agent, None, &unseen)).await,
+            );
+        }
+
+        let group = [&lead]
+            .into_iter()
+            .chain(workers.iter())
+            .map(Group::of)
+            .min_by_key(|group| group.rank())
+            .unwrap_or(Group::Asleep);
+        let why = why_of(std::iter::once(&lead).chain(workers.iter()));
+        let age = crate::home::when_of(lead.state, lead.last_activity);
+        groups[group.rank() as usize].push(Pane {
+            name: project.name.clone(),
+            org: project.org.clone(),
+            current: project.org == slot.org() && project.name == slot.project(),
+            asleep: group == Group::Asleep,
+            age,
+            lead,
+            workers,
+            why,
+        });
+    }
+
+    let [needs, working, asleep] = groups;
+    html! {
+        @for (heading, panes, class) in [
+            ("needs you", &needs, "state needs"),
+            ("working", &working, "state"),
+            ("asleep", &asleep, "state"),
+        ] {
+            @if !panes.is_empty() {
+                div class=(class) { (heading) }
+                @for pane in panes {
+                    (pane_markup(pane))
+                }
+            }
+        }
+    }
+}
+
+/// Where a project sits in the rail. The three groups are also the order
+/// they read in, so the rank is the order and the array index both.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Group {
+    Needs,
+    Working,
+    Asleep,
+}
+
+impl Group {
+    /// The group a row belongs in. An ask outranks the lifecycle: a session
+    /// holds a prompt while the core still calls it idle, and what it is
+    /// waiting on is a person.
+    fn of(row: &Row) -> Self {
+        if row.pending.is_some() {
+            return Self::Needs;
+        }
+        match row.state {
+            State::Lifecycle(
+                SessionLifecycleState::Attention
+                | SessionLifecycleState::Failed
+                | SessionLifecycleState::AuthRequired,
+            ) => Self::Needs,
+            State::NeverStarted
+            | State::Lifecycle(
+                SessionLifecycleState::Sleeping | SessionLifecycleState::LoggedOut,
+            ) => Self::Asleep,
+            State::Lifecycle(
+                SessionLifecycleState::Running
+                | SessionLifecycleState::Spawning
+                | SessionLifecycleState::Idle,
+            )
+            | State::Unseen => Self::Working,
+        }
+    }
+
+    fn rank(self) -> usize {
+        match self {
+            Self::Needs => 0,
+            Self::Working => 1,
+            Self::Asleep => 2,
+        }
+    }
+}
+
+/// One project as the rail draws it.
+struct Pane {
+    name: String,
+    org: String,
+    /// The project the page is showing.
+    current: bool,
+    asleep: bool,
+    age: String,
+    lead: Row,
+    workers: Vec<Row>,
+    /// What the project is waiting on, when it is waiting on anything.
+    why: Option<Why>,
+}
+
+/// The reason line: what a person has to do about this row, in the row's
+/// own words rather than a second vocabulary for the same two asks.
+struct Why {
+    line: String,
+    bad: bool,
+}
+
+/// The line under a project: its first ask, else its first failure. A
+/// project whose worker is held reads as held, whether or not its lead is
+/// the one held.
+fn why_of<'a>(rows: impl Iterator<Item = &'a Row>) -> Option<Why> {
+    let rows: Vec<&Row> = rows.collect();
+    for row in &rows {
+        if let Some(pending) = row.pending {
+            return Some(Why { line: waiting_on(pending), bad: false });
+        }
+    }
+    for row in &rows {
+        if matches!(
+            row.state,
+            State::Lifecycle(SessionLifecycleState::Failed | SessionLifecycleState::AuthRequired)
+        ) {
+            return Some(Why {
+                line: row.reason.clone().unwrap_or_else(|| "not running".to_owned()),
+                bad: true,
+            });
+        }
+    }
+    None
+}
+
+fn pane_markup(pane: &Pane) -> Markup {
+    html! {
+        div class=(if pane.current { "pj cur" } else { "pj" }) {
+            div .pr {
+                span .dot .(mark_of(pane.lead.state)) {}
+                span .nm { a href=(href(&pane.lead.slot)) { (&pane.name) } }
+                span .org { (&pane.org) }
+                @if pane.asleep {
+                    span .age { (&pane.age) }
+                } @else {
+                    (close_chip())
+                }
+            }
+            @if let Some(why) = &pane.why {
+                div class=(if why.bad { "why bad" } else { "why" }) { (&why.line) }
+            }
+            @for worker in &pane.workers {
+                div .wk {
+                    span .dot .(mark_of(worker.state)) {}
+                    span .nm { a href=(href(&worker.slot)) { (worker.slot.label()) } }
+                    (close_chip())
+                }
+            }
+        }
+    }
+}
+
+/// The close chip every row carries. Nothing in this view can close a
+/// session yet - that is the dispatch path, which lands separately - so the
+/// chip is drawn unavailable with the reason rather than as a control that
+/// does nothing when it is clicked.
+fn close_chip() -> Markup {
+    html! {
+        span .x aria-disabled="true"
+             title="closing a session from here needs the dispatch path, which lands separately" {
+            "\u{2715}"
+        }
+    }
+}
+
+/// What a held session is waiting on a person for.
+fn waiting_on(pending: PendingKind) -> String {
+    match pending {
+        PendingKind::Question => "asked you a question",
+        PendingKind::Permission => "a permission prompt is waiting",
+    }
+    .to_owned()
 }
 
 /// What the chat column says while the conversation itself is not there
@@ -226,17 +426,18 @@ fn fleet_count(roster: &Roster) -> String {
 /// the two promotions the home makes over it.
 fn mark_of(state: State) -> &'static str {
     match state {
-        State::Lifecycle(forge_primitives::SessionLifecycleState::Running)
-        | State::Lifecycle(forge_primitives::SessionLifecycleState::Spawning) => "live",
-        State::Lifecycle(forge_primitives::SessionLifecycleState::Idle) => "idle",
+        State::Lifecycle(SessionLifecycleState::Running | SessionLifecycleState::Spawning) => {
+            "live"
+        }
+        State::Lifecycle(SessionLifecycleState::Idle) => "idle",
         State::Unseen => "unseen",
-        State::Lifecycle(forge_primitives::SessionLifecycleState::Attention) => "needs",
+        State::Lifecycle(SessionLifecycleState::Attention) => "needs",
         // Sign-in needed is a failure the user has to act on, and the rail
         // has no auth shape of its own.
-        State::Lifecycle(forge_primitives::SessionLifecycleState::AuthRequired)
-        | State::Lifecycle(forge_primitives::SessionLifecycleState::Failed) => "failed",
-        State::Lifecycle(forge_primitives::SessionLifecycleState::Sleeping)
-        | State::Lifecycle(forge_primitives::SessionLifecycleState::LoggedOut)
+        State::Lifecycle(SessionLifecycleState::AuthRequired | SessionLifecycleState::Failed) => {
+            "failed"
+        }
+        State::Lifecycle(SessionLifecycleState::Sleeping | SessionLifecycleState::LoggedOut)
         | State::NeverStarted => "off",
     }
 }

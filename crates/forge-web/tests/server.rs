@@ -7,8 +7,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::Arc;
 
+use forge_primitives::SessionSlot;
 use forge_primitives::WebConfig;
-use forge_sessions::surface::ViewSurface;
+use forge_sessions::surface::{PendingKind, ViewSurface};
 use forge_sessions::testing::Fleet;
 use forge_web::WebState;
 
@@ -539,6 +540,74 @@ async fn the_home_links_to_the_session_page() {
     assert!(
         page.contains("/session/Personal/dotfiles/lead"),
         "including the one a project nobody has started carries: {page}",
+    );
+}
+
+/// The three groups render in order, and a needs-you row says what it is
+/// waiting on: the reason is what makes the row actionable without opening
+/// it, and the mark alone only says that something is wrong.
+#[tokio::test]
+async fn the_rail_groups_by_state_and_names_what_is_pending() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_test_pending_interaction(&lead, PendingKind::Question);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    let needs = page.find("needs you").expect("the needs-you group renders");
+    let working = page.find("working").expect("the working group renders");
+    let asleep = page.find("asleep").expect("the asleep group renders");
+    assert!(needs < working, "needs-you precedes working: {page}");
+    assert!(working < asleep, "and working precedes asleep: {page}");
+    assert!(page.contains("asked you a question"), "and the row names what it waits on: {page}");
+}
+
+/// A worker row and a lead row are the same object, so both carry a close
+/// chip. This was a defect on the mock - the worker's chip had no rule at
+/// all and fell back to the browser's default size - so it is pinned.
+#[tokio::test]
+async fn a_worker_row_carries_the_same_close_chip_as_a_lead() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.add_worker("Busytools", "forge", "cli-version").expect("forge is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains("cli-version"), "the worker's row renders: {page}");
+    assert_eq!(
+        page.matches("class=\"x\"").count(),
+        2,
+        "the lead and its worker each carry one close chip: {page}",
+    );
+}
+
+/// The rail marks the session the page is showing, so a reader can see
+/// where in the fleet they are.
+#[tokio::test]
+async fn the_rail_marks_the_current_project() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, busymail) = get(&config, "/session/Busytools/busymail/lead").await;
+    let (_status, _content_type, forge) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        busymail.contains("class=\"pj cur\""),
+        "the project the page shows carries the current mark: {busymail}",
+    );
+    assert!(
+        forge.contains("class=\"pj cur\""),
+        "and so does another's when it is the one being shown: {forge}",
+    );
+    assert_eq!(
+        busymail.matches("class=\"pj cur\"").count(),
+        1,
+        "exactly one project is the current one: {busymail}",
     );
 }
 
