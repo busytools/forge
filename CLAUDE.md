@@ -51,10 +51,11 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-sessions`** - what a view needs and nothing about how it
   renders: the read surface a view uses, the session records as a view
   sees them, the peer envelope parsing in both directions, the tool
-  family table, and the policy that folds a run of blocks. Sits between
-  `forge-workspace` and the views, so a second view attaches beside the
-  TUI rather than duplicating it. Nothing here may depend on a view. It
-  reaches the workspace for the one thing a session record cannot
+  family table, the policy that folds a run of blocks, and the transcript
+  fold that turns a conversation's messages into the units a view draws.
+  Sits between `forge-workspace` and the views, so a second view attaches
+  beside the TUI rather than duplicating it. Nothing here may depend on a
+  view. It reaches the workspace for the one thing a session record cannot
   answer alone - whether a tool's input parses into a lifecycle block -
   and does that through `forge-workspace` rather than `forge-agent`, so
   the agent layer stays behind the workspace facade the way it does for
