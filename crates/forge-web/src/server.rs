@@ -153,7 +153,7 @@ async fn font(Path(file): Path<String>) -> Response {
 /// `no-cache` rather than a TTL, because a browser holding an old copy
 /// would report a bug in forge's code. A validator would only turn the
 /// re-fetch into a 304: there is no CDN in front of this, the files are
-/// pinned, and the whole set is half a megabyte over loopback.
+/// pinned, and the whole set is a little over 600KiB over loopback.
 fn vendored(
     table: &'static [(&'static str, &'static [u8])],
     content_type: &'static str,
@@ -220,7 +220,9 @@ async fn favicon(State(wiring): State<Wiring>) -> impl IntoResponse {
 
 /// The palette and the font stack as the page's own root variables, in
 /// every page: one place to change a theme or a typeface, and no component
-/// carries a branch for either.
+/// carries a branch for either. A font name the loader would have refused
+/// contributes nothing, so the page draws in the browser's own default
+/// rather than in a set nobody asked for.
 pub(crate) fn root_block(theme_name: Option<&str>, font_name: Option<&str>) -> Markup {
     // Unescaped, because this is CSS: `&quot;` inside a `<style>` is
     // literal text rather than a quote, and both stacks quote a family
@@ -230,7 +232,7 @@ pub(crate) fn root_block(theme_name: Option<&str>, font_name: Option<&str>) -> M
             (PreEscaped(format!(
                 ":root{{{}{}}}",
                 theme::root_variables(theme_name),
-                theme::font_variables(font_name),
+                theme::font_variables(font_name).unwrap_or_default(),
             )))
         }
     }

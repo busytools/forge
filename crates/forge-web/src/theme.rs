@@ -67,12 +67,14 @@ pub fn root_variables(name: Option<&str>) -> String {
 
 /// The page's own font declarations for `name`, in the shape
 /// [`root_variables`] emits, so the server can put both in one block.
-pub fn font_variables(name: Option<&str>) -> &'static str {
+/// `None` for a name outside the shipped set: the loader refuses one at
+/// boot, and a renderer that drew the built-in pair instead would make an
+/// ignored name read as the key working.
+pub fn font_variables(name: Option<&str>) -> Option<&'static str> {
     match name {
-        Some("system") => SYSTEM_FONT,
-        // The built-in pair, for an unset name and for one outside the
-        // shipped list, which the loader refuses at boot.
-        _ => BUILT_IN_FONT,
+        None => Some(BUILT_IN_FONT),
+        Some("system") => Some(SYSTEM_FONT),
+        Some(_) => None,
     }
 }
 
@@ -125,7 +127,7 @@ mod tests {
             "--rail-l",
             "--rail-r",
         ];
-        let resolved = root_variables(None) + font_variables(None);
+        let resolved = root_variables(None) + font_variables(None).expect("the built-in pair");
 
         let mut reads: Vec<&str> = sheet
             .split("var(")
@@ -183,6 +185,19 @@ mod tests {
         }
     }
 
+    /// A name outside the shipped set draws no stack, rather than the
+    /// built-in one. The loader refuses such a config at boot, so this is
+    /// the renderer's backstop: it must not dress a name nobody ships as
+    /// the built-in pair, which is a silent fallback wearing the answer.
+    #[test]
+    fn a_font_name_outside_the_shipped_set_draws_no_stack() {
+        assert_eq!(font_variables(Some("comic")), None);
+        assert!(font_variables(None).is_some(), "an unset name is the built-in pair");
+        for name in FONT_NAMES {
+            assert!(font_variables(Some(name)).is_some(), "{name} draws a stack");
+        }
+    }
+
     /// The stack the built-in pair draws with and the faces the sheet
     /// declares name the same families: a family on one side only is
     /// either prose falling back to the OS face with nothing reporting it,
@@ -199,7 +214,7 @@ mod tests {
             .collect();
         assert_eq!(declared.len(), 3, "the sheet declares every vendored face: {declared:?}");
 
-        let built_in = font_variables(None);
+        let built_in = font_variables(None).expect("the built-in pair declares a stack");
         let ui =
             built_in.split_once("--ui:").expect("the built-in stack declares the prose face").1;
         let first = ui.split(',').next().expect("a family").trim().trim_matches('"');
