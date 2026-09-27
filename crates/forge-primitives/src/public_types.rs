@@ -128,6 +128,14 @@ pub struct SessionMessage {
     /// Always `None` for top-level messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_tool_use_id: Option<String>,
+    /// When the CLI wrote the row, RFC 3339. The row's own clock, and the
+    /// only record of when a turn ran: no result frame reaches a transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    /// The CLI's record of the tool result this row carries, which the
+    /// tool-result block beside it holds only as prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_result: Option<Value>,
 }
 
 /// A session transcript's replayable messages plus the compaction count
