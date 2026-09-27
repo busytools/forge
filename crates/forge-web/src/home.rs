@@ -331,6 +331,23 @@ pub(crate) fn artifact_label(artifact: &str) -> String {
     if last.is_empty() { trimmed.to_owned() } else { last.to_owned() }
 }
 
+/// The artifact as a target a browser can follow, or `None` when it is not
+/// one: only a whole absolute URL is, since an anchor built from a path or a
+/// sentence addresses a relative URL that does not exist. A URL carries no
+/// whitespace, so one inside the value means the value is prose.
+fn followable(artifact: &str) -> Option<&str> {
+    let trimmed = artifact.trim();
+    if trimmed.contains(char::is_whitespace) {
+        return None;
+    }
+    let (scheme, rest) = trimmed.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if host.is_empty() { None } else { Some(trimmed) }
+}
+
 /// The task a row shows: the one this label holds that is furthest from
 /// done, in-progress first.
 ///
@@ -732,7 +749,11 @@ fn row(row: &Row, refused: Option<&'static str>) -> Markup {
                     span .txt { (&task.subject) }
                     span .st { (task.chip) }
                     @if let Some(artifact) = &task.artifact {
-                        a href=(artifact) target="_blank" rel="noreferrer" { (artifact_label(artifact)) }
+                        @if let Some(href) = followable(artifact) {
+                            a href=(href) target="_blank" rel="noreferrer" { (artifact_label(artifact)) }
+                        } @else {
+                            (artifact_label(artifact))
+                        }
                     }
                 } @else if let Some(refused) = refused {
                     span .txt { (refused) }
@@ -1063,6 +1084,35 @@ mod tests {
             "a path reads as its file name",
         );
         assert_eq!(artifact_label("main"), "main", "and a bare token is itself");
+    }
+
+    /// The row links only what a browser can follow, and that is a whole
+    /// absolute URL. A path and prose are what tempt a looser check - a
+    /// leading `/`, or `contains("http")` - and either draws a link that
+    /// addresses something that is not there.
+    #[test]
+    fn an_artifact_is_followable_only_as_a_whole_url() {
+        assert_eq!(
+            followable("https://github.com/busytools/forge/pull/1223"),
+            Some("https://github.com/busytools/forge/pull/1223"),
+            "an absolute URL is the target it names",
+        );
+        assert_eq!(followable("PR #1210"), None, "a token is not a target");
+        assert_eq!(
+            followable("docs/plans/2026-09-26-web-home.md"),
+            None,
+            "nor is a bare relative path",
+        );
+        assert_eq!(
+            followable("mocks/splash/ served at http://127.0.0.1:60427/"),
+            None,
+            "nor is prose with a URL partway through it",
+        );
+        assert_eq!(
+            followable("https://github.com/busytools/forge/pull/1223 - see notes"),
+            None,
+            "nor is a URL that leads with something after it",
+        );
     }
 
     #[test]

@@ -36,7 +36,7 @@ fn fleet(dir: &Path) -> Fleet {
     fleet.start("Busytools", "forge").expect("forge is declared");
     fleet.add_worker("Busytools", "forge", "em-dash-sweep").expect("forge is declared");
     fleet
-        .add_task("Busytools", "forge", "Sweep the corpus for banned dashes", "lead")
+        .add_task("Busytools", "forge", "Sweep the corpus for banned dashes", "lead", None)
         .expect("forge is declared");
     fleet.start("Busytools", "busymail").expect("busymail is declared");
     fleet
@@ -644,6 +644,45 @@ async fn the_work_cell_gives_the_count_its_own_element() {
     assert!(
         sheet.contains(".row .where .files"),
         "and the rule that colours the count is still on that element: {sheet}",
+    );
+}
+
+/// An artifact is a link only when a browser can follow it. A row whose
+/// artifact reads `PR #1210` used to render an anchor to a relative URL of
+/// that name, which goes nowhere, and the two cases looked identical on the
+/// page while only one of them worked.
+#[tokio::test]
+async fn the_artifact_links_only_when_a_browser_can_follow_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.add_worker("Busytools", "forge", "em-dash-sweep").expect("forge is declared");
+    fleet
+        .add_task(
+            "Busytools",
+            "forge",
+            "Land the retry fix",
+            "lead",
+            Some("https://github.com/busytools/forge/pull/1223"),
+        )
+        .expect("forge is declared");
+    fleet
+        .add_task("Busytools", "forge", "Sweep the corpus", "em-dash-sweep", Some("PR #1210"))
+        .expect("forge is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/").await;
+
+    assert!(
+        page.contains(
+            "<a href=\"https://github.com/busytools/forge/pull/1223\" target=\"_blank\" \
+             rel=\"noreferrer\">PR 1223</a>"
+        ),
+        "a URL artifact is the link it names: {page}",
+    );
+    assert!(
+        page.contains(">PR #1210</span>"),
+        "and one named by number draws its text alone: {page}",
     );
 }
 
