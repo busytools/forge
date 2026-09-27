@@ -8,6 +8,8 @@
 //! its own.
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use forge_primitives::SessionLifecycleState;
@@ -17,9 +19,18 @@ use forge_primitives::git::{GitBranch, GitIssueRef};
 use forge_primitives::git_diff::{GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState};
 use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
 use forge_primitives::tasks::{Task, TaskStatus};
-use forge_primitives::{CronEntry, CronKind};
+use forge_primitives::{ChunkContent, CronEntry, CronKind, ToolCallContent};
+use forge_sessions::family::ToolFamily;
+use forge_sessions::grouping::KindRow;
+use forge_sessions::model::{AnsweredQuestion, ToolCallStatus};
 use forge_sessions::surface::connectors::{GotifyView, SlackView};
-use forge_sessions::surface::{AccountsView, Agents, LoadingState, PendingKind, Roster};
+use forge_sessions::surface::{
+    AccountsView, Agents, LoadingState, PendingKind, Roster, ViewSurface,
+};
+use forge_sessions::transcript;
+use forge_sessions::transcript::{
+    ChatUnit, FamilyLeaves, Notice, NoticeSeverity, PeerCard, ToolLeaf,
+};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::home::{Home, Row, Seed, State};
@@ -106,7 +117,8 @@ pub async fn page(
     };
     // One walk of the core per page: the roster and the agents the route
     // already holds are the two the page draws from.
-    Found::Page(shell(&context(state, bound), &slot, &roster, &agents).await)
+    let units = read_conversation(&state.surface, &slot, roster.cwd_for(&slot)).await;
+    Found::Page(shell(&context(state, bound), &slot, &units, &roster, &agents).await)
 }
 
 /// The pieces both pages read the core through, which are the home's own:
@@ -125,7 +137,13 @@ fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
 /// The page. One page for both outcomes: the columns are as real for a
 /// seat nothing is running behind as for one that is up, and only the chat
 /// column says which of the two it is looking at.
-async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Agents) -> Markup {
+async fn shell(
+    home: &Home<'_>,
+    slot: &SessionSlot,
+    units: &[ChatUnit],
+    roster: &Roster,
+    agents: &Agents,
+) -> Markup {
     let live = Live::lock(home.live).snapshot();
     let accounts = home.surface.accounts();
     let row = agents.all().iter().find(|row| &row.slot == slot);
@@ -180,7 +198,12 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Ag
                             span .facts { (account_chip(&accounts, chip.as_deref())) }
                         }
                         div .conv {
-                            (chat_body(waking, row.and_then(|row| row.reason.as_deref())))
+                            (chat_body(
+                                waking,
+                                row.and_then(|row| row.reason.as_deref()),
+                                units,
+                                roster.cwd_for(slot).as_deref(),
+                            ))
                         }
                     }
                     aside .rail .right {
@@ -759,23 +782,340 @@ fn mode_of(target: &SlackSubscriptionTarget) -> &'static str {
     }
 }
 
-/// What the chat column says while the conversation itself is not there
-/// yet: the seat's own state, and why when the core recorded a reason.
+/// What the chat column draws: the conversation, or the seat's own state
+/// when there is none to draw.
 ///
 /// It claims nothing about a spawn. This page cannot start a session, so a
 /// line saying one is coming would be a promise no code keeps, and a seat
 /// whose spawn failed would carry a failure mark above a line saying it is
-/// connecting.
-fn chat_body(waking: bool, reason: Option<&str>) -> Markup {
-    if !waking {
-        return Markup::default();
+/// connecting. A seat that is up with nothing said yet draws no skeleton
+/// either: an empty conversation is empty.
+fn chat_body(waking: bool, reason: Option<&str>, units: &[ChatUnit], cwd: Option<&Path>) -> Markup {
+    if waking {
+        return html! {
+            div .hold .off {
+                "not running"
+                span .sub { (reason.unwrap_or("this seat has no session behind it")) }
+            }
+        };
     }
+    conversation(units, cwd)
+}
+
+/// A session's conversation, read and folded off the reactor: the read walks
+/// a whole transcript on the calling thread, and a handler that waits for it
+/// stalls every other request.
+async fn read_conversation(
+    surface: &Arc<ViewSurface>,
+    slot: &SessionSlot,
+    cwd: Option<PathBuf>,
+) -> Vec<ChatUnit> {
+    let surface = Arc::clone(surface);
+    let slot = slot.clone();
+    let cwd = cwd.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let history = surface.conversation(&slot, &cwd);
+        transcript::render_units(&history.messages)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// The conversation, as the fold's units read: the user's own turns on their
+/// own, and everything the assistant did in one work block after each.
+fn conversation(units: &[ChatUnit], cwd: Option<&Path>) -> Markup {
     html! {
-        div .hold .off {
-            "not running"
-            span .sub { (reason.unwrap_or("this seat has no session behind it")) }
+        @for turn in turns(units) {
+            @match turn {
+                Turn::Mine(text) => div .mine { (text) },
+                Turn::Work(work) => div .work {
+                    @for unit in work {
+                        (unit_markup(unit, cwd))
+                    }
+                },
+            }
         }
     }
+}
+
+/// The units as turns. A user turn stands alone; a stretch of anything else
+/// belongs to the work block it sits in.
+enum Turn<'a> {
+    Mine(&'a str),
+    Work(Vec<&'a ChatUnit>),
+}
+
+fn turns(units: &[ChatUnit]) -> Vec<Turn<'_>> {
+    let mut turns: Vec<Turn<'_>> = Vec::new();
+    for unit in units {
+        match unit {
+            ChatUnit::UserTurn { text } => turns.push(Turn::Mine(text)),
+            other => match turns.last_mut() {
+                Some(Turn::Work(work)) => work.push(other),
+                _ => turns.push(Turn::Work(vec![other])),
+            },
+        }
+    }
+    turns
+}
+
+/// One unit of work.
+fn unit_markup(unit: &ChatUnit, cwd: Option<&Path>) -> Markup {
+    match unit {
+        ChatUnit::AssistantText { text } => html! { div .prose { (prose(text)) } },
+        ChatUnit::ToolGroup { families, status } => tool_group(families, *status, cwd),
+        ChatUnit::QuestionCard { asked } => question_card(asked),
+        ChatUnit::PeerCard(card) => peer_card(card),
+        ChatUnit::MessagingGroup { cards } => messaging_group(cards),
+        ChatUnit::Notice(notice) => notice_row(notice),
+        // A user turn is the block around its work, drawn by `conversation`.
+        ChatUnit::UserTurn { text } => html! { div .mine { (text) } },
+    }
+}
+
+/// The assistant's prose, as markdown. The angle brackets go in escaped:
+/// markdown passes raw HTML through, and a session's prose can quote
+/// anything it read, which the page would then run.
+fn prose(text: &str) -> Markup {
+    let escaped = text.replace('<', "&lt;");
+    let parser = pulldown_cmark::Parser::new(&escaped);
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(&mut html, parser);
+    PreEscaped(html)
+}
+
+/// The mark a call or a run carries: a check when it came back, a cross when
+/// it failed, and the ring while it is still out.
+fn status_icon(status: ToolCallStatus) -> Markup {
+    match status {
+        ToolCallStatus::Completed => icons::icon("check", "st"),
+        ToolCallStatus::Failed | ToolCallStatus::Killed => icons::icon("x", "st err"),
+        ToolCallStatus::Pending | ToolCallStatus::InProgress => {
+            html! { span .st { span .ring {} } }
+        }
+    }
+}
+
+/// One run of calls: the count and the run's own status, then a label per
+/// family with its calls indented under it.
+fn tool_group(families: &[FamilyLeaves], status: ToolCallStatus, cwd: Option<&Path>) -> Markup {
+    let calls: usize = families.iter().map(|family| family.calls.len()).sum();
+    html! {
+        details .kind open {
+            summary {
+                (status_icon(status))
+                span .nm { (calls) " tool " @if calls == 1 { "call" } @else { "calls" } }
+                (icons::chevron(""))
+            }
+            div .leaves {
+                @for family in families {
+                    div .knd {
+                        (icons::icon(family_icon(family.row), "gl"))
+                        span .nm { (&family.label) }
+                    }
+                    @for call in &family.calls {
+                        (leaf_row(call, opens_by_default(family.row), cwd))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One call: its own status and title, opening on its body. A mutation opens
+/// by default - the mockup draws an edit's diff already there - and every
+/// other call waits to be asked.
+fn leaf_row(leaf: &ToolLeaf, open: bool, cwd: Option<&Path>) -> Markup {
+    html! {
+        details .leaf open[open] {
+            summary {
+                (status_icon(leaf.status))
+                span .tn { (call_target(leaf, cwd)) }
+                (icons::chevron(""))
+            }
+            @if !leaf.content.is_empty() {
+                div .body { (leaf_body(&leaf.content)) }
+            }
+        }
+    }
+}
+
+/// What a call's row opens on.
+fn leaf_body(content: &[ToolCallContent]) -> Markup {
+    html! {
+        @for content in content {
+            @match content {
+                ToolCallContent::Diff { new_path, old, new, .. } => {
+                    (diff_body(new_path, old, new))
+                }
+                ToolCallContent::Content { content } => (chunk_body(content)),
+                ToolCallContent::McpResource { text, uri, .. } => {
+                    div .term { (text.clone().unwrap_or_else(|| uri.clone())) }
+                }
+            }
+        }
+    }
+}
+
+/// A text chunk: the terminal rows the mockup draws for a command's output.
+/// An image chunk is a body this page has no renderer for, so it says what
+/// it is rather than drawing nothing.
+fn chunk_body(content: &ChunkContent) -> Markup {
+    match content {
+        ChunkContent::Text { text } => html! { div .term { (text) } },
+        ChunkContent::Image { mime_type, uri, .. } => html! {
+            div .term {
+                "image"
+                @if let Some(mime) = mime_type { " \u{b7} " (mime) }
+                @if let Some(uri) = uri { " \u{b7} " (uri) }
+            }
+        },
+    }
+}
+
+/// A mutation, as the mockup draws one: the removed lines then the added
+/// ones, numbered. The scan hands whole strings rather than a hunk, so the
+/// body says what changed without inventing the diff's own offsets.
+fn diff_body(path: &str, old: &str, new: &str) -> Markup {
+    html! {
+        div .dif {
+            div .h { (path) }
+            @for line in old.lines() {
+                div .ln .d { span .n { "\u{2212}" } span .l { (line) } }
+            }
+            @for line in new.lines() {
+                div .ln .a { span .n { "+" } span .l { (line) } }
+            }
+        }
+    }
+}
+
+/// The icon a family row draws: the family's own sprite, and the generic
+/// tool's for anything this page has no icon for.
+fn family_icon(row: KindRow) -> &'static str {
+    match row {
+        KindRow::Mcp => "mcp",
+        KindRow::Inbound | KindRow::Outbound => "in",
+        KindRow::Family(family) => match family {
+            ToolFamily::Read => "read",
+            ToolFamily::Search => "search",
+            ToolFamily::Bash => "bash",
+            ToolFamily::Web => "web",
+            ToolFamily::Lsp => "lsp",
+            ToolFamily::Skill => "skill",
+            ToolFamily::ToolSearch => "toolsearch",
+            ToolFamily::Own("Edit" | "Write" | "MultiEdit" | "NotebookEdit") => "edit",
+            ToolFamily::Config | ToolFamily::Worktree | ToolFamily::Tool | ToolFamily::Own(_) => {
+                "tool"
+            }
+        },
+    }
+}
+
+/// Whether a family's calls start open. A mutation's diff is what a reader
+/// came for, and the mockup draws it without being asked.
+fn opens_by_default(row: KindRow) -> bool {
+    matches!(row, KindRow::Family(family) if matches!(family, ToolFamily::Own("Edit" | "Write" | "MultiEdit" | "NotebookEdit")))
+}
+
+/// A call's title without the family word the row above already says, and
+/// without the working directory the reader is already in: the mockup draws
+/// `crates/.../family.rs` under a `read` label.
+fn call_target(leaf: &ToolLeaf, cwd: Option<&Path>) -> String {
+    let title = leaf
+        .title
+        .strip_prefix(leaf.label)
+        .map_or(leaf.title.clone(), |rest| rest.trim_start().to_owned());
+    let Some(cwd) = cwd.and_then(|cwd| cwd.to_str()) else {
+        return title;
+    };
+    match title.strip_prefix(cwd).and_then(|rest| rest.strip_prefix('/')) {
+        Some(relative) if !relative.is_empty() => relative.to_owned(),
+        _ => title,
+    }
+}
+
+/// A question the assistant asked and a person answered: the question, what
+/// was picked, and what was typed, each on its own line.
+fn question_card(asked: &[AnsweredQuestion]) -> Markup {
+    html! {
+        @for pair in asked {
+            div .card {
+                div .q { (icons::icon("question", "qm")) (pair.question) }
+                @for picked in &pair.picked_labels {
+                    div .a {
+                        span .am { "\u{2192}" }
+                        span .picked { (picked) }
+                    }
+                }
+                @if let Some(typed) = &pair.typed_note {
+                    div .a {
+                        span .am { "\u{2192}" }
+                        span .am { "you typed:" }
+                        span .typed { "\u{201C}" (typed) "\u{201D}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One peer message, on its own: the direction, who it was, and what it
+/// said.
+fn peer_card(card: &PeerCard) -> Markup {
+    html! {
+        div .peer {
+            (icons::icon(if card.inbound { "in" } else { "out" }, "dir"))
+            span .from { (&card.peer) }
+            span .txt { (first_line(&card.body)) }
+        }
+    }
+}
+
+/// A run of two or more peer messages: a count over one row per message,
+/// each with its own kind and direction.
+fn messaging_group(cards: &[PeerCard]) -> Markup {
+    html! {
+        details .msg open {
+            summary {
+                (icons::icon("check", "st"))
+                span .c { (cards.len()) " messages" }
+                (icons::chevron(""))
+            }
+            div .msgbody {
+                @for card in cards {
+                    div .mmsg {
+                        (icons::icon(if card.inbound { "in" } else { "out" }, "dir"))
+                        span .kb { (card.kind) }
+                        span .who { (&card.peer) }
+                        span .txt { (first_line(&card.body)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A line nobody typed: an external delivery, a scheduled fire, or a failure
+/// the workspace reported.
+fn notice_row(notice: &Notice) -> Markup {
+    let (class, severity) = match notice.severity {
+        NoticeSeverity::Info => ("notice info", "Info"),
+        NoticeSeverity::Warning => ("notice warn", "Warning"),
+        NoticeSeverity::Error => ("notice err", "Error"),
+    };
+    html! {
+        div class=(class) {
+            span .sev { (severity) }
+            (first_line(&notice.text))
+        }
+    }
+}
+
+/// The first line of a body the row clips: a card's row is one line by the
+/// mockup's own rule, and a message can be any length.
+fn first_line(text: &str) -> String {
+    text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().to_owned()
 }
 
 /// How many projects have a session behind them, out of how many are

@@ -517,6 +517,7 @@ async fn a_sleeping_slot_opens_rather_than_404ing() {
 
     assert_eq!(status, reqwest::StatusCode::OK, "a sleeping seat renders, it does not 404");
     assert!(page.contains("not running"), "and says what the seat is: {page}");
+    assert!(!page.contains("class=\"kind\""), "and draws no chat skeleton under it: {page}");
     assert!(
         !page.contains("connecting"),
         "without claiming a connection nothing is making: {page}"
@@ -851,6 +852,68 @@ async fn the_type_scale_is_the_mocks() {
     for (token, value) in &want {
         assert_eq!(got.get(token).map(String::as_str), Some(value.as_str()), "the sheet's {token}");
     }
+}
+
+/// A conversation with a run of tool calls renders the run's count and the
+/// families it met, with each call's own target under its family and the
+/// assistant's prose above it. This is the model the mockup was built on.
+#[tokio::test]
+async fn the_conversation_renders_the_run_and_its_families() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"user","message":{"role":"user","content":"make the call tree the default"}}"#,
+                r#"{"type":"assistant","message":{"id":"msg_1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"Reading the grouping code first."}]}}"#,
+                r#"{"type":"assistant","message":{"id":"msg_2","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/family.rs"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"pub enum ToolFamily {}"}]}}"#,
+                r#"{"type":"assistant","message":{"id":"msg_3","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_2","name":"Grep","input":{"pattern":"KindRow"}}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains("2 tool calls"), "the run's own count heads it: {page}");
+    assert!(page.contains(">read</span>"), "and the families it met: {page}");
+    assert!(page.contains(">search</span>"), "in the order it met them: {page}");
+    assert!(page.contains("family.rs"), "with each call's own target: {page}");
+    assert!(
+        page.contains("Reading the grouping code first."),
+        "and the prose the assistant wrote above it: {page}",
+    );
+    assert!(
+        page.contains("make the call tree the default"),
+        "and the turn the user wrote, on its own: {page}",
+    );
+}
+
+/// A conversation with nothing in it draws no skeleton. A chat frame with no
+/// rows reads as a session that has nothing to say, which is a different
+/// page from one whose session has not started.
+#[tokio::test]
+async fn an_empty_conversation_draws_no_skeleton() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(!page.contains("class=\"kind\""), "no group is drawn for nothing: {page}");
+    assert!(!page.contains("class=\"mine\""), "and no turn either: {page}");
+    assert!(!page.contains("not running"), "the seat is running, so it does not say otherwise");
 }
 
 /// A worker's own page is served, not only its lead's: the home links

@@ -1,7 +1,7 @@
 //! The palettes forge ships, by the name `[web] theme` takes.
 //!
-//! Every surface reads these twelve tokens and nothing else, so a theme is
-//! one place to change and no component branches for it.
+//! Every surface reads these tokens and nothing else, so a theme is one
+//! place to change and no component branches for it.
 
 /// The palette drawn when no name is set.
 pub const DEFAULT_THEME: &str = "dark";
@@ -18,6 +18,13 @@ const ACCENT: &str = "#f47600";
 const OK: &str = "#82c76b";
 const WARN: &str = "#c9a13b";
 const BAD: &str = "#e0683e";
+const BLUE: &str = "#61a0e0";
+const TEAL: &str = "#4ec9c9";
+const VIOLET: &str = "#b79ae0";
+/// The two diff grounds: a colour with alpha, so an added or removed line
+/// reads as its own layer over whatever the row sits on.
+const ADD_BG: &str = "rgba(15,49,30,.5)";
+const DEL_BG: &str = "rgba(58,22,26,.5)";
 
 /// Every token the dark palette resolves, in the order they are emitted.
 const DARK: &[(&str, &str)] = &[
@@ -33,6 +40,11 @@ const DARK: &[(&str, &str)] = &[
     ("--ok", OK),
     ("--warn", WARN),
     ("--bad", BAD),
+    ("--blue", BLUE),
+    ("--teal", TEAL),
+    ("--violet", VIOLET),
+    ("--add-bg", ADD_BG),
+    ("--del-bg", DEL_BG),
 ];
 
 /// The page's `:root` declarations for `name`.

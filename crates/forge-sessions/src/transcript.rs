@@ -21,10 +21,7 @@ use forge_primitives::{ContentBlock, Message, ToolCallContent};
 
 use crate::envelope::{PeerInboundKind, detect_inbound};
 use crate::family::tool_label;
-use crate::grouping::{
-    KindRow, aggregate_call_status, is_peer_block_render_tool, renders_as_lifecycle_block_parts,
-    wire_row,
-};
+use crate::grouping::{KindRow, aggregate_call_status, wire_row};
 use crate::model::ToolCallStatus;
 use crate::model::tool_call_info::{
     AnsweredQuestion, is_ask_question_tool_name, is_monitor_tool_name,
@@ -38,9 +35,6 @@ pub enum ChatUnit {
     UserTurn { text: String },
     /// Prose the assistant wrote.
     AssistantText { text: String },
-    /// One tool call drawn on its own, because it does not fold into a
-    /// run: a peer block, or a question waiting on a person.
-    ToolCall(ToolLeaf),
     /// A maximal run of consecutive tool calls, drawn as one group.
     ToolGroup {
         /// The families the run met, in first-appearance order, each with
@@ -211,26 +205,10 @@ fn push_call(
         flush(run, units);
         flush_peers(peers, units);
         units.push(question_card(id, input, answers));
-    } else if is_standalone_call(name, Some(input)) {
-        flush(run, units);
-        flush_peers(peers, units);
-        units.push(ChatUnit::ToolCall(leaf(id, name, input, results)));
     } else {
         flush_peers(peers, units);
         run.push((wire_row(name), leaf(id, name, input, results)));
     }
-}
-
-/// True when the fold draws a call on its own instead of folding it into a
-/// run: a peer block, or a question waiting on a person.
-///
-/// This is the fold's own predicate rather than `grouping::is_run_breaker_tool`,
-/// which is the TUI's: that one also breaks on a mutation, because the TUI
-/// opens a diff on its own, while the mockup draws an `edit` family inside
-/// the run with its leaves open.
-fn is_standalone_call(sdk_tool_name: &str, input: Option<&serde_json::Value>) -> bool {
-    is_peer_block_render_tool(sdk_tool_name)
-        || renders_as_lifecycle_block_parts(sdk_tool_name, input)
 }
 
 /// The card a question draws: each question the call asked, with what the
@@ -766,15 +744,17 @@ mod tests {
         );
     }
 
-    /// The whole standalone-call predicate, pinned from both sides: the
-    /// classes the fold draws on their own - a question waiting on a person
-    /// and a peer block - and the mutation it folds into the run instead.
-    /// Re-borrowing the TUI's predicate, or dropping an arm, fails here
-    /// rather than in a rendered page.
+    /// The two classes the mockup draws outside a run - a question waiting
+    /// on a person and a peer block - split it, and the mutation does not:
+    /// an edit is a family inside the group with its leaves open.
     #[test]
     fn only_the_calls_the_mockup_draws_alone_break_the_run() {
         let question = tool_call_named("AskUserQuestion");
-        let peer = tool_call_named("mcp__forge__agents__tell");
+        let peer = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_peer".to_owned(),
+            name: "mcp__forge__agents__tell".to_owned(),
+            input: serde_json::json!({"project": "companies", "message": "did it land?"}),
+        }]);
         let edit = tool_call("edit");
         let read = tool_call_at("read", 9);
 
@@ -784,10 +764,7 @@ mod tests {
             let units = render_units(&[read.clone(), breaker, read.clone()]);
             assert_eq!(units.len(), 3, "the run splits around a call drawn on its own");
             assert!(
-                matches!(
-                    &units[1],
-                    ChatUnit::ToolCall(_) | ChatUnit::PeerCard(_) | ChatUnit::QuestionCard { .. }
-                ),
+                matches!(&units[1], ChatUnit::PeerCard(_) | ChatUnit::QuestionCard { .. }),
                 "and that call is the unit in the middle",
             );
         }
