@@ -240,7 +240,9 @@
   details.leaf[open] > summary { color: var(--text); }
   details.leaf[open] > summary .arw { color: var(--accent); }
 
-  /* a call that stands alone (a run-breaker: diff tools, Monitor, peers) */
+  /* A call that stands alone and breaks the run: a peer block, an
+     unanswered question, or a lifecycle call such as a Monitor. An edit is
+     NOT one of these - it is a family inside the group, drawn above. */
   .body { margin: 3px 0 6px 27px; }
   .code { border: 1px solid var(--line); border-radius: 9px;
     background: var(--s2); overflow: hidden; }
