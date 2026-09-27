@@ -85,7 +85,7 @@ pub fn is_run_breaker_tool(sdk_tool_name: &str, input: Option<&serde_json::Value
 /// Mutation tools by name. Always-break belt-and-suspenders covering
 /// the in-flight window before the diff content arrives. The user's
 /// hard requirement: mutations NEVER fold, NEVER collapse by default.
-fn is_edit_tool(sdk_tool_name: &str) -> bool {
+pub(crate) fn is_edit_tool(sdk_tool_name: &str) -> bool {
     matches!(sdk_tool_name, "Edit" | "Write" | "MultiEdit" | "NotebookEdit")
 }
 

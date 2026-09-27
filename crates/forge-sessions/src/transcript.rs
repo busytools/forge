@@ -20,8 +20,8 @@ use std::collections::HashMap;
 use forge_primitives::{ContentBlock, Message, ToolCallContent};
 
 use crate::envelope::{PeerInboundKind, detect_inbound};
-use crate::family::tool_label;
-use crate::grouping::{KindRow, aggregate_call_status, wire_row};
+use crate::family::{ToolFamily, tool_label};
+use crate::grouping::{KindRow, aggregate_call_status, is_edit_tool, wire_row};
 use crate::model::tool_call_info::{
     AnsweredQuestion, is_ask_question_tool_name, is_monitor_tool_name,
 };
@@ -238,8 +238,20 @@ fn push_call(
         units.push(question_card(id, input, answers));
     } else {
         flush_peers(peers, units);
-        run.push((wire_row(name), leaf(id, name, input, results)));
+        run.push((family_row(name), leaf(id, name, input, results)));
     }
+}
+
+/// The row a call folds under. A mutation folds under one `edit` family
+/// whatever tool it was, which is what the mockup draws: the wire's own
+/// answer gives each of the four mutation tools a row of its own, so
+/// `Edit, Write, Edit` would draw two rows both labelled `edit` and the
+/// second one out of order.
+fn family_row(sdk_tool_name: &str) -> (KindRow, String) {
+    if is_edit_tool(sdk_tool_name) {
+        return (KindRow::Family(ToolFamily::Own("edit")), "edit".to_owned());
+    }
+    wire_row(sdk_tool_name)
 }
 
 /// The card a question draws: each question the call asked, with what the
@@ -760,8 +772,31 @@ mod tests {
         );
         assert_eq!(
             families[1].row,
-            KindRow::Family(ToolFamily::Own("Edit")),
+            KindRow::Family(ToolFamily::Own("edit")),
             "so the edit row reads as a class of its own, not as the generic tool row",
+        );
+    }
+
+    /// Every mutation folds under the one `edit` row, whatever tool it was.
+    /// The wire's own answer gives each of the four tools a row of its own,
+    /// which draws two rows both labelled `edit`, with the second one out of
+    /// order behind the first.
+    #[test]
+    fn every_mutation_folds_under_one_row() {
+        let messages = tool_call_messages(&["edit", "Write", "edit", "MultiEdit"]);
+        let units = render_units(&messages);
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+
+        assert_eq!(families.len(), 1, "one row, not one per tool name");
+        assert_eq!(families[0].label, "edit");
+        assert_eq!(families[0].calls.len(), 4, "with every mutation under it, in order");
+        let ids: Vec<&str> = families[0].calls.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["toolu_edit_0", "toolu_Write_1", "toolu_edit_2", "toolu_MultiEdit_3"],
+            "and in the order they ran",
         );
     }
 

@@ -1139,7 +1139,9 @@ fn family_icon(row: KindRow) -> &'static str {
             ToolFamily::Lsp => "lsp",
             ToolFamily::Skill => "skill",
             ToolFamily::ToolSearch => "toolsearch",
-            ToolFamily::Own("Edit" | "Write" | "MultiEdit" | "NotebookEdit") => "edit",
+            // The fold gives every mutation this one row, so a view names it
+            // once rather than listing the four tools behind it.
+            ToolFamily::Own("edit") => "edit",
             ToolFamily::Config | ToolFamily::Worktree | ToolFamily::Tool | ToolFamily::Own(_) => {
                 "tool"
             }
@@ -1150,7 +1152,7 @@ fn family_icon(row: KindRow) -> &'static str {
 /// Whether a family's calls start open. A mutation's diff is what a reader
 /// came for, and the mockup draws it without being asked.
 fn opens_by_default(row: KindRow) -> bool {
-    matches!(row, KindRow::Family(family) if matches!(family, ToolFamily::Own("Edit" | "Write" | "MultiEdit" | "NotebookEdit")))
+    matches!(row, KindRow::Family(ToolFamily::Own("edit")))
 }
 
 /// A call's title without the family word the row above already says, and
