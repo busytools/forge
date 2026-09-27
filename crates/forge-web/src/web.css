@@ -765,6 +765,193 @@ details.msg[open] > summary .arw { color: var(--teal); }
   font-display: swap;
 }
 
+/* ---------- the composer ----------
+   Taken from the mock at docs/mockups/web-composer.html: the box, the list
+   that opens over it, the dictation row inside it, the states that replace
+   it, and the dock. Two differences from the specimen, both because the
+   live page is editable and the specimen is drawn:
+   the box's text is a textarea rather than a span, so its placeholder and
+   its caret are the browser's own; and the meter is a history of readings
+   rather than two looping copies of one shape, so the track does not
+   animate. */
+
+/* The composer's own slot at the foot of the chat column. Its padding is
+   the only thing keeping the box off the column's bottom edge. */
+.composer { padding: 4px 0 2px; }
+.comp { display: flex; flex-direction: column; gap: 2px; }
+.hint { font-size: var(--fs-base); padding-left: 4px; }
+.hint.login { color: var(--warn); }
+.hint.login .sub { color: var(--dim); display: block; font-size: var(--fs-data); }
+
+.box { border: 1.5px solid rgba(244,118,0,.45); border-radius: 16px;
+  background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
+  backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
+  padding: 11px 14px; display: flex; flex-direction: column; gap: 8px;
+  transition: border-color .3s ease; }
+.box:focus-within { border-color: var(--accent); }
+.box.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
+.box.tr { border-color: var(--blue); }
+.box.done { border-color: var(--ok); }
+.box.err { border-color: var(--bad); }
+.line { display: flex; align-items: flex-start; gap: 10px; }
+/* The draft. A field rather than a span, so it carries no chrome of the
+   page's: the box's own border is the identity. */
+.line .txt { flex: 1; min-width: 0; font-family: inherit; color: inherit;
+  font-size: var(--fs-prose); line-height: 1.5; background: none; border: 0;
+  padding: 0; resize: none; overflow-y: auto; max-height: 40vh;
+  field-sizing: content; }
+.line .txt:focus { outline: none; }
+.line .txt::placeholder { color: var(--dim); font-style: italic; }
+.send { color: var(--accent); padding-top: 3px; background: none; border: 0;
+  cursor: pointer; display: flex; }
+.send[disabled] { cursor: default; opacity: .45; }
+.foot { display: flex; align-items: center; gap: 10px; padding-left: 25px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.foot .mic { margin-left: auto; background: none; border: 0; padding: 0;
+  color: currentColor; display: flex; cursor: pointer; }
+.foot .mic[disabled] { cursor: default; opacity: .45; }
+
+/* The line the composer puts where the mockup puts key hints: every control
+   it names needs the write half of the view surface, so the box, the list
+   and the dock each say what cannot be done rather than advertising a key
+   that nothing reads. */
+.keys { display: flex; gap: 14px; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--dim); }
+.ac .keys { padding: 7px 13px; border-top: 1px solid var(--line); }
+.dock .keys { padding-left: 31px; }
+
+/* The dictation row: it lives inside the box, grows it by one line, and
+   collapses when the take resolves. */
+.dict { display: flex; align-items: center; gap: 11px; padding-left: 25px;
+  font-family: var(--mono); font-size: var(--fs-data); }
+.dict .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+  background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
+.dict .dot.tr { background: var(--blue); animation: none; }
+.dict .t { color: var(--accent); }
+.dict .t.tr { color: var(--dim); }
+.dict .db { color: var(--hot); }
+.dict .db.tr { color: var(--dim); }
+.dict .lbl { color: var(--dim); }
+.dict .esc { margin-left: auto; color: var(--dim); background: none; border: 0;
+  font-family: inherit; font-size: inherit; padding: 0; cursor: pointer; }
+.dict .esc[disabled] { cursor: default; opacity: .45; }
+/* The meter is a history of levels, not bars pulsing in place: each cell is
+   one past sample, and the track is pinned right so the newest reading is
+   always at the right edge and the history flows off the left one. */
+.wave { height: 22px; flex: 1; min-width: 0; overflow: hidden; }
+.wtr { display: flex; align-items: flex-end; justify-content: flex-end;
+  gap: 2px; height: 100%; }
+.wtr i { flex: 0 0 4px; border-radius: 1px; background: var(--s3); }
+.wtr i.mid { background: #ab6100; }
+.wtr i.hot { background: var(--hot); }
+.wave.tr .wtr i { background: #26354a; }
+.wave.tr .wtr i.mid { background: #2f486d; }
+.wave.tr .wtr i.hot { background: #365582; }
+
+/* A notice shares the row with the take and wins it. */
+.notice { font-family: var(--mono); font-size: var(--fs-data); padding-left: 25px; }
+.notice.q { color: var(--dim); }
+.notice.bad { color: var(--bad); }
+.notice.warn { color: var(--warn); }
+
+/* While the session cannot take input the box is replaced entirely, and the
+   slot says why it is not accepting keys. */
+.blocked { display: flex; flex-direction: column; gap: 3px; padding-left: 25px; }
+.blocked .b1 { display: flex; align-items: center; gap: 10px; font-family: var(--mono);
+  font-size: var(--fs-base); color: var(--text); }
+.blocked .b2 { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+  padding-left: 25px; }
+.blocked .ring { width: 13px; height: 13px; flex: none; border-radius: 50%;
+  border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
+  animation: spin 900ms linear infinite; }
+
+/* ---------- autocomplete: four triggers, one popover shape ---------- */
+
+.ac { border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+  background: rgba(13,17,26,.96); box-shadow: 0 18px 44px rgba(0,0,0,.5); }
+.ac .h { display: flex; align-items: center; gap: 8px; padding: 8px 13px;
+  border-bottom: 1px solid var(--line); font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--dim); letter-spacing: .06em;
+  text-transform: uppercase; }
+.ac .h .n { margin-left: auto; }
+/* The window the candidates scroll in. Ten rows is the picker's own window
+   and not its cap: the list behind it runs to two hundred, and the header
+   says how many that is. The height is ten rows of the type scale above,
+   so the tenth is whole, and it gives way to a fraction of the viewport so
+   a short one - a phone on its side - still leaves the box on screen with
+   nothing able to scroll to it. */
+.ac .rows { max-height: min(333px, 40vh); overflow-y: auto; scrollbar-gutter: stable; }
+.ac .rows::-webkit-scrollbar { width: 8px; }
+.ac .rows::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+.ac .rows::-webkit-scrollbar-track { background: transparent; }
+.ac .it { display: flex; align-items: center; gap: 10px; padding: 5px 13px;
+  font-family: var(--mono); font-size: var(--fs-base); }
+.ac .it .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
+.ac .it .p { color: var(--text); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.ac .it .p em { font-style: normal; color: var(--accent); }
+.ac .it .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ac .it.sel { background: rgba(244,118,0,.09); }
+.ac .it.sel .p { color: var(--text); }
+/* The marker says a key would take this row, and no key can: it is drawn
+   demoted the way the dock's is, so one idea is not drawn two ways. */
+.ac .it.sel .cur { color: var(--dim); }
+.ac .it .g { width: 20px; flex: 0 0 20px; text-align: center; }
+
+/* ---------- the dock: the box morphed into a prompt ---------- */
+
+.dock { border: 1.5px solid rgba(244,118,0,.75); border-radius: 16px;
+  background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86));
+  box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 15px 17px;
+  display: flex; flex-direction: column; gap: 11px; }
+.dock .queue { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.dock .head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
+.dock .head .qm { color: var(--accent); font-weight: 700; flex: none; }
+.dock .head .t { font-weight: 650; color: var(--text); }
+.dock .head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock .reason { color: var(--warn); font-size: var(--fs-base); }
+.dock .desc { color: var(--dim); font-size: var(--fs-base); }
+.dock .opts { display: flex; flex-direction: column; gap: 1px; }
+.opt { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
+  border-radius: 9px; font-size: var(--fs-base); }
+.opt .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
+.opt .ic { color: var(--dim); }
+.opt .ic.ok { color: var(--ok); }
+.opt .ic.no { color: var(--bad); }
+.opt .ic.ed { color: var(--blue); }
+.opt .lbl { color: var(--dim); background: none; border: 0; padding: 0;
+  font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
+.opt.sel { background: rgba(244,118,0,.1); }
+.opt.sel .lbl { color: var(--text); font-weight: 600; }
+/* An option whose control cannot answer does not keep the styling of one
+   that can: the selected row's emphasis goes with the choice it advertises. */
+.opt.off .cur { color: var(--dim); }
+.opt.off .lbl, .opt.off.sel .lbl { color: var(--dim); font-weight: 400; }
+.opt .lbl[disabled] { cursor: default; }
+.opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
+  border: 1.5px solid var(--line); display: grid; place-items: center; }
+.dock .notes { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
+  padding: 7px 11px; font-family: inherit; font-size: var(--fs-base); color: var(--text);
+  background: rgba(13,17,26,.6); resize: none; }
+.dock .notes[disabled] { color: var(--dim); }
+.opt.off .ic { opacity: .6; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dict .dot, .blocked .ring { animation: none; }
+}
+
+/* The narrow widths, which the mockup draws the composer at too. The rect
+   is fixed furniture and the meter is the one part of it that flexes, so on
+   a phone the fixed parts leave the meter a slot a pixel wide and the row's
+   whole point renders as a single cell. It takes a line of its own there. */
+@media (max-width: 760px) {
+  .dict { flex-wrap: wrap; row-gap: 2px; }
+  .dict .wave { flex: 1 0 100%; }
+  .dict .esc { margin-left: auto; }
+}
+
 /* ---------- the session header's facts, and the four sections a view
    reads from the session itself: subagents, mcp servers, processes,
    monitors ---------- */

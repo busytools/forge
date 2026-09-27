@@ -183,6 +183,60 @@ impl Fleet {
         self.workspace.seed_test_pending_interaction(slot, kind);
     }
 
+    /// Hold `slot` waiting to be let in, the way a session that cannot
+    /// authenticate reads.
+    pub fn await_login(&self, slot: &SessionSlot) {
+        self.workspace.seed_test_awaiting_login(slot);
+    }
+
+    /// Put `label` under `project` as a worker whose spawn has not
+    /// connected yet, so its row reads as starting rather than asleep.
+    pub fn add_starting_worker(
+        &self,
+        org: &str,
+        project: &str,
+        label: &str,
+    ) -> Result<(), FixtureError> {
+        let key = self.project_key(project)?;
+        self.workspace.seed_test_worker_row(&key, label);
+        self.workspace.insert_live_worker(
+            &key,
+            forge_workspace::WorkerEntry {
+                label: label.to_owned(),
+                charter: format!("charter for {label}"),
+                slot: SessionSlot::worker(org, project, label),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead(org, project),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        self.workspace.register_domain_session(SessionSlot::worker(org, project, label), None);
+        Ok(())
+    }
+
+    /// Hold `slot` on a queue of `count` unanswered prompts, so a view
+    /// test can render a depth a session holding several reads.
+    pub fn seed_test_prompt_queue(&self, slot: &SessionSlot, kind: PendingKind, count: usize) {
+        self.workspace.seed_test_prompt_queue(slot, kind, count);
+    }
+
+    /// Advertise `commands` and `agents` for `slot`, the way the CLI's
+    /// init frame leaves them: what the composer's `/` and `&` triggers
+    /// read.
+    pub fn advertise(
+        &self,
+        slot: &SessionSlot,
+        commands: Vec<forge_primitives::AvailableCommand>,
+        agents: Vec<forge_primitives::AvailableAgent>,
+    ) {
+        self.workspace.seed_test_advertised_catalogues(slot, commands, agents);
+    }
+
     /// Declare a task under `project`, held by the session labelled
     /// `owner`.
     pub fn add_task(

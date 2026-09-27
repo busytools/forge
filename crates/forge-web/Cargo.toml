@@ -22,9 +22,10 @@ pulldown-cmark = { workspace = true }
 # A source file a call read or wrote is drawn highlighted, into the four
 # token classes the mockup names.
 syntect = { workspace = true }
-# An MCP server's config blob, which is where the scope a server with no
-# configured one reads is named, and the status frame's own shape, read for
-# the one field that says a compaction is running.
+# The composer reads a tool call's own input to say what a prompt is about,
+# an MCP server's config blob names the scope a server with none reads, and
+# the status frame's own shape is worth reading for the one field that says a
+# compaction is running.
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
@@ -32,9 +33,6 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
-# The stream tests build wire frames the way the workspace's own tests do:
-# from the JSON the CLI sends, not from a hand-filled struct.
-serde_json = { workspace = true }
 tempfile = { workspace = true }
 # The view fixtures the page's own tests drive a real fleet through.
 forge-sessions = { workspace = true, features = ["testing"] }

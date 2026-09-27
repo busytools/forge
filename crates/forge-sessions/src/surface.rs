@@ -31,7 +31,7 @@ pub use dictate::DictateView;
 // a view does not name.
 pub use forge_primitives::ConversationHistory;
 pub use forge_workspace::env::cli_version::CliVersionInfo;
-pub use forge_workspace::{DictateFailure, DictateModelState, LoadingState};
+pub use forge_workspace::{DictateFailure, DictateModelState, DictateOutcome, LoadingState};
 pub use roster::Roster;
 pub use session::SessionState;
 pub use workers::{WorkerRef, Workers};

@@ -39,6 +39,7 @@ const BAD: &str = "#e0683e";
 const BLUE: &str = "#61a0e0";
 const TEAL: &str = "#4ec9c9";
 const VIOLET: &str = "#b79ae0";
+const HOT: &str = "#ffb058";
 /// The four classes a source file's tokens are drawn in: keyword, string,
 /// function or type. Comments take `--dim`.
 const SYN_KEY: &str = "#c9a13b";
@@ -66,6 +67,7 @@ const DARK: &[(&str, &str)] = &[
     ("--blue", BLUE),
     ("--teal", TEAL),
     ("--violet", VIOLET),
+    ("--hot", HOT),
     ("--syn-key", SYN_KEY),
     ("--syn-str", SYN_STR),
     ("--syn-fn", SYN_FN),

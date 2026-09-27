@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -114,6 +114,7 @@ fn router(wiring: Wiring) -> Router {
         // A session's own stream, beside its page: the page swaps the region
         // this sends, and the home's `/events` stays the fleet's.
         .route("/session/{org}/{project}/{label}/events", get(session_events))
+        .route("/session/{org}/{project}/{label}/composer", get(composer_region))
         .route("/events", get(events))
         .route("/favicon.svg", get(favicon))
         .route("/web.css", get(web_css))
@@ -137,6 +138,27 @@ async fn session_page(
             (StatusCode::NOT_FOUND, "no session slot by that name").into_response()
         }
     }
+}
+
+/// The composer on its own, which is what the box asks for while the reader
+/// types. The draft comes back with the request, so a list opens against
+/// what is actually in the box rather than against what the page was first
+/// drawn with.
+async fn composer_region(
+    State(wiring): State<Wiring>,
+    Path((org, project, label)): Path<(String, String, String)>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let surface = &wiring.state.surface;
+    let roster = surface.roster();
+    let agents = surface.agents();
+    let Some(slot) = crate::session::resolve(surface, &roster, &agents, &org, &project, &label)
+    else {
+        return (StatusCode::NOT_FOUND, "no session slot by that name").into_response();
+    };
+    let home = crate::session::context(&wiring.state, wiring.bound);
+    let draft = crate::composer::draft_of(query.as_deref());
+    crate::composer::render(&home, &slot, &roster, &agents, &draft).await.into_response()
 }
 
 /// One vendored script: the page's own, as published. An unknown name is a

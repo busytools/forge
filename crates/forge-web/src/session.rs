@@ -137,8 +137,31 @@ fn segment(value: &str) -> String {
     out
 }
 
+/// The slot a route names, or `None` for a seat the roster does not hold.
+///
+/// A project declares one seat of its own that exists whether or not it has
+/// ever run; a worker is a seat only while the roster can name it. Both the
+/// page and the composer resolve through this, so a composer for a seat the
+/// page would refuse is refused the same way.
+pub(crate) fn resolve(
+    surface: &ViewSurface,
+    roster: &Roster,
+    agents: &Agents,
+    org: &str,
+    project: &str,
+    label: &str,
+) -> Option<SessionSlot> {
+    let seat = roster.projects.iter().find(|seat| seat.org == org && seat.name == project)?;
+    if label == "lead" {
+        return Some(SessionSlot::lead(org, project));
+    }
+    let named = agents.for_project(&seat.key).iter().any(|row| row.label == label)
+        || surface.workers().for_project(&seat.key).iter().any(|row| row.label == label);
+    named.then(|| SessionSlot::worker(org, project, label))
+}
+
 /// Resolve the slot the route names, then render what it serves: the page,
-/// the waking page, or nothing for a slot the roster does not hold.
+/// or nothing for a slot the roster does not hold.
 pub async fn page(
     state: &WebState,
     bound: SocketAddr,
@@ -146,13 +169,13 @@ pub async fn page(
     project: &str,
     label: &str,
 ) -> Found {
-    let Some(slot) = seat(&state.surface, org, project, label) else {
-        return Found::Absent;
-    };
     // One walk of the core per page: the roster and the agents the page
     // draws from.
     let roster = state.surface.roster();
     let agents = state.surface.agents();
+    let Some(slot) = resolve(&state.surface, &roster, &agents, org, project, label) else {
+        return Found::Absent;
+    };
     let messages = read_conversation(&state.surface, &slot, roster.cwd_for(&slot)).await;
     // The page's first render is before any stream is attached, so it draws
     // no turn row: the stream's opening event follows at once, and it is the
@@ -225,7 +248,7 @@ pub(crate) fn apply_to_live_turn(msg: &Message, live: &mut LiveTurn) {
 
 /// The pieces both pages read the core through, which are the home's own:
 /// one view context per page, over the same surface, cache and live state.
-fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
+pub(crate) fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
     Home {
         surface: &state.surface,
         work: &state.work,
@@ -408,6 +431,9 @@ async fn columns(
                             roster.cwd_for(slot).as_deref(),
                             tail.as_ref(),
                         ))
+                    }
+                    div .composer {
+                        (crate::composer::render(home, slot, roster, agents, "").await)
                     }
                 }
                 aside .rail .right {
