@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use forge_primitives::{ContentBlock, Message};
+use forge_primitives::{ContentBlock, Message, ToolCallContent};
 
 use crate::envelope::{PeerInboundKind, detect_inbound};
 use crate::family::tool_label;
@@ -107,6 +107,10 @@ pub struct ToolLeaf {
     /// The tool's title: the file, command or query it names.
     pub title: String,
     pub status: ToolCallStatus,
+    /// What the row opens on: the diff a mutation carries in its input, and
+    /// whatever the call's result put beside it, in the shapes the shared
+    /// builder resolves. Empty for a call that has not come back yet.
+    pub content: Vec<ToolCallContent>,
 }
 
 /// A peer message, as the envelope it arrived in or the call that sent
@@ -191,7 +195,7 @@ fn push_call(
     id: &str,
     name: &str,
     input: &serde_json::Value,
-    results: &HashMap<String, ToolCallStatus>,
+    results: &HashMap<String, Recorded>,
     answers: &HashMap<String, serde_json::Value>,
     run: &mut Vec<((KindRow, String), ToolLeaf)>,
     peers: &mut Vec<PeerCard>,
@@ -466,22 +470,51 @@ fn outbound_card(name: &str, input: &serde_json::Value) -> Option<PeerCard> {
     Some(PeerCard { peer, body, inbound: false, kind })
 }
 
-/// One call as a transcript holds it: the wire's name and input, the
-/// title the shared call builder resolves, and the status its result
-/// recorded. A call with no result yet reads as `Pending`, which is what
-/// the resume path hands the TUI for the same file.
+/// One call as a transcript holds it: the wire's name and input, the title
+/// and content the shared call builder resolves, and what its result
+/// recorded. A call with no result yet reads as `Pending`, which is what the
+/// resume path hands the TUI for the same file.
 fn leaf(
     id: &str,
     name: &str,
     input: &serde_json::Value,
-    results: &HashMap<String, ToolCallStatus>,
+    results: &HashMap<String, Recorded>,
 ) -> ToolLeaf {
+    let mut call = forge_workspace::tooling::create_tool_call(id, name, input, None);
+    let mut content = std::mem::take(&mut call.content);
+    let recorded = results.get(id);
+    let status = match recorded {
+        Some(recorded) => {
+            // The result's own shapes ride the shared builder rather than a
+            // second reader here: it is what the TUI draws the same rows
+            // from, and two readers would drift.
+            let fields = forge_workspace::tooling::build_tool_result_fields(
+                recorded.status == ToolCallStatus::Failed,
+                recorded.content.as_ref(),
+                Some(&call),
+                recorded.result.as_ref(),
+            );
+            content.extend(fields.content.unwrap_or_default());
+            fields.status.unwrap_or(recorded.status)
+        }
+        None => ToolCallStatus::Pending,
+    };
     ToolLeaf {
         id: id.to_owned(),
         label: tool_label(name),
-        title: forge_workspace::tooling::create_tool_call(id, name, input, None).title,
-        status: results.get(id).copied().unwrap_or(ToolCallStatus::Pending),
+        title: call.title.clone(),
+        status,
+        content,
     }
+}
+
+/// What one call's result recorded: the status it settled at, the row's own
+/// content, and the CLI's record beside it. All three are what the shared
+/// result builder reads.
+struct Recorded {
+    status: ToolCallStatus,
+    content: Option<serde_json::Value>,
+    result: Option<serde_json::Value>,
 }
 
 /// Every tool result the conversation holds, by the call it answers.
@@ -491,26 +524,40 @@ fn leaf(
 /// inline in the assistant message that made the call. Reading only the
 /// user turns leaves a server tool pending for good and holds its group's
 /// aggregate there with it.
-fn result_statuses(messages: &[Message]) -> HashMap<String, ToolCallStatus> {
+fn result_statuses(messages: &[Message]) -> HashMap<String, Recorded> {
     let mut out = HashMap::new();
     for message in messages {
         match message {
-            Message::User { message: envelope, .. } => {
+            Message::User { message: envelope, tool_use_result, .. } => {
                 for block in &envelope.content {
-                    if let ContentBlock::ToolResult { tool_use_id, is_error, .. } = block {
+                    if let ContentBlock::ToolResult { tool_use_id, content, is_error } = block {
                         let status = if *is_error {
                             ToolCallStatus::Failed
                         } else {
                             ToolCallStatus::Completed
                         };
-                        out.insert(tool_use_id.clone(), status);
+                        out.insert(
+                            tool_use_id.clone(),
+                            Recorded {
+                                status,
+                                content: Some(content.clone()),
+                                result: tool_use_result.clone(),
+                            },
+                        );
                     }
                 }
             }
             Message::Assistant { message: envelope, .. } => {
                 for block in &envelope.content {
-                    if let ContentBlock::ServerToolResult { tool_use_id, .. } = block {
-                        out.insert(tool_use_id.clone(), ToolCallStatus::Completed);
+                    if let ContentBlock::ServerToolResult { tool_use_id, content } = block {
+                        out.insert(
+                            tool_use_id.clone(),
+                            Recorded {
+                                status: ToolCallStatus::Completed,
+                                content: Some(content.clone()),
+                                result: None,
+                            },
+                        );
                     }
                 }
             }
@@ -551,7 +598,9 @@ fn flush_peers(peers: &mut Vec<PeerCard>, units: &mut Vec<ChatUnit>) {
 
 #[cfg(test)]
 mod tests {
-    use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
+    use forge_primitives::{
+        AssistantEnvelope, ChunkContent, ContentBlock, Message, ToolCallContent, UserEnvelope,
+    };
 
     use crate::family::ToolFamily;
     use crate::grouping::KindRow;
@@ -1033,6 +1082,59 @@ mod tests {
             "each call reads the status its own result recorded",
         );
         assert_eq!(*status, ToolCallStatus::Failed, "and the run reports the failure it holds");
+    }
+
+    /// A call carries what its row opens on: the result's own content,
+    /// resolved by the same builder the TUI draws the same rows from. A leaf
+    /// with no body is a row that expands to nothing.
+    #[test]
+    fn a_leaf_carries_what_its_result_put_beside_it() {
+        let messages = [tool_call("bash"), tool_result("toolu_bash_0", false)];
+
+        let units = render_units(&messages);
+
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        let leaf = &families[0].calls[0];
+        let text: String = leaf
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                ToolCallContent::Content { content: ChunkContent::Text { text } } => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains("output"), "the row opens on the result's own words: {text}");
+    }
+
+    /// A mutation carries its diff from the input alone, which is what the
+    /// mockup draws open by default: the edit family's leaves are the one
+    /// row that shows its body without being asked.
+    #[test]
+    fn a_mutation_carries_its_diff() {
+        let messages = [assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_edit".to_owned(),
+            name: "Edit".to_owned(),
+            input: serde_json::json!({
+                "file_path": "crates/forge-web/src/home.css",
+                "old_string": "  text-decoration: none; flex: none;",
+                "new_string": "  text-decoration: none; flex: 0 1 auto;",
+            }),
+        }])];
+
+        let units = render_units(&messages);
+
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        let leaf = &families[0].calls[0];
+        assert!(
+            leaf.content.iter().any(|content| matches!(content, ToolCallContent::Diff { .. })),
+            "the edit's row carries the diff its input describes",
+        );
     }
 
     /// A server-side tool's result arrives inline in the assistant message
