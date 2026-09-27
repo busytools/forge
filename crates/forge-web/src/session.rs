@@ -632,7 +632,7 @@ fn schedules_section(crons: &[CronEntry]) -> Markup {
     let body = html! {
         @for cron in crons {
             div .kv {
-                span .k { "\u{23F0} " (cron_label(cron)) }
+                span .k { (cron_label(cron)) }
                 span .v { (until_of(cron.next_fire)) " \u{b7} " (kind_of(&cron.kind)) }
             }
         }
