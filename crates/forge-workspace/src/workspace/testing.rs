@@ -447,6 +447,25 @@ impl Workspace {
         self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);
     }
 
+    /// Advertise `commands` and `agents` for `slot`, registering its
+    /// domain if it has none, so a cross-crate test can read what the
+    /// CLI's init frame would have left behind without driving the wire.
+    /// Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_advertised_catalogues(
+        &self,
+        slot: &SessionSlot,
+        commands: Vec<forge_primitives::AvailableCommand>,
+        agents: Vec<forge_primitives::AvailableAgent>,
+    ) {
+        let domain = self
+            .domain_session_for(slot)
+            .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
+        let mut domain = domain.lock();
+        domain.available_commands = commands;
+        domain.available_agents = agents;
+    }
+
     /// Park a pending interaction on `slot`, registering its domain if it
     /// has none, so a test can read the state a held turn produces without
     /// driving the wire. Test-only.

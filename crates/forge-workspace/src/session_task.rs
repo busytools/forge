@@ -1373,6 +1373,56 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     {
         domain.runtime_state = Some(state);
     }
+    // The two catalogues the composer's autocomplete reads, as the CLI
+    // last advertised them. Held on the session so a view arriving after
+    // the turn started reads one answer rather than waiting for the next
+    // init frame, which is a whole turn away.
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::System { subtype, data, .. },
+        ..
+    } = event
+        && subtype == "init"
+        && let Some(record) = data.as_object()
+    {
+        if let Some(entries) = record.get("slash_commands").and_then(serde_json::Value::as_array) {
+            let commands =
+                forge_agent::translate::commands::map_available_commands_from_json(entries);
+            // An init frame that advertises none carries nothing about
+            // them, and the CLI re-fires one every turn.
+            if !commands.is_empty() {
+                domain.available_commands = commands;
+            }
+        }
+        if !domain.agents_emitted_this_turn
+            && let Some(agents) = record.get("agents")
+        {
+            domain.available_agents =
+                forge_agent::translate::agents::map_available_agents_from_names(Some(agents));
+            domain.agents_emitted_this_turn = true;
+        }
+    }
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::CommandsChanged { commands, .. },
+        ..
+    } = event
+    {
+        let parsed = forge_agent::translate::commands::map_available_commands_from_json(commands);
+        // A payload carrying entries that parse to none means the CLI's
+        // entry shape changed under us, and storing it would wipe the
+        // list; a legitimately empty one clears it.
+        let drift = parsed.is_empty() && !commands.is_empty();
+        if !drift {
+            domain.available_commands = parsed;
+        }
+    }
+    // The turn boundary re-arms the agent read.
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::Result { .. } | forge_primitives::Message::Error { .. },
+        ..
+    } = event
+    {
+        domain.agents_emitted_this_turn = false;
+    }
 }
 
 /// Forward an awaited permission outcome to the agent so the bridge
@@ -3642,6 +3692,95 @@ provider = "anthropic"
 
     fn sdk_message(msg: forge_primitives::Message) -> AgentEvent {
         AgentEvent::SdkMessage { session_id: "s".to_owned(), msg }
+    }
+
+    /// A `system/init` frame, which is where the CLI advertises both
+    /// catalogues: bare command names and bare agent names.
+    fn init_frame(slash_commands: &[&str], agents: &[&str]) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s",
+            "slash_commands": slash_commands,
+            "agents": agents,
+        }))
+        .expect("an init frame")
+    }
+
+    /// Both lists are facts about the session, so the core keeps them: a
+    /// view that arrives after the turn started reads them rather than
+    /// waiting for the next init frame, which may be a whole turn away.
+    #[test]
+    fn the_catalogues_the_cli_advertises_are_retained_on_the_domain() {
+        let mut domain = empty_domain();
+
+        apply_event_to_domain(
+            &mut domain,
+            &sdk_message(init_frame(&["/help", "memory"], &["reviewer"])),
+        );
+
+        let commands: Vec<&str> =
+            domain.available_commands.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(commands, vec!["/help", "memory"], "the command list is kept whole");
+        let agents: Vec<&str> = domain.available_agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(agents, vec!["reviewer"], "and so is the agent catalogue");
+    }
+
+    /// A plugin reload re-sends the command list mid-session, and the
+    /// retained copy has to follow it or the dropdown goes stale.
+    #[test]
+    fn a_commands_changed_frame_refreshes_the_retained_commands() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame(&["/help"], &[])));
+
+        let refreshed = forge_primitives::Message::CommandsChanged {
+            commands: vec![serde_json::json!({"name": "/reload", "description": "Reloaded"})],
+            uuid: "cmd-uuid".to_owned(),
+            session_id: "s".to_owned(),
+        };
+        apply_event_to_domain(&mut domain, &sdk_message(refreshed));
+
+        let commands: Vec<&str> =
+            domain.available_commands.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(commands, vec!["/reload"], "the reload's list replaces the init one");
+    }
+
+    /// The CLI re-fires `system/init` every turn. A frame that advertises
+    /// no commands carries nothing about them, so it must not wipe what
+    /// the previous turn established.
+    #[test]
+    fn an_init_frame_with_no_commands_keeps_the_retained_ones() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame(&["/help"], &["reviewer"])));
+
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame(&[], &["reviewer"])));
+
+        assert_eq!(domain.available_commands.len(), 1, "the earlier list stands");
+        assert_eq!(domain.available_agents.len(), 1, "and the catalogue with it");
+    }
+
+    /// The agent catalogue is read once per turn, which is the rule the
+    /// TUI's own walker applies: a re-fire inside the same turn is the
+    /// same list, and the turn boundary is what re-arms the read.
+    #[test]
+    fn the_agent_catalogue_is_read_once_per_turn() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame(&[], &["reviewer"])));
+
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame(&[], &["someone-else"])));
+        assert_eq!(
+            domain.available_agents.first().map(|a| a.name.as_str()),
+            Some("reviewer"),
+            "a re-fire inside the turn does not replace the catalogue",
+        );
+
+        apply_event_to_domain(&mut domain, &sdk_message(result_message("success", false)));
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame(&[], &["someone-else"])));
+        assert_eq!(
+            domain.available_agents.first().map(|a| a.name.as_str()),
+            Some("someone-else"),
+            "and the next turn's frame does",
+        );
     }
 
     fn assistant_with(error: &str) -> forge_primitives::Message {

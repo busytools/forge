@@ -7,6 +7,7 @@
 
 pub mod accounts;
 pub mod agents;
+pub mod composer;
 pub mod connectors;
 pub mod dictate;
 pub mod plugins;

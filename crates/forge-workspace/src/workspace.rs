@@ -9,7 +9,7 @@ use anyhow::Result;
 use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_agent::env::cli_version::CliVersionInfo;
-use forge_primitives::{PeerInflightStats, SDKSessionInfo};
+use forge_primitives::{AvailableAgent, AvailableCommand, PeerInflightStats, SDKSessionInfo};
 
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
@@ -3233,6 +3233,23 @@ impl Workspace {
     /// this mutex.
     pub fn domain_session_for(&self, key: &SessionSlot) -> Option<Arc<Mutex<DomainSession>>> {
         self.domain_handles.lock().get(key).cloned()
+    }
+
+    /// The slash commands the CLI last advertised for the session at
+    /// `slot`. Empty for a slot whose session has not connected yet, or
+    /// whose CLI advertised none.
+    pub fn available_commands_for(&self, slot: &SessionSlot) -> Vec<AvailableCommand> {
+        self.domain_session_for(slot)
+            .map(|domain| domain.lock().available_commands.clone())
+            .unwrap_or_default()
+    }
+
+    /// The subagents the CLI last advertised for the session at `slot`.
+    /// Empty in the same two cases as [`Self::available_commands_for`].
+    pub fn available_agents_for(&self, slot: &SessionSlot) -> Vec<AvailableAgent> {
+        self.domain_session_for(slot)
+            .map(|domain| domain.lock().available_agents.clone())
+            .unwrap_or_default()
     }
 
     /// Whether the session at `key` currently has a live agent

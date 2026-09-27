@@ -969,44 +969,11 @@ fn handle_compact_boundary(app: &mut App, trigger: &str, pre_tokens: u64) {
     );
 }
 
-/// Parse a `slash_commands` / `commands` array into `AvailableCommand`s.
-/// Entries are either bare name strings (the `system/init`
-/// `slash_commands` shape) or `{name, description, argumentHint}`
-/// objects (the `commands_changed` shape); both flow through here so
-/// init and the live refresh share one boundary. Non-string / nameless
-/// entries are skipped; an empty `argumentHint` collapses to `None`.
-fn available_commands_from_json(arr: &[Value]) -> Vec<forge_primitives::AvailableCommand> {
-    arr.iter()
-        .filter_map(|entry| {
-            if let Some(name) = entry.as_str() {
-                if name.is_empty() {
-                    return None;
-                }
-                return Some(forge_primitives::AvailableCommand {
-                    name: name.to_owned(),
-                    description: String::new(),
-                    input_hint: None,
-                });
-            }
-            let obj = entry.as_object()?;
-            let name = obj.get("name")?.as_str().filter(|s| !s.is_empty())?.to_owned();
-            let description =
-                obj.get("description").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let input_hint = obj
-                .get("argumentHint")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned);
-            Some(forge_primitives::AvailableCommand { name, description, input_hint })
-        })
-        .collect()
-}
-
 /// Build `AvailableCommandsUpdate` from System(init).slash_commands.
 fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(arr) = record.get("slash_commands").and_then(Value::as_array) else { return };
-    let commands = available_commands_from_json(arr);
+    let commands = forge_workspace::translate::commands::map_available_commands_from_json(arr);
     if commands.is_empty() {
         return;
     }
@@ -1704,7 +1671,7 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
 /// init-time seed.
 fn handle_commands_changed(app: &mut App, msg: Message) {
     let Message::CommandsChanged { commands, .. } = msg else { return };
-    let parsed = available_commands_from_json(&commands);
+    let parsed = forge_workspace::translate::commands::map_available_commands_from_json(&commands);
     // Drift guard: a non-empty payload that parses to
     // nothing means the CLI's command-entry shape changed under us.
     // Applying it would silently wipe the `/` dropdown + `/help`, so
@@ -4442,37 +4409,6 @@ mod commands_changed_tests {
             .find(|c| c.name == "gateway-upgrade")
             .expect("gateway");
         assert_eq!(gateway.input_hint, None, "empty argumentHint collapses to None");
-    }
-
-    #[test]
-    fn helper_handles_both_string_and_object_shapes() {
-        use super::available_commands_from_json;
-        // init `slash_commands` shape: bare name strings -> name-only
-        // commands (the pre-refactor init behaviour).
-        let from_strings = available_commands_from_json(&[json!("audit"), json!("resume")]);
-        assert_eq!(from_strings.len(), 2);
-        assert_eq!(from_strings[0].name, "audit");
-        assert_eq!(from_strings[0].description, "");
-        assert_eq!(from_strings[0].input_hint, None);
-        // commands_changed shape: objects; nameless / scalar entries drop.
-        let from_objects = available_commands_from_json(&[
-            json!({"name": "x", "description": "d", "argumentHint": "<a>"}),
-            json!({"description": "no name"}),
-            json!(42),
-        ]);
-        assert_eq!(from_objects.len(), 1, "nameless / scalar entries skipped");
-        assert_eq!(from_objects[0].name, "x");
-        assert_eq!(from_objects[0].description, "d");
-        assert_eq!(from_objects[0].input_hint.as_deref(), Some("<a>"));
-        // Empty names are degenerate (a blank, un-selectable dropdown
-        // row) - skipped in both the string and object shapes.
-        let empties = available_commands_from_json(&[
-            json!(""),
-            json!({"name": "", "description": "blank"}),
-            json!({"name": "real"}),
-        ]);
-        assert_eq!(empties.len(), 1, "empty-name entries skipped in both shapes");
-        assert_eq!(empties[0].name, "real");
     }
 
     #[test]

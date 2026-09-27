@@ -4,5 +4,6 @@
 //! translator paths.
 
 pub mod agents;
+pub mod commands;
 pub mod error_handling;
 pub mod state_parsing;
