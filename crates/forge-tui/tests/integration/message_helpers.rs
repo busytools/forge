@@ -25,6 +25,7 @@ pub fn assistant_message(
         parent_tool_use_id: None,
         error: None,
         uuid: None,
+        timestamp: None,
     }
 }
 
@@ -50,6 +51,7 @@ pub fn assistant_message_with_parent(
         parent_tool_use_id: Some(parent_tool_use_id.to_owned()),
         error: None,
         uuid: None,
+        timestamp: None,
     }
 }
 
@@ -62,6 +64,7 @@ pub fn user_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primi
         parent_tool_use_id: None,
         uuid: None,
         tool_use_result: None,
+        timestamp: None,
     }
 }
 

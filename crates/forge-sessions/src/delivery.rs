@@ -39,5 +39,6 @@ pub fn delivery_turn(update: &SessionUpdate, slot: &SessionSlot) -> Option<Messa
         parent_tool_use_id: None,
         uuid: None,
         tool_use_result: None,
+        timestamp: None,
     })
 }

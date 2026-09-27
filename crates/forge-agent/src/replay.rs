@@ -38,6 +38,7 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty())
             .map(str::to_owned);
+        let timestamp = entry_record.get("timestamp").and_then(Value::as_str).map(str::to_owned);
         let Some(message_value) = entry_record.get("message") else {
             continue;
         };
@@ -72,6 +73,7 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
                     parent_tool_use_id,
                     error: None,
                     uuid: uuid.clone(),
+                    timestamp,
                 });
             }
             "user" => {
@@ -91,7 +93,11 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
                     session_id: String::new(),
                     parent_tool_use_id,
                     uuid,
-                    tool_use_result: None,
+                    tool_use_result: entry_record
+                        .get("tool_use_result")
+                        .filter(|result| !result.is_null())
+                        .cloned(),
+                    timestamp,
                 });
             }
             _ => {}

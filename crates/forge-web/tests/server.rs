@@ -1350,6 +1350,221 @@ async fn a_settled_turn_draws_its_row_and_its_body() {
     );
 }
 
+/// A page opened fresh draws a row for each turn it reads. A transcript holds
+/// no result frame, so a turn that settled before the page opened has no frame
+/// on the wire to draw: what the read can honestly say about it is what the
+/// turn's own rows carry.
+#[tokio::test]
+async fn a_turn_read_from_a_transcript_draws_its_own_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"user","timestamp":"2026-04-22T04:15:27.000Z","message":{"role":"user","content":"make the call tree the default"}}"#,
+                r#"{"type":"assistant","timestamp":"2026-04-22T04:18:08.000Z","message":{"id":"msg_1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"Done."}],"stop_reason":"end_turn","usage":{"input_tokens":14,"output_tokens":1711,"cache_read_input_tokens":102194,"cache_creation_input_tokens":7028}}}"#,
+                r#"{"type":"user","timestamp":"2026-04-22T04:20:00.000Z","message":{"role":"user","content":"and the one after it"}}"#,
+                r#"{"type":"assistant","timestamp":"2026-04-22T04:21:30.000Z","message":{"id":"msg_2","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"Second one done."}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":9,"cache_read_input_tokens":16630,"cache_creation_input_tokens":147}}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(
+        page.matches("class=\"turninfo\"").count(),
+        2,
+        "each turn draws its own row: {page}",
+    );
+    assert!(page.contains("2m 41s"), "the first turn's own wall clock: {page}");
+    assert!(page.contains("1m 30s"), "and the second's: {page}");
+    assert!(page.contains("14\u{2191}"), "the counts its own frames reported: {page}");
+    assert!(page.contains("93% cached"), "and the cache share of what it read: {page}");
+    // The end is the last row's own instant in the reader's own clock. Two
+    // turns whose last rows are 3m 22s apart must date themselves the same
+    // 3m 22s apart: a row stamped with the clock at load would date both to
+    // the moment somebody opened the page.
+    let ended = ended_cells(&page);
+    assert_eq!(ended.len(), 2, "each row carries an ended cell: {page}");
+    assert!(
+        ended
+            .iter()
+            .all(|clock| clock.contains(':') && clock.ends_with(|c: char| c.is_ascii_digit())),
+        "and each is a clock rather than a dash: {ended:?}",
+    );
+    assert!(
+        ended.iter().all(|clock| clock.len() > 8),
+        "and carries its date, these turns being older than today: {ended:?}",
+    );
+    assert_eq!(
+        seconds_of_clock(&ended[1]) - seconds_of_clock(&ended[0]),
+        3 * 60 + 22,
+        "the rows date themselves from the transcript's own clocks: {ended:?}",
+    );
+}
+
+/// A turn settling stays one row. The model's last assistant frame settles
+/// the turn as far as its rows are concerned, and it arrives a frame before
+/// the result does, so the frame it lands in must not draw a second row
+/// beside the live one and take it away again.
+#[tokio::test]
+async fn a_running_turn_draws_the_live_row_and_not_one_beside_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: running_frame(),
+    });
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: finished_assistant_frame("m1", "all done"),
+    });
+    // Read until the frame's own prose is in: the region arrives in chunks,
+    // and a count taken off a half-received one reads as an absence.
+    let seen = event_carrying(stream, "all done").await;
+    let running = seen.rsplit("event: session").next().expect("the running region");
+
+    assert_eq!(
+        running.matches("class=\"turninfo\"").count(),
+        1,
+        "the turn that has not settled draws one row: {running}",
+    );
+    assert!(
+        running.contains("data-k=\"turn-live\""),
+        "and it is the live one, still counting: {running}",
+    );
+    assert!(running.contains("all done"), "with the frame the model just wrote: {running}");
+}
+
+/// The result lands the live row into the settled one: same row, one row,
+/// now carrying the numbers the CLI reported.
+#[tokio::test]
+async fn a_settled_turn_replaces_the_live_row_it_ran_as() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let settled = captured_results("monitor_persistent_stream").pop().expect("the captured turn");
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: running_frame(),
+    });
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: finished_assistant_frame("m1", "all done"),
+    });
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: settled,
+    });
+    // Read until the settled row's own clock is in: the region arrives in
+    // chunks, and a count taken off a half-received one reads as an absence.
+    let seen = event_carrying(stream, "41.0s").await;
+    let done = seen.rsplit("event: session").next().expect("the settled region");
+
+    assert_eq!(
+        done.matches("class=\"turninfo\"").count(),
+        1,
+        "one row once it settles, not two: {done}",
+    );
+    assert!(!done.contains("data-k=\"turn-live\""), "the live one is gone: {done}");
+    assert!(done.contains("41.0s"), "and the settled row is the CLI's own: {done}");
+}
+
+/// The model's last frame of a turn: prose, and the stop that ends it.
+fn finished_assistant_frame(id: &str, text: &str) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "assistant",
+        "uuid": id,
+        "timestamp": "2026-04-22T04:18:08.000Z",
+        "message": {
+            "id": id,
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [{"type": "text", "text": text}],
+            "stop_reason": "end_turn",
+        },
+        "session_id": "s",
+    }))
+    .expect("an assistant frame")
+}
+
+/// A question the assistant asked draws with what was picked and what was
+/// typed. Both live on the row's own record of the result, which the read
+/// carries: the tool-result block beside it holds one English sentence, and
+/// nothing in it says which words were a label and which were typed.
+#[tokio::test]
+async fn an_answered_question_draws_its_answer_on_a_fresh_page() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","timestamp":"2026-04-22T04:15:27.000Z","message":{"id":"msg_1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_q","name":"AskUserQuestion","input":{"questions":[{"question":"Which colour do you prefer?","header":"Colour","options":[{"label":"Blue","description":"the colder one"},{"label":"Red","description":"the warmer one"}],"multiSelect":false}]}}],"stop_reason":"tool_use"}}"#,
+                r#"{"type":"user","timestamp":"2026-04-22T04:15:31.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_q","content":"The user answered: \"Which colour do you prefer?\"=\"Blue\""}]},"toolUseResult":{"questions":[{"question":"Which colour do you prefer?","header":"Colour","options":[{"label":"Blue"},{"label":"Red"}],"multiSelect":false}],"answers":{"Which colour do you prefer?":"Blue"}}}"#,
+                r#"{"type":"assistant","timestamp":"2026-04-22T04:18:08.000Z","message":{"id":"msg_2","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"Blue it is."}],"stop_reason":"end_turn"}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains("Which colour do you prefer?"), "the card draws the question: {page}");
+    assert!(
+        page.contains("class=\"picked\">Blue</span>"),
+        "and the option that was picked, which only the row's own record names: {page}",
+    );
+    assert!(
+        !page.contains("class=\"picked\">Red</span>"),
+        "while the one that was not picked is not drawn as one: {page}",
+    );
+}
+
+/// The wall clock on each settled row's `ended` cell, in the order the rows
+/// are drawn.
+fn ended_cells(page: &str) -> Vec<String> {
+    page.split("<b>ended</b>")
+        .skip(1)
+        .map(|rest| rest.split('<').next().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// The `HH:MM:SS` a cell ends on, as seconds since midnight, so two clocks
+/// can be compared across a minute or an hour boundary whatever date each
+/// carries.
+fn seconds_of_clock(clock: &str) -> i64 {
+    let tail = &clock[clock.len().saturating_sub(8)..];
+    let parts: Vec<i64> = tail.split(':').filter_map(|part| part.parse().ok()).collect();
+    let [hours, minutes, seconds] = parts[..] else {
+        panic!("not a wall clock: {clock}");
+    };
+    hours * 3_600 + minutes * 60 + seconds
+}
+
 /// The pane handles are two halves that have to meet: the boxes outside the
 /// region the stream swaps, and rules that cross that region to the app they
 /// size. Both were wrong at once, so every handle did nothing and the rail

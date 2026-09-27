@@ -520,6 +520,8 @@ pub(crate) fn load_history_messages(
                 "uuid": m.uuid,
                 "message": m.message,
                 "parent_tool_use_id": m.parent_tool_use_id,
+                "timestamp": m.timestamp,
+                "tool_use_result": m.tool_use_result,
             })
         })
         .collect();
@@ -2332,6 +2334,64 @@ mod tests {
         let read = crate::session_history(config_dir.path(), session_id, "");
 
         assert_eq!(read.messages.len(), 2, "the two complete entries survive the partial one");
+    }
+
+    /// Every row the CLI writes carries its own clock. No result frame
+    /// reaches a transcript, so this clock is the whole record of when a
+    /// resumed turn ran.
+    #[test]
+    fn session_history_carries_each_rows_own_clock() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let session_id = "6f0a1d3c-2b47-4e19-8c55-0a7e93b1d208";
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let jsonl = "{\"type\":\"user\",\"timestamp\":\"2026-04-22T04:15:27.000Z\",\"message\":{\"role\":\"user\",\"content\":\"first\"}}\n\
+                     {\"type\":\"assistant\",\"timestamp\":\"2026-04-22T04:18:08.000Z\",\"message\":{\"id\":\"msg_01\",\"role\":\"assistant\",\"model\":\"claude-opus-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]}}\n";
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
+
+        let read = crate::session_history(config_dir.path(), session_id, "");
+
+        let clocks: Vec<Option<&str>> = read
+            .messages
+            .iter()
+            .map(|m| match m {
+                forge_primitives::Message::User { timestamp, .. }
+                | forge_primitives::Message::Assistant { timestamp, .. } => timestamp.as_deref(),
+                other => panic!("unexpected synthesized variant: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            clocks,
+            [Some("2026-04-22T04:15:27.000Z"), Some("2026-04-22T04:18:08.000Z")],
+            "each row's own clock reaches the read",
+        );
+    }
+
+    /// What a question was answered with is a field on the row beside the
+    /// message, and the tool-result block beside it holds the same thing as
+    /// one English sentence. Only this field separates what was picked from
+    /// what was typed, so a read that drops it draws the question alone.
+    #[test]
+    fn session_history_carries_the_rows_tool_use_result() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let session_id = "0c4b2e18-93d5-4a72-b6f1-8ae05c31d47b";
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let jsonl = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"The user answered: \\\"Which one?\\\"=\\\"the second\\\"\"}]},\"toolUseResult\":{\"questions\":[{\"question\":\"Which one?\"}],\"answers\":{\"Which one?\":\"the second\"}}}\n";
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
+
+        let read = crate::session_history(config_dir.path(), session_id, "");
+
+        let [forge_primitives::Message::User { tool_use_result, .. }] = read.messages.as_slice()
+        else {
+            panic!("expected one synthesized user row, got {:?}", read.messages);
+        };
+        let recorded =
+            tool_use_result.as_ref().expect("the row's own record of the result reaches the read");
+        assert_eq!(
+            recorded["answers"]["Which one?"], "the second",
+            "carrying the answer the prose block only paraphrases",
+        );
     }
 
     /// The CLI is told the session's id on exactly one flag. Both
