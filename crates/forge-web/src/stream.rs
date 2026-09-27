@@ -72,11 +72,12 @@ impl Live {
     /// every token of it: only the updates that can change what this page
     /// draws redraw it.
     pub fn apply(&mut self, update: &SessionUpdate) -> bool {
-        // The composer draws states the core announces once and keeps
-        // none of, so it folds everything first and the page redraws for
-        // any of them.
-        let composer = self.composer.apply(update);
-        let fleet = match update {
+        // The composer draws states the core announces once and keeps none
+        // of, so it folds everything. It does not force a redraw: the region
+        // this stream re-sends is the fleet's, and a take's twenty readings
+        // a second are not news about a row.
+        self.composer.apply(update);
+        match update {
             SessionUpdate::ChatAppended { key, msg } => match msg {
                 Message::Result { is_error, subtype, .. }
                     if is_success_result(*is_error, subtype) =>
@@ -131,8 +132,7 @@ impl Live {
             // Everything else is the conversation, which this page does
             // not show.
             _ => false,
-        };
-        composer || fleet
+        }
     }
 }
 
@@ -341,6 +341,29 @@ mod tests {
                 .expect("parse a user message"),
             }),
             "a chat message is not something this page draws",
+        );
+    }
+
+    /// A take's readings are the composer's news, not the fleet's. The
+    /// region this stream re-sends draws rows, so redrawing it for every
+    /// level would rebuild the whole page twenty times a second while a
+    /// take runs. Catches the composer's fold forcing the fleet's redraw.
+    #[test]
+    fn a_takes_readings_do_not_redraw_the_fleet() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+
+        assert!(
+            !live.apply(&SessionUpdate::DictateStarted {
+                key: slot.clone(),
+                floor_db: -50.0,
+                generation: 1,
+            }),
+            "a take starting is not a row changing",
+        );
+        assert!(
+            !live.apply(&SessionUpdate::DictateLevel { key: slot, peak_db: -20.0 }),
+            "nor is a level reading",
         );
     }
 

@@ -790,10 +790,9 @@ pub struct Composer {
 }
 
 impl Composer {
-    /// Fold one update in, answering whether the composer has to be
-    /// redrawn. An update about a take this view is no longer drawing is
-    /// not one.
-    pub fn apply(&mut self, update: &SessionUpdate) -> bool {
+    /// Fold one update in. An update about a take this view is no longer
+    /// drawing is dropped rather than drawn over the newer one.
+    pub fn apply(&mut self, update: &SessionUpdate) {
         match update {
             SessionUpdate::DictateStarted { key, floor_db, generation } => {
                 // A new take supersedes whatever the seat was doing, its
@@ -801,73 +800,61 @@ impl Composer {
                 // draft the browser holds.
                 self.takes.insert(key.clone(), Take::new(*floor_db, *generation));
                 self.notices.remove(key);
-                true
             }
             SessionUpdate::DictateLevel { key, peak_db } => {
                 // The wire carries no generation on a level, and the
                 // stream is one order per seat, so the take it belongs to
                 // is whichever is live: the level that arrives after one
                 // ended finds none and is dropped.
-                let Some(take) = self.takes.get_mut(key) else {
-                    return false;
-                };
-                take.push(*peak_db);
-                true
+                if let Some(take) = self.takes.get_mut(key) {
+                    take.push(*peak_db);
+                }
             }
             SessionUpdate::DictateTranscribing { key } => {
-                let Some(take) = self.takes.get_mut(key) else {
-                    return false;
-                };
-                take.phase = Phase::Transcribing;
-                true
+                if let Some(take) = self.takes.get_mut(key) {
+                    take.phase = Phase::Transcribing;
+                }
             }
             SessionUpdate::DictateProgress { key, generation, done, total } => {
-                let Some(take) = self.takes.get_mut(key) else {
-                    return false;
-                };
-                if take.generation != *generation {
-                    return false;
+                if let Some(take) = self.takes.get_mut(key)
+                    && take.generation == *generation
+                {
+                    take.progress = (*done, *total);
                 }
-                take.progress = (*done, *total);
-                true
             }
             SessionUpdate::DictateEnded { key, outcome, generation } => {
                 // A resolver for a take the composer has already replaced
                 // is about a take that is over.
                 if self.takes.get(key).is_none_or(|take| take.generation != *generation) {
-                    return false;
+                    return;
                 }
                 let floor_db = self.takes.remove(key).map_or(-50.0, |take| take.floor_db);
                 if let Some(notice) = Notice::of(outcome, floor_db) {
                     self.notices.insert(key.clone(), notice);
                 }
-                true
             }
             SessionUpdate::PermissionRequest { key, request, .. } => {
                 self.asks.insert(key.clone(), Ask::Permission(Box::new(request.clone())));
-                true
             }
             SessionUpdate::QuestionRequest { key, request, .. } => {
                 self.asks.insert(key.clone(), Ask::Question(Box::new(request.clone())));
-                true
             }
             // The CLI announces a compaction on the status frame and
             // clears it with a null, which is the only place either is
             // said. Everything else on the conversation is the chat's.
-            SessionUpdate::ChatAppended { key, msg } => match msg {
-                Message::System { subtype, data, .. } if subtype == "status" => {
+            SessionUpdate::ChatAppended { key, msg } => {
+                if let Message::System { subtype, data, .. } = msg
+                    && subtype == "status"
+                {
                     let field = data.get("status");
                     if field.and_then(serde_json::Value::as_str) == Some("compacting") {
-                        return self.compacting.insert(key.clone());
+                        self.compacting.insert(key.clone());
+                    } else if field.is_some_and(serde_json::Value::is_null) {
+                        self.compacting.remove(key);
                     }
-                    if field.is_some_and(serde_json::Value::is_null) {
-                        return self.compacting.remove(key);
-                    }
-                    false
                 }
-                _ => false,
-            },
-            _ => false,
+            }
+            _ => {}
         }
     }
 
