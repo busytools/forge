@@ -3,21 +3,28 @@
 //! The TUI partitions one message's blocks at a time, and a run of tool
 //! calls spans messages - a call and its result are two of them - so this
 //! walks the whole conversation and folds it in one pass. The rules it
-//! folds by are not restated here: the run rule
-//! ([`crate::grouping::is_run_breaker_tool`]), the status a run
-//! summarises under ([`crate::grouping::aggregate_call_status`]), the
-//! family table ([`crate::family`]) and the peer parsers
+//! folds by are not restated here: the row a call summarises under
+//! ([`crate::grouping::wire_row_label`]), the status a run summarises
+//! under ([`crate::grouping::aggregate_call_status`]) and the peer parsers
 //! ([`crate::envelope`], [`crate::peer_outbound`]) are the ones the TUI
 //! already groups by.
+//!
+//! Where it differs from the TUI it is because the mockup draws something
+//! else: a mutation folds as an `edit` family instead of breaking the run,
+//! and an envelope that is not agent traffic is a notice instead of a turn.
 
 use std::collections::HashMap;
 
 use forge_primitives::{ContentBlock, Message};
 
 use crate::envelope::{PeerInboundKind, detect_inbound};
-use crate::family::{ToolFamily, tool_family, tool_label};
-use crate::grouping::{aggregate_call_status, is_run_breaker_tool};
+use crate::family::tool_label;
+use crate::grouping::{
+    aggregate_call_status, is_peer_block_render_tool, renders_as_lifecycle_block_parts,
+    wire_row_label,
+};
 use crate::model::ToolCallStatus;
+use crate::model::tool_call_info::is_ask_question_tool_name;
 use crate::peer_outbound::{PeerOutboundKind, detect_outbound_call};
 
 /// One thing a view draws, in the order the conversation produced it.
@@ -28,7 +35,7 @@ pub enum ChatUnit {
     /// Prose the assistant wrote.
     AssistantText { text: String },
     /// One tool call drawn on its own, because it does not fold into a
-    /// run: a mutation, a lifecycle block, or a question waiting on a
+    /// run: a peer block, a lifecycle row, or a question waiting on a
     /// person.
     ToolCall(ToolLeaf),
     /// A maximal run of consecutive tool calls, drawn as one group.
@@ -42,13 +49,36 @@ pub enum ChatUnit {
     /// A peer message the conversation holds: one it sent, or one it
     /// received.
     PeerCard(PeerCard),
+    /// A line the conversation carries that nobody typed: an external
+    /// delivery, a scheduled fire, or a failure the workspace reported.
+    Notice(Notice),
 }
 
 /// One family's calls inside a group.
 #[derive(Debug, Clone)]
 pub struct FamilyLeaves {
-    pub family: ToolFamily,
+    /// The row the group draws for them: a family word, an MCP server's own
+    /// name, or `edit` for a mutation.
+    pub label: String,
     pub calls: Vec<ToolLeaf>,
+}
+
+/// How loudly a notice reads: the mockup's three rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+/// A notice, as the envelope it arrived in.
+#[derive(Debug, Clone)]
+pub struct Notice {
+    pub severity: NoticeSeverity,
+    /// Where it came from, for a renderer that gives each source its own
+    /// chrome: `gotify`, `cron`, `slack`, `peer` or `worker`.
+    pub source: &'static str,
+    pub text: String,
 }
 
 /// One call inside a group: what its own row shows.
@@ -79,7 +109,7 @@ pub struct PeerCard {
 pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     let results = result_statuses(messages);
     let mut units: Vec<ChatUnit> = Vec::new();
-    let mut run: Vec<(ToolFamily, ToolLeaf)> = Vec::new();
+    let mut run: Vec<(String, ToolLeaf)> = Vec::new();
     for message in messages {
         let (assistant, content) = match message {
             Message::Assistant { message: envelope, .. } => (true, envelope.content.as_slice()),
@@ -117,18 +147,32 @@ fn push_call(
     name: &str,
     input: &serde_json::Value,
     results: &HashMap<String, ToolCallStatus>,
-    run: &mut Vec<(ToolFamily, ToolLeaf)>,
+    run: &mut Vec<(String, ToolLeaf)>,
     units: &mut Vec<ChatUnit>,
 ) {
     if let Some(card) = outbound_card(name, input) {
         flush(run, units);
         units.push(ChatUnit::PeerCard(card));
-    } else if is_run_breaker_tool(name, Some(input)) {
+    } else if is_standalone_call(name, Some(input)) {
         flush(run, units);
         units.push(ChatUnit::ToolCall(leaf(id, name, input, results)));
     } else {
-        run.push((tool_family(name), leaf(id, name, input, results)));
+        run.push((wire_row_label(name), leaf(id, name, input, results)));
     }
+}
+
+/// True when the fold draws a call on its own instead of folding it into a
+/// run: a peer block, a question waiting on a person, or a Monitor's
+/// lifecycle row.
+///
+/// This is the fold's own predicate rather than `grouping::is_run_breaker_tool`,
+/// which is the TUI's: that one also breaks on a mutation, because the TUI
+/// opens a diff on its own, while the mockup draws an `edit` family inside
+/// the run with its leaves open.
+fn is_standalone_call(sdk_tool_name: &str, input: Option<&serde_json::Value>) -> bool {
+    is_ask_question_tool_name(sdk_tool_name)
+        || is_peer_block_render_tool(sdk_tool_name)
+        || renders_as_lifecycle_block_parts(sdk_tool_name, input)
 }
 
 /// The text a queued prompt carries. The wire shape is a string for a
@@ -155,27 +199,52 @@ fn queued_text(prompt: &serde_json::Value) -> String {
 }
 
 /// One text block: the user's own turn, or the assistant's - unless it is
-/// a peer envelope, which arrives as the user turn's prose.
+/// an envelope, which arrives as the user turn's prose.
 fn text_unit(assistant: bool, text: &str) -> ChatUnit {
-    if !assistant && let Some(card) = inbound_card(text) {
-        return ChatUnit::PeerCard(card);
+    if !assistant && let Some(unit) = inbound_unit(text) {
+        return unit;
     }
     let text = text.to_owned();
     if assistant { ChatUnit::AssistantText { text } } else { ChatUnit::UserTurn { text } }
 }
 
-/// The peer envelope a user turn carries, if it is one. The notice-shaped
-/// kinds - a delivery failure, a failed worker spawn - are not peer comms
-/// and stay turns.
-fn inbound_card(text: &str) -> Option<PeerCard> {
+/// The unit an envelope carries. A peer comms envelope is a card; every
+/// other kind the workspace injects is a notice - an external delivery, a
+/// scheduled fire, or a failure - and rendering one as the user's turn
+/// would put a protocol header inside a bubble nobody typed. The match is
+/// exhaustive on purpose: a new envelope kind is a compile error here, not
+/// a silent turn.
+fn inbound_unit(text: &str) -> Option<ChatUnit> {
     match detect_inbound(text)? {
         PeerInboundKind::Question { from, body, .. }
         | PeerInboundKind::Message { from, body, .. }
         | PeerInboundKind::Reply { from, body, .. } => {
-            Some(PeerCard { peer: from, body, inbound: true })
+            Some(ChatUnit::PeerCard(PeerCard { peer: from, body, inbound: true }))
         }
-        _ => None,
+        PeerInboundKind::Gotify { app, title, message, .. } => {
+            Some(notice(NoticeSeverity::Info, "gotify", format!("app '{app}': {title}\n{message}")))
+        }
+        PeerInboundKind::Cron { prompt } => Some(notice(NoticeSeverity::Info, "cron", prompt)),
+        PeerInboundKind::Slack { channel, body, .. } => {
+            Some(notice(NoticeSeverity::Info, "slack", format!("{channel}: {body}")))
+        }
+        PeerInboundKind::DeliveryFailure { target, org, reason } => Some(notice(
+            NoticeSeverity::Warning,
+            "peer",
+            format!("'{target}' ({org}) failed to deliver: {reason}"),
+        )),
+        PeerInboundKind::WorkerSpawnFailed { label, reason } => Some(notice(
+            NoticeSeverity::Warning,
+            "worker",
+            format!("'{label}' failed to spawn: {reason}"),
+        )),
     }
+}
+
+/// A notice, with its text trimmed: a Gotify envelope's message is often
+/// empty and would otherwise leave a bare newline under the title.
+fn notice(severity: NoticeSeverity, source: &'static str, text: String) -> ChatUnit {
+    ChatUnit::Notice(Notice { severity, source, text: text.trim_end().to_owned() })
 }
 
 /// The card an outbound peer call draws, if it is one.
@@ -224,20 +293,19 @@ fn result_statuses(messages: &[Message]) -> HashMap<String, ToolCallStatus> {
     out
 }
 
-/// Close the run being built, if it has one, as one group: the families
-/// it met in first-appearance order, and the status its calls summarise
-/// under.
-fn flush(run: &mut Vec<(ToolFamily, ToolLeaf)>, units: &mut Vec<ChatUnit>) {
+/// Close the run being built, if it has one, as one group: the rows it met
+/// in first-appearance order, and the status its calls summarise under.
+fn flush(run: &mut Vec<(String, ToolLeaf)>, units: &mut Vec<ChatUnit>) {
     if run.is_empty() {
         return;
     }
     let calls = std::mem::take(run);
     let status = aggregate_call_status(calls.iter().map(|(_, leaf)| leaf.status));
     let mut families: Vec<FamilyLeaves> = Vec::new();
-    for (family, leaf) in calls {
-        match families.iter_mut().find(|row| row.family == family) {
+    for (label, leaf) in calls {
+        match families.iter_mut().find(|row| row.label == label) {
             Some(row) => row.calls.push(leaf),
-            None => families.push(FamilyLeaves { family, calls: vec![leaf] }),
+            None => families.push(FamilyLeaves { label, calls: vec![leaf] }),
         }
     }
     units.push(ChatUnit::ToolGroup { families, status });
@@ -249,7 +317,7 @@ mod tests {
 
     use crate::model::ToolCallStatus;
 
-    use super::{ChatUnit, render_units};
+    use super::{ChatUnit, NoticeSeverity, render_units};
 
     /// An assistant message carrying `content`.
     fn assistant(content: Vec<ContentBlock>) -> Message {
@@ -278,6 +346,7 @@ mod tests {
             "read" => "Read",
             "search" => "Grep",
             "bash" => "Bash",
+            "edit" => "Edit",
             other => other,
         };
         assistant(vec![ContentBlock::ToolUse {
@@ -289,6 +358,16 @@ mod tests {
 
     fn tool_call(family: &str) -> Message {
         tool_call_at(family, 0)
+    }
+
+    /// An assistant message carrying a call by its exact SDK name, for the
+    /// names a family word does not cover.
+    fn tool_call_named(name: &str) -> Message {
+        assistant(vec![ContentBlock::ToolUse {
+            id: format!("toolu_{name}"),
+            name: name.to_owned(),
+            input: serde_json::json!({"file_path": "src/lib.rs"}),
+        }])
     }
 
     fn tool_call_messages(families: &[&str]) -> Vec<Message> {
@@ -310,10 +389,80 @@ mod tests {
         let ChatUnit::ToolGroup { families, .. } = &units[0] else {
             panic!("a tool group");
         };
-        let named: Vec<&'static str> = families.iter().map(|f| f.family.kind_label()).collect();
+        let named: Vec<&str> = families.iter().map(|row| row.label.as_str()).collect();
         assert_eq!(named, ["read", "search"], "read and search, in first-appearance order");
         assert_eq!(families[0].calls.len(), 2, "both reads sit under the row they belong to");
         assert_eq!(families[1].calls.len(), 1, "and the search under its own");
+    }
+
+    /// An edit folds into the run as a family of its own. The TUI breaks a
+    /// run on a mutation because it draws the diff open on its own; the
+    /// mockup draws an `edit` family inside the group with its leaves open,
+    /// so this fold cannot borrow the TUI's rule, and the row's word is
+    /// `edit` rather than the tool's own `Edit`.
+    #[test]
+    fn an_edit_folds_into_the_run_as_its_own_family() {
+        let messages = tool_call_messages(&["read", "edit", "read"]);
+        let units = render_units(&messages);
+        assert_eq!(units.len(), 1, "the edit does not break the run");
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        let named: Vec<&str> = families.iter().map(|row| row.label.as_str()).collect();
+        assert_eq!(named, ["read", "edit"], "with the mockup's own word for a mutation");
+        assert_eq!(families[1].calls.len(), 1, "and the edit under that row");
+    }
+
+    /// Two MCP servers are two rows, not one `tool` row. The mockup draws
+    /// each server as its own family, and a server's name is only known at
+    /// runtime, which is why the row carries a label rather than a family.
+    #[test]
+    fn each_mcp_server_is_its_own_family_row() {
+        let messages = [
+            tool_call_named("mcp__playwright__browser_click"),
+            tool_call_named("mcp__forge__agents__list"),
+        ];
+        let units = render_units(&messages);
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        let named: Vec<&str> = families.iter().map(|row| row.label.as_str()).collect();
+        assert_eq!(named, ["playwright", "forge"], "one row per server, in first-appearance order");
+    }
+
+    /// An envelope that is not agent traffic is not the user's own turn: a
+    /// Gotify delivery, a cron fire, a Slack bundle, a failed delivery and a
+    /// failed worker spawn each arrive as a notice, which is what the mockup's
+    /// notice rows are for. Folded as a turn, the page shows a protocol
+    /// header inside a bubble the user never typed.
+    #[test]
+    fn an_external_envelope_is_a_notice_and_not_a_turn() {
+        let delivered = user(vec![ContentBlock::Text {
+            text: "[Gotify - app 'watcher', priority 5]\n\ndeploy finished".to_owned(),
+        }]);
+        let failed = user(vec![ContentBlock::Text {
+            text: "[Ask id=q-1 to agent 'companies' (org 'Busytools') failed to deliver: channel closed]"
+                .to_owned(),
+        }]);
+
+        let units = render_units(&[delivered, failed]);
+
+        let ChatUnit::Notice(delivered) = &units[0] else {
+            panic!("a notice");
+        };
+        assert_eq!(delivered.severity, NoticeSeverity::Info, "a delivery is not a failure");
+        assert_eq!(delivered.source, "gotify", "and says where it came from");
+        assert!(
+            delivered.text.contains("deploy finished"),
+            "carrying the notification's own words: {}",
+            delivered.text,
+        );
+        let ChatUnit::Notice(failed) = &units[1] else {
+            panic!("a notice");
+        };
+        assert_eq!(failed.severity, NoticeSeverity::Warning, "a failed delivery is");
+        assert_eq!(failed.source, "peer", "and names the seat it could not reach");
+        assert!(failed.text.contains("channel closed"), "keeping the reason: {}", failed.text,);
     }
 
     /// A non-tool block ends the run: the next call starts a NEW group.

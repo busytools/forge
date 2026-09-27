@@ -100,7 +100,7 @@ pub fn renders_as_lifecycle_block(tc: &ToolCallInfo) -> bool {
 
 /// [`renders_as_lifecycle_block`] from the name and input alone, for a
 /// caller reading a transcript.
-fn renders_as_lifecycle_block_parts(
+pub(crate) fn renders_as_lifecycle_block_parts(
     sdk_tool_name: &str,
     input: Option<&serde_json::Value>,
 ) -> bool {
@@ -118,7 +118,7 @@ fn renders_as_lifecycle_block_parts(
 /// `crate::peer_outbound::detect_outbound` (rather than the standard tool
 /// card). Name-based because `detect_outbound` matches by
 /// `sdk_tool_name` literal. Mirror its match set exactly.
-fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
+pub(crate) fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
     // The four retired names below are replay-only, matching what a
     // transcript recorded before the rename holds; see `detect_outbound`.
     matches!(
@@ -216,11 +216,30 @@ impl KindSummary {
 /// no family keeps its own label. `mcp__<server>__*` keys by server so
 /// each server gets its own line.
 fn family_row_label(sdk_tool_name: &str) -> (KindRow, String) {
+    let label = wire_row_label(sdk_tool_name);
+    let row = if mcp_parts(sdk_tool_name).is_some() {
+        KindRow::Mcp
+    } else {
+        KindRow::Family(tool_family(sdk_tool_name))
+    };
+    (row, label)
+}
+
+/// The row a call's siblings summarise under, resolved from the wire's name
+/// alone: each `mcp__<server>__*` server keys as itself, a mutation keys as
+/// `edit`, and everything else keys by its family word. The half of
+/// [`family_row_label`] that needs no rendered call, because a view reading
+/// a transcript has none.
+pub fn wire_row_label(sdk_tool_name: &str) -> String {
     if let Some((server, _)) = mcp_parts(sdk_tool_name) {
-        return (KindRow::Mcp, server.to_owned());
+        return server.to_owned();
     }
-    let family = tool_family(sdk_tool_name);
-    (KindRow::Family(family), family.kind_label().to_owned())
+    if is_edit_tool(sdk_tool_name) {
+        // The word the fold's own model draws. The TUI never asks for this
+        // row: it breaks a run on a mutation instead of folding one.
+        return "edit".to_owned();
+    }
+    tool_family(sdk_tool_name).kind_label().to_owned()
 }
 
 /// Tree row data for one inbound envelope: the row it summarises under, the
