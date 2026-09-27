@@ -221,29 +221,31 @@ fn inbound_unit(text: &str) -> Option<ChatUnit> {
         | PeerInboundKind::Reply { from, body, .. } => {
             Some(ChatUnit::PeerCard(PeerCard { peer: from, body, inbound: true }))
         }
-        PeerInboundKind::Gotify { app, title, message, .. } => {
-            Some(notice(NoticeSeverity::Info, "gotify", format!("app '{app}': {title}\n{message}")))
-        }
-        PeerInboundKind::Cron { prompt } => Some(notice(NoticeSeverity::Info, "cron", prompt)),
+        PeerInboundKind::Gotify { app, title, message, .. } => Some(notice(
+            NoticeSeverity::Info,
+            "gotify",
+            &format!("app '{app}': {title}\n{message}"),
+        )),
+        PeerInboundKind::Cron { prompt } => Some(notice(NoticeSeverity::Info, "cron", &prompt)),
         PeerInboundKind::Slack { channel, body, .. } => {
-            Some(notice(NoticeSeverity::Info, "slack", format!("{channel}: {body}")))
+            Some(notice(NoticeSeverity::Info, "slack", &format!("{channel}: {body}")))
         }
         PeerInboundKind::DeliveryFailure { target, org, reason } => Some(notice(
             NoticeSeverity::Warning,
             "peer",
-            format!("'{target}' ({org}) failed to deliver: {reason}"),
+            &format!("'{target}' ({org}) failed to deliver: {reason}"),
         )),
         PeerInboundKind::WorkerSpawnFailed { label, reason } => Some(notice(
             NoticeSeverity::Warning,
             "worker",
-            format!("'{label}' failed to spawn: {reason}"),
+            &format!("'{label}' failed to spawn: {reason}"),
         )),
     }
 }
 
 /// A notice, with its text trimmed: a Gotify envelope's message is often
 /// empty and would otherwise leave a bare newline under the title.
-fn notice(severity: NoticeSeverity, source: &'static str, text: String) -> ChatUnit {
+fn notice(severity: NoticeSeverity, source: &'static str, text: &str) -> ChatUnit {
     ChatUnit::Notice(Notice { severity, source, text: text.trim_end().to_owned() })
 }
 
@@ -462,7 +464,7 @@ mod tests {
         };
         assert_eq!(failed.severity, NoticeSeverity::Warning, "a failed delivery is");
         assert_eq!(failed.source, "peer", "and names the seat it could not reach");
-        assert!(failed.text.contains("channel closed"), "keeping the reason: {}", failed.text,);
+        assert!(failed.text.contains("channel closed"), "keeping the reason: {}", failed.text);
     }
 
     /// A non-tool block ends the run: the next call starts a NEW group.
