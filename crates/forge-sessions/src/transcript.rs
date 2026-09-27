@@ -59,9 +59,11 @@ pub enum ChatUnit {
     Notice(Notice),
     /// What a settled turn did, as the view's own row draws it: the turn's
     /// wall clock, its API time, and the tokens and cost the CLI reported.
-    /// The web view's row is this; the TUI builds the same record from the
-    /// live stream, so the two agree on every field rather than on the ones
-    /// a read happens to carry.
+    /// The web view's row is this, built from the result frame the fold
+    /// reads; the terminal builds the same record from the live stream, so
+    /// the two draw one type rather than a copy each. `ended_at_local` is
+    /// the field they differ on: the wire carries none, so the terminal
+    /// stamps it off its own clock and this side leaves it absent.
     TurnReport(TurnInfo),
 }
 
@@ -1197,9 +1199,6 @@ mod tests {
         assert!(text.contains("output"), "the row opens on the result's own words: {text}");
     }
 
-    /// A mutation carries its diff from the input alone, which is what the
-    /// mockup draws open by default: the edit family's leaves are the one
-    /// row that shows its body without being asked.
     /// A mutation, as the wire carries one: its diff is in the call's own
     /// input.
     fn edit_call() -> Message {
@@ -1221,6 +1220,9 @@ mod tests {
             .count()
     }
 
+    /// A mutation carries its diff from the input alone, which is what the
+    /// mockup draws open by default: the edit family's leaves are the one
+    /// row that shows its body without being asked.
     #[test]
     fn a_mutation_carries_its_diff() {
         let units = render_units(&[edit_call()]);
@@ -1324,14 +1326,18 @@ mod tests {
     fn captured(name: &str) -> Vec<Message> {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../forge-test-harness/baselines/sdk");
-        let file = std::fs::read_dir(&dir)
+        // The version directory is named for the CLI the capture came from,
+        // so the capture is what identifies it: two directories holding the
+        // same name would make this walk pick by directory order.
+        let holding: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
             .expect("the baseline directory")
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .find(|path| path.join(format!("{name}.jsonl")).is_file())
-            .expect("a baseline directory holding that capture")
-            .join(format!("{name}.jsonl"));
-        let raw = std::fs::read_to_string(file).expect("the capture");
+            .filter(|path| path.join(format!("{name}.jsonl")).is_file())
+            .collect();
+        assert_eq!(holding.len(), 1, "one captured version holds {name}");
+        let raw =
+            std::fs::read_to_string(holding[0].join(format!("{name}.jsonl"))).expect("the capture");
         raw.lines()
             .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
             .filter(|envelope| envelope["dir"] == "in")
