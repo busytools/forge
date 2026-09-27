@@ -5321,6 +5321,11 @@ impl Workspace {
                         "WorkerSpawnFailedNotice dispatch to lead failed",
                     );
                 }
+                // And the visible echo, the way every other injected prompt
+                // paints one: the CLI does not echo a prompt it was handed on
+                // stdin, so a view that only drew the wire would show nothing
+                // until the page reloaded.
+                crate::spawn::push_peer_user_turn_into_chat(self, &lead_slot, &wrapped);
             } else {
                 tracing::warn!(
                     target: "forge_workspace::worker_async_failure",
@@ -13530,7 +13535,7 @@ mod async_worker_spawn_failure_tests {
     /// back. Verifies both effects in one go.
     #[tokio::test]
     async fn async_failure_with_worktree_classification_dispatches_notice_and_rolls_back() {
-        let (workspace, _update_rx) = Workspace::testing_stub();
+        let (workspace, mut update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
 
         let project_key = ProjectKey::new("proj-x");
@@ -13557,6 +13562,17 @@ mod async_worker_spawn_failure_tests {
             assert!(text.starts_with("[Worker 'reviewer' spawn failed"));
             assert!(text.contains("already used by worktree"));
         }
+        // And the echo a view draws: the CLI does not paint a prompt it was
+        // handed on stdin, so without this the page shows nothing at all.
+        let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|update| {
+            matches!(
+                update,
+                SessionUpdate::PeerEnvelopeAppended { key, wrapped }
+                    if key == lead_key
+                        && matches!(wrapped.kind, WrappedKind::WorkerSpawnFailedNotice)
+            )
+        });
+        assert!(echoed, "the notice reaches the chat as the update a view draws");
 
         // WorkerEntry rolled back: live_workers is empty.
         assert!(
