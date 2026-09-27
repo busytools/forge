@@ -1131,6 +1131,38 @@ async fn a_settled_turn_draws_its_row_and_its_body() {
     );
 }
 
+/// The pane handles are two halves that have to meet: the boxes outside the
+/// region the stream swaps, and rules that cross that region to the app they
+/// size. Both were wrong at once, so every handle did nothing and the rail
+/// and the inspector were unreachable below the widths that hide them.
+#[tokio::test]
+async fn the_pane_state_crosses_the_swapped_region() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    let wrapper = page.find("id=\"live\"").expect("the wrapper the payload never replaces");
+    let region = page.find("id=\"session-body\"").expect("the region the payload replaces");
+    let boxes = page.find("id=\"l\"").expect("the projects box");
+    assert!(
+        wrapper < boxes && boxes < region,
+        "the boxes hold their state across a swap only by sitting outside the region: {page}",
+    );
+
+    let mut reads = sheet.match_indices(":checked").peekable();
+    assert!(reads.peek().is_some(), "the sheet reads the boxes");
+    for (at, _) in reads {
+        assert!(
+            sheet[at..].starts_with(":checked ~ #session-body"),
+            "every rule that reads a box crosses the region to reach the app: {}",
+            &sheet[at..(at + 60).min(sheet.len())],
+        );
+    }
+}
+
 /// A resume or a `/new` puts another occupant in the slot, and the history
 /// that arrives with it is the conversation the reader is owed. The page's
 /// own copy belongs to the seat that just left, so the region is drawn from

@@ -189,20 +189,22 @@ async fn shell(
                 home.theme,
             ))
             // The checkboxes are the pane state: CSS-only, so a collapsed
-            // pane needs no script and a reload does not forget it while
-            // the page is open. Checked is COLLAPSED.
+            // pane needs no script. Checked is COLLAPSED.
             //
             // The stream is wired by attributes, as the home's is: htmx
             // opens it, swaps the `session` event's payload into the region,
             // and closes on the server's own `close` event. The listener
             // sits on a wrapper the payload never replaces, because htmx
             // re-processes what it swaps in and a listener on the region
-            // itself would register one more per event.
+            // itself would register one more per event. The checkboxes sit
+            // on that wrapper too, beside the region rather than inside it:
+            // the rules that read them are sibling combinators, so a box
+            // the swap replaced would take every one of them with it.
             body hx-ext="sse, morph" sse-connect=(events_path(slot)) sse-close="close" {
                 (icons::sprite())
-                input type="checkbox" id="l" hidden;
-                input type="checkbox" id="r" hidden;
                 div #live sse-swap="session" hx-swap="morph:outerHTML" hx-target="#session-body" {
+                    input type="checkbox" id="l" hidden;
+                    input type="checkbox" id="r" hidden;
                     (columns(home, slot, messages, live_turn, roster, agents).await)
                 }
                 script src="/vendor/htmx.js" {}
