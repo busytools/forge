@@ -274,7 +274,9 @@ section.org > h2 .counts {
 .children { list-style: none; }
 .children .row .name { padding-left: 22px; }
 
-.note {
+/* Scoped to the home's own list: `.note` is a session-page component too,
+   and the row's failure line is not what that one draws. */
+section.org .note {
   font-family: var(--mono); font-size: 13px; color: var(--bad);
   padding: 0 var(--pad) 9px 30px;
 }
