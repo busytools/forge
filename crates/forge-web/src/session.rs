@@ -1211,9 +1211,10 @@ fn text_body(leaf: &ToolLeaf, text: &str) -> Markup {
     if let Some(hits) = search_hits(leaf, text) {
         return hits;
     }
-    match language_of(&leaf.title) {
-        Some(language) => code_body(language, text),
-        None => html! { div .term { (text) } },
+    if let Some(language) = language_of(&leaf.title) {
+        code_body(language, text)
+    } else {
+        html! { div .term { (text) } }
     }
 }
 
