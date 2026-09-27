@@ -3270,7 +3270,7 @@ mod tests {
         app.file_index_mut().expect("active session").generation = 3;
         app.file_index_mut().expect("active session").root =
             Some(std::path::PathBuf::from("/old/path"));
-        app.file_index_mut().expect("active session").entries.insert(
+        app.file_index_mut().expect("active session").index.entries.insert(
             "stale.rs".to_owned(),
             crate::app::file_index::FileCandidate {
                 rel_path: "stale.rs".to_owned(),
@@ -3308,7 +3308,7 @@ mod tests {
             "file_index generation must advance on restart"
         );
         assert!(
-            app.file_index_mut().expect("active session").entries.is_empty(),
+            app.file_index_mut().expect("active session").index.entries.is_empty(),
             "stale entries cleared on restart"
         );
         assert!(
@@ -3333,7 +3333,7 @@ mod tests {
         app.file_index_mut().expect("active session").generation = 8;
         app.file_index_mut().expect("active session").root =
             Some(std::path::PathBuf::from("/before"));
-        app.file_index_mut().expect("active session").entries.insert(
+        app.file_index_mut().expect("active session").index.entries.insert(
             "before.rs".to_owned(),
             crate::app::file_index::FileCandidate {
                 rel_path: "before.rs".to_owned(),
@@ -3371,7 +3371,7 @@ mod tests {
             "file_index generation must advance on restart"
         );
         assert!(
-            app.file_index_mut().expect("active session").entries.is_empty(),
+            app.file_index_mut().expect("active session").index.entries.is_empty(),
             "stale entries cleared on restart"
         );
         assert!(

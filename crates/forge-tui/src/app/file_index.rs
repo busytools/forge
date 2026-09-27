@@ -18,10 +18,9 @@ use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::mpsc::{Sender, TryRecvError};
 
+use forge_sessions::file_index::FileIndex;
 use forge_workspace::env::file_index as env;
 pub use forge_workspace::env::file_index::{FileCandidate, FileIndexChange};
-
-use super::MAX_CANDIDATES;
 
 const EVENT_DRAIN_BUDGET: usize = 64;
 
@@ -30,7 +29,7 @@ pub struct FileIndexState {
     pub root: Option<PathBuf>,
     pub respect_gitignore: bool,
     pub generation: u64,
-    pub entries: BTreeMap<String, FileCandidate>,
+    pub index: FileIndex,
     pub scan_finished: bool,
     scan_overrides: ScanOverrides,
     pub scan: Option<env::CancelToken>,
@@ -76,7 +75,7 @@ pub fn reset(app: &mut App) {
     index.generation = index.generation.saturating_add(1);
     index.root = None;
     index.respect_gitignore = respect_gitignore;
-    index.entries.clear();
+    index.index.entries.clear();
     index.scan_finished = false;
     index.scan_overrides = ScanOverrides::default();
     index.scan = None;
@@ -137,48 +136,6 @@ pub fn drain_events(app: &mut App) {
     }
 }
 
-pub fn visible_candidates(
-    entries: &BTreeMap<String, FileCandidate>,
-    query: &str,
-) -> Vec<FileCandidate> {
-    let query_lower = query.to_lowercase();
-    let mut filtered: Vec<FileCandidate> = entries
-        .values()
-        .filter(|candidate| match_tier(candidate, &query_lower).is_some())
-        .cloned()
-        .collect();
-    rank_and_truncate_candidates(&mut filtered, &query_lower);
-    filtered
-}
-
-pub fn rank_and_truncate_candidates(candidates: &mut Vec<FileCandidate>, query_lower: &str) {
-    candidates.sort_unstable_by(|a, b| {
-        match_tier(a, query_lower)
-            .cmp(&match_tier(b, query_lower))
-            .then_with(|| a.depth.cmp(&b.depth))
-            .then_with(|| a.rel_path.cmp(&b.rel_path))
-    });
-    candidates.truncate(MAX_CANDIDATES);
-}
-
-fn match_tier(candidate: &FileCandidate, query_lower: &str) -> Option<u8> {
-    if query_lower.is_empty() {
-        return Some(0);
-    }
-
-    if candidate.basename_lower.starts_with(query_lower) {
-        Some(0)
-    } else if candidate.rel_path_lower.starts_with(query_lower) {
-        Some(1)
-    } else if candidate.basename_lower.contains(query_lower) {
-        Some(2)
-    } else if candidate.rel_path_lower.contains(query_lower) {
-        Some(3)
-    } else {
-        None
-    }
-}
-
 fn apply_event(app: &mut App, event: FileIndexEvent) {
     match event {
         FileIndexEvent::ScanBatch { key, generation, entries } => {
@@ -192,7 +149,7 @@ fn apply_event(app: &mut App, event: FileIndexEvent) {
                 if slot.file_index.scan_overrides.blocks(&entry.rel_path) {
                     continue;
                 }
-                slot.file_index.entries.insert(entry.rel_path.clone(), entry);
+                slot.file_index.index.entries.insert(entry.rel_path.clone(), entry);
             }
             refresh_after_mutation_if_active(app, &key);
         }
@@ -219,7 +176,7 @@ fn apply_event(app: &mut App, event: FileIndexEvent) {
                 if !slot.file_index.scan_finished {
                     slot.file_index.scan_overrides.record_change(&change);
                 }
-                apply_change(&mut slot.file_index.entries, change);
+                apply_change(&mut slot.file_index.index.entries, change);
             }
             refresh_after_mutation_if_active(app, &key);
         }
@@ -499,7 +456,7 @@ mod tests {
             },
         );
 
-        let entries = &app.sessions[&key].file_index.entries;
+        let entries = &app.sessions[&key].file_index.index.entries;
         assert!(!entries.contains_key("old/gone.rs"));
         assert!(!entries.contains_key("old/deep/gone.rs"));
         assert!(entries.contains_key("new/keep.rs"));
@@ -514,7 +471,7 @@ mod tests {
         mention::activate(&mut app);
         wait_for(&mut app, Duration::from_secs(2), |app| {
             let index = app.file_index().expect("active session");
-            index.scan_finished && !index.entries.is_empty()
+            index.scan_finished && !index.index.entries.is_empty()
         });
         let generation = app.file_index().expect("active session").generation;
 
@@ -554,7 +511,7 @@ mod tests {
             },
         );
         // A's index is empty; B's index has the entry.
-        assert!(app.sessions[&key_a].file_index.entries.is_empty());
-        assert!(app.sessions[&key_b].file_index.entries.contains_key("only_in_b.rs"));
+        assert!(app.sessions[&key_a].file_index.index.entries.is_empty());
+        assert!(app.sessions[&key_b].file_index.index.entries.contains_key("only_in_b.rs"));
     }
 }

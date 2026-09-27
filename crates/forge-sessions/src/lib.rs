@@ -6,8 +6,10 @@
 //! the policy that folds a run of blocks. The reducers that derive the
 //! TUI's session records are still in the TUI.
 
+pub mod emoji;
 pub mod envelope;
 pub mod family;
+pub mod file_index;
 pub mod grouping;
 pub mod model;
 pub mod peer_outbound;
