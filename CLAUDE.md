@@ -716,11 +716,23 @@ inspected.
     - **The review test:** could the NEXT page be written by reusing this
       one's pieces, or would it copy them? A second copy of a row or a
       mark is a finding, not a style choice.
-    - **Prefer upstream to building.** A maintained script vendored into
-      `forge-web/assets` or a maintained crate beats writing either,
-      because the maintenance we avoid is the point. `pulldown-cmark` for
-      markdown and `syntect` for highlighting are the two already chosen
-      for the session page.
+    - **Prefer upstream to building, and verify what is pulled in.** A
+      maintained script vendored into `forge-web/assets` or a maintained
+      crate beats writing either, because the maintenance we avoid is the
+      point - the size of the web ecosystem is the reason this is a web
+      view at all. `pulldown-cmark` for markdown and `syntect` for
+      highlighting are the two already chosen for the session page.
+      **But upstream does not mean anything on npm:** a dependency nobody
+      maintains is worse than the fifty lines it replaced, because it is
+      fifty lines that cannot be fixed here. Before adding one, check it
+      is genuinely maintained - a real release history rather than one
+      commit, an issue tracker that gets answered, a version that is not
+      years behind - and say in the pull request what was checked. A
+      single maintainer is fine and often right; dormant is not. Ved's
+      words: *"we don't want to rely on random things. We want to verify,
+      see how well it is maintained, and all that stuff... it needs to be
+      genuinely good."* Reach for the framework before the helper, and
+      hand-roll only what nothing maintains.
     - **Keeping all the information is not in tension with this.** A
       session page shows everything a session has - context, git and PR,
       tasks, MCP servers, processes, subagents, schedules - because
