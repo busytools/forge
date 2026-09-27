@@ -95,7 +95,10 @@ impl LoggingRuntime {
 /// session's own tool failures and a git probe missing
 /// `refs/remotes/origin/HEAD`, which are real and are not forge's
 /// problems. At `debug` they stay readable without raising a warning
-/// that says forge is unwell. `tui_markdown`
+/// that says forge is unwell. `forge_sessions` is there for the same
+/// reason: a line in a Monitor's output file that cannot be decoded is the
+/// watched command's own output rather than a problem with forge.
+/// `tui_markdown`
 /// is pinned to `error` because it emits per-frame WARN events for
 /// every HTML element and unknown-language code block it encounters
 /// during streaming markdown rendering (peaks at 50K+/sec on chats
@@ -116,6 +119,7 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.lifecycle=debug,\
     bridge.lifecycle=debug,\
     agent.env_git=debug,\
+    forge_sessions=debug,\
     tui_markdown=error,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
@@ -423,6 +427,11 @@ mod tests {
         // miss entirely, which is the state the levels moved away from.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.tool=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
+        // `forge_sessions` carries the Monitor tail read's unreadable-line
+        // record, demoted there for the same reason: a line the watched
+        // command wrote that cannot be decoded is that command's own
+        // output. Without the directive the record never lands at all.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_sessions=debug"));
         // The web view's `enabled = false` record is a `debug` on
         // `app.lifecycle` because a config choice is not a problem, so
         // the target needs the directive or that record never lands.
@@ -439,6 +448,96 @@ mod tests {
             tracing_subscriber::EnvFilter::try_new(DEFAULT_LOG_DIRECTIVES).is_ok(),
             "the default directives must parse",
         );
+    }
+
+    /// Emit one record through the default directives and answer what the
+    /// sink caught. A directive names a target by module-path prefix, so
+    /// the record a demoted site emits is the one its own module path
+    /// names rather than the crate's. Measured rather than read: a
+    /// directive that matches nothing reads exactly like one that works.
+    fn emitted_under_defaults(emit: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex};
+
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("the sink is not poisoned").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let written = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let sink = Arc::clone(&written);
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(DEFAULT_LOG_DIRECTIVES)
+            .with_writer(move || Sink(Arc::clone(&sink)))
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, emit);
+        String::from_utf8(written.lock().expect("the sink is not poisoned").clone())
+            .expect("the sink holds utf-8")
+    }
+
+    /// Driven through the site rather than through a target written here:
+    /// a directive matches by prefix, so a record labelled by the test would
+    /// prove only that the label matches. The reader's unreadable-line arm
+    /// is the demoted one, and a line that is not valid UTF-8 is what
+    /// reaches it.
+    #[test]
+    fn a_demoted_site_emits_under_the_default_directives() {
+        let path =
+            std::env::temp_dir().join(format!("forge-directive-check-{}.log", std::process::id()));
+        std::fs::write(&path, b"one\ntwo\n\xff\xfe not utf-8\n").expect("write the probe file");
+
+        let caught = emitted_under_defaults(|| {
+            let _ = forge_sessions::monitor::read_output_file_tail(&path, 12);
+        });
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            caught.contains("monitor_output_file_line_unreadable"),
+            "the demoted record must land under the default directives: {caught}",
+        );
+    }
+
+    /// A preset REPLACES the default directives, so a target only the
+    /// defaults name lands nowhere under one. The presets that carry a
+    /// session's own records have to carry the crate those records live in
+    /// with them, or the demotion silences them for anyone running under
+    /// that preset.
+    #[test]
+    fn the_presets_carrying_session_records_carry_the_crate_they_live_in() {
+        let carrying =
+            [DiagnosticsPreset::Runtime, DiagnosticsPreset::Session, DiagnosticsPreset::Full];
+
+        for preset in carrying {
+            let directives = preset.filter_directives();
+            assert!(
+                directives.contains("forge_sessions=debug"),
+                "{preset:?} carries a session's own records, so it must carry the crate \
+                 they live in: {directives}",
+            );
+        }
+    }
+
+    /// The control for the assertion above: a crate the defaults say
+    /// nothing about emits nothing under them, so the record landing is
+    /// the directive's doing rather than the subscriber's.
+    #[test]
+    fn a_target_the_defaults_say_nothing_about_stays_out() {
+        let absent = emitted_under_defaults(|| {
+            tracing::debug!(
+                target: "forge_web::session",
+                event_name = "directive_check",
+                "a record",
+            );
+        });
+
+        assert!(absent.is_empty(), "no directive names this crate: {absent}");
     }
 
     #[test]
