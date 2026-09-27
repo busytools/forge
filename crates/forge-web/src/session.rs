@@ -347,15 +347,19 @@ async fn columns(
         .map(|chip| chip.account_name);
     let waking = !roster.has_agent(slot);
     // What the conversation draws after its last block: a compaction in
-    // flight, and the row of the turn that is running.
-    let tail = html! {
-        @if compacting {
-            div .compacting { span .ring {} "Compacting context\u{2026}" }
+    // flight, and the row of the turn that is running. `None` when there is
+    // neither, so nothing opens a block for an empty tail.
+    let live = live_turn.filter(|live| live.started_at.is_some());
+    let tail = (compacting || live.is_some()).then(|| {
+        html! {
+            @if compacting {
+                div .compacting { span .ring {} "Compacting context\u{2026}" }
+            }
+            @if let Some(live) = live {
+                (turn_report_row(&live_report(live, Instant::now()), true, "turn-live"))
+            }
         }
-        @if let Some(live) = live_turn.filter(|live| live.started_at.is_some()) {
-            (turn_report_row(&live_report(live, Instant::now()), true, "turn-live"))
-        }
-    };
+    });
 
     html! {
     div #session-body {
@@ -389,7 +393,7 @@ async fn columns(
                             row.and_then(|row| row.reason.as_deref()),
                             &units,
                             roster.cwd_for(slot).as_deref(),
-                            &tail,
+                            tail.as_ref(),
                         ))
                     }
                 }
@@ -987,7 +991,7 @@ fn chat_body(
     reason: Option<&str>,
     units: &[ChatUnit],
     cwd: Option<&Path>,
-    tail: &Markup,
+    tail: Option<&Markup>,
 ) -> Markup {
     if waking {
         return html! {
@@ -1028,15 +1032,17 @@ pub(crate) async fn read_conversation(
 
 /// The conversation, as the fold's units read: the user's own turns on their
 /// own, and everything the assistant did in one work block after each.
-fn conversation(units: &[ChatUnit], cwd: Option<&Path>, tail: &Markup) -> Markup {
+fn conversation(units: &[ChatUnit], cwd: Option<&Path>, tail: Option<&Markup>) -> Markup {
     let rows = Cell::new(0usize);
     let turns = turns(units);
     // The tail is the live turn's row and the compaction line, and it draws
     // inside the last work block, because that is where the settled row lands
     // when the turn ends: a block of its own sits a block padding lower, and
-    // the row would move under the reader at the settle.
-    let last_work = turns.iter().rposition(|turn| matches!(turn, Turn::Work(_)));
-    let tail_alone = last_work.is_none();
+    // the row would move under the reader at the settle. With no tail there is
+    // no block to open for one, which is what keeps an empty conversation from
+    // drawing a block of nothing.
+    let last_work = tail.and(turns.iter().rposition(|turn| matches!(turn, Turn::Work(_))));
+    let tail_alone = tail.is_some() && last_work.is_none();
     html! {
         @for (at, turn) in turns.iter().enumerate() {
             @match turn {
@@ -1046,13 +1052,17 @@ fn conversation(units: &[ChatUnit], cwd: Option<&Path>, tail: &Markup) -> Markup
                         (unit_markup(unit, cwd, &rows))
                     }
                     @if Some(at) == last_work {
-                        (tail)
+                        @if let Some(tail) = tail {
+                            (tail)
+                        }
                     }
                 },
             }
         }
         @if tail_alone {
-            div .work { (tail) }
+            @if let Some(tail) = tail {
+                div .work { (tail) }
+            }
         }
     }
 }
@@ -1226,7 +1236,13 @@ fn text_body(leaf: &ToolLeaf, text: &str) -> Markup {
     if let Some(hits) = search_hits(leaf, text) {
         return hits;
     }
-    if let Some(language) = language_of(&leaf.title) {
+    // The language comes from a call that named a file. A command's title is
+    // the description it was called with, which can end in an extension
+    // without being a path, and reading it as one drew the command's output
+    // as code and left the command itself nowhere.
+    if leaf.label == "Read"
+        && let Some(language) = language_of(&leaf.title)
+    {
         code_body(language, text)
     } else {
         html! {

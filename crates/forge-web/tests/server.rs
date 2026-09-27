@@ -1090,6 +1090,11 @@ async fn an_empty_conversation_draws_no_skeleton() {
     );
     assert!(!page.contains("class=\"kind\""), "no group is drawn for nothing: {page}");
     assert!(!page.contains("class=\"mine\""), "and no turn either: {page}");
+    assert!(
+        !page.contains("class=\"work\""),
+        "and no work block for a tail that is not there: twelve pixels of one would \
+         push the conversation down: {page}",
+    );
     assert!(!page.contains("not running"), "the seat is running, so it does not say otherwise");
 }
 
@@ -1627,6 +1632,41 @@ async fn a_command_leads_its_own_output() {
     assert!(
         page.contains("run the gates"),
         "while the row above still names the call by its description: {page}",
+    );
+}
+
+/// A command whose description ends in an extension is still a command: its
+/// output is its own lines under the prompt, not a code block, and the
+/// command it ran is drawn.
+#[tokio::test]
+async fn a_command_whose_description_looks_like_a_path_is_still_a_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"just check","description":"regen the fixtures in spec.rs"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"    Finished in 41.2s"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(
+        page.contains("<span class=\"pfx\">$</span> just check"),
+        "the command is drawn, not hidden behind a title that reads as a path: {page}",
+    );
+    assert!(
+        !page.contains("class=\"code\""),
+        "and its output is not drawn as a source file: {page}",
     );
 }
 
