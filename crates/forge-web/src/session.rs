@@ -68,6 +68,7 @@ document.addEventListener('htmx:afterSwap', () => {
     d.open = open[i] === undefined ? d.open : open[i];
   });
 });";
+
 /// What the route found for a slot.
 pub enum Found {
     /// The seat is in the roster, so it has a page: one page draws both a

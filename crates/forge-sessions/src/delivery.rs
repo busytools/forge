@@ -31,7 +31,10 @@ pub fn delivery_turn(update: &SessionUpdate, slot: &SessionSlot) -> Option<Messa
         _ => return None,
     };
     Some(Message::User {
-        message: UserEnvelope { role: "user".to_owned(), content: vec![ContentBlock::Text { text }] },
+        message: UserEnvelope {
+            role: "user".to_owned(),
+            content: vec![ContentBlock::Text { text }],
+        },
         session_id: String::new(),
         parent_tool_use_id: None,
         uuid: None,

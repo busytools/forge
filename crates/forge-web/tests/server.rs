@@ -863,7 +863,8 @@ async fn the_type_scale_is_the_mocks() {
 /// The declarations a stylesheet makes for one selector, whitespace
 /// collapsed so the mockup's formatting and the sheet's compare.
 fn declarations_for(css: &str, selector: &str) -> String {
-    let at = css.find(&format!("{selector} {{")).unwrap_or_else(|| panic!("no rule for {selector}"));
+    let at =
+        css.find(&format!("{selector} {{")).unwrap_or_else(|| panic!("no rule for {selector}"));
     let rest = &css[at..];
     let open = rest.find('{').expect("the block opens");
     let close = rest[open..].find('}').expect("the block closes");
@@ -1203,7 +1204,10 @@ async fn a_replacement_draws_the_history_it_carries() {
     });
     let region = next_session_event(stream).await.expect("the replacement redraws the region");
 
-    assert!(region.contains("the turn the new occupant resumes"), "the history it carries: {region}");
+    assert!(
+        region.contains("the turn the new occupant resumes"),
+        "the history it carries: {region}"
+    );
     assert!(
         !region.contains("the seat before it left"),
         "and not the conversation that belonged to the seat it replaced: {region}",
@@ -1570,14 +1574,18 @@ async fn disabled_binds_nothing() {
 fn captured_results(name: &str) -> Vec<forge_primitives::Message> {
     let baselines =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../forge-test-harness/baselines/sdk");
-    let file = std::fs::read_dir(&baselines)
+    // The version directory is named for the CLI the capture came from, so
+    // the capture is what identifies it: two directories holding the same
+    // name would make this walk pick by directory order.
+    let holding: Vec<std::path::PathBuf> = std::fs::read_dir(&baselines)
         .expect("the baseline directory")
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .find(|path| path.join(format!("{name}.jsonl")).is_file())
-        .expect("a baseline directory holding that capture")
-        .join(format!("{name}.jsonl"));
-    let raw = std::fs::read_to_string(file).expect("the capture");
+        .filter(|path| path.join(format!("{name}.jsonl")).is_file())
+        .collect();
+    assert_eq!(holding.len(), 1, "one captured version holds {name}");
+    let raw =
+        std::fs::read_to_string(holding[0].join(format!("{name}.jsonl"))).expect("the capture");
     let results: Vec<forge_primitives::Message> = raw
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
