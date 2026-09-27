@@ -1666,17 +1666,21 @@ fn fold_monitor(
             settle_monitor(domain, task_id, status, None);
         }
         forge_primitives::Message::TaskNotification { task_id, status, output_file, .. } => {
-            let status = match status {
+            let settled = match status {
                 forge_primitives::TaskNotificationStatus::Completed => {
-                    forge_primitives::MonitorStatus::Completed
+                    Some(forge_primitives::MonitorStatus::Completed)
                 }
                 forge_primitives::TaskNotificationStatus::Failed
                 | forge_primitives::TaskNotificationStatus::Stopped => {
-                    forge_primitives::MonitorStatus::Stopped
+                    Some(forge_primitives::MonitorStatus::Stopped)
                 }
-                forge_primitives::TaskNotificationStatus::Unknown => return,
+                // A status forge cannot name settles nothing, but it is
+                // still a notification and the drain below is unconditional.
+                forge_primitives::TaskNotificationStatus::Unknown => None,
             };
-            settle_monitor(domain, task_id, status, Some(output_file.clone()));
+            if let Some(status) = settled {
+                settle_monitor(domain, task_id, status, Some(output_file.clone()));
+            }
             // The notification is the last frame a monitor sends, so it is
             // where the set drains once nothing in it is running: the same
             // rule the terminal applies, so a session that ran a monitor an
@@ -4062,11 +4066,15 @@ provider = "anthropic"
     }
 
     fn task_notification(task_id: &str) -> forge_primitives::Message {
+        task_notification_with_status(task_id, "completed")
+    }
+
+    fn task_notification_with_status(task_id: &str, status: &str) -> forge_primitives::Message {
         serde_json::from_value(serde_json::json!({
             "type": "system",
             "subtype": "task_notification",
             "task_id": task_id,
-            "status": "completed",
+            "status": status,
             "output_file": "/tmp/forge-test-monitor.out",
             "summary": "Monitor stream ended",
             "uuid": "u-note",
@@ -4635,6 +4643,30 @@ provider = "anthropic"
         assert!(
             domain.monitors.is_empty(),
             "every entry terminal drains the set rather than leaving an empty section",
+        );
+    }
+
+    /// A notification whose status forge cannot name is still a
+    /// notification, and it is the last frame a monitor sends: the
+    /// terminal drains on every one of them, so a status the CLI adds
+    /// later must not leave the core's set standing forever.
+    #[test]
+    fn an_unnameable_task_status_still_drains_the_set() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-a", "ci-watch")));
+        apply_event_to_domain(&mut domain, &sdk_message(task_started("t-a", Some("tu-a"))));
+        // Settled by the command frame, which deliberately does not drain:
+        // the notification that follows is what carries the tail.
+        apply_event_to_domain(&mut domain, &sdk_message(task_updated("t-a", "killed")));
+
+        apply_event_to_domain(
+            &mut domain,
+            &sdk_message(task_notification_with_status("t-a", "reticulating")),
+        );
+
+        assert!(
+            domain.monitors.is_empty(),
+            "a notification drains the set whatever its status says",
         );
     }
 
