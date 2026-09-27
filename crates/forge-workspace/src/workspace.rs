@@ -1833,6 +1833,10 @@ impl Workspace {
         // Connected-time respawn skips the store lookup and brings its
         // workers up fresh alongside the fresh lead.
         domain_arc.lock().spawned_force_new = settings.force_new;
+        // The effort this spawn asked for, so a session whose hook has
+        // not reported one yet still answers with the level it runs at.
+        domain_arc.lock().configured_effort =
+            crate::domain_session::configured_effort_from_settings(&settings);
         // Carry the row's provenance the same way: the tag-write
         // rollback runs long after this spawn returned and needs to know
         // whether the row it would delete is this spawn's to take.
@@ -5751,6 +5755,36 @@ impl Workspace {
         handle.get_mcp_snapshot(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
     }
 
+    /// Record the OS walk of `key`'s process tree for views to read.
+    ///
+    /// The walk itself belongs to whoever owns the tick that drives it,
+    /// because a walk is a `sysinfo` refresh that costs tens of
+    /// milliseconds and no read should pay for one. The answer belongs
+    /// here, so a second view reads the tree rather than walking the OS
+    /// again. `None` clears it: the walk described a subprocess tree
+    /// that is gone.
+    ///
+    /// No-op for a slot with no session: minting a domain for whoever
+    /// asked would leave the workspace routing to a session nobody runs.
+    pub fn store_process_snapshot(
+        &self,
+        key: &SessionSlot,
+        snapshot: Option<forge_agent::env::processes::ProcessSnapshot>,
+    ) {
+        if let Some(domain) = self.domain_session_for(key) {
+            domain.lock().process_snapshot = snapshot;
+        }
+    }
+
+    /// The last OS walk of `key`'s process tree, or `None` when nothing
+    /// has walked it or the tree it described is gone.
+    pub fn process_snapshot(
+        &self,
+        key: &SessionSlot,
+    ) -> Option<forge_agent::env::processes::ProcessSnapshot> {
+        self.domain_session_for(key)?.lock().process_snapshot.clone()
+    }
+
     // ---- Direct-accessor facades (workspace owns the bridge call) ----
 
     /// Resolve the auto-memory path the bridge would consult for
@@ -9255,6 +9289,77 @@ provider = "anthropic"
         workspace.refresh_mcp_snapshot(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
         assert!(matches!(cmd, forge_primitives::AgentCommand::GetMcpSnapshot { .. }));
+    }
+
+    /// The OS walk's answer lands on the session that produced it, and a
+    /// second session's read does not see it: the walk describes one
+    /// subprocess tree, so a read that answered another slot's would
+    /// report a process tree that is not running there.
+    #[test]
+    fn a_stored_process_snapshot_answers_only_its_own_session() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let walked = key_with_stub_handle(&workspace, "walked");
+        let other = key_with_stub_handle(&workspace, "other");
+        let walked_at = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(60);
+
+        workspace.store_process_snapshot(&walked, Some(snapshot_walked_at(walked_at)));
+
+        assert_eq!(
+            workspace.process_snapshot(&walked).map(|snapshot| snapshot.scanned_at),
+            Some(walked_at),
+            "the session that was walked reads its own snapshot back",
+        );
+        assert!(
+            workspace.process_snapshot(&other).is_none(),
+            "and its neighbour reads none, rather than the walk of another tree",
+        );
+    }
+
+    /// The walk described a subprocess tree that is gone, so the read
+    /// must not keep serving it.
+    #[test]
+    fn a_cleared_process_snapshot_reads_as_none() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let key = key_with_stub_handle(&workspace, "walked");
+        workspace.store_process_snapshot(
+            &key,
+            Some(snapshot_walked_at(std::time::SystemTime::UNIX_EPOCH)),
+        );
+
+        workspace.store_process_snapshot(&key, None);
+
+        assert!(workspace.process_snapshot(&key).is_none(), "a cleared snapshot reads as none");
+    }
+
+    /// A slot with no session at all answers rather than panicking, and
+    /// holds nothing: a store that minted a domain for whoever asked
+    /// would leave the workspace routing to a session nobody runs.
+    #[test]
+    fn a_process_snapshot_for_an_unregistered_slot_reads_as_none() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let stranger = SessionSlot::from_str_for_test("never-registered");
+
+        workspace.store_process_snapshot(
+            &stranger,
+            Some(snapshot_walked_at(std::time::SystemTime::UNIX_EPOCH)),
+        );
+
+        assert!(
+            workspace.process_snapshot(&stranger).is_none(),
+            "an unregistered slot holds nothing rather than creating one",
+        );
+    }
+
+    fn snapshot_walked_at(
+        scanned_at: std::time::SystemTime,
+    ) -> forge_agent::env::processes::ProcessSnapshot {
+        forge_agent::env::processes::ProcessSnapshot { processes: Vec::new(), scanned_at }
+    }
+
+    fn key_with_stub_handle(workspace: &Arc<Workspace>, label: &str) -> SessionSlot {
+        let key = SessionSlot::from_str_for_test(label);
+        drop(workspace.install_testing_stub(&key));
+        key
     }
 
     #[test]

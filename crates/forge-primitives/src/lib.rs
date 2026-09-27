@@ -131,9 +131,9 @@ pub use review::{
 };
 pub use runtime::{
     ApiRetryError, ApiRetryUpdate, AvailableAgent, AvailableCommand, AvailableModel,
-    CompactionTrigger, CurrentModel, EffortLevel, ModeInfo, ModeState, RateLimitUpdate,
-    RuntimeSessionState, SessionLifecycleState, SessionStatus, SessionTurnState,
-    SettingsParseErrorUpdate, TerminalReason,
+    CompactionTrigger, CurrentModel, EffortLevel, ModeInfo, ModeState, MonitorRecord,
+    MonitorStatus, RateLimitUpdate, RuntimeSessionState, SessionLifecycleState, SessionStatus,
+    SessionTurnState, SettingsParseErrorUpdate, TerminalReason,
 };
 pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_slot::SessionSlot;

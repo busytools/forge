@@ -19,10 +19,33 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use forge_agent::AgentHandle;
-use forge_primitives::{AvailableAgent, AvailableCommand, RuntimeSessionState, SessionId};
+use forge_primitives::{
+    AvailableAgent, AvailableCommand, CurrentModel, EffortLevel, McpServerStatus, MonitorRecord,
+    PermissionMode, RuntimeSessionState, SessionId,
+};
 
 use crate::SessionSlot;
 use crate::protocol::PendingInteractionSlot;
+
+/// The MCP servers a session's bridge last reported, and the failure
+/// standing beside them when the read did not complete.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpServers {
+    pub servers: Vec<McpServerStatus>,
+    /// Why the read failed, when it did. A failed read carries an empty
+    /// server list, so a reader that ignored this would report a session
+    /// with no servers connected.
+    pub error: Option<String>,
+}
+
+/// How full the session's context window is, from the bridge's last
+/// answer. Both halves are `Option` because the upstream probe reports
+/// them independently.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextUsage {
+    pub percent: Option<u8>,
+    pub max_tokens: Option<u64>,
+}
 
 /// Workspace's owned per-session state. One `DomainSession` per
 /// active `SessionTask`. Single writer (the `SessionTask`); accessed
@@ -113,6 +136,37 @@ pub struct DomainSession {
     /// re-fire inside the same turn repeats it, so the read arms once per
     /// turn - the rule the TUI's own walker applies.
     pub agents_emitted_this_turn: bool,
+    /// Hook-observed permission mode, from the same observation the TUI
+    /// mirrors: higher fidelity than the `system/status` mode, because
+    /// the CLI can change mode without re-emitting status.
+    pub observed_permission_mode: Option<PermissionMode>,
+    /// Hook-observed effort level, on the same terms as
+    /// [`Self::observed_permission_mode`].
+    pub observed_effort: Option<EffortLevel>,
+    /// The effort level forge stamped into this session's launch
+    /// settings, read back so a session whose hook has not fired yet
+    /// still answers with the level it is running at rather than none.
+    /// `Max` when the launch asked for nothing, which is forge's default.
+    pub configured_effort: EffortLevel,
+    /// Hook-observed sub-agent attribution: the `tool_use_id` a
+    /// sub-agent fired, against the agent type that fired it.
+    pub subagent_attribution: HashMap<String, String>,
+    /// The MCP servers this session last saw, from its own bridge: MCP
+    /// is configured per session, so this is not an account-wide fact.
+    pub mcp_servers: Option<McpServers>,
+    /// How full the context window was at the last poll.
+    pub context_usage: Option<ContextUsage>,
+    /// The model the session resolved to, from its connect and from
+    /// every later init frame that names a different one.
+    pub current_model: Option<CurrentModel>,
+    /// The monitors this session has running or has finished, folded
+    /// from the wire: the `Monitor` tool call, the task id the CLI
+    /// assigns it, and the transition that settles it.
+    pub monitors: Vec<MonitorRecord>,
+    /// The last OS-level walk of the session's process tree. The scan
+    /// runs on a view's tick rather than here, so this is the most
+    /// recent one whoever asked last produced.
+    pub process_snapshot: Option<forge_agent::env::processes::ProcessSnapshot>,
 }
 
 impl DomainSession {
@@ -136,6 +190,15 @@ impl DomainSession {
             available_commands: Vec::new(),
             available_agents: Vec::new(),
             agents_emitted_this_turn: false,
+            observed_permission_mode: None,
+            observed_effort: None,
+            configured_effort: EffortLevel::Max,
+            subagent_attribution: HashMap::new(),
+            mcp_servers: None,
+            context_usage: None,
+            current_model: None,
+            monitors: Vec::new(),
+            process_snapshot: None,
         }
     }
 
@@ -158,6 +221,29 @@ impl DomainSession {
     }
 }
 
+/// The effort level a spawn asked for, read back from the launch
+/// settings forge stamps for the CLI.
+///
+/// The CLI reads `effortLevel` out of its own settings file, so a spawn
+/// that pins nothing runs at whatever that file says; forge's default
+/// for an unset one is `Max`, the same default the config reader
+/// applies.
+pub(crate) fn configured_effort_from_settings(
+    settings: &crate::SessionLaunchSettings,
+) -> EffortLevel {
+    settings
+        .settings
+        .as_ref()
+        .and_then(|document| document.get(EFFORT_LEVEL_KEY))
+        .and_then(serde_json::Value::as_str)
+        .and_then(EffortLevel::from_stored)
+        .unwrap_or(EffortLevel::Max)
+}
+
+/// The CLI settings key a session's effort is stamped under. One const,
+/// so the writer and this reader cannot split the seam.
+pub(crate) const EFFORT_LEVEL_KEY: &str = "effortLevel";
+
 impl std::fmt::Debug for DomainSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DomainSession")
@@ -165,5 +251,55 @@ impl std::fmt::Debug for DomainSession {
             .field("session_id", &self.session_id)
             .field("pending_interactions_count", &self.pending_interactions.len())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The level the spawn asked the CLI to run at, so a session whose
+    /// hook has not fired yet still names an effort rather than none.
+    #[test]
+    fn a_launch_that_pins_an_effort_names_that_level() {
+        let settings = crate::SessionLaunchSettings {
+            settings: Some(serde_json::json!({ "effortLevel": "high" })),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_effort_from_settings(&settings),
+            EffortLevel::High,
+            "the level the launch stamped is the level the session runs at",
+        );
+    }
+
+    /// A launch that pins nothing leaves the CLI on its own settings
+    /// file, and forge's default for an unset level is `Max`.
+    #[test]
+    fn a_launch_that_pins_no_effort_reads_forges_default() {
+        let settings = crate::SessionLaunchSettings::default();
+
+        assert_eq!(
+            configured_effort_from_settings(&settings),
+            EffortLevel::Max,
+            "an unset effort is forge's default rather than nothing",
+        );
+    }
+
+    /// A level forge cannot name is a level it cannot report, and the
+    /// default is a better answer than a guess.
+    #[test]
+    fn an_unreadable_launch_effort_reads_forges_default() {
+        let settings = crate::SessionLaunchSettings {
+            settings: Some(serde_json::json!({ "effortLevel": "turbo" })),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_effort_from_settings(&settings),
+            EffortLevel::Max,
+            "a level forge cannot read falls back rather than failing",
+        );
     }
 }

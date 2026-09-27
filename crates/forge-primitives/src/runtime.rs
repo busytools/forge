@@ -1,7 +1,7 @@
 //! Runtime status - mode/model state, available models/commands/agents,
 //! rate-limit views, retry classification, session status, terminal
-//! reason. Wire-shape state the agent ↔ UI channel passes around to
-//! describe "what's the live session doing right now".
+//! reason, monitor records. Wire-shape state the agent ↔ UI channel
+//! passes around to describe "what's the live session doing right now".
 
 use serde::{Deserialize, Serialize};
 
@@ -417,4 +417,57 @@ pub struct SessionTurnState {
     /// across messages so a subsequent `Result` can classify the
     /// turn correctly.
     pub last_assistant_error: Option<String>,
+}
+
+/// Lifecycle status of a Monitor (`Monitor` tool_use).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorStatus {
+    /// Monitor is active. Persistent monitors stay `Running` until
+    /// TaskStop or session end; non-persistent monitors run until
+    /// their `timeout_ms` expires or the watched command exits.
+    Running,
+    /// Monitor terminated via TaskStop / killed / clean exit.
+    Stopped,
+    /// Monitor completed cleanly (synonym for Stopped on the
+    /// renderer; preserved as a distinct variant in case downstream
+    /// callers want to disambiguate normal-exit from explicit-kill).
+    Completed,
+    /// Monitor's `timeout_ms` fired. Renderer surfaces a distinct
+    /// `· timed out` badge so users see the failure mode at a glance.
+    TimedOut,
+}
+
+impl MonitorStatus {
+    /// Whether the monitor has finished, whichever way it ended.
+    pub const fn is_terminal(self) -> bool {
+        !matches!(self, Self::Running)
+    }
+}
+
+/// One Monitor this session has running or has finished: the tool
+/// call that started it, the CLI's task id once the wire names one,
+/// and where it got to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorRecord {
+    /// `tool_use_id` of the `Monitor` tool call - the id every
+    /// monitor surface is keyed by.
+    pub tool_use_id: String,
+    /// Task id the CLI assigned, from `task_started` or a
+    /// `task_*` lifecycle message. `None` until one arrives, which
+    /// is why the terminal transitions key on it rather than the
+    /// tool_use id.
+    pub task_id: Option<String>,
+    /// `tool_input.description` - the headline label.
+    pub description: String,
+    /// `tool_input.command` - the watched shell command.
+    pub command: String,
+    /// `tool_input.persistent` - whether the monitor outlives the
+    /// event that triggered it.
+    pub persistent: bool,
+    /// `tool_input.timeout_ms` - zero when no explicit timeout.
+    pub timeout_ms: u64,
+    pub status: MonitorStatus,
+    /// Path the watched command writes to, once `task_notification`
+    /// names one. A view reads the file for the monitor's tail.
+    pub output_file: Option<String>,
 }
