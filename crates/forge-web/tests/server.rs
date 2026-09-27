@@ -646,6 +646,10 @@ async fn the_inspector_summarises_from_the_core() {
         page.contains("<span class=\"c2\">main \u{b7} 8 files</span>"),
         "the section renders with its summary: {page}",
     );
+    assert!(
+        page.contains("<details class=\"sec\" open>"),
+        "and opens on the changes it holds: {page}",
+    );
     assert!(page.contains("file-0.txt"), "and the body lists the files behind that count: {page}");
 }
 
@@ -733,6 +737,28 @@ async fn the_git_section_summary_counts_what_it_lists() {
     assert!(page.contains("3 files"), "the summary counts the three it lists: {page}");
     assert!(!page.contains("4 files"), "and not the untracked one it cannot: {page}");
     assert_eq!(page.matches("<div class=\"file\">").count(), 3, "three files are listed: {page}");
+}
+
+/// A clean tree with no pull request has nothing to open on, so the section
+/// leads the inspector closed rather than open and empty.
+#[tokio::test]
+async fn a_git_section_with_nothing_behind_it_starts_closed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet =
+        Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    let repo = dir.path().join("forge");
+    repo_with(repo.as_path(), 3);
+    git(repo.as_path(), &["checkout", "--", "."]);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains(">git<") || page.contains("git<"), "the section is still there: {page}");
+    assert!(
+        !page.contains("<details class=\"sec\" open>"),
+        "and carries nothing to open on: {page}",
+    );
 }
 
 /// A worker's own page is served, not only its lead's: the home links

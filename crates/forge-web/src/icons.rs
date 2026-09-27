@@ -21,8 +21,9 @@ pub(crate) fn sprite() -> Markup {
 /// One icon: `name` is the sprite id without its `i-` prefix, and `class`
 /// carries what the page's own rules colour and size it by.
 pub(crate) fn icon(name: &str, class: &str) -> Markup {
+    let class = if class.is_empty() { "ic".to_owned() } else { format!("ic {class}") };
     html! {
-        svg class=(format!("ic {class}")) {
+        svg class=(class) {
             use href=(format!("#i-{name}"));
         }
     }
@@ -31,5 +32,5 @@ pub(crate) fn icon(name: &str, class: &str) -> Markup {
 /// The disclosure arrow every `<details>` on the page carries. One chevron,
 /// turned by the open state rather than swapped for a second glyph.
 pub(crate) fn chevron(class: &str) -> Markup {
-    icon("chev", &format!("arw {class}"))
+    icon("chev", &format!("arw {class}").trim_end())
 }

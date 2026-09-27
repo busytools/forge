@@ -459,11 +459,25 @@ fn section(open: bool, icon_name: &str, name: &str, summary: &str, body: &Markup
 /// The git section: the branch the session's tree is on and what moved in
 /// it, the pull request that tree belongs to, and the files themselves.
 fn git_section(work: &WorkState, diff: Option<&GitDiffSnapshot>) -> Markup {
-    let (summary, body) = match diff {
-        Some(diff) => (git_summary(diff), git_body(work, diff)),
-        None => (String::new(), Markup::default()),
+    let (open, summary, body) = match diff {
+        Some(diff) => (
+            git_has_body(work, diff),
+            git_summary(diff),
+            git_body(work, diff),
+        ),
+        None => (false, String::new(), Markup::default()),
     };
-    section(true, "git", "git", &summary, &body)
+    section(open, "git", "git", &summary, &body)
+}
+
+/// Whether the section has anything to open on. The branch it names is not
+/// enough: a clean tree with no pull request would lead the inspector with
+/// an open section and nothing under it.
+fn git_has_body(work: &WorkState, diff: &GitDiffSnapshot) -> bool {
+    diff.pr.is_some()
+        || matches!(diff.worktree, LayerState::Populated(_))
+        || layer_note(&diff.worktree).is_some()
+        || crate::home::gate_line(work.gate).is_some()
 }
 
 /// The section's line: the branch, and how many files the body below it
