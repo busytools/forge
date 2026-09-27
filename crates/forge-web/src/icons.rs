@@ -32,5 +32,5 @@ pub(crate) fn icon(name: &str, class: &str) -> Markup {
 /// The disclosure arrow every `<details>` on the page carries. One chevron,
 /// turned by the open state rather than swapped for a second glyph.
 pub(crate) fn chevron(class: &str) -> Markup {
-    icon("chev", &format!("arw {class}").trim_end())
+    icon("chev", format!("arw {class}").trim_end())
 }

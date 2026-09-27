@@ -162,7 +162,7 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Ag
                     aside .rail .left {
                         div .banner {
                             span .t { "projects" }
-                            span .n .ml { (fleet_count(&roster)) }
+                            span .n .ml { (fleet_count(roster)) }
                         }
                         div .scroll { (rail(home, roster, agents, slot).await) }
                     }
@@ -188,7 +188,7 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Ag
                             span .t { "inspector" }
                             span .n .ml { (slot.project()) }
                         }
-                        div .scroll { (inspector(home, &roster, slot).await) }
+                        div .scroll { (inspector(home, roster, slot).await) }
                     }
                 }
             }
