@@ -238,13 +238,14 @@ impl Fleet {
     }
 
     /// Declare a task under `project`, held by the session labelled
-    /// `owner`.
+    /// `owner`, with `artifact` as what it produced.
     pub fn add_task(
         &self,
         org: &str,
         project: &str,
         subject: &str,
         owner: &str,
+        artifact: Option<&str>,
     ) -> Result<(), FixtureError> {
         self.workspace.seed_test_task(Task {
             id: subject.into(),
@@ -255,7 +256,7 @@ impl Fleet {
             status: TaskStatus::InProgress,
             owner: Some(SessionSlot::worker(org, project, owner)),
             parent: None,
-            artifact: None,
+            artifact: artifact.map(str::to_owned),
             estimate: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
