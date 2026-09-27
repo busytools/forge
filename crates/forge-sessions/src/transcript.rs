@@ -22,10 +22,10 @@ use forge_primitives::{ContentBlock, Message, ToolCallContent};
 use crate::envelope::{PeerInboundKind, detect_inbound};
 use crate::family::tool_label;
 use crate::grouping::{KindRow, aggregate_call_status, wire_row};
-use crate::model::ToolCallStatus;
 use crate::model::tool_call_info::{
     AnsweredQuestion, is_ask_question_tool_name, is_monitor_tool_name,
 };
+use crate::model::{ToolCallStatus, TurnInfo};
 use crate::peer_outbound::{PeerOutboundKind, detect_outbound_call};
 
 /// One thing a view draws, in the order the conversation produced it.
@@ -57,6 +57,12 @@ pub enum ChatUnit {
     /// A line the conversation carries that nobody typed: an external
     /// delivery, a scheduled fire, or a failure the workspace reported.
     Notice(Notice),
+    /// What a settled turn did, as the view's own row draws it: the turn's
+    /// wall clock, its API time, and the tokens and cost the CLI reported.
+    /// The web view's row is this; the TUI builds the same record from the
+    /// live stream, so the two agree on every field rather than on the ones
+    /// a read happens to carry.
+    TurnReport(TurnInfo),
 }
 
 /// One family's calls inside a group.
@@ -130,7 +136,23 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     let mut units: Vec<ChatUnit> = Vec::new();
     let mut run: Vec<((KindRow, String), ToolLeaf)> = Vec::new();
     let mut peers: Vec<PeerCard> = Vec::new();
+    let mut prev_api: Option<u64> = None;
+    let mut model: Option<String> = None;
     for message in messages {
+        // A settled turn's row, which the view draws under the work it
+        // accounts for. It arrives as a message of its own rather than as a
+        // block, so it ends the run the calls before it built.
+        if let Message::Result { .. } = message {
+            flush(&mut run, &mut units);
+            flush_peers(&mut peers, &mut units);
+            if let Some(info) = turn_report(message, model.as_deref(), &mut prev_api) {
+                units.push(ChatUnit::TurnReport(info));
+            }
+            continue;
+        }
+        if let Message::Assistant { message: envelope, .. } = message {
+            model = Some(envelope.model.clone());
+        }
         let (assistant, content) = match message {
             Message::Assistant { message: envelope, .. } => (true, envelope.content.as_slice()),
             Message::User { message: envelope, .. } => (false, envelope.content.as_slice()),
@@ -495,6 +517,40 @@ struct Recorded {
     status: ToolCallStatus,
     content: Option<serde_json::Value>,
     result: Option<serde_json::Value>,
+}
+
+/// One settled turn's report, from the frame that recorded it.
+///
+/// `prev_api` is the session-cumulative API clock at the previous result:
+/// the wire counts it up across the session, so this turn's figure is the
+/// delta, and a value below the previous one means the counter restarted and
+/// is already per-turn. A resulting zero is "not attributed" rather than
+/// "took no time", so it is left absent.
+fn turn_report(
+    message: &Message,
+    model: Option<&str>,
+    prev_api: &mut Option<u64>,
+) -> Option<TurnInfo> {
+    let Message::Result { duration_ms, duration_api_ms, total_cost_usd, usage, .. } = message
+    else {
+        return None;
+    };
+    let api_ms = match *prev_api {
+        Some(prev) if *duration_api_ms >= prev => duration_api_ms.checked_sub(prev),
+        _ => Some(*duration_api_ms),
+    };
+    *prev_api = Some(*duration_api_ms);
+    Some(TurnInfo {
+        duration_ms: Some(*duration_ms),
+        api_ms: api_ms.filter(|ms| *ms > 0),
+        model: model.map(str::to_owned),
+        input_tokens: usage.as_ref().map(|usage| usage.input_tokens),
+        output_tokens: usage.as_ref().map(|usage| usage.output_tokens),
+        cache_read_tokens: usage.as_ref().map(|usage| usage.cache_read_input_tokens),
+        cache_written_tokens: usage.as_ref().map(|usage| usage.cache_creation_input_tokens),
+        session_cost_usd: *total_cost_usd,
+        ..TurnInfo::default()
+    })
 }
 
 /// Every tool result the conversation holds, by the call it answers.
@@ -1206,6 +1262,52 @@ mod tests {
         assert!(!outbound.inbound, "the call the session made reads as outbound");
         assert_eq!(outbound.peer, "forge", "and names the seat it went to");
         assert_eq!(outbound.body, "did it land?", "with what it asked");
+    }
+
+    /// The decoded inbound frames of one captured baseline, in order.
+    ///
+    /// A capture rather than a fixture: the API clock counts up across the
+    /// session on real traffic, and a hand-built row would only restate the
+    /// reading it is meant to check.
+    fn captured(name: &str) -> Vec<Message> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../forge-test-harness/baselines/sdk");
+        let file = std::fs::read_dir(&dir)
+            .expect("the baseline directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.join(format!("{name}.jsonl")).is_file())
+            .expect("a baseline directory holding that capture")
+            .join(format!("{name}.jsonl"));
+        let raw = std::fs::read_to_string(file).expect("the capture");
+        raw.lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|envelope| envelope["dir"] == "in")
+            .filter_map(|envelope| envelope["line"].as_str().map(str::to_owned))
+            .filter_map(|line| serde_json::from_str::<Message>(&line).ok())
+            .collect()
+    }
+
+    /// A settled turn's row reports what that turn used, not what the
+    /// session had reached. The capture's results are really cumulative -
+    /// 3171 ms of API time at the second one is 1281 ms of it for that turn -
+    /// and the last carries an unattributed zero, which is a frame that
+    /// measured nothing rather than a turn that took no time.
+    #[test]
+    fn a_settled_turn_reports_its_own_api_time() {
+        let reported: Vec<Option<u64>> = render_units(&captured("compact"))
+            .into_iter()
+            .filter_map(|unit| match unit {
+                ChatUnit::TurnReport(info) => Some(info.api_ms),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            reported,
+            [Some(1_890), Some(1_281), Some(1_158), Some(1_383), Some(1_381), Some(1_336), None],
+            "the deltas the captured clock works out to, and nothing for the zero",
+        );
     }
 }
 
