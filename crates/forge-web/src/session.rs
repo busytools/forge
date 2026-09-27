@@ -19,7 +19,7 @@ use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{CronEntry, CronKind};
 use forge_sessions::surface::connectors::{GotifyView, SlackView};
-use forge_sessions::surface::{AccountsView, LoadingState, PendingKind, Roster};
+use forge_sessions::surface::{AccountsView, Agents, LoadingState, PendingKind, Roster};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::home::{Home, Row, Seed, State};
@@ -88,6 +88,7 @@ pub async fn page(
 ) -> Found {
     let surface = &state.surface;
     let roster = surface.roster();
+    let agents = surface.agents();
     let Some(seat) = roster.projects.iter().find(|seat| seat.org == org && seat.name == project)
     else {
         return Found::Absent;
@@ -97,18 +98,17 @@ pub async fn page(
     let slot = if label == "lead" {
         SessionSlot::lead(org, project)
     } else {
-        let named = surface.agents().for_project(&seat.key).iter().any(|row| row.label == label)
+        let named = agents.for_project(&seat.key).iter().any(|row| row.label == label)
             || surface.workers().for_project(&seat.key).iter().any(|row| row.label == label);
         if !named {
             return Found::Absent;
         }
         SessionSlot::worker(org, project, label)
     };
-    if roster.has_agent(&slot) {
-        Found::Open(shell(&context(state, bound), &slot).await)
-    } else {
-        Found::Waking(shell(&context(state, bound), &slot).await)
-    }
+    // One walk of the core per page: the roster and the agents the route
+    // already holds are the two the page draws from.
+    let page = shell(&context(state, bound), &slot, &roster, &agents).await;
+    if roster.has_agent(&slot) { Found::Open(page) } else { Found::Waking(page) }
 }
 
 /// The pieces both pages read the core through, which are the home's own:
@@ -127,10 +127,13 @@ fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
 /// The page. One page for both outcomes: the columns are as real for a
 /// seat nothing is running behind as for one that is up, and only the chat
 /// column says which of the two it is looking at.
-async fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
+async fn shell(
+    home: &Home<'_>,
+    slot: &SessionSlot,
+    roster: &Roster,
+    agents: &Agents,
+) -> Markup {
     let live = Live::lock(home.live).snapshot();
-    let roster = home.surface.roster();
-    let agents = home.surface.agents();
     let accounts = home.surface.accounts();
     let row = agents.all().iter().find(|row| &row.slot == slot);
     let state =
@@ -168,7 +171,7 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
                             span .t { "projects" }
                             span .n .ml { (fleet_count(&roster)) }
                         }
-                        div .scroll { (rail(home, &roster, slot).await) }
+                        div .scroll { (rail(home, roster, agents, slot).await) }
                     }
                     main .chat {
                         div .sess {
@@ -202,9 +205,8 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
 
 /// The projects rail: every declared project, grouped by the strongest
 /// state among its own rows, with its workers under it.
-async fn rail(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Markup {
+async fn rail(home: &Home<'_>, roster: &Roster, agents: &Agents, slot: &SessionSlot) -> Markup {
     let unseen = Live::lock(home.live).snapshot().unseen;
-    let agents = home.surface.agents();
     let mut groups: [Vec<Pane>; 3] = [Vec::new(), Vec::new(), Vec::new()];
 
     for project in &roster.projects {
