@@ -8,8 +8,9 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: ui-monospace, Menlo, monospace;
+  /* --ui and --mono are injected from [web] font, not declared here: at
+     equal specificity a stack in this block lands after the injected one
+     and wins, so the injected stack would silently do nothing. */
   --r: 10px;
   /* One type scale, anchored on the home: 15.5 is its body and 13.5 its
      mono, so nothing here goes below what that surface already uses. Prose
@@ -546,4 +547,26 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   .row .where { grid-column: 2 / 4; grid-row: 2; }
   .row .what  { grid-column: 2 / 4; grid-row: 3; }
   .children .row .name { padding-left: 14px; }
+}
+
+/* ---------- the built-in typefaces ---------- */
+
+/* The two faces [web] font's built-in set names. `font-weight` is the axis
+   range rather than one value: a single one makes 650 snap to a
+   synthesized Bold. */
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Fira Code";
+  src: url("/fonts/FiraCode-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
 }
