@@ -170,16 +170,18 @@ mod tests {
     }
 
     /// Every name `forge.toml` accepts draws a stack of its own, so a name
-    /// added to the shipped list without one cannot quietly render the
-    /// built-in pair. The built-in pair has no name of its own: an unset
-    /// `font` is it, and the one name shipped is the opt-out.
+    /// added to the shipped list without one cannot quietly render as
+    /// nothing or as the built-in pair. The built-in pair has no name of
+    /// its own: an unset `font` is it, and the one name shipped is the
+    /// opt-out.
     #[test]
     fn every_shipped_font_name_has_its_own_stack() {
         let built_in = font_variables(None);
         for name in FONT_NAMES {
+            let stack = font_variables(Some(name));
+            assert!(stack.is_some(), "{name} is a name forge.toml accepts but draws no stack");
             assert_ne!(
-                font_variables(Some(name)),
-                built_in,
+                stack, built_in,
                 "{name} is a name forge.toml accepts but draws the built-in stack",
             );
         }
@@ -191,11 +193,8 @@ mod tests {
     /// the built-in pair, which is a silent fallback wearing the answer.
     #[test]
     fn a_font_name_outside_the_shipped_set_draws_no_stack() {
+        assert!(!FONT_NAMES.contains(&"comic"), "the case is a name forge does not ship");
         assert_eq!(font_variables(Some("comic")), None);
-        assert!(font_variables(None).is_some(), "an unset name is the built-in pair");
-        for name in FONT_NAMES {
-            assert!(font_variables(Some(name)).is_some(), "{name} draws a stack");
-        }
     }
 
     /// The stack the built-in pair draws with and the faces the sheet
