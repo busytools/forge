@@ -7,7 +7,7 @@ sheets showing two or three panels side by side, each panel captioned:
 `usage-page.html`, `reference-glyphs.html`, `slack-connector.html`,
 `help-and-welcome.html` and `pickers-and-overlays.html`.
 
-Two carry their own frame instead, because they are pages rather than
+Three carry their own frame instead, because they are pages rather than
 fragments and are meant to be opened on their own:
 
 - `web-home.html` - the web view's home page, with every state it can
