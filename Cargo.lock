@@ -1330,6 +1330,7 @@ dependencies = [
  "forge-sessions",
  "futures-util",
  "maud",
+ "pulldown-cmark",
  "reqwest",
  "serde_json",
  "tempfile",
