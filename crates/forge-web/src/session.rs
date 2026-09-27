@@ -19,7 +19,7 @@ use forge_primitives::SessionSlot;
 use forge_primitives::account::AccountAuth;
 use forge_primitives::git::{GitBranch, GitIssueRef};
 use forge_primitives::git_diff::{GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState};
-use forge_primitives::messages::Usage;
+use forge_primitives::messages::{StopHookInfo, Usage};
 use forge_primitives::runtime::RuntimeSessionState;
 use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
 use forge_primitives::tasks::{Task, TaskStatus};
@@ -148,7 +148,9 @@ pub async fn page(
     // The page's first render is before any stream is attached, so it draws
     // no turn row: the stream's opening event follows at once, and it is the
     // connection that holds the clock.
-    Found::Page(shell(&context(state, bound), &slot, &messages, None, &roster, &agents).await)
+    Found::Page(
+        shell(&context(state, bound), &slot, &messages, None, false, &roster, &agents).await,
+    )
 }
 
 /// True for the frame that says a turn started.
@@ -161,6 +163,23 @@ fn is_running_state(msg: &Message) -> bool {
                     data.get("state"),
                 ) == Some(RuntimeSessionState::Running)
     )
+}
+
+/// The compaction state a streamed frame reports, when it reports one: the
+/// session's own status frame carries `compacting` while a compaction runs
+/// and a null once it ends. `None` for every other frame.
+pub(crate) fn compaction_state(msg: &Message) -> Option<bool> {
+    let Message::System { subtype, data, .. } = msg else {
+        return None;
+    };
+    if subtype != "status" {
+        return None;
+    }
+    match data.get("status") {
+        Some(serde_json::Value::String(state)) if state == "compacting" => Some(true),
+        Some(value) if value.is_null() => Some(false),
+        _ => None,
+    }
 }
 
 /// Fold one streamed message into the live turn: a running state starts it,
@@ -216,6 +235,7 @@ async fn shell(
     slot: &SessionSlot,
     messages: &[Message],
     live_turn: Option<&LiveTurn>,
+    compacting: bool,
     roster: &Roster,
     agents: &Agents,
 ) -> Markup {
@@ -247,7 +267,7 @@ async fn shell(
                 div #live sse-swap="session" hx-swap="morph:outerHTML" hx-target="#session-body" {
                     input type="checkbox" id="l" hidden;
                     input type="checkbox" id="r" hidden;
-                    (columns(home, slot, messages, live_turn, roster, agents).await)
+                    (columns(home, slot, messages, live_turn, compacting, roster, agents).await)
                 }
                 script src="/vendor/htmx.js" {}
                 script src="/vendor/htmx-sse.js" {}
@@ -267,11 +287,12 @@ pub(crate) async fn session_region(
     slot: &SessionSlot,
     conversation: &[Message],
     live_turn: Option<&LiveTurn>,
+    compacting: bool,
 ) -> Markup {
     let home = context(state, bound);
     let roster = state.surface.roster();
     let agents = state.surface.agents();
-    columns(&home, slot, conversation, live_turn, &roster, &agents).await
+    columns(&home, slot, conversation, live_turn, compacting, &roster, &agents).await
 }
 
 /// The seat a route names, when the roster holds it. A project's own lead
@@ -301,6 +322,7 @@ async fn columns(
     slot: &SessionSlot,
     messages: &[Message],
     live_turn: Option<&LiveTurn>,
+    compacting: bool,
     roster: &Roster,
     agents: &Agents,
 ) -> Markup {
@@ -330,6 +352,9 @@ async fn columns(
                     div .banner {
                         span .t { "projects" }
                         span .n .ml { (fleet_count(roster)) }
+                        // A pane covering the page carries its own way out:
+                        // the header handle that opened it is underneath.
+                        label .close for="l" title="close" { "\u{d7}" }
                     }
                     div .scroll { (rail(home, roster, agents, slot).await) }
                 }
@@ -353,6 +378,9 @@ async fn columns(
                             &units,
                             roster.cwd_for(slot).as_deref(),
                         ))
+                        @if compacting {
+                            div .compacting { span .ring {} "Compacting context\u{2026}" }
+                        }
                         // A turn in flight draws its row where the settled
                         // one will land, so the settle replaces the row
                         // rather than moving it.
@@ -365,6 +393,7 @@ async fn columns(
                     div .banner {
                         span .t { "inspector" }
                         span .n .ml { (slot.project()) }
+                        label .close for="r" title="close" { "\u{d7}" }
                     }
                     div .scroll { (inspector(home, roster, slot).await) }
                 }
@@ -1035,6 +1064,7 @@ fn unit_markup(unit: &ChatUnit, cwd: Option<&Path>, rows: &Cell<usize>) -> Marku
         ChatUnit::PeerCard(card) => peer_card(card),
         ChatUnit::MessagingGroup { cards } => messaging_group(cards),
         ChatUnit::Notice(notice) => notice_row(notice),
+        ChatUnit::Hooks { key, actions, infos } => hooks_row(key, *actions, infos),
         ChatUnit::TurnReport(info) => {
             let nth = rows.get();
             rows.set(nth + 1);
@@ -1112,27 +1142,242 @@ fn leaf_row(leaf: &ToolLeaf, open: bool, cwd: Option<&Path>) -> Markup {
                 (icons::chevron(""))
             }
             @if !leaf.content.is_empty() {
-                div .body { (leaf_body(&leaf.content)) }
+
+                div .body { (leaf_body(leaf, &leaf.content)) }
             }
         }
     }
 }
 
 /// What a call's row opens on.
-fn leaf_body(content: &[ToolCallContent]) -> Markup {
+/// A turn's hooks, as the mockup draws them: the count ahead of a chip that
+/// opens on what each hook ran and how long it took.
+fn hooks_row(key: &str, actions: u32, infos: &[StopHookInfo]) -> Markup {
+    html! {
+        details .hooks data-k=(format!("hooks-{key}")) {
+            summary {
+                "\u{21B3} hook summary \u{b7} " (actions) " actions"
+                span .tog {}
+            }
+            @if !infos.is_empty() {
+                div .body {
+                    @for info in infos {
+                        div .term {
+                            (info.command)
+                            @if let Some(ms) = info.duration_ms {
+                                " \u{b7} " (format_turn_duration(ms))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn leaf_body(leaf: &ToolLeaf, content: &[ToolCallContent]) -> Markup {
     html! {
         @for content in content {
             @match content {
                 ToolCallContent::Diff { new_path, old, new, .. } => {
                     (diff_body(new_path, old, new))
                 }
-                ToolCallContent::Content { content } => (chunk_body(content)),
+                ToolCallContent::Content { content } => {
+                    @match content {
+                        ChunkContent::Text { text } => (text_body(leaf, text)),
+                        other => (chunk_body(other)),
+                    }
+                }
                 ToolCallContent::McpResource { text, uri, .. } => {
                     div .term { (text.clone().unwrap_or_else(|| uri.clone())) }
                 }
             }
         }
     }
+}
+
+/// A call's text body in the shape the mockup draws for it: a source file
+/// as a highlighted code block, a search result as one row per hit, and
+/// anything else as plain terminal rows.
+fn text_body(leaf: &ToolLeaf, text: &str) -> Markup {
+    if let Some(hits) = search_hits(leaf, text) {
+        return hits;
+    }
+    match language_of(&leaf.title) {
+        Some(language) => code_body(language, text),
+        None => html! { div .term { (text) } },
+    }
+}
+
+/// The body of a search call, when that is what this is: every hit the call
+/// came back with, one row each. The wire's shape is `path:line:content`,
+/// which is what the mockup draws as a line number, the file, and the line
+/// the match sits in. `None` when the call is not a search or the text is
+/// not that shape, which leaves the body to the terminal rows.
+fn search_hits(leaf: &ToolLeaf, text: &str) -> Option<Markup> {
+    let search = matches!(leaf.label, "Grep" | "Glob" | "LS");
+    let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+    if !search || lines.is_empty() || !lines.iter().all(|line| split_hit(line).is_some()) {
+        return None;
+    }
+    let pattern = leaf.title.clone();
+    Some(html! {
+        @for line in lines.iter().take(20) {
+            @if let Some((path, number, rest)) = split_hit(line) {
+                div .searchhit {
+                    span .ln { (number) ":" } " " span .fl { (path) }
+                    @if !rest.is_empty() {
+                        "\n" (emphasised(&pattern, rest))
+                    }
+                }
+            }
+        }
+        @if lines.len() > 20 {
+            div .searchhit { "\u{2026}and " (lines.len() - 20) " more" }
+        }
+    })
+}
+
+/// One hit line as `path:line:content`. `None` for a line that is not that
+/// shape, which is what makes the whole body something else.
+fn split_hit(line: &str) -> Option<(&str, &str, &str)> {
+    let (path, rest) = line.split_once(':')?;
+    if path.is_empty() || path.contains(' ') {
+        return None;
+    }
+    let (number, content) = rest.split_once(':').unwrap_or((rest, ""));
+    if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some((path, number, content.trim_start()))
+}
+
+/// The hit's own line with the search pattern marked, which is what the
+/// mockup's `.hit` span is for.
+fn emphasised(pattern: &str, line: &str) -> Markup {
+    if pattern.is_empty() || !line.contains(pattern) {
+        return html! { (line) };
+    }
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(at) = rest.find(pattern) {
+        let (before, after) = rest.split_at(at);
+        out.push_str(&escaped(before));
+        out.push_str("<span class=\"hit\">");
+        out.push_str(&escaped(pattern));
+        out.push_str("</span>");
+        rest = &after[pattern.len()..];
+    }
+    out.push_str(&escaped(rest));
+    PreEscaped(out)
+}
+
+/// Text as the page carries it: the highlighter builds its own markup, so
+/// what it wraps is escaped here rather than by the macro.
+fn escaped(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// A source file, highlighted into the four token classes the mockup draws.
+/// A file the highlighter has no syntax for, or a line it cannot parse, is
+/// drawn as it came: the page never invents text a reader cannot use.
+fn code_body(language: &str, text: &str) -> Markup {
+    let syntaxes = syntaxes();
+    let Some(syntax) = syntaxes.find_syntax_by_token(language) else {
+        return html! { div .term { (text) } };
+    };
+    let mut state = syntect::parsing::ParseState::new(syntax);
+    let mut body = String::new();
+    for line in text.lines() {
+        let spans = state.parse_line(line, syntaxes).unwrap_or_default();
+        let mut at = 0;
+        let mut stack = syntect::parsing::ScopeStack::new();
+        for (offset, op) in spans {
+            if offset > at {
+                push_span(&mut body, token_class(&stack), &line[at..offset]);
+                at = offset;
+            }
+            let _ = stack.apply(&op);
+        }
+        push_span(&mut body, token_class(&stack), &line[at..]);
+        body.push('\n');
+    }
+    html! {
+        div .code {
+            div .lang { (language) }
+            pre { (PreEscaped(body)) }
+        }
+    }
+}
+
+/// One run of the line, in the class its scopes name, escaped for the page.
+fn push_span(out: &mut String, class: Option<&str>, text: &str) {
+    match class {
+        Some(class) => {
+            out.push_str("<span class=\"");
+            out.push_str(class);
+            out.push_str("\">");
+            out.push_str(&escaped(text));
+            out.push_str("</span>");
+        }
+        None => out.push_str(&escaped(text)),
+    }
+}
+
+/// The class a scope stack draws in: a comment, a string, a keyword, or a
+/// name that is a function or a type. Everything else is plain.
+///
+/// Read from the innermost scope out, which is the one a token's own nature
+/// is stated in: a keyword inside a string is a string.
+fn token_class(stack: &syntect::parsing::ScopeStack) -> Option<&'static str> {
+    for scope in stack.as_slice().iter().rev() {
+        let name = scope.build_string();
+        if name.starts_with("comment") {
+            return Some("c2");
+        }
+        if name.contains("string") {
+            return Some("s");
+        }
+        if name.contains("keyword") || name.starts_with("storage") {
+            return Some("k");
+        }
+        if name.starts_with("entity.name.function")
+            || name.starts_with("entity.name.type")
+            || name.starts_with("support.type")
+            || name.starts_with("entity.name.tag")
+        {
+            return Some("f");
+        }
+    }
+    None
+}
+
+/// The syntax definitions, loaded once for the process: they are a few
+/// megabytes of tables, and a page renders on every swap.
+fn syntaxes() -> &'static syntect::parsing::SyntaxSet {
+    static SYNTAXES: std::sync::OnceLock<syntect::parsing::SyntaxSet> = std::sync::OnceLock::new();
+    SYNTAXES.get_or_init(syntect::parsing::SyntaxSet::load_defaults_newlines)
+}
+
+/// The language a path's extension names, when the page has a highlighter
+/// for it. Docs and plain text are not source and keep the terminal rows.
+fn language_of(path: &str) -> Option<&'static str> {
+    let extension = path.rsplit_once('.')?.1;
+    Some(match extension {
+        "rs" => "rust",
+        "ts" | "tsx" => "typescript",
+        "js" | "jsx" | "mjs" => "javascript",
+        "py" => "python",
+        "go" => "go",
+        "sh" | "bash" | "zsh" => "bash",
+        "toml" => "toml",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "css" => "css",
+        "html" => "html",
+        "sql" => "sql",
+        _ => return None,
+    })
 }
 
 /// A text chunk: the terminal rows the mockup draws for a command's output.

@@ -155,9 +155,15 @@ pub async fn session_events(
     // The opening event draws the read, which carries no turn in flight: the
     // connection arms its own clock off the first running state it hears.
     let opening = {
-        let region =
-            crate::session::session_region(&wiring.state, wiring.bound, &slot, &conversation, None)
-                .await;
+        let region = crate::session::session_region(
+            &wiring.state,
+            wiring.bound,
+            &slot,
+            &conversation,
+            None,
+            false,
+        )
+        .await;
         stream::once(
             async move { Ok(Event::default().event(SESSION_EVENT).data(region.into_string())) },
         )
@@ -190,6 +196,10 @@ fn session_updates(
         |(mut receiver, wiring, slot, conversation, live, mut tick)| async move {
             let mut conversation = conversation;
             let mut live = live;
+            // Whether a compaction is running. It is a state of the session
+            // rather than of the conversation, so it rides the connection
+            // beside the live turn rather than the fold.
+            let mut compacting = false;
             loop {
                 let redraw = tokio::select! {
                     update = receiver.recv() => {
@@ -210,6 +220,9 @@ fn session_updates(
                             && key == &slot
                         {
                             crate::session::apply_to_live_turn(msg, &mut live);
+                            if let Some(state) = crate::session::compaction_state(msg) {
+                                compacting = state;
+                            }
                         }
                         appended || fleet || handed_over
                     }
@@ -224,6 +237,7 @@ fn session_updates(
                     &slot,
                     &conversation,
                     Some(&live),
+                    compacting,
                 )
                 .await;
                 let event = Event::default().event(SESSION_EVENT).data(region.into_string());

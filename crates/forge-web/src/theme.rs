@@ -21,6 +21,11 @@ const BAD: &str = "#e0683e";
 const BLUE: &str = "#61a0e0";
 const TEAL: &str = "#4ec9c9";
 const VIOLET: &str = "#b79ae0";
+/// The four classes a source file's tokens are drawn in: keyword, string,
+/// function or type. Comments take `--dim`.
+const SYN_KEY: &str = "#c9a13b";
+const SYN_STR: &str = "#8fd07a";
+const SYN_FN: &str = "#8fb4e0";
 /// The two diff grounds: a colour with alpha, so an added or removed line
 /// reads as its own layer over whatever the row sits on.
 const ADD_BG: &str = "rgba(15,49,30,.5)";
@@ -43,6 +48,9 @@ const DARK: &[(&str, &str)] = &[
     ("--blue", BLUE),
     ("--teal", TEAL),
     ("--violet", VIOLET),
+    ("--syn-key", SYN_KEY),
+    ("--syn-str", SYN_STR),
+    ("--syn-fn", SYN_FN),
     ("--add-bg", ADD_BG),
     ("--del-bg", DEL_BG),
 ];

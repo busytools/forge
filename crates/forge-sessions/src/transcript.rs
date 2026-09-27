@@ -17,11 +17,14 @@
 
 use std::collections::HashMap;
 
+use forge_primitives::messages::StopHookInfo;
 use forge_primitives::{ContentBlock, Message, ToolCallContent};
 
 use crate::envelope::{PeerInboundKind, detect_inbound};
 use crate::family::{ToolFamily, tool_label};
-use crate::grouping::{KindRow, aggregate_call_status, is_edit_tool, wire_row};
+use crate::grouping::{
+    CallParts, KindRow, aggregate_call_status, family_target, is_edit_tool, wire_row,
+};
 use crate::model::tool_call_info::{
     AnsweredQuestion, is_ask_question_tool_name, is_monitor_tool_name,
 };
@@ -57,6 +60,16 @@ pub enum ChatUnit {
     /// A line the conversation carries that nobody typed: an external
     /// delivery, a scheduled fire, or a failure the workspace reported.
     Notice(Notice),
+    /// What the turn's hooks did, drawn as the chip the terminal draws: the
+    /// count, and one row per hook behind it. The wire sends none of these
+    /// when no hook fired.
+    Hooks {
+        /// The frame's own id, which is what a view keys the row's open
+        /// state on.
+        key: String,
+        actions: u32,
+        infos: Vec<StopHookInfo>,
+    },
     /// What a settled turn did, as the view's own row draws it: the turn's
     /// wall clock, its API time, and the tokens and cost the CLI reported.
     /// The web view's row is this, built from the result frame the fold
@@ -142,6 +155,18 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     let mut model: Option<String> = None;
     let mut thinking: Option<u64> = None;
     for message in messages {
+        // What the turn's hooks did. A frame reporting none of them draws
+        // nothing, which is the terminal's rule too.
+        if let Message::StopHookSummary { actions, hook_infos, uuid, .. } = message {
+            if *actions > 0 {
+                units.push(ChatUnit::Hooks {
+                    key: uuid.clone(),
+                    actions: *actions,
+                    infos: hook_infos.clone(),
+                });
+            }
+            continue;
+        }
         // What the turn has thought so far, summed from the frame deltas: the
         // wire's running counter restarts at every thinking block, so the
         // absolute field understates any turn that thought more than once.
@@ -533,7 +558,13 @@ fn leaf(
     ToolLeaf {
         id: id.to_owned(),
         label: tool_label(name),
-        title: call.title.clone(),
+        // What the row names, resolved the way the terminal's own tree
+        // resolves it: a search call's target is its pattern, a read's is
+        // its path, and a call the builders have no target for keeps the
+        // title the CLI gave it. The CLI's title is the tool's own name for
+        // some calls, which a view that strips a label from it draws blank.
+        title: family_target(CallParts { name, input: Some(input), title: &call.title })
+            .unwrap_or_else(|| call.title.clone()),
         status,
         content,
     }

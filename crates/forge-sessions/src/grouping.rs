@@ -182,7 +182,7 @@ impl KindSummary {
     /// (uncapped) so the render can nest one child row per instance.
     pub fn tally(&mut self, tc: &ToolCallInfo) {
         let (row, label) = wire_row(&tc.sdk_tool_name);
-        self.tally_resolved(row, label, family_target(tc), false);
+        self.tally_resolved(row, label, family_target(CallParts::of(tc)), false);
     }
 
     /// Fold one peer/worker message into its ENVELOPE-KIND line. The
@@ -298,21 +298,39 @@ fn mcp_parts(sdk_tool_name: &str) -> Option<(&str, &str)> {
     (!server.is_empty()).then_some((server, tool))
 }
 
+/// What a target is resolved from: the tool's own name, the input it was
+/// called with, and the title the CLI gave it. A view has these three from
+/// the wire and no rendered call to ask, which is why the resolution takes
+/// them rather than a call record.
+#[derive(Clone, Copy)]
+pub struct CallParts<'a> {
+    pub name: &'a str,
+    pub input: Option<&'a serde_json::Value>,
+    pub title: &'a str,
+}
+
+impl<'a> CallParts<'a> {
+    /// The parts of a call record, for a caller that has one.
+    pub fn of(tc: &'a crate::model::ToolCallInfo) -> Self {
+        Self { name: &tc.sdk_tool_name, input: tc.raw_input.as_ref(), title: &tc.title }
+    }
+}
+
 /// Representative target for a kind line: MCP → the tool sub-name;
 /// local tools → their family's extractor, falling back to the title
 /// with the kind-label prefix stripped.
-fn family_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
-    if let Some((_, tool)) = mcp_parts(&tc.sdk_tool_name)
+pub fn family_target(parts: CallParts<'_>) -> Option<String> {
+    if let Some((_, tool)) = mcp_parts(parts.name)
         && !tool.is_empty()
     {
         return Some(tool.to_owned());
     }
-    let bespoke = match tool_family(&tc.sdk_tool_name) {
-        ToolFamily::Read => read_target(tc),
-        ToolFamily::Search => search_target(tc),
-        ToolFamily::Bash => command_target(tc),
-        ToolFamily::Web => web_target(tc),
-        ToolFamily::ToolSearch => query_target(tc),
+    let bespoke = match tool_family(parts.name) {
+        ToolFamily::Read => read_target(parts),
+        ToolFamily::Search => search_target(parts),
+        ToolFamily::Bash => command_target(parts),
+        ToolFamily::Web => web_target(parts),
+        ToolFamily::ToolSearch => query_target(parts),
         ToolFamily::Lsp
         | ToolFamily::Skill
         | ToolFamily::Config
@@ -320,7 +338,7 @@ fn family_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
         | ToolFamily::Tool
         | ToolFamily::Own(_) => None,
     };
-    bespoke.or_else(|| strip_title_prefix(tc))
+    bespoke.or_else(|| strip_title_prefix(parts))
 }
 
 fn push_target(targets: &mut Vec<String>, candidate: Option<String>) {
@@ -333,8 +351,8 @@ fn push_target(targets: &mut Vec<String>, candidate: Option<String>) {
 /// The render relativizes it against the session project root and shows
 /// each file as a nested child, so the full path is kept here - not the
 /// basename.
-fn read_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
-    let raw = tc.raw_input.as_ref().and_then(|v| v.as_object());
+fn read_target(parts: CallParts<'_>) -> Option<String> {
+    let raw = parts.input.and_then(|v| v.as_object());
     let path =
         raw.and_then(|r| r.get("file_path")).and_then(serde_json::Value::as_str).map(str::trim);
     if let Some(p) = path.filter(|s| !s.is_empty()) {
@@ -344,14 +362,14 @@ fn read_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
     // pre-result; the test fixtures also pass raw_input: None).
     // Recover by trimming the leading kind-label from `tc.title` -
     // for Read it's `"Read /path/to/file"`, for Edit `"Edit ..."`.
-    let title = tc.title.trim();
+    let title = parts.title.trim();
     let stripped = title.strip_prefix("Read ").or_else(|| title.strip_prefix("Edit "));
     stripped.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
 }
 
-fn search_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
-    let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
-    let value = match tc.sdk_tool_name.as_str() {
+fn search_target(parts: CallParts<'_>) -> Option<String> {
+    let raw = parts.input.and_then(|v| v.as_object())?;
+    let value = match parts.name {
         "Grep" | "Glob" => raw.get("pattern"),
         "LS" => raw.get("path"),
         _ => None,
@@ -366,9 +384,9 @@ fn search_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
 /// Web family (`⊕`): WebFetch shows its URL (scheme stripped),
 /// WebSearch its query. The full value reaches the render, which clips
 /// it per row.
-fn web_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
-    let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
-    let value = match tc.sdk_tool_name.as_str() {
+fn web_target(parts: CallParts<'_>) -> Option<String> {
+    let raw = parts.input.and_then(|v| v.as_object())?;
+    let value = match parts.name {
         "WebFetch" | "web_fetch" => raw.get("url"),
         "WebSearch" | "web_search" => raw.get("query"),
         _ => None,
@@ -382,8 +400,8 @@ fn web_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
 
 /// ToolSearch (`⌖`): the search query. The full query reaches the
 /// render, which clips it per row.
-fn query_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
-    let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
+fn query_target(parts: CallParts<'_>) -> Option<String> {
+    let raw = parts.input.and_then(|v| v.as_object())?;
     raw.get("query")
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
@@ -398,9 +416,9 @@ fn strip_scheme(url: &str) -> &str {
 /// Fallback target for a kind with no bespoke extractor: `tc.title`
 /// with a leading kind-label prefix stripped (claude sends titles like
 /// `"Skill code-review"` / `"LSP hover"`).
-fn strip_title_prefix(tc: &crate::model::ToolCallInfo) -> Option<String> {
-    let label = tool_label(&tc.sdk_tool_name);
-    let title = tc.title.trim();
+fn strip_title_prefix(parts: CallParts<'_>) -> Option<String> {
+    let label = tool_label(parts.name);
+    let title = parts.title.trim();
     if title.is_empty() {
         return None;
     }
@@ -409,8 +427,8 @@ fn strip_title_prefix(tc: &crate::model::ToolCallInfo) -> Option<String> {
     (!stripped.is_empty()).then(|| stripped.to_owned())
 }
 
-fn command_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
-    let raw = tc.raw_input.as_ref().and_then(|v| v.as_object());
+fn command_target(parts: CallParts<'_>) -> Option<String> {
+    let raw = parts.input.and_then(|v| v.as_object());
     // Prefer Claude's human-readable description (the collapsed
     // headline) - it rides the same raw_input object as the command,
     // and the raw command often starts with a long `cd <path>` that
@@ -438,7 +456,7 @@ fn command_target(tc: &crate::model::ToolCallInfo) -> Option<String> {
     // Defensive: when raw_input is missing, `tool_title("Bash", ...)`
     // emits the bare command as `tc.title`. Use it directly (without
     // a kind-label strip since Bash has no prefix).
-    let title = tc.title.trim();
+    let title = parts.title.trim();
     if title.is_empty() { None } else { Some(title.to_owned()) }
 }
 
@@ -1215,7 +1233,7 @@ mod tests {
 
         let fallback = tool_call_block_with_input("s3", "Skill", "Skill code-review", None);
         let MessageBlock::ToolCall(tc) = &fallback else { unreachable!() };
-        assert_eq!(super::family_target(tc), Some("code-review".to_owned()));
+        assert_eq!(super::family_target(CallParts::of(tc)), Some("code-review".to_owned()));
     }
 
     /// Each kind line collects representative targets: Reads pull the
@@ -1398,7 +1416,7 @@ mod tests {
                 Some(serde_json::json!({ "file_path": file_path })),
             );
             let MessageBlock::ToolCall(tc) = &block else { unreachable!() };
-            read_target(tc)
+            read_target(CallParts::of(tc))
         };
         assert_eq!(read_target_of(""), None, "empty path -> no target");
         assert_eq!(read_target_of("   "), None, "whitespace path -> no target");

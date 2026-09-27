@@ -1248,11 +1248,7 @@ async fn the_live_row_sums_every_thinking_block() {
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    for msg in [
-        running_frame(),
-        thinking_frame(1, 161),
-        thinking_frame(2, 189),
-    ] {
+    for msg in [running_frame(), thinking_frame(1, 161), thinking_frame(2, 189)] {
         fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
             key: SessionSlot::lead("Busytools", "forge"),
             msg,
@@ -1354,6 +1350,182 @@ async fn a_zero_inside_a_real_usage_block_is_drawn_as_one() {
     assert!(region.contains("<b>cache</b>0 read"), "the zero it did spend: {region}");
     assert!(region.contains("<b>wrote</b>13,939"), "beside the count it did spend: {region}");
     assert!(region.contains("13k written"), "and the row's own chip keeps it: {region}");
+}
+
+/// A source file a call read is drawn as the mockup draws it: a code block
+/// with its language named and its tokens classed, rather than the file as
+/// plain rows.
+#[tokio::test]
+async fn a_source_file_is_drawn_highlighted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/src/family.rs"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"/// The group a call belongs to.\npub enum ToolFamily {\n    Read,\n}"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains("class=\"code\""), "the block the mockup draws: {page}");
+    assert!(page.contains("<div class=\"lang\">rust</div>"), "naming its language: {page}");
+    assert!(page.contains("<span class=\"k\">"), "with its keywords classed: {page}");
+    assert!(page.contains("ToolFamily"), "and the file's own text: {page}");
+}
+
+/// A search call's hits are drawn one row each: the line number, the file,
+/// and the line with the pattern marked.
+#[tokio::test]
+async fn a_search_result_is_drawn_as_its_hits() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"KindRow"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"crates/forge-sessions/src/grouping.rs:184: pub fn kind_row(x: KindRow)"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains("class=\"searchhit\""), "the row a hit draws on: {page}");
+    assert!(page.contains("<span class=\"ln\">184:</span>"), "with its line number: {page}");
+    assert!(
+        page.contains("<span class=\"fl\">crates/forge-sessions/src/grouping.rs</span>"),
+        "and the file it is in: {page}",
+    );
+    assert!(
+        page.contains("pub fn kind_row(x: <span class=\"hit\">KindRow</span>)"),
+        "the line it sits in, with the pattern marked and the rest left as it came: {page}",
+    );
+}
+
+/// A turn's hooks collapse to the chip the mockup draws, with what each one
+/// ran and how long it took behind it.
+#[tokio::test]
+async fn a_turns_hooks_are_drawn_as_the_chip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    // Built as the decoder's typed variant rather than from JSON: the wire
+    // reaches this one through the subtype dispatch, not through serde.
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: forge_primitives::Message::StopHookSummary {
+            actions: 2,
+            hook_infos: vec![
+                forge_primitives::messages::StopHookInfo {
+                    command: "just fmt".to_owned(),
+                    duration_ms: Some(1400),
+                },
+                forge_primitives::messages::StopHookInfo {
+                    command: "just check".to_owned(),
+                    duration_ms: Some(62000),
+                },
+            ],
+            has_output: true,
+            level: "suggestion".to_owned(),
+            prevented_continuation: false,
+            stop_reason: String::new(),
+            tool_use_id: String::new(),
+            parent_tool_use_id: None,
+            session_id: "s".to_owned(),
+            uuid: "hooks-1".to_owned(),
+        },
+    });
+    let region = next_session_event(stream).await.expect("the frame redraws the region");
+
+    assert!(region.contains("class=\"hooks\""), "the chip: {region}");
+    assert!(region.contains("hook summary \u{b7} 2 actions"), "with its count: {region}");
+    assert!(region.contains("just fmt \u{b7} 1.4s"), "and what each one ran: {region}");
+    assert!(region.contains("just check \u{b7} 1m 02s"), "with how long it took: {region}");
+}
+
+/// A compaction in flight says so, from the session's own status frame, and
+/// stops saying so when the frame says it ended.
+#[tokio::test]
+async fn a_compaction_in_flight_says_so() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    let key = SessionSlot::lead("Busytools", "forge");
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: key.clone(),
+        msg: serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "status",
+            "status": "compacting",
+            "uuid": "status-1",
+            "session_id": "s",
+        }))
+        .expect("a status frame"),
+    });
+    let region = next_session_event(stream).await.expect("the status redraws the region");
+
+    assert!(region.contains("class=\"compacting\""), "the line: {region}");
+    assert!(region.contains("Compacting context"), "and what it says: {region}");
+}
+
+/// The line goes when the session says the compaction ended, which is the
+/// status frame's null rather than a second frame that never comes.
+#[tokio::test]
+async fn a_compaction_that_ended_stops_saying_so() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    let key = SessionSlot::lead("Busytools", "forge");
+    for (uuid, status) in
+        [("status-1", serde_json::json!("compacting")), ("status-2", serde_json::json!(null))]
+    {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: key.clone(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "status",
+                "status": status,
+                "uuid": uuid,
+                "session_id": "s",
+            }))
+            .expect("a status frame"),
+        });
+    }
+    let region = nth_session_event(stream, 3).await.expect("both statuses redraw the region");
+
+    assert!(!region.contains("Compacting context"), "the line is gone once it ended: {region}");
 }
 
 /// A cron fire is drawn as the turn it is. The session's model is handed the

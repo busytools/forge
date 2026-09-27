@@ -334,6 +334,12 @@ details[open] > summary .arw { transform: rotate(90deg); }
   gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden;
   font-size: var(--fs-prose);
 }
+/* Placed rather than auto-flowed: a collapsed pane leaves its column empty,
+   and auto-flowing the rest along moves the conversation into the rail's
+   column and blanks the page. */
+.app > .rail.left { grid-column: 1; }
+.app > main.chat { grid-column: 2; }
+.app > .rail.right { grid-column: 3; }
 /* checked is COLLAPSED. The boxes sit beside the swapped region rather than
    inside it, so the rules reach through it to the app they size. */
 #l:checked ~ #session-body .app { --rail-l: 0px; }
@@ -367,6 +373,10 @@ details[open] > summary .arw { transform: rotate(90deg); }
   text-transform: uppercase; color: var(--accent); }
 .banner .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .banner .n.ml { margin-left: auto; }
+/* A pane that covered the page carries its own way out: the header handle
+   that opened it is underneath. */
+.banner .close { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px; }
+.banner .close:hover { color: var(--text); }
 
 /* The chat column. min-height:0 or the column refuses to shrink below its
    content and the composer is pushed past the viewport, where
@@ -520,6 +530,7 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 
 @media (max-width: 980px) {
   .app { grid-template-columns: minmax(0,1fr); }
+  .app > main.chat { grid-column: 1; }
   .sess { flex-wrap: wrap; gap: 8px; }
   .sess .facts { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
   .sess .tog-r { order: 0; }
@@ -562,6 +573,9 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   border-radius: 0 10px 10px 0; }
 .work { padding: 4px 0 8px; }
 .work .prose p + p { margin-top: 10px; }
+/* The reset above zeroes the padding a list draws its markers in. */
+.work .prose ul, .work .prose ol { padding-left: 22px; margin: 8px 0; }
+.work .prose li + li { margin-top: 4px; }
 .work .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
   background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
 
@@ -607,6 +621,24 @@ details.leaf[open] > summary .arw { color: var(--accent); }
 .term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
   border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
   white-space: pre-wrap; overflow-x: auto; }
+.term .pfx { color: var(--dim); }
+.term .sum { color: var(--ok); }
+/* A source file a call read or wrote, and the four token classes it carries. */
+.code { border: 1px solid var(--line); border-radius: 9px;
+  background: var(--s2); overflow: hidden; }
+.code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  padding: 5px 12px; border-bottom: 1px solid var(--line); }
+.code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 8px 12px;
+  white-space: pre; overflow-x: auto; line-height: 1.55; }
+.k { color: var(--syn-key); }
+.s { color: var(--syn-str); }
+.f { color: var(--syn-fn); }
+/* A search result, one row per hit: where it is, then what matched. */
+.searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
+  margin: 4px 0; border-left: 1px solid var(--line); }
+.searchhit .ln { color: var(--accent); }
+.searchhit .fl { color: var(--muted); }
+.searchhit .hit { color: var(--warn); }
 .dif { border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
   font-family: var(--mono); font-size: var(--fs-data); }
 .dif .h { color: var(--teal); background: var(--s2); padding: 4px 12px; }
@@ -665,6 +697,18 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .turninfo > summary > span { white-space: nowrap; }
 .turninfo > summary::-webkit-details-marker { display: none; }
 .turninfo .sep { opacity: .5; }
+/* A compaction in flight, and the chip a turn's hooks collapse to. */
+.compacting { display: flex; align-items: center; gap: 9px; color: var(--accent);
+  font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
+.hooks { display: flex; align-items: center; gap: 8px; margin: 4px 0;
+  font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
+.hooks > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
+.hooks > summary::-webkit-details-marker { display: none; }
+.hooks:hover { color: var(--muted); }
+.hooks .tog { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px;
+  font-size: var(--fs-label); }
+.hooks .tog::after { content: "expand"; }
+.hooks[open] .tog::after { content: "collapse"; }
 .turninfo .tog { color: var(--muted); border: 1px solid var(--line);
   border-radius: 6px; padding: 0 8px; font-size: var(--fs-data); }
 /* The chip's label follows the row it sits on. */

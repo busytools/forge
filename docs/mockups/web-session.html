@@ -27,6 +27,7 @@
     --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
     --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
     --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
+    --syn-key:#c9a13b; --syn-str:#8fd07a; --syn-fn:#8fb4e0;
     --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5);
     --ui: "Fira Sans", system-ui, -apple-system, sans-serif;
     --mono: "Fira Code", ui-monospace, Menlo, monospace;
@@ -66,6 +67,12 @@
      chat header so it stays clickable while the pane is gone ---------- */
   .app { display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr) var(--rail-r);
     gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden; }
+  /* Placed rather than auto-flowed: a collapsed pane leaves its column empty,
+     and auto-flowing the rest along moves the conversation into the rail's
+     column and blanks the page. */
+  .app > .rail.left { grid-column: 1; }
+  .app > main.chat { grid-column: 2; }
+  .app > .rail.right { grid-column: 3; }
   #l:checked ~ .app { --rail-l: 0px; }
   #r:checked ~ .app { --rail-r: 0px; }
   #l:checked ~ .app .rail.left, #r:checked ~ .app .rail.right { display: none; }
@@ -113,6 +120,10 @@
     text-transform: uppercase; color: var(--accent); }
   .banner .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .banner .n.ml { margin-left: auto; }
+  /* A pane that covered the page carries its own way out: the header handle
+     that opened it is underneath. */
+  .banner .close { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px; }
+  .banner .close:hover { color: var(--text); }
 
   /* ---------- projects ---------- */
   .state { padding: 12px 8px 4px; font-size: var(--fs-label); font-weight: 700;
@@ -198,6 +209,9 @@
     border-radius: 0 10px 10px 0; }
   .work { padding: 4px 0 8px; }
   .work .prose p + p { margin-top: 10px; }
+  /* The reset above zeroes the padding a list draws its markers in. */
+  .work .prose ul, .work .prose ol { padding-left: 22px; margin: 8px 0; }
+  .work .prose li + li { margin-top: 4px; }
   .work .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
     background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
 
@@ -250,8 +264,9 @@
     padding: 5px 12px; border-bottom: 1px solid var(--line); }
   .code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 8px 12px;
     white-space: pre; overflow-x: auto; line-height: 1.55; }
-  .k { color: #c9a13b; } .s { color: #8fd07a; } .c2 { color: var(--dim); font-style: italic; }
-  .f { color: #8fb4e0; }
+  .k { color: var(--syn-key); } .s { color: var(--syn-str); }
+  .c2 { color: var(--dim); font-style: italic; }
+  .f { color: var(--syn-fn); }
 
   .term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
     border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
@@ -566,9 +581,16 @@
      opens on the conversation and the header's two handles reach the
      panes. */
   @media (max-width: 1280px) { .app { grid-template-columns: var(--rail-l) minmax(0,1fr); }
-    .rail.right { display: none; } #r:checked ~ .app .rail.right { display: none; } }
+    /* The inspector stops being a column and becomes a sheet over the chat,
+       rather than disappearing: the handle that reaches it stays a control,
+       and the sheet carries the handle that closes it. */
+    .rail.right { display: none; }
+    #r:checked ~ .app .rail.right {
+      display: flex; position: fixed; inset: 0; z-index: 40; border-radius: 0;
+    } }
   @media (max-width: 980px) {
     .app { grid-template-columns: minmax(0,1fr); }
+    .app > main.chat { grid-column: 1; }
     .sess { flex-wrap: wrap; gap: 8px; }
     .sess .facts { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
     .sess .facts .sep { display: none; }
@@ -628,6 +650,7 @@
     <div class="banner">
       <span class="t">projects</span>
       <span class="n ml">10 live / 16</span>
+      <label class="close" for="l" title="close">&#215;</label>
     </div>
     <div class="scroll">
 
@@ -1230,6 +1253,7 @@ docs: Render the message body into rows.</div>
     <div class="banner">
       <span class="t">inspector</span>
       <span class="n ml">forge</span>
+      <label class="close" for="r" title="close">&#215;</label>
     </div>
     <div class="scroll">
 
