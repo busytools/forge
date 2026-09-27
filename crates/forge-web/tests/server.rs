@@ -7,8 +7,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::Arc;
 
+use forge_primitives::SessionSlot;
 use forge_primitives::WebConfig;
-use forge_sessions::surface::ViewSurface;
+use forge_sessions::surface::{PendingKind, ViewSurface};
 use forge_sessions::testing::Fleet;
 use forge_web::WebState;
 
@@ -393,18 +394,21 @@ async fn the_vendored_scripts_are_served() {
     );
 }
 
-/// The stylesheet is served beside the page, as a stylesheet.
+/// The stylesheet is served beside the page, as a stylesheet, and it is
+/// the one sheet both pages link: a second copy of a row or a mark is the
+/// defect rule 21 names.
 #[tokio::test]
-async fn the_home_serves_its_stylesheet() {
+async fn the_pages_serve_the_one_stylesheet() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
-    let (status, content_type, body) = get(&config, "/home.css").await;
+    let (status, content_type, body) = get(&config, "/web.css").await;
 
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(content_type.starts_with("text/css"), "a browser reads it as a stylesheet");
-    assert!(body.contains(".row"), "the stylesheet carries the row: {body}");
+    assert!(body.contains(".row"), "the sheet carries the home's row: {body}");
+    assert!(body.contains(".rail"), "and the session page's rail: {body}");
 }
 
 /// The mark a browser tab carries comes from `[web] mark`, so a mark
@@ -458,6 +462,495 @@ async fn unset_names_fall_back_to_the_built_in_mark_and_palette() {
         page.contains("--accent:#f47600"),
         "the page carries the palette as its root variables, got: {page}",
     );
+}
+
+/// The route serves a real page for a real slot, with all three columns.
+#[tokio::test]
+async fn the_session_page_serves_all_three_columns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(content_type.starts_with("text/html"), "a browser renders it as a page");
+    assert!(page.contains("projects"), "the rail renders: {page}");
+    assert!(page.contains("inspector"), "the inspector renders: {page}");
+    assert!(page.contains("/web.css"), "and the page links the one stylesheet: {page}");
+}
+
+/// An unknown slot is a 404, not an empty shell that looks like a session.
+/// A shell would read as a session with nothing in it, which is a wrong
+/// answer rather than a missing one.
+#[tokio::test]
+async fn an_unknown_slot_is_not_found() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, _page) = get(&config, "/session/Nobody/nothing/lead").await;
+    assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "an unknown slot is a 404");
+
+    // The project is declared and the seat it names is not one of its own:
+    // a project's roster names its lead and its workers, and nobody else.
+    let (status, _content_type, _page) = get(&config, "/session/Busytools/forge/cli-version").await;
+    assert_eq!(
+        status,
+        reqwest::StatusCode::NOT_FOUND,
+        "a label the project's roster does not hold is a 404 like any other unknown seat",
+    );
+}
+
+/// A slot in the roster whose lead is not running opens its page. It is NOT
+/// a 404: the seat exists, its occupant does not, and the page says which of
+/// the two it is rather than claiming a connection nothing is making.
+#[tokio::test]
+async fn a_sleeping_slot_opens_rather_than_404ing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // dotfiles is declared and nothing has ever run in it: the sleeping
+    // project the home draws a Start row for.
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Personal/dotfiles/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "a sleeping seat renders, it does not 404");
+    assert!(page.contains("not running"), "and says what the seat is: {page}");
+    assert!(
+        !page.contains("connecting"),
+        "without claiming a connection nothing is making: {page}"
+    );
+}
+
+/// A seat whose spawn failed carries the reason the core recorded, which is
+/// the same diagnostic the home renders: a failure mark over a page that
+/// says nothing about the failure is a page that lost it.
+#[tokio::test]
+async fn a_failed_seat_carries_the_reason_the_core_recorded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.fail_spawn("Busytools", "forge", "lead", "the subprocess exited");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "a failed seat is still its own page");
+    assert!(page.contains("the subprocess exited"), "carrying the reason: {page}");
+}
+
+/// The home's project rows link here. Without this the page has no entry
+/// point, and a page nothing points at is one nobody opens.
+#[tokio::test]
+async fn the_home_links_to_the_session_page() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/").await;
+
+    assert!(
+        page.contains("/session/Busytools/forge/lead"),
+        "a project's lead row links into the page: {page}",
+    );
+    assert!(
+        page.contains("/session/Busytools/forge/em-dash-sweep"),
+        "and so does a worker's row, under its own label: {page}",
+    );
+    assert!(
+        page.contains("/session/Personal/dotfiles/lead"),
+        "including the one a project nobody has started carries: {page}",
+    );
+}
+
+/// The three groups render in order, and a needs-you row says what it is
+/// waiting on: the reason is what makes the row actionable without opening
+/// it, and the mark alone only says that something is wrong.
+#[tokio::test]
+async fn the_rail_groups_by_state_and_names_what_is_pending() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_test_pending_interaction(&lead, PendingKind::Question);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    let needs = page.find("needs you").expect("the needs-you group renders");
+    let working = page.find("working").expect("the working group renders");
+    let asleep = page.find("asleep").expect("the asleep group renders");
+    assert!(needs < working, "needs-you precedes working: {page}");
+    assert!(working < asleep, "and working precedes asleep: {page}");
+    assert!(page.contains("asked you a question"), "and the row names what it waits on: {page}");
+}
+
+/// A worker row and a lead row are the same object, so both carry a close
+/// chip: a chip the sheet styles for one and not the other is the defect
+/// this pins.
+#[tokio::test]
+async fn a_worker_row_carries_the_same_close_chip_as_a_lead() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.add_worker("Busytools", "forge", "cli-version").expect("forge is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains("cli-version"), "the worker's row renders: {page}");
+    assert_eq!(
+        page.matches("class=\"x\"").count(),
+        2,
+        "the lead and its worker each carry one close chip: {page}",
+    );
+}
+
+/// The rail marks the session the page is showing, so a reader can see
+/// where in the fleet they are.
+#[tokio::test]
+async fn the_rail_marks_the_current_project() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, busymail) = get(&config, "/session/Busytools/busymail/lead").await;
+    let (_status, _content_type, forge) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        busymail.contains("class=\"pj cur\""),
+        "the project the page shows carries the current mark: {busymail}",
+    );
+    assert!(
+        forge.contains("class=\"pj cur\""),
+        "and so does another's when it is the one being shown: {forge}",
+    );
+    assert_eq!(
+        busymail.matches("class=\"pj cur\"").count(),
+        1,
+        "exactly one project is the current one: {busymail}",
+    );
+}
+
+/// A section renders its summary from real data, and the summary is a
+/// fact rather than a label: a git section with eight changed files says
+/// eight.
+#[tokio::test]
+async fn the_inspector_summarises_from_the_core() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    repo_with(dir.path().join("forge").as_path(), 8);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<span class=\"c2\">main \u{b7} 8 files</span>"),
+        "the section renders with its summary: {page}",
+    );
+    assert!(
+        page.contains("<details class=\"sec\" open>"),
+        "and opens on the changes it holds: {page}",
+    );
+    assert!(page.contains("file-0.txt"), "and the body lists the files behind that count: {page}");
+}
+
+/// A section with nothing behind it renders without inventing content. A
+/// fixture with no connectors configured must not report one connected.
+#[tokio::test]
+async fn an_empty_section_does_not_invent_content() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(!page.contains("workspaces"), "no slack content without slack: {page}");
+    assert!(!page.contains("connected"), "and nothing claims a connection: {page}");
+}
+
+/// The tasks and schedules sections read the project's own store rows, so
+/// what the core holds is what the page lists, under the section's own
+/// counting summary.
+#[tokio::test]
+async fn the_inspector_lists_the_projects_tasks_and_schedules() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.add_cron("forge", "stand-up").expect("forge is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("Sweep the corpus for banned dashes"),
+        "the task the store holds is listed: {page}",
+    );
+    assert!(page.contains("of 1"), "under its own done-of-total summary: {page}");
+    assert!(page.contains("stand-up"), "and so is the project's cron: {page}");
+    assert!(page.contains("recurring"), "named for what kind it is: {page}");
+}
+
+/// The files are grouped by directory even though the scan returns them
+/// ordered by how much each changed: a directory's heading is drawn once,
+/// wherever in that order its files land.
+#[tokio::test]
+async fn the_git_section_groups_a_directory_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    // `a/` holds two files of different sizes with `b/`'s between them, so
+    // the scan's size order is a/wide, b/mid, a/narrow.
+    repo_of_sizes(
+        dir.path().join("forge").as_path(),
+        &[("a/wide.txt", 9), ("b/mid.txt", 5), ("a/narrow.txt", 1)],
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(
+        page.matches("<div class=\"dir\">a/</div>").count(),
+        1,
+        "a directory's heading is drawn once: {page}",
+    );
+    for file in ["wide.txt", "mid.txt", "narrow.txt"] {
+        assert!(page.contains(file), "{file} is listed: {page}");
+    }
+}
+
+/// The section's summary counts what its own body lists, so a file the
+/// body does not carry cannot inflate the count into a truncation note
+/// that is not true.
+#[tokio::test]
+async fn the_git_section_summary_counts_what_it_lists() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    let repo = dir.path().join("forge");
+    repo_with(repo.as_path(), 3);
+    // Untracked, so the working tree's own count includes it and the diff
+    // the section lists cannot.
+    std::fs::write(repo.join("untracked.txt"), "new\n").expect("write");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains("3 files"), "the summary counts the three it lists: {page}");
+    assert!(!page.contains("4 files"), "and not the untracked one it cannot: {page}");
+    assert_eq!(page.matches("<div class=\"file\">").count(), 3, "three files are listed: {page}");
+}
+
+/// A clean tree with no pull request has nothing to open on, so the section
+/// leads the inspector closed rather than open and empty.
+#[tokio::test]
+async fn a_git_section_with_nothing_behind_it_starts_closed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    let repo = dir.path().join("forge");
+    repo_with(repo.as_path(), 3);
+    git(repo.as_path(), &["checkout", "--", "."]);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("href=\"#i-git\""),
+        "the section is still there, with its own icon: {page}",
+    );
+    assert!(
+        !page.contains("<details class=\"sec\" open>"),
+        "and carries nothing to open on: {page}",
+    );
+}
+
+/// The mockup, read here rather than by a human: it is the specification the
+/// page is built from, and a pin against it is the mechanical form of "the
+/// mockup wins".
+const MOCK: &str = include_str!("../../../docs/mockups/web-session.html");
+
+/// The `<symbol>` elements of a document, by id, carrying their attribute
+/// text. Enough to catch a hand-copied sprite drifting: a path or an
+/// attribute that differs fails, and the id names which one.
+fn symbols(html: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for chunk in html.split("<symbol ").skip(1) {
+        let Some((attrs, _)) = chunk.split_once("</symbol>") else {
+            continue;
+        };
+        let Some(id) = attrs.split("id=\"").nth(1).and_then(|rest| rest.split('"').next()) else {
+            continue;
+        };
+        out.insert(id.to_owned(), attrs.trim_end().to_owned());
+    }
+    out
+}
+
+/// The `--fs-*` tokens a stylesheet declares, by name.
+fn scale_tokens(css: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let without_comments = css
+        .split("/*")
+        .enumerate()
+        .map(|(nth, chunk)| {
+            if nth == 0 {
+                chunk.to_owned()
+            } else {
+                chunk.split_once("*/").map_or(String::new(), |(_, rest)| rest.to_owned())
+            }
+        })
+        .collect::<String>();
+    for declaration in without_comments.split(';') {
+        let Some((key, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.starts_with("--fs-") {
+            out.insert(key.to_owned(), value.trim().to_owned());
+        }
+    }
+    out
+}
+
+/// Every symbol the mockup defines is the symbol the page draws, attribute
+/// for attribute. The sprite is a hand-copied block with nothing else
+/// comparing it, which is how a stroke width drifted once already.
+#[tokio::test]
+async fn the_sprite_is_the_mocks_sprite() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    let want = symbols(MOCK);
+    let got = symbols(&page);
+
+    assert!(!want.is_empty(), "the mockup's sprite is what this pins the page against");
+    assert_eq!(got.len(), want.len(), "the page draws every symbol the mockup defines");
+    for (id, attrs) in &want {
+        assert_eq!(got.get(id).map(String::as_str), Some(attrs.as_str()), "the page's {id}");
+    }
+}
+
+/// The sheet's type scale is the mockup's, token for token: the scale is
+/// what a page's text says a thing is, and the mockup is where it was
+/// settled.
+#[tokio::test]
+async fn the_type_scale_is_the_mocks() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    let want = scale_tokens(MOCK);
+    let got = scale_tokens(&sheet);
+
+    assert!(!want.is_empty(), "the mockup declares the scale this pins the sheet against");
+    for (token, value) in &want {
+        assert_eq!(got.get(token).map(String::as_str), Some(value.as_str()), "the sheet's {token}");
+    }
+}
+
+/// A worker's own page is served, not only its lead's: the home links
+/// every row it draws, and a link into a 404 is worse than no link.
+#[tokio::test]
+async fn a_workers_own_page_serves() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) =
+        get(&config, "/session/Busytools/forge/em-dash-sweep").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "a worker's seat is a page too");
+    assert!(
+        page.contains("<span class=\"nm\">em-dash-sweep</span>"),
+        "and the header names the worker rather than its project: {page}",
+    );
+}
+
+/// A project's name can hold a slash - the mock's own roster has one - so
+/// the route's segment escaping has to survive the round trip: the home
+/// links the escaped form, and the route decodes it back to one segment.
+#[tokio::test]
+async fn a_project_name_with_a_slash_addresses_the_page() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Personal", &["companies/steward"])])
+        .expect("the fleet builds");
+    fleet.start("Personal", "companies/steward").expect("the project is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) =
+        get(&config, "/session/Personal/companies%2Fsteward/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "the escaped name addresses one segment: {page}");
+    assert!(page.contains("companies/steward"), "and the page names the project: {page}");
+
+    let (_status, _content_type, home) = get(&config, "/").await;
+    assert!(
+        home.contains("/session/Personal/companies%2Fsteward/lead"),
+        "the home links the escaped form: {home}",
+    );
+}
+
+/// A repository at `dir` with one commit and `changed` tracked files moved
+/// in it. `git init -b` needs git 2.28 and CI runs 2.25, so HEAD is
+/// pointed by `symbolic-ref` instead.
+fn repo_with(dir: &Path, changed: usize) {
+    git(dir, &["init", "-q"]);
+    git(dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    git(dir, &["config", "user.email", "t@e.com"]);
+    git(dir, &["config", "user.name", "T"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    for n in 0..changed {
+        std::fs::write(dir.join(format!("file-{n}.txt")), "one\n").expect("write");
+    }
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "init"]);
+    for n in 0..changed {
+        std::fs::write(dir.join(format!("file-{n}.txt")), "one\ntwo\n").expect("modify");
+    }
+}
+
+/// A repository at `dir` whose one commit carries `files`, each then grown
+/// by its own number of lines: the scan orders its list by total changes,
+/// so the sizes decide the order the section meets them in.
+fn repo_of_sizes(dir: &Path, files: &[(&str, usize)]) {
+    git(dir, &["init", "-q"]);
+    git(dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    git(dir, &["config", "user.email", "t@e.com"]);
+    git(dir, &["config", "user.name", "T"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    for (path, _) in files {
+        let file = dir.join(path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).expect("a directory for the file");
+        }
+        std::fs::write(&file, "one\n").expect("write");
+    }
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "init"]);
+    for (path, added) in files {
+        std::fs::write(dir.join(path), format!("one\n{}", "grown\n".repeat(*added))).expect("grow");
+    }
+}
+
+/// Spawn git the way the product does, scrub included: a fixture that
+/// skipped the scrub answers about a foreign repository when the suite
+/// runs under a git hook.
+fn git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
 /// A port something else holds is an error rather than a silent no-op:

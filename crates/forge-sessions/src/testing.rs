@@ -15,10 +15,11 @@ use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
 use forge_primitives::tasks::{Task, TaskStatus};
+use forge_primitives::{CronEntry, CronId, CronKind};
 use forge_workspace::{ProjectKey, Workspace};
 
 use crate::SessionUpdate;
-use crate::surface::ViewSurface;
+use crate::surface::{PendingKind, ViewSurface};
 
 /// What a fixture hands back when it cannot build what was asked for.
 pub type FixtureError = Box<dyn std::error::Error + Send + Sync>;
@@ -96,6 +97,23 @@ impl Fleet {
         Ok(())
     }
 
+    /// Give `slot` the core's own record of a spawn that failed, as the
+    /// connection-failure path leaves one.
+    pub fn fail_spawn(&self, org: &str, project: &str, label: &str, reason: &str) {
+        let slot = if label == "lead" {
+            SessionSlot::lead(org, project)
+        } else {
+            SessionSlot::worker(org, project, label)
+        };
+        self.workspace.record_spawn_failure_for_test(&slot, reason);
+    }
+
+    /// Hold `slot` on a pending interaction, the way a session that has
+    /// asked a person for something reads.
+    pub fn seed_test_pending_interaction(&self, slot: &SessionSlot, kind: PendingKind) {
+        self.workspace.seed_test_pending_interaction(slot, kind);
+    }
+
     /// Declare a task under `project`, held by the session labelled
     /// `owner`.
     pub fn add_task(
@@ -118,6 +136,23 @@ impl Fleet {
             estimate: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+        Ok(())
+    }
+
+    /// Declare a durable cron under `project`, firing a day out so a view
+    /// renders it as a schedule rather than as an overdue one.
+    pub fn add_cron(&self, project: &str, prompt: &str) -> Result<(), FixtureError> {
+        self.workspace.seed_test_cron(CronEntry {
+            id: CronId::from(prompt),
+            project_name: project.to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: prompt.to_owned(),
+            description: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
+            team_role: None,
         });
         Ok(())
     }

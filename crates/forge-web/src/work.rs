@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use forge_primitives::SessionSlot;
-use forge_primitives::git_diff::RepoGate;
+use forge_primitives::git_diff::{GitDiffSnapshot, RepoGate};
 use forge_sessions::git_diff;
 
 /// How long a read answers for. Everything inside the window is served
@@ -68,6 +68,11 @@ struct Entry {
     /// The last read, `None` until the first one lands.
     state: Option<WorkState>,
     read_at: Instant,
+    /// The full scan the inspector draws: the files behind the count, and
+    /// the open PR. Its own window, because it runs more of git than the
+    /// row's own read does.
+    diff: Option<GitDiffSnapshot>,
+    diff_read_at: Instant,
     /// Held across a refresh so two callers for one slot do not both probe
     /// the same tree.
     refreshing: Arc<tokio::sync::Mutex<()>>,
@@ -79,6 +84,8 @@ impl Entry {
             cwd: cwd.to_owned(),
             state: None,
             read_at: Instant::now(),
+            diff: None,
+            diff_read_at: Instant::now(),
             refreshing: Arc::default(),
         }
     }
@@ -130,6 +137,38 @@ impl WorkCache {
         entry.state = Some(state.clone());
         entry.read_at = Instant::now();
         state
+    }
+
+    /// The full scan of `cwd`'s working tree, at most `REFRESH_INTERVAL`
+    /// old. A view drawing the detail reads this; the row's own line reads
+    /// [`Self::snapshot`], and the two share a slot's entry so neither
+    /// holds a second opinion about which tree the slot is in.
+    pub async fn diff(&self, slot: &SessionSlot, cwd: &Path) -> GitDiffSnapshot {
+        let refreshing = {
+            let mut entries = self.entries();
+            Arc::clone(&entries.entry(slot.clone()).or_insert_with(|| Entry::new(cwd)).refreshing)
+        };
+        let _refreshing = refreshing.lock().await;
+        {
+            let entries = self.entries();
+            if let Some(diff) = entries
+                .get(slot)
+                .filter(|entry| entry.cwd == cwd && entry.diff_read_at.elapsed() < REFRESH_INTERVAL)
+                .and_then(|entry| entry.diff.as_ref())
+            {
+                return diff.clone();
+            }
+        }
+        // The previous scan rides along so the PR lookup is reused rather
+        // than repeated: the scan rate-limits its own lookups on it.
+        let prev = self.entries().get(slot).and_then(|entry| entry.diff.clone());
+        let diff = git_diff::scan(cwd, prev.as_ref()).await;
+        let mut entries = self.entries();
+        let entry = entries.entry(slot.clone()).or_insert_with(|| Entry::new(cwd));
+        cwd.clone_into(&mut entry.cwd);
+        entry.diff = Some(diff.clone());
+        entry.diff_read_at = Instant::now();
+        diff
     }
 
     /// A panicking task must not take the cache with it: the map holds no

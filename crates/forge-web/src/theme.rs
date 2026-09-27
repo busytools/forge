@@ -77,9 +77,25 @@ mod tests {
     /// inverse of what the test is for.
     #[test]
     fn every_token_the_stylesheet_reads_resolves() {
-        let sheet = include_str!("home.css");
-        // The five the sheet defines for itself: layout, not palette.
-        let local = ["--ui", "--mono", "--r", "--cols", "--pad"];
+        let sheet = include_str!("web.css");
+        // The ones the sheet defines for itself: layout and type, not
+        // palette.
+        let local = [
+            "--ui",
+            "--mono",
+            "--r",
+            "--cols",
+            "--pad",
+            "--fs-prose",
+            "--fs-base",
+            "--fs-group",
+            "--fs-data",
+            "--fs-label",
+            "--fs-title",
+            "--ins",
+            "--rail-l",
+            "--rail-r",
+        ];
         let resolved = root_variables(None);
 
         let mut reads: Vec<&str> = sheet

@@ -1,0 +1,549 @@
+/* The web view's one stylesheet, which both pages link: the home from
+   docs/mockups/web-home.html and the session page from
+   docs/mockups/web-session.html. The palette is not here: the server
+   injects it as the page's own :root from [web] theme, so a theme is one
+   place to change, and a second copy of a row, a mark or a palette is the
+   defect rule 21 names. */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, Menlo, monospace;
+  --r: 10px;
+  /* One type scale, anchored on the home: 15.5 is its body and 13.5 its
+     mono, so nothing here goes below what that surface already uses. Prose
+     is what you read, a row is data, and a label sits on data. */
+  --fs-prose: 17px; --fs-base: 15.5px; --fs-group: 15.5px;
+  --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
+  --ins: 10px; --rail-l: 312px; --rail-r: 366px;
+  /* one line per entity: state | name | where | what | when.
+     no action column - the whole row is the target.
+     name and where are capped because their content is short; the surplus
+     width past the cap goes to the task column, which is the only one
+     whose content is long. */
+  --cols: 13px minmax(0, 22rem) minmax(0, 20rem) minmax(0, 1fr) 74px;
+  --pad: 16px;
+}
+
+html, body { height: 100%; }
+body {
+  background:
+    radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+    radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: 15.5px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The full width, not a centred measure: the row's columns carry real
+   content and a browser has the room a terminal does not. */
+.wrap { padding: 30px 40px 64px; }
+
+/* ---------- header ---------- */
+
+header.top {
+  display: flex; align-items: center; gap: 14px;
+  padding-bottom: 18px; margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand .mark { width: 30px; height: 30px; flex: 0 0 30px; color: var(--accent); }
+.brand .mark svg { display: block; width: 100%; height: 100%; }
+.brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+.versions { font-family: var(--mono); font-size: 13.5px; color: var(--dim); }
+.versions b { color: var(--muted); font-weight: 500; }
+/* The installed version is context; an available update is something to
+   act on, so it carries the amber the TUI uses for the same notice. */
+.versions .upd { color: var(--warn); }
+.totals { margin-left: auto; font-family: var(--mono); font-size: 13.5px; color: var(--muted); }
+.totals .n { color: var(--text); font-weight: 600; }
+
+/* ---------- system band ---------- */
+
+.band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+.svc {
+  background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 12px 14px;
+}
+.svc .k {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--dim); margin-bottom: 7px;
+}
+.svc .v { font-family: var(--mono); font-size: 15px; color: var(--text); }
+.svc .sub { font-family: var(--mono); font-size: 13px; color: var(--dim); margin-top: 4px; }
+.svc.warn { border-color: rgba(201,161,59,.35); }
+.svc.warn .v { color: var(--warn); }
+.svc.bad { border-color: rgba(224,104,62,.4); }
+.svc.bad .v { color: var(--bad); }
+.svc.off { opacity: .72; }
+
+/* The mock's upstream banner is not here: it hangs on a status probe the
+   TUI runs once, before a browser can attach, so on the web it could only
+   ever show a notice under a label it does not own. It comes back with a
+   read over a stored probe result. */
+
+/* ---------- the state mark: one shape per meaning, never colour alone ----------
+   Shared by the rail, the session header and the home's rows, so a state
+   that needs a new shape adds an arm here rather than a mark of its own. */
+
+.dot { width: 11px; height: 11px; flex: 0 0 11px; }
+.dot.live { border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 900ms linear infinite; }
+.dot.idle { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--accent); }
+.dot.unseen { background: var(--ok); clip-path: polygon(50% 2%, 98% 50%, 50% 98%, 2% 50%); }
+.dot.needs { background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%);
+  animation: pulse 1500ms ease-in-out infinite; }
+.dot.off { width: 9px; height: 9px; flex: 0 0 9px; border: 1.4px solid var(--dim); border-radius: 50%; }
+.dot.failed { background: var(--bad);
+  clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
+
+/* The work spinner is the RING: the mark for work in flight, wherever it
+   is drawn. */
+.ring { width: 10px; height: 10px; display: inline-block; border-radius: 50%;
+  border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
+  animation: spin 900ms linear infinite; }
+
+/* The system band's marks are flat discs: a card says how a service is,
+   not what state a session is in. Sized down from the shared mark, and
+   reset so none of its shapes reach here. */
+.band .dot {
+  width: 7px; height: 7px; flex: 0 0 7px; border: 0; border-radius: 50%;
+  background: none; box-shadow: none; opacity: 1; animation: none;
+}
+.band .dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
+.band .dot.off { background: var(--dim); }
+.band .dot.bad { background: var(--bad); box-shadow: 0 0 7px rgba(224,104,62,.5); }
+.band .dot.warn { background: var(--warn); }
+
+/* the mark inside a row: the shared shapes, with the row's own reset so a
+   state that is not a ring cannot inherit the ring's border or spin. */
+.row .dot {
+  width: 11px; height: 11px; flex: 0 0 11px;
+  border: 0; border-radius: 0; background: none; box-shadow: none; opacity: 1;
+  animation: none;
+}
+.row.running .dot, .row.spawning .dot {
+  border-radius: 50%;
+  animation: spin 900ms linear infinite;
+}
+.row.running .dot { border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent); }
+.row.spawning .dot {
+  border: 1.6px solid rgba(93,102,117,.45);
+  border-top-color: var(--muted);
+  animation-duration: 1500ms;
+}
+.row.idle .dot {
+  width: 7px; height: 7px; flex: 0 0 7px;
+  border-radius: 50%; background: var(--accent);
+}
+.row.asleep .dot, .row.never .dot {
+  width: 9px; height: 9px; flex: 0 0 9px;
+  border: 1.4px solid var(--dim); border-radius: 50%;
+}
+.row.never .dot { opacity: .55; }
+.row.failed .dot {
+  width: 10px; height: 10px; flex: 0 0 10px; background: var(--bad);
+  clip-path: polygon(16% 0, 50% 34%, 84% 0, 100% 16%, 66% 50%, 100% 84%,
+                     84% 100%, 50% 66%, 16% 100%, 0 84%, 34% 50%, 0 16%);
+}
+.row.needs .dot, .row.auth .dot {
+  width: 11px; height: 11px; flex: 0 0 11px;
+  clip-path: polygon(50% 3%, 97% 95%, 3% 95%);
+  animation: pulse 1500ms ease-in-out infinite;
+}
+.row.needs .dot { background: var(--warn); }
+.row.auth .dot { background: var(--bad); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .dot.live, .ring { animation: none; border-color: var(--accent); }
+  .dot.needs { animation: none; }
+  .row.running .dot { animation: none; border-color: var(--accent); }
+  .row.spawning .dot { animation: none; border-color: var(--muted); }
+  .row.needs .dot, .row.auth .dot { animation: none; }
+}
+
+/* ---------- org: a label and a hairline. no container anywhere ---------- */
+
+/* Scoped to the section: `.org` is also the rail's own name for a
+   project's org label, which is a span on a row and owes this none. */
+section.org { margin-bottom: 30px; }
+section.org > h2 {
+  display: flex; align-items: baseline; gap: 10px;
+  font-size: 12.5px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
+  color: var(--muted); padding: 0 0 8px;
+}
+section.org > h2 .rule { flex: 1; height: 1px; background: var(--line); }
+section.org > h2 .counts {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+  text-transform: none; color: var(--dim); font-weight: 400;
+}
+
+.list { list-style: none; }
+.list .node { border-top: 1px solid rgba(34,42,60,.55); }
+.list > .node:first-child { border-top: 0; }
+
+/* ---------- the row: one line, same for a lead and for a worker ---------- */
+
+.row {
+  display: grid; grid-template-columns: var(--cols);
+  align-items: center; gap: 12px;
+  padding: 11px 24px 11px 2px;
+  position: relative;
+  cursor: pointer;
+}
+/* The row goes somewhere, so it says so: a hover ground and a chevron the
+   stretch below does not carry. */
+.row:hover { background: rgba(27,33,48,.42); }
+.row::after {
+  content: "\203A"; position: absolute; right: 6px; top: 50%;
+  transform: translateY(-50%); font-size: 15px; line-height: 1;
+  color: var(--accent); opacity: 0; transition: opacity .12s ease;
+}
+.row:hover::after { opacity: .75; }
+/* A row with a state of its own colours the chevron the way it colours the
+   name: the mark on the right is the same signal as the one on the left. */
+.row.failed::after { color: var(--bad); }
+.row.needs::after { color: var(--warn); }
+.row.auth::after { color: var(--bad); }
+/* Not the mock's `display: flex`: the row's mark is a grid sibling, not a
+   child, so the flex only stops the text from ellipsising - and a name
+   like `pure-black-github-intellij` has to shorten rather than clip. */
+.row .name {
+  min-width: 0; font-size: 15.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The whole row is the target: the name's anchor stretches over it, so a
+   click anywhere on the row goes where the name goes, and the row keeps one
+   anchor rather than nesting a second one where it carries an artifact. */
+.row .name a { color: inherit; text-decoration: none; }
+.row .name a::after { content: ""; position: absolute; inset: 0; }
+.row .name a:hover { text-decoration: underline; }
+/* Anything else clickable inside the row sits above that stretch. */
+.row .what a { position: relative; z-index: 1; }
+.row .where, .row .when {
+  font-family: var(--mono); font-size: 13.5px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row .when { text-align: right; }
+.row .where .files { color: var(--muted); }
+
+/* what it is doing: its task when there is one, and its artifact */
+.row .what {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  font-size: 14px; color: var(--muted);
+}
+.row .what .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.row .what .st {
+  font-family: var(--mono); font-size: 10.5px; color: var(--dim);
+  border: 1px solid var(--line); border-radius: 99px; padding: 0 7px; flex: none;
+}
+.row .what a {
+  font-family: var(--mono); font-size: 11.5px; color: var(--accent);
+  text-decoration: none; flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row .what a:hover { text-decoration: underline; }
+
+.row.running .name, .row.idle .name, .row.spawning .name { font-weight: 600; }
+
+.row.asleep .name { color: var(--muted); font-weight: 400; }
+.row.asleep .where, .row.asleep .what { opacity: .6; }
+
+.row.never .name { color: var(--dim); font-weight: 400; }
+.row.never .where, .row.never .what, .row.never .when { opacity: .45; }
+
+/* finished, and you have not looked at it: the one state that answers
+   "what changed while I was away". a diamond, so it is a third shape. */
+.row.unseen .dot {
+  width: 11px; height: 11px; flex: 0 0 11px; background: var(--ok);
+  clip-path: polygon(50% 2%, 98% 50%, 50% 98%, 2% 50%);
+}
+.row.unseen .what { color: var(--ok); }
+
+.row.failed { background: rgba(224,104,62,.055); }
+.row.failed .name { color: var(--bad); font-weight: 600; }
+.row.failed .where, .row.failed .what { color: var(--bad); }
+
+/* needs you: the one state that has to be impossible to miss */
+.row.needs { background: rgba(201,161,59,.075); }
+.row.needs .name { color: var(--warn); font-weight: 600; }
+.row.needs .what { color: var(--warn); }
+
+/* sign-in needed is the same family as needs-you, one step harder */
+.row.auth { background: rgba(224,104,62,.06); }
+.row.auth .name { color: var(--bad); font-weight: 600; }
+.row.auth .what { color: var(--bad); }
+
+/* hierarchy: an indent and nothing else. every other column stays put. */
+.children { list-style: none; }
+.children .row .name { padding-left: 22px; }
+
+/* Scoped to the home's own list: `.note` is a session-page component too,
+   and the row's failure line is not what that one draws. */
+section.org .note {
+  font-family: var(--mono); font-size: 13px; color: var(--bad);
+  padding: 0 var(--pad) 9px 30px;
+}
+.children .note { padding-left: 52px; }
+
+/* ---------- nothing configured: a fresh install ---------- */
+
+.empty {
+  border: 1px dashed var(--line); border-radius: var(--r);
+  padding: 46px 24px; text-align: center;
+}
+.empty .mark {
+  display: inline-block; width: 34px; height: 34px;
+  margin-bottom: 14px; color: rgba(244,118,0,.55);
+}
+.empty .mark svg { display: block; width: 100%; height: 100%; }
+.empty .t { font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+.empty .d { font-size: 12.5px; color: var(--dim); max-width: 46ch; margin: 0 auto; }
+.empty code {
+  font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  background: var(--s2); border: 1px solid var(--line);
+  border-radius: 4px; padding: 1px 5px;
+}
+
+/* ---------- the session page: three columns over one sheet ----------
+   Taken from the mock at docs/mockups/web-session.html. A pane collapses
+   to nothing, and the handle that brings it back lives in the chat header
+   rather than on the pane's edge, so a collapsed column leaves no edge
+   behind and its control stays clickable. */
+
+.mono { font-family: var(--mono); }
+/* One icon rule for the whole page: a sprite reference inherits the colour
+   of whatever row it sits in, so nothing draws its own. */
+.ic { width: 15px; height: 15px; flex: 0 0 15px; display: block; }
+/* One chevron, turned by the open state, on every disclosure on the page. */
+.arw { transition: transform .12s ease; }
+details[open] > summary .arw { transform: rotate(90deg); }
+.dim { color: var(--dim); }
+
+.app {
+  display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr) var(--rail-r);
+  gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden;
+  font-size: var(--fs-prose);
+}
+/* checked is COLLAPSED */
+#l:checked ~ .app { --rail-l: 0px; }
+#r:checked ~ .app { --rail-r: 0px; }
+#l:checked ~ .app .rail.left, #r:checked ~ .app .rail.right { display: none; }
+.pane-tog { display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
+  color: var(--muted); border: 1px solid transparent; }
+.pane-tog:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
+.pane-tog svg { width: 16px; height: 16px; display: block; }
+/* Both handles sit with the title on a phone; on a wide screen the
+   inspector's goes to the far right, past the facts. */
+.sess .tog-r { order: 99; }
+#l:checked ~ .app .pane-tog.tog-l, #r:checked ~ .app .pane-tog.tog-r {
+  color: var(--accent); background: rgba(244,118,0,.1); border-color: rgba(244,118,0,.3); }
+
+.rail { display: flex; flex-direction: column; overflow: hidden; border-radius: 16px;
+  border: 1px solid rgba(34,42,60,.9);
+  background: linear-gradient(180deg, rgba(20,25,38,.62), rgba(9,12,20,.74));
+  backdrop-filter: blur(14px) saturate(120%);
+  box-shadow: 0 18px 48px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.03); }
+/* An appearing scrollbar must not shift the layout under the pointer. */
+.rail .scroll { overflow-y: auto; flex: 1; padding: 0 8px 12px; scrollbar-gutter: stable; }
+.rail .scroll::-webkit-scrollbar { width: 8px; }
+.rail .scroll::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+.rail .scroll::-webkit-scrollbar-track { background: transparent; }
+.banner { display: flex; align-items: center; gap: 8px; padding: 13px 12px 9px; }
+.banner .t { font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--accent); }
+.banner .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.banner .n.ml { margin-left: auto; }
+
+/* The chat column. min-height:0 or the column refuses to shrink below its
+   content and the composer is pushed past the viewport, where
+   overflow:hidden eats it. */
+main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.sess { display: flex; align-items: center; gap: 12px; padding: 2px 0 12px;
+  flex-wrap: wrap; row-gap: 8px; }
+.sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; }
+.sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable; }
+.conv::-webkit-scrollbar { width: 8px; }
+.conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+.conv::-webkit-scrollbar-track { background: transparent; }
+/* ---------- projects: three state groups, one row shape ---------- */
+
+.state { padding: 12px 8px 4px; font-size: var(--fs-label); font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+.state.needs { color: var(--warn); }
+.pj { border-radius: 10px; margin: 1px 0; }
+.pj:hover { background: rgba(27,33,48,.5); }
+.pj.cur { background: rgba(244,118,0,.1); box-shadow: inset 0 0 0 1px rgba(244,118,0,.35); }
+.pr { display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; }
+.pr .nm { font-size: var(--fs-base); font-weight: 600; flex: none; white-space: nowrap; }
+.pr .org { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
+  font-family: var(--mono); font-size: var(--fs-data); line-height: 1.5;
+  border-radius: 5px; padding: 0 5px; cursor: pointer; }
+.pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
+.pj.cur .pr .nm { color: var(--accent); }
+.wk { display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 34px; cursor: pointer; }
+.wk:hover { background: rgba(27,33,48,.4); border-radius: 0 8px 8px 0; }
+.wk .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A worker's mark is a step down from its project's: the size is what makes
+   the indent read as nesting rather than as another project. */
+.wk .dot { width: 8px; height: 8px; flex: 0 0 8px; }
+/* The reason a row is in this group, on every row that has one. */
+.why { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+  padding: 0 10px 6px 34px; display: flex; align-items: center; gap: 7px; }
+.why.bad { color: var(--bad); }
+.rail .nm a { color: inherit; text-decoration: none; }
+.rail .nm a:hover { text-decoration: underline; }
+/* A chip that cannot be clicked yet says so rather than turning red under
+   the pointer, which would promise the click. */
+.pj:hover .pr .x[aria-disabled="true"], .wk:hover .x[aria-disabled="true"] {
+  color: var(--muted); background: none;
+}
+.x[aria-disabled="true"] { opacity: .4; cursor: default; }
+
+/* a line whose work is in flight, the ring in front of it */
+.hold { display: flex; align-items: center; gap: 9px; color: var(--accent);
+  font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
+.hold .sub { color: var(--dim); }
+/* A seat nothing is running on is not work in flight: it says so quietly. */
+.hold.off { color: var(--muted); }
+
+/* ---------- inspector: one collapsed section per subject ---------- */
+
+/* the two sides of a count that moves, wherever the count is drawn */
+.pm { color: var(--ok); }
+.mm { color: var(--bad); }
+
+.sec { border-bottom: 1px solid rgba(34,42,60,.55); }
+.sec:last-child { border-bottom: 0; }
+details.sec > summary { list-style: none; display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px; font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--muted); cursor: pointer; }
+details.sec > summary::-webkit-details-marker { display: none; }
+details.sec > summary:hover { background: rgba(27,33,48,.4); }
+details.sec > summary .gl { color: var(--dim); }
+details.sec > summary .c2 { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
+  font-style: italic; letter-spacing: 0; text-transform: none; font-weight: 400;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.sec > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
+details.sec[open] > summary { border-bottom: 1px solid var(--line); }
+details.sec[open] > summary .arw { color: var(--accent); }
+.sb { padding: 10px 14px 14px; }
+/* Stacked rows in a section body: a little air between the facts, none
+   before the first. */
+.sb .kv + .kv { padding-top: 6px; }
+
+.sb .dir { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 5px 0 1px; }
+.sb .file { display: flex; align-items: center; gap: 8px; padding: 2px 0;
+  font-family: var(--mono); font-size: var(--fs-data); }
+.sb .file .p { color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.sb .file .pm { margin-left: auto; }
+
+/* one task: a rule down its left, in the colour of its state */
+.sb .tk { display: flex; align-items: flex-start; gap: 9px; padding: 5px 0; }
+.sb .tk .b { width: 3px; align-self: stretch; border-radius: 99px; background: var(--s3);
+  flex: none; }
+.sb .tk.now .b { background: var(--accent); }
+.sb .tk.done .b { background: var(--ok); }
+.sb .tk.blocked .b { background: var(--warn); }
+.sb .tk .s { font-size: var(--fs-base); color: var(--muted); }
+.sb .tk.done .s { color: var(--dim); text-decoration: line-through; }
+.sb .tk .meta { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); margin-top: 1px; }
+.sb .tk .meta b { color: var(--muted); font-weight: 500; }
+
+/* the account chip, and the popover it opens on what the poller knows */
+details.acct { position: relative; }
+details.acct > summary { list-style: none; cursor: pointer; display: flex; align-items: center;
+  gap: 7px; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 99px; padding: 2px 11px; }
+details.acct > summary::-webkit-details-marker { display: none; }
+details.acct > summary:hover { border-color: #2e3850; color: var(--text); }
+details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--accent); }
+.pop { position: absolute; right: 0; top: calc(100% + 10px); width: 320px; z-index: 20;
+  background: var(--s1); border: 1px solid rgba(34,42,60,.95); border-radius: 14px;
+  padding: 13px 15px; box-shadow: 0 24px 60px rgba(0,0,0,.6);
+  text-transform: none; letter-spacing: 0; }
+.pop .hd { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+.pop .hd .nm { font-size: var(--fs-group); font-weight: 650; color: var(--accent); }
+.pop .hd .st { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--ok); }
+.pop .hd .st.wait { color: var(--warn); }
+.pop .hd .st.bad { color: var(--bad); }
+.kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
+  font-family: var(--mono); font-size: var(--fs-data); }
+/* A key can be a task subject or a cron prompt, so it shortens rather
+   than pushing its value out of the rail. */
+.kv .k { color: var(--dim); min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.kv .v { color: var(--muted); text-align: right; }
+.kv .v.a { color: var(--accent); }
+.pop hr { border: 0; height: 1px; background: var(--line); margin: 9px 0 7px; }
+.bar { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
+.bar .lb { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); width: 26px; }
+.bar .tk { flex: 1; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+.bar .fl { height: 100%; background: var(--accent); }
+.bar .pc { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); width: 34px;
+  text-align: right; }
+.bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px;
+  text-align: right; }
+
+/* ---------- narrow: the session page loses its columns ----------
+   Below 1280 the inspector stops being a column and becomes a sheet over
+   the chat when its handle asks for it, so the handle the header draws is
+   never a control that does nothing. */
+
+@media (max-width: 1280px) {
+  .app { grid-template-columns: var(--rail-l) minmax(0,1fr); }
+  .rail.right { display: none; }
+  #r:checked ~ .app .rail.right {
+    display: flex; position: fixed; inset: 0; z-index: 40; border-radius: 0;
+  }
+}
+
+@media (max-width: 980px) {
+  .app { grid-template-columns: minmax(0,1fr); }
+  .sess { flex-wrap: wrap; gap: 8px; }
+  .sess .facts { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
+  .sess .tog-r { order: 0; }
+  .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
+  .rail.left, .rail.right { display: none; }
+  #l:checked ~ .app .rail.left { display: flex; }
+  #r:checked ~ .app .rail.right { display: flex; }
+  #l:checked ~ .app, #r:checked ~ .app { --rail-l: 0px; --rail-r: 0px; }
+}
+
+/* ---------- narrow: a phone is a client too ---------- */
+
+@media (max-width: 760px) {
+  :root { --pad: 14px; }
+  .wrap { padding: 18px 16px 56px; }
+  header.top { flex-wrap: wrap; gap: 8px 12px; }
+  .totals { margin-left: 0; width: 100%; }
+  .band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  section.org > h2 .counts { display: none; }
+  .row {
+    grid-template-columns: 12px minmax(0, 1fr) 62px;
+    row-gap: 3px; padding: 9px 18px 9px 2px;
+  }
+  .row .dot   { grid-column: 1; grid-row: 1; }
+  .row .name  { grid-column: 2; grid-row: 1; }
+  .row .when  { grid-column: 3; grid-row: 1; }
+  .row .where { grid-column: 2 / 4; grid-row: 2; }
+  .row .what  { grid-column: 2 / 4; grid-row: 3; }
+  .children .row .name { padding-left: 14px; }
+}

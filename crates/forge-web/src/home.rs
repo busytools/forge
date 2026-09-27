@@ -17,7 +17,6 @@ use forge_sessions::surface::{
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::brand;
-use crate::server::root_block;
 use crate::stream::Live;
 use crate::unseen::Unseen;
 use crate::work::{Gate, WorkCache, WorkState};
@@ -109,6 +108,8 @@ pub struct ProjectRows {
 
 /// One row: the same shape for a lead and for a worker.
 pub struct Row {
+    /// The seat the row draws, which is what its link addresses.
+    pub slot: SessionSlot,
     pub state: State,
     pub name: String,
     /// The branch the agent's tree is on, and how much has moved in it.
@@ -143,18 +144,22 @@ pub struct TaskCell {
 }
 
 /// What a row starts from, before its working tree is read.
-struct Seed<'a> {
-    slot: &'a SessionSlot,
-    name: String,
-    state: State,
-    pending: Option<PendingKind>,
-    reason: Option<String>,
-    task: Option<&'a Task>,
-    last_activity: Option<SystemTime>,
+pub(crate) struct Seed<'a> {
+    pub(crate) slot: &'a SessionSlot,
+    pub(crate) name: String,
+    pub(crate) state: State,
+    pub(crate) pending: Option<PendingKind>,
+    pub(crate) reason: Option<String>,
+    pub(crate) task: Option<&'a Task>,
+    pub(crate) last_activity: Option<SystemTime>,
 }
 
 impl Seed<'_> {
-    fn from_agent<'a>(agent: &'a AgentRow, task: Option<&'a Task>, unseen: &Unseen) -> Seed<'a> {
+    pub(crate) fn from_agent<'a>(
+        agent: &'a AgentRow,
+        task: Option<&'a Task>,
+        unseen: &Unseen,
+    ) -> Seed<'a> {
         Seed {
             slot: &agent.slot,
             name: agent.label.clone(),
@@ -167,6 +172,30 @@ impl Seed<'_> {
     }
 }
 
+/// The seed a project nobody has started gets: asleep if anything ever ran
+/// in it, never-started if nothing has. The two draw differently, and a
+/// forge restart leaves every project in the first case, so reading the
+/// lifecycle alone would call the whole fleet new.
+pub(crate) fn dormant_seed(
+    slot: &SessionSlot,
+    name: String,
+    last_ran: Option<SystemTime>,
+) -> Seed<'_> {
+    Seed {
+        slot,
+        name,
+        state: if last_ran.is_some() {
+            State::Lifecycle(SessionLifecycleState::Sleeping)
+        } else {
+            State::NeverStarted
+        },
+        pending: None,
+        reason: None,
+        task: None,
+        last_activity: last_ran,
+    }
+}
+
 /// What an agent's row draws. Two promotions the core does not make, both
 /// about what the mark means rather than what the session is:
 ///
@@ -174,7 +203,7 @@ impl Seed<'_> {
 ///   work even after the turn that started it settled;
 /// - a turn that finished while this view was not showing the session is
 ///   the one state that answers "what changed while I was away".
-fn state_of_agent(agent: &AgentRow, unseen: &Unseen) -> State {
+pub(crate) fn state_of_agent(agent: &AgentRow, unseen: &Unseen) -> State {
     match agent.lifecycle {
         SessionLifecycleState::Idle if agent.has_background_work => {
             State::Lifecycle(SessionLifecycleState::Running)
@@ -213,19 +242,8 @@ async fn view_of(home: &Home<'_>) -> HomeView {
         // differently, and a restart puts every project in the first case,
         // so reading the lifecycle alone would call the whole fleet new.
         let last_ran = project.sessions.iter().filter_map(|view| view.last_activity).max();
-        let dormant = Seed {
-            slot: &SessionSlot::lead(&project.org, &project.name),
-            name: project.name.clone(),
-            state: if last_ran.is_some() {
-                State::Lifecycle(SessionLifecycleState::Sleeping)
-            } else {
-                State::NeverStarted
-            },
-            pending: None,
-            reason: None,
-            task: None,
-            last_activity: last_ran,
-        };
+        let lead_slot = SessionSlot::lead(&project.org, &project.name);
+        let dormant = dormant_seed(&lead_slot, project.name.clone(), last_ran);
 
         let (lead, workers) = match rows.split_first() {
             Some((head, rest)) => {
@@ -299,7 +317,7 @@ fn owned_by(task: &Task, label: &str) -> bool {
 /// A task's artifact is a PR URL or a path, and either would push the
 /// row's other cells off a narrow screen, so a PR URL reads `PR 148` and
 /// a path reads its file name.
-fn artifact_label(artifact: &str) -> String {
+pub(crate) fn artifact_label(artifact: &str) -> String {
     let trimmed = artifact.trim_end_matches('/');
     let mut parts = trimmed.rsplit('/');
     let last = parts.next().unwrap_or("");
@@ -320,12 +338,19 @@ fn artifact_label(artifact: &str) -> String {
 /// finished task, and the row would show it under a state column saying
 /// running. The TUI sorts in-progress first for the same reason.
 fn task_for<'a>(tasks: &'a [Task], label: &str) -> Option<&'a Task> {
-    tasks.iter().filter(|task| owned_by(task, label)).min_by_key(|task| match task.status {
+    tasks.iter().filter(|task| owned_by(task, label)).min_by_key(|task| status_rank(task.status))
+}
+
+/// How close to done a task is, in-progress first. The order a store
+/// happens to return is insertion order within a run and key order across
+/// a restart, which is not the order a person reads tasks in.
+pub(crate) fn status_rank(status: TaskStatus) -> u8 {
+    match status {
         TaskStatus::InProgress => 0,
         TaskStatus::Blocked => 1,
         TaskStatus::Pending => 2,
         TaskStatus::Completed => 3,
-    })
+    }
 }
 
 /// The four cards. Each is quiet until its own state says otherwise.
@@ -453,12 +478,13 @@ fn refusal(has_model: bool, would_bind: bool) -> Option<&'static str> {
 /// One row, with its working tree out of the cache. The roster is passed
 /// in rather than collected here: it walks the project catalog, and a walk
 /// per row is the per-row-loop trap the view surface's own notes name.
-async fn row_for(home: &Home<'_>, roster: &Roster, seed: Seed<'_>) -> Row {
+pub(crate) async fn row_for(home: &Home<'_>, roster: &Roster, seed: Seed<'_>) -> Row {
     let work = match roster.cwd_for(seed.slot) {
         Some(cwd) => Some(home.work.snapshot(seed.slot, cwd.as_path()).await),
         None => None,
     };
     Row {
+        slot: seed.slot.clone(),
         state: seed.state,
         name: seed.name,
         place: place_of(work.as_ref()),
@@ -476,16 +502,23 @@ async fn row_for(home: &Home<'_>, roster: &Roster, seed: Seed<'_>) -> Row {
 
 /// The `where` cell: the branch the tree is on, and what has moved in it.
 /// Empty when the directory is not a repository, or is not there.
-fn place_of(work: Option<&WorkState>) -> String {
+pub(crate) fn place_of(work: Option<&WorkState>) -> String {
     let Some(work) = work else {
         return String::new();
     };
-    let files = match work.changed {
+    branch_and_files(work.branch.as_deref(), work.changed)
+}
+
+/// A branch and a count as one line, shared by the home's rows and the
+/// inspector's git section: the two draw the same fact, and a second
+/// formatter is how they would come to disagree about it.
+pub(crate) fn branch_and_files(branch: Option<&str>, changed: Option<usize>) -> String {
+    let files = match changed {
         Some(0) | None => String::new(),
         Some(1) => "1 file".to_owned(),
         Some(count) => format!("{count} files"),
     };
-    match (work.branch.as_deref(), files.is_empty()) {
+    match (branch, files.is_empty()) {
         (None, true) => String::new(),
         (None, false) => files,
         (Some(branch), true) => branch.to_owned(),
@@ -493,7 +526,7 @@ fn place_of(work: Option<&WorkState>) -> String {
     }
 }
 
-fn chip_for(status: TaskStatus) -> &'static str {
+pub(crate) fn chip_for(status: TaskStatus) -> &'static str {
     match status {
         TaskStatus::Pending => "pending",
         TaskStatus::InProgress => "in progress",
@@ -517,14 +550,7 @@ fn page(view: &HomeView, theme_name: Option<&str>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { "forge \u{b7} home" }
-                (root_block(theme_name))
-                link rel="stylesheet" href="/home.css";
-                link rel="icon" href="/favicon.svg" type="image/svg+xml";
-            }
+            (crate::server::page_head("forge \u{b7} home", theme_name))
             // The stream, wired by attributes: htmx opens it, swaps the
             // `fleet` event's payload into the region, and closes on the
             // server's own `close` event rather than reconnecting to a
@@ -653,7 +679,11 @@ fn row(row: &Row, refused: Option<&'static str>) -> Markup {
     html! {
         div .row .(mark.class) {
             span .dot .(mark.dot) {}
-            span .name { (&row.name) }
+            // The name is the link rather than the row: a row can carry an
+            // artifact anchor, and an anchor inside an anchor is not HTML.
+            span .name {
+                a href=(crate::session::href(&row.slot)) { (&row.name) }
+            }
             span .where { (&row.place) }
             span .what {
                 @if let Some(pending) = row.pending {
@@ -682,7 +712,7 @@ fn row(row: &Row, refused: Option<&'static str>) -> Markup {
 
 /// What a row says when its working directory is not there to read. `InRepo`
 /// is the row that has nothing to explain, and says nothing.
-fn gate_line(gate: Gate) -> Option<&'static str> {
+pub(crate) fn gate_line(gate: Gate) -> Option<&'static str> {
     match gate {
         Gate::InRepo => None,
         Gate::NotARepository => Some("not a git repository, so there is no branch to show"),
@@ -731,7 +761,7 @@ fn state_of(state: State) -> Mark {
 /// How long ago the session last wrote. A project nothing has run in is
 /// `never`; a live session with no transcript yet has only just started,
 /// which is `now` rather than an absence.
-fn when_of(state: State, last_activity: Option<SystemTime>) -> String {
+pub(crate) fn when_of(state: State, last_activity: Option<SystemTime>) -> String {
     if state == State::NeverStarted {
         return "never".to_owned();
     }
@@ -753,6 +783,7 @@ mod tests {
 
     fn row_of(state: State) -> Row {
         Row {
+            slot: SessionSlot::lead("Org", "forge"),
             state,
             name: "forge".to_owned(),
             place: String::new(),
