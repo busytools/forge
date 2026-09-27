@@ -110,10 +110,11 @@ impl ViewSurface {
         let Some(session_id) = self.workspace.running_session_id_for(slot) else {
             return ConversationHistory::default();
         };
+        let cwd = self.workspace.git_scan_cwd_for_session(slot, cwd_raw);
         forge_workspace::session_history(
             self.workspace.config_dir(),
             &session_id,
-            &cwd_raw.to_string_lossy(),
+            &cwd.to_string_lossy(),
         )
     }
 }
@@ -193,6 +194,60 @@ mod tests {
             );
         }
         std::fs::write(projects.join(format!("{session_id}.jsonl")), body).expect("write");
+    }
+
+    /// A worker's transcript is written under its worktree's project key,
+    /// not the project root's, so the verb has to resolve the cwd the way
+    /// the session verb beside it does: a caller handing it the project
+    /// root still reads the worker's own conversation rather than an
+    /// empty one.
+    #[test]
+    fn conversation_resolves_a_workers_worktree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _updates) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let project_root = dir.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project dir");
+        workspace.seed_test_project("forge", &project_root.to_string_lossy());
+
+        let worker = SessionSlot::worker("TestOrg", "forge", "probe-a");
+        let worktree = project_root.join(".claude/worktrees/probe-a");
+        std::fs::create_dir_all(&worktree).expect("worktree");
+        workspace.seed_test_running_session_id(&worker, SESSION_A);
+        let project = ViewSurface::new(Arc::clone(&workspace))
+            .roster()
+            .project_named("forge")
+            .expect("seeded project")
+            .key
+            .clone();
+        workspace.insert_live_worker(
+            &project,
+            forge_workspace::WorkerEntry {
+                label: "probe-a".to_owned(),
+                charter: "charter".to_owned(),
+                slot: worker.clone(),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "forge"),
+                needs_tag: false,
+                is_git_repo_at_spawn: true,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        let worktree_str = worktree.to_string_lossy().into_owned();
+        let projects = dir.path().join("projects").join(
+            forge_workspace::userdata::catalog::scan::project_key_for_directory(Some(
+                &worktree_str,
+            )),
+        );
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        seed_transcript(&projects, SESSION_A, 2);
+
+        let read = ViewSurface::new(Arc::clone(&workspace)).conversation(&worker, &project_root);
+
+        assert_eq!(read.messages.len(), 2, "the worker reads its worktree transcript");
     }
 
     /// The verb reads the slot's own transcript, and a slot with no
