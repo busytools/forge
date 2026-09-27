@@ -756,7 +756,10 @@ async fn a_git_section_with_nothing_behind_it_starts_closed() {
 
     let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
 
-    assert!(page.contains(">git<") || page.contains("git<"), "the section is still there: {page}");
+    assert!(
+        page.contains("href=\"#i-git\""),
+        "the section is still there, with its own icon: {page}",
+    );
     assert!(
         !page.contains("<details class=\"sec\" open>"),
         "and carries nothing to open on: {page}",
