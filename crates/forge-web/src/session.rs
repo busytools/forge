@@ -346,6 +346,16 @@ async fn columns(
         .and_then(|seat| roster.chip_for(&seat.key))
         .map(|chip| chip.account_name);
     let waking = !roster.has_agent(slot);
+    // What the conversation draws after its last block: a compaction in
+    // flight, and the row of the turn that is running.
+    let tail = html! {
+        @if compacting {
+            div .compacting { span .ring {} "Compacting context\u{2026}" }
+        }
+        @if let Some(live) = live_turn.filter(|live| live.started_at.is_some()) {
+            (turn_report_row(&live_report(live, Instant::now()), true, "turn-live"))
+        }
+    };
 
     html! {
     div #session-body {
@@ -379,24 +389,8 @@ async fn columns(
                             row.and_then(|row| row.reason.as_deref()),
                             &units,
                             roster.cwd_for(slot).as_deref(),
+                            &tail,
                         ))
-                        @if compacting {
-                            div .compacting { span .ring {} "Compacting context\u{2026}" }
-                        }
-                        // A turn in flight draws its row where the settled one
-                        // will land, in a work block of its own: the block's
-                        // padding is what puts the row where the settle will
-                        // leave it, rather than moving it by eight pixels
-                        // under the reader's cursor.
-                        @if let Some(live) = live_turn.filter(|live| live.started_at.is_some()) {
-                            div .work {
-                                (turn_report_row(
-                                    &live_report(live, Instant::now()),
-                                    true,
-                                    "turn-live",
-                                ))
-                            }
-                        }
                     }
                 }
                 aside .rail .right {
@@ -988,7 +982,13 @@ fn mode_of(target: &SlackSubscriptionTarget) -> &'static str {
 /// whose spawn failed would carry a failure mark above a line saying it is
 /// connecting. A seat that is up with nothing said yet draws no skeleton
 /// either: an empty conversation is empty.
-fn chat_body(waking: bool, reason: Option<&str>, units: &[ChatUnit], cwd: Option<&Path>) -> Markup {
+fn chat_body(
+    waking: bool,
+    reason: Option<&str>,
+    units: &[ChatUnit],
+    cwd: Option<&Path>,
+    tail: &Markup,
+) -> Markup {
     if waking {
         return html! {
             div .hold .off {
@@ -997,7 +997,7 @@ fn chat_body(waking: bool, reason: Option<&str>, units: &[ChatUnit], cwd: Option
             }
         };
     }
-    conversation(units, cwd)
+    conversation(units, cwd, tail)
 }
 
 /// A session's conversation, read off the reactor: the read walks a whole
@@ -1028,18 +1028,31 @@ pub(crate) async fn read_conversation(
 
 /// The conversation, as the fold's units read: the user's own turns on their
 /// own, and everything the assistant did in one work block after each.
-fn conversation(units: &[ChatUnit], cwd: Option<&Path>) -> Markup {
+fn conversation(units: &[ChatUnit], cwd: Option<&Path>, tail: &Markup) -> Markup {
     let rows = Cell::new(0usize);
+    let turns = turns(units);
+    // The tail is the live turn's row and the compaction line, and it draws
+    // inside the last work block, because that is where the settled row lands
+    // when the turn ends: a block of its own sits a block padding lower, and
+    // the row would move under the reader at the settle.
+    let last_work = turns.iter().rposition(|turn| matches!(turn, Turn::Work(_)));
+    let tail_alone = last_work.is_none();
     html! {
-        @for turn in turns(units) {
+        @for (at, turn) in turns.iter().enumerate() {
             @match turn {
                 Turn::Mine(text) => div .mine { (text) },
                 Turn::Work(work) => div .work {
                     @for unit in work {
                         (unit_markup(unit, cwd, &rows))
                     }
+                    @if Some(at) == last_work {
+                        (tail)
+                    }
                 },
             }
+        }
+        @if tail_alone {
+            div .work { (tail) }
         }
     }
 }
@@ -1216,7 +1229,18 @@ fn text_body(leaf: &ToolLeaf, text: &str) -> Markup {
     if let Some(language) = language_of(&leaf.title) {
         code_body(language, text)
     } else {
-        html! { div .term { (text) } }
+        html! {
+            div .term {
+                // The command a call ran leads its output: a call with a
+                // description shows that as its title, so this is the only
+                // place the command itself is drawn.
+                @if let Some(command) = &leaf.command {
+                    span .pfx { "$" }
+                    " " (command) "\n"
+                }
+                (text)
+            }
+        }
     }
 }
 

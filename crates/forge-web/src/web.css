@@ -623,7 +623,6 @@ details.leaf[open] > summary .arw { color: var(--accent); }
   border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
   white-space: pre-wrap; overflow-x: auto; }
 .term .pfx { color: var(--dim); }
-.term .sum { color: var(--ok); }
 /* A source file a call read or wrote, and the four token classes it carries. */
 .code { border: 1px solid var(--line); border-radius: 9px;
   background: var(--s2); overflow: hidden; }

@@ -192,14 +192,14 @@ fn session_updates(
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + TICK, TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     stream::unfold(
-        (receiver, wiring, slot, conversation, live, tick),
-        |(mut receiver, wiring, slot, conversation, live, mut tick)| async move {
+        // The compaction flag rides the carried state with the conversation
+        // and the live turn. A local inside the step would be rebuilt false
+        // on every yielded region, so the line would go at the next tick
+        // rather than when the session said the compaction ended.
+        (receiver, wiring, slot, conversation, live, false, tick),
+        |(mut receiver, wiring, slot, conversation, live, mut compacting, mut tick)| async move {
             let mut conversation = conversation;
             let mut live = live;
-            // Whether a compaction is running. It is a state of the session
-            // rather than of the conversation, so it rides the connection
-            // beside the live turn rather than the fold.
-            let mut compacting = false;
             loop {
                 let redraw = tokio::select! {
                     update = receiver.recv() => {
@@ -241,7 +241,10 @@ fn session_updates(
                 )
                 .await;
                 let event = Event::default().event(SESSION_EVENT).data(region.into_string());
-                return Some((Ok(event), (receiver, wiring, slot, conversation, live, tick)));
+                return Some((
+                    Ok(event),
+                    (receiver, wiring, slot, conversation, live, compacting, tick),
+                ));
             }
         },
     )

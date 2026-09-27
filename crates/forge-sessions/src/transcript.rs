@@ -121,6 +121,10 @@ pub struct ToolLeaf {
     pub label: &'static str,
     /// The tool's title: the file, command or query it names.
     pub title: String,
+    /// The command a call ran, when it ran one. Separate from the title
+    /// because a call that carries a description shows that as its title,
+    /// and the command it actually ran would otherwise appear nowhere.
+    pub command: Option<String>,
     pub status: ToolCallStatus,
     /// What the row opens on: the diff a mutation carries in its input, and
     /// whatever the call's result put beside it, in the shapes the shared
@@ -565,6 +569,12 @@ fn leaf(
         // some calls, which a view that strips a label from it draws blank.
         title: family_target(CallParts { name, input: Some(input), title: &call.title })
             .unwrap_or_else(|| call.title.clone()),
+        command: input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+            .map(str::to_owned),
         status,
         content,
     }

@@ -985,14 +985,36 @@ async fn the_turn_body_grid_is_the_mocks() {
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
     let (_status, _content_type, sheet) = get(&config, "/web.css").await;
 
+    // Every block the sheet writes, against every block the mockup writes:
+    // a width override is legitimate where the drawing carries it too, and
+    // an invented one is not.
     for selector in [".tibody", ".tibody .l, .tibody .n", ".tibody .wide", ".tibody b"] {
         let want = blocks_for(MOCK, selector);
         for block in blocks_for(&sheet, selector) {
-            assert_eq!(block, want[0], "the sheet's {selector}");
+            assert!(
+                want.contains(&block),
+                "the sheet's {selector} draws {block}, which the mockup does not",
+            );
         }
     }
-    // The class names the body is built from are compared where a body is
-    // drawn: a read carries no settled turn, so there is none on this page.
+}
+
+/// The reader takes every block a selector is written in, which is what
+/// makes an override visible to it. It is pinned here because no shipped
+/// fixture writes a compared selector twice, so a reader that took the first
+/// block would pass everything the sheet has today.
+#[test]
+fn the_grid_reader_reads_every_block_a_selector_is_written_in() {
+    let sheet = ".tibody { display: grid; }\n\
+                 @media (max-width: 600px) { .tibody { display: block; } }";
+
+    let blocks = blocks_for(sheet, ".tibody");
+
+    assert_eq!(blocks.len(), 2, "both of them, so an override cannot hide behind the first");
+    assert!(
+        blocks.contains(&"display: block;".to_owned()),
+        "including the one that undoes the grid: {blocks:?}",
+    );
 }
 
 /// A conversation with a run of tool calls renders the run's count and the
@@ -1383,6 +1405,50 @@ fn running_frame() -> forge_primitives::Message {
     .expect("a state frame")
 }
 
+/// The live row draws inside the work block the settled row will land in,
+/// not in a block of its own. That is what keeps it still: a block of its
+/// own sits a block padding lower, so the row moves down by twelve pixels
+/// the moment the turn settles, under the reader's cursor.
+#[tokio::test]
+async fn the_live_row_draws_where_the_settled_one_will_land() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/src/lib.rs"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"one\ntwo"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key: SessionSlot::lead("Busytools", "forge"),
+        msg: running_frame(),
+    });
+    let region = next_session_event(stream).await.expect("the state redraws the region");
+
+    let row = region.find("data-k=\"turn-live\"").expect("the live row is drawn");
+    let block = region[..row].rfind("class=\"work\"").expect("a work block above it");
+    assert!(
+        region[block..row].contains("class=\"kind\""),
+        "the live row shares the block with the work the turn did: {}",
+        &region[block..row],
+    );
+    assert!(
+        !region[..row].trim_end().ends_with("class=\"work\">"),
+        "rather than opening a block of its own for itself: {}",
+        &region[block..row],
+    );
+}
+
 /// The live row counts the estimate while the turn runs.
 #[tokio::test]
 async fn the_live_row_counts_the_thinking_estimate() {
@@ -1528,6 +1594,42 @@ async fn a_source_file_is_drawn_highlighted() {
     assert!(page.contains("ToolFamily"), "and the file's own text: {page}");
 }
 
+/// A command's own line leads its output. The call's title is the
+/// description when it carries one, so without this the command it ran is
+/// drawn nowhere at all.
+#[tokio::test]
+async fn a_command_leads_its_own_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"just check","description":"run the gates"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"   Compiling forge-web v1.0.91\n    Finished in 41.2s"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(
+        page.contains("<span class=\"pfx\">$</span> just check"),
+        "the command, under its own prompt: {page}",
+    );
+    assert!(page.contains("Finished in 41.2s"), "and the output it wrote below it: {page}");
+    assert!(
+        page.contains("run the gates"),
+        "while the row above still names the call by its description: {page}",
+    );
+}
+
 /// A search call's hits are drawn one row each: the line number, the file,
 /// and the line with the pattern marked.
 #[tokio::test]
@@ -1634,10 +1736,24 @@ async fn a_compaction_in_flight_says_so() {
         }))
         .expect("a status frame"),
     });
-    let region = next_session_event(stream).await.expect("the status redraws the region");
+    // An unrelated update follows the status, and the region read is the one
+    // after both. A compaction runs for minutes while anything else may land
+    // in between, so a flag that lived for one redraw would flash the line
+    // and take it away at the tick.
+    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        key,
+        msg: user_frame("u-1", "a message while the compaction runs"),
+    });
+    let region = nth_session_event(stream, 3).await.expect("both updates redraw the region");
 
-    assert!(region.contains("class=\"compacting\""), "the line: {region}");
-    assert!(region.contains("Compacting context"), "and what it says: {region}");
+    assert!(
+        region.contains("a message while the compaction runs"),
+        "precondition: the unrelated update is the later of the two: {region}",
+    );
+    assert!(
+        region.contains("Compacting context"),
+        "and the compaction is still running, so the line is still drawn: {region}",
+    );
 }
 
 /// The line goes when the session says the compaction ended, which is the
