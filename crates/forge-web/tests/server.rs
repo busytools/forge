@@ -860,6 +860,36 @@ async fn the_type_scale_is_the_mocks() {
     }
 }
 
+/// The declarations a stylesheet makes for one selector, whitespace
+/// collapsed so the mockup's formatting and the sheet's compare.
+fn declarations_for(css: &str, selector: &str) -> String {
+    let at = css.find(&format!("{selector} {{")).unwrap_or_else(|| panic!("no rule for {selector}"));
+    let rest = &css[at..];
+    let open = rest.find('{').expect("the block opens");
+    let close = rest[open..].find('}').expect("the block closes");
+    rest[open + 1..open + close].split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The turn body's grid is the mockup's, declaration for declaration. It
+/// rendered as one run-on line with every label fused to its value until the
+/// sheet was given these, and nothing in the suite noticed: the fields were
+/// all present and every one of them was asserted.
+#[tokio::test]
+async fn the_turn_body_grid_is_the_mocks() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    for selector in [".tibody", ".tibody .l, .tibody .n", ".tibody .wide", ".tibody b"] {
+        assert_eq!(
+            declarations_for(&sheet, selector),
+            declarations_for(MOCK, selector),
+            "the sheet's {selector}",
+        );
+    }
+}
+
 /// A conversation with a run of tool calls renders the run's count and the
 /// families it met, with each call's own target under its family and the
 /// assistant's prose above it. This is the model the mockup was built on.

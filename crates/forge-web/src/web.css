@@ -666,6 +666,13 @@ details.msg[open] > summary .arw { color: var(--teal); }
 /* The chip's label follows the row it sits on. */
 .turninfo .tog::after { content: "expand"; }
 .turninfo[open] .tog::after { content: "collapse"; }
+/* The body's two columns, each cell a label and its figure. */
+.tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
+  padding: 6px 0 0 18px; width: max-content;
+  font-family: var(--mono); font-size: var(--fs-data); }
+.tibody .l, .tibody .n { color: var(--muted); }
+.tibody .wide { grid-column: 1 / -1; }
+.tibody b { color: var(--dim); font-weight: 400; display: inline-block; width: 78px; }
 
 /* A delivery keeps the lines it arrived with: its body is often a second
    line under the header the envelope carries. */
