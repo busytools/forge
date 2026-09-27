@@ -1063,17 +1063,20 @@ mod tests {
     }
 
     /// A fleet with nothing in it is the empty state, not a blank page. It
-    /// is the third place a mark resolves, so it is checked as one rather
-    /// than only through the header that draws the same drawing.
+    /// is the third place a mark resolves, and the check is scoped to its
+    /// own panel: the header draws the same mark from the same field, so a
+    /// search over the whole page is satisfied by the header whatever this
+    /// panel does.
     #[test]
     fn an_empty_fleet_draws_the_empty_state() {
         let markup = render(&empty());
 
         assert!(markup.contains("No projects yet"), "a fresh install gets a page: {markup}");
         assert!(markup.contains("[[orgs.projects]]"), "and a way out of it: {markup}");
+        let panel = markup.split_once("class=\"empty\"").expect("the page draws the empty state").1;
         assert!(
-            markup.contains(crate::brand::mark_path(None)),
-            "and it draws the mark the view ships, not one of its own: {markup}",
+            panel.contains(crate::brand::mark_path(None)),
+            "the empty state draws the mark the view ships, not one of its own: {markup}",
         );
     }
 
