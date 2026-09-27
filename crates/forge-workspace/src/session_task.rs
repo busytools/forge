@@ -1301,6 +1301,12 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // registry left standing would spin a row over a task that went
         // with the identity it belonged to.
         domain.background_work = false;
+        // A new occupant has advertised nothing yet: the CLI sends
+        // `system/init` at the head of a turn only, so the last one's
+        // catalogues would stand until this one's first message - and
+        // after a login swap they came from another account's config dir.
+        domain.available_commands.clear();
+        domain.available_agents.clear();
         // It connected, so it is not waiting to be let in.
         domain.awaiting_login = false;
     }
@@ -3692,6 +3698,26 @@ provider = "anthropic"
 
     fn sdk_message(msg: forge_primitives::Message) -> AgentEvent {
         AgentEvent::SdkMessage { session_id: "s".to_owned(), msg }
+    }
+
+    /// A `Connected` in the same seat is a NEW OCCUPANT, and it has
+    /// advertised nothing yet: the CLI sends `system/init` at the head of
+    /// a turn only, so the last one's catalogues would stand until the new
+    /// occupant's first message. The TUI clears both on the same event,
+    /// and after a login swap the stale list came from another account's
+    /// config dir - another session's data, not a late one.
+    #[test]
+    fn a_new_occupant_advertises_no_catalogues() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame(&["/help"], &["reviewer"])));
+
+        apply_event_to_domain(&mut domain, &connected_event("new-occupant", "/proj"));
+
+        assert!(
+            domain.available_commands.is_empty(),
+            "the previous occupant's command list does not stand",
+        );
+        assert!(domain.available_agents.is_empty(), "nor the agent catalogue it advertised");
     }
 
     /// A `system/init` frame, which is where the CLI advertises both
