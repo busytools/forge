@@ -117,8 +117,9 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     // and a new occupant arrives on a swap that ends no turn - a mid-turn
     // `/new`, a reconnect after a login. Left armed the guard would drop
     // the new occupant's own init and leave the list empty for a whole
-    // turn. The core clears it on the same event, so both views refill at
-    // the same moment.
+    // turn. `apply_connected_presentation`'s background arm clears the
+    // same three for the sessions this path cannot reach, and the core
+    // clears its copy on the same event, so every view refills at once.
     app.with_turn_state_mut(|state| state.agents_emitted_this_turn = false);
     app.config.overlay = None;
 }
