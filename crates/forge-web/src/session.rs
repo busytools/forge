@@ -681,21 +681,31 @@ fn until_of(at: SystemTime) -> String {
 
 /// The gotify section: the stream's liveness and what this project is
 /// subscribed to on it.
+///
+/// One row per subject rather than one per subscription: the mockup labels
+/// them `apps` and `priority`, and a delivery is let through when any
+/// subscription matches, so the two facts are each read across the set.
 fn gotify_section(view: &GotifyView) -> Markup {
     let summary = if view.connected { "connected" } else { "not connected" };
+    let mut apps: Vec<&str> = Vec::new();
+    for app in view.subscriptions.iter().flat_map(|sub| &sub.applications) {
+        if !apps.contains(&app.as_str()) {
+            apps.push(app);
+        }
+    }
+    let floor = if view.subscriptions.iter().any(|sub| sub.min_priority.is_none()) {
+        None
+    } else {
+        view.subscriptions.iter().filter_map(|sub| sub.min_priority).min()
+    };
     let body = html! {
-        @for sub in &view.subscriptions {
-            div .kv {
-                span .k { (sub.applications.join(", ")) }
-                span .v { (priority_of(sub.min_priority)) }
-            }
+        div .kv { span .k { "apps" } span .v { (apps.join(", ")) } }
+        div .kv {
+            span .k { "priority" }
+            span .v { (floor.map_or_else(|| "any".to_owned(), |floor| format!(">={floor}"))) }
         }
     };
     section(false, "gotify", "gotify", summary, &body)
-}
-
-fn priority_of(priority: Option<u8>) -> String {
-    priority.map_or_else(|| "any priority".to_owned(), |floor| format!(">={floor}"))
 }
 
 /// The slack section: one row per workspace, and one per subscription
