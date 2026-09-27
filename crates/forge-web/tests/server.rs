@@ -621,6 +621,32 @@ async fn the_home_links_to_the_session_page() {
     );
 }
 
+/// The count sits in its own element, because the sheet colours it apart
+/// from the branch beside it: `.row .where .files` draws the count muted
+/// where the branch draws dim, and the two only pair if both are there.
+#[tokio::test]
+async fn the_work_cell_gives_the_count_its_own_element() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    repo_with(dir.path().join("forge").as_path(), 7);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/").await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    assert!(
+        page.contains(
+            "<span class=\"where\">main \u{b7} <span class=\"files\">7 files</span></span>"
+        ),
+        "the branch and the count are elements of their own: {page}",
+    );
+    assert!(
+        sheet.contains(".row .where .files"),
+        "and the rule that colours the count is still on that element: {sheet}",
+    );
+}
+
 /// The three groups render in order, and a needs-you row says what it is
 /// waiting on: the reason is what makes the row actionable without opening
 /// it, and the mark alone only says that something is wrong.

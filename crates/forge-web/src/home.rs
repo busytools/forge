@@ -115,7 +115,7 @@ pub struct Row {
     pub state: State,
     pub name: String,
     /// The branch the agent's tree is on, and how much has moved in it.
-    pub place: String,
+    pub place: Place,
     /// The task it holds, when it holds one.
     pub task: Option<TaskCell>,
     pub pending: Option<PendingKind>,
@@ -502,30 +502,64 @@ pub(crate) async fn row_for(home: &Home<'_>, roster: &Roster, seed: Seed<'_>) ->
     }
 }
 
-/// The `where` cell: the branch the tree is on, and what has moved in it.
-/// Empty when the directory is not a repository, or is not there.
-pub(crate) fn place_of(work: Option<&WorkState>) -> String {
-    let Some(work) = work else {
-        return String::new();
-    };
-    branch_and_files(work.branch.as_deref(), work.changed)
+/// The `where` cell's two parts, kept apart because the sheet weights them
+/// apart: `.row .where .files` colours the count muted against the branch's
+/// dim.
+#[derive(Default)]
+pub(crate) struct Place {
+    pub branch: Option<String>,
+    pub files: Option<String>,
 }
 
-/// A branch and a count as one line, shared by the home's rows and the
-/// inspector's git section: the two draw the same fact, and a second
-/// formatter is how they would come to disagree about it.
-pub(crate) fn branch_and_files(branch: Option<&str>, changed: Option<usize>) -> String {
-    let files = match changed {
-        Some(0) | None => String::new(),
-        Some(1) => "1 file".to_owned(),
-        Some(count) => format!("{count} files"),
-    };
-    match (branch, files.is_empty()) {
-        (None, true) => String::new(),
-        (None, false) => files,
-        (Some(branch), true) => branch.to_owned(),
-        (Some(branch), false) => format!("{branch} \u{b7} {files}"),
+impl Place {
+    /// Sits between the two parts, and only when both are there.
+    const SEPARATOR: &'static str = " \u{b7} ";
+
+    fn of(branch: Option<&str>, changed: Option<usize>) -> Self {
+        let files = match changed {
+            Some(0) | None => None,
+            Some(1) => Some("1 file".to_owned()),
+            Some(count) => Some(format!("{count} files")),
+        };
+        Self { branch: branch.map(str::to_owned), files }
     }
+
+    /// The separator the cell draws between the two parts, and nothing when
+    /// there is only one of them.
+    pub(crate) fn separator(&self) -> Option<&'static str> {
+        (self.branch.is_some() && self.files.is_some()).then_some(Self::SEPARATOR)
+    }
+
+    /// The cell as one line, for the view that draws it as text.
+    pub(crate) fn text(&self) -> String {
+        let mut line = String::new();
+        if let Some(branch) = &self.branch {
+            line.push_str(branch);
+        }
+        if let Some(separator) = self.separator() {
+            line.push_str(separator);
+        }
+        if let Some(files) = &self.files {
+            line.push_str(files);
+        }
+        line
+    }
+}
+
+/// The `where` cell: the branch the tree is on, and what has moved in it.
+/// Empty when the directory is not a repository, or is not there.
+pub(crate) fn place_of(work: Option<&WorkState>) -> Place {
+    let Some(work) = work else {
+        return Place::default();
+    };
+    Place::of(work.branch.as_deref(), work.changed)
+}
+
+/// A branch and a count as one line, for the inspector's git section: it
+/// reads the same `Place` the home's rows draw, and a second formatter is how
+/// the two would come to disagree about that fact.
+pub(crate) fn branch_and_files(branch: Option<&str>, changed: Option<usize>) -> String {
+    Place::of(branch, changed).text()
 }
 
 pub(crate) fn chip_for(status: TaskStatus) -> &'static str {
@@ -686,7 +720,11 @@ fn row(row: &Row, refused: Option<&'static str>) -> Markup {
             span .name {
                 a href=(crate::session::href(&row.slot)) { (&row.name) }
             }
-            span .where { (&row.place) }
+            span .where {
+                @if let Some(branch) = &row.place.branch { (branch) }
+                @if let Some(separator) = row.place.separator() { (separator) }
+                @if let Some(files) = &row.place.files { span .files { (files) } }
+            }
             span .what {
                 @if let Some(pending) = row.pending {
                     span .txt { (waiting_on(pending)) }
@@ -794,7 +832,7 @@ mod tests {
             slot: SessionSlot::lead("Org", "forge"),
             state,
             name: "forge".to_owned(),
-            place: String::new(),
+            place: Place::default(),
             task: None,
             pending: None,
             reason: None,
@@ -901,27 +939,42 @@ mod tests {
         }
     }
 
-    /// The `where` cell shows the branch and what has moved, and nothing at
+    /// The cell as one line: the branch and what has moved, and nothing at
     /// all when there is no repository to read.
     #[test]
     fn the_work_column_says_what_moved() {
-        assert_eq!(place_of(None), "", "no repository is an empty column");
+        assert_eq!(place_of(None).text(), "", "no repository is an empty column");
         assert_eq!(
-            place_of(Some(&work(None, None))),
+            place_of(Some(&work(None, None))).text(),
             "",
             "a directory outside a repository has no branch to show",
         );
         assert_eq!(
-            place_of(Some(&work(Some("main"), Some(0)))),
+            place_of(Some(&work(Some("main"), Some(0)))).text(),
             "main",
             "a clean tree is the branch"
         );
         assert_eq!(
-            place_of(Some(&work(Some("main"), Some(1)))),
+            place_of(Some(&work(Some("main"), Some(1)))).text(),
             "main \u{b7} 1 file",
             "one file is not one files",
         );
-        assert_eq!(place_of(Some(&work(Some("main"), Some(7)))), "main \u{b7} 7 files");
+        assert_eq!(place_of(Some(&work(Some("main"), Some(7)))).text(), "main \u{b7} 7 files");
+    }
+
+    /// A tree with a count and no branch, which is a detached HEAD, draws the
+    /// count alone: its own element, and no separator before it.
+    #[test]
+    fn a_detached_tree_draws_its_count_alone() {
+        let mut row = row_of(State::Lifecycle(SessionLifecycleState::Idle));
+        row.place = place_of(Some(&work(None, Some(7))));
+
+        let markup = row_markup(&row);
+
+        assert!(
+            markup.contains("<span class=\"where\"><span class=\"files\">7 files</span></span>"),
+            "the count is the whole cell: {markup}",
+        );
     }
 
     /// Catches a row showing a finished task while its state column says
