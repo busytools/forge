@@ -459,23 +459,25 @@ fn leaf(
     results: &HashMap<String, Recorded>,
 ) -> ToolLeaf {
     let mut call = forge_workspace::tooling::create_tool_call(id, name, input, None);
-    let mut content = std::mem::take(&mut call.content);
     let recorded = results.get(id);
-    let status = match recorded {
+    let (status, content) = match recorded {
         Some(recorded) => {
             // The result's own shapes ride the shared builder rather than a
             // second reader here: it is what the TUI draws the same rows
-            // from, and two readers would drift.
+            // from, and two readers would drift. The builder resolves the
+            // input's own body too - an edit's diff arrives in the input -
+            // so its answer is the whole of what the row opens on.
             let fields = forge_workspace::tooling::build_tool_result_fields(
                 recorded.status == ToolCallStatus::Failed,
                 recorded.content.as_ref(),
                 Some(&call),
                 recorded.result.as_ref(),
             );
-            content.extend(fields.content.unwrap_or_default());
-            fields.status.unwrap_or(recorded.status)
+            (fields.status.unwrap_or(recorded.status), fields.content.unwrap_or_default())
         }
-        None => ToolCallStatus::Pending,
+        // A call that has not come back yet still carries what its own input
+        // says: an edit's diff is in the call, not in the result.
+        None => (ToolCallStatus::Pending, std::mem::take(&mut call.content)),
     };
     ToolLeaf {
         id: id.to_owned(),
@@ -1090,9 +1092,10 @@ mod tests {
     /// A mutation carries its diff from the input alone, which is what the
     /// mockup draws open by default: the edit family's leaves are the one
     /// row that shows its body without being asked.
-    #[test]
-    fn a_mutation_carries_its_diff() {
-        let messages = [assistant(vec![ContentBlock::ToolUse {
+    /// A mutation, as the wire carries one: its diff is in the call's own
+    /// input.
+    fn edit_call() -> Message {
+        assistant(vec![ContentBlock::ToolUse {
             id: "toolu_edit".to_owned(),
             name: "Edit".to_owned(),
             input: serde_json::json!({
@@ -1100,18 +1103,43 @@ mod tests {
                 "old_string": "  text-decoration: none; flex: none;",
                 "new_string": "  text-decoration: none; flex: 0 1 auto;",
             }),
-        }])];
+        }])
+    }
 
-        let units = render_units(&messages);
+    fn diffs_in(leaf: &super::ToolLeaf) -> usize {
+        leaf.content
+            .iter()
+            .filter(|content| matches!(content, ToolCallContent::Diff { .. }))
+            .count()
+    }
+
+    #[test]
+    fn a_mutation_carries_its_diff() {
+        let units = render_units(&[edit_call()]);
 
         let ChatUnit::ToolGroup { families, .. } = &units[0] else {
             panic!("a tool group");
         };
-        let leaf = &families[0].calls[0];
-        assert!(
-            leaf.content.iter().any(|content| matches!(content, ToolCallContent::Diff { .. })),
+        assert_eq!(
+            diffs_in(&families[0].calls[0]),
+            1,
             "the edit's row carries the diff its input describes",
         );
+    }
+
+    /// A mutation that has come back carries ONE diff, not two: the result
+    /// builder resolves the input's body as well, so a leaf that also kept
+    /// the call's own content would draw the same diff twice.
+    #[test]
+    fn a_mutation_that_came_back_carries_one_diff() {
+        let units = render_units(&[edit_call(), tool_result("toolu_edit", false)]);
+
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        let call = &families[0].calls[0];
+        assert_eq!(call.status, ToolCallStatus::Completed, "the result settles it");
+        assert_eq!(diffs_in(call), 1, "and its body is one diff, not two");
     }
 
     /// A server-side tool's result arrives inline in the assistant message

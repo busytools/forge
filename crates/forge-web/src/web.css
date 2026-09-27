@@ -474,7 +474,10 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .card .a .picked { color: var(--ok); }
 .card .a .typed { color: var(--text); font-weight: 700; }
 
-.notice { margin: 10px 0; padding: 9px 13px; border-radius: 9px; font-size: var(--fs-prose); }
+/* A delivery keeps the lines it arrived with: its body is often a second
+   line under the header the envelope carries. */
+.notice { margin: 10px 0; padding: 9px 13px; border-radius: 9px; font-size: var(--fs-prose);
+  white-space: pre-line; }
 .notice .sev { font-weight: 700; margin-right: 7px; }
 .notice.info { border: 1px solid var(--line); color: var(--dim); }
 .notice.warn { border: 1px solid rgba(201,161,59,.35); background: rgba(201,161,59,.07);

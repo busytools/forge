@@ -1107,7 +1107,7 @@ fn notice_row(notice: &Notice) -> Markup {
     html! {
         div class=(class) {
             span .sev { (severity) }
-            (first_line(&notice.text))
+            (notice.text.as_str())
         }
     }
 }
