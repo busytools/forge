@@ -722,9 +722,17 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
         // identity, so bump its generation too (its guard drops the
         // stale event) and let the next ticker re-scan.
         session.process_scan_generation = session.process_scan_generation.saturating_add(1);
-        session.process_snapshot = None;
         session.process_last_refreshed_at = None;
         session.process_scan_in_flight.store(false, std::sync::atomic::Ordering::Release);
+    }
+    // The walk's answer lives on the session now, so the swap drops it
+    // there too: a tree scanned against the old claude pid describes a
+    // subprocess this identity does not have.
+    if cwd_changed
+        && let Some(key) = app.active_session_key.as_ref()
+        && let Some(workspace) = app.workspace.as_ref()
+    {
+        workspace.store_process_snapshot(key, None);
     }
 }
 
@@ -1487,12 +1495,19 @@ mod process_scan_generation_tests {
         let key = SessionSlot::from_str_for_test("swap-uuid");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "test-project");
         bucket.cwd_raw = "/tmp/old-cwd".to_owned();
-        bucket.process_snapshot = Some(forge_workspace::env::processes::ProcessSnapshot {
-            processes: Vec::new(),
-            scanned_at: std::time::SystemTime::now(),
-        });
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key.clone());
+        app.workspace
+            .as_ref()
+            .expect("test App holds a workspace")
+            .register_domain_session(key.clone(), None);
+        app.workspace.as_ref().expect("test App holds a workspace").store_process_snapshot(
+            &key,
+            Some(forge_workspace::env::processes::ProcessSnapshot {
+                processes: Vec::new(),
+                scanned_at: std::time::SystemTime::now(),
+            }),
+        );
 
         apply_session_cwd(&mut app, "/tmp/new-cwd".to_owned());
 
@@ -1501,7 +1516,10 @@ mod process_scan_generation_tests {
             session.process_scan_generation, 1,
             "the generation bumps once on a genuine cwd change"
         );
-        assert!(session.process_snapshot.is_none(), "the old-pid snapshot does not survive");
+        assert!(
+            app.surface().expect("surface").processes(&key).is_none(),
+            "the old-pid snapshot does not survive",
+        );
         assert!(
             !session.process_scan_in_flight.load(std::sync::atomic::Ordering::Acquire),
             "the in-flight guard releases so the next tick re-scans"

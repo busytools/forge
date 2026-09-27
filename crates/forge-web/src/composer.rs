@@ -42,9 +42,9 @@ const AGENT_ROWS: usize = 8;
 const CANDIDATES: usize = 200;
 
 /// How many level readings the meter keeps: at the mockup's own six pixels a
-/// cell, 720 pixels of track. That reaches both edges of the slot a session
-/// column leaves on a laptop, and clips the oldest readings where the slot is
-/// wider, so a live take reads as a history rather than as a clump at one end.
+/// cell, a little over 700 pixels of track. A slot narrower than that is
+/// filled edge to edge and the oldest readings clip, which is the case for a
+/// session column at 1440; a wider one falls short of the left edge.
 const METER_CELLS: usize = 120;
 
 /// The top of the meter's own scale, in dBFS. A reading is measured between

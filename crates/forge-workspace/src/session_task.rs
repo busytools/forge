@@ -1269,11 +1269,12 @@ const API_RETRY_SUBTYPE: &str = "api_retry";
 /// I/O, no async, no sends. Called from inside
 /// [`SessionTask::translate_event`] under the domain's lock.
 ///
-/// Workspace only owns the `session_id` mirror used for `AgentHandle`
-/// dispatch - operational state (lifecycle, cwd, turn state,
-/// account info) lives on the TUI's `UiSession`, populated via the
-/// `SessionUpdate` envelopes the task emits.
+/// Workspace owns the routing metadata every dispatch needs
+/// (`session_id`) plus the facts a view reads through the view
+/// surface. Operational state a view renders from the update stream
+/// itself (lifecycle, cwd, account info) stays on the view.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
+    hold_view_facts(domain, event);
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
         // in-flight guards don't read a stale turn.
@@ -1446,6 +1447,273 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     } = event
     {
         domain.agents_emitted_this_turn = false;
+    }
+}
+
+/// Drop every fact that describes one run of a session: the hook's mode
+/// and effort, the model it resolved, and the two bridge snapshots that
+/// describe a subprocess tree.
+///
+/// This mirrors the view's own reset on the same events, so what it holds
+/// is what a view draws. Three facts are deliberately not here, because
+/// the view's reset does not touch them either: the sub-agent attribution
+/// and the monitor set outlive the run they came from, and the process
+/// walk is cleared where a view learns the cwd moved, which is its own
+/// path rather than this one.
+fn clear_runtime_identity(domain: &mut DomainSession) {
+    domain.observed_permission_mode = None;
+    domain.observed_effort = None;
+    domain.current_model = None;
+    domain.mcp_servers = None;
+    domain.context_usage = None;
+}
+
+/// The facts this event carries that a view other than the TUI reads
+/// through the view surface: the hook observation's three, the two
+/// bridge snapshots, the resolved model, and the monitor set.
+///
+/// One source, two readers: each fact is folded from the same event the
+/// `SessionUpdate` for it is built from, so the held copy cannot drift
+/// from the streamed one.
+fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
+    if let AgentEvent::Connected { current_model, available_models, history_updates, .. } = event {
+        // A replacement occupant inherits nothing the last one held:
+        // its hook mirrors describe a session that is gone, and its
+        // bridge snapshots describe subprocesses that went with it.
+        clear_runtime_identity(domain);
+        domain.subagent_attribution.clear();
+        domain.current_model = Some(current_model.clone());
+        domain.available_models.clone_from(available_models);
+        // A monitor started before this process did is in the transcript
+        // the connect carries, so the same fold runs over it: a view
+        // opening the session sees the monitor rather than nothing.
+        domain.monitors.clear();
+        if let Some(history) = history_updates {
+            for msg in history {
+                fold_monitor(domain, msg, MonitorOrigin::Transcript);
+            }
+            // A transcript's monitors are all settled, so the seed drains in
+            // the one call: a resumed session shows no section rather than a
+            // row per monitor it ever ran.
+            drain_settled_monitors(domain);
+        }
+    }
+    // The two events that end a run leave the session with no runtime
+    // identity: a login wait, and a connection that died. The TUI blanks
+    // its own copy on both, so the core blanks what a view reads
+    // through it - a mode or a model left standing describes a run that
+    // is gone.
+    if matches!(event, AgentEvent::ConnectionFailed { .. } | AgentEvent::AuthRequired { .. }) {
+        clear_runtime_identity(domain);
+    }
+    if let AgentEvent::HookObservation {
+        tool_use_id,
+        permission_mode,
+        effort,
+        agent_id,
+        agent_type,
+        ..
+    } = event
+    {
+        if let Some(mode) =
+            permission_mode.as_deref().and_then(forge_primitives::PermissionMode::from_wire)
+        {
+            domain.observed_permission_mode = Some(mode);
+        }
+        // An unreadable level is a level forge cannot name, not a reason
+        // to forget the one already held.
+        if let Some(level) = effort.as_deref().and_then(forge_primitives::EffortLevel::from_stored)
+        {
+            domain.observed_effort = Some(level);
+        }
+        if let (Some(id), Some(_), Some(kind)) = (tool_use_id, agent_id, agent_type) {
+            domain.subagent_attribution.insert(id.clone(), kind.clone());
+        }
+    }
+    if let AgentEvent::McpSnapshot { servers, error, .. } = event {
+        domain.mcp_servers = Some(crate::domain_session::McpServers {
+            servers: servers.clone(),
+            error: error.clone(),
+        });
+    }
+    if let AgentEvent::ContextUsage { percentage, max_tokens, .. } = event {
+        domain.context_usage = Some(crate::domain_session::ContextUsage {
+            percent: *percentage,
+            max_tokens: *max_tokens,
+        });
+    }
+    if let AgentEvent::SdkMessage { msg, .. } = event {
+        fold_monitor(domain, msg, MonitorOrigin::Wire);
+        if let forge_primitives::Message::System { subtype, data, .. } = msg
+            && subtype == "init"
+        {
+            reconcile_model_from_init(domain, data);
+        }
+    }
+}
+
+/// Take the model a turn's `system/init` names, which is how a switch
+/// reaches a reader: `/model` re-fires the frame with the model the turn
+/// runs under, and the frame arrives at the head of every turn besides.
+///
+/// A frame naming the model the session is already on changes nothing, so
+/// a session that did not switch keeps the name its connect resolved
+/// rather than being renamed to the CLI's own spelling of the same model.
+fn reconcile_model_from_init(domain: &mut DomainSession, data: &serde_json::Value) {
+    let Some(model_id) = data.get("model").and_then(serde_json::Value::as_str).map(str::trim)
+    else {
+        return;
+    };
+    if model_id.is_empty()
+        || domain.current_model.as_ref().is_some_and(|held| held.resolved_id == model_id)
+    {
+        return;
+    }
+    // No requested id: the pin forge stamped described the model the
+    // session connected on, and the CLI has just named a different one, so
+    // the CLI's own answer is what names this model.
+    domain.current_model = Some(crate::session_lifecycle::resolve_current_model_from_inputs(
+        model_id,
+        None,
+        None,
+        &domain.available_models,
+    ));
+}
+
+/// The status a terminal `task_updated` names, in the vocabulary the
+/// renderers use. `None` for a status that is not terminal, and for one
+/// forge does not know: a patch that only stamps an end time carries no
+/// status at all.
+fn monitor_status_from_wire(status: &str) -> Option<forge_primitives::MonitorStatus> {
+    match status {
+        "completed" => Some(forge_primitives::MonitorStatus::Completed),
+        "failed" | "killed" | "stopped" => Some(forge_primitives::MonitorStatus::Stopped),
+        _ => None,
+    }
+}
+
+/// Which side of the session a monitor was folded from, which decides the
+/// state it starts in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonitorOrigin {
+    /// The live wire, where a `Monitor` tool call means the monitor runs
+    /// until a command frame settles it.
+    Wire,
+    /// The transcript a connect carries. It holds no lifecycle frame - the
+    /// replay synthesizer emits user and assistant messages only - so a
+    /// monitor found here is one whose task is over as far as this process
+    /// can tell, and nothing that follows can settle it, because every
+    /// settlement is keyed on the task id a transcript cannot carry.
+    Transcript,
+}
+
+/// Fold one wire message into the session's monitor set: the `Monitor`
+/// tool call that starts one, the task id the CLI assigns it, and the
+/// lifecycle message that settles it.
+///
+/// The CLI's task ids are what the terminal transitions are keyed by,
+/// so a record's `task_id` is what lets a later `task_updated` find it
+/// at all.
+fn fold_monitor(
+    domain: &mut DomainSession,
+    msg: &forge_primitives::Message,
+    origin: MonitorOrigin,
+) {
+    match msg {
+        forge_primitives::Message::Assistant { message, .. } => {
+            for block in &message.content {
+                let forge_primitives::ContentBlock::ToolUse { id, name, input } = block else {
+                    continue;
+                };
+                if name != "Monitor" {
+                    continue;
+                }
+                let Some(parsed) = forge_agent::user_interaction::parse_monitor_input(input) else {
+                    continue;
+                };
+                if domain.monitors.iter().any(|held| &held.tool_use_id == id) {
+                    continue;
+                }
+                let status = match origin {
+                    MonitorOrigin::Wire => forge_primitives::MonitorStatus::Running,
+                    MonitorOrigin::Transcript => forge_primitives::MonitorStatus::Completed,
+                };
+                domain.monitors.push(forge_primitives::MonitorRecord {
+                    tool_use_id: id.clone(),
+                    task_id: None,
+                    description: parsed.description,
+                    command: parsed.command,
+                    persistent: parsed.persistent,
+                    timeout_ms: parsed.timeout_ms,
+                    status,
+                    output_file: None,
+                });
+            }
+        }
+        forge_primitives::Message::TaskStarted { task_id, tool_use_id: Some(id), .. } => {
+            let Some(record) = domain.monitors.iter_mut().find(|held| &held.tool_use_id == id)
+            else {
+                return;
+            };
+            record.task_id.get_or_insert_with(|| task_id.clone());
+        }
+        forge_primitives::Message::TaskUpdated { task_id, patch, .. } => {
+            // A patch that only stamps an end time carries no status, and
+            // a status forge does not classify is one it cannot act on.
+            let Some(status) = patch.status.as_deref().and_then(monitor_status_from_wire) else {
+                return;
+            };
+            settle_monitor(domain, task_id, status, None);
+        }
+        forge_primitives::Message::TaskNotification { task_id, status, output_file, .. } => {
+            let settled = match status {
+                forge_primitives::TaskNotificationStatus::Completed => {
+                    Some(forge_primitives::MonitorStatus::Completed)
+                }
+                forge_primitives::TaskNotificationStatus::Failed
+                | forge_primitives::TaskNotificationStatus::Stopped => {
+                    Some(forge_primitives::MonitorStatus::Stopped)
+                }
+                // A status forge cannot name settles nothing, but it is
+                // still a notification and the drain below is unconditional.
+                forge_primitives::TaskNotificationStatus::Unknown => None,
+            };
+            if let Some(status) = settled {
+                settle_monitor(domain, task_id, status, Some(output_file.clone()));
+            }
+            // The notification is the last frame a monitor sends, so it is
+            // where the set drains once nothing in it is running: the same
+            // rule the terminal applies, so a session that ran a monitor an
+            // hour ago draws no section in either view.
+            drain_settled_monitors(domain);
+        }
+        _ => {}
+    }
+}
+
+/// Drop the monitor set once every entry in it is terminal.
+fn drain_settled_monitors(domain: &mut DomainSession) {
+    if !domain.monitors.is_empty()
+        && domain.monitors.iter().all(|monitor| monitor.status.is_terminal())
+    {
+        domain.monitors.clear();
+    }
+}
+
+fn settle_monitor(
+    domain: &mut DomainSession,
+    task_id: &str,
+    status: forge_primitives::MonitorStatus,
+    output_file: Option<String>,
+) {
+    let Some(record) =
+        domain.monitors.iter_mut().find(|held| held.task_id.as_deref() == Some(task_id))
+    else {
+        return;
+    };
+    record.status = status;
+    if let Some(path) = output_file {
+        record.output_file = Some(path);
     }
 }
 
@@ -3718,6 +3986,103 @@ provider = "anthropic"
         AgentEvent::SdkMessage { session_id: "s".to_owned(), msg }
     }
 
+    fn hook_observation(
+        permission_mode: Option<&str>,
+        effort: Option<&str>,
+        tool_use_id: Option<&str>,
+        agent_type: Option<&str>,
+    ) -> AgentEvent {
+        AgentEvent::HookObservation {
+            session_id: "s".to_owned(),
+            tool_use_id: tool_use_id.map(str::to_owned),
+            permission_mode: permission_mode.map(str::to_owned),
+            effort: effort.map(str::to_owned),
+            agent_id: tool_use_id.map(|_| "agent-1".to_owned()),
+            agent_type: agent_type.map(str::to_owned),
+        }
+    }
+
+    fn init_frame_naming_the_model(model: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s",
+            "model": model,
+        }))
+        .expect("parse an init frame naming a model")
+    }
+
+    fn mcp_server(name: &str) -> forge_primitives::McpServerStatus {
+        serde_json::from_value(serde_json::json!({ "name": name, "status": "connected" }))
+            .expect("parse an MCP server status")
+    }
+
+    fn monitor_tool_use(tool_use_id: &str, description: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg-mon",
+                "role": "assistant",
+                "model": "claude-sonnet-5",
+                "content": [{
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "Monitor",
+                    "input": {
+                        "description": description,
+                        "command": "gh run watch 1",
+                        "persistent": true,
+                    },
+                }],
+            },
+            "session_id": "s",
+        }))
+        .expect("parse a Monitor tool_use")
+    }
+
+    fn task_started(task_id: &str, tool_use_id: Option<&str>) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": task_id,
+            "description": "watch CI",
+            "uuid": "u-task",
+            "session_id": "s",
+            "tool_use_id": tool_use_id,
+        }))
+        .expect("parse a task_started")
+    }
+
+    fn task_updated(task_id: &str, status: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": task_id,
+            "patch": { "status": status },
+            "uuid": "u-upd",
+            "session_id": "s",
+        }))
+        .expect("parse a task_updated")
+    }
+
+    fn task_notification(task_id: &str) -> forge_primitives::Message {
+        task_notification_with_status(task_id, "completed")
+    }
+
+    fn task_notification_with_status(task_id: &str, status: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": task_id,
+            "status": status,
+            "output_file": "/tmp/forge-test-monitor.out",
+            "summary": "Monitor stream ended",
+            "uuid": "u-note",
+            "session_id": "s",
+        }))
+        .expect("parse a task_notification")
+    }
+
     /// A `commands_changed` payload carrying entries that parse to none
     /// means the CLI's entry shape changed under us. Storing it would
     /// wipe the list, and `/help` with it, for every view reading
@@ -3879,6 +4244,450 @@ provider = "anthropic"
             domain.available_agents.first().map(|a| a.name.as_str()),
             Some("someone-else"),
             "and the next turn's frame does",
+        );
+    }
+
+    /// The hook observation carries three facts a view renders and the
+    /// TUI alone holds today: the permission mode, the effort level and
+    /// the tool_use -> agent-type attribution. All three land on the
+    /// session so a view reads them instead of folding the same event
+    /// again.
+    #[test]
+    fn a_hook_observation_is_held_on_the_domain() {
+        let mut domain = empty_domain();
+
+        apply_event_to_domain(
+            &mut domain,
+            &hook_observation(Some("acceptEdits"), Some("xhigh"), Some("tu-1"), Some("Explore")),
+        );
+
+        assert_eq!(
+            domain.observed_permission_mode,
+            Some(forge_primitives::PermissionMode::AcceptEdits),
+            "the hook's permission mode is kept",
+        );
+        assert_eq!(
+            domain.observed_effort,
+            Some(forge_primitives::EffortLevel::Xhigh),
+            "and its effort level",
+        );
+        assert_eq!(
+            domain.subagent_attribution.get("tu-1").map(String::as_str),
+            Some("Explore"),
+            "and the tool_use the sub-agent fired, against its type",
+        );
+    }
+
+    /// A level the CLI spells differently is a level forge cannot name,
+    /// not a reason to forget the one it already has.
+    #[test]
+    fn an_unreadable_hook_effort_keeps_the_level_already_held() {
+        let mut domain = empty_domain();
+        domain.observed_effort = Some(forge_primitives::EffortLevel::High);
+
+        apply_event_to_domain(&mut domain, &hook_observation(None, Some("turbo"), None, None));
+
+        assert_eq!(
+            domain.observed_effort,
+            Some(forge_primitives::EffortLevel::High),
+            "an unreadable level leaves the held one standing",
+        );
+    }
+
+    /// The MCP set is per session, and the core is the one that asks for
+    /// it, so the answer is kept rather than only passed through.
+    #[test]
+    fn the_mcp_snapshot_the_bridge_returns_is_held() {
+        let mut domain = empty_domain();
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::McpSnapshot {
+                session_id: "s".to_owned(),
+                servers: vec![mcp_server("ctx7")],
+                error: None,
+            },
+        );
+
+        let held = domain.mcp_servers.as_ref().expect("the snapshot is kept");
+        assert_eq!(held.servers.len(), 1, "the server list is kept whole");
+        assert_eq!(held.servers[0].name, "ctx7", "and names the server it carries");
+        assert_eq!(held.error, None, "with no error standing beside it");
+    }
+
+    /// A later snapshot replaces the one before it, including when the
+    /// bridge reports a failure: a stale `connected` row is worse than
+    /// no row.
+    #[test]
+    fn a_failed_mcp_snapshot_replaces_the_one_before_it() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::McpSnapshot {
+                session_id: "s".to_owned(),
+                servers: vec![mcp_server("ctx7")],
+                error: None,
+            },
+        );
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::McpSnapshot {
+                session_id: "s".to_owned(),
+                servers: Vec::new(),
+                error: Some("the CLI refused".to_owned()),
+            },
+        );
+
+        let held = domain.mcp_servers.as_ref().expect("the snapshot is kept");
+        assert!(held.servers.is_empty(), "the failed read's empty set replaces the old one");
+        assert_eq!(held.error.as_deref(), Some("the CLI refused"), "and carries why");
+    }
+
+    /// Context usage is the header's `ctx` reading, and it survives its
+    /// own refresh: the poll that fills it lands on the session rather
+    /// than only on the view that asked.
+    #[test]
+    fn the_context_usage_the_bridge_reports_is_held() {
+        let mut domain = empty_domain();
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::ContextUsage {
+                session_id: "s".to_owned(),
+                percentage: Some(62),
+                max_tokens: Some(1_000_000),
+            },
+        );
+
+        let held = domain.context_usage.expect("the usage is kept");
+        assert_eq!(held.percent, Some(62), "the percentage is kept");
+        assert_eq!(held.max_tokens, Some(1_000_000), "and the window it is a share of");
+    }
+
+    /// The model a session runs is stated at connect, and a view reading
+    /// later must get the session's own rather than nothing.
+    #[test]
+    fn a_connected_session_holds_the_model_it_reported() {
+        let mut domain = empty_domain();
+
+        apply_event_to_domain(&mut domain, &connected_event("uuid-1", "/proj"));
+
+        assert_eq!(
+            domain.current_model.as_ref().map(|m| m.resolved_id.as_str()),
+            Some("claude"),
+            "the model the connect reported is kept",
+        );
+    }
+
+    /// The CLI names the model each turn runs under at the head of the
+    /// turn, and that frame is how a mid-session switch reaches a reader:
+    /// after `/model` the terminal's own row moves, and a read that only
+    /// listened at connect would go on naming the model the session left.
+    #[test]
+    fn the_model_follows_a_later_turns_init_frame() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &connected_event("uuid-1", "/proj"));
+        apply_event_to_domain(
+            &mut domain,
+            &sdk_message(init_frame_naming_the_model("claude-opus-5-5")),
+        );
+
+        assert_eq!(
+            domain.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+            Some("claude-opus-5-5"),
+            "the model the turn runs under is the model the session is said to be on",
+        );
+    }
+
+    /// The frame arrives at the head of every turn, including the turns
+    /// that changed nothing, so a session that is not switching keeps the
+    /// name it resolved at connect rather than being renamed to the CLI's
+    /// own spelling of it.
+    #[test]
+    fn an_init_frame_naming_the_same_model_keeps_the_resolved_name() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &connected_event("uuid-1", "/proj"));
+        domain.current_model = Some(forge_primitives::CurrentModel {
+            requested_id: Some("Opus (1M context)".to_owned()),
+            resolved_id: "claude".to_owned(),
+            display_name_short: "Opus (1M context)".to_owned(),
+            display_name_long: "Opus (1M context)".to_owned(),
+            ..forge_primitives::CurrentModel::new("claude", "claude", "claude")
+        });
+
+        apply_event_to_domain(&mut domain, &sdk_message(init_frame_naming_the_model("claude")));
+
+        assert_eq!(
+            domain.current_model.as_ref().map(|model| model.display_name_long.as_str()),
+            Some("Opus (1M context)"),
+            "a turn that switched nothing does not rename the session",
+        );
+    }
+
+    /// A replacement occupant inherits none of the last one's facts: the
+    /// hook mirrors describe a session that is gone, and the process tree
+    /// belonged to a subprocess that exited with it.
+    #[test]
+    fn a_replaced_occupant_clears_the_held_view_facts() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(
+            &mut domain,
+            &hook_observation(Some("plan"), Some("max"), Some("tu-1"), Some("Explore")),
+        );
+        domain.mcp_servers = Some(crate::domain_session::McpServers::default());
+        domain.context_usage =
+            Some(crate::domain_session::ContextUsage { percent: Some(10), max_tokens: None });
+
+        apply_event_to_domain(&mut domain, &connected_event("uuid-2", "/proj"));
+
+        assert_eq!(domain.observed_permission_mode, None, "the dead run's mode does not stand");
+        assert_eq!(domain.observed_effort, None, "nor its effort");
+        assert!(domain.subagent_attribution.is_empty(), "nor its sub-agent attributions");
+        assert_eq!(domain.mcp_servers, None, "nor the servers it had connected");
+        assert_eq!(domain.context_usage, None, "nor the context it had filled");
+    }
+
+    /// A login wait and a dead connection both blank the session's
+    /// runtime identity, and a view renders that: what the core holds has
+    /// to go with the run it described, or the read answers with a mode
+    /// and a model the session no longer has.
+    #[test]
+    fn a_login_wait_clears_the_held_view_facts() {
+        let mut domain = seeded_view_facts();
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::AuthRequired {
+                method_name: "oauth".to_owned(),
+                method_description: "sign in".to_owned(),
+            },
+        );
+
+        assert_view_facts_cleared(&domain, "no credential");
+    }
+
+    /// The same, for the other event that ends a run.
+    #[test]
+    fn a_dead_connection_clears_the_held_view_facts() {
+        let mut domain = seeded_view_facts();
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::ConnectionFailed {
+                message: "reader died".to_owned(),
+                kind: SpawnFailureKind::Unclassified,
+            },
+        );
+
+        assert_view_facts_cleared(&domain, "the subprocess died");
+    }
+
+    fn seeded_view_facts() -> DomainSession {
+        let mut domain = empty_domain();
+        apply_event_to_domain(
+            &mut domain,
+            &hook_observation(Some("plan"), Some("max"), Some("tu-1"), Some("Explore")),
+        );
+        domain.current_model =
+            Some(forge_primitives::CurrentModel::new("claude-opus-5", "Opus", "Claude Opus 5"));
+        domain.mcp_servers = Some(crate::domain_session::McpServers::default());
+        domain.context_usage =
+            Some(crate::domain_session::ContextUsage { percent: Some(10), max_tokens: None });
+        domain
+    }
+
+    fn assert_view_facts_cleared(domain: &DomainSession, why: &str) {
+        assert_eq!(domain.observed_permission_mode, None, "{why} leaves no mode standing");
+        assert_eq!(domain.observed_effort, None, "{why} leaves no effort standing");
+        assert_eq!(domain.current_model, None, "{why} leaves no model standing");
+        assert_eq!(domain.context_usage, None, "{why} leaves no context reading standing");
+        assert_eq!(domain.mcp_servers, None, "{why} leaves no server snapshot standing");
+    }
+
+    /// The process walk is not a fact of the run that ended: a view goes on
+    /// painting the last tree it was given after a failed connection, so
+    /// the read has to go on serving it. It is cleared where a view learns
+    /// the cwd moved, which is that path's job and not this one's.
+    #[test]
+    fn a_dead_connection_keeps_the_process_walk() {
+        let mut domain = empty_domain();
+        domain.process_snapshot = Some(forge_agent::env::processes::ProcessSnapshot {
+            processes: Vec::new(),
+            scanned_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::ConnectionFailed {
+                message: "reader died".to_owned(),
+                kind: SpawnFailureKind::Unclassified,
+            },
+        );
+
+        assert!(
+            domain.process_snapshot.is_some(),
+            "the walk describes a tree a view is still painting, so it stays readable",
+        );
+    }
+
+    /// A Monitor tool call is live work, and the core holds it so a view
+    /// that is not the TUI can draw it.
+    #[test]
+    fn a_monitor_tool_call_enters_the_held_set() {
+        let mut domain = empty_domain();
+
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-mon", "ci-watch")));
+
+        assert_eq!(domain.monitors.len(), 1, "the call enters the set");
+        let held = &domain.monitors[0];
+        assert_eq!(held.tool_use_id, "tu-mon", "keyed by the tool_use that started it");
+        assert_eq!(held.description, "ci-watch", "carrying its headline");
+        assert_eq!(held.command, "gh run watch 1", "and the command it watches");
+        assert_eq!(
+            held.status,
+            forge_primitives::MonitorStatus::Running,
+            "and it starts running, which is the only state the tool call proves",
+        );
+        assert_eq!(held.task_id, None, "with no task id the wire has not named yet");
+    }
+
+    /// The monitor's terminal transition is keyed by the CLI's task id,
+    /// so the `task_started` stamp is what lets a later `task_updated`
+    /// find the record at all.
+    #[test]
+    fn a_monitors_task_transition_settles_its_held_record() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-mon", "ci-watch")));
+
+        apply_event_to_domain(&mut domain, &sdk_message(task_started("t-1", Some("tu-mon"))));
+        assert_eq!(
+            domain.monitors[0].task_id.as_deref(),
+            Some("t-1"),
+            "the task id the CLI assigned is stamped on the record",
+        );
+
+        apply_event_to_domain(&mut domain, &sdk_message(task_updated("t-1", "completed")));
+
+        assert_eq!(
+            domain.monitors[0].status,
+            forge_primitives::MonitorStatus::Completed,
+            "a clean exit settles the monitor",
+        );
+    }
+
+    /// A monitor that was already running before this process started is
+    /// in the transcript the connect carries, and the transcript carries
+    /// no lifecycle frame at all: the replay synthesizer emits user and
+    /// assistant messages and nothing else. So a seeded entry is settled
+    /// on arrival - one seeded running could never be settled, because
+    /// every settlement is keyed on the task id the transcript cannot
+    /// carry.
+    #[test]
+    fn a_monitor_folded_from_a_transcript_is_seeded_settled() {
+        let mut domain = empty_domain();
+
+        fold_monitor(
+            &mut domain,
+            &monitor_tool_use("tu-mon", "ci-watch"),
+            MonitorOrigin::Transcript,
+        );
+
+        assert_eq!(domain.monitors.len(), 1, "the transcript's monitor is seeded");
+        assert_eq!(
+            domain.monitors[0].status,
+            forge_primitives::MonitorStatus::Completed,
+            "settled rather than left falsely running forever",
+        );
+        assert_eq!(
+            domain.monitors[0].task_id, None,
+            "with no task id, which is why nothing could ever settle it",
+        );
+    }
+
+    /// A live tool call is not settled: its task is running and the
+    /// command frames that settle it are still to come.
+    #[test]
+    fn a_monitor_folded_from_the_wire_is_seeded_running() {
+        let mut domain = empty_domain();
+
+        fold_monitor(&mut domain, &monitor_tool_use("tu-mon", "ci-watch"), MonitorOrigin::Wire);
+
+        assert_eq!(
+            domain.monitors[0].status,
+            forge_primitives::MonitorStatus::Running,
+            "a call on the live wire is running until the command says otherwise",
+        );
+    }
+
+    /// The monitor set drains once every entry is terminal, which is what
+    /// the terminal does: a session that ran a monitor an hour ago shows
+    /// no section, not a section with nothing to say.
+    #[test]
+    fn the_monitor_set_drains_once_every_entry_is_terminal() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-a", "ci-watch")));
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-b", "deploy-gate")));
+        apply_event_to_domain(&mut domain, &sdk_message(task_started("t-a", Some("tu-a"))));
+        apply_event_to_domain(&mut domain, &sdk_message(task_started("t-b", Some("tu-b"))));
+
+        apply_event_to_domain(&mut domain, &sdk_message(task_updated("t-a", "completed")));
+        assert_eq!(
+            domain.monitors.len(),
+            2,
+            "one settled monitor keeps the section, holding its tail"
+        );
+
+        apply_event_to_domain(&mut domain, &sdk_message(task_notification("t-b")));
+
+        assert!(
+            domain.monitors.is_empty(),
+            "every entry terminal drains the set rather than leaving an empty section",
+        );
+    }
+
+    /// A notification whose status forge cannot name is still a
+    /// notification, and it is the last frame a monitor sends: the
+    /// terminal drains on every one of them, so a status the CLI adds
+    /// later must not leave the core's set standing forever.
+    #[test]
+    fn an_unnameable_task_status_still_drains_the_set() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-a", "ci-watch")));
+        apply_event_to_domain(&mut domain, &sdk_message(task_started("t-a", Some("tu-a"))));
+        // Settled by the command frame, which deliberately does not drain:
+        // the notification that follows is what carries the tail.
+        apply_event_to_domain(&mut domain, &sdk_message(task_updated("t-a", "killed")));
+
+        apply_event_to_domain(
+            &mut domain,
+            &sdk_message(task_notification_with_status("t-a", "reticulating")),
+        );
+
+        assert!(
+            domain.monitors.is_empty(),
+            "a notification drains the set whatever its status says",
+        );
+    }
+
+    /// The same drain runs over a transcript's seed, so a resumed session
+    /// whose monitors were all over shows none of them.
+    #[test]
+    fn a_resumed_sessions_history_leaves_no_live_monitor() {
+        let mut domain = empty_domain();
+        let mut connected = connected_event("uuid-1", "/proj");
+        if let AgentEvent::Connected { history_updates, .. } = &mut connected {
+            *history_updates = Some(vec![
+                monitor_tool_use("tu-mon", "ci-watch"),
+                monitor_tool_use("tu-other", "deploy-gate"),
+            ]);
+        }
+
+        apply_event_to_domain(&mut domain, &connected);
+
+        assert!(
+            domain.monitors.is_empty(),
+            "a transcript cannot say a monitor is still running, so none of them are drawn",
         );
     }
 

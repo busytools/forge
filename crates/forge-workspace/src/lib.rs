@@ -97,7 +97,7 @@ pub use forge_gateway::{LoadingState, Unusable, UsageFetchStatus};
 // The normalizer's prompt axes reach the TUI only through this
 // re-export: forge-tui depends on no forge-dictate crate of its own.
 pub use dictate::resolve_capture_device;
-pub use domain_session::DomainSession;
+pub use domain_session::{ContextUsage, DomainSession, McpServers};
 pub use error::WorkspaceError;
 pub use forge_dictate::Device;
 pub use forge_dictate::normalize::{Context, Structure, Styling};

@@ -67,7 +67,9 @@ pub fn collect_mcp_servers(app: &App) -> McpServerSection {
 
     let mut process_of: HashMap<String, (&ProcessEntry, u64)> = HashMap::new();
     let mut claimed_pids: HashSet<u32> = HashSet::new();
-    if let Some(snapshot) = session.process_snapshot.as_ref() {
+    // Held beyond the block: `process_of` borrows rows out of the walk.
+    let snapshot = app.active_process_snapshot();
+    if let Some(snapshot) = snapshot.as_ref() {
         let wire_alive = crate::app::processes::wire_alive_tool_calls(session);
         let matcher = crate::app::processes::WireMatcher::new(&wire_alive);
         join_processes_to_servers(snapshot, servers, &matcher, &mut process_of, &mut claimed_pids);
