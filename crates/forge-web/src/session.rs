@@ -381,11 +381,19 @@ async fn columns(
                         @if compacting {
                             div .compacting { span .ring {} "Compacting context\u{2026}" }
                         }
-                        // A turn in flight draws its row where the settled
-                        // one will land, so the settle replaces the row
-                        // rather than moving it.
+                        // A turn in flight draws its row where the settled one
+                        // will land, in a work block of its own: the block's
+                        // padding is what puts the row where the settle will
+                        // leave it, rather than moving it by eight pixels
+                        // under the reader's cursor.
                         @if let Some(live) = live_turn.filter(|live| live.started_at.is_some()) {
-                            (turn_report_row(&live_report(live, Instant::now()), true, "turn-live"))
+                            div .work {
+                                (turn_report_row(
+                                    &live_report(live, Instant::now()),
+                                    true,
+                                    "turn-live",
+                                ))
+                            }
                         }
                     }
                 }
@@ -1763,7 +1771,7 @@ fn account_chip(accounts: &AccountsView, account: Option<&str>) -> Markup {
     let loading = accounts.loading.iter().find(|row| row.display_name == account);
     let usage = accounts.usage_for(account);
     html! {
-        details .acct {
+        details .acct data-k="acct" {
             summary { span .dot .idle {} (account) }
             div .pop {
                 div .hd {

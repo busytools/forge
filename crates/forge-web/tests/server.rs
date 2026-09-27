@@ -860,21 +860,53 @@ async fn the_type_scale_is_the_mocks() {
     }
 }
 
-/// The declarations a stylesheet makes for one selector, whitespace
+/// Every declaration block a stylesheet makes for one selector, whitespace
 /// collapsed so the mockup's formatting and the sheet's compare.
-fn declarations_for(css: &str, selector: &str) -> String {
-    let at =
-        css.find(&format!("{selector} {{")).unwrap_or_else(|| panic!("no rule for {selector}"));
-    let rest = &css[at..];
-    let open = rest.find('{').expect("the block opens");
-    let close = rest[open..].find('}').expect("the block closes");
-    rest[open + 1..open + close].split_whitespace().collect::<Vec<_>>().join(" ")
+///
+/// Every one, not the first: a rule that agrees with the mockup at one width
+/// and overrides it at another is exactly what a first-block reader misses.
+fn blocks_for(css: &str, selector: &str) -> Vec<String> {
+    let needle = format!("{selector} {{");
+    let mut at = 0;
+    let mut out = Vec::new();
+    while let Some(found) = css[at..].find(&needle) {
+        let start = at + found + needle.len() - 1;
+        let rest = &css[start..];
+        let close = rest.find('}').unwrap_or_else(|| panic!("{selector} never closes"));
+        out.push(rest[1..close].split_whitespace().collect::<Vec<_>>().join(" "));
+        at = start + close;
+    }
+    assert!(!out.is_empty(), "no rule for {selector}");
+    out
 }
 
-/// The turn body's grid is the mockup's, declaration for declaration. It
-/// rendered as one run-on line with every label fused to its value until the
-/// sheet was given these, and nothing in the suite noticed: the fields were
-/// all present and every one of them was asserted.
+/// The class names inside the element carrying `class="outer"`, in the order
+/// they appear there.
+fn classes_within(html: &str, outer: &str) -> Vec<String> {
+    let marker = format!("class=\"{outer}\"");
+    let start = html.find(&marker).unwrap_or_else(|| panic!("no {outer}")).to_owned();
+    let rest = &html[start..];
+    let end = rest.find("</div>").unwrap_or(rest.len());
+    let body = &rest[..end];
+    let mut out = Vec::new();
+    for chunk in body.split("class=\"").skip(1) {
+        if let Some(name) = chunk.split('"').next()
+            && name != outer
+            && !out.iter().any(|seen| seen == name)
+        {
+            out.push(name.to_owned());
+        }
+    }
+    out
+}
+
+/// The turn body's grid is the mockup's: the declarations, in every block the
+/// sheet writes them in, and the class names its own markup carries.
+///
+/// It rendered as one run-on line with every label fused to its value until
+/// the sheet was given these, and nothing in the suite noticed: the fields
+/// were all present and every one of them was asserted. A rename takes the
+/// grid away again the same way, which is why the names are compared too.
 #[tokio::test]
 async fn the_turn_body_grid_is_the_mocks() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -883,12 +915,13 @@ async fn the_turn_body_grid_is_the_mocks() {
     let (_status, _content_type, sheet) = get(&config, "/web.css").await;
 
     for selector in [".tibody", ".tibody .l, .tibody .n", ".tibody .wide", ".tibody b"] {
-        assert_eq!(
-            declarations_for(&sheet, selector),
-            declarations_for(MOCK, selector),
-            "the sheet's {selector}",
-        );
+        let want = blocks_for(MOCK, selector);
+        for block in blocks_for(&sheet, selector) {
+            assert_eq!(block, want[0], "the sheet's {selector}");
+        }
     }
+    // The class names the body is built from are compared where a body is
+    // drawn: a read carries no settled turn, so there is none on this page.
 }
 
 /// A conversation with a run of tool calls renders the run's count and the
@@ -1126,6 +1159,11 @@ async fn a_settled_turn_draws_its_row_and_its_body() {
     assert!(region.contains("<b>out</b>1,711"), "the body's counts are the exact ones: {region}");
     assert!(region.contains("<b>cache</b>102,194 read"), "both sides of the cache: {region}");
     assert!(region.contains("<span class=\"tog\"></span>"), "the chip that opens it: {region}");
+    assert_eq!(
+        classes_within(&region, "tibody"),
+        classes_within(MOCK, "tibody"),
+        "and the body's cells are the mockup's, by name",
+    );
     assert!(
         region.contains("93% of input served from cache"),
         "and the share spelled out: {region}",
@@ -1350,6 +1388,42 @@ async fn a_zero_inside_a_real_usage_block_is_drawn_as_one() {
     assert!(region.contains("<b>cache</b>0 read"), "the zero it did spend: {region}");
     assert!(region.contains("<b>wrote</b>13,939"), "beside the count it did spend: {region}");
     assert!(region.contains("13k written"), "and the row's own chip keeps it: {region}");
+}
+
+/// A mutation's leaf draws the edit glyph and starts open, which is what the
+/// fold's one `edit` row feeds. Both are decided in the view, and reverting
+/// either to the four tool names behind that row leaves every mutation's
+/// leaf collapsed and generic, which is what the mockup forbids.
+#[tokio::test]
+async fn a_mutation_leaf_draws_the_edit_glyph_and_starts_open() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_9","name":"Edit","input":{"file_path":"/tmp/src/lib.rs","old_string":"one","new_string":"two"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"the file has been updated"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(
+        page.contains("<div class=\"knd\"><svg class=\"ic gl\"><use href=\"#i-edit\">"),
+        "the family row draws the mutation's glyph: {page}",
+    );
+    assert!(
+        page.contains("<details class=\"leaf\" open data-k=\"leaf-toolu_9\">"),
+        "and its own leaf opens on the diff without being asked: {page}",
+    );
 }
 
 /// A source file a call read is drawn as the mockup draws it: a code block

@@ -247,14 +247,6 @@ fn session_updates(
     )
 }
 
-/// Fold one update into the connection's conversation, answering whether
-/// the page has to be redrawn.
-///
-/// A message the read already carried is dropped: the read is the baseline
-/// and the stream is applied on top of it, so anything in both is already
-/// drawn. The identity is the message's own id, which the transcript row and
-/// the wire frame share.
-///
 /// The conversation a replacement hands over, when it is this seat's.
 ///
 /// A resume or a `/new` puts another occupant in the slot and the page's copy
@@ -273,6 +265,14 @@ fn replacement(update: &SessionUpdate, slot: &SessionSlot) -> Option<Vec<Message
     }
 }
 
+/// Fold one update into the connection's conversation, answering whether the
+/// page has to be redrawn.
+///
+/// A message the read already carried is dropped: the read is the baseline
+/// and the stream is applied on top of it, so anything in both is already
+/// drawn. The identity is the message's own id, which the transcript row and
+/// the wire frame share.
+///
 /// A delivery the workspace injected draws as a turn of its own, forged from
 /// the update rather than read off the wire: the CLI does not echo a prompt
 /// it was handed on stdin, so the assistant would otherwise answer something
