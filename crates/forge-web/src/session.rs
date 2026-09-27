@@ -143,7 +143,7 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
     let chip = roster
         .projects
         .iter()
-        .find(|seat| seat.name == slot.project())
+        .find(|seat| seat.org == slot.org() && seat.name == slot.project())
         .and_then(|seat| roster.chip_for(&seat.key))
         .map(|chip| chip.account_name);
     let waking = !roster.has_agent(slot);
