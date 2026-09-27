@@ -15,7 +15,7 @@ pub mod roster;
 pub mod session;
 pub mod workers;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
@@ -107,15 +107,25 @@ impl ViewSurface {
     /// removes.
     ///
     /// `cwd_raw` is the session's own cwd, which a git worker's worktree
-    /// overrides. A slot with no live session reads as an empty
-    /// conversation: nothing has been written for it to read, and another
-    /// session's messages would be a wrong answer rather than a missing
-    /// one.
+    /// overrides. An empty `cwd_raw` resolves to the slot's recorded path
+    /// rather than being passed on, because a read given no directory walks
+    /// every project on disk for the file name. A slot with no live session,
+    /// or one whose cwd no record places, reads as an empty conversation:
+    /// another session's messages would be a wrong answer rather than a
+    /// missing one.
     pub fn conversation(&self, slot: &SessionSlot, cwd_raw: &Path) -> ConversationHistory {
         let Some(session_id) = self.workspace.running_session_id_for(slot) else {
             return ConversationHistory::default();
         };
-        let cwd = self.workspace.git_scan_cwd_for_session(slot, cwd_raw);
+        let cwd_raw = if cwd_raw.as_os_str().is_empty() {
+            let Some(recorded) = self.workspace.cwd_for_session(slot) else {
+                return ConversationHistory::default();
+            };
+            PathBuf::from(recorded)
+        } else {
+            cwd_raw.to_path_buf()
+        };
+        let cwd = self.workspace.git_scan_cwd_for_session(slot, &cwd_raw);
         forge_workspace::session_history(
             self.workspace.config_dir(),
             &session_id,
@@ -253,6 +263,50 @@ mod tests {
         let read = ViewSurface::new(Arc::clone(&workspace)).conversation(&worker, &project_root);
 
         assert_eq!(read.messages.len(), 2, "the worker reads its worktree transcript");
+    }
+
+    /// An empty `cwd_raw` is a state the launchpad produces, and the read
+    /// must not carry it on. The slot's own record places the read instead,
+    /// so a caller that holds no path still gets the session's conversation.
+    /// The fixture writes a real `forge.toml`: the project has to be one the
+    /// workspace loaded, not one only the test overlay knows.
+    #[test]
+    fn conversation_places_an_empty_cwd_from_the_session_record() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.seed_test_running_session_id(&lead, SESSION_A);
+
+        // The fixture's one project lives at `/tmp`; the transcript lands
+        // under its key inside the fixture's own config dir.
+        let projects = workspace.config_dir().join("projects").join(
+            forge_workspace::userdata::catalog::scan::project_key_for_directory(Some("/tmp")),
+        );
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        seed_transcript(&projects, SESSION_A, 2);
+
+        let read = ViewSurface::new(Arc::clone(&workspace)).conversation(&lead, Path::new(""));
+
+        assert_eq!(read.messages.len(), 2, "the record places the read the caller could not");
+    }
+
+    /// A slot whose cwd no record places reads as empty, and not as whatever
+    /// a walk of every project happened to find: given no directory, the
+    /// scan answers with the first `<session_id>.jsonl` on disk, which can
+    /// belong to something else entirely.
+    #[test]
+    fn conversation_does_not_scan_every_project_for_an_empty_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _updates) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let stranger = dir.path().join("projects").join("some-other-project");
+        std::fs::create_dir_all(&stranger).expect("projects dir");
+        seed_transcript(&stranger, SESSION_A, 2);
+
+        let unplaced = SessionSlot::lead("TestOrg", "not-a-project");
+        workspace.seed_test_running_session_id(&unplaced, SESSION_A);
+
+        let read = ViewSurface::new(Arc::clone(&workspace)).conversation(&unplaced, Path::new(""));
+
+        assert!(read.messages.is_empty(), "no recorded cwd reads as empty, not as a stranger's");
     }
 
     /// The verb reads the slot's own transcript, and a slot with no
