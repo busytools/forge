@@ -38,22 +38,19 @@ pub const DEFAULT_WEB_PORT: u16 = 8790;
 /// The marks forge ships, by the name `[web] mark` takes - a bounded set
 /// rather than a path, so every option is one forge has drawn.
 pub const MARK_NAMES: &[&str] = &[
+    "panes",
     "klin",
     "lanes",
     "f_slab",
     "split",
     "spine",
-    "slab",
     "grid",
     "clamp",
     "strike",
-    "cascade",
     "nest",
     "chamfer",
     "tally",
     "stencil_f",
-    "anvil",
-    "spark",
 ];
 
 /// The palettes forge ships, by the name `[web] theme` takes.
