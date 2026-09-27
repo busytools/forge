@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; logo directions, second pass</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.55 var(--ui);
+    -webkit-font-smoothing: antialiased;
+    padding: 0 0 1px;
+  }
+
+  .wrap { max-width: 1220px; margin: 0 auto; padding: 36px 32px 96px; }
+
+  h1 { font-size: 22px; font-weight: 650; letter-spacing: -.012em; }
+  h1 em { color: var(--accent); font-style: normal; }
+  .lede { color: var(--muted); max-width: 78ch; margin-top: 9px; font-size: 13.5px; }
+  .lede + .lede { margin-top: 8px; }
+  .rules { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .rules span {
+    font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+    border: 1px solid var(--line); background: var(--s1);
+    border-radius: 999px; padding: 3px 10px;
+  }
+  .rules span b { color: var(--accent); font-weight: 600; }
+
+  .band { margin-top: 40px; }
+  .band > h2 {
+    font-size: 12px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--text); padding-bottom: 9px; border-bottom: 1px solid var(--line);
+  }
+  .band > h2 span { color: var(--dim); font-weight: 400; letter-spacing: 0; text-transform: none; font-family: var(--mono); font-size: 11px; margin-left: 10px; }
+
+  .sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(452px, 1fr)); gap: 16px; margin-top: 16px; }
+
+  .card { background: var(--s1); border: 1px solid var(--line); border-radius: 12px; padding: 15px 17px 17px; }
+  .card > h3 { font-size: 13.5px; font-weight: 650; letter-spacing: -.005em; display: flex; align-items: baseline; gap: 9px; }
+  .card > h3 .n { font-family: var(--mono); font-size: 10.5px; font-weight: 400; color: var(--dim); }
+  .card > h3 .fam { margin-left: auto; font-family: var(--mono); font-size: 9.5px; font-weight: 400; color: var(--dim); letter-spacing: .04em; }
+  .card > h3 code { font-family: var(--mono); font-size: 10.5px; color: var(--accent); background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  .idea { color: var(--muted); font-size: 12.5px; margin: 6px 0 12px; max-width: 64ch; }
+
+  .row { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; padding: 9px 0; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .tag { flex: 0 0 44px; align-self: center; font-family: var(--mono); font-size: 9.5px; color: var(--dim); letter-spacing: .03em; }
+
+  figure { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  figcaption { font-family: var(--mono); font-size: 9px; color: var(--dim); letter-spacing: .04em; }
+
+  .mk { display: block; color: var(--accent); flex: 0 0 auto; }
+  .mk.w { color: var(--text); }
+
+  .note {
+    margin-top: 12px; padding-left: 10px; border-left: 2px solid var(--line);
+    font-size: 11.5px; color: var(--dim); max-width: 66ch;
+  }
+  .note b { color: var(--muted); font-weight: 600; }
+  .note.risk { border-left-color: var(--bad); }
+  .note.good { border-left-color: var(--ok); }
+
+  .places { background: var(--s1); border: 1px solid var(--line); border-radius: 12px; padding: 6px 17px 14px; margin-top: 16px; }
+  .place { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; padding: 11px 0; }
+  .place + .place { border-top: 1px solid var(--line); }
+  .place .nm { font-family: var(--mono); font-size: 10px; color: var(--dim); flex: 0 0 84px; }
+  .sl { font-family: var(--mono); font-size: 9px; color: var(--dim); letter-spacing: .04em; flex: 0 0 46px; }
+
+  .hd { display: flex; align-items: center; gap: 9px; }
+  .hd .word { font-size: 19px; font-weight: 650; letter-spacing: -.022em; }
+  .tab { display: flex; align-items: center; gap: 6px; background: var(--s2); border: 1px solid var(--line); border-radius: 6px 6px 0 0; padding: 5px 10px 5px 7px; }
+  .tab .fav { width: 16px; height: 16px; flex: 0 0 16px; color: var(--text); }
+  .tab .ttl { font-size: 11px; color: var(--muted); }
+  .empty { border: 1px dashed var(--line); border-radius: 10px; padding: 10px 15px; display: flex; align-items: center; gap: 11px; }
+  .empty .emk { width: 34px; height: 34px; flex: 0 0 34px; color: rgba(244,118,0,.55); }
+  .empty .t { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+
+  .picks { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 16px; }
+  .pick { background: var(--s1); border: 1px solid var(--line); border-radius: 12px; padding: 15px 17px; }
+  .pick.one { border-color: rgba(244,118,0,.42); }
+  .pick h4 { font-size: 13px; font-weight: 650; display: flex; align-items: center; gap: 10px; }
+  .pick h4 .rank { font-family: var(--mono); font-size: 10px; color: var(--accent); }
+  .pick p { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+  .drop { border-left: 2px solid var(--bad); }
+  .drop h4 .rank { color: var(--bad); }
+  .keep { border-left: 2px solid var(--ok); }
+  .keep h4 .rank { color: var(--ok); }
+  code { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+
+  dl.fam { margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }
+  dl.fam > div { background: var(--s1); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  dl.fam dt { font-size: 12.5px; font-weight: 650; }
+  dl.fam dd { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  dl.fam b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<!-- Every mark defined once; currentColor passes through <use>. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <g id="m-wedge"><path fill="currentColor" d="M4 20V4A16 16 0 0 1 20 20Z"/></g>
+  <g id="m-keystone"><path fill="currentColor" d="M9 4h6l6 16H3Z"/></g>
+  <g id="m-gusset"><path fill="currentColor" d="M3 3h4v10l4 4h10v4H3Z"/></g>
+  <g id="m-rails"><g fill="currentColor"><rect x="2.6" y="3.2" width="18.8" height="3.2" rx="1"/><rect x="2.6" y="8" width="18.8" height="3.2" rx="1"/><rect x="2.6" y="12.8" width="18.8" height="3.2" rx="1"/><rect x="2.6" y="17.6" width="18.8" height="3.2" rx="1"/></g></g>
+  <g id="m-queue"><g fill="currentColor"><rect x="2.6" y="3.4" width="18.8" height="3.6" rx="1"/><rect x="2.6" y="10.2" width="13.4" height="3.6" rx="1"/><rect x="2.6" y="17" width="8" height="3.6" rx="1"/></g></g>
+  <g id="m-panes"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></g>
+  <g id="m-fan"><g fill="currentColor"><rect x="5.6" y="3" width="2.8" height="14" rx="1.4" transform="rotate(0 7 17)"/><rect x="5.6" y="3" width="2.8" height="14" rx="1.4" transform="rotate(45 7 17)"/><rect x="5.6" y="3" width="2.8" height="14" rx="1.4" transform="rotate(90 7 17)"/></g></g>
+  <g id="m-feed"><g fill="currentColor"><rect x="9.8" y="1" width="4.4" height="7.5" rx="2.2" transform="rotate(45 12 12)"/><rect x="9.8" y="15.5" width="4.4" height="7.5" rx="2.2" transform="rotate(45 12 12)"/></g></g>
+  <g id="m-dock"><rect x="3.4" y="3.4" width="12.4" height="12.4" rx="4" fill="none" stroke="currentColor" stroke-width="2.6"/><rect x="14.6" y="14.6" width="7" height="7" rx="2.4" fill="currentColor"/></g>
+  <g id="m-loop"><path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" d="M20.4 9V6.6A3.2 3.2 0 0 0 17.2 3.4H6.8A3.2 3.2 0 0 0 3.6 6.6v10.8A3.2 3.2 0 0 0 6.8 20.6h10.4A3.2 3.2 0 0 0 20.4 17.4V15"/></g>
+  <g id="m-dial"><path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" d="M12 3.6A8.4 8.4 0 1 1 5.1 7.2"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></g>
+  <g id="m-orbit"><circle cx="12" cy="12" r="7.8" fill="none" stroke="currentColor" stroke-width="2.6"/><circle cx="17.5" cy="6.5" r="3.1" fill="currentColor"/></g>
+  <g id="m-prism"><g fill="currentColor"><path d="M12 2.8 20.4 7.6 12 12.4 3.6 7.6Z"/><path d="M3.6 9.2 11.2 13.7V21.2L3.6 16.7Z"/><path d="M12.8 13.7 20.4 9.2V16.7L12.8 21.2Z"/></g></g>
+  <g id="m-f_mono"><path fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" d="M7.2 20.4V4.4h10.4M7.2 12.2h6.6"/></g>
+</defs></svg>
+
+<div class="wrap">
+
+  <h1>forge &middot; logo directions <em>ii</em></h1>
+  <p class="lede">
+    Fourteen marks, drawn from what current developer tools and technical products
+    actually put on a tab rather than from a guess. Every mark is one
+    <code>&lt;svg viewBox="0 0 24 24"&gt;</code> in <code>currentColor</code>, shown at 96, 24
+    and 16px in accent and in single colour, so a direction that only works large
+    fails in front of you rather than in a favicon nobody rechecks.
+  </p>
+  <p class="lede">
+    No gradients, no two-tone, no container that exists only to hold a gradient.
+    A mark that needs two colours breaks the theme; a mark that needs three strokes
+    is not a favicon.
+  </p>
+  <div class="rules">
+    <span>holds at <b>24px</b></span>
+    <span>survives <b>16px</b></span>
+    <span><b>monochrome</b> only</span>
+    <span><b>currentColor</b> throughout</span>
+    <span>one path or a <b>small group</b></span>
+    <span>name is a <b>[web] mark</b> value</span>
+  </div>
+
+  <section class="band">
+    <h2>The marks <span>14 directions, six families: solid primitive, many-of-one, fan and stream, container, monoline, letterform</span></h2>
+    <div class="sheet">
+
+      <!-- 01 -->
+      <article class="card">
+        <h3><span class="n">01</span>Wedge<span class="fam">solid primitive</span><code>wedge</code></h3>
+        <p class="idea">One solid mass with one straight edge and one curved: the corner of a circle that has been cut off. Nothing inside it to lose, which is the whole point of the family Vercel, Biome and Alacritty are in.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-wedge"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-wedge"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-wedge"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-wedge"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-wedge"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-wedge"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note good">Cannot fail at 16px: it is one silhouette with no interior edge, and the arc is 16 units of radius so the curve still reads as a curve in 10 pixels of ink. Light and dark both take it with no variant.</p>
+      </article>
+
+      <!-- 02 -->
+      <article class="card">
+        <h3><span class="n">02</span>Keystone<span class="fam">solid primitive</span><code>keystone</code></h3>
+        <p class="idea">A solid trapezoid, narrow at the top. The piece that locks an arch, stated as pure geometry with no picture in it. The triangle's cousin without being the triangle everyone already has.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-keystone"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-keystone"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-keystone"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-keystone"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-keystone"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-keystone"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The 6-unit top edge is 4px at 16px, so the taper survives. Sharp corners on the vocabulary from the print-engineering marks, and one fill with no interior line means nothing to mush.</p>
+      </article>
+
+      <!-- 03 -->
+      <article class="card">
+        <h3><span class="n">03</span>Gusset<span class="fam">solid primitive</span><code>gusset</code></h3>
+        <p class="idea">A thick L with a 45-degree brace across its inner corner. The bracket that holds a piece square, and the only mark here whose subject is the corner rather than the object.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-gusset"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-gusset"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-gusset"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-gusset"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-gusset"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-gusset"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">Both arms are 4 units, so at 16px it is a 2.7px bracket with a 2.7px diagonal, and the diagonal is the whole read. It sits in the same space as a code bracket, which is either a fit or a collision depending on how you feel about it.</p>
+      </article>
+
+      <!-- 04 -->
+      <article class="card">
+        <h3><span class="n">04</span>Rails<span class="fam">many-of-one</span><code>rails</code></h3>
+        <p class="idea">Four equal bars stacked tight. The Railway idiom, and the most literal statement of the product: many of the same thing running side by side, none of them ranked.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-rails"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-rails"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-rails"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-rails"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-rails"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-rails"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">Bar 3.2 units, gap 1.6: at 16px that is 2.1px of ink and a 1.1px gap, so the four bars survive as four and not as a slab. Four rather than three is what keeps it off <code>clamp</code>, which is already three bars on this sheet.</p>
+      </article>
+
+      <!-- 05 -->
+      <article class="card">
+        <h3><span class="n">05</span>Queue<span class="fam">many-of-one</span><code>queue</code></h3>
+        <p class="idea">Three bars, each shorter than the last, all hung off the same edge. Work draining rather than work listed, which is the one thing a roster view cannot show at a glance.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-queue"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-queue"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-queue"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-queue"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-queue"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-queue"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note risk">The honest risk is the icon dictionary: three descending bars left-aligned is what a signal-strength or a sort glyph looks like. The 8-unit shortest bar is what tips it, and it may not be enough. It is here because the idea is good, not because the drawing is finished.</p>
+      </article>
+
+      <!-- 06 -->
+      <article class="card">
+        <h3><span class="n">06</span>Panes<span class="fam">many-of-one</span><code>panes</code></h3>
+        <p class="idea">A frame split into two uneven panes with the left one solid. The tmux mark, redrawn: sessions inside one window, and exactly one of them alive. It is the only mark here that shows containment and state at once.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-panes"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-panes"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-panes"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-panes"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-panes"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-panes"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">Four elements: the frame, the divider, the filled pane. At 16px it reads as a box with the left half dark, which is a shape difference rather than a colour one, so a flatten to one colour leaves it intact. The 2-unit gap between the pane and the divider is 1.3px, which is where it is tightest.</p>
+      </article>
+
+      <!-- 07 -->
+      <article class="card">
+        <h3><span class="n">07</span>Fan<span class="fam">fan and stream</span><code>fan</code></h3>
+        <p class="idea">Three spokes swinging out of one corner. The lead-and-workers shape as a radial, which is the device the whole agent category has settled on this year, drawn from a corner rather than a centre so it is not the Claude burst.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-fan"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-fan"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-fan"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-fan"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-fan"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-fan"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note risk">At 96px it is a fan. At 24px and below the 45-degree spoke wins and it reads as a diagonal arrow with a bar behind it, which is a different mark. The other risk is adjacency rather than size: this is a relative of the Claude burst, and forge is the thing that hosts Claude sessions.</p>
+      </article>
+
+      <!-- 08 -->
+      <article class="card">
+        <h3><span class="n">08</span>Feed<span class="fam">fan and stream</span><code>feed</code></h3>
+        <p class="idea">One diagonal, broken in the middle. Two parallel bars pointing the same way with a gap between them: a stream crossing a boundary, which is what a session stream is. It is also the two slashes a developer already reads as a comment.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-feed"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-feed"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-feed"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-feed"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-feed"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-feed"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">Two bars 4.4 units wide and 11.9 long with a 2.6-unit gap: at 16px that is 2.9px of ink, a 7.9px stroke and a 1.7px break. The break is the tightest number on this sheet, and if it closes the mark becomes a single diagonal. It is also a cousin of <code>strike</code>: same 45 degrees, different count, no crossing.</p>
+      </article>
+
+      <!-- 09 -->
+      <article class="card">
+        <h3><span class="n">09</span>Dock<span class="fam">container plus symbol</span><code>dock</code></h3>
+        <p class="idea">A frame with a solid tile dropped onto its corner. The project holding a session, or the server holding a view. Two masses and no fine detail, which is the shape a favicon wants and the shape the whole app-icon convention is built on.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-dock"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-dock"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-dock"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-dock"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-dock"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-dock"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note risk">Frame stroke 2.6, tile 7 units: at 16px a 10px box with a 1.7px outline and a 4.7px block clipping its corner, and the two stay two because the block is smaller than the hole it leaves. Its failure mode is the dictionary, not the size: a small solid mark on the outside of a ring at tab size is what a magnifier looks like. Moving the block to the middle of an edge instead kills the magnifier and introduces a battery, so this is the better of the two.</p>
+      </article>
+
+      <!-- 10 -->
+      <article class="card">
+        <h3><span class="n">10</span>Loop<span class="fam">monoline</span><code>loop</code></h3>
+        <p class="idea">A rounded square that almost closes, with the two ends left round and apart. The agent loop as one stroke, and the only mark here whose subject is the cycle rather than the contents.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-loop"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-loop"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-loop"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-loop"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-loop"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-loop"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">Stroke 3 gives 2px at 16px, which is the thinnest thing that survives here, and round caps keep the ends from looking cut. The 6-unit opening is 4px at 16px, so it reads as open. This is the mark that spins cleanly if the working state ever wants a motion variant.</p>
+      </article>
+
+      <!-- 11 -->
+      <article class="card">
+        <h3><span class="n">11</span>Dial<span class="fam">monoline</span><code>dial</code></h3>
+        <p class="idea">An open ring with a solid point at the centre. One live thing inside a cycle that has a way out, rather than a closed circle with nothing in it. OpenAI's rebrand reduced its whole mark to a solid point; this is that point with something around it.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-dial"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-dial"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-dial"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-dial"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-dial"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-dial"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">The centre dot is 5 units across and the ring sits at 8.4, so at 16px you get a 3.3px point inside a 2px ring with 2.9px of clearance. Both survive. The 55-degree opening is at the top-left, which is where a spinner's head would be, so this is also the one that animates most obviously.</p>
+      </article>
+
+      <!-- 12 -->
+      <article class="card">
+        <h3><span class="n">12</span>Orbit<span class="fam">monoline</span><code>orbit</code></h3>
+        <p class="idea">A closed ring with one solid bead riding it. The other end of the ring family from <code>dial</code>: here the loop is whole and the interest is the one thing on it. Reads as a session attached to a project that keeps going.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-orbit"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-orbit"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-orbit"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-orbit"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-orbit"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-orbit"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note risk">A 2.6-unit ring is 1.7px at 16px, and the bead is 6.2 units so it survives, but the bead grows toward the ring as the render shrinks and the two start to merge around 20px. The cleaner version would thicken the ring to 3 and drop the bead to 2.6.</p>
+      </article>
+
+      <!-- 13 -->
+      <article class="card">
+        <h3><span class="n">13</span>Prism<span class="fam">dimensional, flat</span><code>prism</code></h3>
+        <p class="idea">Three faces of a cube, separated by gaps rather than by shading, so it stays one colour. Cursor's isometric lineage, minus the shading that would break it on a dark page. Work shown from outside rather than in plan.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-prism"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-prism"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-prism"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-prism"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-prism"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-prism"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note risk">The seams are 1.4 units, which is 0.9px at 16px: below 24px the three faces fuse into one hexagonal lump and the whole idea goes. Cursor keeps a separately drawn flat one-colour version as its primary mark for exactly this reason, so this direction means shipping two drawings, not one.</p>
+      </article>
+
+      <!-- 14 -->
+      <article class="card">
+        <h3><span class="n">14</span>F Mono<span class="fam">letterform</span><code>f_mono</code></h3>
+        <p class="idea">The letter as one uniform stroke rather than as slabs or as a knockout. Resend and Anthropic both draw their letter as a path instead of setting it in a font; this is that construction at the lightest weight on this sheet.</p>
+        <div class="row"><span class="tag">accent</span>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="96" height="96"><use href="#m-f_mono"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="24" height="24"><use href="#m-f_mono"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk" viewBox="0 0 24 24" width="16" height="16"><use href="#m-f_mono"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <div class="row"><span class="tag">white</span>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="96" height="96"><use href="#m-f_mono"/></svg><figcaption>96</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="24" height="24"><use href="#m-f_mono"/></svg><figcaption>24</figcaption></figure>
+          <figure><svg class="mk w" viewBox="0 0 24 24" width="16" height="16"><use href="#m-f_mono"/></svg><figcaption>16</figcaption></figure>
+        </div>
+        <p class="note">3.2 units of stroke is 2.1px at 16px and the gaps in the letter are 4.6 units, so an F still reads in a tab. It floats with no container, which means it has no tile to hold it on a light bar: on light it wants the near-black colour and nothing else.</p>
+      </article>
+
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Where it actually goes <span>page header at 30px, browser tab at 16px, empty state at 34px</span></h2>
+    <div class="places">
+
+      <div class="place"><span class="nm">wedge</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-wedge"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-wedge"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-wedge"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">keystone</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-keystone"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-keystone"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-keystone"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">gusset</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-gusset"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-gusset"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-gusset"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">rails</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-rails"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-rails"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-rails"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">queue</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-queue"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-queue"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-queue"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">panes</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-panes"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-panes"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-panes"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">fan</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-fan"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-fan"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-fan"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">feed</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-feed"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-feed"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-feed"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">dock</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-dock"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-dock"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-dock"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">loop</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-loop"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-loop"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-loop"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">dial</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-dial"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-dial"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-dial"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">orbit</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-orbit"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-orbit"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-orbit"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">prism</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-prism"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-prism"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-prism"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+      <div class="place"><span class="nm">f_mono</span>
+        <span class="sl">header</span>
+        <span class="hd"><svg class="mk" viewBox="0 0 24 24" width="30" height="30"><use href="#m-f_mono"/></svg><span class="word">forge</span></span>
+        <span class="sl">tab</span>
+        <span class="tab"><svg class="fav" viewBox="0 0 24 24" width="16" height="16"><use href="#m-f_mono"/></svg><span class="ttl">forge</span></span>
+        <span class="sl">empty</span>
+        <span class="empty"><svg class="emk" viewBox="0 0 24 24" width="34" height="34"><use href="#m-f_mono"/></svg><span class="t">No sessions yet</span></span>
+      </div>
+
+    </div>
+    <p class="lede" style="margin-top:14px">
+      The tab is the size that decides it. On a dark browser the mark takes the page's
+      text colour; on a light one it wants the near-black fill, so the favicon ships as
+      an SVG with a <code>prefers-color-scheme</code> block rather than as one flat file,
+      and Safari needs a PNG fallback because it ignores that block on favicons.
+    </p>
+  </section>
+
+  <section class="band">
+    <h2>What the vocabulary actually is <span>read off shipped marks, not off taste</span></h2>
+    <dl class="fam">
+      <div>
+        <dt>One mass, no interior detail</dt>
+        <dd><b>Vercel</b> is a single triangle: <code>m12 1.608 12 20.784H0Z</code>, one path, no second element. <b>Biome</b> is one filled path. <b>Alacritty</b> is one path of nested chevrons.</dd>
+        <dd>The recurring argument is that extreme constraint buys recognition: the mark is describable in one sentence and drawable in one shape.</dd>
+      </div>
+      <div>
+        <dt>Many of one thing, stacked</dt>
+        <dd><b>Railway</b> is horizontal rail bands. <b>Warp</b> is two offset blocks with a notch. <b>tmux</b> is literally a divided rectangle. <b>Devin</b> is seven rounded hexagons arranged into one larger hexagon, per its registered trademark text.</dd>
+        <dd>This is the closest family to what forge is: the product is many-of-one-thing, and the category draws that directly.</dd>
+      </div>
+      <div>
+        <dt>Monoline with rounded joins</dt>
+        <dd><b>Sentry</b> is nested chevrons in one uniform stroke. <b>Raycast</b> is a rounded frame with a chamfered inner square and corner ticks. <b>Ghostty</b> is a single filled terminal with the glyph knocked out of it.</dd>
+        <dd>The trap in this family is stroke weight: anything under about 2.6 units on a 24 grid rasterises away at 16px.</dd>
+      </div>
+      <div>
+        <dt>The letter drawn as a path</dt>
+        <dd><b>Resend</b> is an R cut as one path, not set in a typeface. <b>Anthropic</b> is a filled A with the counter as a subpath. <b>Linear</b> is four arc strokes and reads as a letterform without being one.</dd>
+        <dd>A letter survives being 10px wide in a tab in a way no abstraction does. The cost is that it is the safe answer, and the category is full of them.</dd>
+      </div>
+      <div>
+        <dt>Negative space inside a field</dt>
+        <dd><b>Claude</b>'s app icon inverts: white burst on a solid orange tile. Third-party harnesses now carry Claude's burst, Amp's three-bar red mark and others as standardised SVGs so agents keep an identity inside someone else's UI.</dd>
+        <dd>A tile gives 16px a solid edge to hold, which is why <code>klin</code> still holds up better than most of the original sheet.</dd>
+      </div>
+      <div>
+        <dt>45-degree, and optical correction</dt>
+        <dd><b>Cursor</b>'s identity writeup is explicit that the original cube was mathematically perfect isometry that would not render at small sizes, so the corners were rounded and the cursor offset to open a gap: abandoning geometric purity for optical truth. A separate flat one-colour version is the primary mark; the 2.5D and 3D versions are for the app icon.</dd>
+        <dd>Read as: a mark that needs its shading to work is not the primary mark.</dd>
+      </div>
+    </dl>
+    <p class="lede" style="margin-top:14px">
+      <b>Out of fashion, and left off this sheet:</b> gradients as the mark itself (the soft AI-default blob
+      is now called a liability rather than a shortcut), glassmorphism applied without purpose, glossy 3D
+      skeuomorphic containers, thin-stroke line icons at small sizes, and anything needing three strokes or
+      two colours to be legible. Also out: a mark that only exists large and gets redrawn smaller - one
+      drawing has to do the whole range.
+    </p>
+  </section>
+
+  <section class="band">
+    <h2>What I would pick <span>and what is only different</span></h2>
+    <div class="picks">
+
+      <div class="pick one">
+        <h4><span class="rank">01</span>Improvement: <code>panes</code></h4>
+        <p>The only mark on either sheet showing containment and state in one drawing, and it does it with
+        a shape difference rather than a colour one, so flattening to one colour leaves the reading intact.
+        It is the most product-specific thing here - forge is what puts several sessions in one window -
+        and it is the only one with somewhere to go: the filled pane can become the live-session count, so
+        the tab itself reports how much is running without a second mark.</p>
+      </div>
+
+      <div class="pick">
+        <h4><span class="rank">02</span>Improvement: <code>rails</code></h4>
+        <p>Four bars at 2.1px with a 1.1px gap. The plainest possible statement of the product, surviving
+        every size and both backgrounds with nothing added, and the safest mark on either sheet. It is the
+        honest successor to <code>lanes</code>: four equal bars read as a fleet where three unequal bars
+        read as a chart. The cost is that it is quiet to the point of being generic.</p>
+      </div>
+
+      <div class="pick">
+        <h4><span class="rank">03</span>Improvement: <code>dock</code></h4>
+        <p>Two masses, one outline and one solid: a 1.7px stroke and a 4.7px block at 16px. It is the best
+        looking mark on either sheet and it is built from the shape the category actually uses for an app
+        icon. Its failure mode is the dictionary rather than the size - a small solid block outside a ring
+        at tab size is what a magnifier looks like - which is why it is third and not first.</p>
+      </div>
+
+      <div class="pick">
+        <h4><span class="rank">04</span>Improvement: <code>gusset</code></h4>
+        <p>A bracket that is a brace rather than a bracket. 45 degrees is the deliberate angle in this
+        category right now, both arms are 4 units so nothing thins out, and it is the only mark here whose
+        subject is a corner. Same class of risk as <code>dock</code>: it sits where a code bracket sits.</p>
+      </div>
+
+      <div class="pick drop">
+        <h4><span class="rank">CUT</span>Prism, orbit, queue</h4>
+        <p><b>Prism</b> needs two drawings to work, the definition of the thing this sheet avoids.
+        <b>Orbit</b>'s bead and ring merge below about 20px. <b>Queue</b> has the best idea and the most
+        fragile drawing - three descending bars is a signal-strength glyph at 16px - so it is worth one
+        more pass, not a place in the top three.</p>
+      </div>
+
+      <div class="pick">
+        <h4><span class="rank">-</span>Just different, not better</h4>
+        <p><code>wedge</code>, <code>keystone</code>, <code>feed</code>, <code>fan</code>,
+        <code>dial</code>, <code>loop</code>, <code>f_mono</code>. Every one is defensible and every one
+        is a taste call rather than a legibility win, so none of them belongs in a top four.
+        <code>fan</code> is the sharpest case: a real improvement in category fit, and a real adjacency
+        risk, since forge hosts Claude sessions and the Claude mark is a radial burst. On the evidence of
+        the tab strip above, the ones worth a second look are <code>loop</code> and <code>f_mono</code>,
+        which both hold at 16px better than the rest of this group.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>What already fits <span>the first sheet, read against what the category does</span></h2>
+    <div class="picks">
+
+      <div class="pick keep">
+        <h4><span class="rank">KEEP</span>Klin, Lanes, Chamfer</h4>
+        <p>These three already sit in the modern vocabulary and I would not replace them. <b>Klin</b> is a
+        negative-space knockout in a solid tile, exactly the shape the app-icon convention is built on,
+        with a 6px arch at 16px. <b>Lanes</b> is the many-of-one direction done with a rhythm rather than
+        a grid. <b>Chamfer</b> is the 45-degree cut: one shape, nothing to mush. If Klin stays the
+        default, nothing here has to move.</p>
+      </div>
+
+      <div class="pick">
+        <h4><span class="rank">-</span>Fine, but not the strongest in their family</h4>
+        <p><b>F Slab</b> and <b>Stencil F</b> are both letterforms, a live direction, drawn better than
+        most - but that is one family represented twice on a sixteen-mark sheet, which is more than the
+        vocabulary supports. <b>Strike</b> is the strongest pure geometry on the first sheet and its only
+        real problem is the X-equals-close read. <b>Nest</b> and <b>Grid</b> are competent;
+        <b>Grid</b>'s problem is the dictionary, not legibility.</p>
+      </div>
+
+      <div class="pick drop">
+        <h4><span class="rank">DROP</span>Cascade, Slab, Spark, Anvil</h4>
+        <p><b>Cascade</b>'s gaps close at 16px and the rhythm that is the whole idea disappears.
+        <b>Slab</b>'s three isometric plates merge into a striped lozenge, and the fix is two plates,
+        which is a different mark. <b>Spark</b> and <b>Anvil</b> are both the literal cliche of the name: a
+        spark says nothing a hundred other sparks do not, and the anvil's three openings are 2.1px bands
+        at 16px so the shape stops being an anvil. The most-cited rebrands this year are explicit that
+        literal depictions of the product's subject are the thing being avoided.</p>
+      </div>
+
+      <div class="pick">
+        <h4><span class="rank">-</span>Honest summary</h4>
+        <p>Of the sixteen on the first sheet, three already fit the current vocabulary well, four are drawn
+        competently but sit in families the sheet covers elsewhere, and four are the literal cliche or a
+        small-size failure. That is a good hit rate for a sheet drawn from one person's head. This second
+        sheet is not a rebrand of that one: it is the same job with the vocabulary read off shipped marks
+        first, and of its fourteen, eight are a legibility win while six are a taste call.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Implementation notes <span>for whichever survives</span></h2>
+    <p class="lede" style="margin-top:14px">
+      Every mark is one <code>&lt;svg viewBox="0 0 24 24"&gt;</code> using <code>currentColor</code>, so the
+      accent is a <code>color</code> change on the caller and nothing else. The shapes live in one
+      <code>&lt;defs&gt;</code> block at the top of this page and every size is a <code>&lt;use&gt;</code>,
+      so a drawing exists once and a change lands at all three sizes at once. In the crate the same string
+      goes into <code>mark_path</code> in <code>crates/forge-web/src/brand.rs</code>, and
+      <code>every_shipped_name_has_its_own_drawing</code> fails the build for any name added to
+      <code>MARK_NAMES</code> without a drawing of its own beside it.
+    </p>
+    <p class="lede">
+      None of this changes anything in the product. It is a sheet to pick from or reject.
+    </p>
+  </section>
+
+<!--APPEND-->
+
+</div>
+</body>
+</html>
