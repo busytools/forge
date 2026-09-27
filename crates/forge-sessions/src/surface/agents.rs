@@ -19,6 +19,9 @@ pub struct AgentRow {
     pub lifecycle: SessionLifecycleState,
     pub has_background_work: bool,
     pub pending: Option<PendingKind>,
+    /// How many prompts the session is holding. Zero when it holds none,
+    /// and more than one when a prompt waits behind another.
+    pub pending_depth: usize,
     pub last_activity: Option<SystemTime>,
     /// Why this session failed, from the core's own record: a worker's
     /// spawn diagnostic, or the failure the slot's last connection left
@@ -107,6 +110,7 @@ fn row_for(
         has_background_work: workspace.has_background_work(&slot),
         last_activity: workspace.session_last_activity(&slot),
         pending: workspace.pending_interaction(&slot),
+        pending_depth: workspace.pending_interaction_depth(&slot),
         // A worker's own spawn diagnostic is the more specific record, so
         // it wins; a lead has only the slot's, which is why the fallback
         // is here rather than at the call sites.

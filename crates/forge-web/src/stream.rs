@@ -16,6 +16,7 @@ use futures_util::stream::{self, Stream};
 use maud::Markup;
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use crate::composer::Composer;
 use crate::server::{WebState, Wiring, home_region};
 use crate::unseen::Unseen;
 
@@ -39,6 +40,7 @@ const TICK: Duration = Duration::from_secs(10);
 #[derive(Default)]
 pub struct Live {
     unseen: Unseen,
+    composer: Composer,
 }
 
 /// What the stream has said, as one render reads it. A render takes this
@@ -47,6 +49,7 @@ pub struct Live {
 #[derive(Default)]
 pub struct LiveState {
     pub unseen: Unseen,
+    pub composer: Composer,
 }
 
 impl Live {
@@ -60,7 +63,7 @@ impl Live {
     }
 
     pub fn snapshot(&self) -> LiveState {
-        LiveState { unseen: self.unseen.clone() }
+        LiveState { unseen: self.unseen.clone(), composer: self.composer.clone() }
     }
 
     /// Fold one update in, answering whether the page has to be redrawn.
@@ -69,7 +72,11 @@ impl Live {
     /// every token of it: only the updates that can change what this page
     /// draws redraw it.
     pub fn apply(&mut self, update: &SessionUpdate) -> bool {
-        match update {
+        // The composer draws states the core announces once and keeps
+        // none of, so it folds everything first and the page redraws for
+        // any of them.
+        let composer = self.composer.apply(update);
+        let fleet = match update {
             SessionUpdate::ChatAppended { key, msg } => match msg {
                 Message::Result { is_error, subtype, .. }
                     if is_success_result(*is_error, subtype) =>
@@ -124,7 +131,8 @@ impl Live {
             // Everything else is the conversation, which this page does
             // not show.
             _ => false,
-        }
+        };
+        composer || fleet
     }
 }
 

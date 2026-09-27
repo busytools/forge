@@ -1114,6 +1114,7 @@ mod tests {
             lifecycle,
             has_background_work: background,
             pending: None,
+            pending_depth: 0,
             last_activity: None,
             reason: None,
         }

@@ -19,7 +19,9 @@ use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{CronEntry, CronKind};
 use forge_sessions::surface::connectors::{GotifyView, SlackView};
-use forge_sessions::surface::{AccountsView, Agents, LoadingState, PendingKind, Roster};
+use forge_sessions::surface::{
+    AccountsView, Agents, LoadingState, PendingKind, Roster, ViewSurface,
+};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::home::{Home, Row, Seed, State};
@@ -76,8 +78,31 @@ fn segment(value: &str) -> String {
     out
 }
 
+/// The slot a route names, or `None` for a seat the roster does not hold.
+///
+/// A project declares one seat of its own that exists whether or not it has
+/// ever run; a worker is a seat only while the roster can name it. Both the
+/// page and the composer resolve through this, so a composer for a seat the
+/// page would refuse is refused the same way.
+pub(crate) fn resolve(
+    surface: &ViewSurface,
+    roster: &Roster,
+    agents: &Agents,
+    org: &str,
+    project: &str,
+    label: &str,
+) -> Option<SessionSlot> {
+    let seat = roster.projects.iter().find(|seat| seat.org == org && seat.name == project)?;
+    if label == "lead" {
+        return Some(SessionSlot::lead(org, project));
+    }
+    let named = agents.for_project(&seat.key).iter().any(|row| row.label == label)
+        || surface.workers().for_project(&seat.key).iter().any(|row| row.label == label);
+    named.then(|| SessionSlot::worker(org, project, label))
+}
+
 /// Resolve the slot the route names, then render what it serves: the page,
-/// the waking page, or nothing for a slot the roster does not hold.
+/// or nothing for a slot the roster does not hold.
 pub async fn page(
     state: &WebState,
     bound: SocketAddr,
@@ -85,33 +110,19 @@ pub async fn page(
     project: &str,
     label: &str,
 ) -> Found {
-    let surface = &state.surface;
-    let roster = surface.roster();
-    let agents = surface.agents();
-    let Some(seat) = roster.projects.iter().find(|seat| seat.org == org && seat.name == project)
-    else {
+    // One walk of the core per page: the roster and the agents the route
+    // resolves through are the two the page draws from.
+    let roster = state.surface.roster();
+    let agents = state.surface.agents();
+    let Some(slot) = resolve(&state.surface, &roster, &agents, org, project, label) else {
         return Found::Absent;
     };
-    // A project declares one seat of its own that exists whether or not it
-    // has ever run; a worker is a seat only while the roster can name it.
-    let slot = if label == "lead" {
-        SessionSlot::lead(org, project)
-    } else {
-        let named = agents.for_project(&seat.key).iter().any(|row| row.label == label)
-            || surface.workers().for_project(&seat.key).iter().any(|row| row.label == label);
-        if !named {
-            return Found::Absent;
-        }
-        SessionSlot::worker(org, project, label)
-    };
-    // One walk of the core per page: the roster and the agents the route
-    // already holds are the two the page draws from.
     Found::Page(shell(&context(state, bound), &slot, &roster, &agents).await)
 }
 
 /// The pieces both pages read the core through, which are the home's own:
 /// one view context per page, over the same surface, cache and live state.
-fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
+pub(crate) fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
     Home {
         surface: &state.surface,
         work: &state.work,
@@ -184,6 +195,7 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Ag
                         div .conv {
                             (chat_body(waking, row.and_then(|row| row.reason.as_deref())))
                         }
+                        (crate::composer::render(home, slot, roster, agents, "").await)
                     }
                     aside .rail .right {
                         div .banner {

@@ -114,6 +114,24 @@ impl Fleet {
         self.workspace.seed_test_pending_interaction(slot, kind);
     }
 
+    /// Hold `slot` on a queue of `count` unanswered prompts, so a view
+    /// test can render a depth a session holding several reads.
+    pub fn seed_test_prompt_queue(&self, slot: &SessionSlot, kind: PendingKind, count: usize) {
+        self.workspace.seed_test_prompt_queue(slot, kind, count);
+    }
+
+    /// Advertise `commands` and `agents` for `slot`, the way the CLI's
+    /// init frame leaves them: what the composer's `/` and `&` triggers
+    /// read.
+    pub fn advertise(
+        &self,
+        slot: &SessionSlot,
+        commands: Vec<forge_primitives::AvailableCommand>,
+        agents: Vec<forge_primitives::AvailableAgent>,
+    ) {
+        self.workspace.seed_test_advertised_catalogues(slot, commands, agents);
+    }
+
     /// Declare a task under `project`, held by the session labelled
     /// `owner`.
     pub fn add_task(

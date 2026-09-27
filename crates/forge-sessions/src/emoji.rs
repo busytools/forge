@@ -54,6 +54,13 @@ pub fn exact(name: &str) -> Option<&'static Emoji> {
     TABLE.iter().find(|emoji| emoji.name == name)
 }
 
+/// How many shortcodes the table holds. A picker shows this so a list that
+/// is capped says what it was capped from rather than reading as the whole
+/// set.
+pub fn count() -> usize {
+    TABLE.len()
+}
+
 /// Shortcodes people already know, from the GitHub / Slack naming that
 /// both surfaces share. Deliberately a curated set rather than the full
 /// Unicode emoji list: the long tail is never scrolled to in a
