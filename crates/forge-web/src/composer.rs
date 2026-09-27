@@ -41,9 +41,10 @@ const AGENT_ROWS: usize = 8;
 /// window, and this is the set the window scrolls over.
 const CANDIDATES: usize = 200;
 
-/// How many level readings the meter keeps. The window has to be long enough
-/// to fill a desktop slot edge to edge at the mockup's own cell size, or a
-/// live take reads as a clump at one end rather than as a history.
+/// How many level readings the meter keeps: at the mockup's own six pixels a
+/// cell, 720 pixels of track. That reaches both edges of the slot a session
+/// column leaves on a laptop, and clips the oldest readings where the slot is
+/// wider, so a live take reads as a history rather than as a clump at one end.
 const METER_CELLS: usize = 120;
 
 /// The top of the meter's own scale, in dBFS. A reading is measured between
@@ -779,8 +780,7 @@ fn question_dock(request: &QuestionRequest) -> Markup {
                 (option_control("Tell Claude something else:"))
             }
         }
-        textarea .notes name="notes" rows="1" disabled=(NO_DISPATCH)
-            placeholder=(format!("answering is {NO_DISPATCH}")) {}
+        textarea .notes name="notes" rows="1" disabled=(NO_DISPATCH) {}
     }
 }
 

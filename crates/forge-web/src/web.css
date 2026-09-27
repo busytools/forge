@@ -691,9 +691,10 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 /* The window the candidates scroll in. Ten rows is the picker's own window
    and not its cap: the list behind it runs to two hundred, and the header
    says how many that is. The height is ten rows of the type scale above,
-   so the tenth is whole and the clip at the edge is the only hint a list
-   needs that there is more of it. */
-.ac .rows { max-height: 333px; overflow-y: auto; scrollbar-gutter: stable; }
+   so the tenth is whole, and it gives way to a fraction of the viewport so
+   a short one - a phone on its side - still leaves the box on screen with
+   nothing able to scroll to it. */
+.ac .rows { max-height: min(333px, 40vh); overflow-y: auto; scrollbar-gutter: stable; }
 .ac .rows::-webkit-scrollbar { width: 8px; }
 .ac .rows::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
 .ac .rows::-webkit-scrollbar-track { background: transparent; }
@@ -707,6 +708,9 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ac .it.sel { background: rgba(244,118,0,.09); }
 .ac .it.sel .p { color: var(--text); }
+/* The marker says a key would take this row, and no key can: it is drawn
+   demoted the way the dock's is, so one idea is not drawn two ways. */
+.ac .it.sel .cur { color: var(--dim); }
 .ac .it .g { width: 20px; flex: 0 0 20px; text-align: center; }
 
 /* ---------- the dock: the box morphed into a prompt ---------- */
@@ -750,4 +754,14 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 
 @media (prefers-reduced-motion: reduce) {
   .dict .dot, .blocked .ring { animation: none; }
+}
+
+/* The narrow widths, which the mockup draws the composer at too. The rect
+   is fixed furniture and the meter is the one part of it that flexes, so on
+   a phone the fixed parts leave the meter a slot a pixel wide and the row's
+   whole point renders as a single cell. It takes a line of its own there. */
+@media (max-width: 760px) {
+  .dict { flex-wrap: wrap; row-gap: 2px; }
+  .dict .wave { flex: 1 0 100%; }
+  .dict .esc { margin-left: auto; }
 }

@@ -1343,7 +1343,10 @@ async fn a_seat_with_nothing_running_gets_the_reason_not_a_box() {
 
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(page.contains("class=\"blocked\""), "the slot says why it takes no input: {page}");
-    assert!(page.contains("not running"), "in the same words the chat column uses: {page}");
+    assert!(
+        page.contains("</span>not running</span>"),
+        "in the composer's own line, which is the same wording the chat column uses: {page}",
+    );
     assert!(!page.contains("id=\"draft\""), "and there is no input to lose a draft in: {page}");
 }
 
@@ -1453,10 +1456,6 @@ async fn a_live_take_draws_its_meter() {
     );
     assert!(page.contains("-10 dB"), "and the row quotes the newest reading: {page}");
     assert!(page.contains("listening"), "while the take is still open: {page}");
-    assert!(
-        page.contains("stopping a take is not available yet"),
-        "and its cancel says it cannot: {page}",
-    );
 }
 
 /// The generation is what says which take a report belongs to. A take that
@@ -1909,6 +1908,46 @@ async fn the_hint_names_the_sign_in_it_waits_on() {
     assert!(page.contains("id=\"draft\""), "while the box stays where the mockup draws it: {page}");
 }
 
+/// A seat that is up claims no sign-in. The guard is the arm that matters
+/// most: without it every ordinary box says a sign-in is needed, and the
+/// line the reader is meant to act on is the one they learn to ignore.
+#[tokio::test]
+async fn an_ordinary_box_claims_no_sign_in() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "").await;
+
+    assert!(page.contains("id=\"draft\""), "precondition: the box is drawn: {page}");
+    assert!(!page.contains("class=\"hint"), "and claims nothing above it: {page}");
+    assert!(!page.contains("Authentication required"), "no sign-in is needed: {page}");
+}
+
+/// A hint with no description from the wire falls back to the command that
+/// fixes it, rather than leaving the reader with a state and no way out.
+#[tokio::test]
+async fn the_sign_in_hint_falls_back_to_the_command_that_fixes_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.await_login(&lead());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::AuthRequired {
+        key: lead(),
+        method_name: "claude.ai".to_owned(),
+        method_description: String::new(),
+    });
+    settle().await;
+
+    let (_status, page) = composer(&config, "").await;
+
+    assert!(page.contains("Authentication required"), "the state is named: {page}");
+    assert!(
+        page.contains("Run `claude auth login`"),
+        "and the way out is, when the wire names none: {page}",
+    );
+}
+
 /// A status frame, as the CLI sends it.
 fn status(value: &str) -> forge_primitives::Message {
     serde_json::from_value(serde_json::json!({
@@ -1952,9 +1991,11 @@ async fn a_long_list_scrolls_in_a_window() {
     let (_s, _ct, sheet) = get(&config, "/web.css").await;
 
     assert!(page.contains("class=\"rows\""), "the rows sit in a window: {page}");
+    let bound = declaration(&sheet, ".ac .rows", "max-height")
+        .expect("the sheet bounds that window, or the rows grow it without limit");
     assert!(
-        declaration(&sheet, ".ac .rows", "max-height").is_some(),
-        "and the sheet bounds that window, or the rows grow it without limit",
+        bound.contains("vh"),
+        "and the bound gives way to the viewport, or a short one leaves the box off screen: {bound}",
     );
 }
 
@@ -2056,8 +2097,8 @@ async fn a_takes_cancel_refuses_in_text() {
     let (_s, _ct, sheet) = get(&config, "/web.css").await;
 
     assert!(
-        page.contains("stopping a take is not available yet"),
-        "the box says the take cannot be stopped: {page}",
+        page.contains("<span class=\"off\">stopping a take is not available yet</span>"),
+        "the box says the take cannot be stopped, in text rather than in a title: {page}",
     );
     assert!(
         declaration(&sheet, ".dict .esc[disabled]", "opacity").is_some(),
