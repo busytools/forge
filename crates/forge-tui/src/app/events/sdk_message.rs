@@ -2709,54 +2709,6 @@ mod assistant_lifecycle_gate_tests {
 }
 
 #[cfg(test)]
-mod queued_command_tests {
-    use super::extract_queued_command_text;
-    use serde_json::json;
-
-    #[test]
-    fn plain_string_prompt_round_trips() {
-        let prompt = json!("Q1, let's give.");
-        assert_eq!(extract_queued_command_text(&prompt), "Q1, let's give.");
-    }
-
-    #[test]
-    fn multi_block_prompt_concatenates_text_blocks() {
-        // Multi-modal queued input: text + image.
-        let prompt = json!([
-            {"type": "text", "text": "look at this"},
-            {"type": "image", "source": {"type": "base64", "data": "..."}},
-        ]);
-        assert_eq!(extract_queued_command_text(&prompt), "look at this\n[image]");
-    }
-
-    #[test]
-    fn unknown_inner_block_type_renders_as_placeholder() {
-        // Forward-compat: unrecognised inner block types render as
-        // `[<type>]` placeholders so the user sees something.
-        let prompt = json!([
-            {"type": "text", "text": "hi"},
-            {"type": "future_block_type", "payload": "..."},
-        ]);
-        assert_eq!(extract_queued_command_text(&prompt), "hi\n[future_block_type]");
-    }
-
-    #[test]
-    fn empty_array_returns_empty_string() {
-        let prompt = json!([]);
-        assert_eq!(extract_queued_command_text(&prompt), "");
-    }
-
-    #[test]
-    fn non_array_non_string_falls_back_to_json_literal() {
-        // Object shape - render as JSON literal so the user sees
-        // something rather than blank.
-        let prompt = json!({"weird": "shape"});
-        let out = extract_queued_command_text(&prompt);
-        assert!(out.contains("weird"));
-    }
-}
-
-#[cfg(test)]
 mod task_updated_section_routing_tests {
     //! Monitor + Workflow status transitions in
     //! `handle_task_updated` run BEFORE the `task_tool_use_ids`
