@@ -589,17 +589,13 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
    rather than two looping copies of one shape, so the track does not
    animate. */
 
+/* The composer's own slot at the foot of the chat column. Its padding is
+   the only thing keeping the box off the column's bottom edge. */
 .composer { padding: 4px 0 2px; }
 .comp { display: flex; flex-direction: column; gap: 2px; }
 .hint { font-size: var(--fs-base); padding-left: 4px; }
 .hint.login { color: var(--warn); }
 .hint.login .sub { color: var(--dim); display: block; font-size: var(--fs-data); }
-.hint.cancel { color: var(--dim); font-size: var(--fs-data); }
-.hint.sugg { color: var(--dim); font-size: var(--fs-data); }
-.hint.sugg b { color: var(--text); font-weight: 500; }
-.hint.sugg .tab { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px;
-  margin-left: 8px; }
-.hint .off { color: var(--dim); }
 
 .box { border: 1.5px solid rgba(244,118,0,.45); border-radius: 16px;
   background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
@@ -625,10 +621,18 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 .send[disabled] { cursor: default; opacity: .45; }
 .foot { display: flex; align-items: center; gap: 10px; padding-left: 25px;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.foot .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
 .foot .mic { margin-left: auto; background: none; border: 0; padding: 0;
   color: currentColor; display: flex; cursor: pointer; }
 .foot .mic[disabled] { cursor: default; opacity: .45; }
+
+/* The line the composer puts where the mockup puts key hints: every control
+   it names needs the write half of the view surface, so the box, the list
+   and the dock each say what cannot be done rather than advertising a key
+   that nothing reads. */
+.keys { display: flex; gap: 14px; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--dim); }
+.ac .keys { padding: 7px 13px; border-top: 1px solid var(--line); }
+.dock .keys { padding-left: 31px; }
 
 /* The dictation row: it lives inside the box, grows it by one line, and
    collapses when the take resolves. */
@@ -644,7 +648,7 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 .dict .lbl { color: var(--dim); }
 .dict .esc { margin-left: auto; color: var(--dim); background: none; border: 0;
   font-family: inherit; font-size: inherit; padding: 0; cursor: pointer; }
-.dict .esc[disabled] { cursor: default; }
+.dict .esc[disabled] { cursor: default; opacity: .45; }
 /* The meter is a history of levels, not bars pulsing in place: each cell is
    one past sample, and the track is pinned right so the newest reading is
    always at the right edge and the history flows off the left one. */
@@ -684,6 +688,15 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   font-size: var(--fs-label); color: var(--dim); letter-spacing: .06em;
   text-transform: uppercase; }
 .ac .h .n { margin-left: auto; }
+/* The window the candidates scroll in. Ten rows is the picker's own window
+   and not its cap: the list behind it runs to two hundred, and the header
+   says how many that is. The height is ten rows of the type scale above,
+   so the tenth is whole and the clip at the edge is the only hint a list
+   needs that there is more of it. */
+.ac .rows { max-height: 333px; overflow-y: auto; scrollbar-gutter: stable; }
+.ac .rows::-webkit-scrollbar { width: 8px; }
+.ac .rows::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+.ac .rows::-webkit-scrollbar-track { background: transparent; }
 .ac .it { display: flex; align-items: center; gap: 10px; padding: 5px 13px;
   font-family: var(--mono); font-size: var(--fs-base); }
 .ac .it .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
@@ -722,17 +735,18 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
 .opt.sel { background: rgba(244,118,0,.1); }
 .opt.sel .lbl { color: var(--text); font-weight: 600; }
+/* An option whose control cannot answer does not keep the styling of one
+   that can: the selected row's emphasis goes with the choice it advertises. */
+.opt.off .cur { color: var(--dim); }
+.opt.off .lbl, .opt.off.sel .lbl { color: var(--dim); font-weight: 400; }
 .opt .lbl[disabled] { cursor: default; }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
   border: 1.5px solid var(--line); display: grid; place-items: center; }
-.opt .box2.on { border-color: var(--ok); color: var(--ok); }
-.opt .box2 svg { width: 11px; height: 11px; }
 .dock .notes { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
   padding: 7px 11px; font-family: inherit; font-size: var(--fs-base); color: var(--text);
   background: rgba(13,17,26,.6); resize: none; }
-.dock .keys { display: flex; gap: 14px; font-family: var(--mono);
-  font-size: var(--fs-label); color: var(--dim); padding-left: 31px; }
-.dock .keys .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
+.dock .notes[disabled] { color: var(--dim); }
+.opt.off .ic { opacity: .6; }
 
 @media (prefers-reduced-motion: reduce) {
   .dict .dot, .blocked .ring { animation: none; }

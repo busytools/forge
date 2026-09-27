@@ -36,9 +36,15 @@ const FILE_ROWS: usize = 32;
 /// How many agent rows the `&` list shows, matching the TUI's own.
 const AGENT_ROWS: usize = 8;
 
-/// How many level readings the meter keeps. The TUI draws 26 cells into a
-/// fixed width; a bar has the room for a longer history.
-const METER_CELLS: usize = 44;
+/// How many candidates a list is ranked down to before it is drawn, which is
+/// the TUI's own cap. It is not how many rows are visible: those scroll in a
+/// window, and this is the set the window scrolls over.
+const CANDIDATES: usize = 200;
+
+/// How many level readings the meter keeps. The window has to be long enough
+/// to fill a desktop slot edge to edge at the mockup's own cell size, or a
+/// live take reads as a clump at one end rather than as a history.
+const METER_CELLS: usize = 120;
 
 /// The top of the meter's own scale, in dBFS. A reading is measured between
 /// the take's own silence floor and this.
@@ -107,7 +113,7 @@ pub async fn render(
             } @else if let Some(pending) = row.and_then(|row| row.pending) {
                 (dock(row, pending, held.ask(slot)))
             } @else {
-                (hint(row))
+                (hint(row, held.sign_in(slot)))
                 (popover(home, slot, roster, draft).await)
                 (box_markup(
                     draft,
@@ -197,8 +203,9 @@ fn blocked_box(blocked: &Blocked) -> Markup {
 /// The line above the box, for what the reader has to know before typing.
 ///
 /// One hint: a seat that needs signing in cannot get anything sent from it
-/// anywhere, and that is the one fact about this seat the core records.
-fn hint(row: Option<&AgentRow>) -> Markup {
+/// anywhere, and the wire names the method it is waiting on, so the line can
+/// say which sign-in rather than only that there is one.
+fn hint(row: Option<&AgentRow>, sign_in: Option<&SignIn>) -> Markup {
     use forge_primitives::SessionLifecycleState as Lifecycle;
 
     if row.map(|row| row.lifecycle) != Some(Lifecycle::AuthRequired) {
@@ -207,10 +214,17 @@ fn hint(row: Option<&AgentRow>) -> Markup {
     html! {
         div .hint .login {
             "Authentication required"
-            @if let Some(reason) = row.and_then(|row| row.reason.as_deref()) {
-                " \u{b7} " (reason)
+            @if let Some(sign_in) = sign_in {
+                " \u{b7} " (&sign_in.method_name)
             }
-            span .sub { "Run `claude auth login` in another terminal to authenticate" }
+            span .sub {
+                @match sign_in {
+                    Some(sign_in) if !sign_in.method_description.is_empty() => {
+                        (&sign_in.method_description)
+                    }
+                    _ => "Run `claude auth login` in another terminal to authenticate",
+                }
+            }
         }
     }
 }
@@ -246,6 +260,7 @@ fn box_markup(
         (None, false) => "",
     };
     let filled = !draft.is_empty();
+    let refusing = refusing(filled, dictation, take.is_some());
     html! {
         div class=(format!("box{state}")) {
             @if let Some(take) = take {
@@ -262,9 +277,9 @@ fn box_markup(
                     }
                 }
             }
-            @if filled {
+            @if !refusing.is_empty() {
                 div .foot {
-                    span .off { "sending is " (NO_DISPATCH) }
+                    span .off { (refusing) }
                     @if dictation {
                         (mic_control())
                     }
@@ -272,6 +287,34 @@ fn box_markup(
             }
         }
     }
+}
+
+/// The box's controls that cannot act, in the order they sit. Every one of
+/// them needs the write half of the view surface, so the box names them in
+/// one line the reader can see: a reason living only in a disabled
+/// control's `title` is a reason nobody reads, because a disabled control
+/// takes no pointer events.
+fn refusing(draft: bool, dictation: bool, take: bool) -> String {
+    let mut controls = Vec::new();
+    if draft {
+        controls.push("sending");
+    }
+    if dictation {
+        controls.push("dictation");
+    }
+    if take {
+        controls.push("stopping a take");
+    }
+    let Some((last, rest)) = controls.split_last() else {
+        return String::new();
+    };
+    let named = if rest.is_empty() {
+        (*last).to_owned()
+    } else {
+        format!("{} and {last}", rest.join(", "))
+    };
+    let verb = if controls.len() == 1 { "is" } else { "are" };
+    format!("{named} {verb} {NO_DISPATCH}")
 }
 
 /// The draft with a take's words at its end, which is where the caret was.
@@ -521,9 +564,10 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
             let rows: Vec<Markup> = commands
                 .iter()
                 .filter(|command| matches_query(&[&command.name, &command.description], query))
+                .take(CANDIDATES)
                 .map(|command| row(&command.name, &command.description, None, query))
                 .collect();
-            ("tool", "commands".to_owned(), count.to_string(), rows)
+            ("cmd", "commands".to_owned(), count.to_string(), rows)
         }
         Trigger::File => {
             let index = match roster.cwd_for(slot) {
@@ -533,7 +577,7 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
             let found = index.visible(query, FILE_ROWS);
             let rows: Vec<Markup> =
                 found.iter().map(|file| row(&file.rel_path, "", None, query)).collect();
-            ("read", "files & folders".to_owned(), format!("{FILE_ROWS} max"), rows)
+            ("file", "files & folders".to_owned(), format!("{FILE_ROWS} max"), rows)
         }
         Trigger::Agent => {
             let agents = home.surface.subagents(slot);
@@ -546,7 +590,7 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
             ("bot", "subagents".to_owned(), format!("{AGENT_ROWS} max"), rows)
         }
         Trigger::Emoji => {
-            let found = forge_sessions::surface::ViewSurface::emoji(query, usize::MAX);
+            let found = forge_sessions::surface::ViewSurface::emoji(query, CANDIDATES);
             let rows: Vec<Markup> = found
                 .iter()
                 .map(|emoji| {
@@ -569,12 +613,22 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
                 (title)
                 span .n { (cap) }
             }
-            @for (index, row) in rows.into_iter().enumerate() {
-                div class=(if index == 0 { "it sel" } else { "it" }) {
-                    span .cur { @if index == 0 { "\u{25b8}" } }
-                    (row)
+            // The rows scroll inside a window of their own rather than
+            // growing the popover: the box sits under it, and a list drawn
+            // in full pushes the box past the viewport, where a page that
+            // is one viewport tall clips it and the reader types blind.
+            div .rows {
+                @for (index, row) in rows.into_iter().enumerate() {
+                    div class=(if index == 0 { "it sel" } else { "it" }) {
+                        span .cur { @if index == 0 { "\u{25b8}" } }
+                        (row)
+                    }
                 }
             }
+            // The list is drawn, not yet choosable, and it is the one place
+            // in the composer that could leave that unsaid: a selected row
+            // advertises a key that nothing here reads.
+            div .keys { span .off { "choosing a row is " (NO_DISPATCH) } }
         }
     }
 }
@@ -690,7 +744,7 @@ fn permission_dock(request: &PermissionRequest) -> Markup {
         }
         div .opts {
             @for (index, option) in request.options.iter().enumerate() {
-                div class=(if index == 0 { "opt sel" } else { "opt" }) {
+                div class=(opt_class(index)) {
                     span .cur { @if index == 0 { "\u{25b8}" } }
                     (icons::icon(option_icon(option.kind), option_tone(option.kind)))
                     (option_control(&option.name))
@@ -713,7 +767,7 @@ fn question_dock(request: &QuestionRequest) -> Markup {
         div .desc { (&prompt.question) }
         div .opts {
             @for (index, option) in prompt.options.iter().enumerate() {
-                div class=(if index == 0 { "opt sel" } else { "opt" }) {
+                div class=(opt_class(index)) {
                     span .cur { @if index == 0 { "\u{25b8}" } }
                     span .box2 {}
                     (option_control(&option.label))
@@ -727,6 +781,16 @@ fn question_dock(request: &QuestionRequest) -> Markup {
         }
         textarea .notes name="notes" rows="1" disabled=(NO_DISPATCH)
             placeholder=(format!("answering is {NO_DISPATCH}")) {}
+    }
+}
+
+/// What an option's row carries: the first is the one a key would take, and
+/// every one of them is marked as unable to answer, so the row does not keep
+/// the styling of a live choice while its control refuses.
+fn opt_class(index: usize) -> &'static str {
+    match index {
+        0 => "opt sel off",
+        _ => "opt off",
     }
 }
 
@@ -787,6 +851,15 @@ pub struct Composer {
     notices: HashMap<SessionSlot, Notice>,
     compacting: HashSet<SessionSlot>,
     asks: HashMap<SessionSlot, Ask>,
+    sign_ins: HashMap<SessionSlot, SignIn>,
+}
+
+/// The sign-in a seat is waiting on, as the wire names it. The method is what
+/// makes the hint say which account rather than only that one is needed.
+#[derive(Clone)]
+struct SignIn {
+    method_name: String,
+    method_description: String,
 }
 
 impl Composer {
@@ -833,6 +906,15 @@ impl Composer {
                     self.notices.insert(key.clone(), notice);
                 }
             }
+            SessionUpdate::AuthRequired { key, method_name, method_description } => {
+                self.sign_ins.insert(
+                    key.clone(),
+                    SignIn {
+                        method_name: method_name.clone(),
+                        method_description: method_description.clone(),
+                    },
+                );
+            }
             SessionUpdate::PermissionRequest { key, request, .. } => {
                 self.asks.insert(key.clone(), Ask::Permission(Box::new(request.clone())));
             }
@@ -872,5 +954,9 @@ impl Composer {
 
     fn compacting(&self, slot: &SessionSlot) -> bool {
         self.compacting.contains(slot)
+    }
+
+    fn sign_in(&self, slot: &SessionSlot) -> Option<&SignIn> {
+        self.sign_ins.get(slot)
     }
 }

@@ -1817,3 +1817,296 @@ async fn no_prompt_leaves_the_ordinary_box() {
     assert!(!page.contains("class=\"dock\""), "nothing pending, no dock: {page}");
     assert!(page.contains("id=\"draft\""), "the ordinary box is there to type in: {page}");
 }
+
+// ---------- the composer: the states the box is replaced by ----------
+
+/// A seat whose spawn has not connected is connecting, which is a wait and
+/// not a failure, and takes no input while it waits. Catches the connecting
+/// arm folded into "not running", which is the state next door.
+#[tokio::test]
+async fn a_starting_seat_is_connecting() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.add_starting_worker("Busytools", "forge", "cli-version").expect("forge is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _ct, page) = get(&config, "/session/Busytools/forge/cli-version").await;
+
+    assert!(
+        page.contains("Connecting to Claude Code"),
+        "a spawn that has not connected says so: {page}",
+    );
+    assert!(page.contains("class=\"blocked\""), "and the box is the reason: {page}");
+    assert!(!page.contains("id=\"draft\""), "with no input to type into: {page}");
+}
+
+/// A spawn that failed is a failure the reader has to act on, not a wait,
+/// and it carries the reason the core recorded.
+#[tokio::test]
+async fn a_seat_that_could_not_start_says_why() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.fail_spawn("Busytools", "forge", "lead", "the subprocess exited");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _page) = composer(&config, "").await;
+
+    let (_status, _ct, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(page.contains("could not start"), "a dead spawn says so: {page}");
+    assert!(page.contains("the subprocess exited"), "with the core's own reason: {page}");
+    assert!(page.contains("class=\"box err\""), "drawn as a failure rather than a wait: {page}");
+}
+
+/// A compaction the CLI announces replaces the box, and it clears when the
+/// CLI says the status is over: a seat held on a compaction takes no more
+/// input than a seat that is starting.
+#[tokio::test]
+async fn a_compacting_session_says_so_until_it_clears() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    fleet.emit(SessionUpdate::ChatAppended { key: lead(), msg: status("compacting") });
+    settle().await;
+    let (_status, page) = composer(&config, "").await;
+
+    assert!(page.contains("Compacting context"), "the CLI's own status is drawn: {page}");
+    assert!(!page.contains("id=\"draft\""), "and the box is gone while it runs: {page}");
+
+    fleet.emit(SessionUpdate::ChatAppended { key: lead(), msg: status_null() });
+    settle().await;
+    let (_status, page) = composer(&config, "").await;
+
+    assert!(!page.contains("Compacting context"), "and it clears when the CLI says so: {page}");
+    assert!(page.contains("id=\"draft\""), "which gives the box back: {page}");
+}
+
+/// The sign-in hint names the method the wire is waiting on, which is what
+/// lets it say which sign-in rather than only that there is one. The box
+/// stays, because the mockup draws it staying.
+#[tokio::test]
+async fn the_hint_names_the_sign_in_it_waits_on() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.await_login(&lead());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::AuthRequired {
+        key: lead(),
+        method_name: "claude.ai".to_owned(),
+        method_description: "Anthropic OAuth (Pro)".to_owned(),
+    });
+    settle().await;
+
+    let (_status, page) = composer(&config, "").await;
+
+    assert!(page.contains("class=\"hint login\""), "the hint line is drawn: {page}");
+    assert!(page.contains("Authentication required"), "naming the state: {page}");
+    assert!(page.contains("claude.ai"), "and the method the wire named: {page}");
+    assert!(page.contains("Anthropic OAuth (Pro)"), "with its own description: {page}");
+    assert!(page.contains("id=\"draft\""), "while the box stays where the mockup draws it: {page}");
+}
+
+/// A status frame, as the CLI sends it.
+fn status(value: &str) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "status",
+        "session_id": "s",
+        "status": value,
+    }))
+    .expect("a status message")
+}
+
+/// The same frame with the status cleared, which is how a compaction ends.
+fn status_null() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "status",
+        "session_id": "s",
+        "status": null,
+    }))
+    .expect("a cleared status message")
+}
+
+// ---------- the composer: what the list and the dock say about themselves ----------
+
+/// The rows scroll inside a window of their own. A list drawn in full grows
+/// the popover until the box under it is past the viewport, where a page one
+/// viewport tall clips it and the reader types blind. Both halves are pinned:
+/// the markup's container and the sheet's bound on it.
+#[tokio::test]
+async fn a_long_list_scrolls_in_a_window() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.advertise(
+        &SessionSlot::lead("Busytools", "forge"),
+        vec![forge_primitives::AvailableCommand::new("model", "Switch model")],
+        Vec::new(),
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "/m").await;
+    let (_s, _ct, sheet) = get(&config, "/web.css").await;
+
+    assert!(page.contains("class=\"rows\""), "the rows sit in a window: {page}");
+    assert!(
+        declaration(&sheet, ".ac .rows", "max-height").is_some(),
+        "and the sheet bounds that window, or the rows grow it without limit",
+    );
+}
+
+/// The `value` a rule declares for `property`, if the rule is there at all.
+fn declaration(sheet: &str, selector: &str, property: &str) -> Option<String> {
+    let (_, rest) = sheet.split_once(&format!("{selector} {{"))?;
+    let (body, _) = rest.split_once('}')?;
+    body.split(';')
+        .filter_map(|entry| entry.split_once(':'))
+        .find(|(key, _)| key.trim() == property)
+        .map(|(_, value)| value.trim().to_owned())
+}
+
+/// Every list draws its own mark rather than sharing one generic glyph: the
+/// four triggers are four kinds of thing, and the mockup draws four symbols.
+#[tokio::test]
+async fn each_list_draws_its_own_mark() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let slot = SessionSlot::lead("Busytools", "forge");
+    fleet.advertise(
+        &slot,
+        vec![forge_primitives::AvailableCommand::new("model", "Switch model")],
+        vec![forge_primitives::AvailableAgent::new("cli-version", "Bump the pinned CLI")],
+    );
+    let project = dir.path().join("forge");
+    std::fs::create_dir_all(project.join("src")).expect("mkdir");
+    std::fs::write(project.join("src/home.rs"), "").expect("write");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    for (draft, mark) in [("/m", "#i-cmd"), ("&cli", "#i-bot"), (":sm", "#i-smile")] {
+        let (_status, page) = composer(&config, draft).await;
+        assert!(page.contains(&format!("href=\"{mark}\"")), "{draft} draws {mark}: {page}");
+    }
+
+    // The file list needs a seat whose tree has something in it.
+    let (_status, page) = composer(&config, "@home").await;
+    assert!(page.contains("class=\"ac\""), "a file query opens the file list: {page}");
+    assert!(page.contains("href=\"#i-file\""), "which draws the file mark: {page}");
+}
+
+/// The filter is a window over the candidates and not the whole set: a list
+/// long enough to fill a window is drawn in full and scrolled, and the header
+/// keeps the count that says where it came from.
+#[tokio::test]
+async fn the_window_holds_more_candidates_than_it_shows() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let commands: Vec<_> = (0..40)
+        .map(|n| forge_primitives::AvailableCommand::new(format!("cmd{n}"), "A command"))
+        .collect();
+    fleet.advertise(&SessionSlot::lead("Busytools", "forge"), commands, Vec::new());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "/cmd").await;
+
+    assert_eq!(
+        page.matches("class=\"it sel\"").count() + page.matches("class=\"it\"").count(),
+        40,
+        "every candidate reaches the window, which is what scrolls: {page}",
+    );
+    assert!(page.contains(">40<"), "and the header counts them: {page}");
+}
+
+/// The list says a row cannot be chosen, which is the one place in the
+/// composer that could leave it unsaid: a selected row advertises a key that
+/// nothing reads, and every other unwired control refuses in text.
+#[tokio::test]
+async fn the_list_says_a_row_cannot_be_chosen_yet() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.advertise(
+        &SessionSlot::lead("Busytools", "forge"),
+        vec![forge_primitives::AvailableCommand::new("model", "Switch model")],
+        Vec::new(),
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "/m").await;
+
+    assert!(
+        page.contains("choosing a row is not available yet"),
+        "the list says what it cannot do: {page}",
+    );
+}
+
+/// A take's cancel refuses in text like every other control, and it is dimmed
+/// like the send button: a reason living only in a disabled control's title is
+/// a reason nobody reads, because a disabled control takes no pointer events.
+#[tokio::test]
+async fn a_takes_cancel_refuses_in_text() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(started(1));
+    settle().await;
+
+    let (_status, page) = composer(&config, "").await;
+    let (_s, _ct, sheet) = get(&config, "/web.css").await;
+
+    assert!(
+        page.contains("stopping a take is not available yet"),
+        "the box says the take cannot be stopped: {page}",
+    );
+    assert!(
+        declaration(&sheet, ".dict .esc[disabled]", "opacity").is_some(),
+        "and the control is dimmed like the send button, not left looking live",
+    );
+}
+
+/// The dock's rows do not keep the styling of a live choice while their
+/// controls refuse: the selected row's emphasis goes with the choice it
+/// advertises.
+#[tokio::test]
+async fn a_docks_rows_are_marked_unable_to_answer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::PermissionRequest {
+        key: lead(),
+        tool_id: "tu-1".to_owned(),
+        request: permission(),
+    });
+    settle().await;
+
+    let (_status, page) = composer(&config, "").await;
+
+    assert!(page.contains("class=\"opt sel off\""), "the first row is marked: {page}");
+    assert!(page.contains("class=\"opt off\""), "and so is every other: {page}");
+    assert!(!page.contains("class=\"opt sel\""), "with none left reading as a live choice: {page}");
+}
+
+/// The meter's window is long enough to fill the slot it sits in. The
+/// mockup's own track draws fifty-two cells, so a window shorter than that
+/// reads as a clump at one end rather than as a history.
+#[tokio::test]
+async fn the_meter_window_fills_its_slot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(started(1));
+    for reading in 0..52 {
+        fleet.emit(level(-40.0 + f32::from(i16::try_from(reading).expect("a small count"))));
+    }
+    settle().await;
+
+    let (_status, page) = composer(&config, "").await;
+
+    assert_eq!(
+        page.matches("style=\"height:").count(),
+        52,
+        "the mockup's own track length fits inside the window: {page}",
+    );
+}

@@ -487,6 +487,16 @@ impl Workspace {
         domain.lock().pending_interactions.insert(slot.display(), pending);
     }
 
+    /// Hold `slot` waiting to be let in, the state a session that cannot
+    /// authenticate reads as. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_awaiting_login(&self, slot: &SessionSlot) {
+        let domain = self
+            .domain_session_for(slot)
+            .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
+        domain.lock().awaiting_login = true;
+    }
+
     /// Park `count` unanswered prompts on `slot` under distinct tool ids,
     /// the way a session holding a queue of them reads. Test-only.
     #[cfg(any(test, feature = "testing"))]

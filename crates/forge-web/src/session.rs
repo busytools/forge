@@ -195,7 +195,9 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, agents: &Ag
                         div .conv {
                             (chat_body(waking, row.and_then(|row| row.reason.as_deref())))
                         }
-                        (crate::composer::render(home, slot, roster, agents, "").await)
+                        div .composer {
+                            (crate::composer::render(home, slot, roster, agents, "").await)
+                        }
                     }
                     aside .rail .right {
                         div .banner {
