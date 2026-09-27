@@ -209,6 +209,11 @@ section.org > h2 .counts {
   color: var(--accent); opacity: 0; transition: opacity .12s ease;
 }
 .row:hover::after { opacity: .75; }
+/* A row with a state of its own colours the chevron the way it colours the
+   name: the mark on the right is the same signal as the one on the left. */
+.row.failed::after { color: var(--bad); }
+.row.needs::after { color: var(--warn); }
+.row.auth::after { color: var(--bad); }
 /* Not the mock's `display: flex`: the row's mark is a grid sibling, not a
    child, so the flex only stops the text from ellipsising - and a name
    like `pure-black-github-intellij` has to shorten rather than clip. */
