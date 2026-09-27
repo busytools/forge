@@ -517,6 +517,7 @@ pub(crate) fn load_history_messages(
             };
             serde_json::json!({
                 "type": kind,
+                "uuid": m.uuid,
                 "message": m.message,
                 "parent_tool_use_id": m.parent_tool_use_id,
             })
@@ -2280,6 +2281,34 @@ mod tests {
 
         assert!(absent.messages.is_empty(), "no transcript reads as empty, not as an error");
         assert_eq!(absent.compaction_count, 0, "and carries no count");
+    }
+
+    /// The read carries each row's own message id. It is the only key a
+    /// view has for matching a message it also received on the
+    /// subscription, and dropping it leaves the two impossible to
+    /// reconcile.
+    #[test]
+    fn session_history_carries_each_rows_message_id() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let session_id = "b41c8e07-6a2d-4f95-83b1-7d09c2ea5f68";
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let jsonl = "{\"type\":\"user\",\"uuid\":\"row-one\",\"message\":{\"role\":\"user\",\"content\":\"first\"}}\n\
+                     {\"type\":\"assistant\",\"uuid\":\"row-two\",\"message\":{\"id\":\"msg_01\",\"role\":\"assistant\",\"model\":\"claude-opus-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]}}\n";
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
+
+        let read = crate::session_history(config_dir.path(), session_id, "");
+
+        let carried: Vec<Option<&str>> = read
+            .messages
+            .iter()
+            .map(|m| match m {
+                forge_primitives::Message::Assistant { uuid, .. }
+                | forge_primitives::Message::User { uuid, .. } => uuid.as_deref(),
+                other => panic!("unexpected synthesized variant: {other:?}"),
+            })
+            .collect();
+        assert_eq!(carried, [Some("row-one"), Some("row-two")], "each row's id reaches the read");
     }
 
     /// A transcript whose last line was cut mid-write keeps everything
