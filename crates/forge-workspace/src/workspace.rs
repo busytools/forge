@@ -30,7 +30,7 @@ use crate::update_fanout::{SubscriberRole, UpdateFanout};
 use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 
 #[cfg(any(test, feature = "testing"))]
-mod testing;
+pub(crate) mod testing;
 
 /// How often the background poller refreshes account usage. The
 /// TUI's bottom panel and the gateway's account selection both read
@@ -4204,15 +4204,13 @@ impl Workspace {
         // A question outranks a permission prompt: both hold a turn, and
         // the question is the one a person has to read before answering.
         // A slot holding both therefore answers as the question.
-        if guard
-            .pending_interactions
-            .values()
-            .any(|pending| matches!(pending, crate::protocol::PendingInteractionSlot::Question(_)))
-        {
+        if guard.pending_interactions.values().any(|pending| {
+            matches!(pending, crate::protocol::PendingInteractionSlot::Question { .. })
+        }) {
             return Some(PendingInteractionKind::Question);
         }
         if guard.pending_interactions.values().any(|pending| {
-            matches!(pending, crate::protocol::PendingInteractionSlot::Permission(_))
+            matches!(pending, crate::protocol::PendingInteractionSlot::Permission { .. })
         }) {
             return Some(PendingInteractionKind::Permission);
         }
@@ -4224,6 +4222,34 @@ impl Workspace {
     /// view showing one of them can say how many wait behind it.
     pub fn pending_interaction_depth(&self, slot: &SessionSlot) -> usize {
         self.domain_session_for(slot).map_or(0, |domain| domain.lock().pending_interactions.len())
+    }
+
+    /// What the session at `slot` is held on, as the core kept it. `None`
+    /// when it is holding nothing.
+    ///
+    /// This is the read a view needs when it attached after the prompt
+    /// landed: the stream is a mirror with no backlog, so the update that
+    /// carried the request is gone, and the request beside the answer's
+    /// oneshot is what is left.
+    pub fn pending_ask(&self, slot: &SessionSlot) -> Option<crate::protocol::PendingAsk> {
+        let domain = self.domain_session_for(slot)?;
+        let guard = domain.lock();
+        let question = guard
+            .pending_interactions
+            .values()
+            .find(|pending| {
+                matches!(pending, crate::protocol::PendingInteractionSlot::Question { .. })
+            })
+            .map(crate::protocol::PendingInteractionSlot::ask);
+        question.or_else(|| {
+            guard
+                .pending_interactions
+                .values()
+                .find(|pending| {
+                    matches!(pending, crate::protocol::PendingInteractionSlot::Permission { .. })
+                })
+                .map(crate::protocol::PendingInteractionSlot::ask)
+        })
     }
 
     /// What `entry`'s session is doing right now. The two liveness states
@@ -10695,9 +10721,7 @@ mod worker_activity_tests {
             let mut guard = domain.lock();
             guard.turn_pending = true;
             let (tx, _rx) = tokio::sync::oneshot::channel();
-            guard
-                .pending_interactions
-                .insert("tool-1".to_owned(), PendingInteractionSlot::Permission(tx));
+            guard.pending_interactions.insert("tool-1".to_owned(), testing::test_permission(tx));
         }
         assert_eq!(
             ws.session_activity(&blocked),
@@ -10797,11 +10821,11 @@ mod worker_activity_tests {
         };
         let permission = || {
             let (tx, _rx) = tokio::sync::oneshot::channel();
-            PendingInteractionSlot::Permission(tx)
+            testing::test_permission(tx)
         };
         let question = || {
             let (tx, _rx) = tokio::sync::oneshot::channel();
-            PendingInteractionSlot::Question(tx)
+            testing::test_question(tx)
         };
 
         assert_eq!(
@@ -10914,8 +10938,7 @@ mod worker_activity_tests {
             with_domain("w-blocked", &|d| {
                 d.turn_pending = true;
                 let (tx, _rx) = tokio::sync::oneshot::channel();
-                d.pending_interactions
-                    .insert("tool-1".to_owned(), PendingInteractionSlot::Permission(tx));
+                d.pending_interactions.insert("tool-1".to_owned(), testing::test_permission(tx));
             }),
             L::Attention,
             "a pending interaction outranks the turn it is blocking",
@@ -10948,7 +10971,7 @@ mod worker_activity_tests {
             let (tx, _rx) = tokio::sync::oneshot::channel();
             guard
                 .pending_interactions
-                .insert("tool-stranded".to_owned(), PendingInteractionSlot::Permission(tx));
+                .insert("tool-stranded".to_owned(), testing::test_permission(tx));
         }
 
         assert_eq!(

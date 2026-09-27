@@ -2896,11 +2896,10 @@ async fn a_seat_with_nothing_running_gets_the_reason_not_a_box() {
     assert!(!page.contains("id=\"draft\""), "and there is no input to lose a draft in: {page}");
 }
 
-/// The box's controls need the dispatch path, which is not built. Each is
-/// drawn unavailable with the reason rather than as a control that does
-/// nothing when it is clicked.
+/// The box's send is a control that acts: it posts the draft to the seat,
+/// and the box's own keys are the ones that work.
 #[tokio::test]
-async fn the_controls_say_they_cannot_act_yet() {
+async fn the_box_offers_the_keys_it_honours() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
@@ -2908,11 +2907,8 @@ async fn the_controls_say_they_cannot_act_yet() {
     let (_status, page) = composer(&config, "push it once CI is green").await;
 
     assert!(page.contains("push it once CI is green"), "the draft is the box's content: {page}");
-    assert!(page.contains("disabled"), "the controls render unavailable: {page}");
-    assert!(
-        page.contains("not available yet"),
-        "and say why rather than leaving a dead click: {page}",
-    );
+    assert!(page.contains("hx-post=\"/session/Busytools/forge/lead/composer/send\""), "{page}");
+    assert!(page.contains("\u{21b5}") && page.contains("send"), "the keys it honours: {page}");
 }
 
 /// The composer is served as part of the session page, at the foot of the
@@ -3233,10 +3229,10 @@ async fn a_pending_prompt_morphs_the_box_and_lists_its_options() {
     assert!(allow < always && always < deny && deny < notes, "in the order the CLI built: {page}");
 }
 
-/// An option is a control, not inert text: it renders a button that says
-/// it cannot answer yet rather than a row that looks clickable and is not.
+/// An option is a control that answers: one button per option, each posting
+/// the option it names rather than an outcome of its own.
 #[tokio::test]
-async fn a_docks_options_are_controls_that_refuse() {
+async fn every_dock_option_is_a_control_that_answers() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
@@ -3250,16 +3246,11 @@ async fn a_docks_options_are_controls_that_refuse() {
 
     let (_status, page) = composer(&config, "").await;
 
-    assert!(page.contains("<button class=\"lbl\""), "an option is a button: {page}");
-    assert_eq!(
-        page.matches("disabled=\"not available yet\"").count(),
-        5,
-        "one refusing control per option: {page}",
-    );
-    assert!(page.contains("answering is not available yet"), "and the dock says so: {page}");
+    assert_eq!(page.matches("<button class=\"lbl\"").count(), 5, "one control per option: {page}");
+    assert_eq!(page.matches("composer/answer").count(), 5, "each posting an answer: {page}");
     assert!(
-        !page.contains("class=\"opt\"><span class=\"lbl\""),
-        "and never an inert row that looks clickable: {page}",
+        page.contains("&quot;option_id&quot;:&quot;edits&quot;"),
+        "naming the option rather than the outcome: {page}",
     );
 }
 
@@ -3286,24 +3277,27 @@ async fn a_question_draws_its_own_anatomy() {
     assert!(page.contains("class=\"box2\""), "each with the multi-select box: {page}");
 }
 
-/// A prompt the core reports and this view never saw the offer of says so,
-/// rather than drawing an ordinary box that would read as nothing pending.
+/// A view that attached after the prompt landed still draws what it offers.
+/// This is the case the dock exists for - the stream is a mirror with no
+/// backlog, so the update that carried the request is long gone, and the
+/// request the core kept beside the answer's oneshot is what is left.
 #[tokio::test]
-async fn a_prompt_with_no_options_says_so_rather_than_nothing_pending() {
+async fn a_view_that_attached_late_still_draws_the_options() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     fleet.seed_test_pending_interaction(&lead(), PendingKind::Question);
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
+    // Nothing is emitted: this view was not there when the prompt landed.
     let (_status, page) = composer(&config, "").await;
 
     assert!(page.contains("class=\"dock\""), "the core says a prompt waits: {page}");
-    assert!(page.contains("a question is waiting for you"), "so the dock is drawn: {page}");
+    assert!(page.contains("Which environment?"), "and the question it asked: {page}");
+    assert!(page.contains("Staging"), "and the options it offered: {page}");
     assert!(
-        page.contains("its options arrived before this view attached"),
-        "and it says what it cannot show: {page}",
+        !page.contains("its options arrived before this view attached"),
+        "so nothing is missing from it: {page}",
     );
-    assert!(!page.contains("id=\"draft\""), "and never the ordinary box: {page}");
 }
 
 /// A session holding more than one prompt says how many wait behind the
@@ -3628,11 +3622,10 @@ async fn the_list_says_a_row_cannot_be_chosen_yet() {
     );
 }
 
-/// A take's cancel refuses in text like every other control, and it is dimmed
-/// like the send button: a reason living only in a disabled control's title is
-/// a reason nobody reads, because a disabled control takes no pointer events.
+/// A take's cancel is a control that acts: it posts the abandon, and the
+/// row carries no reason it cannot.
 #[tokio::test]
-async fn a_takes_cancel_refuses_in_text() {
+async fn a_takes_cancel_acts() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
@@ -3640,23 +3633,18 @@ async fn a_takes_cancel_refuses_in_text() {
     settle().await;
 
     let (_status, page) = composer(&config, "").await;
-    let (_s, _ct, sheet) = get(&config, "/web.css").await;
 
+    assert!(page.contains("composer/dictate"), "the row's cancel posts a stop: {page}");
     assert!(
-        page.contains("<span class=\"off\">stopping a take is not available yet</span>"),
-        "the box says the take cannot be stopped, in text rather than in a title: {page}",
-    );
-    assert!(
-        declaration(&sheet, ".dict .esc[disabled]", "opacity").is_some(),
-        "and the control is dimmed like the send button, not left looking live",
+        !page.contains("stopping a take is not available yet"),
+        "and carries no refusal: {page}",
     );
 }
 
-/// The dock's rows do not keep the styling of a live choice while their
-/// controls refuse: the selected row's emphasis goes with the choice it
-/// advertises.
+/// The dock's rows are live choices again, which is what the marker means:
+/// the first option is the one a key would take, and choosing it answers.
 #[tokio::test]
-async fn a_docks_rows_are_marked_unable_to_answer() {
+async fn a_docks_rows_read_as_live_choices() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
@@ -3670,9 +3658,8 @@ async fn a_docks_rows_are_marked_unable_to_answer() {
 
     let (_status, page) = composer(&config, "").await;
 
-    assert!(page.contains("class=\"opt sel off\""), "the first row is marked: {page}");
-    assert!(page.contains("class=\"opt off\""), "and so is every other: {page}");
-    assert!(!page.contains("class=\"opt sel\""), "with none left reading as a live choice: {page}");
+    assert!(page.contains("class=\"opt sel\""), "the first row is marked: {page}");
+    assert!(!page.contains("off\""), "with nothing demoted: {page}");
 }
 
 /// The meter's window is long enough to fill the slot it sits in. The
@@ -3696,6 +3683,224 @@ async fn the_meter_window_fills_its_slot() {
         52,
         "the mockup's own track length fits inside the window: {page}",
     );
+}
+
+// ---------- the composer: the write half ----------
+
+/// Posting a form to a session's route, the way a control does.
+async fn post(config: &WebConfig, path: &str, body: &str) -> (reqwest::StatusCode, String) {
+    let response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{}{path}", config.port))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body.to_owned())
+        .send()
+        .await
+        .expect("served");
+    let status = response.status();
+    (status, response.text().await.expect("the body reads"))
+}
+
+/// A draft sent from the box reaches the core as a prompt for that seat,
+/// which is the whole of what the send button is for.
+#[tokio::test]
+async fn the_send_reaches_the_core() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.intercept_dispatch();
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _body) = post(
+        &config,
+        "/session/Busytools/forge/lead/send",
+        "draft=push%20it%20once%20CI%20is%20green",
+    )
+    .await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "a send the core accepts answers with the box");
+    let dispatched = fleet.dispatched();
+    assert_eq!(dispatched.len(), 1, "exactly one command: {dispatched:?}");
+    let forge_sessions::Command::Prompt { key, text, .. } = &dispatched[0] else {
+        panic!("a send is a prompt: {:?}", dispatched[0]);
+    };
+    assert_eq!(key, &lead(), "addressed to the seat the composer belongs to");
+    assert_eq!(text, "push it once CI is green", "and carrying what was typed");
+}
+
+/// The box comes back empty, because the draft it held has gone to the
+/// core: a page that kept it would send the same message twice.
+#[tokio::test]
+async fn a_sent_draft_leaves_the_box_empty() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.intercept_dispatch();
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, body) = post(&config, "/session/Busytools/forge/lead/send", "draft=hello").await;
+
+    assert!(body.contains("id=\"draft\""), "the region is the box it swaps in: {body}");
+    assert!(
+        body.contains("></textarea>"),
+        "and the box is empty, so the words are not sent twice: {body}",
+    );
+}
+
+/// The dock's option answers the prompt it was drawn for, with the action
+/// the core built rather than one the browser named: the option's own
+/// meaning is what the CLI decides on, and a browser that could send any
+/// action could allow what the prompt never offered.
+#[tokio::test]
+async fn answering_the_dock_reaches_the_core() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.intercept_dispatch();
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::PermissionRequest {
+        key: lead(),
+        tool_id: "tu-1".to_owned(),
+        request: permission(),
+    });
+    settle().await;
+
+    let (status, _body) =
+        post(&config, "/session/Busytools/forge/lead/answer", "tool_id=tu-1&option_id=edits").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "the answer is accepted");
+    let dispatched = fleet.dispatched();
+    assert_eq!(dispatched.len(), 1, "exactly one command: {dispatched:?}");
+    let forge_sessions::Command::RespondPermission { key, tool_id, outcome } = &dispatched[0]
+    else {
+        panic!("an answer is a permission response: {:?}", dispatched[0]);
+    };
+    assert_eq!(key, &lead());
+    assert_eq!(tool_id, "tu-1", "addressed to the prompt that asked");
+    let forge_primitives::permission_ui::PermissionOutcome::Selected { option_id, action, .. } =
+        outcome
+    else {
+        panic!("a chosen option is a selection: {outcome:?}");
+    };
+    assert_eq!(option_id, "edits");
+    assert_eq!(
+        action,
+        &forge_primitives::permission_ui::PermissionAction::AllowWithInput,
+        "with the action the core built for that option, not one the browser sent",
+    );
+}
+
+/// A send from a seat nothing is running behind is refused rather than
+/// queued: the composer draws no box there, so a request that arrives
+/// anyway is a caller going round the page, and it says so.
+#[tokio::test]
+async fn a_send_with_no_session_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    // No intercept: the command has to reach the core for the core to
+    // refuse it, which is the thing under test.
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, body) =
+        post(&config, "/session/Personal/dotfiles/lead/send", "draft=anyone").await;
+
+    assert_ne!(status, reqwest::StatusCode::OK, "a seat with no session takes no message");
+    assert!(
+        body.contains("no session to send to"),
+        "and the refusal says why rather than nothing: {body}",
+    );
+    assert!(fleet.dispatched().is_empty(), "with nothing queued for later: {body}");
+}
+
+/// The dictation controls start and stop a take, which is the only thing
+/// they ever claimed to do.
+#[tokio::test]
+async fn the_dictation_controls_reach_the_core() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.intercept_dispatch();
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    for action in ["start", "stop", "cancel"] {
+        let (status, _) =
+            post(&config, "/session/Busytools/forge/lead/dictate", &format!("action={action}"))
+                .await;
+        assert_eq!(status, reqwest::StatusCode::OK, "{action} is accepted");
+    }
+
+    let dispatched = fleet.dispatched();
+    assert_eq!(dispatched.len(), 3, "a take started, submitted and abandoned: {dispatched:?}");
+    assert!(
+        matches!(&dispatched[0], forge_sessions::Command::DictateStart { key } if key == &lead()),
+        "{:?}",
+        dispatched[0],
+    );
+    assert!(
+        matches!(&dispatched[1], forge_sessions::Command::DictateStop { submit: true, .. }),
+        "stopping submits the take: {:?}",
+        dispatched[1],
+    );
+    assert!(
+        matches!(&dispatched[2], forge_sessions::Command::DictateStop { submit: false, .. }),
+        "cancelling abandons it: {:?}",
+        dispatched[2],
+    );
+}
+
+/// Every control the composer draws now does what it says, so none of them
+/// carries the refusal it used to: a reason on a control that can act is a
+/// lie about the control.
+#[tokio::test]
+async fn no_control_refuses_any_more() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::PermissionRequest {
+        key: lead(),
+        tool_id: "tu-1".to_owned(),
+        request: permission(),
+    });
+    settle().await;
+
+    let (_status, box_page) = composer(&config, "a draft").await;
+    let (_status, dock_page) = composer(&config, "").await;
+
+    for page in [&box_page, &dock_page] {
+        assert!(!page.contains("not available yet"), "nothing refuses now: {page}");
+        assert!(!page.contains("disabled"), "and nothing is drawn unavailable: {page}");
+    }
+    assert!(dock_page.contains("hx-post"), "the dock's options post an answer: {dock_page}");
+}
+
+/// Answering clears the dock on every view, not only the one that clicked:
+/// the update says the prompt is gone, and a page that kept drawing it
+/// would offer an answer to a question already settled.
+#[tokio::test]
+async fn the_dock_clears_when_the_prompt_is_gone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::PermissionRequest {
+        key: lead(),
+        tool_id: "tu-1".to_owned(),
+        request: permission(),
+    });
+    settle().await;
+    let (_status, page) = composer(&config, "").await;
+    assert!(page.contains("class=\"dock\""), "precondition: the dock is drawn: {page}");
+
+    // Both halves of an answer, as the core does them: the pending set
+    // lets go, and the stream says so.
+    fleet.clear_test_pending(&lead());
+    fleet.emit(SessionUpdate::PendingInteractionResolved {
+        key: lead(),
+        tool_id: "tu-1".to_owned(),
+    });
+    settle().await;
+
+    let (_status, page) = composer(&config, "").await;
+
+    assert!(!page.contains("class=\"dock\""), "the prompt is gone, so the box is back: {page}");
+    assert!(page.contains("id=\"draft\""), "and it takes input again: {page}");
 }
 
 fn mcp_server(name: &str, scope: &str, tools: usize) -> McpServerStatus {

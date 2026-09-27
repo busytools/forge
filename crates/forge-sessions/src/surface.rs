@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
-use forge_workspace::Workspace;
+use forge_workspace::{Command, DispatchError, Workspace};
 
 pub use accounts::{AccountsView, GatewayView};
 pub use agents::{AgentRow, Agents, PendingKind};
@@ -31,6 +31,7 @@ pub use dictate::DictateView;
 // a view does not name.
 pub use forge_primitives::ConversationHistory;
 pub use forge_workspace::env::cli_version::CliVersionInfo;
+pub use forge_workspace::protocol::PendingAsk;
 pub use forge_workspace::{DictateFailure, DictateModelState, DictateOutcome, LoadingState};
 pub use roster::Roster;
 pub use session::SessionState;
@@ -56,6 +57,23 @@ pub fn is_success_result(is_error: bool, subtype: &str) -> bool {
 impl ViewSurface {
     pub fn new(workspace: Arc<Workspace>) -> Self {
         Self { workspace }
+    }
+
+    /// Dispatch one command to the core, which is how a view acts rather
+    /// than only reads.
+    ///
+    /// A verb rather than an accessor, on purpose: a second view is handed
+    /// the writes it needs and not the whole core, so nothing here grows a
+    /// way to reach the workspace itself.
+    pub fn dispatch(&self, command: Command) -> Result<(), DispatchError> {
+        self.workspace.dispatch(command)
+    }
+
+    /// What the seat at `slot` is held on, as the core kept it, so a view
+    /// that attached after a prompt landed still draws what it offers.
+    /// `None` when the seat is holding nothing.
+    pub fn pending_ask(&self, slot: &SessionSlot) -> Option<PendingAsk> {
+        self.workspace.pending_ask(slot)
     }
 
     /// The core's own update stream, as a mirror of it. Every caller gets

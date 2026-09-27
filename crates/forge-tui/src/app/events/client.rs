@@ -277,6 +277,15 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 crate::app::prompt::retire_slack_draft(session, id);
             }
         }
+        // The prompt is settled in the core, so a queue still holding it
+        // drops it here too. Idempotent on purpose: this view has usually
+        // popped it already, and it is another view's answer that makes
+        // the case matter.
+        SessionUpdate::PendingInteractionResolved { key, tool_id } => {
+            if let Some(session) = app.session_mut(&key) {
+                session.prompt_queue.retain(|prompt| prompt.tool_id != *tool_id);
+            }
+        }
         SessionUpdate::PermissionRequest { key, tool_id, request } => {
             let mut queued = false;
             if let Some(session) = app.session_mut(&key) {

@@ -461,7 +461,10 @@ impl SessionTask {
                     let mut guard = self.domain.lock();
                     guard.pending_interactions.insert(
                         tool_call_id.clone(),
-                        PendingInteractionSlot::Permission(response_tx),
+                        PendingInteractionSlot::Permission {
+                            tx: response_tx,
+                            request: Box::new(wire_request.clone()),
+                        },
                     );
                 }
                 let answerable = self.update_tx.send_answering(SessionUpdate::PermissionRequest {
@@ -484,7 +487,7 @@ impl SessionTask {
                     // `claude` subprocess turn forever.
                     if let Some(pending) =
                         self.domain.lock().pending_interactions.remove(&tool_call_id)
-                        && let PendingInteractionSlot::Permission(tx) = pending
+                        && let PendingInteractionSlot::Permission { tx, .. } = pending
                     {
                         let _ = tx.send(forge_primitives::PermissionOutcome::Cancelled);
                     }
@@ -505,7 +508,10 @@ impl SessionTask {
                     let mut guard = self.domain.lock();
                     guard.pending_interactions.insert(
                         tool_call_id.clone(),
-                        PendingInteractionSlot::Question(response_tx),
+                        PendingInteractionSlot::Question {
+                            tx: response_tx,
+                            request: Box::new(wire_request.clone()),
+                        },
                     );
                 }
                 let answerable = self.update_tx.send_answering(SessionUpdate::QuestionRequest {
@@ -527,7 +533,7 @@ impl SessionTask {
                     // unblocks rather than hanging the turn.
                     if let Some(pending) =
                         self.domain.lock().pending_interactions.remove(&tool_call_id)
-                        && let PendingInteractionSlot::Question(tx) = pending
+                        && let PendingInteractionSlot::Question { tx, .. } = pending
                     {
                         let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
                     }
@@ -666,12 +672,13 @@ impl SessionTask {
                 let mut guard = self.domain.lock();
                 let kind_matches = matches!(
                     guard.pending_interactions.get(&tool_id),
-                    Some(PendingInteractionSlot::Permission(_)),
+                    Some(PendingInteractionSlot::Permission { .. }),
                 );
                 if kind_matches
-                    && let Some(PendingInteractionSlot::Permission(tx)) =
+                    && let Some(PendingInteractionSlot::Permission { tx, .. }) =
                         guard.pending_interactions.remove(&tool_id)
                 {
+                    drop(guard);
                     if tx.send(outcome).is_err() {
                         tracing::warn!(
                             target: "forge_workspace::session_task",
@@ -680,6 +687,10 @@ impl SessionTask {
                             "permission oneshot receiver dropped before response could be sent"
                         );
                     }
+                    self.emit(SessionUpdate::PendingInteractionResolved {
+                        key: self.key.clone(),
+                        tool_id,
+                    });
                 } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
                     tracing::warn!(
                         target: "forge_workspace::session_task",
@@ -702,12 +713,13 @@ impl SessionTask {
                 let mut guard = self.domain.lock();
                 let kind_matches = matches!(
                     guard.pending_interactions.get(&tool_id),
-                    Some(PendingInteractionSlot::Question(_)),
+                    Some(PendingInteractionSlot::Question { .. }),
                 );
                 if kind_matches
-                    && let Some(PendingInteractionSlot::Question(tx)) =
+                    && let Some(PendingInteractionSlot::Question { tx, .. }) =
                         guard.pending_interactions.remove(&tool_id)
                 {
+                    drop(guard);
                     if tx.send(outcome).is_err() {
                         tracing::warn!(
                             target: "forge_workspace::session_task",
@@ -716,6 +728,10 @@ impl SessionTask {
                             "question oneshot receiver dropped"
                         );
                     }
+                    self.emit(SessionUpdate::PendingInteractionResolved {
+                        key: self.key.clone(),
+                        tool_id,
+                    });
                 } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
                     tracing::warn!(
                         target: "forge_workspace::session_task",
@@ -3418,10 +3434,10 @@ provider = "anthropic"
         let domain = Arc::new(parking_lot::Mutex::new(empty_domain()));
         let (response_tx, mut response_rx) =
             oneshot::channel::<forge_primitives::PermissionOutcome>();
-        domain
-            .lock()
-            .pending_interactions
-            .insert("stale_tool_id".to_owned(), PendingInteractionSlot::Permission(response_tx));
+        domain.lock().pending_interactions.insert(
+            "stale_tool_id".to_owned(),
+            crate::workspace::testing::test_permission(response_tx),
+        );
         let mut task = SessionTask {
             key: SessionSlot::from_str_for_test("old-uuid"),
             handle: Arc::new(handle),

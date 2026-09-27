@@ -23,6 +23,15 @@ pub mod transcript;
 /// same call hands the TUI, so nothing here wraps or renames it.
 pub use surface::SessionUpdate;
 
+/// The core's write protocol, re-exported for the same reason the update
+/// is: a view acts by dispatching the core's own command rather than a
+/// second vocabulary this crate would have to keep in step.
+pub use forge_workspace::Command;
+
+/// Why a command did not reach a session, so a view can say which of the
+/// three it was rather than only that something failed.
+pub use forge_workspace::DispatchError;
+
 /// The plumbing a view reaches the core's reads through, re-exported so a
 /// view depends on this crate and `forge-primitives` and no further.
 ///

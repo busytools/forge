@@ -892,6 +892,20 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .ac .it .p em { font-style: normal; color: var(--accent); }
 .ac .it .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The page puts the composer beside the region its stream swaps rather
+   than inside it, so a morph of the columns cannot reach the field being
+   typed into. Both wrappers dissolve, so the composer is still a grid item
+   of the app and still sits under the chat column. */
+#session-body, #composer-slot { display: contents; }
+.app { grid-template-rows: minmax(0, 1fr) auto; }
+.rail.left { grid-column: 1; grid-row: 1; }
+main.chat { grid-column: 2; grid-row: 1; }
+.rail.right { grid-column: 3; grid-row: 1; }
+.composer { grid-column: 2; grid-row: 2; }
+@media (max-width: 980px) {
+  .composer { grid-column: 1; }
+}
+
 .ac .it.sel { background: rgba(244,118,0,.09); }
 .ac .it.sel .p { color: var(--text); }
 /* The marker says a key would take this row, and no key can: it is drawn

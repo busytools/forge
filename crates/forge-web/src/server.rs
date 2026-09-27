@@ -7,7 +7,7 @@ use axum::Router;
 use axum::extract::{Path, RawQuery, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use forge_primitives::WebConfig;
 use forge_sessions::surface::ViewSurface;
 use maud::{Markup, PreEscaped, html};
@@ -115,6 +115,12 @@ fn router(wiring: Wiring) -> Router {
         // this sends, and the home's `/events` stays the fleet's.
         .route("/session/{org}/{project}/{label}/events", get(session_events))
         .route("/session/{org}/{project}/{label}/composer", get(composer_region))
+        // The composer's controls, one route per verb. Each answers with
+        // the region the page swaps in, so what a click produced is drawn
+        // from the core rather than assumed by the browser.
+        .route("/session/{org}/{project}/{label}/send", post(send_to))
+        .route("/session/{org}/{project}/{label}/answer", post(answer_prompt))
+        .route("/session/{org}/{project}/{label}/dictate", post(dictate))
         .route("/events", get(events))
         .route("/favicon.svg", get(favicon))
         .route("/web.css", get(web_css))
@@ -159,6 +165,117 @@ async fn composer_region(
     let home = crate::session::context(&wiring.state, wiring.bound);
     let draft = crate::composer::draft_of(query.as_deref());
     crate::composer::render(&home, &slot, &roster, &agents, &draft).await.into_response()
+}
+
+/// The box's send: the draft goes to the seat as its next prompt.
+async fn send_to(
+    State(wiring): State<Wiring>,
+    Path((org, project, label)): Path<(String, String, String)>,
+    body: String,
+) -> Response {
+    let draft = crate::composer::field(&body, "draft").unwrap_or_default();
+    act(&wiring, &org, &project, &label, |slot| forge_sessions::Command::Prompt {
+        key: slot.clone(),
+        text: draft,
+        attachments: Vec::new(),
+    })
+    .await
+}
+
+/// The dock's answer. The outcome is built from the option the core offered
+/// rather than from anything the browser sent: the option's own action is
+/// what the CLI decides on, and a browser naming its own could allow what
+/// the prompt never offered.
+async fn answer_prompt(
+    State(wiring): State<Wiring>,
+    Path((org, project, label)): Path<(String, String, String)>,
+    body: String,
+) -> Response {
+    let Some(tool_id) = crate::composer::field(&body, "tool_id") else {
+        return (StatusCode::BAD_REQUEST, "an answer names the prompt it answers").into_response();
+    };
+    let option_id = crate::composer::field(&body, "option_id");
+    let notes = crate::composer::field(&body, "notes");
+    let Some(slot) = crate::session::seat(&wiring.state.surface, &org, &project, &label) else {
+        return (StatusCode::NOT_FOUND, "no session slot by that name").into_response();
+    };
+    // The prompt's own detail is the view's, so an answer names the option
+    // and the invoke is built from the core's copy of what it offered.
+    let held = Live::lock(&wiring.state.live).snapshot().composer;
+    let Some(command) =
+        crate::composer::answer(&held, &slot, &tool_id, option_id.as_deref(), notes.as_deref())
+    else {
+        return (
+            StatusCode::CONFLICT,
+            "that prompt is no longer holding this seat, or its options never reached this view",
+        )
+            .into_response();
+    };
+    if let Err(error) = wiring.state.surface.dispatch(command) {
+        return (StatusCode::CONFLICT, format!("no session to answer for: {error}"))
+            .into_response();
+    }
+    composer_region_of(&wiring, &slot).await.into_response()
+}
+
+/// The take's controls: start, submit or abandon.
+async fn dictate(
+    State(wiring): State<Wiring>,
+    Path((org, project, label)): Path<(String, String, String)>,
+    body: String,
+) -> Response {
+    let action = crate::composer::field(&body, "action").unwrap_or_default();
+    let start = match action.as_str() {
+        "start" => true,
+        "stop" | "cancel" => false,
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("a take is started, stopped or cancelled, not {other:?}"),
+            )
+                .into_response();
+        }
+    };
+    act(&wiring, &org, &project, &label, move |slot| {
+        if start {
+            forge_sessions::Command::DictateStart { key: slot.clone() }
+        } else {
+            forge_sessions::Command::DictateStop { key: slot.clone(), submit: action == "stop" }
+        }
+    })
+    .await
+}
+
+/// Resolve the seat a control posted to, run `command` for it, and answer
+/// with the composer region, so the page swaps in what the action produced.
+///
+/// A seat with no session is refused with the reason rather than queued:
+/// the composer draws no box there, so a request that arrives anyway went
+/// round the page and is owed an answer rather than a silence.
+async fn act(
+    wiring: &Wiring,
+    org: &str,
+    project: &str,
+    label: &str,
+    command: impl FnOnce(&forge_primitives::SessionSlot) -> forge_sessions::Command,
+) -> Response {
+    let surface = &wiring.state.surface;
+    let roster = surface.roster();
+    let agents = surface.agents();
+    let Some(slot) = crate::session::resolve(surface, &roster, &agents, org, project, label) else {
+        return (StatusCode::NOT_FOUND, "no session slot by that name").into_response();
+    };
+    if let Err(error) = surface.dispatch(command(&slot)) {
+        return (StatusCode::CONFLICT, format!("no session to send to: {error}")).into_response();
+    }
+    composer_region_of(wiring, &slot).await.into_response()
+}
+
+/// The composer region for a seat the caller has already resolved.
+async fn composer_region_of(wiring: &Wiring, slot: &forge_primitives::SessionSlot) -> Markup {
+    let surface = &wiring.state.surface;
+    let home = crate::session::context(&wiring.state, wiring.bound);
+    crate::composer::render(&home, slot, &surface.roster(), &surface.agents(), "").await
 }
 
 /// One vendored script: the page's own, as published. An unknown name is a

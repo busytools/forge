@@ -12,10 +12,14 @@ use std::time::Instant;
 
 use forge_primitives::Message;
 use forge_primitives::SessionSlot;
-use forge_primitives::permission_ui::{PermissionOptionKind, PermissionRequest};
-use forge_primitives::question::QuestionRequest;
+use forge_primitives::permission_ui::{PermissionOptionKind, PermissionOutcome, PermissionRequest};
+use forge_primitives::question::{QuestionAnnotation, QuestionOutcome, QuestionRequest};
 use forge_primitives::session_update::ToolCall;
 use forge_sessions::SessionUpdate;
+// One prompt as the composer draws it, whichever copy it came from: the
+// wire's, or the one the core kept beside the answer's oneshot for a view
+// that attached after it landed.
+use forge_sessions::surface::PendingAsk as Ask;
 use forge_sessions::surface::{AgentRow, Agents, DictateOutcome, PendingKind, Roster};
 use maud::{Markup, html};
 
@@ -55,18 +59,20 @@ const METER_CEILING_DB: f32 = 0.0;
 /// a pulse, so the quietest one still has to be visible as one.
 const METER_FLOOR_PERCENT: f32 = 12.0;
 
-/// The draft a request carries, decoded. A browser escapes a form field
-/// with `%XX` and `+`, so the text the box was drawn for is the text the
-/// browser had, byte for byte.
+/// The draft a request carries, decoded.
 pub(crate) fn draft_of(raw_query: Option<&str>) -> String {
-    let Some(value) = raw_query.and_then(|query| {
-        query
-            .split('&')
-            .filter_map(|pair| pair.split_once('='))
-            .find_map(|(key, value)| (key == "draft").then_some(value))
-    }) else {
-        return String::new();
-    };
+    field(raw_query.unwrap_or_default(), "draft").unwrap_or_default()
+}
+
+/// One form field out of a request, decoded. A browser escapes a form field
+/// with `%XX` and `+`, so the value a control sent is the one the server
+/// reads, byte for byte. The query and the body are the same shape, so both
+/// come through here.
+pub(crate) fn field(raw: &str, name: &str) -> Option<String> {
+    let value = raw
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find_map(|(key, value)| (key == name).then_some(value))?;
     let mut bytes = Vec::with_capacity(value.len());
     let mut chars = value.bytes();
     while let Some(byte) = chars.next() {
@@ -79,7 +85,60 @@ pub(crate) fn draft_of(raw_query: Option<&str>) -> String {
             other => bytes.push(other),
         }
     }
-    String::from_utf8_lossy(&bytes).into_owned()
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The command one option of a held prompt answers with, or `None` when this
+/// view is not the one holding it.
+///
+/// The outcome is built here from the option the core offered rather than
+/// from anything the browser sent: an option's own action is what the CLI
+/// decides on, and a browser naming its own could allow what the prompt
+/// never offered.
+pub(crate) fn answer(
+    held: &Composer,
+    slot: &SessionSlot,
+    tool_id: &str,
+    option_id: Option<&str>,
+    notes: Option<&str>,
+) -> Option<forge_sessions::Command> {
+    match held.ask(slot)? {
+        Ask::Permission(request) if request.tool_call.tool_call_id == tool_id => {
+            let option = request
+                .options
+                .iter()
+                .find(|option| Some(option.option_id.as_str()) == option_id)?;
+            Some(forge_sessions::Command::RespondPermission {
+                key: slot.clone(),
+                tool_id: tool_id.to_owned(),
+                outcome: PermissionOutcome::Selected {
+                    option_id: option.option_id.clone(),
+                    action: option.action.clone(),
+                    notes_text: notes.map(str::to_owned),
+                    edited_input: None,
+                },
+            })
+        }
+        Ask::Question(request) if request.tool_call.tool_call_id == tool_id => {
+            let annotation = notes
+                .filter(|notes| !notes.trim().is_empty())
+                .map(|notes| QuestionAnnotation { preview: None, notes: Some(notes.to_owned()) });
+            let selected: Vec<String> = option_id.into_iter().map(str::to_owned).collect();
+            // The TUI's own rule: nothing chosen and nothing said is not an
+            // answer, it is a rejection.
+            let outcome = if selected.is_empty() && annotation.is_none() {
+                QuestionOutcome::Cancelled
+            } else {
+                QuestionOutcome::Answered { selected_option_ids: selected, annotation }
+            };
+            Some(forge_sessions::Command::RespondQuestion {
+                key: slot.clone(),
+                tool_id: tool_id.to_owned(),
+                outcome,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn hex(byte: u8) -> Option<u8> {
@@ -105,6 +164,10 @@ pub async fn render(
     let state =
         row.map_or(State::NeverStarted, |row| crate::home::state_of_agent(row, &live.unseen));
     let endpoint = format!("{}/composer", crate::session::href(slot));
+    // The stream's copy is the newest. The core's is the one a view that
+    // attached after the prompt landed has at all: the wire carried it once
+    // and kept it nowhere else.
+    let kept = home.surface.pending_ask(slot);
 
     html! {
         form #comp .comp hx-get=(endpoint) hx-target="#comp" hx-swap="outerHTML"
@@ -112,7 +175,7 @@ pub async fn render(
             @if let Some(blocked) = blocked(state, row, slot, held) {
                 (blocked_box(&blocked))
             } @else if let Some(pending) = row.and_then(|row| row.pending) {
-                (dock(row, pending, held.ask(slot)))
+                (dock(row, pending, held.ask(slot).or(kept.as_ref()), &endpoint))
             } @else {
                 (hint(row, held.sign_in(slot)))
                 (popover(home, slot, roster, draft).await)
@@ -121,6 +184,7 @@ pub async fn render(
                     held.take(slot),
                     held.notice(slot),
                     dictation_offered(home),
+                    &endpoint,
                 ))
             }
         }
@@ -244,6 +308,7 @@ fn box_markup(
     take: Option<&Take>,
     notice: Option<&Notice>,
     dictation: bool,
+    endpoint: &str,
 ) -> Markup {
     // A landed take puts its words where the reader was about to type, so
     // the box holds the draft and the words together. Nothing else changes
@@ -261,11 +326,10 @@ fn box_markup(
         (None, false) => "",
     };
     let filled = !draft.is_empty();
-    let refusing = refusing(filled, dictation, take.is_some());
     html! {
         div class=(format!("box{state}")) {
             @if let Some(take) = take {
-                (dictation_row(take))
+                (dictation_row(take, endpoint))
             } @else if let Some(notice) = notice.filter(|notice| notice.line().is_some()) {
                 div class=(format!("notice {}", notice.tone())) { (notice.line().unwrap_or_default()) }
             }
@@ -273,16 +337,21 @@ fn box_markup(
                 textarea #draft .txt name="draft" rows="3" autocomplete="off" spellcheck="false"
                     placeholder="Type a message\u{2026}" { (&draft) }
                 @if filled {
-                    button .send type="button" disabled=(NO_DISPATCH) title=(NO_DISPATCH) {
+                    button .send type="submit" hx-post=(format!("{endpoint}/send"))
+                        hx-include="#draft" hx-target="#comp" hx-swap="outerHTML"
+                        title="send" {
                         (icons::icon("send", ""))
                     }
                 }
             }
-            @if !refusing.is_empty() {
+            @if filled || dictation {
                 div .foot {
-                    span .off { (refusing) }
+                    @if filled {
+                        span .k { "\u{21b5}" } " send "
+                        span .k { "\u{21e7}\u{21b5}" } " newline"
+                    }
                     @if dictation {
-                        (mic_control())
+                        (mic_control(endpoint))
                     }
                 }
             }
@@ -290,32 +359,17 @@ fn box_markup(
     }
 }
 
-/// The box's controls that cannot act, in the order they sit. Every one of
-/// them needs the write half of the view surface, so the box names them in
-/// one line the reader can see: a reason living only in a disabled
-/// control's `title` is a reason nobody reads, because a disabled control
-/// takes no pointer events.
-fn refusing(draft: bool, dictation: bool, take: bool) -> String {
-    let mut controls = Vec::new();
-    if draft {
-        controls.push("sending");
+/// The control that starts a take. The mockup draws no way in - every take
+/// it draws is already running - so the affordance is here rather than
+/// missing.
+fn mic_control(endpoint: &str) -> Markup {
+    html! {
+        button .mic type="submit" hx-post=(format!("{endpoint}/dictate"))
+            hx-vals=r#"{"action":"start"}"# hx-target="#comp" hx-swap="outerHTML"
+            title="start a take" {
+            (icons::icon("mic", ""))
+        }
     }
-    if dictation {
-        controls.push("dictation");
-    }
-    if take {
-        controls.push("stopping a take");
-    }
-    let Some((last, rest)) = controls.split_last() else {
-        return String::new();
-    };
-    let named = if rest.is_empty() {
-        (*last).to_owned()
-    } else {
-        format!("{} and {last}", rest.join(", "))
-    };
-    let verb = if controls.len() == 1 { "is" } else { "are" };
-    format!("{named} {verb} {NO_DISPATCH}")
 }
 
 /// The draft with a take's words at its end, which is where the caret was.
@@ -324,18 +378,6 @@ fn joined(draft: &str, words: &str) -> String {
         format!("{draft}{words}")
     } else {
         format!("{draft} {words}")
-    }
-}
-
-/// The control that would start a take. The mockup draws no way in - every
-/// take it draws is already running - so the affordance is here rather than
-/// missing, refusing with the reason every other unwired control gives.
-fn mic_control() -> Markup {
-    html! {
-        button .mic type="button" disabled=(NO_DISPATCH)
-            title=(format!("starting a take is {NO_DISPATCH}")) {
-            (icons::icon("mic", ""))
-        }
     }
 }
 
@@ -403,7 +445,7 @@ impl Take {
     }
 }
 
-fn dictation_row(take: &Take) -> Markup {
+fn dictation_row(take: &Take, endpoint: &str) -> Markup {
     let tone = if take.phase == Phase::Transcribing { " tr" } else { "" };
     let label = match (take.phase, take.progress) {
         (_, (done, Some(total))) => format!("transcribing {done}/{total}"),
@@ -424,8 +466,9 @@ fn dictation_row(take: &Take) -> Markup {
                 }
             }
             span .lbl { (label) }
-            button .esc type="button" disabled=(NO_DISPATCH)
-                title=(format!("stopping a take is {NO_DISPATCH}")) { "esc cancel" }
+            button .esc type="submit" hx-post=(format!("{endpoint}/dictate"))
+                hx-vals=r#"{"action":"cancel"}"# hx-target="#comp" hx-swap="outerHTML"
+                title="abandon the take" { "esc cancel" }
         }
     }
 }
@@ -678,13 +721,6 @@ fn marked(text: &str, query: &str) -> Markup {
 
 // ---------- the dock ----------
 
-/// One prompt as the composer draws it: what the wire said it offers.
-#[derive(Clone)]
-enum Ask {
-    Permission(Box<PermissionRequest>),
-    Question(Box<QuestionRequest>),
-}
-
 /// The prompt dock: the box morphed, because the eye is already there.
 ///
 /// Which prompt waits is the core's answer, read through the seat's row.
@@ -692,18 +728,17 @@ enum Ask {
 /// it is `None` for a view that attached after the prompt landed - and that
 /// case says so rather than drawing a box that would read as nothing
 /// pending.
-fn dock(row: Option<&AgentRow>, kind: PendingKind, ask: Option<&Ask>) -> Markup {
+fn dock(row: Option<&AgentRow>, kind: PendingKind, ask: Option<&Ask>, endpoint: &str) -> Markup {
     html! {
         div .dock {
             @if let Some(depth) = row.map(|row| row.pending_depth).filter(|depth| *depth > 1) {
                 div .queue { "\u{25bc} " (depth - 1) " more pending" }
             }
             @match ask {
-                Some(Ask::Permission(request)) => (permission_dock(request)),
-                Some(Ask::Question(request)) => (question_dock(request)),
+                Some(Ask::Permission(request)) => (permission_dock(request, endpoint)),
+                Some(Ask::Question(request)) => (question_dock(request, endpoint)),
                 None => (unknown_dock(kind)),
             }
-            div .keys { span .off { "answering is " (NO_DISPATCH) } }
         }
     }
 }
@@ -720,7 +755,7 @@ fn unknown_dock(kind: PendingKind) -> Markup {
     }
 }
 
-fn permission_dock(request: &PermissionRequest) -> Markup {
+fn permission_dock(request: &PermissionRequest, endpoint: &str) -> Markup {
     let call = &request.tool_call;
     let display = request.display.clone().unwrap_or_default();
     let title = display
@@ -748,15 +783,16 @@ fn permission_dock(request: &PermissionRequest) -> Markup {
                 div class=(opt_class(index)) {
                     span .cur { @if index == 0 { "\u{25b8}" } }
                     (icons::icon(option_icon(option.kind), option_tone(option.kind)))
-                    (option_control(&option.name))
+                    (option_control(&option.name, endpoint, &call.tool_call_id, &option.option_id))
                 }
             }
         }
     }
 }
 
-fn question_dock(request: &QuestionRequest) -> Markup {
+fn question_dock(request: &QuestionRequest, endpoint: &str) -> Markup {
     let prompt = &request.prompt;
+    let tool_id = &request.tool_call.tool_call_id;
     html! {
         div .head {
             span .qm { "?" }
@@ -771,34 +807,43 @@ fn question_dock(request: &QuestionRequest) -> Markup {
                 div class=(opt_class(index)) {
                     span .cur { @if index == 0 { "\u{25b8}" } }
                     span .box2 {}
-                    (option_control(&option.label))
+                    (option_control(&option.label, endpoint, tool_id, &option.option_id))
                 }
             }
+            // The escape hatch the mockup draws: it answers the question
+            // with words instead of a choice, which is an answer the CLI
+            // accepts with nothing selected.
             div .opt {
                 span .cur {}
                 span .box2 {}
-                (option_control("Tell Claude something else:"))
+                button .lbl type="submit" hx-post=(format!("{endpoint}/answer"))
+                    hx-include="closest .dock" hx-vals=(format!(r#"{{"tool_id":"{tool_id}"}}"#))
+                    hx-target="#comp" hx-swap="outerHTML" {
+                    "Tell Claude something else:"
+                }
             }
         }
-        textarea .notes name="notes" rows="1" disabled=(NO_DISPATCH) {}
+        textarea .notes name="notes" rows="1"
+            placeholder="answer with your own words" {}
     }
 }
 
-/// What an option's row carries: the first is the one a key would take, and
-/// every one of them is marked as unable to answer, so the row does not keep
-/// the styling of a live choice while its control refuses.
+/// What an option's row carries: the first is the one a key would take.
 fn opt_class(index: usize) -> &'static str {
     match index {
-        0 => "opt sel off",
-        _ => "opt off",
+        0 => "opt sel",
+        _ => "opt",
     }
 }
 
-/// One option, as the control it will be once answering is wired.
-fn option_control(label: &str) -> Markup {
+/// One option, as the control it is: it answers the prompt it was drawn for,
+/// and names the option the core offered rather than the outcome, which only
+/// the core may build.
+fn option_control(label: &str, endpoint: &str, tool_id: &str, option_id: &str) -> Markup {
     html! {
-        button .lbl type="button" disabled=(NO_DISPATCH)
-            title=(format!("answering is {NO_DISPATCH}")) { (label) }
+        button .lbl type="submit" hx-post=(format!("{endpoint}/answer"))
+            hx-vals=(format!(r#"{{"tool_id":"{tool_id}","option_id":"{option_id}"}}"#))
+            hx-target="#comp" hx-swap="outerHTML" { (label) }
     }
 }
 
@@ -863,9 +908,12 @@ struct SignIn {
 }
 
 impl Composer {
-    /// Fold one update in. An update about a take this view is no longer
-    /// drawing is dropped rather than drawn over the newer one.
-    pub fn apply(&mut self, update: &SessionUpdate) {
+    /// Fold one update in, answering whether a composer has to be redrawn.
+    ///
+    /// An update about a take this view is no longer drawing is dropped
+    /// rather than drawn over the newer one, and drops answer false: a stale
+    /// take's tail is not news.
+    pub fn apply(&mut self, update: &SessionUpdate) -> bool {
         match update {
             SessionUpdate::DictateStarted { key, floor_db, generation } => {
                 // A new take supersedes whatever the seat was doing, its
@@ -873,6 +921,7 @@ impl Composer {
                 // draft the browser holds.
                 self.takes.insert(key.clone(), Take::new(*floor_db, *generation));
                 self.notices.remove(key);
+                true
             }
             SessionUpdate::DictateLevel { key, peak_db } => {
                 // The wire carries no generation on a level, and the
@@ -881,30 +930,37 @@ impl Composer {
                 // ended finds none and is dropped.
                 if let Some(take) = self.takes.get_mut(key) {
                     take.push(*peak_db);
+                    return true;
                 }
+                false
             }
             SessionUpdate::DictateTranscribing { key } => {
                 if let Some(take) = self.takes.get_mut(key) {
                     take.phase = Phase::Transcribing;
+                    return true;
                 }
+                false
             }
             SessionUpdate::DictateProgress { key, generation, done, total } => {
                 if let Some(take) = self.takes.get_mut(key)
                     && take.generation == *generation
                 {
                     take.progress = (*done, *total);
+                    return true;
                 }
+                false
             }
             SessionUpdate::DictateEnded { key, outcome, generation } => {
                 // A resolver for a take the composer has already replaced
                 // is about a take that is over.
                 if self.takes.get(key).is_none_or(|take| take.generation != *generation) {
-                    return;
+                    return false;
                 }
                 let floor_db = self.takes.remove(key).map_or(-50.0, |take| take.floor_db);
                 if let Some(notice) = Notice::of(outcome, floor_db) {
                     self.notices.insert(key.clone(), notice);
                 }
+                true
             }
             SessionUpdate::AuthRequired { key, method_name, method_description } => {
                 self.sign_ins.insert(
@@ -914,12 +970,33 @@ impl Composer {
                         method_description: method_description.clone(),
                     },
                 );
+                true
             }
             SessionUpdate::PermissionRequest { key, request, .. } => {
                 self.asks.insert(key.clone(), Ask::Permission(Box::new(request.clone())));
+                true
             }
             SessionUpdate::QuestionRequest { key, request, .. } => {
                 self.asks.insert(key.clone(), Ask::Question(Box::new(request.clone())));
+                true
+            }
+            // The prompt is settled, so the dock goes. This is the only
+            // thing on the stream that says so: answering leaves the core's
+            // pending set either way, and a view that answered from another
+            // seat's page would otherwise keep drawing it.
+            SessionUpdate::PendingInteractionResolved { key, tool_id } => {
+                let held = match self.asks.get(key) {
+                    Some(Ask::Permission(request)) => &request.tool_call.tool_call_id == tool_id,
+                    Some(Ask::Question(request)) => &request.tool_call.tool_call_id == tool_id,
+                    None => false,
+                };
+                if held {
+                    self.asks.remove(key);
+                }
+                // True whatever this view held: the prompt is gone from the
+                // core, and a view that never had the ask still draws the
+                // dock from the core's own record of what is pending.
+                true
             }
             // The CLI announces a compaction on the status frame and
             // clears it with a null, which is the only place either is
@@ -930,13 +1007,15 @@ impl Composer {
                 {
                     let field = data.get("status");
                     if field.and_then(serde_json::Value::as_str) == Some("compacting") {
-                        self.compacting.insert(key.clone());
-                    } else if field.is_some_and(serde_json::Value::is_null) {
-                        self.compacting.remove(key);
+                        return self.compacting.insert(key.clone());
+                    }
+                    if field.is_some_and(serde_json::Value::is_null) {
+                        return self.compacting.remove(key);
                     }
                 }
+                false
             }
-            _ => {}
+            _ => false,
         }
     }
 
