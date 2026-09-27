@@ -1647,6 +1647,7 @@ fn fold_monitor(
                     timeout_ms: parsed.timeout_ms,
                     status,
                     output_file: None,
+                    ended_at: None,
                 });
             }
         }
@@ -1658,12 +1659,16 @@ fn fold_monitor(
             record.task_id.get_or_insert_with(|| task_id.clone());
         }
         forge_primitives::Message::TaskUpdated { task_id, patch, .. } => {
-            // A patch that only stamps an end time carries no status, and
-            // a status forge does not classify is one it cannot act on.
-            let Some(status) = patch.status.as_deref().and_then(monitor_status_from_wire) else {
-                return;
-            };
-            settle_monitor(domain, task_id, status, None);
+            // A status forge does not classify is one it cannot act on,
+            // so only the instant is stamped then: it is a fact the frame
+            // states whether or not this build can name how it ended.
+            settle_monitor(
+                domain,
+                task_id,
+                patch.status.as_deref().and_then(monitor_status_from_wire),
+                None,
+                patch.end_time,
+            );
         }
         forge_primitives::Message::TaskNotification { task_id, status, output_file, .. } => {
             let settled = match status {
@@ -1679,7 +1684,7 @@ fn fold_monitor(
                 forge_primitives::TaskNotificationStatus::Unknown => None,
             };
             if let Some(status) = settled {
-                settle_monitor(domain, task_id, status, Some(output_file.clone()));
+                settle_monitor(domain, task_id, Some(status), Some(output_file.clone()), None);
             }
             // The notification is the last frame a monitor sends, so it is
             // where the set drains once nothing in it is running: the same
@@ -1703,17 +1708,24 @@ fn drain_settled_monitors(domain: &mut DomainSession) {
 fn settle_monitor(
     domain: &mut DomainSession,
     task_id: &str,
-    status: forge_primitives::MonitorStatus,
+    status: Option<forge_primitives::MonitorStatus>,
     output_file: Option<String>,
+    end_time_ms: Option<u64>,
 ) {
     let Some(record) =
         domain.monitors.iter_mut().find(|held| held.task_id.as_deref() == Some(task_id))
     else {
         return;
     };
-    record.status = status;
+    if let Some(status) = status {
+        record.status = status;
+    }
     if let Some(path) = output_file {
         record.output_file = Some(path);
+    }
+    if let Some(end_ms) = end_time_ms {
+        record.ended_at =
+            Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(end_ms));
     }
 }
 
@@ -4065,6 +4077,20 @@ provider = "anthropic"
         .expect("parse a task_updated")
     }
 
+    /// A terminal patch as the CLI sends one: the status and the instant
+    /// it ended, in one frame.
+    fn task_updated_at(task_id: &str, status: &str, end_ms: u64) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": task_id,
+            "patch": { "status": status, "end_time": end_ms },
+            "uuid": "u-upd",
+            "session_id": "s",
+        }))
+        .expect("parse a task_updated carrying an end time")
+    }
+
     fn task_notification(task_id: &str) -> forge_primitives::Message {
         task_notification_with_status(task_id, "completed")
     }
@@ -4573,6 +4599,46 @@ provider = "anthropic"
             domain.monitors[0].status,
             forge_primitives::MonitorStatus::Completed,
             "a clean exit settles the monitor",
+        );
+    }
+
+    /// The instant a monitor ended rides the frame that settles it, and a
+    /// view draws the age from it. Without it the record says how a
+    /// monitor ended and not when, which is the whole difference between
+    /// `completed` and `completed 12m`.
+    #[test]
+    fn a_monitors_terminal_transition_stamps_the_instant_it_ended() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-mon", "ci-watch")));
+        apply_event_to_domain(&mut domain, &sdk_message(task_started("t-1", Some("tu-mon"))));
+
+        apply_event_to_domain(
+            &mut domain,
+            &sdk_message(task_updated_at("t-1", "completed", 1_700_000_000_123)),
+        );
+
+        assert_eq!(
+            domain.monitors[0].ended_at,
+            Some(
+                std::time::SystemTime::UNIX_EPOCH
+                    + std::time::Duration::from_millis(1_700_000_000_123)
+            ),
+            "the frame that ends the monitor is the frame that says when",
+        );
+    }
+
+    /// A running monitor has no end instant, and a read that carried one
+    /// would draw an age on work that is still going.
+    #[test]
+    fn a_running_monitor_carries_no_end_instant() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-mon", "ci-watch")));
+        apply_event_to_domain(&mut domain, &sdk_message(task_started("t-1", Some("tu-mon"))));
+        apply_event_to_domain(&mut domain, &sdk_message(task_updated("t-1", "running")));
+
+        assert_eq!(
+            domain.monitors[0].ended_at, None,
+            "a monitor still watching has not ended, so it has nothing to age",
         );
     }
 

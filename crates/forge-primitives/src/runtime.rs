@@ -474,4 +474,9 @@ pub struct MonitorRecord {
     /// Path the watched command writes to, once `task_notification`
     /// names one. A view reads the file for the monitor's tail.
     pub output_file: Option<String>,
+    /// When the task ended, from the `end_time` a `task_updated` patch
+    /// carries. `None` while it runs and for any transition that
+    /// stated no instant, which is why a view draws an age only when
+    /// one is here rather than counting from the status.
+    pub ended_at: Option<std::time::SystemTime>,
 }

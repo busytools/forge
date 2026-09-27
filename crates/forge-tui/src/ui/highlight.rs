@@ -13,58 +13,6 @@ static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_
 static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 static FALLBACK_THEME: LazyLock<Theme> = LazyLock::new(Theme::default);
 
-pub(crate) fn strip_ansi(text: &str) -> String {
-    enum State {
-        Normal,
-        Escape,
-        Csi,
-        Osc,
-        OscEscape,
-    }
-
-    let mut out = String::with_capacity(text.len());
-    let mut state = State::Normal;
-
-    for ch in text.chars() {
-        state = match state {
-            State::Normal => {
-                if ch == '\u{1b}' {
-                    State::Escape
-                } else {
-                    out.push(ch);
-                    State::Normal
-                }
-            }
-            State::Escape => match ch {
-                '[' => State::Csi,
-                ']' => State::Osc,
-                _ => State::Normal,
-            },
-            State::Csi => {
-                if ('\u{40}'..='\u{7e}').contains(&ch) {
-                    State::Normal
-                } else {
-                    State::Csi
-                }
-            }
-            State::Osc => match ch {
-                '\u{07}' => State::Normal,
-                '\u{1b}' => State::OscEscape,
-                _ => State::Osc,
-            },
-            State::OscEscape => {
-                if ch == '\\' {
-                    State::Normal
-                } else {
-                    State::Osc
-                }
-            }
-        };
-    }
-
-    out
-}
-
 /// Drop control characters from produced spans - never from the input,
 /// where a control byte terminates an escape sequence (BEL ends OSC).
 fn strip_control_chars(text: &str) -> Cow<'_, str> {
@@ -89,7 +37,7 @@ fn strip_line_controls(line: Line<'static>) -> Line<'static> {
 }
 
 pub(crate) fn render_terminal_output(text: &str) -> Vec<Line<'static>> {
-    let stripped = strip_ansi(text);
+    let stripped = forge_sessions::ansi::strip_ansi(text);
     if diff::looks_like_unified_diff(&stripped) {
         return diff::render_raw_unified_diff(&stripped);
     }
@@ -274,18 +222,6 @@ fn ratatui_style(color: SyntectColor, font_style: FontStyle) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn strip_ansi_removes_csi_sequences() {
-        let input = "\u{1b}[31mred\u{1b}[0m plain";
-        assert_eq!(strip_ansi(input), "red plain");
-    }
-
-    #[test]
-    fn strip_ansi_removes_osc_sequences() {
-        let input = "prefix\u{1b}]0;title\u{07}suffix";
-        assert_eq!(strip_ansi(input), "prefixsuffix");
-    }
 
     #[test]
     fn highlight_code_preserves_text() {

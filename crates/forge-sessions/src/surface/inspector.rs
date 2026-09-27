@@ -346,6 +346,7 @@ mod tests {
                 timeout_ms: 0,
                 status: MonitorStatus::Running,
                 output_file: None,
+                ended_at: None,
             },
             MonitorRecord {
                 tool_use_id: "tu-done".to_owned(),
@@ -356,6 +357,7 @@ mod tests {
                 timeout_ms: 0,
                 status: MonitorStatus::Completed,
                 output_file: Some("/tmp/monitor-out".to_owned()),
+                ended_at: None,
             },
         ];
 

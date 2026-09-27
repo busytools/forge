@@ -2622,6 +2622,7 @@ async fn the_monitors_section_draws_the_live_set() {
                     timeout_ms: 0,
                     status: MonitorStatus::Running,
                     output_file: None,
+                    ended_at: None,
                 },
                 MonitorRecord {
                     tool_use_id: "tu-done".to_owned(),
@@ -2632,6 +2633,7 @@ async fn the_monitors_section_draws_the_live_set() {
                     timeout_ms: 0,
                     status: MonitorStatus::Completed,
                     output_file: None,
+                    ended_at: None,
                 },
             ],
             ..ViewFacts::default()
@@ -2652,6 +2654,158 @@ async fn the_monitors_section_draws_the_live_set() {
     assert!(
         page.contains("<svg class=\"ic st\">"),
         "a settled monitor's mark carries its own state class: {page}",
+    );
+}
+
+/// The watched command's own output is what the section is opened for. The
+/// CLI streams it to a file rather than over the wire and names that file
+/// on the notification that ends the monitor, so the output is drawn under
+/// the command of the card that ended.
+#[tokio::test]
+async fn a_settled_monitor_draws_its_commands_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("ci-watch.out");
+    std::fs::write(&out, "build \u{b7} in_progress\nlint \u{b7} success\ndeploy \u{b7} queued\n")
+        .expect("seed the watched command's output");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            monitors: vec![MonitorRecord {
+                tool_use_id: "tu-done".to_owned(),
+                task_id: Some("t-done".to_owned()),
+                description: "ci-watch".to_owned(),
+                command: "gh run watch 18234567".to_owned(),
+                persistent: false,
+                timeout_ms: 0,
+                status: MonitorStatus::Completed,
+                output_file: Some(out.to_string_lossy().into_owned()),
+                ended_at: None,
+            }],
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    let command = page.find("gh run watch 18234567").expect("the command row renders");
+    let first = page.find("build \u{b7} in_progress").expect("the first output line renders");
+    let last = page.find("deploy \u{b7} queued").expect("and the last one");
+    assert!(command < first, "the output sits under the command it came from: {page}");
+    assert!(first < last, "and the lines keep the order the command wrote them in: {page}");
+}
+
+/// A running monitor names no file, and its card draws its command and no
+/// output. The record is created without a path and the only frame that
+/// carries one settles the monitor, so this is not a gap in the drawing:
+/// there is nothing yet to draw.
+#[tokio::test]
+async fn a_running_monitor_draws_only_its_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            monitors: vec![MonitorRecord {
+                tool_use_id: "tu-live".to_owned(),
+                task_id: Some("t-live".to_owned()),
+                description: "ci-watch".to_owned(),
+                command: "gh run watch 18234567".to_owned(),
+                persistent: true,
+                timeout_ms: 0,
+                status: MonitorStatus::Running,
+                output_file: None,
+                ended_at: None,
+            }],
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("gh run watch 18234567"),
+        "a monitor still watching draws the command it watches: {page}",
+    );
+    assert!(page.contains("ci-watch"), "and its own row: {page}");
+    assert!(
+        !page.contains("class=\"settled\""),
+        "and no settled line, which nothing has said: {page}",
+    );
+}
+
+/// A settled monitor says how long ago it settled. The record carries the
+/// instant the wire stamped on the transition that ended it, so the row
+/// reads `completed 12m` rather than only `completed`.
+#[tokio::test]
+async fn a_settled_monitor_states_the_age_of_its_end() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            monitors: vec![MonitorRecord {
+                tool_use_id: "tu-done".to_owned(),
+                task_id: Some("t-done".to_owned()),
+                description: "deploy-gate".to_owned(),
+                command: "gh run watch 2".to_owned(),
+                persistent: false,
+                timeout_ms: 0,
+                status: MonitorStatus::Completed,
+                output_file: None,
+                ended_at: Some(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(12 * 60),
+                ),
+            }],
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<span class=\"n\">completed 12m</span>"),
+        "the settled row says how long ago the watched command ended: {page}",
+    );
+}
+
+/// A settled monitor whose transition carried no instant still states that
+/// it settled. The age is the extra, not the answer.
+#[tokio::test]
+async fn a_settled_monitor_without_an_instant_still_states_its_end() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            monitors: vec![MonitorRecord {
+                tool_use_id: "tu-done".to_owned(),
+                task_id: Some("t-done".to_owned()),
+                description: "deploy-gate".to_owned(),
+                command: "gh run watch 2".to_owned(),
+                persistent: false,
+                timeout_ms: 0,
+                status: MonitorStatus::Completed,
+                output_file: None,
+                ended_at: None,
+            }],
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<span class=\"n\">completed</span>"),
+        "a settled monitor with no instant states the end and no more: {page}",
     );
 }
 

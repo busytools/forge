@@ -730,6 +730,7 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
     let servers = home.surface.mcp_servers(slot);
     let walk = home.surface.processes(slot);
     let monitors = home.surface.monitors(slot);
+    let tails = monitor_tails(&monitors).await;
 
     html! {
         @if let Some(work) = &work {
@@ -762,7 +763,7 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
             (processes_section(walk))
         }
         @if !monitors.is_empty() {
-            (monitors_section(&monitors))
+            (monitors_section(&monitors, &tails))
         }
     }
 }
@@ -986,7 +987,13 @@ fn memory_label(bytes: u64) -> String {
 
 /// The monitors section. Monitors live here and not in the chat, so this
 /// is the only surface that says what a session is watching.
-fn monitors_section(monitors: &[MonitorRecord]) -> Markup {
+///
+/// Every card draws its command, and the output under it only when the
+/// record names a file. The CLI names one on the notification that ends the
+/// monitor and never before: the record is created without one and the only
+/// frame that carries one also settles it, so the output belongs to a
+/// settled card and a running one has nothing to put under its command.
+fn monitors_section(monitors: &[MonitorRecord], tails: &HashMap<String, Vec<String>>) -> Markup {
     let running = monitors.iter().filter(|monitor| !monitor.status.is_terminal()).count();
     let summary = format!("{running} running");
     let body = html! {
@@ -1002,10 +1009,9 @@ fn monitors_section(monitors: &[MonitorRecord]) -> Markup {
                     span .nm { (&monitor.description) }
                     span .n { (monitor_label(monitor)) }
                 }
-                @if monitor.status.is_terminal() {
-                    div .settled { "settled - its output stays in the transcript" }
-                } @else {
-                    div .tt { span .tg { "$" } " " (&monitor.command) }
+                div .tt { span .tg { "$" } " " (&monitor.command) }
+                @for line in tails.get(&monitor.tool_use_id).into_iter().flatten() {
+                    div .tt { (line) }
                 }
             }
         }
@@ -1013,15 +1019,66 @@ fn monitors_section(monitors: &[MonitorRecord]) -> Markup {
     section(false, "monitors", "monitors", &summary, &body)
 }
 
+/// The watched command's own output for every monitor that names a file,
+/// keyed by the record's own id.
+///
+/// Read on a blocking thread rather than inside the markup: these are disk
+/// reads on a render path, and the page's other ones are offloaded the same
+/// way. A file that cannot be read contributes no lines, which is what a
+/// reader gets for a command that has written nothing either, and the read
+/// logs why for the case where that is wrong.
+async fn monitor_tails(monitors: &[MonitorRecord]) -> HashMap<String, Vec<String>> {
+    let named: Vec<(String, String)> = monitors
+        .iter()
+        .filter_map(|monitor| {
+            monitor.output_file.as_ref().map(|path| (monitor.tool_use_id.clone(), path.clone()))
+        })
+        .collect();
+    if named.is_empty() {
+        return HashMap::new();
+    }
+    tokio::task::spawn_blocking(move || {
+        named
+            .into_iter()
+            .map(|(id, path)| {
+                let lines = forge_sessions::monitor::read_output_file_tail(
+                    Path::new(&path),
+                    MONITOR_TAIL_LINES,
+                )
+                .unwrap_or_default();
+                (id, lines)
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// How many of the watched command's output lines the card draws. The
+/// terminal's own chat block caps at the same five: the row is about what
+/// the command is doing now, not a transcript of everything it printed.
+const MONITOR_TAIL_LINES: usize = 5;
+
 /// The trailing word on a monitor's own row: how it ended, or what it is
 /// while it runs.
+///
+/// A settled row carries the age of its end beside it, from the instant
+/// the wire stamped on the transition. Only when the record holds one:
+/// a transition that stated no instant draws the word alone rather than
+/// an age counted from the status, which would be a number nothing said.
 fn monitor_label(monitor: &MonitorRecord) -> String {
-    match monitor.status {
-        MonitorStatus::Running if monitor.persistent => "persistent".to_owned(),
-        MonitorStatus::Running => "running".to_owned(),
-        MonitorStatus::Completed => "completed".to_owned(),
-        MonitorStatus::Stopped => "stopped".to_owned(),
-        MonitorStatus::TimedOut => "timed out".to_owned(),
+    let word = match monitor.status {
+        MonitorStatus::Running if monitor.persistent => "persistent",
+        MonitorStatus::Running => "running",
+        MonitorStatus::Completed => "completed",
+        MonitorStatus::Stopped => "stopped",
+        MonitorStatus::TimedOut => "timed out",
+    };
+    match monitor.ended_at {
+        Some(at) if monitor.status.is_terminal() => {
+            format!("{word} {}", crate::home::elapsed_label(at))
+        }
+        _ => word.to_owned(),
     }
 }
 
