@@ -1109,11 +1109,16 @@ async fn the_mcp_section_lists_the_sessions_servers() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     let lead = SessionSlot::lead("Busytools", "forge");
+    // The second server reports no scope of its own, which is the case the
+    // CLI leaves for an in-process server: its config blob is what names it.
+    let mut sdk = mcp_server("context7", "session", 2);
+    sdk.scope = None;
+    sdk.config = Some(serde_json::json!({ "type": "sdk" }));
     fleet.seed_view_facts(
         &lead,
         ViewFacts {
             mcp: Some(McpServers {
-                servers: vec![mcp_server("forge"), mcp_server("context7")],
+                servers: vec![mcp_server("forge", "session", 24), sdk],
                 error: None,
             }),
             ..ViewFacts::default()
@@ -1124,9 +1129,57 @@ async fn the_mcp_section_lists_the_sessions_servers() {
     let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
 
     assert!(page.contains("href=\"#i-mcp\""), "the section renders: {page}");
-    assert!(page.contains("forge"), "naming the server it holds: {page}");
-    assert!(page.contains("context7"), "and the one beside it: {page}");
+    assert!(
+        page.contains("<span class=\"k\">forge \u{b7} session</span>"),
+        "naming the server and the scope it is configured in: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"v\">24 tools</span>"),
+        "and how many tools it offers, which is what the terminal's own row says: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"k\">context7 \u{b7} sdk</span>"),
+        "the next one, with the scope its config blob names: {page}",
+    );
     assert!(page.contains("<span class=\"c2\">2</span>"), "under a count of them: {page}");
+}
+
+/// A server that is not up says why in the place its tool count would be,
+/// and a count of one reads as one rather than as one tools.
+#[tokio::test]
+async fn an_mcp_row_states_its_state_where_a_tool_count_would_go() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    let mut refused = serde_json::from_value::<McpServerStatus>(serde_json::json!({
+        "name": "playwright",
+        "status": "failed",
+        "error": "Server does not exist",
+    }))
+    .expect("a failed server");
+    refused.scope = Some("user".to_owned());
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            mcp: Some(McpServers {
+                servers: vec![refused, mcp_server("one-tool", "session", 1)],
+                error: None,
+            }),
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<span class=\"v\">Server does not exist</span>"),
+        "a server that failed says why, where the count would be: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"v\">1 tool</span>"),
+        "and a count of one reads as one: {page}",
+    );
 }
 
 /// A failed MCP read says so rather than rendering a session with no
@@ -1183,21 +1236,73 @@ async fn the_processes_section_draws_the_walk() {
     let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
 
     assert!(page.contains("href=\"#i-processes\""), "the section renders: {page}");
-    assert!(page.contains("<span class=\"k\">cargo</span>"), "naming what is running: {page}");
     assert!(
-        page.contains("<span class=\"k\">&nbsp;&nbsp;cc</span>"),
-        "and its child, indented under it: {page}",
+        page.contains("<span class=\"k\">cargo nextest run</span>"),
+        "naming the command the supervisor runs: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"k\">&nbsp;&nbsp;cc -O2 -o build/obj.o</span>"),
+        "and its child's command, indented under it: {page}",
     );
     assert!(page.contains("412 MB"), "with the memory it holds: {page}");
     assert!(page.contains("4242"), "and the pid it runs under: {page}");
     assert!(page.contains("<span class=\"c2\">3</span>"), "under a count of the rows: {page}");
-    let cargo = page.find("<span class=\"k\">cargo</span>").expect("the parent is listed");
-    let child = page.find("<span class=\"k\">&nbsp;&nbsp;cc</span>").expect("the child is listed");
+    let cargo =
+        page.find("<span class=\"k\">cargo nextest run</span>").expect("the parent is listed");
+    let child =
+        page.find("<span class=\"k\">&nbsp;&nbsp;cc -O2 -o build/obj.o</span>").expect("the child");
     assert!(cargo < child, "a parent is drawn before the child it indents: {page}");
-    let heavy = page.find("big-rustc").expect("the heavier child is listed");
+    let heavy = page.find("rustc --crate-name forge_web").expect("the heavier child is listed");
     assert!(
         cargo < heavy,
         "and a child heavier than its parent still follows it, rather than the scan's order: {page}",
+    );
+}
+
+/// A row names the command its process is running rather than the name the
+/// OS gives it: the name alone says nothing about which node process it is,
+/// and the terminal's own row draws the cmdline for that reason. A shell
+/// wrapper's chrome is not a headline either, so its inner command is what
+/// shows.
+#[tokio::test]
+async fn the_processes_rows_name_the_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let lead = SessionSlot::lead("Busytools", "forge");
+    fleet.seed_view_facts(
+        &lead,
+        ViewFacts {
+            process_snapshot: Some(ProcessSnapshot {
+                processes: vec![
+                    process(5000, 4000, "node", "node /opt/ctx7/server.js --stdio", 64),
+                    // The shape claude wraps a Bash call in, which is what
+                    // the terminal unwraps: the inner command sits between
+                    // `eval '` and the ` < /dev/null` redirect.
+                    process(
+                        5001,
+                        4000,
+                        "zsh",
+                        "/bin/zsh -c source /tmp/snap.sh && eval 'cargo nextest run' \
+                         < /dev/null && pwd -P >| /tmp/claude-cwd",
+                        12,
+                    ),
+                ],
+                scanned_at: std::time::SystemTime::now(),
+            }),
+            ..ViewFacts::default()
+        },
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<span class=\"k\">node /opt/ctx7/server.js --stdio</span>"),
+        "the row names the command with its executable's path stripped: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"k\">cargo nextest run</span>"),
+        "a shell wrapper shows the command it wraps rather than its own chrome: {page}",
     );
 }
 
@@ -1276,6 +1381,12 @@ async fn the_monitors_section_draws_the_live_set() {
     assert!(page.contains("persistent"), "and whether it outlives its event: {page}");
     assert!(page.contains("1 running"), "under a count of what is still live: {page}");
     assert!(page.contains("deploy-gate"), "with the settled one listed too: {page}");
+    // The state class rides the mark itself, the way the mockup draws it,
+    // rather than a span around it.
+    assert!(
+        page.contains("<svg class=\"ic st\">"),
+        "a settled monitor's mark carries its own state class: {page}",
+    );
 }
 
 /// A snapshot that came back with no servers and no failure is a session
@@ -1414,9 +1525,17 @@ async fn a_name_that_is_not_a_vendored_face_is_not_found() {
     assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "and a script is not served as a font");
 }
 
-fn mcp_server(name: &str) -> McpServerStatus {
-    serde_json::from_value(serde_json::json!({ "name": name, "status": "connected" }))
-        .expect("an MCP server status")
+fn mcp_server(name: &str, scope: &str, tools: usize) -> McpServerStatus {
+    let tool_list: Vec<serde_json::Value> =
+        (0..tools).map(|i| serde_json::json!({ "name": format!("tool-{i}") })).collect();
+    let mut server = serde_json::from_value::<McpServerStatus>(serde_json::json!({
+        "name": name,
+        "status": "connected",
+        "tools": tool_list,
+    }))
+    .expect("an MCP server status");
+    server.scope = Some(scope.to_owned());
+    server
 }
 
 fn process(pid: u32, parent_pid: u32, name: &str, command: &str, memory_mb: u64) -> ProcessEntry {

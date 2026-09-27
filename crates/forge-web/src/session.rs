@@ -20,14 +20,15 @@ use forge_primitives::git_diff::{GitDiffFile, GitDiffSnapshot, GitDiffStats, Lay
 use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{
-    CronEntry, CronKind, McpServerConnectionStatus, MonitorRecord, MonitorStatus,
+    CronEntry, CronKind, McpServerConnectionStatus, McpServerStatus, MonitorRecord, MonitorStatus,
 };
 use forge_sessions::surface::connectors::{GotifyView, SlackView};
 use forge_sessions::surface::inspector::{
-    McpServers, ProcessEntry, ProcessSnapshot, SessionHeader,
+    McpServers, ProcessEntry, ProcessSnapshot, SessionHeader, basename_exe, extract_inner_command,
 };
 use forge_sessions::surface::{AccountsView, Agents, LoadingState, PendingKind, Roster};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
+use serde_json::Value;
 
 use crate::home::{Home, Row, Seed, State};
 use crate::icons;
@@ -565,8 +566,8 @@ fn mcp_section(servers: &McpServers) -> Markup {
     let body = html! {
         @for server in &servers.servers {
             div .kv {
-                span .k { (server.name) }
-                span .v { (connection_label(server.status)) }
+                span .k { (server.name) " \u{b7} " (scope_label(server)) }
+                span .v { (mcp_state(server)) }
             }
         }
         @if let Some(error) = &servers.error {
@@ -576,15 +577,47 @@ fn mcp_section(servers: &McpServers) -> Markup {
     section(false, "mcp", "mcp servers", &summary, &body)
 }
 
-/// What a server's connection state reads as, in the page's words rather
-/// than the wire's.
-fn connection_label(status: McpServerConnectionStatus) -> &'static str {
-    match status {
-        McpServerConnectionStatus::Connected => "connected",
-        McpServerConnectionStatus::Failed => "failed",
-        McpServerConnectionStatus::NeedsAuth => "needs sign-in",
-        McpServerConnectionStatus::Pending => "connecting",
-        McpServerConnectionStatus::Disabled => "disabled",
+/// The scope a server is configured in, which is what its config blob names
+/// rather than where its process runs. The terminal's own row reads it the
+/// same way, so a server that reports no scope reads as the session's.
+fn scope_label(server: &McpServerStatus) -> String {
+    if let Some(scope) = server.scope.as_deref() {
+        return scope.to_owned();
+    }
+    match server.config.as_ref().and_then(|config| config.get("type")).and_then(Value::as_str) {
+        Some("sdk") => "sdk".to_owned(),
+        _ => "session".to_owned(),
+    }
+}
+
+/// What the row says in its value column: how many tools the server offers
+/// when it is up, and why it is not when it is not. The terminal's own rule,
+/// so one server reads the same in either view.
+fn mcp_state(server: &McpServerStatus) -> String {
+    match server.status {
+        McpServerConnectionStatus::Connected => server
+            .tools
+            .as_ref()
+            .map_or_else(|| "connected".to_owned(), |tools| tool_summary(tools.len())),
+        McpServerConnectionStatus::Failed => server
+            .error
+            .as_deref()
+            .map(str::trim)
+            .filter(|error| !error.is_empty())
+            .unwrap_or("failed")
+            .to_owned(),
+        McpServerConnectionStatus::NeedsAuth => "needs sign-in".to_owned(),
+        McpServerConnectionStatus::Pending => "connecting".to_owned(),
+        McpServerConnectionStatus::Disabled => "disabled".to_owned(),
+    }
+}
+
+/// How many tools a server offers, counted so that one reads as one.
+fn tool_summary(count: usize) -> String {
+    match count {
+        0 => "no tools".to_owned(),
+        1 => "1 tool".to_owned(),
+        count => format!("{count} tools"),
     }
 }
 
@@ -599,7 +632,7 @@ fn processes_section(walk: &ProcessSnapshot) -> Markup {
             div .kv {
                 span .k {
                     @for _ in 0..depth { (PreEscaped("&nbsp;&nbsp;")) }
-                    (entry.name)
+                    (process_headline(entry))
                 }
                 span .v { (format!("{} \u{b7} {}", memory_label(entry.memory_bytes), entry.pid)) }
             }
@@ -607,6 +640,21 @@ fn processes_section(walk: &ProcessSnapshot) -> Markup {
         div .note { (walked) }
     };
     section(false, "processes", "processes", &count.to_string(), &body)
+}
+
+/// What a row calls its process: the command it is running, with the
+/// executable's path stripped, and the command a shell wrapper wraps rather
+/// than its own chrome. The OS name alone says nothing about which node
+/// process it is, which is why the terminal's own row draws this.
+fn process_headline(entry: &ProcessEntry) -> String {
+    let command = entry.command.trim();
+    if let Some(inner) = extract_inner_command(&entry.command) {
+        return basename_exe(&inner);
+    }
+    if command.is_empty() {
+        return if entry.name.is_empty() { "(process)".to_owned() } else { entry.name.clone() };
+    }
+    basename_exe(command)
 }
 
 /// When the walk behind these rows was taken. The walk is only ever
@@ -699,7 +747,7 @@ fn monitors_section(monitors: &[MonitorRecord]) -> Markup {
             div .sa {
                 div .sh {
                     @if monitor.status.is_terminal() {
-                        span .st { (icons::icon("check", "")) }
+                        (icons::icon("check", "st"))
                     } @else {
                         span .st { span .ring style="width:8px;height:8px" {} }
                     }

@@ -15,7 +15,9 @@ use crate::surface::ViewSurface;
 // A view reads the values these verbs hand it, so it needs their names
 // too - re-exported here rather than reached for in the crates below,
 // which a view does not name.
-pub use forge_workspace::env::processes::{ProcessEntry, ProcessSnapshot};
+pub use forge_workspace::env::processes::{
+    ProcessEntry, ProcessSnapshot, basename_exe, extract_inner_command,
+};
 pub use forge_workspace::{ContextUsage, McpServers};
 
 /// What a session header states about the session.
