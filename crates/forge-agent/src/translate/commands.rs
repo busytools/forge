@@ -38,14 +38,36 @@ pub fn map_available_commands_from_json(arr: &[Value]) -> Vec<AvailableCommand> 
         .collect()
 }
 
+/// The name a slash command is typed and drawn with. The wire carries it
+/// without the leading slash - the committed baseline's `slash_commands`
+/// is `["doctor", "color", "reload-plugins"]` - so every surface adds one
+/// before it renders.
+pub fn slash_name(name: &str) -> String {
+    if name.starts_with('/') { name.to_owned() } else { format!("/{name}") }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::map_available_commands_from_json;
+    use super::{map_available_commands_from_json, slash_name};
     use forge_primitives::AvailableCommand;
     use serde_json::{Value, json};
 
     fn parse(entries: &Value) -> Vec<AvailableCommand> {
         map_available_commands_from_json(entries.as_array().expect("an array"))
+    }
+
+    /// The wire carries the name without the slash, and every surface
+    /// types and draws it with one.
+    #[test]
+    fn a_bare_name_gains_the_slash_it_is_typed_with() {
+        assert_eq!(slash_name("doctor"), "/doctor");
+    }
+
+    /// A name that already carries one is left alone, so applying this
+    /// twice is the same as applying it once.
+    #[test]
+    fn a_name_that_already_carries_one_is_unchanged() {
+        assert_eq!(slash_name("/doctor"), "/doctor");
     }
 
     /// The `system/init` shape: bare names, no descriptions, which is
