@@ -1,16 +1,17 @@
 //! TUI-side state machine + routing for the file-index. The
 //! filesystem walker and `notify::Watcher` themselves live in
 //! `forge_agent::env::file_index` (lifted out so the TUI doesn't
-//! shell out to OS-side I/O directly). This module:
+//! shell out to OS-side I/O directly), and the index they fill plus the
+//! ranking a query is read against live in `forge_sessions::file_index`,
+//! shared with the other view. This module:
 //!
-//! - Holds per-bucket [`FileIndexState`] (the `BTreeMap` of entries
-//!   plus scan/watch handles).
+//! - Holds per-bucket [`FileIndexState`] (the index plus scan/watch
+//!   handles).
 //! - Spawns forwarding threads that consume the agent's progress
 //!   channels and re-emit as `FileIndexEvent`s tagged with
 //!   `SessionSlot` + generation so the workspace-wide event pump
 //!   routes them to the right bucket.
-//! - Owns the reducer ([`apply_event`]) and the autocomplete
-//!   ranking ([`visible_candidates`], [`rank_and_truncate_candidates`]).
+//! - Owns the reducer ([`apply_event`]) and the per-bucket routing.
 
 use super::App;
 use std::collections::{BTreeMap, BTreeSet};
