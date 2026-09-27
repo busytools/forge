@@ -443,7 +443,9 @@ fn section(open: bool, icon_name: &str, name: &str, summary: &str, body: &Markup
             summary {
                 (icons::icon(icon_name, "gl"))
                 (name)
-                span .c2 { (summary) }
+                @if !summary.is_empty() {
+                    span .c2 { (summary) }
+                }
                 (icons::chevron(""))
             }
             div .sb { (body) }
