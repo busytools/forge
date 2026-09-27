@@ -49,15 +49,19 @@ curl -sSL -o FiraCode-LICENSE.txt https://raw.githubusercontent.com/tonsky/FiraC
 | `fonts/InterVariable.woff2` | `rsms/inter` at tag `v4.1`, `docs/font-files/InterVariable.woff2` |
 | `fonts/Inter-LICENSE.txt` | the same tag, `LICENSE.txt` |
 | `fonts/FiraCode-Regular.woff2` | `Fira_Code_v6.2.zip`, `woff2/FiraCode-Regular.woff2` |
+| `fonts/FiraCode-Medium.woff2` | `Fira_Code_v6.2.zip`, `woff2/FiraCode-Medium.woff2` |
 | `fonts/FiraCode-LICENSE.txt` | `tonsky/FiraCode` at tag `6.2`, `LICENSE` |
 
 Inter is taken from the repository rather than from a subsetting service
 on purpose. The Fontsource and Google Fonts latin subsets drop seven
-marks the full font carries (`↩ ↳ ⏎ ⇧ ● ▼` among them) and trail upstream
-by a revision, so the smaller file is bought with glyphs that fall back.
-Its upstream is paused rather than maintained - the last commit to the
-font files is the `v4.1` tag - so treat this file as final rather than
-waiting on a release.
+marks the full font carries (`↩ ↳ ⏎ ⇧ ● ▼` among them), so the smaller
+file is bought with glyphs that fall back. Its upstream is paused rather
+than maintained - the last commit to the font files is the `v4.1` tag - so
+treat this file as final rather than waiting on a release.
+
+`"Inter"` is a Reserved Font Name, declared in upstream's README rather
+than in the licence text vendored here, so a subset or a rename of the
+352KB file needs a name of its own.
 
 `idiomorph-ext.min.js` is self-contained (it defines `Idiomorph` and
 registers the htmx `morph` swaps), so `idiomorph.min.js` is not needed
