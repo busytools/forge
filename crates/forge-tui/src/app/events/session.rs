@@ -120,6 +120,11 @@ fn apply_connected_presentation(
             bucket.available_commands.clear();
             bucket.available_agents.clear();
             bucket.turn_state.agents_emitted_this_turn = false;
+            // The active arm writes this unconditionally on the same
+            // event, and for the same reason: a respawn that pins no
+            // model must not leave the outgoing occupant's request
+            // labelling the incoming one.
+            bucket.turn_state.requested_model_id = None;
         }
         set_bucket_lifecycle_state(app, session_key, SessionLifecycleState::Idle);
         // Mirror session_id onto the workspace's DomainSession so
