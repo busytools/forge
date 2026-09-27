@@ -207,3 +207,19 @@ pub(crate) fn root_block(theme_name: Option<&str>) -> Markup {
         style { ":root{" (theme::root_variables(theme_name)) "}" }
     }
 }
+
+/// The head every page carries: the same metadata, the same one sheet, the
+/// same tab mark. Only the title differs by caller, so a second copy is how
+/// the two would come to disagree about what a page loads.
+pub(crate) fn page_head(title: &str, theme_name: Option<&str>) -> Markup {
+    html! {
+        head {
+            meta charset="utf-8";
+            meta name="viewport" content="width=device-width, initial-scale=1";
+            title { (title) }
+            (root_block(theme_name))
+            link rel="stylesheet" href="/web.css";
+            link rel="icon" href="/favicon.svg" type="image/svg+xml";
+        }
+    }
+}

@@ -7,6 +7,7 @@
 
 pub mod brand;
 mod home;
+mod icons;
 mod server;
 mod session;
 mod stream;

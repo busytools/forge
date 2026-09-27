@@ -17,7 +17,6 @@ use forge_sessions::surface::{
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::brand;
-use crate::server::root_block;
 use crate::stream::Live;
 use crate::unseen::Unseen;
 use crate::work::{Gate, WorkCache, WorkState};
@@ -551,14 +550,7 @@ fn page(view: &HomeView, theme_name: Option<&str>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { "forge \u{b7} home" }
-                (root_block(theme_name))
-                link rel="stylesheet" href="/web.css";
-                link rel="icon" href="/favicon.svg" type="image/svg+xml";
-            }
+            (crate::server::page_head("forge \u{b7} home", theme_name))
             // The stream, wired by attributes: htmx opens it, swaps the
             // `fleet` event's payload into the region, and closes on the
             // server's own `close` event rather than reconnecting to a

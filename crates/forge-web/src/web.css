@@ -305,6 +305,12 @@ section.org > h2 .counts {
    behind and its control stays clickable. */
 
 .mono { font-family: var(--mono); }
+/* One icon rule for the whole page: a sprite reference inherits the colour
+   of whatever row it sits in, so nothing draws its own. */
+.ic { width: 15px; height: 15px; flex: 0 0 15px; display: block; }
+/* One chevron, turned by the open state, on every disclosure on the page. */
+.arw { transition: transform .12s ease; }
+details[open] > summary .arw { transform: rotate(90deg); }
 .dim { color: var(--dim); }
 
 .app {

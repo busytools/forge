@@ -23,7 +23,8 @@ use forge_sessions::surface::{AccountsView, LoadingState, PendingKind, Roster};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::home::{Home, Row, Seed, State};
-use crate::server::{WebState, root_block};
+use crate::icons;
+use crate::server::WebState;
 use crate::stream::Live;
 use crate::work::WorkState;
 
@@ -150,18 +151,15 @@ async fn shell(home: &Home<'_>, slot: &SessionSlot) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { "forge \u{b7} " (slot.project()) " \u{b7} " (name) }
-                (root_block(home.theme))
-                link rel="stylesheet" href="/web.css";
-                link rel="icon" href="/favicon.svg" type="image/svg+xml";
-            }
+            (crate::server::page_head(
+                &format!("forge \u{b7} {} \u{b7} {name}", slot.project()),
+                home.theme,
+            ))
             // The checkboxes are the pane state: CSS-only, so a collapsed
             // pane needs no script and a reload does not forget it while
             // the page is open. Checked is COLLAPSED.
             body {
+                (icons::sprite())
                 input type="checkbox" id="l" hidden;
                 input type="checkbox" id="r" hidden;
                 div .app {
@@ -440,17 +438,17 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
     }
 }
 
-/// One section: a name, a summary of what is behind it, and the body it
-/// opens on. The arrow is drawn for the state the section starts in, so a
-/// closed section does not show the open one's mark.
-fn section(open: bool, glyph: &str, name: &str, summary: &str, body: &Markup) -> Markup {
+/// One section: an icon, a name, a summary of what is behind it, and the
+/// body it opens on. The arrow is one chevron turned by the open state, so a
+/// closed section and an open one draw the same sprite.
+fn section(open: bool, icon_name: &str, name: &str, summary: &str, body: &Markup) -> Markup {
     html! {
         details .sec open[open] {
             summary {
-                span .gl { (glyph) }
+                (icons::icon(icon_name, "gl"))
                 (name)
                 span .c2 { (summary) }
-                span .arw { @if open { "\u{25BE}" } @else { "\u{25B8}" } }
+                (icons::chevron(""))
             }
             div .sb { (body) }
         }
@@ -464,7 +462,7 @@ fn git_section(work: &WorkState, diff: Option<&GitDiffSnapshot>) -> Markup {
         Some(diff) => (git_summary(diff), git_body(work, diff)),
         None => (String::new(), Markup::default()),
     };
-    section(true, "\u{2387}", "git", &summary, &body)
+    section(true, "git", "git", &summary, &body)
 }
 
 /// The section's line: the branch, and how many files the body below it
@@ -597,7 +595,7 @@ fn tasks_section(tasks: &[Task]) -> Markup {
             }
         }
     };
-    section(false, "\u{2713}", "tasks", &format!("{done} of {}", tasks.len()), &body)
+    section(false, "tasks", "tasks", &format!("{done} of {}", tasks.len()), &body)
 }
 
 fn task_class(status: TaskStatus) -> &'static str {
@@ -633,7 +631,7 @@ fn schedules_section(crons: &[CronEntry]) -> Markup {
             }
         }
     };
-    section(false, "\u{25D4}", "schedules", &crons.len().to_string(), &body)
+    section(false, "schedules", "schedules", &crons.len().to_string(), &body)
 }
 
 /// What a schedule is called: its own description, else the first line of
@@ -678,7 +676,7 @@ fn gotify_section(view: &GotifyView) -> Markup {
             }
         }
     };
-    section(false, "\u{25C8}", "gotify", summary, &body)
+    section(false, "gotify", "gotify", summary, &body)
 }
 
 fn priority_of(priority: Option<u8>) -> String {
@@ -716,7 +714,7 @@ fn slack_section(view: &SlackView) -> Markup {
             }
         }
     };
-    section(false, "\u{25C7}", "slack", &summary, &body)
+    section(false, "slack", "slack", &summary, &body)
 }
 
 /// What a Slack subscription watches: a conversation by its name, or the
