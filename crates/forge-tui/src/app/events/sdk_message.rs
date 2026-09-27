@@ -623,43 +623,10 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
     }
 }
 
-/// Extract a renderable text string from a `queued_command` block's
-/// `prompt` field. Wire shape for `prompt` is `Value` so it could be
-/// a plain string, OR a content-block array for multi-modal inputs
-/// (e.g. text + image). For the latter, walk the inner blocks and
-/// concatenate the text content. Image/document blocks render as
-/// `[image]` / `[document]` placeholders so the user sees something
-/// rather than blank.
-///
-/// This is invoked twice - once for the user-content walker (live
-/// mid-turn / replay), once for the assistant-content walker (edge
-/// case).
-pub(super) fn extract_queued_command_text(prompt: &Value) -> String {
-    if let Some(s) = prompt.as_str() {
-        return s.to_owned();
-    }
-    let Some(blocks) = prompt.as_array() else {
-        // Object or other - render as JSON literal so the user can
-        // see SOMETHING. Should never hit in practice.
-        return serde_json::to_string(prompt).unwrap_or_else(|_| String::from("[unrenderable]"));
-    };
-    let mut parts = Vec::new();
-    for block in blocks {
-        let Some(obj) = block.as_object() else { continue };
-        match obj.get("type").and_then(Value::as_str) {
-            Some("text") => {
-                if let Some(t) = obj.get("text").and_then(Value::as_str) {
-                    parts.push(t.to_owned());
-                }
-            }
-            Some("image") => parts.push(String::from("[image]")),
-            Some("document") => parts.push(String::from("[document]")),
-            Some(other) => parts.push(format!("[{other}]")),
-            None => {}
-        }
-    }
-    parts.join("\n")
-}
+/// The text a `queued_command` block's `prompt` renders as. Shared with
+/// the conversation fold, which reads the same policy from
+/// [`forge_sessions::transcript`], so the two cannot drift apart.
+pub(super) use forge_sessions::transcript::queued_command_text as extract_queued_command_text;
 
 /// Process a `queued_command` content-block.
 ///
