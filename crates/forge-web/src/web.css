@@ -422,7 +422,7 @@ details.sec > summary::-webkit-details-marker { display: none; }
 details.sec > summary:hover { background: rgba(27,33,48,.4); }
 details.sec > summary .gl { color: var(--dim); }
 details.sec > summary .c2 { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
-  letter-spacing: 0; text-transform: none; font-weight: 400;
+  font-style: italic; letter-spacing: 0; text-transform: none; font-weight: 400;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 details.sec > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
 details.sec[open] > summary { border-bottom: 1px solid var(--line); }
