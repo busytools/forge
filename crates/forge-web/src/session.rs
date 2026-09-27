@@ -201,7 +201,7 @@ async fn shell(
                     (columns(home, slot, messages, turn_started, roster, agents).await)
                 }
                 script src="/vendor/htmx.js" {}
-                script src="/vendor/htmx-script.js" {}
+                script src="/vendor/htmx-sse.js" {}
                 script src="/vendor/idiomorph.js" {}
             }
         }
