@@ -546,6 +546,7 @@ fn subagents_section(attributed: &HashMap<String, String>) -> Markup {
                 span .v { (call_count(*calls)) }
             }
         }
+        div .note { "The only surface subagents have - the chat suppresses them." }
     };
     section(false, "subagents", "subagents", &types.to_string(), &body)
 }
@@ -591,8 +592,10 @@ fn scope_label(server: &McpServerStatus) -> String {
 }
 
 /// What the row says in its value column: how many tools the server offers
-/// when it is up, and why it is not when it is not. The terminal's own rule,
-/// so one server reads the same in either view.
+/// when it is up, and why it is not when it is not. The rule is the
+/// terminal's own; the words are this view's, and two of the five read
+/// differently because a page has room for them and a pane of rows does
+/// not.
 fn mcp_state(server: &McpServerStatus) -> String {
     match server.status {
         McpServerConnectionStatus::Connected => server

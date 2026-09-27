@@ -1089,6 +1089,10 @@ async fn the_subagents_section_draws_the_sessions_attribution() {
     assert!(page.contains("href=\"#i-subagents\""), "the section renders: {page}");
     assert!(page.contains("Explore"), "naming an agent type that ran work: {page}");
     assert!(page.contains("code-reviewer"), "and the other one: {page}");
+    assert!(
+        page.contains("The only surface subagents have"),
+        "with the note the drawing puts under the section: {page}",
+    );
     assert!(page.contains("2 calls"), "with how much work each ran: {page}");
     assert!(
         page.contains("<span class=\"v\">1 call</span>"),
@@ -1111,14 +1115,19 @@ async fn the_mcp_section_lists_the_sessions_servers() {
     let lead = SessionSlot::lead("Busytools", "forge");
     // The second server reports no scope of its own, which is the case the
     // CLI leaves for an in-process server: its config blob is what names it.
+    // The third reports none either and is not one of those, which is the
+    // ordinary case: a server the CLI says nothing about.
     let mut sdk = mcp_server("context7", "session", 2);
     sdk.scope = None;
     sdk.config = Some(serde_json::json!({ "type": "sdk" }));
+    let mut quiet = mcp_server("playwright", "session", 3);
+    quiet.scope = None;
+    quiet.config = None;
     fleet.seed_view_facts(
         &lead,
         ViewFacts {
             mcp: Some(McpServers {
-                servers: vec![mcp_server("forge", "session", 24), sdk],
+                servers: vec![mcp_server("forge", "session", 24), sdk, quiet],
                 error: None,
             }),
             ..ViewFacts::default()
@@ -1141,7 +1150,11 @@ async fn the_mcp_section_lists_the_sessions_servers() {
         page.contains("<span class=\"k\">context7 \u{b7} sdk</span>"),
         "the next one, with the scope its config blob names: {page}",
     );
-    assert!(page.contains("<span class=\"c2\">2</span>"), "under a count of them: {page}");
+    assert!(
+        page.contains("<span class=\"k\">playwright \u{b7} session</span>"),
+        "and one the CLI says nothing about, which is the session's own: {page}",
+    );
+    assert!(page.contains("<span class=\"c2\">3</span>"), "under a count of them: {page}");
 }
 
 /// A server that is not up says why in the place its tool count would be,
