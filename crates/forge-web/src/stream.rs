@@ -16,6 +16,7 @@ use futures_util::stream::{self, Stream};
 use maud::Markup;
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use crate::composer::Composer;
 use crate::server::{WebState, Wiring, home_region};
 use crate::unseen::Unseen;
 
@@ -39,6 +40,7 @@ const TICK: Duration = Duration::from_secs(10);
 #[derive(Default)]
 pub struct Live {
     unseen: Unseen,
+    composer: Composer,
 }
 
 /// What the stream has said, as one render reads it. A render takes this
@@ -47,6 +49,7 @@ pub struct Live {
 #[derive(Default)]
 pub struct LiveState {
     pub unseen: Unseen,
+    pub composer: Composer,
 }
 
 impl Live {
@@ -60,7 +63,7 @@ impl Live {
     }
 
     pub fn snapshot(&self) -> LiveState {
-        LiveState { unseen: self.unseen.clone() }
+        LiveState { unseen: self.unseen.clone(), composer: self.composer.clone() }
     }
 
     /// Fold one update in, answering whether the page has to be redrawn.
@@ -69,6 +72,11 @@ impl Live {
     /// every token of it: only the updates that can change what this page
     /// draws redraw it.
     pub fn apply(&mut self, update: &SessionUpdate) -> bool {
+        // The composer draws states the core announces once and keeps none
+        // of, so it folds everything. It does not force a redraw: the region
+        // this stream re-sends is the fleet's, and a take's twenty readings
+        // a second are not news about a row.
+        self.composer.apply(update);
         match update {
             SessionUpdate::ChatAppended { key, msg } => match msg {
                 Message::Result { is_error, subtype, .. }
@@ -333,6 +341,29 @@ mod tests {
                 .expect("parse a user message"),
             }),
             "a chat message is not something this page draws",
+        );
+    }
+
+    /// A take's readings are the composer's news, not the fleet's. The
+    /// region this stream re-sends draws rows, so redrawing it for every
+    /// level would rebuild the whole page twenty times a second while a
+    /// take runs. Catches the composer's fold forcing the fleet's redraw.
+    #[test]
+    fn a_takes_readings_do_not_redraw_the_fleet() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+
+        assert!(
+            !live.apply(&SessionUpdate::DictateStarted {
+                key: slot.clone(),
+                floor_db: -50.0,
+                generation: 1,
+            }),
+            "a take starting is not a row changing",
+        );
+        assert!(
+            !live.apply(&SessionUpdate::DictateLevel { key: slot, peak_db: -20.0 }),
+            "nor is a level reading",
         );
     }
 

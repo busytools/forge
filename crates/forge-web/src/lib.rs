@@ -6,6 +6,7 @@
 //! no crate under that one.
 
 pub mod brand;
+mod composer;
 mod home;
 mod icons;
 mod server;

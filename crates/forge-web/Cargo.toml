@@ -16,8 +16,9 @@ forge-sessions = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
 maud = { workspace = true }
-# An MCP server's config blob, which is where the scope a server with no
-# configured one reads is named.
+# The composer reads a tool call's own input to say what a prompt is about,
+# an MCP server's config blob names the scope a server with none reads, and
+# the wire frames the tests build are JSON.
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
@@ -25,9 +26,6 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
-# The stream tests build wire frames the way the workspace's own tests do:
-# from the JSON the CLI sends, not from a hand-filled struct.
-serde_json = { workspace = true }
 tempfile = { workspace = true }
 # The view fixtures the page's own tests drive a real fleet through.
 forge-sessions = { workspace = true, features = ["testing"] }

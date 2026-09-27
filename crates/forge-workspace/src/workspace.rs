@@ -4219,6 +4219,13 @@ impl Workspace {
         None
     }
 
+    /// How many prompts the session at `slot` is holding, zero when none.
+    /// The same set [`Self::pending_interaction`] answers the kind of, so a
+    /// view showing one of them can say how many wait behind it.
+    pub fn pending_interaction_depth(&self, slot: &SessionSlot) -> usize {
+        self.domain_session_for(slot).map_or(0, |domain| domain.lock().pending_interactions.len())
+    }
+
     /// What `entry`'s session is doing right now. The two liveness states
     /// that need no session of their own answer here; everything else is
     /// [`Self::session_activity`].

@@ -1,9 +1,9 @@
 //! The palettes and typefaces forge ships, by the names `[web] theme` and
 //! `[web] font` take.
 //!
-//! Every surface reads these twelve tokens and nothing else, so a theme is
-//! one place to change and no component branches for it. The stacks are
-//! here for the same reason, and the sheet declares none of its own: the
+//! Every surface reads these tokens and nothing else, so a theme is one
+//! place to change and no component branches for it. The stacks are here
+//! for the same reason, and the sheet declares none of its own: the
 //! injected block is the only place a typeface is chosen.
 
 /// The palette drawn when no name is set.
@@ -36,6 +36,8 @@ const ACCENT: &str = "#f47600";
 const OK: &str = "#82c76b";
 const WARN: &str = "#c9a13b";
 const BAD: &str = "#e0683e";
+const BLUE: &str = "#61a0e0";
+const HOT: &str = "#ffb058";
 
 /// Every token the dark palette resolves, in the order they are emitted.
 const DARK: &[(&str, &str)] = &[
@@ -51,6 +53,8 @@ const DARK: &[(&str, &str)] = &[
     ("--ok", OK),
     ("--warn", WARN),
     ("--bad", BAD),
+    ("--blue", BLUE),
+    ("--hot", HOT),
 ];
 
 /// The page's `:root` declarations for `name`.

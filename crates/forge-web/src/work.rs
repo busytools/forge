@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use forge_primitives::SessionSlot;
 use forge_primitives::git_diff::{GitDiffSnapshot, RepoGate};
+use forge_sessions::file_index::FileIndex;
 use forge_sessions::git_diff;
 
 /// How long a read answers for. Everything inside the window is served
@@ -73,6 +74,10 @@ struct Entry {
     /// row's own read does.
     diff: Option<GitDiffSnapshot>,
     diff_read_at: Instant,
+    /// The file walk the composer's `@` list reads. Its own window again:
+    /// a walk costs more than the row's read and less than the full scan.
+    file_index: Option<Arc<FileIndex>>,
+    files_read_at: Instant,
     /// Held across a refresh so two callers for one slot do not both probe
     /// the same tree.
     refreshing: Arc<tokio::sync::Mutex<()>>,
@@ -86,6 +91,8 @@ impl Entry {
             read_at: Instant::now(),
             diff: None,
             diff_read_at: Instant::now(),
+            file_index: None,
+            files_read_at: Instant::now(),
             refreshing: Arc::default(),
         }
     }
@@ -169,6 +176,45 @@ impl WorkCache {
         entry.diff = Some(diff.clone());
         entry.diff_read_at = Instant::now();
         diff
+    }
+
+    /// One root's files, walked at most `REFRESH_INTERVAL` old. The `@`
+    /// list reads this: a typeahead walks on every keystroke, and the tree
+    /// a reader is naming a file in does not change between two of them.
+    ///
+    /// The walk is blocking, so it runs off the reactor. A walk that
+    /// panicked reads as no files rather than as the page's problem: the
+    /// same answer a root that is not there gives.
+    pub async fn files(&self, slot: &SessionSlot, root: &Path) -> Arc<FileIndex> {
+        let refreshing = {
+            let mut entries = self.entries();
+            Arc::clone(&entries.entry(slot.clone()).or_insert_with(|| Entry::new(root)).refreshing)
+        };
+        let _refreshing = refreshing.lock().await;
+        {
+            let entries = self.entries();
+            if let Some(index) = entries
+                .get(slot)
+                .filter(|entry| {
+                    entry.cwd == root && entry.files_read_at.elapsed() < REFRESH_INTERVAL
+                })
+                .and_then(|entry| entry.file_index.as_ref())
+            {
+                return Arc::clone(index);
+            }
+        }
+        let walked = root.to_owned();
+        let index = Arc::new(
+            tokio::task::spawn_blocking(move || FileIndex::scan(&walked, true))
+                .await
+                .unwrap_or_default(),
+        );
+        let mut entries = self.entries();
+        let entry = entries.entry(slot.clone()).or_insert_with(|| Entry::new(root));
+        root.clone_into(&mut entry.cwd);
+        entry.file_index = Some(Arc::clone(&index));
+        entry.files_read_at = Instant::now();
+        index
     }
 
     /// A panicking task must not take the cache with it: the map holds no
