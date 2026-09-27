@@ -970,6 +970,13 @@ fn handle_compact_boundary(app: &mut App, trigger: &str, pre_tokens: u64) {
 }
 
 /// Build `AvailableCommandsUpdate` from System(init).slash_commands.
+///
+/// The core keeps the same two catalogues off the same frames, for the
+/// views that read them through the view surface. The parser is one
+/// function, in `forge_workspace::translate`; the policy around it - the
+/// once-per-turn read below and the drift guard on `commands_changed` -
+/// is deliberately a second live copy until this view is removed, and
+/// goes with it.
 fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(arr) = record.get("slash_commands").and_then(Value::as_array) else { return };

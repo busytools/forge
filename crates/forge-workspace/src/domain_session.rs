@@ -11,8 +11,9 @@
 //! authoritatively for its worker-liveness and prompt-interception
 //! guards, and [`DomainSession::background_work`],
 //! [`DomainSession::available_commands`] and
-//! [`DomainSession::available_agents`] are held so two views always agree
-//! about them.
+//! [`DomainSession::available_agents`] are held so a view arriving late
+//! reads them from the core. The last two are an intermediate state: the
+//! TUI folds its own copy until it is removed.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -94,12 +95,18 @@ pub struct DomainSession {
     pub dictate_overrides: crate::dictate::DictateOverrides,
     /// The slash commands the CLI last advertised for this session, from
     /// the `system/init` frame's `slash_commands` and from
-    /// `commands_changed`. Held here rather than folded per view so a
-    /// view that arrived after the turn started reads one answer, and
-    /// the two views cannot disagree about it.
+    /// `commands_changed`. Held here so a view that arrived after the
+    /// turn started reads the list through the view surface, rather than
+    /// waiting a whole turn for the next frame.
+    ///
+    /// This is an intermediate state of a migration, not a settled rule.
+    /// The TUI still folds its own copy from the same frames and calls
+    /// neither verb, so the same policy runs in both places until it is
+    /// removed; what is shared today is the parser, not the gate or the
+    /// drift guard around it.
     pub available_commands: Vec<AvailableCommand>,
     /// The subagents the CLI last advertised, from the same init frame's
-    /// `agents`. Same reason as `available_commands`.
+    /// `agents`, on the same terms as [`Self::available_commands`].
     pub available_agents: Vec<AvailableAgent>,
     /// Whether this turn's `system/init` has already been read for the
     /// agent catalogue. The first init of a turn carries it and a
