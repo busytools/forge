@@ -948,11 +948,21 @@ pub(crate) async fn read_conversation(
     cwd: Option<PathBuf>,
 ) -> Vec<Message> {
     let surface = Arc::clone(surface);
-    let slot = slot.clone();
+    let reading = slot.clone();
     let cwd = cwd.unwrap_or_default();
-    tokio::task::spawn_blocking(move || surface.conversation(&slot, &cwd).messages)
-        .await
-        .unwrap_or_default()
+    let read =
+        tokio::task::spawn_blocking(move || surface.conversation(&reading, &cwd).messages).await;
+    match read {
+        Ok(messages) => messages,
+        // An empty conversation and a read that never happened draw the same
+        // page, so the failure is the one thing that has to say which it was.
+        Err(err) => {
+            tracing::warn!(org = slot.org(), project = slot.project(), label = slot.label(), %err,
+                event_name = "web_conversation_read_failed",
+                "the session page could not read the conversation; drawing it empty");
+            Vec::new()
+        }
+    }
 }
 
 /// The conversation, as the fold's units read: the user's own turns on their
