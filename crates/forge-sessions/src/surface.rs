@@ -101,10 +101,13 @@ impl ViewSurface {
     /// transcript on disk: the same read a resume performs, for a view
     /// that arrived after the session was already running.
     ///
-    /// Call it BEFORE subscribing: this read is the baseline, and the
-    /// stream carries only what happens after the caller attaches, so a
-    /// caller that subscribes first reintroduces the overlap the ordering
-    /// removes.
+    /// Subscribe first, then call this. The read is the baseline the stream
+    /// is applied on top of, so a message that lands during the read is in
+    /// both, and a view resolves that by dropping the stream's copy when the
+    /// read already carries its id; reading first would instead lose whatever
+    /// arrived in between, and no later read brings it back. An echoed typed
+    /// prompt carries no id on either side, so that copy is not matched and
+    /// can show twice.
     ///
     /// `cwd_raw` is the session's own cwd, which a git worker's worktree
     /// overrides. An empty `cwd_raw` resolves to the slot's recorded path
