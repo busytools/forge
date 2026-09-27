@@ -84,8 +84,9 @@ Work top-down; the first match wins.
 **The view surface's read verbs are built.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
-`cli_version`, `conversation` - and receives changes through
-`subscribe()`. All eleven exist in `forge-sessions`, and the TUI reads
+`cli_version`, `conversation`, `slash_commands`, `subagents`, `emoji`,
+`file_index` - and receives changes through
+`subscribe()`. All fifteen exist in `forge-sessions`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions and dictation state through them; the web view
