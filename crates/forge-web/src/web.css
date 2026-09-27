@@ -199,12 +199,8 @@ section.org > h2 .counts {
   align-items: center; gap: 12px;
   padding: 11px 24px 11px 2px;
   position: relative;
+  cursor: pointer;
 }
-/* The row is the whole click target on the mock, with a pointer cursor
-   and a hover chevron. Nothing on this page can be opened yet: the
-   session route does not exist, so a row that looked clickable would
-   promise a click that does nothing, which is the one thing the mock's
-   own rows are not allowed to do. Both come back with the route. */
 /* Not the mock's `display: flex`: the row's mark is a grid sibling, not a
    child, so the flex only stops the text from ellipsising - and a name
    like `pure-black-github-intellij` has to shorten rather than clip. */
@@ -212,10 +208,14 @@ section.org > h2 .counts {
   min-width: 0; font-size: 15.5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* The row's name is where it goes, so it is a link; it keeps the row's own
-   look and shows itself on hover. */
+/* The whole row is the target: the name's anchor stretches over it, so a
+   click anywhere on the row goes where the name goes, and the row keeps one
+   anchor rather than nesting a second one where it carries an artifact. */
 .row .name a { color: inherit; text-decoration: none; }
+.row .name a::after { content: ""; position: absolute; inset: 0; }
 .row .name a:hover { text-decoration: underline; }
+/* Anything else clickable inside the row sits above that stretch. */
+.row .what a { position: relative; z-index: 1; }
 .row .where, .row .when {
   font-family: var(--mono); font-size: 13.5px; color: var(--dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
