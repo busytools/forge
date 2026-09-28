@@ -663,6 +663,14 @@ fn spawn_background_service_status_probe(
     if started.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return;
     }
+    // The line the terminal's own module used to write. Without it a probe
+    // that stops running is invisible: the only other record is the warning
+    // for a missing runtime, which is a different failure.
+    tracing::info!(
+        target: "forge_workspace::workspace",
+        event_name = "service_status_probe_started",
+        "the statuspage probe is running",
+    );
     let run = run_service_status_probe(Arc::clone(service_status), update_tx.clone(), prober);
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn(run);
