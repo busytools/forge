@@ -4835,9 +4835,9 @@ async fn answering_the_dock_reaches_the_core() {
 }
 
 /// A send from a seat nothing is running behind is answered with the box the
-/// core would draw for it, which says why. The refusal is the seat's own
-/// state rather than a status htmx will not swap, so the click that asked
-/// still changes what is on the page.
+/// core would draw for it, which says why, and the field is left alone: the
+/// words never reached the core, so nothing about them went anywhere and a
+/// box that replaced the field would destroy them.
 #[tokio::test]
 async fn a_send_with_no_session_answers_with_the_seat() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -4855,6 +4855,10 @@ async fn a_send_with_no_session_answers_with_the_seat() {
     assert_eq!(status, reqwest::StatusCode::OK, "the click swaps the box: {body}");
     assert!(body.contains("class=\"blocked\""), "which is the reason it takes no input: {body}");
     assert!(body.contains("not running"), "and says what that reason is: {body}");
+    assert!(
+        body.contains("id=\"draft\"") && body.contains("hx-preserve"),
+        "with the reader's field kept, because their words never reached the core: {body}",
+    );
     assert!(!holds_a_session(), "with nothing created for it to deliver later");
 }
 
@@ -5661,6 +5665,10 @@ async fn the_notes_field_belongs_to_its_question() {
         page[notes..].contains("hx-preserve"),
         "and kept across a push, like the box's own: {page}",
     );
+    assert!(
+        page.contains("class=\"lbl own\""),
+        "and the control that submits those words is marked, because Enter in the field goes to it: {page}",
+    );
 
     // The next question is a different field, so what was typed for this one
     // cannot come back as an answer to it.
@@ -5785,9 +5793,11 @@ async fn the_dock_names_the_keys_it_answers_to() {
 async fn a_list_row_carries_what_a_pick_writes() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
+    // A name forge does not handle itself, so the row under test is the one
+    // built from the CLI's advertised list rather than from forge's table.
     fleet.advertise(
         &SessionSlot::lead("Busytools", "forge"),
-        vec![forge_primitives::AvailableCommand::new("model", "Switch model")],
+        vec![forge_primitives::AvailableCommand::new("plan", "Draft a plan")],
         Vec::new(),
     );
     let project = dir.path().join("forge");
@@ -5795,9 +5805,9 @@ async fn a_list_row_carries_what_a_pick_writes() {
     std::fs::write(project.join("crates/forge-web/src/home.rs"), "").expect("write");
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
-    let (_status, page) = composer(&config, "/m").await;
+    let (_status, page) = composer(&config, "/pl").await;
     assert!(
-        page.contains("data-ins=\"/model\""),
+        page.contains("data-ins=\"/plan\""),
         "the command's row carries the command a pick writes: {page}",
     );
 
@@ -5851,11 +5861,53 @@ async fn the_page_ships_the_keys_the_composer_names() {
 
     let script = page.find("addEventListener('keydown'").expect("the page reads keys");
     let script = &page[script..];
-    for named in ["ArrowDown", "ArrowUp", "Escape", "shiftKey", "dataset.ins"] {
-        assert!(script.contains(named), "the listener reads {named:?}: {script:.400}");
+    // The mapping rather than the vocabulary: which key does what is the
+    // whole of it, and two swapped arrows or an Escape bound elsewhere would
+    // pass a check that only looked for the names.
+    for mapping in [
+        "{ ArrowDown: 1, ArrowUp: -1 }",
+        "event.key === 'Enter' && !event.shiftKey",
+        "opt.querySelector('.no')",
+        "dataset.ins",
+        "textarea.notes",
+        "'.lbl.own'",
+    ] {
+        assert!(script.contains(mapping), "the listener maps {mapping}: {script:.400}");
     }
     assert!(
         script.contains("#comp"),
         "and it reads the composer region rather than binding to a node a swap replaces: {script:.400}",
+    );
+}
+
+/// An answer whose command never reaches a session is answered with the
+/// region rather than a status htmx will not swap. A dock drawn before the
+/// session died is otherwise inert and stuck: its options post into nothing,
+/// and its field is parked, so the reader cannot even type to force a
+/// refetch.
+#[tokio::test]
+async fn an_answer_that_reaches_no_session_answers_with_the_region() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    // Nothing is behind this seat, which is what makes the dispatch fail.
+    let seat = SessionSlot::lead("Personal", "dotfiles");
+    fleet.seed_test_pending_interaction(&seat, PendingKind::Question);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::QuestionRequest {
+        key: seat,
+        tool_id: "tu-2".to_owned(),
+        request: question(),
+    });
+    settle().await;
+
+    let (status, body) =
+        post(&config, "/session/Personal/dotfiles/lead/answer", "tool_id=tu-2&option_id=staging")
+            .await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "the click swaps something: {body}");
+    assert!(body.contains("id=\"draft\""), "and what it draws is the composer: {body}");
+    assert!(
+        body.contains("hx-preserve"),
+        "with the reader's field kept, because nothing was answered: {body}",
     );
 }

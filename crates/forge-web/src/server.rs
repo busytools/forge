@@ -202,9 +202,10 @@ async fn send_to(
         .is_err()
     {
         // The seat has no session behind it, and the box the core would draw
-        // for it says so. A refusal htmx does not swap would leave the click
-        // looking like nothing happened.
-        return composer_region_of(&wiring, &slot, crate::composer::Draft::Cleared, "")
+        // for it says so. The field is left alone: the words never reached
+        // the core, so there is nothing to send twice, and a box that
+        // replaced the reader's field would destroy what they wrote.
+        return composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "")
             .await
             .into_response();
     }
@@ -251,8 +252,14 @@ async fn answer_prompt(
             .await
             .into_response();
     };
-    if let Err(error) = wiring.state.surface.dispatch(command) {
-        return (StatusCode::CONFLICT, format!("no session to answer for: {error}"))
+    if wiring.state.surface.dispatch(command).is_err() {
+        // The answer never reached a session, so the region comes back drawn
+        // from the core as it stands now. A status htmx will not swap leaves
+        // a dock that predates the session's death inert and stuck: its
+        // options post into nothing and its field is parked, so the reader
+        // cannot even type to force a refetch.
+        return composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "")
+            .await
             .into_response();
     }
     // An answer is not the reader's words, so the box keeps them.
@@ -299,9 +306,10 @@ async fn dictate(
 /// Resolve the seat a control posted to, run `command` for it, and answer
 /// with the composer region, so the page swaps in what the action produced.
 ///
-/// A seat with no session is refused with the reason rather than queued:
-/// the composer draws no box there, so a request that arrives anyway went
-/// round the page and is owed an answer rather than a silence.
+/// A command that reaches no session is answered with the region the core
+/// would draw rather than queued and rather than refused with a status htmx
+/// will not swap: the seat's own state is the reason, and the reader sees it
+/// on the page.
 async fn act(
     wiring: &Wiring,
     org: &str,

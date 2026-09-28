@@ -823,7 +823,7 @@ fn dock(
                 Some(Ask::Question(request)) => (question_dock(request, endpoint)),
                 None => (unknown_dock(kind)),
             }
-            (dock_keys(matches!(ask, Some(Ask::Question(_)))))
+            (dock_keys(ask))
         }
     }
 }
@@ -882,6 +882,23 @@ pub(crate) const COMPOSER_KEYS: &str = r"
     const dock = comp.querySelector('.dock');
     if (dock) {
       const opts = dock.querySelectorAll('.opt');
+      const notes = dock.querySelector('textarea.notes');
+      // A question's own words field is where the reader is typing, and
+      // Enter there submits what they wrote rather than the marked option -
+      // the TUI's own rule for its Notes row. Any other field on the page
+      // keeps its keys: this listener is for the dock, not for the page.
+      if (notes && document.activeElement === notes) {
+        if (event.key === 'Enter') {
+          const own = dock.querySelector('.lbl.own');
+          if (own) { event.preventDefault(); own.click(); }
+        }
+        return;
+      }
+      if (document.activeElement
+        && (document.activeElement.tagName === 'TEXTAREA'
+          || document.activeElement.tagName === 'INPUT')) {
+        return;
+      }
       if (step) { event.preventDefault(); move(opts, step); return; }
       if (event.key === 'Enter') {
         const control = opts[marked(opts)] && opts[marked(opts)].querySelector('.lbl');
@@ -910,7 +927,13 @@ pub(crate) const COMPOSER_KEYS: &str = r"
 /// mockup draws and the answer the page can send carries one option, so a
 /// toggle would name a key that cannot do what it says, which is the defect
 /// the line exists to avoid.
-fn dock_keys(question: bool) -> Markup {
+fn dock_keys(ask: Option<&Ask>) -> Markup {
+    // A dock with no offer draws no rows to move between, so it names no
+    // keys: the line is a promise about what the dock below it answers to.
+    let Some(ask) = ask else {
+        return Markup::default();
+    };
+    let question = matches!(ask, Ask::Question(_));
     let (moved, confirmed) = if question { ("move", "submit") } else { ("select", "confirm") };
     html! {
         div .keys {
@@ -1016,7 +1039,7 @@ fn question_dock(request: &QuestionRequest, endpoint: &str) -> Markup {
             div .opt {
                 span .cur {}
                 span .box2 {}
-                button .lbl type="submit" hx-post=(format!("{endpoint}/answer"))
+                button .lbl .own type="submit" hx-post=(format!("{endpoint}/answer"))
                     hx-include="closest .dock" hx-vals=(format!(r#"{{"tool_id":"{tool_id}"}}"#))
                     hx-target="#comp" hx-swap="outerHTML" {
                     "Tell Claude something else:"
@@ -1264,6 +1287,30 @@ impl Composer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dock with no offer draws no rows, so it names no keys: the line is
+    /// a promise about what the dock under it answers to, and a promise
+    /// about keys the page swallows is the defect the line exists to avoid.
+    #[test]
+    fn a_dock_with_nothing_to_select_names_no_keys() {
+        let permission = serde_json::from_value::<PermissionRequest>(serde_json::json!({
+            "tool_call": {
+                "tool_call_id": "tu-1",
+                "title": "Bash",
+                "kind": "execute",
+                "status": "pending",
+                "content": [],
+                "locations": [],
+                "raw_input": {"command": "ls"},
+            },
+            "options": [],
+        }))
+        .expect("a permission request off the wire");
+
+        assert!(dock_keys(None).into_string().is_empty(), "nothing to select draws no keys line");
+        let named = dock_keys(Some(&Ask::Permission(Box::new(permission)))).into_string();
+        assert!(named.contains("confirm"), "and a dock with rows names theirs: {named}");
+    }
 
     /// A prompt settled in the core redraws the box wherever it is drawn,
     /// this view's own copy included or not: the dock answers to the core's
