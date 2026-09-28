@@ -1535,12 +1535,18 @@ fn tool_group(families: &[FamilyLeaves], status: ToolCallStatus, cwd: Option<&Pa
     }
 }
 
+/// True when a row is named by the command it ran: a command call with no
+/// description, whose title the fold took from the command itself.
+fn named_by_its_command(leaf: &ToolLeaf) -> bool {
+    leaf.command.as_deref() == Some(leaf.title.as_str())
+}
+
 /// One call: its own status and title, opening on its body. A mutation opens
 /// by default - the mockup draws an edit's diff already there - and every
 /// other call waits to be asked.
 fn leaf_row(leaf: &ToolLeaf, open: bool, cwd: Option<&Path>) -> Markup {
     html! {
-        details .leaf open[open] data-k=(format!("leaf-{}", leaf.id)) {
+        details .leaf .cmd[named_by_its_command(leaf)] open[open] data-k=(format!("leaf-{}", leaf.id)) {
             summary {
                 (status_icon(leaf.status))
                 span .tn { (call_target(leaf, cwd)) }
@@ -1619,11 +1625,12 @@ fn text_body(leaf: &ToolLeaf, text: &str) -> Markup {
     } else {
         html! {
             div .term {
-                // The command a call ran leads its output, unless the row
-                // above already names it: a call with a description shows
-                // the description as its title, and a call without one has
-                // the command there, so drawing both would repeat it.
-                @if let Some(command) = leaf.command.as_deref().filter(|it| *it != leaf.title) {
+                // The command a call ran leads its output. A call with a
+                // description shows that as its title and the command would
+                // otherwise appear nowhere; a call named by its command has
+                // it in the title, which the row caps at three lines, so this
+                // is where the whole of it stays readable.
+                @if let Some(command) = leaf.command.as_deref() {
                     span .pfx { "$" }
                     " " (command) "\n"
                 }

@@ -1722,10 +1722,11 @@ async fn a_command_leads_its_own_output() {
     );
 }
 
-/// A command with no description is named by the row above, so the prompt
-/// line under it would be the same words twice.
+/// A command with no description is named by the row above, and the row caps
+/// that title at three lines - so the body draws the command too, and it is
+/// the only place the whole of a long one stays readable on the page.
 #[tokio::test]
-async fn a_command_the_row_already_names_is_not_drawn_twice() {
+async fn a_command_the_row_already_names_is_still_readable_in_its_body() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
     fleet.start("Busytools", "forge").expect("forge is declared");
@@ -1747,7 +1748,10 @@ async fn a_command_the_row_already_names_is_not_drawn_twice() {
 
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(page.contains(">just check</span>"), "the row names the command: {page}");
-    assert_eq!(page.matches("just check").count(), 1, "and the body does not say it again: {page}");
+    assert!(
+        page.contains("<span class=\"pfx\">$</span> just check"),
+        "and the body draws it, where a capped title cannot reach: {page}",
+    );
     assert!(page.contains("Finished in 41.2s"), "while the output it wrote is still drawn: {page}");
 }
 
@@ -3877,4 +3881,101 @@ async fn the_schedule_rows_sit_inside_the_scope_the_sheet_names() {
         "a row, not just a heading, sits inside it: {rows}"
     );
     assert!(rows.contains("stand-up"), "with the project's own cron among them: {rows}");
+}
+
+/// A command with no description is named by its own command in the row
+/// title, and the arguments at the end are what tell one invocation from
+/// another, so that title wraps rather than running off one line and
+/// ellipsising. It stops at three lines, and the body draws the whole
+/// command, because a capped title cannot reach its own tail.
+#[tokio::test]
+async fn a_command_row_that_is_named_by_its_command_wraps_within_a_cap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"find /tmp/rev40.R9A5 -depth -delete; find /tmp/rev41.zUeo -depth -delete; rm -f /tmp/gamarr-rev-dirs.txt; ls -d /tmp/rev40.R9A5 /tmp/rev41.zUeo 2>&1; echo done"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"done"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<details class=\"leaf cmd\""),
+        "the row says its title is the command it ran: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"pfx\">$</span> find /tmp/rev40.R9A5 -depth -delete"),
+        "and the body draws that command, where the title's own clamp cannot reach: {page}",
+    );
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+    let title = blocks_for(&sheet, "details.leaf.cmd > summary .tn");
+    assert!(
+        title.iter().any(|block| block.contains("white-space: normal")),
+        "so that title wraps instead of running off the one line: {title:?}",
+    );
+    assert!(
+        title.iter().any(|block| block.contains("-webkit-line-clamp: 3")),
+        "and stops at the cap a real command was measured against: {title:?}",
+    );
+    assert!(
+        !sheet.contains("details.leaf.cmd > summary {"),
+        "with nothing else about the row moved to do it",
+    );
+    let rules = blocks_for(&sheet, "details.leaf > summary .tn");
+    assert!(
+        rules.iter().any(|block| block.contains("white-space: nowrap")),
+        "and every other call's row still ellipsises on one line",
+    );
+    // No count here, unlike the schedule rule: this sheet writes the scoped
+    // selector as `details.leaf.cmd > summary .tn`, which does not contain the
+    // shared selector's text, so this list holds every block that could put
+    // the wrap on every call and one of them carrying it is the failure.
+    assert!(
+        !rules.iter().any(|block| block.contains("-webkit-line-clamp")),
+        "and the wrap not written at the shared selector, where it would reach every call: {rules:?}",
+    );
+}
+
+/// A command that carries a description is named by that description, which
+/// is a sentence rather than a command line, so its row keeps the one-line
+/// title every other call has.
+#[tokio::test]
+async fn a_command_with_a_description_keeps_the_one_line_title() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"just check","description":"run the gates"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"    Finished in 41.2s"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("run the gates"),
+        "the described command's row is there to be seen at all: {page}",
+    );
+    assert!(
+        !page.contains("leaf cmd"),
+        "a described command's title is a sentence, and it keeps its one line: {page}",
+    );
 }

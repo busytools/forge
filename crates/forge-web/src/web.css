@@ -1011,3 +1011,16 @@ details.msg[open] > summary .arw { color: var(--teal); }
    gap, so a change to one is a change to the other. */
 .sec[data-k="sec-schedules"] .sb .kv .k { flex: 1 1 auto; min-width: 30%; }
 .sec[data-k="sec-schedules"] .sb .kv .v { flex: 0 0 auto; max-width: calc(70% - 12px); }
+
+/* A command with no description is named by its own command in the row title,
+   so that title wraps instead of ellipsising a line off it, and stops at
+   three lines. Counted in a browser over all 683 undescribed Bash calls in
+   this machine's own session transcripts, subagents' ones left out because
+   the page never draws them: three lines draws 22.8% of them whole at 1600
+   and 4.1% at 430. The cap bounds the row rather than promising coverage, and
+   the body draws the command at every width, which is where a capped title's
+   tail stays readable. Nothing else about the row moves - the status mark and
+   the chevron keep the position the shared rule centres them in. */
+details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
+  overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3; overflow: hidden; }
