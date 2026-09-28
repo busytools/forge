@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 
 use super::TransportState;
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
-use super::wire::encode_subject;
+use super::wire::{encode_subject, page};
 use crate::Command;
 
 /// The protocol this server speaks.
@@ -133,18 +133,31 @@ async fn handle_client(
         ClientMessage::Command { command, reply_to } => {
             dispatch(socket, state, *command, reply_to).await
         }
-        // Unsubscribe and More arrive in Task 8. Until then they answer
-        // rather than being dropped, so a client is never left waiting on
-        // one.
-        other => {
-            send(
-                socket,
-                ServerMessage::Error {
-                    what: "not_yet".to_owned(),
-                    why: format!("this server does not serve {other:?} yet"),
-                },
-            )
-            .await
+        ClientMessage::More { conversation, before, turns } => {
+            let Some(cwd) = state.surface.roster().cwd_for(&conversation) else {
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "more".to_owned(),
+                        why: format!("forge holds no session for {conversation:?}"),
+                    },
+                )
+                .await;
+            };
+            // The fold runs over the WHOLE conversation and the window slices
+            // its result, so a row is always a whole turn. Slicing messages
+            // instead is what would hand a client half a tool-call group.
+            let all = state.surface.folded_units(&conversation, &cwd);
+            let page = page(&all, before.as_deref(), turns);
+            let rows = page.rows.iter().map(serde_json::to_value).collect::<Result<_, _>>()?;
+            send(socket, ServerMessage::Page { conversation, rows, cursor: page.cursor }).await
+        }
+        ClientMessage::Unsubscribe { what } => {
+            // No answer: the client asked to stop hearing, and there is
+            // nothing to say back. The stream is already this socket's own,
+            // so dropping the subject from `watched` is the whole of it.
+            watched.retain(|held| held != &what);
+            Ok(())
         }
     }
 }

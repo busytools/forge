@@ -26,6 +26,7 @@ use serde_json::Value;
 
 use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, PendingAsk, ViewSurface};
+use crate::transcript::ChatUnit;
 use crate::transport::TransportState;
 use crate::transport::envelope::Subject;
 use crate::work::WorkState;
@@ -279,6 +280,66 @@ pub struct ReviewsWire {
     pub reviews: ReadWire<Vec<ReviewSet>>,
 }
 
+/// One page of history: whole turns, newest first, and the handle that asks
+/// for the ones above them.
+pub struct Page {
+    pub rows: Vec<ChatUnit>,
+    /// `None` means there is nothing above this page, which is the one case
+    /// a client stops asking.
+    pub cursor: Option<String>,
+}
+
+/// Slice a folded conversation into whole turns, newest first.
+///
+/// **A turn is a RUN of the fold's units**, so slicing on a unit count would
+/// cut a turn in half - the breakage the design exists to avoid. `UserTurn`
+/// is a safe boundary because `render_units` flushes any open tool run before
+/// it pushes one, so no `UserTurn` can fall inside a `ToolGroup`.
+///
+/// **The cursor errs toward OVERLAP, never toward a gap.** A client asking
+/// for more may be handed a turn it already has - it keys its rows and drops
+/// the repeats - but never a HOLE, which is history it has no way to ask for
+/// again.
+///
+/// **The cursor is a POSITION, not a name, and the reason is a fact about the
+/// read rather than a preference.** A turn's name would be its
+/// `ChatUnit::TurnReport { key }`, and the fold builds a report only from a
+/// `Message::Result` frame - while a conversation read from a transcript
+/// carries none: `SessionMessageKind` is `User | Assistant | System` with no
+/// Result kind, and the replay synthesizer never emits one. So a keyed cursor
+/// is `None` on every page of every transcript-derived conversation, and a
+/// client reading `None` as "nothing above" stops after the first page. The
+/// unit index of the page's first turn is the one thing that always names it.
+pub fn page(all: &[ChatUnit], before: Option<&str>, turns: u32) -> Page {
+    // Where each turn opens. Slicing on a unit count instead would cut a turn
+    // in half, because one turn is several units.
+    let opens: Vec<usize> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, unit)| matches!(unit, ChatUnit::UserTurn { .. }))
+        .map(|(at, _)| at)
+        .collect();
+
+    // A cursor names the unit the previous page BEGAN at, so the page above
+    // ends where that one started: the two meet exactly.
+    let ends_at = before
+        .and_then(|cursor| cursor.parse::<usize>().ok())
+        .and_then(|started| opens.iter().position(|&open| open == started))
+        .unwrap_or(opens.len());
+
+    let first = ends_at.saturating_sub(turns as usize);
+    let start = opens.get(first).copied().unwrap_or(0);
+    let end = opens.get(ends_at).copied().unwrap_or(all.len());
+    let rows = all[start..end].to_vec();
+
+    // `None` is the real "nothing above this page": a page already opening on
+    // the conversation's first turn has nothing to walk back to, and that is
+    // the one case a client stops asking.
+    let cursor = if first == 0 { None } else { opens.get(first).map(usize::to_string) };
+
+    Page { rows, cursor }
+}
+
 /// A subject's wire form. The ONE place it is produced.
 ///
 /// Async because a session's git section is a filesystem read, so the
@@ -428,6 +489,135 @@ async fn session(
 
 #[cfg(test)]
 mod tests {
+    use crate::transcript::ChatUnit;
+
+    /// The transcript rows one turn leaves: what the user wrote, what the
+    /// assistant said, and the result that closes it. The result carries a
+    /// `uuid`, which is what the fold names the turn by - so a turn's report
+    /// has a key, and a key is what a page's cursor is.
+    fn a_turns_rows(turn: usize) -> String {
+        format!(
+            r#"{{"type":"user","uuid":"u{turn}","message":{{"role":"user","content":"turn {turn}"}}}}
+{{"type":"assistant","uuid":"a{turn}","message":{{"id":"m{turn}","role":"assistant","model":"claude-opus-5","content":[{{"type":"text","text":"reply {turn}"}}]}}}}
+{{"type":"result","uuid":"r{turn}","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}}"#
+        )
+    }
+
+    /// A seat whose transcript holds `turns` finished turns, and the surface
+    /// over it.
+    fn a_surface_of_turns(turns: usize) -> (Arc<ViewSurface>, SessionSlot, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let rows: Vec<String> = (0..turns).map(a_turns_rows).collect();
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+
+        let seat = fixture_seat();
+        let surface = fleet.surface();
+        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
+        (surface, seat, cwd)
+    }
+
+    /// Review Focus item 1: a page opens on a turn, and consecutive pages
+    /// meet without a gap.
+    #[test]
+    fn a_page_opens_on_a_turn_and_the_pages_meet_exactly() {
+        let (surface, seat, cwd) = a_surface_of_turns(50);
+        let all = surface.folded_units(&seat, &cwd);
+        let first = page(&all, None, 10);
+
+        // A turn opens on the row the user wrote. A page beginning anywhere
+        // else hands a client the tail of one turn and no way to tell that is
+        // what it has.
+        assert!(
+            matches!(first.rows.first(), Some(ChatUnit::UserTurn { .. })),
+            "a page opens on a turn rather than inside one",
+        );
+
+        // And the next page must reach back to where this one began. It may
+        // repeat rows - the client keys them and drops the repeats - but it
+        // may never skip one, because a skipped turn is history the reader
+        // has no way to ask for again.
+        //
+        // The evidence is the turn TEXTS rather than a position: comparing
+        // positions by pointer is vacuous here, because `page` hands back
+        // clones and no clone is ever `ptr::eq` to the original - both sides
+        // read as "not found" and the comparison passes whatever happened.
+        let written = |page: &Page| -> Vec<String> {
+            page.rows
+                .iter()
+                .filter_map(|unit| match unit {
+                    ChatUnit::UserTurn { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let all_turns: Vec<String> = written(&Page { rows: all.clone(), cursor: None });
+        let second = page(&all, first.cursor.as_deref(), 10);
+        let first_turns = written(&first);
+        let second_turns = written(&second);
+
+        assert!(!second_turns.is_empty(), "asking for more turns returns some");
+        let above = all_turns
+            .iter()
+            .position(|held| *held == first_turns[0])
+            .and_then(|at| at.checked_sub(1))
+            .map(|at| all_turns[at].clone());
+        assert_eq!(
+            second_turns.last().cloned(),
+            above,
+            "the page above ends on the turn directly above this one, so no turn is skipped",
+        );
+    }
+
+    /// A client walking back through history reaches EVERY turn, and the walk
+    /// TERMINATES.
+    ///
+    /// **This is the assertion the keyed cursor failed.** A cursor the fold
+    /// could not supply is `None` on every page, and `None` is the one signal
+    /// a client reads as "nothing above this page" - so the walk stopped after
+    /// one page and every turn above it was unreachable. Not an error and not
+    /// a gap a client can see: a conversation that appeared to begin where the
+    /// page did. `pages > 1` is the half that catches it.
+    #[test]
+    fn walking_back_through_history_sees_every_turn_and_ends() {
+        let (surface, seat, cwd) = a_surface_of_turns(25);
+        let all = surface.folded_units(&seat, &cwd);
+        let written = |rows: &[ChatUnit]| -> Vec<String> {
+            rows.iter()
+                .filter_map(|unit| match unit {
+                    ChatUnit::UserTurn { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let every = written(&all);
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            let asked = page(&all, cursor.as_deref(), 5);
+            pages += 1;
+            assert!(pages < every.len() + 2, "the walk terminates rather than cycling");
+            seen.extend(written(&asked.rows));
+            match asked.cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+
+        assert!(pages > 1, "the walk goes past the first page, or nothing above it is reachable");
+        for turn in &every {
+            assert!(seen.contains(turn), "every turn is reached, and {turn} was not");
+        }
+        assert!(
+            seen.contains(&every[0]),
+            "and the walk ends only once the OLDEST turn has been seen: {pages} pages",
+        );
+    }
+
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 

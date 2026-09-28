@@ -21,6 +21,7 @@ pub mod workers;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::transcript::ChatUnit;
 use forge_primitives::SessionSlot;
 use forge_workspace::{Command, DispatchError, Workspace};
 
@@ -94,6 +95,17 @@ impl ViewSurface {
 
     pub fn pending_ask(&self, slot: &SessionSlot) -> Option<PendingAsk> {
         self.workspace.pending_ask(slot)
+    }
+
+    /// The conversation's units, as the server folds them.
+    ///
+    /// `conversation` hands over the wire messages and lets a view fold them;
+    /// this hands over the FOLD, which is what a client reading history
+    /// needs. One turn is a RUN of these units, so slicing them at a
+    /// `UserTurn` is what lets a page be cut on a turn boundary rather than
+    /// through the middle of one.
+    pub fn folded_units(&self, slot: &SessionSlot, cwd_raw: &Path) -> Vec<ChatUnit> {
+        crate::transcript::render_units(&self.conversation(slot, cwd_raw).messages)
     }
 
     /// The core's own update stream. Every caller gets a receiver of its

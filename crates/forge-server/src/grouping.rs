@@ -140,7 +140,8 @@ pub(crate) fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
 /// render's decision. A family is a concept and a glyph is one rendering
 /// of it, and spelling the grouping policy in glyphs is how the two drift
 /// apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum KindRow {
     Family(ToolFamily),
     Mcp,

@@ -191,6 +191,44 @@ async fn a_command_for_a_seat_that_is_not_there_answers_with_an_error() {
     assert!(why.contains("Nowhere"), "the error names the seat: {why}");
 }
 
+/// The transcript rows one turn leaves: what the user wrote, what the
+/// assistant said, and the result that closes it.
+fn a_turns_rows(turn: usize) -> String {
+    format!(
+        r#"{{"type":"user","uuid":"u{turn}","message":{{"role":"user","content":"turn {turn}"}}}}
+{{"type":"assistant","uuid":"a{turn}","message":{{"id":"m{turn}","role":"assistant","model":"claude-opus-5","content":[{{"type":"text","text":"reply {turn}"}}]}}}}
+{{"type":"result","uuid":"r{turn}","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}}"#
+    )
+}
+
+/// A client asking for history is handed whole turns over the socket: a page
+/// opens on a turn the user wrote, and it carries the handle that asks for
+/// the ones above it.
+#[tokio::test]
+async fn a_more_is_answered_with_a_page_of_whole_turns() {
+    let (url, fleet) = a_server().await;
+    let rows: Vec<String> = (0..20).map(a_turns_rows).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
+        .await;
+
+    let ServerMessage::Page { rows, cursor, .. } = next_server(&mut socket).await else {
+        panic!("a page is the answer to a request for more")
+    };
+    assert!(!rows.is_empty(), "the newest turns come back");
+    assert_eq!(
+        rows[0].get("kind").and_then(serde_json::Value::as_str),
+        Some("user_turn"),
+        "a page opens on a turn the user wrote rather than inside one: {rows:?}",
+    );
+    let kinds: Vec<&str> =
+        rows.iter().filter_map(|row| row.get("kind").and_then(serde_json::Value::as_str)).collect();
+    assert!(cursor.is_some(), "and it carries the handle that asks for the ones above: {kinds:?}");
+}
+
 /// A subscription hears the updates its subject receives and no others.
 #[tokio::test]
 async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
