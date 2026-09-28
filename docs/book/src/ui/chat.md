@@ -54,7 +54,7 @@ A prompt submitted mid-turn with no cancel in flight joins the running turn rath
 
 </div>
 
-A resumed session renders no turn-info row at all - replay synthesises only assistant and user messages, so neither half of the row is ever known.
+A resumed session renders no turn-info row at all - a transcript keeps no result frame, so the replay has nothing to settle a turn with, and the terminal stamps a row only as a result arrives.
 
 Collapsed is the default and the expanded flag survives a re-render. While the turn runs the token field carries only its input half, and the elapsed ticks in whole seconds. The thinking estimate sits at position 2 and is a running-row field only:
 

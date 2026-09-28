@@ -38,4 +38,5 @@ pub use surface::SessionUpdate;
 /// which is the discipline that matters here; it is not a claim that the
 /// code beneath is the workspace's own.
 pub use forge_workspace::env::git_diff;
+pub use forge_workspace::env::timezone;
 pub use forge_workspace::translate;

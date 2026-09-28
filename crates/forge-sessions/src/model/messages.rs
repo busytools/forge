@@ -104,6 +104,11 @@ pub struct TurnInfo {
     /// Local wall-clock `HH:MM:SS` at which the Result arrived - the
     /// wire carries none, so it is read from the clock on arrival.
     pub ended_at_local: Option<String>,
+    /// The same instant as the CLI stamped it, RFC 3339, for a turn read
+    /// from a transcript: the row's own clock is the only one there is, and
+    /// a view renders it in the reader's zone rather than the record
+    /// carrying a formatted string that outlives the zone.
+    pub ended_at_utc: Option<String>,
     pub model: Option<String>,
     /// Estimated reasoning tokens for this turn, summed from the
     /// `ThinkingTokens` deltas because the wire's running counter

@@ -259,6 +259,7 @@ mod tests {
             parent_tool_use_id: parent.map(str::to_owned),
             error: None,
             uuid: None,
+            timestamp: None,
         }
     }
 
@@ -299,6 +300,7 @@ mod tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 
@@ -337,6 +339,7 @@ mod tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 

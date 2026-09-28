@@ -22,7 +22,6 @@ use forge_primitives::account::AccountAuth;
 use forge_primitives::git::{GitBranch, GitIssueRef};
 use forge_primitives::git_diff::{GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState};
 use forge_primitives::messages::{StopHookInfo, Usage};
-use forge_primitives::runtime::RuntimeSessionState;
 use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{
@@ -179,22 +178,11 @@ pub async fn page(
     };
     let messages = read_conversation(&state.surface, &slot, roster.cwd_for(&slot)).await;
     // The page's first render is before any stream is attached, so it draws
-    // no turn row: the stream's opening event follows at once, and it is the
-    // connection that holds the clock.
+    // no live turn row: the stream's opening event follows at once, and it is
+    // the connection that holds the clock. The conversation's own turn rows
+    // come from the read, which the fold draws.
     Found::Page(
         shell(&context(state, bound), &slot, &messages, None, false, &roster, &agents).await,
-    )
-}
-
-/// True for the frame that says a turn started.
-fn is_running_state(msg: &Message) -> bool {
-    matches!(
-        msg,
-        Message::System { subtype, data, .. }
-            if subtype == "session_state_changed"
-                && forge_sessions::translate::state_parsing::parse_runtime_session_state(
-                    data.get("state"),
-                ) == Some(RuntimeSessionState::Running)
     )
 }
 
@@ -225,11 +213,18 @@ pub(crate) fn compaction_state(msg: &Message) -> Option<bool> {
 /// the state frame that starts one reaches it: a transcript can say what a
 /// turn did, and never that one is running.
 pub(crate) fn apply_to_live_turn(msg: &Message, live: &mut LiveTurn) {
-    match msg {
-        Message::System { .. } if is_running_state(msg) => live.start(Instant::now()),
-        Message::System { subtype, .. } if subtype == "session_state_changed" => {
+    // The session's own report of a turn in flight, and the same reading the
+    // fold takes of it: a running state starts this row's clock, and any
+    // other state says nothing is running.
+    if let Some(running) = transcript::session_running_state(msg) {
+        if running {
+            live.start(Instant::now());
+        } else {
             *live = LiveTurn::default();
         }
+        return;
+    }
+    match msg {
         Message::Result { .. } => *live = LiveTurn::default(),
         // Summed from the delta, the terminal's own rule: the wire's counter
         // restarts at each thinking block, so the absolute field would step
@@ -361,7 +356,6 @@ async fn columns(
     roster: &Roster,
     agents: &Agents,
 ) -> Markup {
-    let units = transcript::render_units(messages);
     let live = Live::lock(home.live).snapshot();
     let accounts = home.surface.accounts();
     let row = agents.all().iter().find(|row| &row.slot == slot);
@@ -383,6 +377,7 @@ async fn columns(
     // flight, and the row of the turn that is running. `None` when there is
     // neither, so nothing opens a block for an empty tail.
     let live = live_turn.filter(|live| live.started_at.is_some());
+    let units = transcript::render_units(messages);
     let tail = (compacting || live.is_some()).then(|| {
         html! {
             @if compacting {
@@ -2121,7 +2116,7 @@ fn turn_report_row(info: &TurnInfo, live: bool, key: &str) -> Markup {
 fn turn_body(info: &TurnInfo) -> Markup {
     let dash = || "-".to_owned();
     html! {
-        span .l { b { "ended" } (info.ended_at_local.clone().unwrap_or_else(dash)) }
+        span .l { b { "ended" } (ended_clock(info).unwrap_or_else(dash)) }
         span .n { b { "model" } (info.model.clone().unwrap_or_else(dash)) }
         span .l { b { "elapsed" } (format_turn_duration(info.elapsed_ms())) }
         span .n {
@@ -2169,6 +2164,16 @@ fn turn_body(info: &TurnInfo) -> Markup {
         }
         span .n {}
     }
+}
+
+/// When the turn ended, as the reader's own wall clock. A turn the page
+/// watched settle carries the clock the terminal stamped; one read from a
+/// transcript carries the instant the CLI wrote instead, and the view renders
+/// it: a record holds the instant and the viewer's zone is the view's.
+fn ended_clock(info: &TurnInfo) -> Option<String> {
+    info.ended_at_local
+        .clone()
+        .or_else(|| info.ended_at_utc.as_deref().and_then(forge_sessions::timezone::local_clock))
 }
 
 /// The record with an unattributed usage block dropped, which is the rule the
