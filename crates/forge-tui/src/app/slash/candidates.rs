@@ -206,21 +206,12 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     }
 
     // Forge group: commands that forge handles itself (either fully
-    // implemented in-process or wrappers around upstream CLI semantics).
+    // implemented in-process or wrappers around upstream CLI semantics),
+    // from the table the web view reads too.
     let mut forge: BTreeMap<String, String> = BTreeMap::new();
-    forge.insert("/compact".into(), "Compact session context".into());
-    forge.insert("/dictate".into(), "Set how dictation is cleaned up, for this session".into());
-    forge.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
-    forge.insert("/effort".into(), "Show / set thinking effort".into());
-    forge.insert("/extensions".into(), "Open extensions".into());
-    forge.insert("/gateway".into(), "Inspect the gateway's orgs and accounts".into());
-    forge.insert("/launchpad".into(), "Return to project picker".into());
-    forge.insert("/mode".into(), "Show / set session mode".into());
-    forge.insert("/model".into(), "Show / set session model".into());
-    forge.insert("/new".into(), "Start a fresh session".into());
-    forge.insert("/resume".into(), "Resume a session by ID".into());
-    forge.insert("/spinner".into(), "Show / set the spinner style".into());
-    forge.insert("/usage".into(), "Token/cost usage by project or model".into());
+    for command in forge_sessions::commands::FORGE_COMMANDS {
+        forge.insert(command.name.to_owned(), command.description.to_owned());
+    }
 
     // Claude group: commands advertised by the upstream claude CLI that
     // forge doesn't have its own handler for - forwarded as-is.
@@ -467,25 +458,19 @@ pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
     })
 }
 
+/// The names the submit path forwards to the model rather than deciding
+/// itself: the pair the terminal handles only on the launchpad, and the two
+/// forge retired, which it forwards rather than refuses.
+///
+/// Forge's own commands are the dispatch table's, so they never reach the
+/// fallback that reads this and none of them may appear here: the two lists
+/// answer the same question about a name.
+const FORWARDED: [&str; 4] = ["/help", "/mcp", "/plugins", "/quit"];
+
+/// Whether the submit path forwards `command_name` to the model rather than
+/// refusing it here: [`FORWARDED`], or whatever the CLI advertised.
 pub fn is_supported_command(app: &App, command_name: &str) -> bool {
-    matches!(
-        command_name,
-        "/compact"
-            | "/dictate"
-            | "/diff"
-            | "/effort"
-            | "/help"
-            | "/launchpad"
-            | "/mcp"
-            | "/mode"
-            | "/model"
-            | "/new"
-            | "/quit"
-            | "/resume"
-            | "/plugins"
-            | "/spinner"
-            | "/usage"
-    ) || advertised_commands(app).iter().any(|c| c == command_name)
+    FORWARDED.contains(&command_name) || advertised_commands(app).iter().any(|c| c == command_name)
 }
 
 #[cfg(test)]
@@ -517,6 +502,116 @@ mod launchpad_filter_tests {
         assert!(names.contains(&"/launchpad"), "chat surfaces /launchpad: {names:?}");
         assert!(names.contains(&"/mode"), "chat surfaces /mode: {names:?}");
         assert!(names.contains(&"/extensions"), "chat surfaces /extensions: {names:?}");
+    }
+
+    /// The dropdown's forge group is the shared table, entry for entry, so
+    /// this view and the web view cannot drift into two different command
+    /// lists.
+    #[test]
+    fn the_chat_dropdown_offers_forges_own_table() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Chat;
+        // Advertised names, one of which forge handles itself, so the group
+        // walk and the once-per-name check both have something to see.
+        app.active_bucket_mut().expect("a session").available_commands = vec![
+            crate::agent::model::AvailableCommand::new("/model", "Switch model"),
+            crate::agent::model::AvailableCommand::new("/memory", "Edit project memory"),
+        ];
+        let candidates = supported_command_candidates(&app);
+
+        // The group opens with its own divider row, so its entries are what
+        // follows that up to the next divider.
+        let offered: Vec<&str> = candidates
+            .iter()
+            .skip_while(|candidate| !is_group_divider(candidate))
+            .skip(1)
+            .take_while(|candidate| !is_group_divider(candidate))
+            .map(|candidate| candidate.primary.as_str())
+            .collect();
+        let table: Vec<&str> =
+            forge_sessions::commands::FORGE_COMMANDS.iter().map(|entry| entry.name).collect();
+
+        assert_eq!(offered, table, "the forge group is the table both views read");
+        for entry in forge_sessions::commands::FORGE_COMMANDS {
+            let row = candidates
+                .iter()
+                .find(|candidate| candidate.primary == entry.name)
+                .expect("every table entry is offered");
+            assert_eq!(
+                row.secondary.as_deref(),
+                Some(entry.description),
+                "and carries the table's own description",
+            );
+        }
+
+        // Once per name, which is the other half of the shadow rule: a group
+        // that stopped skipping the CLI's rows for names it handles would
+        // offer those twice, in the second group, where the walk above
+        // cannot see them.
+        let mut names: Vec<&str> = candidates
+            .iter()
+            .filter(|candidate| !is_group_divider(candidate))
+            .map(|candidate| candidate.primary.as_str())
+            .collect();
+        let offered_count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), offered_count, "no command is offered twice: {names:?}");
+    }
+
+    /// The launchpad's rows are its own, but a name it shares with the
+    /// shared table carries that table's description rather than a copy that
+    /// drifts from it.
+    #[test]
+    fn the_launchpad_rows_agree_with_the_shared_table() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Launchpad;
+
+        for row in &supported_command_candidates(&app) {
+            let Some(entry) = forge_sessions::commands::FORGE_COMMANDS
+                .iter()
+                .find(|entry| entry.name == row.primary)
+            else {
+                continue;
+            };
+            assert_eq!(
+                row.secondary.as_deref(),
+                Some(entry.description),
+                "{} carries the shared table's description",
+                row.primary,
+            );
+        }
+    }
+
+    /// The list the fallback forwards and the table forge dispatches are
+    /// disjoint: a name in both would be offered by the dropdowns and then
+    /// decided by the fallback, which is the drift this pair kept landing in.
+    #[test]
+    fn the_fallback_forwards_nothing_forge_dispatches() {
+        for name in FORWARDED {
+            assert!(
+                !forge_sessions::commands::is_forge_command(name),
+                "{name} is in the fallback list and in the table both views offer",
+            );
+        }
+    }
+
+    /// The names the terminal dispatches and the names the shared table
+    /// offers are the same set: the table is what both views' dropdowns
+    /// draw, so a name it carries that nothing dispatches would be offered
+    /// by both and refused when typed, and a dispatch with no entry would be
+    /// reachable only by someone who knew it existed.
+    #[test]
+    fn the_shared_table_and_the_dispatch_agree() {
+        let mut dispatched = crate::app::slash::executors::handled_names();
+        let mut offered: Vec<&str> =
+            forge_sessions::commands::FORGE_COMMANDS.iter().map(|entry| entry.name).collect();
+        // Sets, not sequences: the table's order is the dropdown's, and the
+        // dispatch is a lookup that has none.
+        dispatched.sort_unstable();
+        offered.sort_unstable();
+
+        assert_eq!(dispatched, offered, "the dispatched set is the table's set");
     }
 
     /// Not a show-and-set: the dialog never reads state back, so the

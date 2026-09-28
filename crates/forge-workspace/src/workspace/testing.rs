@@ -338,8 +338,17 @@ impl Workspace {
             unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
+            test_user_preferences: Mutex::new(None),
         };
         (Arc::new(workspace), update_rx)
+    }
+
+    /// Hold the CLI's per-user preferences document, so a cross-crate test
+    /// reads an ignore preference without the machine's own
+    /// `$HOME/.claude.json`. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_user_preferences(&self, preferences: serde_json::Value) {
+        *self.test_user_preferences.lock() = Some(preferences);
     }
 }
 

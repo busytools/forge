@@ -51,7 +51,8 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-sessions`** - what a view needs and nothing about how it
   renders: the read surface a view uses, the session records as a view
   sees them, the peer envelope parsing in both directions, the tool
-  family table, the policy that folds a run of blocks, the transcript
+  family table, forge's own slash commands, the policy that folds a run
+  of blocks, the transcript
   fold that turns a conversation's messages into the units a view draws,
   the fold that turns a session's dispatches into the sub-agent instances
   a view draws, and the two reads of a pty's own text: its escape
@@ -153,12 +154,13 @@ Work top-down; first match wins.
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
-`cli_version`, `conversation`, `slash_commands`, `subagents`, `emoji`,
-`file_index`, `header`, `mcp_servers`,
+`cli_version`, `conversation`, `slash_commands`, `forge_commands`,
+`subagents`, `emoji`,
+`file_index`, `respect_gitignore`, `header`, `mcp_servers`,
 `processes`, `monitors` and `pending_ask` - receives changes through
 `subscribe()`, and acts through `dispatch()`, which is a verb rather than
 an accessor so a view is handed the commands it needs and not the whole
-core. All twenty exist in `forge-sessions`, and the TUI reads
+core. All twenty-two exist in `forge-sessions`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk

@@ -20,7 +20,7 @@ use forge_sessions::SessionUpdate;
 // wire's, or the one the core kept beside the answer's oneshot for a view
 // that attached after it landed.
 use forge_sessions::surface::PendingAsk as Ask;
-use forge_sessions::surface::{AgentRow, Agents, DictateOutcome, PendingKind, Roster};
+use forge_sessions::surface::{AgentRow, Agents, DictateOutcome, PendingKind, Roster, ViewSurface};
 use maud::{Markup, html};
 
 use crate::home::{Home, State};
@@ -655,19 +655,36 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
     // query, so a short list reads as filtered rather than as the whole set.
     let (icon, title, cap, rows) = match trigger {
         Trigger::Command => {
-            let commands = home.surface.slash_commands(slot);
-            let count = commands.len();
-            let rows: Vec<Markup> = commands
+            // forge's own commands first, then the ones the CLI advertised
+            // that forge does not handle itself: a name in both lists is
+            // forge's, and drawing the CLI's copy beside it would offer one
+            // command twice.
+            let forge = ViewSurface::forge_commands();
+            let advertised: Vec<forge_primitives::AvailableCommand> = home
+                .surface
+                .slash_commands(slot)
                 .iter()
-                .filter(|command| matches_query(&[&command.name, &command.description], query))
+                .filter(|command| !forge_sessions::commands::is_forge_command(&command.name))
+                .cloned()
+                .collect();
+            let count = forge.len() + advertised.len();
+            let rows: Vec<Markup> = forge
+                .iter()
+                .map(|command| (command.name, command.description))
+                .chain(
+                    advertised
+                        .iter()
+                        .map(|command| (command.name.as_str(), command.description.as_str())),
+                )
+                .filter(|(name, description)| matches_query(&[name, description], query))
                 .take(CANDIDATES)
-                .map(|command| row(&command.name, &command.description, None, query))
+                .map(|(name, description)| row(name, description, None, query))
                 .collect();
             ("cmd", "commands".to_owned(), count.to_string(), rows)
         }
         Trigger::File => {
             let index = match roster.cwd_for(slot) {
-                Some(cwd) => home.work.files(slot, &cwd).await,
+                Some(cwd) => home.work.files(home.surface, slot, &cwd).await,
                 None => std::sync::Arc::default(),
             };
             let found = index.visible(query, FILE_ROWS);

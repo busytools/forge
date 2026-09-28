@@ -48,8 +48,14 @@ pub fn settings_documents(config_dir: &Path, cwd: Option<&Path>) -> SettingsDocu
         user: read_json_file(&config_dir.join("settings.json")),
         project_local: cwd
             .and_then(|cwd| read_json_file(&cwd.join(".claude").join("settings.local.json"))),
-        preferences: home_dir().and_then(|h| read_json_file(&h.join(".claude.json"))),
+        preferences: user_preferences(),
     }
+}
+
+/// The per-user preferences document alone, for a reader that wants
+/// nothing else out of it. `None` when the file is absent or unreadable.
+pub fn user_preferences() -> Option<Value> {
+    home_dir().and_then(|home| read_json_file(&home.join(".claude.json")))
 }
 
 fn home_dir() -> Option<PathBuf> {

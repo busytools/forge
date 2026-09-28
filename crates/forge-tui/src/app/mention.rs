@@ -481,6 +481,56 @@ mod tests {
         assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "ignored.rs"));
     }
 
+    /// The preference is re-read when the walk is rebuilt, not only when the
+    /// mention list opens: the user can flip it while a session runs, and a
+    /// walk that kept the preference it started with would answer the old one
+    /// for the rest of the session, which is exactly the divergence the web
+    /// view's shared read exists to remove.
+    #[test]
+    fn flipping_the_preference_rebuilds_the_walk() {
+        let (mut app, tmp) = app_with_temp_files(&["visible.rs", "ignored.rs"]);
+        std::fs::create_dir_all(tmp.path().join(".git")).expect("create .git");
+        std::fs::write(tmp.path().join(".gitignore"), "ignored.rs\n").expect("write .gitignore");
+        app.input_mut().expect("active session").set_text("@rs");
+        let _ = app.input_mut().expect("active session").set_cursor(0, 3);
+
+        activate(&mut app);
+        run_search(&mut app);
+        assert!(
+            !mention_offers(&app, "ignored.rs"),
+            "hidden while the preference still respects the file",
+        );
+
+        crate::app::config::store::set_respect_gitignore(
+            &mut app.config.committed_preferences_document,
+            false,
+        );
+        crate::app::file_index::ensure_started(&mut app);
+        drain_until(&mut app, &|app| mention_offers(app, "ignored.rs"));
+
+        assert!(mention_offers(&app, "ignored.rs"), "and offered once the preference flips");
+    }
+
+    fn mention_offers(app: &App, rel_path: &str) -> bool {
+        app.mention().is_some_and(|mention| {
+            mention.candidates.iter().any(|candidate| candidate.rel_path == rel_path)
+        })
+    }
+
+    /// Drain the walk's events until `enough` holds, or the same 1s bound
+    /// `run_search` uses runs out. A rebuilt walk lands as background batches,
+    /// so the flip is not visible until they arrive and nothing else waits.
+    fn drain_until(app: &mut App, enough: &dyn Fn(&App) -> bool) {
+        for _ in 0..200 {
+            crate::app::file_index::drain_events(app);
+            std::thread::sleep(Duration::from_millis(5));
+            if enough(app) {
+                return;
+            }
+        }
+        panic!("the walk did not answer the flipped preference within 1s");
+    }
+
     #[test]
     fn nested_gitignore_hides_same_directory_children() {
         let (mut app, _tmp) =

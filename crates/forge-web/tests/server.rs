@@ -3588,8 +3588,8 @@ async fn typing_a_slash_opens_the_command_list() {
     fleet.advertise(
         &SessionSlot::lead("Busytools", "forge"),
         vec![
-            forge_primitives::AvailableCommand::new("model", "Switch model"),
             forge_primitives::AvailableCommand::new("memory", "Edit project memory"),
+            forge_primitives::AvailableCommand::new("status", "Show the session status"),
         ],
         Vec::new(),
     );
@@ -3600,11 +3600,60 @@ async fn typing_a_slash_opens_the_command_list() {
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(page.contains("class=\"ac\""), "the popover opens on the trigger: {page}");
     assert!(page.contains("commands"), "and names the list it is showing: {page}");
-    assert!(page.contains("/<em>m</em>odel"), "with the typed span marked: {page}");
-    assert!(page.contains("Switch model"), "and the row's own description: {page}");
+    assert!(page.contains("/<em>m</em>emory"), "with the typed span marked: {page}");
+    assert!(page.contains("Edit project memory"), "and the row's own description: {page}");
     assert!(
         page.contains("class=\"it sel\""),
         "and the first row is the one a key would take: {page}"
+    );
+    let forge_row = page.find("/<em>m</em>ode").expect("forge's own row is drawn");
+    let advertised_row = page.find("/<em>m</em>emory").expect("the CLI's row is drawn");
+    assert!(
+        forge_row < advertised_row,
+        "and forge's own commands lead, so the row a key would take is one of them: {page}",
+    );
+}
+
+/// The list carries forge's own commands beside the CLI's. `/diff` is one
+/// the CLI never advertises, so a popover built from the advertised list
+/// alone cannot offer it however the session is set up.
+#[tokio::test]
+async fn the_command_list_carries_forges_own_commands() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "/diff").await;
+
+    assert!(page.contains("/<em>diff</em>"), "forge's own command is offered: {page}");
+    assert!(
+        page.contains("Review changes in a full-screen diff overlay"),
+        "with the description the shared table carries: {page}",
+    );
+}
+
+/// One command is one row. forge handles `/model` itself, so the CLI's
+/// `model` is not drawn beside it - and the row that is drawn is forge's,
+/// which is the half a list built from the CLI's own advertisement cannot
+/// show.
+#[tokio::test]
+async fn a_command_forge_handles_shadows_the_clis_own_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.advertise(
+        &SessionSlot::lead("Busytools", "forge"),
+        vec![forge_primitives::AvailableCommand::new("model", "Switch model")],
+        Vec::new(),
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "/model").await;
+
+    assert!(page.contains("Show / set session model"), "forge's row is the one drawn: {page}");
+    assert_eq!(
+        page.matches("/<em>model</em>").count(),
+        1,
+        "and the CLI's copy is not drawn beside it: {page}",
     );
 }
 
@@ -3654,7 +3703,13 @@ async fn a_query_filters_the_list_it_opened() {
 
     assert!(page.contains("/<em>mem</em>ory"), "the row that carries the query is offered: {page}");
     assert!(!page.contains("Compact conversation context"), "and one that does not is not: {page}");
-    assert!(page.contains(">3<"), "while the header counts the list the rows came from: {page}");
+    // The header counts the list behind the rows: forge's table, plus the
+    // one advertised command that is not a name forge handles itself.
+    let listed = forge_sessions::commands::FORGE_COMMANDS.len() + 1;
+    assert!(
+        page.contains(&format!(">{listed}<")),
+        "while the header counts the list the rows came from: {page}",
+    );
 }
 
 /// A query nothing carries opens nothing, rather than a popover holding a
@@ -4418,6 +4473,56 @@ async fn each_list_draws_its_own_mark() {
     assert!(page.contains("href=\"#i-file\""), "which draws the file mark: {page}");
 }
 
+/// One file is gitignored in the fleet's project tree, and one is not.
+fn seed_ignored_tree(dir: &tempfile::TempDir) {
+    let root = dir.path().join("forge");
+    std::fs::create_dir_all(root.join(".git")).expect("mkdir");
+    std::fs::write(root.join(".gitignore"), "ignored.rs\n").expect("write");
+    std::fs::write(root.join("ignored.rs"), "").expect("write");
+    std::fs::write(root.join("visible.rs"), "").expect("write");
+}
+
+/// The walk runs with the user's own gitignore preference, so a second view
+/// answers as the terminal does for one tree: with `respectGitignore` off,
+/// the file the tree's own `.gitignore` names is offered.
+#[tokio::test]
+async fn the_file_list_follows_the_ignore_preference() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    seed_ignored_tree(&dir);
+    fleet.set_user_preferences(serde_json::json!({ "respectGitignore": false }));
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "@ignored").await;
+
+    assert!(
+        page.contains("<em>ignored</em>.rs"),
+        "an ignored file is offered once the preference is off: {page}",
+    );
+}
+
+/// The same tree with the preference unset offers it not at all: an absent
+/// key reads as the CLI's own default, which is to respect the file. The
+/// walk is then asked for the other file, because a list that came back
+/// empty for any other reason reads the same as a hidden one.
+#[tokio::test]
+async fn the_file_list_hides_ignored_files_by_default() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    seed_ignored_tree(&dir);
+    fleet.set_user_preferences(serde_json::json!({}));
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "@ignored").await;
+    assert!(!page.contains("class=\"ac\""), "no list opens for a file the tree ignores: {page}");
+
+    let (_status, page) = composer(&config, "@visible").await;
+    assert!(
+        page.contains("<em>visible</em>.rs"),
+        "and the same tree is walked for a file it does not ignore: {page}",
+    );
+}
+
 /// The filter is a window over the candidates and not the whole set: a list
 /// long enough to fill a window is drawn in full and scrolled, and the header
 /// keeps the count that says where it came from.
@@ -4428,7 +4533,7 @@ async fn the_window_holds_more_candidates_than_it_shows() {
     let commands: Vec<_> = (0..40)
         .map(|n| forge_primitives::AvailableCommand::new(format!("cmd{n}"), "A command"))
         .collect();
-    fleet.advertise(&SessionSlot::lead("Busytools", "forge"), commands, Vec::new());
+    fleet.advertise(&SessionSlot::lead("Busytools", "forge"), commands.clone(), Vec::new());
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let (_status, page) = composer(&config, "/cmd").await;
@@ -4438,7 +4543,10 @@ async fn the_window_holds_more_candidates_than_it_shows() {
         40,
         "every candidate reaches the window, which is what scrolls: {page}",
     );
-    assert!(page.contains(">40<"), "and the header counts them: {page}");
+    // The list is forge's table plus the advertised commands it does not
+    // shadow, which is what the header counts.
+    let listed = forge_sessions::commands::FORGE_COMMANDS.len() + commands.len();
+    assert!(page.contains(&format!(">{listed}<")), "and the header counts them: {page}");
 }
 
 /// The list says a row cannot be chosen, which is the one place in the
