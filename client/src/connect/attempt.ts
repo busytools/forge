@@ -65,14 +65,46 @@ export function displayAddress(url: string): string {
 }
 
 /**
+ * One attempt, and always an `Attempt`: a connection that throws is a
+ * connection that did not happen, and the two must reach the screen as the
+ * same thing.
+ *
+ * **A real socket rejects, and this is where that lands.** A handshake
+ * timeout, a `WebSocket` constructor that throws on an address the normaliser
+ * accepted, a settings round trip that fails: none of them is an exception
+ * the page can do anything with, and a caller that let one escape would leave
+ * its button disabled reading "Connecting" with no reason and no way out but
+ * a reload. So the rejection becomes the `unreachable` arm the screen already
+ * knows how to draw.
+ *
+ * `connect` is a parameter so this can be exercised without a socket; it
+ * defaults to the real one.
+ */
+export async function attempt(
+  input: string,
+  connect: (input: string) => Promise<Attempt> = connectTo,
+): Promise<Attempt> {
+  try {
+    return await connect(input);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      kind: 'unreachable',
+      why: `Nothing answered at ${input.trim()}: ${why}`,
+    };
+  }
+}
+
+/**
  * Connect, and answer with what the greeting carried.
  *
  * **The body is the fixture and the signature is not.** Nothing here opens a
  * socket, so this answers as a forge whose `[web]` block names nothing -
  * every mark, palette and typeface at its built-in - and the home behind this
  * screen draws the fixture the server committed. Task 2 replaces the body
- * with the real `connect(url)` and produces the `unreachable` arm; no caller
- * changes.
+ * with the real `connect(url)`; `attempt` above is what turns its rejections
+ * into the screen's own vocabulary, and no caller changes.
  */
 export async function connectTo(input: string): Promise<Attempt> {
   const normalized = normalizeAddress(input);

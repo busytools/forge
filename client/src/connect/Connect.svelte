@@ -1,7 +1,7 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
   import type { ClientSettings } from '../wire/types';
-  import { connectTo, DEFAULT_ADDRESS, type Attempt } from './attempt';
+  import { attempt, DEFAULT_ADDRESS, type Attempt } from './attempt';
 
   let {
     settings,
@@ -19,13 +19,19 @@
     event.preventDefault();
     busy = true;
     failure = null;
-    const attempt = await connectTo(address);
-    busy = false;
-    if (attempt.ok) {
-      onconnect({ url: attempt.url, settings: attempt.settings });
-      return;
+    try {
+      const answer = await attempt(address);
+      if (answer.ok) {
+        onconnect({ url: answer.url, settings: answer.settings });
+        return;
+      }
+      failure = answer;
+    } finally {
+      // In `finally` rather than on each path: a throw from `attempt` would
+      // otherwise leave the button disabled reading "Connecting" forever,
+      // which is the same screen as a connection still in progress.
+      busy = false;
     }
-    failure = attempt;
   }
 </script>
 
@@ -134,6 +140,15 @@
 
   input[aria-invalid='true'] {
     border-color: var(--bad);
+  }
+
+  /* iOS Safari zooms the whole viewport for a field under 16px and leaves the
+     page scrolled off-centre, which is the "opens in the wrong position"
+     symptom. A desktop responsive mode does not reproduce it. */
+  @media (max-width: 560px) {
+    input {
+      font-size: 16px;
+    }
   }
 
   button {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
 import { DEFAULT_MARK, DEFAULT_WEB_PORT, MARK_NAMES } from '../wire/types';
-import { displayAddress, normalizeAddress } from './attempt';
+import { attempt, displayAddress, normalizeAddress } from './attempt';
 
 describe('the address a person types', () => {
   it('takes a bare host and port, and adds the path the server serves', () => {
@@ -19,16 +19,59 @@ describe('the address a person types', () => {
     expect(normalizeAddress('box:8790/other')).toEqual({ url: 'ws://box:8790/other' });
   });
 
+  /**
+   * Three different refusals, asserted by the words a reader sees. A shared
+   * `toHaveProperty('why')` is satisfied by any message at all, so swapping
+   * them would be invisible.
+   */
   it('refuses an empty field and an address that is not one', () => {
-    expect(normalizeAddress('   ')).toHaveProperty('why');
-    expect(normalizeAddress('::::')).toHaveProperty('why');
-    expect(normalizeAddress('ftp://box:8790')).toHaveProperty('why');
+    expect(normalizeAddress('   ')).toEqual({ why: 'Enter the address forge is serving on.' });
+    expect(normalizeAddress('::::')).toEqual({
+      why: ':::: is not an address. It wants a host and a port, like 127.0.0.1:8790.',
+    });
+    expect(normalizeAddress('ftp://box:8790')).toEqual({
+      why: 'ftp: is not a socket. Use ws:// or wss://, or just 127.0.0.1:8790.',
+    });
   });
 
   it('reads back the host and port the field would show', () => {
     expect(displayAddress(`ws://127.0.0.1:${DEFAULT_WEB_PORT}/socket`)).toBe(
       `127.0.0.1:${DEFAULT_WEB_PORT}`,
     );
+  });
+});
+
+describe('one attempt', () => {
+  /**
+   * A real socket rejects, and a rejection the caller cannot classify is a
+   * page that never leaves "Connecting". It has to arrive as the same arm a
+   * refusal does, so the screen draws a reason and re-enables the button.
+   */
+  it('answers a rejection as an unreachable connection rather than throwing', async () => {
+    const answer = await attempt('box:8790', () => Promise.reject(new Error('timed out')));
+    expect(answer).toEqual({
+      ok: false,
+      kind: 'unreachable',
+      why: 'Nothing answered at box:8790: timed out',
+    });
+  });
+
+  it('answers a bad address as an address, not as an unreachable one', async () => {
+    const answer = await attempt('::::');
+    expect(answer.ok).toBe(false);
+    // `address` is the arm with no `[web] enabled` paragraph: the reader can
+    // fix this one themselves, so pointing them at their config would be
+    // wrong.
+    expect(answer.ok === false && answer.kind).toBe('address');
+  });
+
+  it('passes a connection through untouched', async () => {
+    const answer = await attempt('box:8790');
+    expect(answer).toEqual({
+      ok: true,
+      url: 'ws://box:8790/socket',
+      settings: { mark: null, theme: null, font: null },
+    });
   });
 });
 
