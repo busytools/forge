@@ -352,6 +352,11 @@ pub struct Page {
 /// client reading `None` as "nothing above" stops after the first page. The
 /// unit index of the page's first turn is the one thing that always names it.
 pub fn page(all: &[ChatUnit], before: Option<&str>, turns: u32) -> Page {
+    // A page of no turns ends where it began: its cursor would name the row it
+    // already opened at, so a client walking back would ask for the same page
+    // forever.
+    let turns = turns.max(1) as usize;
+
     // Where each turn opens. Slicing on a unit count instead would cut a turn
     // in half, because one turn is several units.
     let opens: Vec<usize> = all
@@ -368,8 +373,12 @@ pub fn page(all: &[ChatUnit], before: Option<&str>, turns: u32) -> Page {
         .and_then(|started| opens.iter().position(|&open| open == started))
         .unwrap_or(opens.len());
 
-    let first = ends_at.saturating_sub(turns as usize);
-    let start = opens.get(first).copied().unwrap_or(0);
+    let first = ends_at.saturating_sub(turns);
+    // The conversation's opening rows - who started it, a cron fire, a
+    // delivery - come before its first turn, so the first page starts at the
+    // conversation rather than at that turn. Starting at `opens[0]` would
+    // leave them above every page, where no walk can reach them.
+    let start = if first == 0 { 0 } else { opens.get(first).copied().unwrap_or(0) };
     let end = opens.get(ends_at).copied().unwrap_or(all.len());
     let rows = all[start..end].to_vec();
 
@@ -616,6 +625,51 @@ mod tests {
         let surface = fleet.surface();
         let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
         (surface, seat, cwd)
+    }
+
+    /// A page of no turns ended where it began - an empty page whose cursor
+    /// named the row it had already opened at - so a client walking back asked
+    /// for it forever.
+    #[test]
+    fn a_page_of_no_turns_still_walks_backwards() {
+        let (surface, seat, cwd) = a_surface_of_turns(6);
+        let all = surface.folded_units(&seat, &cwd);
+
+        // Reached the way a client reaches one, from the cursor below it.
+        let lower = page(&all, None, 2);
+        let cursor = lower.cursor.expect("there is a page above this one");
+
+        let above = page(&all, Some(&cursor), 0);
+
+        assert!(!above.rows.is_empty(), "a page carries rows rather than none at all");
+        assert_ne!(
+            above.cursor.as_deref(),
+            Some(cursor.as_str()),
+            "and it moves rather than naming the row it already opened at",
+        );
+    }
+
+    /// The conversation's opening rows come before its first turn, so a page
+    /// starting at that turn leaves them above every page, where no walk
+    /// reaches them.
+    #[test]
+    fn the_rows_before_the_first_turn_ride_the_first_page() {
+        let units = [
+            ChatUnit::Notice(crate::transcript::Notice {
+                severity: crate::transcript::NoticeSeverity::Info,
+                source: "cron",
+                text: "a scheduled prompt".to_owned(),
+            }),
+            ChatUnit::UserTurn { text: "hello".to_owned() },
+        ];
+
+        let first = page(&units, None, 10);
+
+        assert!(
+            matches!(first.rows.first(), Some(ChatUnit::Notice(_))),
+            "the opening row is on the page rather than above every page: {:?}",
+            first.rows,
+        );
     }
 
     /// Review Focus item 1: a page opens on a turn, and consecutive pages
