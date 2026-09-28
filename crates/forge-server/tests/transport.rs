@@ -159,6 +159,55 @@ fn a_prompt_for(org: &str, project: &str, label: &str) -> Command {
     }
 }
 
+/// What a composer is doing is announced once and retained nowhere, so a
+/// client attaching to a running session cannot rebuild it: a take in flight,
+/// the line a finished one left, a compaction, a sign-in, and the ask it is
+/// answering - which rides `pending_ask` rather than being copied here.
+#[tokio::test]
+async fn a_running_take_is_on_the_seat_a_client_attaches_to() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
+        panic!("the subscribe is answered with a snapshot first")
+    };
+
+    fleet.emit(SessionUpdate::DictateStarted {
+        key: lead_seat(),
+        floor_db: -50.0,
+        generation: 1,
+    });
+    assert!(
+        matches!(next_server(&mut socket).await, ServerMessage::Update { .. }),
+        "reading it back is what proves the fold ran before the next subscribe",
+    );
+
+    let mut fresh = connect(&url).await;
+    send(
+        &mut fresh,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let ServerMessage::Snapshot { data, .. } = next_server(&mut fresh).await else {
+        panic!("expected the session snapshot")
+    };
+
+    assert_eq!(
+        data["composer"]["take"]["phase"], "recording",
+        "the take a client never saw announced is on the record: {}",
+        data["composer"],
+    );
+    assert_eq!(
+        data["composer"]["take"]["floor_db"], -50.0,
+        "with the floor its own meter measures against",
+    );
+}
+
 /// A turn that finishes while nobody is showing the seat leaves a mark, and
 /// the mark is exactly the fact a client cannot reconstruct: a transcript says
 /// the turn ended, never that it ended unwatched. It rides the home snapshot,

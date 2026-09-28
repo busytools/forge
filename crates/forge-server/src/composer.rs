@@ -34,7 +34,8 @@ const METER_CEILING_DB: f32 = 0.0;
 const METER_FLOOR_PERCENT: f32 = 12.0;
 
 /// What a take is doing, as a composer draws it.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Phase {
     Recording,
     Transcribing,
@@ -105,6 +106,29 @@ pub enum Notice {
     Line { tone: &'static str, text: String },
 }
 
+/// A notice as it crosses, with the tone owned: the composer's own type holds
+/// a `&'static str` so it never needs an owned one, and a client reading one
+/// back does.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NoticeWire {
+    Landed { text: String, truncated: bool },
+    Line { tone: String, text: String },
+}
+
+impl From<&Notice> for NoticeWire {
+    fn from(notice: &Notice) -> Self {
+        match notice {
+            Notice::Landed { text, truncated } => {
+                Self::Landed { text: text.clone(), truncated: *truncated }
+            }
+            Notice::Line { tone, text } => {
+                Self::Line { tone: (*tone).to_owned(), text: text.clone() }
+            }
+        }
+    }
+}
+
 impl Notice {
     /// The notice a finished take leaves, worded per outcome. A take that
     /// landed leaves words rather than a line, and one the reader abandoned
@@ -173,10 +197,24 @@ pub struct Composer {
 
 /// The sign-in a seat is waiting on, as the wire names it. The method is what
 /// makes the hint say which account rather than only that one is needed.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SignIn {
     pub method_name: String,
     pub method_description: String,
+}
+
+impl Take {
+    /// The take's own silence floor, which its meter measures against rather
+    /// than assuming a fixed one.
+    pub fn floor_db(&self) -> f32 {
+        self.floor_db
+    }
+
+    /// How long the take has run. `Instant` is a Rust mechanism and does not
+    /// cross, so what crosses is the duration a client draws.
+    pub fn elapsed(&self) -> std::time::Duration {
+        self.started.elapsed()
+    }
 }
 
 impl Composer {

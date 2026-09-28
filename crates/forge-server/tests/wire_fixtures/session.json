@@ -17,6 +17,12 @@
       "context": null
     }
   },
+  "composer": {
+    "take": null,
+    "notice": null,
+    "compacting": false,
+    "sign_in": null
+  },
   "header": {
     "model": null,
     "effort": "max",
