@@ -27,7 +27,7 @@ use serde_json::Value;
 
 use crate::composer::{NoticeWire, Phase, SignIn};
 use crate::file_index::FileIndex;
-use crate::surface::{AgentRow, PendingAsk, ViewSurface};
+use crate::surface::{AgentRow, ConversationHistory, PendingAsk, ViewSurface};
 use crate::transcript::ChatUnit;
 use crate::transport::TransportState;
 use crate::transport::envelope::Subject;
@@ -630,17 +630,17 @@ async fn session(
     let conversation = {
         let reader = Arc::clone(&state.surface);
         let (seat, root) = (slot.clone(), cwd.to_path_buf());
-        tokio::task::spawn_blocking(move || reader.conversation(&seat, &root))
-            .await
-            .unwrap_or_else(|error| {
+        tokio::task::spawn_blocking(move || reader.conversation(&seat, &root)).await.unwrap_or_else(
+            |error| {
                 tracing::warn!(
                     event_name = "conversation_read_failed",
                     %error,
                     slot = %slot.display(),
                     "the transcript read did not finish; the record is answered without it",
                 );
-                Default::default()
-            })
+                ConversationHistory::default()
+            },
+        )
     };
     let work = state.work.snapshot(slot, cwd).await;
     let branch = work.branch.clone().unwrap_or_default();

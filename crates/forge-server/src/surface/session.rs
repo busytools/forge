@@ -25,7 +25,7 @@ impl SessionState {
     pub(super) fn collect(workspace: &Workspace, slot: &SessionSlot, cwd_raw: &Path) -> Self {
         let dictate_overrides = workspace
             .domain_session_for(slot)
-            .map(|domain| domain.lock().dictate_overrides.clone())
+            .map(|domain| domain.lock().dictate_overrides)
             .unwrap_or_default();
         Self {
             slot: slot.clone(),

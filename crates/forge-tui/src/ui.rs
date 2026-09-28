@@ -31,6 +31,7 @@ pub(crate) mod prompt;
 pub(crate) mod schedule_format;
 pub(crate) mod spinner;
 pub(crate) mod spinner_picker;
+pub(crate) mod spinner_style;
 pub(crate) mod tasks_detail;
 pub(crate) mod theme;
 pub(crate) mod tool_call;

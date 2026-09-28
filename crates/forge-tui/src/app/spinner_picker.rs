@@ -3,19 +3,19 @@
 //! A centered overlay (rendered by [`crate::ui::spinner_picker`])
 //! listing every [`SpinnerStyle`] animating live. Arrow keys preview
 //! the highlighted style across the whole UI by mutating
-//! `App::spinner_style`; `enter` commits the choice (persisted to the
-//! redb store via `Workspace::persist_spinner`); `esc` restores the
-//! style that was active when the overlay opened.
+//! `App::spinner_style`; `enter` commits the choice for this run and
+//! nothing stores it; `esc` restores the style that was active when the
+//! overlay opened.
 
+use crate::ui::spinner_style::SpinnerStyle;
 use crossterm::event::{KeyCode, KeyEvent};
-use forge_workspace::SpinnerStyle;
 
 use super::App;
 
 /// State for the open `/spinner` picker. `None` on `App` when closed.
 #[derive(Debug, Clone, Copy)]
 pub struct SpinnerPickerState {
-    /// Index into [`SpinnerStyle::ALL_STYLES`] of the highlighted row.
+    /// Index into `SpinnerStyle::ALL_STYLES` of the highlighted row.
     pub highlight: usize,
     /// Style active when the picker opened. Restored on `esc` (cancel)
     /// so live-preview navigation doesn't stick when the user backs out.
@@ -50,11 +50,9 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Up => preview(app, (state.highlight + count - 1) % count),
         KeyCode::Down => preview(app, (state.highlight + 1) % count),
         KeyCode::Enter => {
-            let style = SpinnerStyle::ALL_STYLES[state.highlight];
-            app.spinner_style = style;
-            if let Some(ws) = app.workspace.as_ref() {
-                let _ = ws.dispatch(forge_workspace::Command::PersistSpinner { style });
-            }
+            // The pick is for this run: a spinner is the terminal's own
+            // presentation and nothing persists one.
+            app.spinner_style = SpinnerStyle::ALL_STYLES[state.highlight];
             close(app);
         }
         KeyCode::Esc => {

@@ -272,21 +272,12 @@ replacing the token needs a restart.
 Only key names, never values, are recorded in forge's per-spawn log
 line. These tables hold tokens.
 
-## `[ui]`
+## Notifications
 
-Optional. Every field has a default, so an absent section is the same
-as all defaults.
-
-| Key | Type | Default | Accepted values |
-|---|---|---|---|
-| `spinner` | string | `braille` | `braille`, `phase_of_moon`, `ember`, `bars_v`, `star`, `sparkle` |
-| `fps` | integer | `120` | 30 to 240 |
-
-The two values are lenient, so a hand-edited typo does not stop forge
-booting. A `spinner` name forge does not recognise resolves to the
-default. An `fps` outside the range is clamped and warned about, and a
-non-integer `fps` resolves to the default. The keys are not lenient: an
-unrecognised key in this section fails the load like any other.
+There is no `[ui]` section. The spinner a terminal draws and how often
+it repaints are the terminal's own, with no key and nothing persisted;
+a `forge.toml` still carrying one **fails the load** rather than being
+ignored, so remove the section when you upgrade.
 
 Forge writes an OSC 777 desktop-notification escape every time it
 raises a notification, and asks nothing about the terminal first. A
@@ -336,9 +327,9 @@ Optional. Absent means dictation is off, which is also what an explicit
 | `bind` | string | `right_cmd` | The push-to-talk key: `right_cmd`, `left_cmd` or `off`. On Linux and Windows the cmd equivalent is the right/left Control key. |
 | `mode` | string | `auto` | How press/release maps onto recording: `auto` infers from timing (a quick tap toggles, a hold transcribes on release), `toggle` starts on a press and stops on the next press, `hold` records while held and always transcribes on release. |
 
-Unlike `[ui]`, an unrecognised key here fails the load rather than being
-ignored: a mistyped `models_dir` would otherwise fetch three gigabytes
-to the wrong volume with nothing said about it.
+An unrecognised key here fails the load rather than being ignored: a
+mistyped `models_dir` would otherwise fetch three gigabytes to the
+wrong volume with nothing said about it.
 
 With `enabled = true`, forge fetches, verifies and loads the models on
 the preflight screen before forge hands over. A first run
@@ -459,18 +450,17 @@ Every table rejects unknown fields, so a mistyped key fails the load
 and names itself rather than parsing clean and meaning something else -
 a misspelled `fallback_accounts` would otherwise read as "no
 fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
-`[[accounts]]`, `[[slack]]`, `[gotify]`, `[ui]`, `[gateway]`,
+`[[accounts]]`, `[[slack]]`, `[gotify]`, `[gateway]`,
 `[dictate]`, `[plugins]` and `[web]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
-`[workers]`, `[projects.<name>]`, `[selection]` and
-`[ui] notifications_osc9`. Anything else in those places is a typo and
-is refused.
+`[workers]`, `[projects.<name>]` and `[selection]`. Anything else in
+those places is a typo and is refused.
 
-The one deliberate exception to the refusal is `[ui]`'s two values,
-`spinner` and `fps`: an unrecognised spinner name and an out-of-range
-`fps` resolve to defaults instead of failing the load.
+`[ui]` is not one of those ghosts. It was a section for a view's own
+presentation, it holds nothing the server reads, and carrying one
+refuses the boot - so it goes rather than being tolerated.
 
 ## A complete example
 
@@ -530,10 +520,6 @@ models = ["claude-sonnet-5"]
 
   [accounts.env]
   CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = "1"
-
-[ui]
-spinner = "phase_of_moon"
-fps = 120
 
 [dictate]
 enabled = true

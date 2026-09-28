@@ -541,13 +541,6 @@ pub enum Command {
         thread_id: String,
         status: ReviewStatus,
     },
-    /// Persist the `/spinner` override so it survives restart. The
-    /// in-session active style lives on the TUI's `App::spinner_style`
-    /// already; this is the durable-store write. App-level command
-    /// (`key()` returns `None`); routed inline.
-    PersistSpinner {
-        style: crate::ui::SpinnerStyle,
-    },
     /// Release the session `session_key` (cascade-aware: a project
     /// lead's workers terminate first). Dispatched by the TUI's
     /// per-row close click; the TUI removes its own bucket around the
@@ -621,7 +614,6 @@ impl Command {
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
             | Self::SetReviewThreadStatus { .. }
-            | Self::PersistSpinner { .. }
             | Self::CloseSession { .. }
             | Self::UpsertReviewThread { .. }
             | Self::RespondSlackPost { .. }
@@ -769,9 +761,6 @@ impl std::fmt::Debug for Command {
                 .field("thread_id", thread_id)
                 .field("status", status)
                 .finish(),
-            Self::PersistSpinner { style } => {
-                f.debug_struct("PersistSpinner").field("style", style).finish()
-            }
             Self::CloseSession { session_key } => {
                 f.debug_struct("CloseSession").field("session_key", session_key).finish()
             }

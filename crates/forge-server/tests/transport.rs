@@ -177,11 +177,7 @@ async fn a_running_take_is_on_the_seat_a_client_attaches_to() {
         panic!("the subscribe is answered with a snapshot first")
     };
 
-    fleet.emit(SessionUpdate::DictateStarted {
-        key: lead_seat(),
-        floor_db: -50.0,
-        generation: 1,
-    });
+    fleet.emit(SessionUpdate::DictateStarted { key: lead_seat(), floor_db: -50.0, generation: 1 });
     assert!(
         matches!(next_server(&mut socket).await, ServerMessage::Update { .. }),
         "reading it back is what proves the fold ran before the next subscribe",
@@ -447,8 +443,11 @@ async fn two_sockets_on_one_seat_both_hear_it() {
     let mut first = connect(&url).await;
     let mut second = connect(&url).await;
     for socket in [&mut first, &mut second] {
-        send(socket, ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true })
-            .await;
+        send(
+            socket,
+            ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+        )
+        .await;
         let ServerMessage::Snapshot { .. } = next_server(socket).await else {
             panic!("a seat that exists is answered with its snapshot")
         };

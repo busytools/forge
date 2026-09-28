@@ -954,7 +954,7 @@ fn finalize_deferred_submit(app: &mut App) {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use forge_workspace::RepaintCadence;
+    use crate::ui::spinner_style::RepaintCadence;
 
     use crate::app::{MessageBlock, MessageRole};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};

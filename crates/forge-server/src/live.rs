@@ -100,13 +100,10 @@ impl Live {
                 true
             }
             // Work started again, which supersedes the completion the
-            // diamond marks. Serving the seat's page clears it too, so this
-            // is the clear for a seat nobody opened.
-            FleetNews::Running(key) => {
-                self.unseen.clear(key);
-                true
-            }
-            FleetNews::Occupant(key) => {
+            // diamond marks, and a fresh occupant whose history is not a
+            // completion this page failed to show. Serving the seat's page
+            // clears it too, so this is the clear for a seat nobody opened.
+            FleetNews::Running(key) | FleetNews::Occupant(key) => {
                 self.unseen.clear(key);
                 true
             }

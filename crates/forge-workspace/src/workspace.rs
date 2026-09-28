@@ -1090,7 +1090,7 @@ impl Workspace {
         catalog_scan: bool,
         cli_version_prober: Option<CliVersionProber>,
     ) -> Result<Self, WorkspaceError> {
-        let mut config = load_from_dir(&config_dir)?;
+        let config = load_from_dir(&config_dir)?;
 
         // Create forge's own config subfolder before anything writes into
         // it (the lock, the cron + state stores all live under it). Hard-
@@ -1365,12 +1365,6 @@ impl Workspace {
         };
         accounts.seed_from_cache(&state.account_usage);
 
-        // The store's runtime spinner override (set via `/spinner`) wins
-        // over the hand-authored forge.toml `[ui] spinner` default.
-        // Folding it into `config.ui` here means `ui_settings()` returns
-        // the effective style.
-        config.ui.spinner = crate::ui::resolve_spinner(state.spinner, config.ui.spinner);
-
         let gateway_port = config.gateway_port;
         let update_tx = UpdateFanout::default();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
@@ -1471,20 +1465,10 @@ impl Workspace {
             // otherwise fire per-op into the log only.
             let _ = workspace.update_tx.send(SessionUpdate::ServiceStatus {
                 severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-                message: "Machine-local store unavailable this run; crons, tasks, Gotify and Slack subscriptions and the spinner override will not persist".to_owned(),
+                message: "Machine-local store unavailable this run; crons, tasks, Gotify and Slack subscriptions will not persist".to_owned(),
             });
         }
         Ok(workspace)
-    }
-
-    /// Effective `[ui]` settings. All fields have defaults so callers
-    /// can use the result without worrying about whether the section
-    /// was present in the config file. `spinner` carries the resolved
-    /// active style: the store's runtime override (set via `/spinner`)
-    /// if present, else the forge.toml `[ui] spinner` default. Cheap
-    /// clone - the struct is shallow.
-    pub fn ui_settings(&self) -> crate::ui::UiSettings {
-        self.config.ui.clone()
     }
 
     /// Effective `[web]` settings: whether the web view starts, where it
@@ -1563,24 +1547,6 @@ impl Workspace {
                 plugin = %plugin_id,
                 error = %error,
                 "failed to clear a plugin update record",
-            );
-        }
-    }
-
-    /// Persist `style` as the runtime spinner override in the machine-
-    /// local store (never touches the hand-authored forge.toml). The next
-    /// boot's `Workspace::new` layers it over the forge.toml `[ui]
-    /// spinner` default. Called by the `/spinner` picker (enter-apply) and
-    /// the direct `/spinner <name>` path; the in-session active style
-    /// lives on the TUI's `App::spinner_style`, so this write only affects
-    /// subsequent launches. A no-op with a warn when the store is closed.
-    pub fn persist_spinner(&self, style: crate::ui::SpinnerStyle) {
-        if let Some(db) = self.db.lock().as_ref() {
-            crate::account_cache::store_spinner(db, Some(style));
-        } else {
-            tracing::warn!(
-                target: "forge_workspace::workspace",
-                "store unavailable; the /spinner override will not persist across restart",
             );
         }
     }
@@ -3858,11 +3824,6 @@ impl Workspace {
                     );
                     let _enter = span.enter();
                     self.set_review_thread_status(&project, &branch, &thread_id, status);
-                }
-                Command::PersistSpinner { style } => {
-                    let span = tracing::info_span!("persist_spinner", style = %style.key());
-                    let _enter = span.enter();
-                    self.persist_spinner(style);
                 }
                 Command::CloseSession { session_key } => {
                     let span = tracing::info_span!(
@@ -7300,25 +7261,6 @@ mod tests {
         assert!(!ws.domain_handles.lock().contains_key(&key), "domain handle removed");
     }
 
-    #[test]
-    fn persist_spinner_writes_the_redb_override() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-
-        ws.persist_spinner(crate::ui::SpinnerStyle::Ember);
-
-        let guard = ws.db.lock();
-        let db = guard.as_ref().expect("db installed");
-        assert_eq!(
-            crate::store::state::spinner(db).expect("read spinner"),
-            Some(crate::ui::SpinnerStyle::Ember),
-            "persist_spinner writes the override into the store",
-        );
-    }
-
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
@@ -7500,28 +7442,6 @@ mod tests {
         // A garbage 200 parses empty and must NOT wipe the good cache.
         assert!(!ws.store_fresh_pricing("not json".to_owned()), "garbage is rejected");
         assert!(!ws.load_pricing().is_empty(), "the good cache survives the garbage response");
-    }
-
-    #[test]
-    fn boot_load_reads_the_redb_spinner_override() {
-        // Stands in for the removed connect.rs override test: a persisted
-        // redb spinner override is what account_cache::load returns, so
-        // the boot fold layers it over the forge.toml default. Kept off
-        // the real machine db (issue #392) via a tempdir store + config dir.
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-
-        let guard = ws.db.lock();
-        let db = guard.as_ref().expect("db installed");
-        crate::store::state::set_spinner(db, Some(crate::ui::SpinnerStyle::Ember)).expect("set");
-        assert_eq!(
-            crate::account_cache::load(db).spinner,
-            Some(crate::ui::SpinnerStyle::Ember),
-            "load returns the persisted redb override, which the boot fold wins with",
-        );
     }
 
     #[test]
@@ -9703,14 +9623,6 @@ provider = "anthropic"
             respond_rx.try_recv().expect("response present"),
             "an open store confirms the upsert on the responder"
         );
-
-        // The spinner override persists through its variant too.
-        workspace
-            .dispatch(Command::PersistSpinner { style: crate::ui::SpinnerStyle::Star })
-            .expect("dispatch");
-        let db = workspace.db.lock();
-        let stored = crate::store::state::spinner(db.as_ref().expect("db")).expect("read spinner");
-        assert_eq!(stored, Some(crate::ui::SpinnerStyle::Star));
     }
 
     /// `/new` and `/resume` re-spawn on the already-pooled handle, where

@@ -1278,7 +1278,6 @@ pub(crate) fn execute_command_via_handle(
         | Command::SaveReviewThreads { .. }
         | Command::RemoveReviewThread { .. }
         | Command::SetReviewThreadStatus { .. }
-        | Command::PersistSpinner { .. }
         | Command::CloseSession { .. }
         | Command::UpsertReviewThread { .. }
         | Command::SubmitReview { .. }) => {

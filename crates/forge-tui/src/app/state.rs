@@ -518,13 +518,13 @@ pub struct App {
     /// Active spinner style for every animated surface (chat, input,
     /// projects pane, inspector, launchpad). Seeded from the config
     /// `spinner` field at startup; mutated live by `/spinner`.
-    pub spinner_style: forge_workspace::SpinnerStyle,
+    pub spinner_style: crate::ui::spinner_style::SpinnerStyle,
     /// Monotonic start anchor for the time-based spinner. Frame index
     /// derives from `spinner_epoch.elapsed() / cadence_ms`.
     pub spinner_epoch: Instant,
     /// How often the run loop repaints while something is animating.
     /// Seeded from the config `fps` field at startup; read-only after.
-    pub repaint_cadence: forge_workspace::RepaintCadence,
+    pub repaint_cadence: crate::ui::spinner_style::RepaintCadence,
     /// Open `/spinner` picker overlay state; `None` when closed.
     pub spinner_picker: Option<crate::app::spinner_picker::SpinnerPickerState>,
     /// Open `/model` picker overlay state; `None` when closed.
@@ -1059,9 +1059,9 @@ impl App {
             diff_scan_seq: 0,
             spinner_frame: 0,
             spinner_last_advance_at: None,
-            spinner_style: forge_workspace::SpinnerStyle::default(),
+            spinner_style: crate::ui::spinner_style::SpinnerStyle::default(),
             spinner_epoch: Instant::now(),
-            repaint_cadence: forge_workspace::RepaintCadence::default(),
+            repaint_cadence: crate::ui::spinner_style::RepaintCadence::default(),
             spinner_picker: None,
             model_picker: None,
             gateway_view: None,

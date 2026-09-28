@@ -57,7 +57,7 @@ The spawn gate needs settled accounts and does not need the dictation weights, s
 | Gateway states | | `binding` while the listener task runs, `bound :<port>` once ready, `failed :<port>` with the error on a dim continuation line beneath when the bind failed. A failed row follows the account bail's grammar: the name bolds and the state carries the red. |
 
 - The gateway row shows the inference listener's bind state, rendered whenever forge runs. A failure is the legible form of the boot gate: no session spawns while the listener cannot bind its port, and this row - not a log file - is where that refusal explains itself.
-- The spinner is the configured `[ui] spinner` style at its own cadence, shared with every other animated surface.
+- The spinner is the terminal's own default style at its own cadence, shared with every other animated surface.
 - <kbd>Esc</kbd> cancels an in-flight model download, which quits forge; <kbd>Ctrl+Q</kbd> quits. Every other key is consumed silently - the projects view underneath is not reachable yet.
 - The hand-over is latched: a mid-session Ready → Bailed → Loading flip never throws you back onto this screen - the launchpad's own gate covers the window.
 - The wordmark is dropped before any panel content when the block does not fit - the failure exits are the one thing this screen cannot clip. Past that rows drop from the TOP, replaced with a dim `… N more above`; the failure detail is appended last and never vanishes unmarked (at 100x24 the bailed screen already overflows).

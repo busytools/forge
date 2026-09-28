@@ -29,7 +29,6 @@ use forge_primitives::web::WebConfig;
 use serde::Deserialize;
 
 use crate::error::WorkspaceError;
-use crate::ui::UiSettings;
 
 /// The whole `forge.toml`. Unknown keys are rejected so a mistyped
 /// section name fails the load instead of being ignored.
@@ -40,12 +39,6 @@ struct ForgeToml {
     orgs: Vec<OrgEntry>,
     #[serde(default)]
     accounts: Vec<AccountEntry>,
-    /// Optional `[ui]` section - visual knobs that don't fit on
-    /// `[[orgs]]` / `[[accounts]]`. Currently carries the launchpad
-    /// spinner style; will grow as the launchpad UI lands. Absent
-    /// section → all defaults.
-    #[serde(default)]
-    ui: UiSettings,
     /// Optional `[dictate]` section - local dictation. Absent section
     /// -> disabled, which is what keeps a 3 GB model download opt-in.
     #[serde(default)]
@@ -338,9 +331,6 @@ pub(crate) struct LoadedConfig {
     /// / smoke paths; the production launchpad picker overrides.
     pub default_index: usize,
     pub accounts: Vec<LoadedAccount>,
-    /// `[ui]` section knobs. All fields have defaults; absent
-    /// section means every field is at its default.
-    pub ui: UiSettings,
     /// `[dictate]` section knobs. Absent section means dictation is
     /// off and preflight skips it entirely.
     pub dictate: crate::dictate::DictateSettings,
@@ -453,7 +443,6 @@ impl LoadedConfig {
             projects: Vec::new(),
             default_index: 0,
             accounts: Vec::new(),
-            ui: UiSettings::default(),
             dictate: crate::dictate::DictateSettings::default(),
             gotify: None,
             slack: Vec::new(),
@@ -563,15 +552,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
              max_workers, env and env_file onto the project's \
              [[orgs.projects]] entry - \
              this config's per-project keys are being silently dropped",
-        );
-    }
-
-    if parsed.ui.retired_notifications_osc9.is_some() {
-        tracing::warn!(
-            target: "forge_workspace::config",
-            event_name = "ui_notifications_osc9_ignored",
-            "[ui] notifications_osc9 is no longer read; forge writes the escape \
-             unconditionally, whatever the terminal reports",
         );
     }
 
@@ -849,7 +829,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         projects,
         default_index,
         accounts,
-        ui: parsed.ui,
         dictate: parsed.dictate,
         gotify: parsed.gotify,
         slack: parsed.slack,
@@ -2074,7 +2053,6 @@ provider = "anthropic"
                 format!("{base}\n[gotify]\nurl = \"https://notifier\"\nclient_tokens = \"t\"\n"),
                 "client_tokens",
             ),
-            ("[ui]", format!("{base}\n[ui]\nspiner = \"ember\"\n"), "spiner"),
         ];
         // Collected rather than asserted one at a time: a section that
         // started ignoring keys again should be named alongside the
@@ -3235,11 +3213,6 @@ provider = "anthropic"
                 "[projects.<name>]",
                 "\n[projects.forge]\nmodel = \"x\"\n",
                 "projects_section_ignored",
-            ),
-            (
-                "[ui] notifications_osc9",
-                "\n[ui]\nnotifications_osc9 = \"off\"\n",
-                "ui_notifications_osc9_ignored",
             ),
             (
                 "a gateway key in an env layer",
