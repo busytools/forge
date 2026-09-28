@@ -63,7 +63,8 @@ forge-test-harness ─→ primitives + sdk + workspace
   answer alone - whether a tool's input parses into a lifecycle block -
   and does that through `forge-workspace` rather than `forge-agent`, so
   the agent layer stays behind the workspace facade the way it does for
-  the TUI.
+  the TUI. The name is this crate; forge's in-process MCP server is
+  unrelated and is named as the `forge` MCP server.
 - **`forge-web`** - the web view: HTTP served beside the TUI, in the
   process that already owns the sessions, so a second view costs a
   listener rather than a second cron scheduler. Server-rendered markup
@@ -188,7 +189,7 @@ of work, not a prerequisite for adding to the crates.
 Legitimate splits are common (a git-diff feature touches agent +
 workspace + tui). Rule of thumb: logic/IO/subprocess -> agent;
 cross-crate shape -> primitives; multi-session state -> workspace;
-a session record as a view sees it -> server; anything the user
+a session record as a view sees it -> forge-server; anything the user
 sees -> TUI. The default failure mode here is "too much in
 forge-tui", so bias toward the deeper crate when unsure.
 

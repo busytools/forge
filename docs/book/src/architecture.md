@@ -25,7 +25,7 @@ forge-test-harness->  primitives + sdk
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
-| `forge-server` | What a view needs and nothing about how it renders: the read surface a view uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, forge's own slash commands, the policy that folds a run of blocks, the transcript fold that turns a conversation's messages into the units a view draws, the fold that turns a session's dispatches into the sub-agent instances a view draws, and the two reads of a pty's own text: its escape sequences, and a Monitor's watched-command output tail. Holds no terminal types, so a second view attaches beside the TUI rather than duplicating it. |
+| `forge-server` | What a view needs and nothing about how it renders: the read surface a view uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, forge's own slash commands, the policy that folds a run of blocks, the transcript fold that turns a conversation's messages into the units a view draws, the fold that turns a session's dispatches into the sub-agent instances a view draws, and the two reads of a pty's own text: its escape sequences, and a Monitor's watched-command output tail. Holds no terminal types, so a second view attaches beside the TUI rather than duplicating it. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. |
 | `forge-web` | The web view: HTTP served beside the TUI, from the process that owns the sessions. axum plus server-rendered markup: the home, kept live by a stream the page subscribes to, and a page per session carrying the projects rail, the chat column, the inspector and the composer, kept live by a stream of its own. Reads the core through the view surface in `forge-server`, git plumbing included; it never names `forge-workspace`, and starts no subsystem of its own. |
 | `forge-tui` | The view layer. Rendering, key and mouse handling, per-session presentation state. Ships the `forge` binary. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. Dev tooling, not in the runtime path. |
@@ -116,7 +116,7 @@ Splits across several crates are normal; a git-diff feature naturally
 touches agent, workspace and TUI. The rule of thumb is that logic, I/O
 and subprocess work belong in the agent layer, cross-crate shapes in
 primitives, multi-session state in workspace, a session record as a
-view sees it in server, and only what the user sees in the TUI. The
+view sees it in `forge-server`, and only what the user sees in the TUI. The
 common mistake is putting too much in `forge-tui`, so when in doubt,
 push it down.
 
