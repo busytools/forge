@@ -282,7 +282,7 @@
   .dif { border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
     font-family: var(--mono); font-size: var(--fs-data); }
   .dif .h { color: var(--teal); background: var(--s2); padding: 4px 12px; }
-  .dif .ln { display: grid; grid-template-columns: 44px 1fr; }
+  .dif .ln { display: grid; grid-template-columns: 22px 1fr; }
   .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
   .dif .ln .l { white-space: pre; padding-right: 12px; }
   .dif .ln.a .l { background: var(--add-bg); }
@@ -872,12 +872,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
               <div class="body">
                 <div class="dif">
                   <div class="h">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css</div>
-                  <div class="ln"><span class="n">30</span><span class="l">.row .what a {</span></div>
-                  <div class="ln"><span class="n">31</span><span class="l">  font-family: var(--mono); color: var(--accent);</span></div>
-                  <div class="ln d"><span class="n">32</span><span class="l">- text-decoration: none; flex: none;</span></div>
-                  <div class="ln a"><span class="n">33</span><span class="l">+ text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
-                  <div class="ln a"><span class="n">34</span><span class="l">+ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
-                  <div class="ln"><span class="n">35</span><span class="l">}</span></div>
+                  <div class="ln d"><span class="n">&#8722;</span><span class="l">  text-decoration: none; flex: none;</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
                 </div>
               </div>
             </details>
@@ -886,12 +883,11 @@ Consecutive tool calls between two user messages fold into one group.</div>
               <div class="body">
                 <div class="dif">
                   <div class="h">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.rs</div>
-                  <div class="ln d"><span class="n">563</span><span class="l">-                 div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }</span></div>
-                  <div class="ln a"><span class="n">564</span><span class="l">+                 div .versions {</span></div>
-                  <div class="ln a"><span class="n">565</span><span class="l">+                     b { "v" (env!("CARGO_PKG_VERSION")) }</span></div>
-                  <div class="ln a"><span class="n">566</span><span class="l">+                     @if let Some(installed) = view.cli.as_ref().and_then(|cli| cli.installed.as_deref()) {</span></div>
-                  <div class="ln a"><span class="n">567</span><span class="l">+                         " \u{b7} claude " (installed)</span></div>
-                  <div class="ln"><span class="n">568</span><span class="l">                      }</span></div>
+                  <div class="ln d"><span class="n">&#8722;</span><span class="l">                 div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">                 div .versions {</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">                     b { "v" (env!("CARGO_PKG_VERSION")) }</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">                     @if let Some(installed) = view.cli.as_ref().and_then(|cli| cli.installed.as_deref()) {</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">                         " \u{b7} claude " (installed)</span></div>
                 </div>
               </div>
             </details>
@@ -900,11 +896,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
               <div class="body">
                 <div class="dif">
                   <div class="h">/Users/vedhavyas/Projects/forge/crates/forge-sessions/src/surface.rs</div>
-                  <div class="ln"><span class="n">92</span><span class="l">     /// [`SessionUpdate::CliVersionChanged`].</span></div>
-                  <div class="ln a"><span class="n">93</span><span class="l">+    pub fn cli_version(&amp;self) -&gt; Option&lt;CliVersionInfo&gt; {</span></div>
-                  <div class="ln a"><span class="n">94</span><span class="l">+        self.workspace.cli_version()</span></div>
-                  <div class="ln a"><span class="n">95</span><span class="l">+    }</span></div>
-                  <div class="ln"><span class="n">96</span><span class="l"> }</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">    pub fn cli_version(&amp;self) -&gt; Option&lt;CliVersionInfo&gt; {</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">        self.workspace.cli_version()</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">    }</span></div>
                 </div>
               </div>
             </details>
