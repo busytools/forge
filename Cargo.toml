@@ -27,7 +27,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 maud = { version = "0.27", features = ["axum"] }
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 tracing = "0.1"

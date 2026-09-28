@@ -230,7 +230,24 @@ async fn handle_client(
             // The fold runs over the WHOLE conversation and the window slices
             // its result, so a row is always a whole turn. Slicing messages
             // instead is what would hand a client half a tool-call group.
-            let all = state.surface.folded_units(&conversation, &cwd);
+            // Off the task that serves every other client: the fold reads a
+            // whole transcript off disk, and its own doc says a caller
+            // offloads it rather than running it in a handler.
+            let all = {
+                let reader = Arc::clone(&state.surface);
+                let (seat, root) = (conversation.clone(), cwd.clone());
+                tokio::task::spawn_blocking(move || reader.folded_units(&seat, &root))
+                    .await
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(
+                            event_name = "transcript_fold_failed",
+                            %error,
+                            slot = %conversation.display(),
+                            "the fold did not finish; the page is answered empty",
+                        );
+                        Vec::new()
+                    })
+            };
             let page = page(&all, before.as_deref(), turns);
             let rows = page.rows.iter().map(serde_json::to_value).collect::<Result<_, _>>()?;
             send(socket, ServerMessage::Page { conversation, rows, cursor: page.cursor }).await

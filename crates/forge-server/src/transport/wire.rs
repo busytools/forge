@@ -13,6 +13,7 @@
 //! later without a server change.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use forge_primitives::review::{ReviewSet, ReviewThread};
@@ -246,7 +247,10 @@ pub struct SessionWire {
     pub conversation: ConversationWire,
     pub slash_commands: Vec<AvailableCommand>,
     pub subagents: Vec<AvailableAgent>,
-    pub file_index: FileIndex,
+    /// Shared with the cache that built it, rather than walked per subscriber:
+    /// the walk is a whole tree, and a second client on one seat would pay for
+    /// it again. Serialises as the index itself.
+    pub file_index: Arc<FileIndex>,
     pub reviews: ReviewsWire,
     /// The working tree behind the git section. The diff itself is a second,
     /// heavier read and is deliberately out of scope.
@@ -548,7 +552,21 @@ async fn session(
     cwd: &Path,
 ) -> Result<SessionWire> {
     let header = surface.header(slot);
-    let conversation = surface.conversation(slot, cwd);
+    let conversation = {
+        let reader = Arc::clone(&state.surface);
+        let (seat, root) = (slot.clone(), cwd.to_path_buf());
+        tokio::task::spawn_blocking(move || reader.conversation(&seat, &root))
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    event_name = "conversation_read_failed",
+                    %error,
+                    slot = %slot.display(),
+                    "the transcript read did not finish; the record is answered without it",
+                );
+                Default::default()
+            })
+    };
     let work = state.work.snapshot(slot, cwd).await;
     let branch = work.branch.clone().unwrap_or_default();
     let reviews = surface.reviews(slot.project(), &branch);
@@ -556,7 +574,10 @@ async fn session(
 
     Ok(SessionWire {
         slot: slot.clone(),
-        file_index: surface.file_index(&state_at.scan_cwd),
+        // Through the shared cache rather than the surface's own walk: the
+        // walk is a full tree, and every client on this seat would otherwise
+        // pay for it again.
+        file_index: state.work.files(&state.surface, slot, &state_at.scan_cwd).await,
         slash_commands: surface.slash_commands(slot),
         subagents: surface.subagents(slot),
         mcp: surface.mcp_servers(slot),
