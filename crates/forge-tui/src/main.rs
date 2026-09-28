@@ -140,36 +140,61 @@ fn run() -> anyhow::Result<()> {
         // that moment, and a branch usually outlives its worker.
         workspace.start_review_branch_sweep();
 
-        // Serve the web view on the address `[web]` names. A second view
-        // in the same process, which is the point: it starts no subsystem
-        // of its own, so the cron scheduler and the connectors above stay
-        // the only ones. A bind that fails still boots - the TUI is not
+        // Serve the socket on the address `[web]` names. A view beside the
+        // TUI in the same process, which is the point: it starts no subsystem
+        // of its own, so the cron scheduler and the connectors above stay the
+        // only ones. A bind that fails still boots - the TUI is not
         // downstream of this.
-        let web_state = forge_web::WebState::new(
-            std::sync::Arc::new(forge_server::surface::ViewSurface::new(std::sync::Arc::clone(
-                &workspace,
-            ))),
-            std::sync::Arc::new(forge_web::WorkCache::new()),
-            workspace.web_config(),
-        );
-        match forge_web::start(web_state).await {
-            Ok(Some(addr)) => tracing::info!(
-                target: forge_tui::logging::targets::APP_LIFECYCLE,
-                event_name = "web_view_listening",
-                %addr,
-                "web view listening",
-            ),
-            Ok(None) => tracing::debug!(
+        //
+        // It takes the port the web view served on, so that page is off from
+        // here: one listener, and the socket is what holds it.
+        let config = workspace.web_config();
+        if !config.enabled {
+            tracing::debug!(
                 target: forge_tui::logging::targets::APP_LIFECYCLE,
                 event_name = "web_view_disabled",
-                "[web] enabled = false; no web view this run",
-            ),
-            Err(error) => tracing::error!(
-                target: forge_tui::logging::targets::APP_LIFECYCLE,
-                event_name = "web_view_bind_failed",
-                error = %error,
-                "the web view is not serving; the TUI is unaffected",
-            ),
+                "[web] enabled = false; nothing is serving this run",
+            );
+        } else {
+            let addr = std::net::SocketAddr::new(config.bind, config.port);
+            let state = std::sync::Arc::new(forge_server::transport::TransportState {
+                surface: std::sync::Arc::new(forge_server::surface::ViewSurface::new(
+                    std::sync::Arc::clone(&workspace),
+                )),
+                work: std::sync::Arc::new(forge_server::work::WorkCache::new()),
+                // This process is another viewer of the same seats, so the
+                // attachment count has to see it: a turn finishing on a seat
+                // this terminal is showing is one the reader watched.
+                live: std::sync::Mutex::new(forge_server::live::Live::new()),
+                config,
+            });
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(listener) => {
+                    let bound = listener.local_addr().unwrap_or(addr);
+                    tracing::info!(
+                        target: forge_tui::logging::targets::APP_LIFECYCLE,
+                        event_name = "server_socket_listening",
+                        %bound,
+                        "the server's socket is listening",
+                    );
+                    tokio::spawn(async move {
+                        if let Err(error) = forge_server::transport::serve(state, listener).await {
+                            tracing::error!(
+                                target: forge_tui::logging::targets::APP_LIFECYCLE,
+                                event_name = "server_socket_failed",
+                                error = %error,
+                                "the socket stopped serving; the TUI is unaffected",
+                            );
+                        }
+                    });
+                }
+                Err(error) => tracing::error!(
+                    target: forge_tui::logging::targets::APP_LIFECYCLE,
+                    event_name = "web_view_bind_failed",
+                    error = %error,
+                    "the socket is not serving; the TUI is unaffected",
+                ),
+            }
         }
 
         // Create the app (instant, no I/O). The TUI holds an
