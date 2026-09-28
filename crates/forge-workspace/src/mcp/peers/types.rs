@@ -42,7 +42,7 @@ use crate::SessionSlot;
 /// Generated once at the sender's tool impl; threaded through the
 /// wrapper text the recipient sees, then echoed back via
 /// `in_reply_to` on the recipient's `agents__tell` reply.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CorrelationId(pub String);
 
 impl CorrelationId {
@@ -122,7 +122,7 @@ pub enum PeerFailureReason {
 pub const REPLY_TOOL: &str = "agents__tell";
 
 /// Wire kind of a peer message.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WrappedKind {
     /// `agents__ask` from sender. Recipient replies with
     /// `in_reply_to` set to this id.
@@ -161,7 +161,7 @@ pub struct InflightAsk {
 }
 
 /// The complete content of an outgoing or inbound peer message.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WrappedPrompt {
     pub correlation_id: CorrelationId,
     pub kind: WrappedKind,

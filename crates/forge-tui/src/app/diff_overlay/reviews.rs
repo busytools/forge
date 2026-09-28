@@ -347,7 +347,7 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
                 summary: overview.map(str::to_owned),
                 thread_ids: seal_ids.to_owned(),
                 origin,
-                respond: respond_tx,
+                respond: Some(respond_tx),
             })
             .ok()
             .and_then(|()| respond_rx.try_recv().ok())

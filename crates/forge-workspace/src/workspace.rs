@@ -3591,7 +3591,7 @@ impl Workspace {
                         spawned_by,
                         resume_existing.as_deref(),
                         from_boot_respawn,
-                        return_to,
+                        return_to.unwrap_or_else(crate::protocol::unanswerable),
                     );
                 }
                 Command::CloseWorker { project_key, label } => {
@@ -3611,7 +3611,13 @@ impl Workspace {
                         force,
                     );
                     let _enter = span.enter();
-                    spawn::handle_despawn_worker(self, &project_key, &label, force, respond);
+                    spawn::handle_despawn_worker(
+                        self,
+                        &project_key,
+                        &label,
+                        force,
+                        respond.unwrap_or_else(crate::protocol::unanswerable),
+                    );
                 }
                 Command::DeliverWorkerPrompt { caller, project_key, target_label, wrapped } => {
                     let span = tracing::info_span!(
@@ -3733,7 +3739,9 @@ impl Workspace {
                         thread_id = %thread.id,
                     );
                     let _enter = span.enter();
-                    let _ = respond.send(self.upsert_review_thread(&project, &branch, thread));
+                    if let Some(respond) = respond {
+                        let _ = respond.send(self.upsert_review_thread(&project, &branch, thread));
+                    }
                 }
                 Command::SubmitReview { project, branch, summary, thread_ids, origin, respond } => {
                     let span = tracing::info_span!(
@@ -3743,13 +3751,15 @@ impl Workspace {
                         threads = thread_ids.len(),
                     );
                     let _enter = span.enter();
-                    let _ = respond.send(self.submit_review(
-                        &project,
-                        &branch,
-                        summary,
-                        &thread_ids,
-                        origin,
-                    ));
+                    if let Some(respond) = respond {
+                        let _ = respond.send(self.submit_review(
+                            &project,
+                            &branch,
+                            summary,
+                            &thread_ids,
+                            origin,
+                        ));
+                    }
                 }
                 other => {
                     tracing::warn!(
@@ -3850,7 +3860,7 @@ impl Workspace {
                 resume_kick: None,
                 interactive: worker.interactive.unwrap_or(false),
                 from_boot_respawn: true,
-                return_to: tx,
+                return_to: Some(tx),
             };
             if let Err(err) = self.dispatch(cmd) {
                 tracing::error!(
@@ -9494,7 +9504,7 @@ provider = "anthropic"
                 project: "forge".to_owned(),
                 branch: "feat".to_owned(),
                 thread: thread.clone(),
-                respond: respond_tx,
+                respond: Some(respond_tx),
             })
             .expect("dispatch");
         assert!(
@@ -13413,6 +13423,7 @@ provider = "anthropic"
         // the assertion below reads is the facade's own mapping of it,
         // which reports a fallback for a resume that found nothing.
         return_to
+            .expect("a dispatch off the workspace's own bus carries a reply channel")
             .send(Ok(WorkerSpawnReply {
                 session_id: session_id.to_owned(),
                 tag: forge_primitives::worker_tag("steward"),
@@ -13527,6 +13538,7 @@ provider = "anthropic"
         // whatever flag the caller passed. Whether it asked to resume and
         // found nothing is known only to the facade, which restates it.
         return_to
+            .expect("a dispatch off the workspace's own bus carries a reply channel")
             .send(Ok(WorkerSpawnReply {
                 session_id: "fresh-session-uuid".into(),
                 tag: forge_primitives::worker_tag("ghost"),
@@ -13576,6 +13588,7 @@ provider = "anthropic"
         };
         assert!(resume_existing.is_none(), "the flag was not set, so nothing is resumed");
         return_to
+            .expect("a dispatch off the workspace's own bus carries a reply channel")
             .send(Ok(WorkerSpawnReply {
                 session_id: "fresh-session-uuid".into(),
                 tag: forge_primitives::worker_tag("ghost"),

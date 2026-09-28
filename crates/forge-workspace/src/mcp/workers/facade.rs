@@ -570,7 +570,7 @@ impl WorkerFacade for ProdWorkerFacade {
             resume_kick,
             interactive,
             from_boot_respawn: false,
-            return_to: tx,
+            return_to: Some(tx),
         };
         if let Err(err) = ws.dispatch(cmd) {
             discard_refused_worktree(&view.path, &spawn_label, ensured.take());
@@ -655,7 +655,7 @@ impl WorkerFacade for ProdWorkerFacade {
             project_key: cp.project_key.clone(),
             label: label.to_owned(),
             force,
-            respond: tx,
+            respond: Some(tx),
         };
         if let Err(err) = ws.dispatch(cmd) {
             return Err(WorkerDespawnError::DispatchFailed {

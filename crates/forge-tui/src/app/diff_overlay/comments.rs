@@ -127,7 +127,7 @@ fn persist_active_input(app: &mut App) {
                                 project: project.to_owned(),
                                 branch: branch.to_owned(),
                                 thread: prior.thread.clone(),
-                                respond: respond_tx,
+                                respond: Some(respond_tx),
                             })
                             .ok()
                             .and_then(|()| respond_rx.try_recv().ok())
@@ -293,7 +293,7 @@ fn persist_active_input(app: &mut App) {
             project: project.to_owned(),
             branch: branch.to_owned(),
             thread: thread.clone(),
-            respond: respond_tx,
+            respond: Some(respond_tx),
         });
         dispatched.ok().and_then(|()| respond_rx.try_recv().ok()).unwrap_or_else(|| {
             tracing::warn!(

@@ -37,6 +37,9 @@ encoding_rs = { workspace = true }
 # 16-bit PCM wav, and its metadata as JSON.
 hound = { workspace = true }
 serde_json = { workspace = true }
+# The prompt normaliser's option types cross the wire inside the
+# workspace's command and update enums, so they derive the codec here.
+serde = { workspace = true }
 # Microphone capture. The stream is !Send, which is why it lives on a
 # thread of its own rather than inside `Capture`.
 cpal = { workspace = true }
@@ -50,5 +53,4 @@ llama-cpp-2 = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-serde = { workspace = true }
 toml = { workspace = true }

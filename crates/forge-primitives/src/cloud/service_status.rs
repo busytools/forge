@@ -2,7 +2,7 @@
 
 /// Severity of a detected service-status issue. Mirrored on the UI
 /// side as `ClientEvent::ServiceStatus { severity, .. }`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ServiceSeverity {
     Warning,
     Error,
