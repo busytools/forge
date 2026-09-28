@@ -1084,16 +1084,16 @@ async fn a_git_section_with_nothing_behind_it_starts_closed() {
 /// The mockup, read here rather than by a human: it is the specification the
 /// page is built from, and a pin against it is the mechanical form of "the
 /// mockup wins".
-const MOCK: &str = include_str!("../../../docs/mockups/web-session.html");
+const MOCK: &str = include_str!("../../../docs/book/src/ui/client/web-session.html");
 
 /// The home's mockup, read for the same reason: it is what the home is held
 /// against, and the mark and the typefaces are the two things it draws that
 /// the page has to match.
-const MOCK_HOME: &str = include_str!("../../../docs/mockups/web-home.html");
+const MOCK_HOME: &str = include_str!("../../../docs/book/src/ui/client/web-home.html");
 
 /// The composer's mockup: a specimen read state by state against the built
 /// page, so its faces are read as closely as its states.
-const MOCK_COMPOSER: &str = include_str!("../../../docs/mockups/web-composer.html");
+const MOCK_COMPOSER: &str = include_str!("../../../docs/book/src/ui/client/web-composer.html");
 
 /// Every symbol the page's two mockups define, by id. Both mocks draw some
 /// of the same marks, so the session mockup keeps the ids it already won -

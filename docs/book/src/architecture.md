@@ -251,6 +251,12 @@ the visual reference for every surface `forge-tui` can currently
 render, with mockups, glyph tables and colour tables. They are scoped
 to current state only.
 
+The [client's pages](./ui/client/home.md) live under `ui/client/` and
+hold the same role for the client, with the drawing each surface is held
+against beside it rather than in `docs/mockups/`. Both sets are current
+state only, and a surface's page lands in the same change as the
+surface.
+
 ## The client's standard
 
 The client under `client/` is a Svelte app that connects to a running

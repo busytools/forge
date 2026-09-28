@@ -63,8 +63,8 @@ describe('the icon sprite', () => {
    */
   it('carries every icon the mockups draw', () => {
     for (const mock of [
-      '../../../docs/mockups/web-session.html',
-      '../../../docs/mockups/web-composer.html',
+      '../../../docs/book/src/ui/client/web-session.html',
+      '../../../docs/book/src/ui/client/web-composer.html',
     ]) {
       const used = idsUsedBy(mock);
       expect(used.size, `${mock} draws no icons`).toBeGreaterThan(0);

@@ -1,9 +1,9 @@
 /* The web view's one stylesheet, which both pages link: the home from
-   docs/mockups/web-home.html and the session page from
-   docs/mockups/web-session.html. The palette is not here: the server
-   injects it as the page's own :root from [web] theme, so a theme is one
-   place to change, and a second copy of a row, a mark or a palette is the
-   defect rule 21 names. */
+   docs/book/src/ui/client/web-home.html and the session page from
+   docs/book/src/ui/client/web-session.html. The palette is not here: the
+   server injects it as the page's own :root from [web] theme, so a theme is
+   one place to change, and a second copy of a row, a mark or a palette is
+   the defect rule 21 names. */
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -316,7 +316,7 @@ section.org .note {
 }
 
 /* ---------- the session page: three columns over one sheet ----------
-   Taken from the mock at docs/mockups/web-session.html. A pane collapses
+   Taken from the mock at docs/book/src/ui/client/web-session.html. A pane collapses
    to nothing, and the handle that brings it back lives in the chat header
    rather than on the pane's edge, so a collapsed column leaves no edge
    behind and its control stays clickable. */
@@ -576,7 +576,8 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 
 /* ---------- the conversation ----------
    Everything the chat draws, in one block at the end of the sheet: the
-   mockup is docs/mockups/web-session.html, and a page still to come appends
+   mockup is docs/book/src/ui/client/web-session.html, and a page still to
+   come appends
    its own rules after these rather than weaving into them. */
 
 .mine { margin: 15px 0; padding: 10px 15px; border-left: 2px solid var(--accent);
@@ -784,7 +785,7 @@ details.msg[open] > summary .arw { color: var(--teal); }
 }
 
 /* ---------- the composer ----------
-   Taken from the mock at docs/mockups/web-composer.html: the box, the list
+   Taken from the mock at docs/book/src/ui/client/web-composer.html: the box, the list
    that opens over it, the dictation row inside it, the states that replace
    it, and the dock. Two differences from the specimen, both because the
    live page is editable and the specimen is drawn:
