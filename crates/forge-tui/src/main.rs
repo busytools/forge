@@ -149,13 +149,7 @@ fn run() -> anyhow::Result<()> {
         // It takes the port the web view served on, so that page is off from
         // here: one listener, and the socket is what holds it.
         let config = workspace.web_config();
-        if !config.enabled {
-            tracing::debug!(
-                target: forge_tui::logging::targets::APP_LIFECYCLE,
-                event_name = "web_view_disabled",
-                "[web] enabled = false; nothing is serving this run",
-            );
-        } else {
+        if config.enabled {
             let addr = std::net::SocketAddr::new(config.bind, config.port);
             let state = std::sync::Arc::new(forge_server::transport::TransportState {
                 surface: std::sync::Arc::new(forge_server::surface::ViewSurface::new(
@@ -195,6 +189,12 @@ fn run() -> anyhow::Result<()> {
                     "the socket is not serving; the TUI is unaffected",
                 ),
             }
+        } else {
+            tracing::debug!(
+                target: forge_tui::logging::targets::APP_LIFECYCLE,
+                event_name = "web_view_disabled",
+                "[web] enabled = false; nothing is serving this run",
+            );
         }
 
         // Create the app (instant, no I/O). The TUI holds an
