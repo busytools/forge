@@ -273,7 +273,7 @@ impl super::App {
         let Some(path) = path else {
             return;
         };
-        if let Some(lines) = forge_sessions::monitor::read_output_file_tail(
+        if let Some(lines) = forge_server::monitor::read_output_file_tail(
             &path,
             crate::app::state::types::MonitorEntry::OUTPUT_TAIL_MAX,
         ) {

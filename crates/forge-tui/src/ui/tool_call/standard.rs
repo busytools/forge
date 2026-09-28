@@ -208,7 +208,7 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     // For Execute tool calls with terminal output, render the live output
     if is_execute {
         if let Some(ref output) = tc.terminal_output {
-            let stripped_output = forge_sessions::ansi::strip_ansi(output);
+            let stripped_output = forge_server::ansi::strip_ansi(output);
             if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
                 && let Some(first_line) = failed_execute_first_line(&stripped_output)
             {

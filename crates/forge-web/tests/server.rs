@@ -11,10 +11,10 @@ use forge_primitives::McpServerStatus;
 use forge_primitives::{
     CurrentModel, EffortLevel, MonitorRecord, MonitorStatus, PermissionMode, SessionSlot, WebConfig,
 };
-use forge_sessions::SessionUpdate;
-use forge_sessions::surface::inspector::{ContextUsage, McpServers, ProcessEntry, ProcessSnapshot};
-use forge_sessions::surface::{PendingKind, ViewSurface};
-use forge_sessions::testing::{Fleet, ViewFacts};
+use forge_server::SessionUpdate;
+use forge_server::surface::inspector::{ContextUsage, McpServers, ProcessEntry, ProcessSnapshot};
+use forge_server::surface::{PendingKind, ViewSurface};
+use forge_server::testing::{Fleet, ViewFacts};
 use forge_web::WebState;
 
 /// A port to hand the server: bind one, read it, let it go. Something
@@ -277,7 +277,7 @@ async fn two_subscribers_both_see_an_update() {
     let first = open_stream(&config).await;
     let second = open_stream(&config).await;
 
-    fleet.emit(forge_sessions::SessionUpdate::CatalogLoaded);
+    fleet.emit(forge_server::SessionUpdate::CatalogLoaded);
 
     let (a, b) = tokio::join!(two_fleet_events(first), two_fleet_events(second));
 
@@ -296,7 +296,7 @@ async fn a_completion_while_no_tab_is_open_earns_its_diamond() {
     // No stream is opened at all: the page has never been loaded.
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: forge_primitives::SessionSlot::lead("Busytools", "forge"),
         msg: finished_turn(),
     });
@@ -354,7 +354,7 @@ async fn opening_a_session_page_clears_its_diamond_and_no_other() {
 
     // Two live seats finish a turn with no page showing either of them.
     for project in ["forge", "busymail"] {
-        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        fleet.emit(forge_server::SessionUpdate::ChatAppended {
             key: SessionSlot::lead("Busytools", project),
             msg: finished_turn(),
         });
@@ -407,7 +407,7 @@ async fn an_open_page_holds_its_seat() {
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
 
     for project in ["forge", "busymail"] {
-        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        fleet.emit(forge_server::SessionUpdate::ChatAppended {
             key: SessionSlot::lead("Busytools", project),
             msg: finished_turn(),
         });
@@ -1412,11 +1412,11 @@ async fn a_message_the_read_carried_is_not_appended_twice() {
     // stream: that overlap is what the ordering makes possible. A second
     // message follows it, so the payload below is the region as the page
     // holds it once both have been through.
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: user_frame("u-1", "make the call tree the default"),
     });
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: user_frame("u-3", "and the one after it"),
     });
@@ -1442,7 +1442,7 @@ async fn a_message_the_read_did_not_carry_is_appended() {
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: user_frame("u-2", "a turn nobody had read"),
     });
@@ -1470,7 +1470,7 @@ async fn a_turn_row_draws_its_own_api_time_rather_than_the_sessions() {
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
     for result in captured_results("multi_turn") {
-        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        fleet.emit(forge_server::SessionUpdate::ChatAppended {
             key: SessionSlot::lead("Busytools", "forge"),
             msg: result,
         });
@@ -1509,7 +1509,7 @@ async fn a_settled_turn_draws_its_row_and_its_body() {
     let settled = captured_results("monitor_persistent_stream").pop().expect("the captured turn");
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: settled,
     });
@@ -1632,11 +1632,11 @@ async fn a_running_turn_draws_the_live_row_and_not_one_beside_it() {
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: running_frame(),
     });
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: finished_assistant_frame("m1", "all done"),
     });
@@ -1670,15 +1670,15 @@ async fn a_settled_turn_replaces_the_live_row_it_ran_as() {
     let settled = captured_results("monitor_persistent_stream").pop().expect("the captured turn");
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: running_frame(),
     });
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: finished_assistant_frame("m1", "all done"),
     });
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: settled,
     });
@@ -1850,7 +1850,7 @@ async fn a_replacement_draws_the_history_it_carries() {
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::SessionReplaced {
+    fleet.emit(forge_server::SessionUpdate::SessionReplaced {
         key: SessionSlot::lead("Busytools", "forge"),
         session_id: forge_primitives::SessionId::new("session-2"),
         cwd: String::new(),
@@ -1901,7 +1901,7 @@ async fn the_live_row_sums_every_thinking_block() {
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
     for msg in [running_frame(), thinking_frame(1, 161), thinking_frame(2, 189)] {
-        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        fleet.emit(forge_server::SessionUpdate::ChatAppended {
             key: SessionSlot::lead("Busytools", "forge"),
             msg,
         });
@@ -1955,7 +1955,7 @@ async fn the_live_row_draws_where_the_settled_one_will_land() {
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: running_frame(),
     });
@@ -1987,7 +1987,7 @@ async fn the_live_row_counts_the_thinking_estimate() {
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
     for msg in [running_frame(), thinking_frame(1, 434)] {
-        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        fleet.emit(forge_server::SessionUpdate::ChatAppended {
             key: SessionSlot::lead("Busytools", "forge"),
             msg,
         });
@@ -2013,7 +2013,7 @@ async fn the_settled_row_keeps_the_estimate_in_its_body() {
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
     for msg in [thinking_frame(1, 434), settled] {
-        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        fleet.emit(forge_server::SessionUpdate::ChatAppended {
             key: SessionSlot::lead("Busytools", "forge"),
             msg,
         });
@@ -2042,7 +2042,7 @@ async fn a_zero_inside_a_real_usage_block_is_drawn_as_one() {
     let frame = captured_results("set_model").pop().expect("the captured turn");
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: frame,
     });
@@ -2239,7 +2239,7 @@ async fn a_search_result_is_drawn_as_its_hits() {
             "lead",
             &[
                 r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"KindRow"}}]}}"#,
-                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"crates/forge-sessions/src/grouping.rs:184: pub fn kind_row(x: KindRow)"}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"crates/forge-server/src/grouping.rs:184: pub fn kind_row(x: KindRow)"}]}}"#,
             ],
         )
         .expect("the transcript is written");
@@ -2251,7 +2251,7 @@ async fn a_search_result_is_drawn_as_its_hits() {
     assert!(page.contains("class=\"searchhit\""), "the row a hit draws on: {page}");
     assert!(page.contains("<span class=\"ln\">184:</span>"), "with its line number: {page}");
     assert!(
-        page.contains("<span class=\"fl\">crates/forge-sessions/src/grouping.rs</span>"),
+        page.contains("<span class=\"fl\">crates/forge-server/src/grouping.rs</span>"),
         "and the file it is in: {page}",
     );
     assert!(
@@ -2274,7 +2274,7 @@ async fn a_turns_hooks_are_drawn_as_the_chip() {
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
     // Built as the decoder's typed variant rather than from JSON: the wire
     // reaches this one through the subtype dispatch, not through serde.
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: forge_primitives::Message::StopHookSummary {
             actions: 2,
@@ -2368,7 +2368,7 @@ async fn the_chat_draws_none_of_a_sub_agents_frames() {
         ("a dispatched agent thinking out loud", Some("toolu_dispatch")),
         ("the session's own line", None),
     ] {
-        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        fleet.emit(forge_server::SessionUpdate::ChatAppended {
             key: key.clone(),
             msg: assistant_saying(text, parent),
         });
@@ -2413,7 +2413,7 @@ async fn a_compaction_in_flight_says_so() {
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
     let key = SessionSlot::lead("Busytools", "forge");
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: key.clone(),
         msg: serde_json::from_value(serde_json::json!({
             "type": "system",
@@ -2428,7 +2428,7 @@ async fn a_compaction_in_flight_says_so() {
     // after both. A compaction runs for minutes while anything else may land
     // in between, so a flag that lived for one redraw would flash the line
     // and take it away at the tick.
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key,
         msg: user_frame("u-1", "a message while the compaction runs"),
     });
@@ -2460,7 +2460,7 @@ async fn a_compaction_that_ended_stops_saying_so() {
     for (uuid, status) in
         [("status-1", serde_json::json!("compacting")), ("status-2", serde_json::json!(null))]
     {
-        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+        fleet.emit(forge_server::SessionUpdate::ChatAppended {
             key: key.clone(),
             msg: serde_json::from_value(serde_json::json!({
                 "type": "system",
@@ -2491,7 +2491,7 @@ async fn a_cron_delivery_is_drawn_as_the_turn_it_is() {
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::CronPromptAppended {
+    fleet.emit(forge_server::SessionUpdate::CronPromptAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         text: "the nightly sweep is due".to_owned(),
     });
@@ -2514,7 +2514,7 @@ async fn a_workers_message_does_not_redraw_the_leads_page() {
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::worker("Busytools", "forge", "em-dash-sweep"),
         msg: user_frame("u-10", "a message for the seat beside it"),
     });
@@ -2535,7 +2535,7 @@ async fn an_update_for_another_slot_does_not_swap() {
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "busymail"),
         msg: user_frame("u-9", "a message for another session"),
     });
@@ -2778,7 +2778,7 @@ async fn a_frame_that_reports_nothing_draws_no_zeroes() {
     let compaction = captured_results("compact").pop().expect("the captured compaction");
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         msg: compaction,
     });
@@ -2923,7 +2923,7 @@ async fn a_running_instance_draws_its_own_calls() {
     let key = SessionSlot::lead("Busytools", "forge");
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: key.clone(),
         msg: call_frame(
             "toolu_a",
@@ -2932,7 +2932,7 @@ async fn a_running_instance_draws_its_own_calls() {
             None,
         ),
     });
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: key.clone(),
         msg: call_frame(
             "toolu_a1",
@@ -2941,7 +2941,7 @@ async fn a_running_instance_draws_its_own_calls() {
             Some("toolu_a"),
         ),
     });
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key,
         msg: call_frame(
             "toolu_a2",
@@ -3006,7 +3006,7 @@ async fn a_settled_instance_states_when_it_settled() {
         .saturating_sub(12 * 60 * 1000);
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: key.clone(),
         msg: call_frame(
             "toolu_a",
@@ -3015,7 +3015,7 @@ async fn a_settled_instance_states_when_it_settled() {
             None,
         ),
     });
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: key.clone(),
         msg: call_frame(
             "toolu_a1",
@@ -3024,7 +3024,7 @@ async fn a_settled_instance_states_when_it_settled() {
             Some("toolu_a"),
         ),
     });
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key: key.clone(),
         msg: serde_json::from_value(serde_json::json!({
             "type": "system",
@@ -3037,7 +3037,7 @@ async fn a_settled_instance_states_when_it_settled() {
         }))
         .expect("a task_started frame"),
     });
-    fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+    fleet.emit(forge_server::SessionUpdate::ChatAppended {
         key,
         msg: serde_json::from_value(serde_json::json!({
             "type": "system",
@@ -3816,7 +3816,7 @@ async fn a_query_filters_the_list_it_opened() {
     assert!(!page.contains("Compact conversation context"), "and one that does not is not: {page}");
     // The header counts the list behind the rows: forge's table, plus the
     // one advertised command that is not a name forge handles itself.
-    let listed = forge_sessions::commands::FORGE_COMMANDS.len() + 1;
+    let listed = forge_server::commands::FORGE_COMMANDS.len() + 1;
     assert!(
         page.contains(&format!(">{listed}<")),
         "while the header counts the list the rows came from: {page}",
@@ -3956,7 +3956,7 @@ fn level(peak_db: f32) -> SessionUpdate {
     SessionUpdate::DictateLevel { key: lead(), peak_db }
 }
 
-fn ended(generation: u64, outcome: forge_sessions::surface::DictateOutcome) -> SessionUpdate {
+fn ended(generation: u64, outcome: forge_server::surface::DictateOutcome) -> SessionUpdate {
     SessionUpdate::DictateEnded { key: lead(), outcome, generation }
 }
 
@@ -4004,7 +4004,7 @@ async fn a_stale_takes_end_does_not_clear_a_newer_one() {
     fleet.emit(level(-12.0));
     fleet.emit(ended(
         1,
-        forge_sessions::surface::DictateOutcome::NoAudio { peak_db: -38.2, seconds: 4 },
+        forge_server::surface::DictateOutcome::NoAudio { peak_db: -38.2, seconds: 4 },
     ));
     settle().await;
 
@@ -4072,7 +4072,7 @@ async fn a_landed_take_pastes_into_the_box() {
     fleet.emit(started(1));
     fleet.emit(ended(
         1,
-        forge_sessions::surface::DictateOutcome::Landed {
+        forge_server::surface::DictateOutcome::Landed {
             text: "and run the gate".to_owned(),
             truncated: false,
         },
@@ -4101,7 +4101,7 @@ async fn a_take_with_nothing_to_insert_leaves_its_notice() {
     fleet.emit(started(1));
     fleet.emit(ended(
         1,
-        forge_sessions::surface::DictateOutcome::NoAudio { peak_db: -38.2, seconds: 4 },
+        forge_server::surface::DictateOutcome::NoAudio { peak_db: -38.2, seconds: 4 },
     ));
     settle().await;
 
@@ -4656,7 +4656,7 @@ async fn the_window_holds_more_candidates_than_it_shows() {
     );
     // The list is forge's table plus the advertised commands it does not
     // shadow, which is what the header counts.
-    let listed = forge_sessions::commands::FORGE_COMMANDS.len() + commands.len();
+    let listed = forge_server::commands::FORGE_COMMANDS.len() + commands.len();
     assert!(page.contains(&format!(">{listed}<")), "and the header counts them: {page}");
 }
 
@@ -4809,7 +4809,7 @@ async fn the_send_reaches_the_core() {
     assert_eq!(status, reqwest::StatusCode::OK, "a send the core accepts answers with the box");
     let dispatched = fleet.dispatched();
     assert_eq!(dispatched.len(), 1, "exactly one command: {dispatched:?}");
-    let forge_sessions::Command::Prompt { key, text, .. } = &dispatched[0] else {
+    let forge_server::Command::Prompt { key, text, .. } = &dispatched[0] else {
         panic!("a send is a prompt: {:?}", dispatched[0]);
     };
     assert_eq!(key, &lead(), "addressed to the seat the composer belongs to");
@@ -4858,8 +4858,7 @@ async fn answering_the_dock_reaches_the_core() {
     assert_eq!(status, reqwest::StatusCode::OK, "the answer is accepted");
     let dispatched = fleet.dispatched();
     assert_eq!(dispatched.len(), 1, "exactly one command: {dispatched:?}");
-    let forge_sessions::Command::RespondPermission { key, tool_id, outcome } = &dispatched[0]
-    else {
+    let forge_server::Command::RespondPermission { key, tool_id, outcome } = &dispatched[0] else {
         panic!("an answer is a permission response: {:?}", dispatched[0]);
     };
     assert_eq!(key, &lead());
@@ -4924,17 +4923,17 @@ async fn the_dictation_controls_reach_the_core() {
     let dispatched = fleet.dispatched();
     assert_eq!(dispatched.len(), 3, "a take started, submitted and abandoned: {dispatched:?}");
     assert!(
-        matches!(&dispatched[0], forge_sessions::Command::DictateStart { key } if key == &lead()),
+        matches!(&dispatched[0], forge_server::Command::DictateStart { key } if key == &lead()),
         "{:?}",
         dispatched[0],
     );
     assert!(
-        matches!(&dispatched[1], forge_sessions::Command::DictateStop { submit: true, .. }),
+        matches!(&dispatched[1], forge_server::Command::DictateStop { submit: true, .. }),
         "stopping submits the take: {:?}",
         dispatched[1],
     );
     assert!(
-        matches!(&dispatched[2], forge_sessions::Command::DictateStop { submit: false, .. }),
+        matches!(&dispatched[2], forge_server::Command::DictateStop { submit: false, .. }),
         "cancelling abandons it: {:?}",
         dispatched[2],
     );
@@ -5063,7 +5062,7 @@ async fn the_prompt_the_core_kept_is_answered_from_the_core() {
     assert_eq!(status, reqwest::StatusCode::OK, "and the option it drew answers");
     let dispatched = fleet.dispatched();
     assert_eq!(dispatched.len(), 1, "exactly one command: {dispatched:?}");
-    let forge_sessions::Command::RespondQuestion { tool_id, outcome, .. } = &dispatched[0] else {
+    let forge_server::Command::RespondQuestion { tool_id, outcome, .. } = &dispatched[0] else {
         panic!("an answer is a question response: {:?}", dispatched[0]);
     };
     assert_eq!(tool_id, "test-tool", "addressed to the prompt the core holds");
@@ -5742,7 +5741,7 @@ async fn a_take_that_ends_reaches_the_box() {
     // application of it finds nothing: that is the whole of the trap.
     fleet.emit(ended(
         7,
-        forge_sessions::surface::DictateOutcome::NoAudio { peak_db: -61.0, seconds: 3 },
+        forge_server::surface::DictateOutcome::NoAudio { peak_db: -61.0, seconds: 3 },
     ));
 
     let region = nth_composer_event(stream, 2).await.expect("the take's end redraws the box");

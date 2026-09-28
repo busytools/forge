@@ -914,7 +914,7 @@ impl SessionTask {
     /// The existing prompt-delivery path handles it identically to a
     /// user-typed prompt - the only difference is the prose body
     /// carries the `[Question id=q-…]` / `[Message id=t-…]` wrapper
-    /// that `forge_sessions::envelope::detect_inbound` matches, which
+    /// that `forge_server::envelope::detect_inbound` matches, which
     /// the chat renders as a styled peer block.
     fn deliver_parked_peers(
         &self,

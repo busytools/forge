@@ -396,7 +396,7 @@ MCP by server:
   <pre class="indent">
   <span class="success">✓</span> <span class="bold">6 tool calls</span>   <span class="dim">ctrl+x to expand</span>
   <span class="dim">├─ </span><span class="bold">⬚ read</span>
-  <span class="dim">│  ├─ crates/forge-sessions/src/grouping.rs</span>
+  <span class="dim">│  ├─ crates/forge-server/src/grouping.rs</span>
   <span class="dim">│  └─ crates/forge-tui/src/ui/theme.rs</span>
   <span class="dim">├─ </span><span class="bold">◈ context7</span>
   <span class="dim">│  ├─ resolve-library-id</span>

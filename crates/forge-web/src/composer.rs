@@ -15,12 +15,12 @@ use forge_primitives::SessionSlot;
 use forge_primitives::permission_ui::{PermissionOptionKind, PermissionOutcome, PermissionRequest};
 use forge_primitives::question::{QuestionAnnotation, QuestionOutcome, QuestionRequest};
 use forge_primitives::session_update::ToolCall;
-use forge_sessions::SessionUpdate;
+use forge_server::SessionUpdate;
 // One prompt as the composer draws it, whichever copy it came from: the
 // wire's, or the one the core kept beside the answer's oneshot for a view
 // that attached after it landed.
-use forge_sessions::surface::PendingAsk as Ask;
-use forge_sessions::surface::{AgentRow, Agents, DictateOutcome, PendingKind, Roster, ViewSurface};
+use forge_server::surface::PendingAsk as Ask;
+use forge_server::surface::{AgentRow, Agents, DictateOutcome, PendingKind, Roster, ViewSurface};
 use maud::{Markup, html};
 
 use crate::home::{Home, State};
@@ -97,7 +97,7 @@ pub(crate) fn answer(
     tool_id: &str,
     option_id: Option<&str>,
     notes: Option<&str>,
-) -> Option<forge_sessions::Command> {
+) -> Option<forge_server::Command> {
     // Resolved the way the render resolves it, and for the same reason: a
     // view that attached after the prompt landed, or one holding two
     // prompts, has only the core's copy of this one.
@@ -111,7 +111,7 @@ pub(crate) fn answer(
                 .options
                 .iter()
                 .find(|option| Some(option.option_id.as_str()) == option_id)?;
-            Some(forge_sessions::Command::RespondPermission {
+            Some(forge_server::Command::RespondPermission {
                 key: slot.clone(),
                 tool_id: tool_id.to_owned(),
                 outcome: PermissionOutcome::Selected {
@@ -144,7 +144,7 @@ pub(crate) fn answer(
             } else {
                 QuestionOutcome::Answered { selected_option_ids: chosen, annotation }
             };
-            Some(forge_sessions::Command::RespondQuestion {
+            Some(forge_server::Command::RespondQuestion {
                 key: slot.clone(),
                 tool_id: tool_id.to_owned(),
                 outcome,
@@ -634,7 +634,7 @@ fn trigger_of(draft: &str) -> Option<(Trigger, &str)> {
         return (!query.is_empty()).then_some((Trigger::Agent, query));
     }
     if let Some(query) = token.strip_prefix(':') {
-        return (query.chars().count() >= forge_sessions::emoji::MIN_QUERY_CHARS)
+        return (query.chars().count() >= forge_server::emoji::MIN_QUERY_CHARS)
             .then_some((Trigger::Emoji, query));
     }
     None
@@ -659,7 +659,7 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
                 .surface
                 .slash_commands(slot)
                 .iter()
-                .filter(|command| !forge_sessions::commands::is_forge_command(&command.name))
+                .filter(|command| !forge_server::commands::is_forge_command(&command.name))
                 .cloned()
                 .collect();
             let count = forge.len() + advertised.len();
@@ -705,7 +705,7 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
             ("bot", "subagents".to_owned(), format!("{AGENT_ROWS} max"), rows)
         }
         Trigger::Emoji => {
-            let found = forge_sessions::surface::ViewSurface::emoji(query, CANDIDATES);
+            let found = forge_server::surface::ViewSurface::emoji(query, CANDIDATES);
             let rows: Vec<(String, Markup)> = found
                 .iter()
                 .map(|emoji| {
@@ -713,7 +713,7 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
                     (shortcode.clone(), row(&shortcode, "", Some(emoji.glyph.to_owned()), query))
                 })
                 .collect();
-            let count = forge_sessions::emoji::count();
+            let count = forge_server::emoji::count();
             ("smile", "emoji".to_owned(), format!("{count} shortcodes"), rows)
         }
     };

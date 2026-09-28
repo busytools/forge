@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use forge_primitives::PeerInflightStats;
-use forge_sessions::surface::ViewSurface;
+use forge_server::surface::ViewSurface;
 use forge_workspace::ProjectView;
 use ratatui::Frame;
 use ratatui::layout::Rect;

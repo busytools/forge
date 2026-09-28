@@ -39,7 +39,7 @@ mod usage_overlay;
 pub(crate) mod worker_status;
 mod wrap;
 
-pub use forge_sessions::grouping;
+pub use forge_server::grouping;
 pub use message::SpinnerState;
 #[cfg(any(test, feature = "testing"))]
 pub use message::measure_message_height_cached;

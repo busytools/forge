@@ -159,7 +159,7 @@ impl super::App {
     /// would keep materially more than its cap.
     fn markdown_capacity(
         caches: &crate::app::RenderCacheStore,
-        id: forge_sessions::model::BlockId,
+        id: forge_server::model::BlockId,
         text_capacity: usize,
     ) -> usize {
         caches.peek_markdown(id).map_or(text_capacity, |markdown| markdown.text_capacity())

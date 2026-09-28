@@ -9,10 +9,10 @@ use crate::ui::theme;
 use crate::ui::tool_call;
 use crate::ui::wrap;
 
-/// The grouping policy moved to `forge-sessions`. Re-exported as a module so
+/// The grouping policy moved to `forge-server`. Re-exported as a module so
 /// every `grouping::…` path in the view keeps resolving.
-pub use forge_sessions::grouping;
-pub use forge_sessions::grouping::renders_as_lifecycle_block;
+pub use forge_server::grouping;
+pub use forge_server::grouping::renders_as_lifecycle_block;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -279,7 +279,7 @@ impl<'a> MessageRenderContext<'a> {
     /// call: the caller still renders, it just cannot reuse.
     fn text_block_cache(
         &self,
-        id: forge_sessions::model::BlockId,
+        id: forge_server::model::BlockId,
         signature: u64,
         preserve_newlines: bool,
         gutter: u16,
@@ -297,7 +297,7 @@ impl<'a> MessageRenderContext<'a> {
     /// The block's incremental markdown, from the store by the block's id.
     fn text_block_markdown(
         &self,
-        id: forge_sessions::model::BlockId,
+        id: forge_server::model::BlockId,
         text: &str,
     ) -> crate::app::SlotMarkdown<'_> {
         block_markdown_for(self.render_caches, id, text)
@@ -383,7 +383,7 @@ impl<'a> MessageRenderContext<'a> {
 
 /// The turn row's formatting, shared with the web view so a settled turn
 /// reads the same in both.
-pub use forge_sessions::model::{
+pub use forge_server::model::{
     format_token_count_grouped, format_token_count_short, format_turn_duration,
 };
 
@@ -846,7 +846,7 @@ fn append_user_block(
             // directive via `resolve_collapsed_bool`. Per-block
             // click override wins; absent falls through to
             // `tools_collapsed`.
-            if let Some(kind) = forge_sessions::envelope::detect_inbound(&block.text) {
+            if let Some(kind) = forge_server::envelope::detect_inbound(&block.text) {
                 let trailing_gap = block.trailing_blank_lines();
                 let collapsed = crate::ui::collapse::resolve_collapsed_bool(
                     block.peer_collapsed_override,
@@ -2186,7 +2186,7 @@ fn welcome_block_layout(
 /// reuse or store.
 fn block_cache_for(
     render_caches: Option<&crate::app::RenderCacheStore>,
-    id: forge_sessions::model::BlockId,
+    id: forge_server::model::BlockId,
     signature: u64,
     tools_collapsed: bool,
     preserve_newlines: bool,
@@ -2204,7 +2204,7 @@ fn block_cache_for(
 /// extends the entry instead of starting a new one.
 fn block_markdown_for<'a>(
     render_caches: Option<&'a crate::app::RenderCacheStore>,
-    id: forge_sessions::model::BlockId,
+    id: forge_server::model::BlockId,
     text: &str,
 ) -> crate::app::SlotMarkdown<'a> {
     match render_caches {
@@ -2418,7 +2418,7 @@ pub(crate) enum EnvelopeStreakPosition {
 /// anything that is not peer/worker traffic. Gotify, cron and Slack return
 /// `None` from `peer_sender_identity`, so they never join a streak.
 fn block_envelope_identity(block: &MessageBlock) -> Option<(String, String)> {
-    use forge_sessions::envelope::{PeerInboundKind, detect_inbound};
+    use forge_server::envelope::{PeerInboundKind, detect_inbound};
     let MessageBlock::Text(text) = block else {
         return None;
     };

@@ -17,7 +17,7 @@ use std::ops::Range;
 use ratatui::text::Line;
 
 use super::block_cache::BlockCache;
-use forge_sessions::model::{BlockId, MessageId};
+use forge_server::model::{BlockId, MessageId};
 
 /// What a cached entry's lines were rendered for. Every input that changes
 /// the rows is part of the stamp rather than the key, so a change replaces
@@ -656,7 +656,7 @@ pub mod testing {
     use ratatui::text::Line;
 
     use crate::app::{App, TextBlock};
-    use forge_sessions::model::BlockId;
+    use forge_server::model::BlockId;
 
     /// Store rendered rows for a text block, as the assistant renderer would.
     pub fn store_block(app: &App, block: &TextBlock, lines: Vec<Line<'static>>) {

@@ -3,7 +3,7 @@
 //! Two responsibilities:
 //!
 //! 1. **Inbound rendering**. Draw the envelope
-//!    `forge_sessions::envelope::detect_inbound` parses out of the
+//!    `forge_server::envelope::detect_inbound` parses out of the
 //!    bracket-wrapped prose `forge_workspace` injects into user-turn text
 //!    (e.g. `[Question id=q-... from agent 'forge' (org 'Personal') -
 //!    reply with agents__tell in_reply_to=q-...]\n\n<body>`) as a
@@ -29,8 +29,8 @@
 
 use crate::ui::chat_tree;
 use crate::ui::theme::{self, INBOUND_GLYPH, OUTBOUND_GLYPH};
-use forge_sessions::envelope::{PeerInboundKind, is_slack_id, tidy_mrkdwn};
-pub(crate) use forge_sessions::peer_outbound::{PeerOutboundKind, detect_outbound};
+use forge_server::envelope::{PeerInboundKind, is_slack_id, tidy_mrkdwn};
+pub(crate) use forge_server::peer_outbound::{PeerOutboundKind, detect_outbound};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -494,7 +494,7 @@ pub(crate) fn render_messaging_group_summary_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_sessions::envelope::detect_inbound;
+    use forge_server::envelope::detect_inbound;
 
     fn render_lines_to_strings(lines: &[Line<'static>]) -> Vec<String> {
         lines

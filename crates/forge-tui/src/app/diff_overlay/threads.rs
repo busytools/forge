@@ -6,7 +6,7 @@
 use super::types::{AnchorNote, CommentRef, HunkComment, LineKey, ThreadAction};
 use crate::app::App;
 use forge_primitives::review::{ReviewAuthor, ReviewSide, ReviewStatus, ReviewThread};
-use forge_sessions::surface::ViewSurface;
+use forge_server::surface::ViewSurface;
 use forge_workspace::env::git_diff::hunks::FileHunks;
 use forge_workspace::env::git_diff::resolver::{self, AnchorResolution};
 

@@ -13,7 +13,7 @@ use super::types::{DiffOverlayEvent, DiffScanKind, DiffScope, NavOutcome};
 use crate::app::App;
 use crate::app::view::{ActiveView, set_active_view};
 use forge_primitives::git_diff::RepoGate;
-use forge_sessions::surface::ViewSurface;
+use forge_server::surface::ViewSurface;
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 
 /// Which scope the initial `/diff` open should land on, resolved from the

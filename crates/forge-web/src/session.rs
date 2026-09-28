@@ -27,22 +27,20 @@ use forge_primitives::{
     ChunkContent, CronEntry, CronKind, McpServerConnectionStatus, McpServerStatus, MonitorRecord,
     MonitorStatus, ToolCallContent,
 };
-use forge_sessions::family::ToolFamily;
-use forge_sessions::grouping::KindRow;
-use forge_sessions::model::{
+use forge_server::family::ToolFamily;
+use forge_server::grouping::KindRow;
+use forge_server::model::{
     AnsweredQuestion, LiveTurn, LiveUsage, ToolCallStatus, TurnInfo, format_token_count_grouped,
     format_token_count_short, format_turn_duration,
 };
-use forge_sessions::subagents::{SubagentCard, subagent_cards};
-use forge_sessions::surface::connectors::{GotifyView, SlackView};
-use forge_sessions::surface::inspector::{
+use forge_server::subagents::{SubagentCard, subagent_cards};
+use forge_server::surface::connectors::{GotifyView, SlackView};
+use forge_server::surface::inspector::{
     McpServers, ProcessEntry, ProcessSnapshot, SessionHeader, basename_exe, extract_inner_command,
 };
-use forge_sessions::surface::{
-    AccountsView, Agents, LoadingState, PendingKind, Roster, ViewSurface,
-};
-use forge_sessions::transcript;
-use forge_sessions::transcript::{
+use forge_server::surface::{AccountsView, Agents, LoadingState, PendingKind, Roster, ViewSurface};
+use forge_server::transcript;
+use forge_server::transcript::{
     ChatUnit, FamilyLeaves, Notice, NoticeSeverity, PeerCard, ToolLeaf,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
@@ -1094,7 +1092,7 @@ async fn monitor_tails(monitors: &[MonitorRecord]) -> HashMap<String, Vec<String
         named
             .into_iter()
             .map(|(id, path)| {
-                let lines = forge_sessions::monitor::read_output_file_tail(
+                let lines = forge_server::monitor::read_output_file_tail(
                     Path::new(&path),
                     MONITOR_TAIL_LINES,
                 )
@@ -2229,7 +2227,7 @@ fn turn_body(info: &TurnInfo) -> Markup {
 fn ended_clock(info: &TurnInfo) -> Option<String> {
     info.ended_at_local
         .clone()
-        .or_else(|| info.ended_at_utc.as_deref().and_then(forge_sessions::timezone::local_clock))
+        .or_else(|| info.ended_at_utc.as_deref().and_then(forge_server::timezone::local_clock))
 }
 
 /// The record with an unattributed usage block dropped, which is the rule the

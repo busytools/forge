@@ -9,7 +9,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use forge_primitives::WebConfig;
-use forge_sessions::surface::ViewSurface;
+use forge_server::surface::ViewSurface;
 use maud::{Markup, PreEscaped, html};
 
 use crate::home::{Home, render, render_region};
@@ -194,7 +194,7 @@ async fn send_to(
             .into_response();
     }
     if surface
-        .dispatch(forge_sessions::Command::Prompt {
+        .dispatch(forge_server::Command::Prompt {
             key: slot.clone(),
             text: draft,
             attachments: Vec::new(),
@@ -294,9 +294,9 @@ async fn dictate(
         crate::composer::Draft::Unknown,
         move |slot| {
             if start {
-                forge_sessions::Command::DictateStart { key: slot.clone() }
+                forge_server::Command::DictateStart { key: slot.clone() }
             } else {
-                forge_sessions::Command::DictateStop { key: slot.clone(), submit: action == "stop" }
+                forge_server::Command::DictateStop { key: slot.clone(), submit: action == "stop" }
             }
         },
     )
@@ -316,7 +316,7 @@ async fn act(
     project: &str,
     label: &str,
     draft: crate::composer::Draft,
-    command: impl FnOnce(&forge_primitives::SessionSlot) -> forge_sessions::Command,
+    command: impl FnOnce(&forge_primitives::SessionSlot) -> forge_server::Command,
 ) -> Response {
     let surface = &wiring.state.surface;
     let roster = surface.roster();

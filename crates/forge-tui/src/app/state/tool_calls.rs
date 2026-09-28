@@ -12,7 +12,7 @@ use crate::agent::model;
 /// Mark a tool call's render cache stale, counting the request.
 ///
 /// The counter is the view's, not the model's: `ToolCallInfo` moves to
-/// `forge-sessions`, which carries no perf dependency. Every request for an
+/// `forge-server`, which carries no perf dependency. Every request for an
 /// invalidation goes through one of these, so the count keeps meaning what
 /// it did when the mark sat on the model.
 pub(crate) fn request_tool_call_render_dirty(tc: &mut ToolCallInfo) {

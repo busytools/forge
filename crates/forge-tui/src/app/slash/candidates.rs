@@ -209,7 +209,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     // implemented in-process or wrappers around upstream CLI semantics),
     // from the table the web view reads too.
     let mut forge: BTreeMap<String, String> = BTreeMap::new();
-    for command in forge_sessions::commands::FORGE_COMMANDS {
+    for command in forge_server::commands::FORGE_COMMANDS {
         forge.insert(command.name.to_owned(), command.description.to_owned());
     }
 
@@ -529,10 +529,10 @@ mod launchpad_filter_tests {
             .map(|candidate| candidate.primary.as_str())
             .collect();
         let table: Vec<&str> =
-            forge_sessions::commands::FORGE_COMMANDS.iter().map(|entry| entry.name).collect();
+            forge_server::commands::FORGE_COMMANDS.iter().map(|entry| entry.name).collect();
 
         assert_eq!(offered, table, "the forge group is the table both views read");
-        for entry in forge_sessions::commands::FORGE_COMMANDS {
+        for entry in forge_server::commands::FORGE_COMMANDS {
             let row = candidates
                 .iter()
                 .find(|candidate| candidate.primary == entry.name)
@@ -568,7 +568,7 @@ mod launchpad_filter_tests {
         app.active_view = ActiveView::Launchpad;
 
         for row in &supported_command_candidates(&app) {
-            let Some(entry) = forge_sessions::commands::FORGE_COMMANDS
+            let Some(entry) = forge_server::commands::FORGE_COMMANDS
                 .iter()
                 .find(|entry| entry.name == row.primary)
             else {
@@ -590,7 +590,7 @@ mod launchpad_filter_tests {
     fn the_fallback_forwards_nothing_forge_dispatches() {
         for name in FORWARDED {
             assert!(
-                !forge_sessions::commands::is_forge_command(name),
+                !forge_server::commands::is_forge_command(name),
                 "{name} is in the fallback list and in the table both views offer",
             );
         }
@@ -605,7 +605,7 @@ mod launchpad_filter_tests {
     fn the_shared_table_and_the_dispatch_agree() {
         let mut dispatched = crate::app::slash::executors::handled_names();
         let mut offered: Vec<&str> =
-            forge_sessions::commands::FORGE_COMMANDS.iter().map(|entry| entry.name).collect();
+            forge_server::commands::FORGE_COMMANDS.iter().map(|entry| entry.name).collect();
         // Sets, not sequences: the table's order is the dropdown's, and the
         // dispatch is a lookup that has none.
         dispatched.sort_unstable();

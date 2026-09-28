@@ -7,7 +7,7 @@
 //! a picker.
 
 use super::{App, FocusTarget, dialog::DialogState};
-pub use forge_sessions::emoji::{Emoji, exact, is_shortcode_char, matches};
+pub use forge_server::emoji::{Emoji, exact, is_shortcode_char, matches};
 
 /// Max candidates shown in the dropdown. The list is dense (one glyph +
 /// one short name per row), so a shorter window than the file picker's

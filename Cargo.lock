@@ -1249,7 +1249,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "forge-sessions"
+name = "forge-server"
 version = "1.0.92"
 dependencies = [
  "forge-primitives",
@@ -1292,7 +1292,7 @@ dependencies = [
  "dirs",
  "forge-primitives",
  "forge-sdk",
- "forge-sessions",
+ "forge-server",
  "forge-test-harness",
  "forge-tui",
  "forge-web",
@@ -1329,7 +1329,7 @@ version = "1.0.92"
 dependencies = [
  "axum",
  "forge-primitives",
- "forge-sessions",
+ "forge-server",
  "futures-util",
  "maud",
  "pulldown-cmark",

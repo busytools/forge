@@ -1,6 +1,6 @@
 use crate::agent::model;
 
-pub use forge_sessions::model::MonitorStatus;
+pub use forge_server::model::MonitorStatus;
 
 pub use forge_primitives::runtime::{ModeInfo, ModeState};
 

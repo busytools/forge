@@ -2240,7 +2240,7 @@ pub(crate) fn apply_rollback_failure(
 fn refresh_update_records(app: &mut App) {
     if let Some(workspace) = app.workspace.as_ref() {
         app.plugins.update_records =
-            forge_sessions::surface::ViewSurface::new(std::sync::Arc::clone(workspace))
+            forge_server::surface::ViewSurface::new(std::sync::Arc::clone(workspace))
                 .plugins()
                 .update_records;
     }

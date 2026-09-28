@@ -5,7 +5,7 @@
 //! Two of them are facts about a session - what the CLI advertised - so
 //! the core holds them and these verbs read through it. The other four
 //! have no session in them at all: forge's own command table, the emoji
-//! table and the file walk are view-side data, so `forge-sessions` owns
+//! table and the file walk are view-side data, so `forge-server` owns
 //! them and no view keeps a copy, and the walk's ignore preference is the
 //! user's own, which the core reads on the walk's behalf.
 //!
