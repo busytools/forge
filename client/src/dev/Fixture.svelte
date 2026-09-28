@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { DEFAULT_ADDRESS } from '../connect/attempt';
   import Home from '../home/Home.svelte';
   import { loadFixtureHome } from './fixture';
 
@@ -15,6 +16,8 @@
 
 {#await loaded then wire}
   {#if wire}
-    <Home {wire} />
+    <!-- The default address, so the band's web card reads as it does behind a
+         connection rather than blank. -->
+    <Home {wire} address={DEFAULT_ADDRESS} />
   {/if}
 {/await}

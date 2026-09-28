@@ -35,7 +35,8 @@
   }
 </script>
 
-<div class="wrap">
+<!-- A landmark, so every part of the page sits inside one. -->
+<main class="wrap">
   <div class="door">
     <header class="brand">
       <Brand name={settings.mark} />
@@ -84,7 +85,7 @@
       </div>
     {/if}
   </div>
-</div>
+</main>
 
 <style>
   .door {

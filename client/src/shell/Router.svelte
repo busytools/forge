@@ -42,14 +42,14 @@
   <Fixture />
 {:else if route.name === 'session'}
   <!-- Task 5 draws the session page here, from `src/session/`. -->
-  <div class="wrap"><p class="pending">The session page is next.</p></div>
+  <main class="wrap"><p class="pending">The session page is next.</p></main>
 {:else}
-  <div class="wrap">
+  <main class="wrap">
     <p class="pending">
       That is not a page forge serves. The home is at <a href="/">/</a>, and a session at
       <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;</code>.
     </p>
-  </div>
+  </main>
 {/if}
 
 <style>
