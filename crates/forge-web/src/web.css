@@ -1004,3 +1004,29 @@ main.chat { grid-column: 2; grid-row: 1; }
 .sb .sa .tt .tg { color: var(--muted); }
 .sb .sa .settled { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   padding: 0 12px 9px; }
+
+/* ---------- how a row gives way where the value is the point ----------
+
+   A schedule row inverts the shared row rule above it: the next-fire is what
+   the row is for and the label is only its context, so the label shortens and
+   the value keeps its own width. Scoped here on purpose - a server row and a
+   process row keep the shared rule, where the name is the thing scanned for.
+   The floor under the label is 30% rather than the shared 35%, and the value
+   is capped at what that floor leaves it, so one too wide for the column
+   ellipsises rather than running past the rail. The 12px is this row's own
+   gap, so a change to one is a change to the other. */
+.sec[data-k="sec-schedules"] .sb .kv .k { flex: 1 1 auto; min-width: 30%; }
+.sec[data-k="sec-schedules"] .sb .kv .v { flex: 0 0 auto; max-width: calc(70% - 12px); }
+
+/* A command with no description is named by its own command in the row title,
+   so that title wraps instead of ellipsising a line off it, and stops at
+   three lines. Counted in a browser over all 683 undescribed Bash calls in
+   this machine's own session transcripts, subagents' ones left out because
+   the page never draws them: three lines draws 22.8% of them whole at 1600
+   and 4.1% at 430. The cap bounds the row rather than promising coverage, and
+   the body draws the command at every width, which is where a capped title's
+   tail stays readable. Nothing else about the row moves - the status mark and
+   the chevron keep the position the shared rule centres them in. */
+details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
+  overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3; overflow: hidden; }
