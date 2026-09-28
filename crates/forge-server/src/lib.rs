@@ -1,11 +1,17 @@
-//! What a view needs and nothing about how it renders.
+//! The server: what a client reads of the core, and no view of its own.
 //!
-//! Holds the read surface a view uses, the peer envelope parsing and the
-//! outbound peer calls, the tool family table, forge's own slash
-//! commands, the transcript fold that turns a conversation's wire
-//! messages into the units a view draws, the policy that folds a run of
-//! blocks, and the two reads of a pty's own output: its escape
-//! sequences, and a Monitor's watched-command tail.
+//! Holds the view surface - the reads a client makes and the commands it
+//! sends -, the peer envelope parsing and the outbound peer calls, the
+//! tool family table, forge's own slash commands, the transcript fold that
+//! turns a conversation's wire messages into the units a view draws, the
+//! policy that folds a run of blocks, the two reads of a pty's own output:
+//! its escape sequences and a Monitor's watched-command tail, and the
+//! socket that carries all of it to whatever is drawing.
+//!
+//! Nothing here draws. What a glyph, a colour or a weight is belongs to the
+//! client, and the test is whether removing a thing changes what the data
+//! IS or only how it is DRAWN.
+//!
 //! The reducers that derive the TUI's session records are still in the
 //! TUI.
 

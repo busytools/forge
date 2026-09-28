@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "What a view needs and nothing about how it renders."
+description = "The server: what a client reads of the core, and no view of its own."
 publish = false
 
 [features]
