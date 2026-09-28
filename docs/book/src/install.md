@@ -69,9 +69,10 @@ set (with and without `--all-features`),
 doc steps each set `RUSTFLAGS=-D warnings` so a warning CI would reject
 fails locally too; CI sets it once at workflow level instead.
 
-Run it before opening a pull request. It is CI's set minus two jobs: CI
-also runs `cargo check --release` and `just check-feature-configs`, both
-of which `just check` deliberately leave out.
+Run it before opening a pull request. It is CI's set minus three jobs: CI
+also runs `cargo check --release` and `just check-feature-configs`, which
+`just check` deliberately leaves out, and it builds, typechecks and tests
+the client, which is not a cargo workspace member.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
 or `[ERROR] check: <step> failed`, and stops at the first failing step,

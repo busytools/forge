@@ -23,8 +23,9 @@ set (with and without `--all-features`),
 `cargo nextest run --workspace --all-features`, and
 `cargo doc --workspace --no-deps --all-features`, all with
 `RUSTFLAGS=-D warnings` on the clippy, test and doc steps. Get it
-green before you open a pull request. It is CI's set minus two jobs:
-CI also runs `cargo check --release` and `just check-feature-configs`.
+green before you open a pull request. It is CI's set minus three jobs:
+CI also runs `cargo check --release` and `just check-feature-configs`, and
+it builds, typechecks and tests the client, which no cargo recipe reaches.
 
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later
