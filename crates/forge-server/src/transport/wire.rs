@@ -67,7 +67,7 @@ impl<T> From<std::result::Result<T, String>> for ReadWire<T> {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct HomeWire {
-    pub projects: Vec<ProjectView>,
+    pub projects: Vec<ProjectWire>,
     pub agents: Vec<AgentRow>,
     pub accounts: AccountsWire,
     pub plugins: PluginsWire,
@@ -77,10 +77,45 @@ pub struct HomeWire {
     /// The claude CLI versions the core holds, as the core's own snapshot
     /// serialises. Its crate is one this one may not name.
     pub cli_version: Option<Value>,
+    /// The forge build serving this socket: the full stamp and the short one.
+    ///
+    /// **A client draws these rather than its own package version.** The
+    /// header states which forge commit is RUNNING, and the client is a
+    /// different program with a version of its own - so a client rendering
+    /// `env!("CARGO_PKG_VERSION")` would name itself in a header about forge.
+    pub forge_version: String,
+    pub forge_version_short: String,
     pub service_status: Option<Value>,
     /// The last fatal error, held by the core: an App-level event with no
     /// state behind it reaches only whoever was subscribed when it fired.
     pub fatal_error: Option<Value>,
+}
+
+/// One project row: the project, and the per-row reads the home draws it from.
+///
+/// The three beside the project are what the row's cells state, and each is
+/// reached from the ROW rather than from a seat: a home row is a project, and
+/// a project is a row whether or not anything has started it.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectWire {
+    pub project: ProjectView,
+    /// The branch and the count for the project's own tree.
+    ///
+    /// **Keyed by the project's LEAD slot, which exists for every declared
+    /// project** whether or not a session has opened it, and read at the
+    /// project's own path - so a row's cell is filled for a project nobody
+    /// has started, which is the whole point of the cell.
+    ///
+    /// This is the shared cache the transport holds, so several clients
+    /// subscribing do not multiply git invocations: the cache is what makes
+    /// the per-row cost the terminal's rather than N times it.
+    pub work: WorkState,
+    pub tasks: Vec<forge_primitives::tasks::Task>,
+    /// Whether a spawn in this project would find an account. Read beside
+    /// `project.has_model`, which is what tells the two reasons a spawn cannot
+    /// run apart.
+    pub would_bind: bool,
 }
 
 /// The plugin inventory and its update records.
@@ -187,6 +222,12 @@ pub struct SlackWire {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DictateWire {
+    /// Whether `[dictate] enabled` is set. **Carried rather than inferred
+    /// from an empty `models` list**: the list is empty both for a
+    /// switched-off section and for a default snapshot, so a reader asserting
+    /// the cause from the value tells a healthy configuration it is off, and
+    /// nothing in the payload says which.
+    pub enabled: bool,
     pub snapshot: Value,
     pub models_dir: Option<std::path::PathBuf>,
 }
@@ -352,7 +393,7 @@ pub fn page(all: &[ChatUnit], before: Option<&str>, turns: u32) -> Page {
 pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result<Value> {
     let surface = &state.surface;
     match subject {
-        Subject::Home => Ok(serde_json::to_value(home(surface))?),
+        Subject::Home => Ok(serde_json::to_value(home(state, surface).await)?),
         Subject::Session(slot) => {
             let roster = surface.roster();
             let Some(cwd) = roster.cwd_for(slot) else {
@@ -364,13 +405,27 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
 }
 
 /// The home's record, from the reads a home-scoped view makes.
-fn home(surface: &ViewSurface) -> HomeWire {
+///
+/// Async because a row's work state is a filesystem read, cached by the
+/// shared `WorkCache` the transport holds.
+async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
     let roster = surface.roster();
     let accounts = surface.accounts();
     let connectors = surface.connectors(None);
     let dictate = surface.dictate();
     let workers = surface.workers();
     let encode = |value: Option<Value>| value;
+
+    let mut projects = Vec::with_capacity(roster.projects.len());
+    for project in &roster.projects {
+        let seat = SessionSlot::lead(project.org.clone(), project.name.clone());
+        projects.push(ProjectWire {
+            work: state.work.snapshot(&seat, &project.path).await,
+            tasks: roster.tasks_for_project(&project.name),
+            would_bind: roster.would_bind(&project.key),
+            project: project.clone(),
+        });
+    }
 
     HomeWire {
         workers: roster
@@ -419,16 +474,19 @@ fn home(surface: &ViewSurface) -> HomeWire {
             },
         },
         dictate: DictateWire {
+            enabled: dictate.enabled,
             snapshot: serde_json::to_value(dictate.snapshot).unwrap_or(Value::Null),
             models_dir: dictate.models_dir,
         },
         cli_version: surface.cli_version().and_then(|version| serde_json::to_value(version).ok()),
+        forge_version: crate::FORGE_VERSION.to_owned(),
+        forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
         service_status: surface.service_status().and_then(|issue| serde_json::to_value(issue).ok()),
         fatal_error: encode(
             surface.fatal_error().and_then(|error| serde_json::to_value(error).ok()),
         ),
         agents: surface.agents().all().to_vec(),
-        projects: roster.projects,
+        projects,
     }
 }
 
@@ -677,17 +735,28 @@ mod tests {
     /// The slug form is why replacing the plain path alone is not enough:
     /// the key is a temp directory spelled with dashes, and it differs per
     /// machine just as much as the path does.
-    fn volatile(root: &Path) -> Vec<String> {
+    fn volatile(root: &Path) -> Vec<(String, &'static str)> {
         let raw = root.to_string_lossy().into_owned();
         let canonical = root
             .canonicalize()
             .unwrap_or_else(|_| root.to_path_buf())
             .to_string_lossy()
             .into_owned();
-        let mut forms = vec![raw, canonical];
-        forms.extend(forms.iter().map(|form| slug(form)).collect::<Vec<_>>());
-        forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
-        forms.dedup();
+        let mut forms = vec![
+            (raw.clone(), "<fixture>"),
+            (canonical.clone(), "<fixture>"),
+            (slug(&raw), "<fixture>"),
+            (slug(&canonical), "<fixture>"),
+            // The build stamp carries the commit the binary was built from, so
+            // it moves on every commit and a fixture pinning it would fail on
+            // the next one. Each gets its OWN stand-in: collapsing them to one
+            // placeholder would leave a client unable to tell which field is
+            // which.
+            (crate::FORGE_VERSION.to_owned(), "<forge-version>"),
+            (crate::FORGE_VERSION_SHORT.to_owned(), "<forge-version-short>"),
+        ];
+        forms.sort_by_key(|(form, _)| std::cmp::Reverse(form.len()));
+        forms.dedup_by(|left, right| left.0 == right.0);
         forms
     }
 
@@ -696,12 +765,12 @@ mod tests {
         path.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
     }
 
-    fn normalise(value: &mut Value, forms: &[String]) {
+    fn normalise(value: &mut Value, forms: &[(String, &'static str)]) {
         match value {
             Value::String(text) => {
-                for form in forms {
+                for (form, stands_in) in forms {
                     if let Some(rest) = text.strip_prefix(form.as_str()) {
-                        *text = format!("<fixture>{rest}");
+                        *text = format!("{stands_in}{rest}");
                         break;
                     }
                 }

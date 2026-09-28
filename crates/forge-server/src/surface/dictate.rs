@@ -13,8 +13,13 @@ use super::ViewSurface;
 /// reached on demand from a spawned task rather than read per frame
 /// along with this.
 pub struct DictateView {
-    /// Per-model fetch and load progress. Empty `models` means
-    /// `[dictate] enabled` is false.
+    /// Whether `[dictate] enabled` is set. **Carried rather than inferred
+    /// from an empty `models` list**: the list is empty for a switched-off
+    /// section AND for a `DictateSnapshot::default()`, so a reader asserting
+    /// the cause from the value reports a healthy configuration as switched
+    /// off - or a switched-off one as healthy - with nothing to say which.
+    pub enabled: bool,
+    /// Per-model fetch and load progress.
     pub snapshot: DictateSnapshot,
     /// Where the dictation models land. `None` when the platform has no
     /// usable cache directory and none was configured.
@@ -24,6 +29,7 @@ pub struct DictateView {
 impl ViewSurface {
     pub fn dictate(&self) -> DictateView {
         DictateView {
+            enabled: self.workspace.dictate_enabled(),
             snapshot: self.workspace.dictate_snapshot(),
             models_dir: self.workspace.dictate_models_dir(),
         }

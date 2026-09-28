@@ -1,17 +1,26 @@
 {
   "projects": [
     {
-      "key": "<fixture>-proj",
-      "name": "proj",
-      "org": "TestOrg",
-      "path": "<fixture>/proj",
-      "display_path": "<fixture>/proj",
-      "accounts": [
-        "Acct"
-      ],
-      "fallback_accounts": [],
-      "has_model": false,
-      "sessions": []
+      "project": {
+        "key": "<fixture>-proj",
+        "name": "proj",
+        "org": "TestOrg",
+        "path": "<fixture>/proj",
+        "display_path": "<fixture>/proj",
+        "accounts": [
+          "Acct"
+        ],
+        "fallback_accounts": [],
+        "has_model": false,
+        "sessions": []
+      },
+      "work": {
+        "branch": null,
+        "changed": null,
+        "gate": "gone"
+      },
+      "tasks": [],
+      "would_bind": false
     }
   ],
   "agents": [
@@ -119,6 +128,7 @@
     }
   },
   "dictate": {
+    "enabled": true,
     "snapshot": {
       "models": [
         {
@@ -140,6 +150,8 @@
     "installed": "1.0.0",
     "latest": "1.1.0"
   },
+  "forge_version": "<forge-version>",
+  "forge_version_short": "<forge-version-short>",
   "service_status": null,
   "fatal_error": null
 }

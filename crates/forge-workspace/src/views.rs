@@ -10,7 +10,7 @@ pub use forge_primitives::usage::AccountBudget;
 /// One project from the catalog plus its sessions, sorted last-
 /// activity descending. `sessions[0]` is the lead. Empty `sessions`
 /// means the project has no on-disk history yet.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectView {
     pub key: ProjectKey,
     /// The toml `name` field from `forge.toml`. Distinct from `key`,
