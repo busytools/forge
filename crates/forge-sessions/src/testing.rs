@@ -40,7 +40,6 @@ pub struct ViewFacts {
     pub mcp: Option<forge_workspace::McpServers>,
     pub process_snapshot: Option<forge_workspace::env::processes::ProcessSnapshot>,
     pub monitors: Vec<forge_primitives::MonitorRecord>,
-    pub subagent_attribution: std::collections::HashMap<String, String>,
 }
 
 /// A view surface over a stub workspace, plus the seeding a test needs to
@@ -312,7 +311,6 @@ impl Fleet {
         held.mcp_servers = facts.mcp;
         held.process_snapshot = facts.process_snapshot;
         held.monitors = facts.monitors;
-        held.subagent_attribution = facts.subagent_attribution;
     }
 
     fn project_view(&self, project: &str) -> Result<forge_workspace::ProjectView, FixtureError> {

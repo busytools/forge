@@ -2,10 +2,13 @@
 //!
 //! Holds the read surface a view uses, the peer envelope parsing and the
 //! outbound peer calls, the tool family table, the transcript fold that
-//! turns a conversation's wire messages into the units a view draws, and
-//! the policy that folds a run of blocks. The reducers that derive the
-//! TUI's session records are still in the TUI.
+//! turns a conversation's wire messages into the units a view draws, the
+//! policy that folds a run of blocks, and the two reads of a pty's own
+//! output: its escape sequences, and a Monitor's watched-command tail.
+//! The reducers that derive the TUI's session records are still in the
+//! TUI.
 
+pub mod ansi;
 pub mod delivery;
 pub mod emoji;
 pub mod envelope;
@@ -13,7 +16,9 @@ pub mod family;
 pub mod file_index;
 pub mod grouping;
 pub mod model;
+pub mod monitor;
 pub mod peer_outbound;
+pub mod subagents;
 pub mod surface;
 #[cfg(feature = "testing")]
 pub mod testing;

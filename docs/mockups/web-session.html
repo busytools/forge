@@ -1313,7 +1313,7 @@ docs: Render the message body into rows.</div>
           <div class="sa">
             <div class="sh"><svg class="ic st"><use href="#i-check"/></svg><svg class="ic gl"><use href="#i-subagents"/></svg>
               <span class="nm">cli-version</span><span class="n">7 tools &#183; settled 3m</span></div>
-            <div class="settled">settled - open to read its four most recent calls</div>
+            <div class="settled">settled - its calls are not drawn</div>
           </div>
           <div class="sa">
             <div class="sh"><span class="st"><span class="ring" style="width:8px;height:8px"></span></span>
@@ -1399,15 +1399,15 @@ docs: Render the message body into rows.</div>
               <svg class="ic gl"><use href="#i-monitors"/></svg>
               <span class="nm">ci-watch</span><span class="n">persistent</span></div>
             <div class="tt"><span class="tg">$</span> gh run watch 18234567</div>
-            <div class="tt"><span class="tg">&#9679;</span> build &#183; in_progress</div>
-            <div class="tt"><svg class="ic tg"><use href="#i-check"/></svg> lint &#183; success</div>
-            <div class="tt"><span class="tg">&#9679;</span> deploy &#183; queued</div>
-            <div class="tt"><svg class="ic tg"><use href="#i-tool"/></svg> notify &#183; queued</div>
           </div>
           <div class="sa">
             <div class="sh"><svg class="ic st"><use href="#i-check"/></svg><svg class="ic gl"><use href="#i-monitors"/></svg>
               <span class="nm">deploy-gate</span><span class="n">completed 12m</span></div>
-            <div class="settled">settled - its output stays in the transcript</div>
+            <div class="tt"><span class="tg">$</span> gh run watch 2</div>
+            <div class="tt">build &#183; in_progress</div>
+            <div class="tt">lint &#183; success</div>
+            <div class="tt">deploy &#183; queued</div>
+            <div class="tt">notify &#183; queued</div>
           </div>
         </div>
       </details>

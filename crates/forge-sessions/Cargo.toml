@@ -27,6 +27,9 @@ serde_json = { workspace = true }
 # The subscription verb hands out the workspace's own receiver, and naming
 # that type is a tokio channel.
 tokio = { workspace = true, features = ["sync"] }
+# The Monitor tail read reports a file it could not open, which is a
+# diagnosis a reader makes from the log rather than from the page.
+tracing = { workspace = true }
 
 [dev-dependencies]
 # The surface's equivalence tests read the same workspace the TUI reads,

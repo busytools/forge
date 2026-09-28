@@ -34,6 +34,7 @@ use forge_sessions::model::{
     AnsweredQuestion, LiveTurn, LiveUsage, ToolCallStatus, TurnInfo, format_token_count_grouped,
     format_token_count_short, format_turn_duration,
 };
+use forge_sessions::subagents::{SubagentCard, subagent_cards};
 use forge_sessions::surface::connectors::{GotifyView, SlackView};
 use forge_sessions::surface::inspector::{
     McpServers, ProcessEntry, ProcessSnapshot, SessionHeader, basename_exe, extract_inner_command,
@@ -437,7 +438,7 @@ async fn columns(
                         span .n .ml { (slot.project()) }
                         label .close for="r" title="close" { "\u{d7}" }
                     }
-                    div .scroll { (inspector(home, roster, slot).await) }
+                    div .scroll { (inspector(home, roster, slot, messages).await) }
                 }
             }
         }
@@ -711,20 +712,27 @@ fn waiting_on(pending: PendingKind) -> String {
 /// summary and opening in place. A section is drawn when there is
 /// something behind it - a project with no tasks has no tasks section -
 /// because a section that is always there says nothing when it is empty.
-async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Markup {
-    let (work, diff) = match roster.cwd_for(slot) {
+async fn inspector(
+    home: &Home<'_>,
+    roster: &Roster,
+    slot: &SessionSlot,
+    messages: &[Message],
+) -> Markup {
+    let cwd = roster.cwd_for(slot);
+    let (work, diff) = match cwd.as_deref() {
         Some(cwd) => {
-            (Some(home.work.snapshot(slot, &cwd).await), Some(home.work.diff(slot, &cwd).await))
+            (Some(home.work.snapshot(slot, cwd).await), Some(home.work.diff(slot, cwd).await))
         }
         None => (None, None),
     };
     let tasks = roster.tasks_for_project(slot.project());
     let crons = roster.crons_for_project(slot.project());
     let connectors = home.surface.connectors(Some(slot.project()));
-    let attributed = home.surface.subagent_attribution(slot);
+    let instances = subagent_cards(messages);
     let servers = home.surface.mcp_servers(slot);
     let walk = home.surface.processes(slot);
     let monitors = home.surface.monitors(slot);
+    let tails = monitor_tails(&monitors).await;
 
     html! {
         @if let Some(work) = &work {
@@ -733,8 +741,8 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
         @if !tasks.is_empty() {
             (tasks_section(&tasks))
         }
-        @if !attributed.is_empty() {
-            (subagents_section(&attributed))
+        @if !instances.is_empty() {
+            (subagents_section(&instances, cwd.as_deref()))
         }
         @if !crons.is_empty() {
             (schedules_section(&crons))
@@ -757,42 +765,72 @@ async fn inspector(home: &Home<'_>, roster: &Roster, slot: &SessionSlot) -> Mark
             (processes_section(walk))
         }
         @if !monitors.is_empty() {
-            (monitors_section(&monitors))
+            (monitors_section(&monitors, &tails))
         }
     }
 }
 
-/// The subagents section: which agent type ran which of this session's
-/// tool calls.
+/// The subagents section: one card per INSTANCE the session dispatched, with
+/// the calls that ran under it.
 ///
-/// This is the session's own attribution, not the CLI's catalogue of the
-/// agent types that exist: a session that has had no sub-agent run has
-/// nothing here, whether or not it could offer one.
-fn subagents_section(attributed: &HashMap<String, String>) -> Markup {
-    let mut per_type: Vec<(&str, usize)> = Vec::new();
-    for agent_type in attributed.values() {
-        match per_type.iter_mut().find(|(name, _)| name == agent_type) {
-            Some((_, calls)) => *calls += 1,
-            None => per_type.push((agent_type.as_str(), 1)),
-        }
-    }
-    per_type.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
-    let types = per_type.len();
+/// The instances are the conversation's own: a dispatch is a `Task`/`Agent`
+/// call, and the frames it produces name it in `parent_tool_use_id`. The
+/// attribution map cannot draw this - it pairs a call with an agent type, so
+/// two dispatches of one type collapse into a row while one dispatch of two
+/// types splits in two.
+fn subagents_section(cards: &[SubagentCard], cwd: Option<&Path>) -> Markup {
+    let running = cards.iter().filter(|card| card.running).count();
+    let summary = format!("{running} running");
     let body = html! {
-        @for (agent_type, calls) in &per_type {
-            div .kv {
-                span .k { (agent_type) }
-                span .v { (call_count(*calls)) }
+        div .note { "The only surface subagents have - the chat suppresses them." }
+        @for card in cards {
+            div .sa {
+                div .sh {
+                    @if card.running {
+                        span .st { span .ring style="width:8px;height:8px" {} }
+                    } @else {
+                        (icons::icon("check", "st"))
+                    }
+                    (icons::icon("subagents", "gl"))
+                    span .nm { (&card.name) }
+                    span .n { (card_state(card)) }
+                }
+                @if card.running {
+                    @for call in &card.tail {
+                        div .tt {
+                            (icons::icon(family_icon(call.row), "tg"))
+                            " " (call.label) " " (call_target(call, cwd))
+                        }
+                    }
+                } @else {
+                    div .settled { "settled - its calls are not drawn" }
+                }
             }
         }
-        div .note { "The only surface subagents have - the chat suppresses them." }
     };
-    section(false, "subagents", "subagents", &types.to_string(), &body)
+    section(false, "subagents", "subagents", &summary, &body)
 }
 
-/// How much work one agent type ran, counted so that one reads as one.
-fn call_count(calls: usize) -> String {
-    if calls == 1 { "1 call".to_owned() } else { format!("{calls} calls") }
+/// What a card says beside the instance's name: what it is doing, and how
+/// much it has run. The drawing puts the state first while an instance works
+/// and the count first once it has settled.
+fn card_state(card: &SubagentCard) -> String {
+    let tools = match card.calls {
+        0 => None,
+        1 => Some("1 tool".to_owned()),
+        calls => Some(format!("{calls} tools")),
+    };
+    if card.running {
+        return tools
+            .map_or_else(|| "running".to_owned(), |tools| format!("running \u{b7} {tools}"));
+    }
+    // An age only when the frame that settled it stated one: a number
+    // counted from the page's own clock would be a fact nothing said.
+    let settled = match card.ended_at {
+        Some(at) => format!("settled {}", crate::home::elapsed_label(at)),
+        None => "settled".to_owned(),
+    };
+    tools.map_or_else(|| settled.clone(), |tools| format!("{tools} \u{b7} {settled}"))
 }
 
 /// The MCP servers this session's bridge reported, with the reason a read
@@ -981,7 +1019,13 @@ fn memory_label(bytes: u64) -> String {
 
 /// The monitors section. Monitors live here and not in the chat, so this
 /// is the only surface that says what a session is watching.
-fn monitors_section(monitors: &[MonitorRecord]) -> Markup {
+///
+/// Every card draws its command, and the output under it only when the
+/// record names a file. The CLI names one on the notification that ends the
+/// monitor and never before: the record is created without one and the only
+/// frame that carries one also settles it, so the output belongs to a
+/// settled card and a running one has nothing to put under its command.
+fn monitors_section(monitors: &[MonitorRecord], tails: &HashMap<String, Vec<String>>) -> Markup {
     let running = monitors.iter().filter(|monitor| !monitor.status.is_terminal()).count();
     let summary = format!("{running} running");
     let body = html! {
@@ -997,10 +1041,9 @@ fn monitors_section(monitors: &[MonitorRecord]) -> Markup {
                     span .nm { (&monitor.description) }
                     span .n { (monitor_label(monitor)) }
                 }
-                @if monitor.status.is_terminal() {
-                    div .settled { "settled - its output stays in the transcript" }
-                } @else {
-                    div .tt { span .tg { "$" } " " (&monitor.command) }
+                div .tt { span .tg { "$" } " " (&monitor.command) }
+                @for line in tails.get(&monitor.tool_use_id).into_iter().flatten() {
+                    div .tt { (line) }
                 }
             }
         }
@@ -1008,15 +1051,66 @@ fn monitors_section(monitors: &[MonitorRecord]) -> Markup {
     section(false, "monitors", "monitors", &summary, &body)
 }
 
+/// The watched command's own output for every monitor that names a file,
+/// keyed by the record's own id.
+///
+/// Read on a blocking thread rather than inside the markup: these are disk
+/// reads on a render path, and the page's other ones are offloaded the same
+/// way. A file that cannot be read contributes no lines, which is what a
+/// reader gets for a command that has written nothing either, and the read
+/// logs why for the case where that is wrong.
+async fn monitor_tails(monitors: &[MonitorRecord]) -> HashMap<String, Vec<String>> {
+    let named: Vec<(String, String)> = monitors
+        .iter()
+        .filter_map(|monitor| {
+            monitor.output_file.as_ref().map(|path| (monitor.tool_use_id.clone(), path.clone()))
+        })
+        .collect();
+    if named.is_empty() {
+        return HashMap::new();
+    }
+    tokio::task::spawn_blocking(move || {
+        named
+            .into_iter()
+            .map(|(id, path)| {
+                let lines = forge_sessions::monitor::read_output_file_tail(
+                    Path::new(&path),
+                    MONITOR_TAIL_LINES,
+                )
+                .unwrap_or_default();
+                (id, lines)
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// How many of the watched command's output lines the card draws. The
+/// terminal's own chat block caps at the same five: the row is about what
+/// the command is doing now, not a transcript of everything it printed.
+const MONITOR_TAIL_LINES: usize = 5;
+
 /// The trailing word on a monitor's own row: how it ended, or what it is
 /// while it runs.
+///
+/// A settled row carries the age of its end beside it, from the instant
+/// the wire stamped on the transition. Only when the record holds one:
+/// a transition that stated no instant draws the word alone rather than
+/// an age counted from the status, which would be a number nothing said.
 fn monitor_label(monitor: &MonitorRecord) -> String {
-    match monitor.status {
-        MonitorStatus::Running if monitor.persistent => "persistent".to_owned(),
-        MonitorStatus::Running => "running".to_owned(),
-        MonitorStatus::Completed => "completed".to_owned(),
-        MonitorStatus::Stopped => "stopped".to_owned(),
-        MonitorStatus::TimedOut => "timed out".to_owned(),
+    let word = match monitor.status {
+        MonitorStatus::Running if monitor.persistent => "persistent",
+        MonitorStatus::Running => "running",
+        MonitorStatus::Completed => "completed",
+        MonitorStatus::Stopped => "stopped",
+        MonitorStatus::TimedOut => "timed out",
+    };
+    match monitor.ended_at {
+        Some(at) if monitor.status.is_terminal() => {
+            format!("{word} {}", crate::home::elapsed_label(at))
+        }
+        _ => word.to_owned(),
     }
 }
 

@@ -119,6 +119,10 @@ pub struct Notice {
 pub struct ToolLeaf {
     /// The `tool_use` id the wire gave it.
     pub id: String,
+    /// The class this call belongs to, which a row that draws one call
+    /// rather than a family picks its glyph from. A label alone cannot
+    /// tell a server named `read` from the read family.
+    pub row: KindRow,
     /// The tool's own label, for a row that names the tool rather than
     /// its family.
     pub label: &'static str,
@@ -712,7 +716,7 @@ fn outbound_card(name: &str, input: &serde_json::Value) -> Option<PeerCard> {
 /// and content the shared call builder resolves, and what its result
 /// recorded. A call with no result yet reads as `Pending`, which is what the
 /// resume path hands the TUI for the same file.
-fn leaf(
+pub(crate) fn leaf(
     id: &str,
     name: &str,
     input: &serde_json::Value,
@@ -741,6 +745,7 @@ fn leaf(
     };
     ToolLeaf {
         id: id.to_owned(),
+        row: family_row(name).0,
         label: tool_label(name),
         // What the row names, resolved the way the terminal's own tree
         // resolves it: a search call's target is its pattern, a read's is
@@ -763,10 +768,10 @@ fn leaf(
 /// What one call's result recorded: the status it settled at, the row's own
 /// content, and the CLI's record beside it. All three are what the shared
 /// result builder reads.
-struct Recorded {
-    status: ToolCallStatus,
-    content: Option<serde_json::Value>,
-    result: Option<serde_json::Value>,
+pub(crate) struct Recorded {
+    pub(crate) status: ToolCallStatus,
+    pub(crate) content: Option<serde_json::Value>,
+    pub(crate) result: Option<serde_json::Value>,
 }
 
 /// One settled turn's report, from the frame that recorded it.
@@ -815,7 +820,7 @@ fn turn_report(
 /// inline in the assistant message that made the call. Reading only the
 /// user turns leaves a server tool pending for good and holds its group's
 /// aggregate there with it.
-fn result_statuses(messages: &[Message]) -> HashMap<String, Recorded> {
+pub(crate) fn result_statuses(messages: &[Message]) -> HashMap<String, Recorded> {
     let mut out = HashMap::new();
     for message in messages {
         match message {

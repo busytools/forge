@@ -43,13 +43,17 @@ pub enum DiagnosticsPreset {
 }
 
 impl DiagnosticsPreset {
+    /// A preset replaces the default directives rather than adding to them,
+    /// so a target that only the defaults name lands nowhere under one. The
+    /// presets that carry a session's own records carry `forge_sessions`
+    /// too, which is where the demoted ones live.
     pub fn filter_directives(&self) -> &'static str {
         match self {
             Self::Runtime => {
-                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug"
+                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,forge_sessions=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug"
             }
             Self::Session => {
-                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,app.permission=debug,app.command=debug"
+                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,forge_sessions=debug,app.permission=debug,app.command=debug"
             }
             Self::Render => {
                 "info,app.render=trace,app.cache=debug,app.input=debug,app.paste=debug,app.perf=info"
@@ -58,7 +62,7 @@ impl DiagnosticsPreset {
                 "info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug"
             }
             Self::Full => {
-                "info,app.render=trace,app.perf=info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug"
+                "info,app.render=trace,app.perf=info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,forge_sessions=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug"
             }
         }
     }
