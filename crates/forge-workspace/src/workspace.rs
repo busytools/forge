@@ -3312,6 +3312,16 @@ impl Workspace {
         self.update_tx.subscribe_without_backlog(SubscriberRole::Observing)
     }
 
+    /// Subscribe as an answerer, carrying only what is emitted from here on.
+    ///
+    /// The answering half of [`Self::subscribe_mirror`], for a client that
+    /// renders prompts and attaches beside a terminal: it can answer, and the
+    /// backlog still belongs to whoever was there first, because that is the
+    /// view drawing the boot notice.
+    pub fn subscribe_answerer(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
+        self.update_tx.subscribe_without_backlog(SubscriberRole::Answering)
+    }
+
     /// Clone the workspace's [`SessionUpdate`] sender. Internal to this
     /// crate: a view's own async work belongs on a channel of its own,
     /// so that [`Self::subscribe`] is the whole of what the core owes a

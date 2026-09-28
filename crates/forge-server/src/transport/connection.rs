@@ -7,12 +7,12 @@ use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use futures_util::StreamExt;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use super::TransportState;
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{encode_subject, page, walk_processes_if_stale};
-use crate::Command;
+use crate::{Command, SessionUpdate};
 
 /// The protocol this server speaks.
 ///
@@ -64,23 +64,27 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
 /// message this server chose to drop, which is the failure that reads as a
 /// hang rather than as an error.
 async fn drive(socket: &mut WebSocket, state: &TransportState) -> anyhow::Result<()> {
-    // This socket's own stream, handed over by the surface. Every caller
-    // gets one, so a second client attaches beside the first rather than
-    // stealing its events, and dropping the socket drops this with it -
-    // which is what keeps a subscription from outliving its connection.
-    let mut updates = state.surface.subscribe();
     let mut watched: Vec<Subject> = Vec::new();
+    // None until the client's first word, which is what decides whether this
+    // connection answers. Registering as answering before knowing would count
+    // a client that cannot show a prompt as able to answer one, and the core
+    // parks a turn on that reply rather than failing it.
+    let mut updates: Option<mpsc::UnboundedReceiver<SessionUpdate>> = None;
 
     loop {
         tokio::select! {
             msg = socket.next() => {
                 let Some(msg) = msg else { break };   // the client went away
-                handle_client(socket, state, &mut watched, msg?).await?;
+                let msg = msg?;
+                if updates.is_none() {
+                    updates = Some(open_stream(state, &msg));
+                }
+                handle_client(socket, state, &mut watched, msg).await?;
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
             // would silently stop delivering while the socket stayed open.
-            heard = updates.recv() => {
+            heard = next_update(&mut updates) => {
                 let Some(update) = heard else { break };
                 if watched.iter().any(|what| what.covers(&update)) {
                     send(socket, ServerMessage::Update { update: Box::new(update) }).await?;
@@ -89,6 +93,42 @@ async fn drive(socket: &mut WebSocket, state: &TransportState) -> anyhow::Result
         }
     }
     Ok(())
+}
+
+/// This connection's stream from the core, registered with the role the
+/// client's first message declares.
+///
+/// Every caller gets a stream of its own, so a second client attaches beside
+/// the first rather than stealing its events, and dropping the socket drops
+/// this with it - which is what keeps a subscription from outliving its
+/// connection.
+fn open_stream(state: &TransportState, msg: &Message) -> mpsc::UnboundedReceiver<SessionUpdate> {
+    state.surface.subscribe_client(declaring_answers(msg))
+}
+
+/// Whether a client message says its sender can answer prompts. Anything
+/// else, including a message this server cannot read, leaves the connection
+/// observing.
+fn declaring_answers(msg: &Message) -> bool {
+    let Message::Text(text) = msg else {
+        return false;
+    };
+    matches!(
+        serde_json::from_str::<ClientMessage>(text),
+        Ok(ClientMessage::Subscribe { answering: true, .. }),
+    )
+}
+
+/// The stream's next update, or a future that never resolves while there is
+/// none - which is what keeps the branch out of the way until the client has
+/// spoken and the role is known.
+async fn next_update(
+    updates: &mut Option<mpsc::UnboundedReceiver<SessionUpdate>>,
+) -> Option<SessionUpdate> {
+    match updates.as_mut() {
+        Some(updates) => updates.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Answer one client message.
@@ -112,7 +152,7 @@ async fn handle_client(
         .await;
     };
     match client {
-        ClientMessage::Subscribe { what } => match encode_subject(state, &what).await {
+        ClientMessage::Subscribe { what, .. } => match encode_subject(state, &what).await {
             Ok(data) => {
                 // Watched only once the subject is one this server can
                 // answer for: a refused subscribe leaves nothing to hear.

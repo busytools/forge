@@ -87,68 +87,109 @@ impl Live {
     /// and not the fleet's, and the fleet's region carries no composer.
     pub fn apply(&mut self, update: &SessionUpdate) -> Redraw {
         let composer = self.composer.apply(update);
-        let fleet = match update {
-            SessionUpdate::ChatAppended { key, msg } => match msg {
-                Message::Result { is_error, subtype, .. }
-                    if is_success_result(*is_error, subtype) =>
-                {
-                    // A turn finished on a session this page is not
-                    // showing, so the row earns its diamond until the
-                    // session is opened. A seat a page is open on has
-                    // already shown it, so it earns nothing, and the row
-                    // settles out of running like any other.
-                    if !self.attached.contains_key(key) {
-                        self.unseen.mark_completed(key);
-                    }
-                    true
+        let fleet = match fleet_news(update) {
+            FleetNews::Nothing => false,
+            // A turn finished on a session this page is not showing, so the
+            // row earns its diamond until the session is opened. A seat a
+            // page is open on has already shown it, so it earns nothing,
+            // and the row settles out of running like any other.
+            FleetNews::Completed(key) => {
+                if !self.attached.contains_key(key) {
+                    self.unseen.mark_completed(key);
                 }
-                Message::System { subtype, data, .. } if subtype == "session_state_changed" => {
-                    // Work started again, which supersedes the completion
-                    // the diamond marks. Serving the seat's page clears it
-                    // too, so this is the clear for a seat nobody opened.
-                    if parse_runtime_session_state(data.get("state"))
-                        == Some(RuntimeSessionState::Running)
-                    {
-                        self.unseen.clear(key);
-                    }
-                    true
-                }
-                Message::BackgroundTasksChanged { .. } => true,
-                _ => false,
-            },
-            // The row set, and what each row is. A spawn or a replacement
-            // is a fresh occupant, whose history is not a completion this
-            // page has failed to show.
-            SessionUpdate::Spawning { key, .. }
-            | SessionUpdate::Connected { key, .. }
-            | SessionUpdate::SessionReplaced { key, .. } => {
+                true
+            }
+            // Work started again, which supersedes the completion the
+            // diamond marks. Serving the seat's page clears it too, so this
+            // is the clear for a seat nobody opened.
+            FleetNews::Running(key) => {
                 self.unseen.clear(key);
                 true
             }
-            // Everything else that changes what a row or a card says. The
-            // catalog, the dictation snapshot and the claude version all
-            // arrive after the listener binds: a page opened in those
-            // first seconds would otherwise keep the empty answer it
-            // painted until the next tick.
-            SessionUpdate::CatalogLoaded
-            | SessionUpdate::CliVersionChanged
-            | SessionUpdate::DictateAvailability
-            | SessionUpdate::ConnectionFailed { .. }
-            | SessionUpdate::AuthRequired { .. }
-            | SessionUpdate::TurnError { .. }
-            | SessionUpdate::TurnCancelled { .. }
-            | SessionUpdate::PermissionRequest { .. }
-            | SessionUpdate::QuestionRequest { .. }
-            // Answering moves the seat out of the rail's needs-you group and
-            // drops the inspector's pending row, so it redraws a row even
-            // though it is the composer that asked for it.
-            | SessionUpdate::PendingInteractionResolved { .. }
-            | SessionUpdate::WorkerStatusChanged { .. } => true,
-            // Everything else is the conversation, which this page does
-            // not show.
-            _ => false,
+            FleetNews::Occupant(key) => {
+                self.unseen.clear(key);
+                true
+            }
+            FleetNews::Redraw => true,
         };
         Redraw { fleet, composer }
+    }
+}
+
+/// What one update asks of the fleet region: the rows, and the marks on them.
+///
+/// One classification for its two readers - the view folding the stream, and
+/// the socket deciding which subscribers an update belongs to - because a
+/// second table of the variants would drift from this one.
+pub enum FleetNews<'a> {
+    /// The region draws nothing of it. Most of the stream: a turn's own words
+    /// are the bulk of it, and no row shows one.
+    Nothing,
+    /// A row or a mark changed.
+    Redraw,
+    /// A turn finished on the seat.
+    Completed(&'a SessionSlot),
+    /// Work started again on the seat.
+    Running(&'a SessionSlot),
+    /// A fresh occupant took the seat.
+    Occupant(&'a SessionSlot),
+}
+
+impl FleetNews<'_> {
+    /// Whether the region draws anything of this update at all.
+    pub fn any(&self) -> bool {
+        !matches!(self, Self::Nothing)
+    }
+}
+
+/// Classify one update for the fleet region.
+///
+/// The filter is what keeps a busy turn from re-sending the fleet for every
+/// token of it: only the updates that can change what a row draws belong here.
+pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
+    match update {
+        SessionUpdate::ChatAppended { key, msg } => match msg {
+            Message::Result { is_error, subtype, .. }
+                if is_success_result(*is_error, subtype) =>
+            {
+                FleetNews::Completed(key)
+            }
+            Message::System { subtype, data, .. } if subtype == "session_state_changed" => {
+                if parse_runtime_session_state(data.get("state")) == Some(RuntimeSessionState::Running)
+                {
+                    FleetNews::Running(key)
+                } else {
+                    FleetNews::Redraw
+                }
+            }
+            Message::BackgroundTasksChanged { .. } => FleetNews::Redraw,
+            _ => FleetNews::Nothing,
+        },
+        // The row set, and what each row is.
+        SessionUpdate::Spawning { key, .. }
+        | SessionUpdate::Connected { key, .. }
+        | SessionUpdate::SessionReplaced { key, .. } => FleetNews::Occupant(key),
+        // Everything else that changes what a row or a card says. The
+        // catalog, the dictation snapshot and the claude version all arrive
+        // after the listener binds: a page opened in those first seconds
+        // would otherwise keep the empty answer it painted until the next
+        // tick.
+        SessionUpdate::CatalogLoaded
+        | SessionUpdate::CliVersionChanged
+        | SessionUpdate::DictateAvailability
+        | SessionUpdate::ConnectionFailed { .. }
+        | SessionUpdate::AuthRequired { .. }
+        | SessionUpdate::TurnError { .. }
+        | SessionUpdate::TurnCancelled { .. }
+        | SessionUpdate::PermissionRequest { .. }
+        | SessionUpdate::QuestionRequest { .. }
+        // Answering moves the seat out of the rail's needs-you group and
+        // drops the inspector's pending row, so it redraws a row even though
+        // it is the composer that asked for it.
+        | SessionUpdate::PendingInteractionResolved { .. }
+        | SessionUpdate::WorkerStatusChanged { .. } => FleetNews::Redraw,
+        // Everything else is the conversation, which no row shows.
+        _ => FleetNews::Nothing,
     }
 }
 

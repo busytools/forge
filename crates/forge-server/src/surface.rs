@@ -151,6 +151,29 @@ impl ViewSurface {
         self.workspace.subscribe_mirror()
     }
 
+    /// The core's stream for a client attaching beside the terminal,
+    /// registered with the role that client declared.
+    ///
+    /// **Neither role takes the pre-attach backlog.** It goes to the first
+    /// subscriber, and the view that renders the boot notice is the terminal:
+    /// a client attaching beside it must not take that notice away, whether
+    /// or not the client can answer. A client reads what it missed from the
+    /// subject's snapshot instead.
+    ///
+    /// The role decides one thing: whether the core may park a prompt on this
+    /// connection's reply. `answering` is the client's own statement that it
+    /// can show and answer a prompt.
+    pub fn subscribe_client(
+        &self,
+        answering: bool,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+        if answering {
+            self.workspace.subscribe_answerer()
+        } else {
+            self.workspace.subscribe_mirror()
+        }
+    }
+
     /// The projects, their sessions, and the per-project lists the
     /// Projects pane renders.
     pub fn roster(&self) -> Roster {

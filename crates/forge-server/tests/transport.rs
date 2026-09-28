@@ -139,7 +139,7 @@ async fn a_client_can_open_the_socket() {
 #[tokio::test]
 async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
     let mut socket = connected().await;
-    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home }).await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
 
     let msg = next_server(&mut socket).await;
     let ServerMessage::Snapshot { subject, data } = msg else { panic!("{msg:?}") };
@@ -234,7 +234,7 @@ async fn a_more_is_answered_with_a_page_of_whole_turns() {
 async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
     let (url, fleet) = a_server().await;
     let mut socket = connect(&url).await;
-    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home }).await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
         panic!("the subscribe is answered with a snapshot first")
     };
@@ -246,15 +246,41 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
         "a home subscriber hears an App-level update",
     );
 
-    // And one that names a seat is not the home's business. The evidence is ORDER, never a
-    // timeout: waiting for the update to NOT arrive would hang on the correct behaviour, so
-    // the test asks for something whose answer must come next and asserts THAT is what it got.
+    // A seat's own news reaches the home, because a row states it: whether the
+    // seat is running, waiting on an answer, or finished with a turn nobody
+    // looked at. A home that heard only the App-level updates would be a still
+    // photograph of a fleet changing underneath it.
     fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
-    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home }).await;
+    assert!(
+        matches!(next_server(&mut socket).await, ServerMessage::Update { .. }),
+        "a home subscriber hears a seat's row change",
+    );
+
+    // And the conversation does not. A token is the bulk of the stream and no
+    // row draws one, so carrying it here would re-send the whole fleet for
+    // every word of every seat in it. The evidence is ORDER, never a timeout:
+    // waiting for the update NOT to arrive would hang on the correct
+    // behaviour, so the test asks for something whose answer must come next
+    // and asserts THAT is what it got.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "m1",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{ "type": "text", "text": "a token" }],
+            },
+            "session_id": "s",
+        }))
+        .expect("parse an assistant message"),
+    });
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let msg = next_server(&mut socket).await;
     assert!(
         matches!(msg, ServerMessage::Snapshot { .. }),
-        "a seat's update must not reach a home subscriber; the snapshot should be next: {msg:?}",
+        "a chat token must not reach a home subscriber; the snapshot should be next: {msg:?}",
     );
 }
 
@@ -266,7 +292,8 @@ async fn two_sockets_on_one_seat_both_hear_it() {
     let mut first = connect(&url).await;
     let mut second = connect(&url).await;
     for socket in [&mut first, &mut second] {
-        send(socket, ClientMessage::Subscribe { what: Subject::Session(lead_seat()) }).await;
+        send(socket, ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true })
+            .await;
         let ServerMessage::Snapshot { .. } = next_server(socket).await else {
             panic!("a seat that exists is answered with its snapshot")
         };
@@ -290,7 +317,7 @@ async fn two_sockets_on_one_seat_both_hear_it() {
 async fn a_dropped_socket_leaves_no_subscription_behind() {
     let (url, fleet) = a_server().await;
     let mut socket = connect(&url).await;
-    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home }).await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
         panic!("the subscribe is answered with a snapshot")
     };

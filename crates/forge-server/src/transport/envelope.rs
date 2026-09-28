@@ -8,6 +8,7 @@
 use forge_primitives::{SessionSlot, WebConfig};
 use serde::{Deserialize, Serialize};
 
+use crate::live::fleet_news;
 use crate::{Command, SessionUpdate};
 
 /// What a client can watch. A subscription names one of these and is
@@ -22,18 +23,20 @@ pub enum Subject {
 impl Subject {
     /// Whether an update belongs to what this subscription asked for.
     ///
-    /// The workspace already decides which seat a variant routes to, so this
-    /// ASKS it rather than matching the variants. A match over all
-    /// fifty-five would be large, it looks like the real work, and one wrong
-    /// arm gives a client that either never hears something or hears
-    /// everything - neither of which fails a build.
+    /// A session subscription is a seat, so the workspace is ASKED which seat
+    /// a variant routes to rather than this matching the variants itself.
+    ///
+    /// A home subscription is a row per seat plus the App-level facts, so it
+    /// takes the classification that already exists for the same question:
+    /// [`fleet_news`], which is what the view folding this stream draws the
+    /// fleet from. It is narrow on purpose - a row states a seat's lifecycle,
+    /// its status and its pending state, and no row shows a word of its
+    /// conversation - so a second table of variants here would both drift and
+    /// hand a home subscriber every token of every seat in the fleet.
     pub fn covers(&self, update: &SessionUpdate) -> bool {
-        match (self, update.slot()) {
-            // A variant that names no seat is App-level, which is exactly
-            // what a home subscription is for.
-            (Self::Home, None) => true,
-            (Self::Session(seat), Some(to)) => seat == to,
-            _ => false,
+        match self {
+            Self::Home => fleet_news(update).any(),
+            Self::Session(seat) => update.slot() == Some(seat),
         }
     }
 }
@@ -44,6 +47,16 @@ impl Subject {
 pub enum ClientMessage {
     Subscribe {
         what: Subject,
+        /// Whether this client can answer the prompts it is shown.
+        ///
+        /// Off unless the client says otherwise, because the core parks a
+        /// turn on the reply of whoever registered as answering: a client
+        /// counted as able to answer a prompt it cannot display hangs the
+        /// turn rather than failing it. A client with a dock to answer from
+        /// says so here; the connection registers with the core accordingly
+        /// before it forwards anything.
+        #[serde(default)]
+        answering: bool,
     },
     Unsubscribe {
         what: Subject,
@@ -126,15 +139,16 @@ mod tests {
 
     #[test]
     fn a_subscribe_round_trips_through_json() {
-        let sent = ClientMessage::Subscribe { what: Subject::Home };
+        let sent = ClientMessage::Subscribe { what: Subject::Home, answering: true };
         let json = serde_json::to_string(&sent).expect("encode");
         assert!(json.contains("\"kind\":\"subscribe\""), "{json}");
 
         let back: ClientMessage = serde_json::from_str(&json).expect("decode");
-        let ClientMessage::Subscribe { what } = back else {
+        let ClientMessage::Subscribe { what, answering } = back else {
             panic!("{json} decoded into another message");
         };
         assert_eq!(what, Subject::Home, "the subject survives the round trip");
+        assert!(answering, "and so does the capability the client declared");
     }
 
     /// The client's settings come off the server's own config, so the

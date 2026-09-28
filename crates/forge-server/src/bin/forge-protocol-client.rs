@@ -117,7 +117,10 @@ fn parse_line(line: &str, reply_to: &mut u64) -> anyhow::Result<ClientMessage> {
     let (verb, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
     let rest = rest.trim();
     match verb {
-        "subscribe" => Ok(ClientMessage::Subscribe { what: subject(rest)? }),
+        // This instrument drives the socket the way a view does, so it
+        // declares itself able to answer: a client that cannot show a prompt
+        // must not be counted as one, but this one walks the reply path.
+        "subscribe" => Ok(ClientMessage::Subscribe { what: subject(rest)?, answering: true }),
         "unsubscribe" => Ok(ClientMessage::Unsubscribe { what: subject(rest)? }),
         "more" => {
             let mut parts = rest.split_whitespace();
