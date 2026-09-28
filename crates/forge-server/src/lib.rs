@@ -33,6 +33,35 @@ pub mod transport;
 pub mod unseen;
 pub mod work;
 
+// The build's own stamp, which states WHICH forge commit is running rather
+// than which crate is drawing. It lives here because the crate that renders a
+// header is not the crate the header is about: the terminal reads these and
+// re-exports them, and a client reads them off the wire - so the stamp has to
+// outlive the terminal rather than being compiled into it.
+
+/// Full version string for the welcome banner + status panel.
+///
+/// Always carries the short SHA so a screenshot is enough to identify the
+/// running build. On `main` (and detached HEAD) the stamp adds ` · <sha>`;
+/// on any other branch the stamp adds ` · <sha> (<branch>)`.
+pub const FORGE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("FORGE_BUILD_SUFFIX_FULL"));
+
+/// Short version string for tight slots (Projects pane bottom row, launchpad
+/// version line). Always carries the short SHA as `+<sha>` so the running
+/// build is identifiable from a screenshot.
+pub const FORGE_VERSION_SHORT: &str =
+    concat!(env!("CARGO_PKG_VERSION"), env!("FORGE_BUILD_SUFFIX_SHORT"));
+
+/// How this build was made - the marker `scripts/install.sh` sets, or empty
+/// for anything else. Surfaced at startup by the terminal's
+/// `startup::report_build_provenance`.
+pub const FORGE_BUILD_PROVENANCE: &str = env!("FORGE_BUILD_PROVENANCE");
+
+/// Digest of the `Cargo.lock` this build saw, not of forge's single-instance
+/// lock. FNV-1a, not a SHA, so `shasum` will not reproduce it. Meaningful only
+/// compared against the digest a build of the released tag reports.
+pub const FORGE_CARGO_LOCK_DIGEST: &str = env!("FORGE_CARGO_LOCK_DIGEST");
+
 /// The core's update protocol, as a view reads it. It is the same type the
 /// same call hands the TUI, so nothing here wraps or renames it.
 pub use surface::SessionUpdate;
