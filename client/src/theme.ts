@@ -48,7 +48,13 @@ const DARK: Record<string, string> = {
   '--line': '#222a3c',
   '--text': '#eaeef6',
   '--muted': '#8f98a8',
-  '--dim': '#5d6675',
+  // The quietest of the three text tokens, and the darkest step that clears
+  // AA on every ground the sheet puts text on: 5.26:1 on the page, 4.87:1 on
+  // --s1 and 4.53:1 on --s2. It was #5d6675, which measured 3.51:1 while
+  // carrying 12.5px labels in about fifty places, so the token failed the
+  // standard rather than the uses being wrong. Kept in step with
+  // `crates/forge-web/src/theme.rs` by `salvage.test.ts`.
+  '--dim': '#788294',
   '--accent': '#f47600',
   '--ok': '#82c76b',
   '--warn': '#c9a13b',

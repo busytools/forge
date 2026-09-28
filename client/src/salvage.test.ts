@@ -49,4 +49,58 @@ describe('the salvage copies', () => {
       );
     }
   });
+
+  /**
+   * The palette has the same two-copies problem as the sheet and, until
+   * this, nothing pinned it. `theme.rs` names its values as constants and
+   * lists them by key; `theme.ts` holds them inline, so the two shapes are
+   * parsed apart and compared as maps.
+   *
+   * A value that drifts here is a token the server and the client disagree
+   * about, which shows up as one surface drawing a different colour rather
+   * than as a failure - the reason the sheet's copy is pinned too.
+   */
+  it('resolves the same palette the server does', () => {
+    // The key carries a digit (`--s1`), so the character class does too.
+    const KEY = /'?(--[a-z0-9-]+)'?/;
+
+    const rust = read('../../crates/forge-web/src/theme.rs');
+    const named = new Map(
+      [...rust.matchAll(/const ([A-Z0-9_]+): &str = "(#[0-9a-f]{3,8})";/g)].map((match) => [
+        match[1] as string,
+        match[2] as string,
+      ]),
+    );
+    const server = new Map(
+      [...rust.matchAll(/\("(--[a-z0-9-]+)", ([A-Z0-9_]+)\)/g)].map((match) => [
+        match[1] as string,
+        named.get(match[2] as string),
+      ]),
+    );
+    const client = new Map(
+      [...read('./theme.ts').matchAll(/'(--[a-z0-9-]+)': '(#[0-9a-f]{3,8})'/g)].map((match) => [
+        match[1] as string,
+        match[2] as string,
+      ]),
+    );
+
+    expect(server.size, 'theme.rs lists no tokens').toBeGreaterThan(15);
+
+    /**
+     * The client drops exactly the highlighter's five, because the server
+     * owns no code colouring: naming them here is what stops a SIXTH one
+     * disappearing from the client unnoticed, which is the drift this test
+     * exists for.
+     */
+    const dropped = new Set(['--syn-key', '--syn-str', '--syn-fn', '--add-bg', '--del-bg']);
+    expect(
+      [...server.keys()].filter((token) => !client.has(token)).sort(),
+      'the client carries a different set from the server',
+    ).toEqual([...dropped].sort());
+
+    for (const [token, value] of client) {
+      expect(value, `${token} differs between the two copies`).toBe(server.get(token));
+      expect(KEY.test(token), `${token} is not a token name`).toBe(true);
+    }
+  });
 });

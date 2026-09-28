@@ -119,13 +119,33 @@ the 44 a finger needs. Every form control now takes 44px at the phone
 breakpoint, where before nothing did.
 
 The contrast pair was measured rather than trusted to the token's name,
-and it found a third: **`--dim` is 3.51:1 on the page's own background**,
-under the 4.5:1 that normal text needs, and it carries 12.5 and 13.5px
-labels in about fifty places across the sheet. That one is not fixed here,
-because it is the palette's VALUE and the palette arrives from the server:
-`#788294` would clear it at 5.26:1 on the background and 4.87:1 on the
-raised surface, and changing it moves every surface at once. It is
-recorded rather than applied.
+and it found a third: **`--dim` carried 12.5 and 13.5px labels in about
+fifty places while measuring 3.51:1 on the page and 3.03:1 on a raised
+card**, under the 4.5:1 that normal text needs. The uses were not wrong,
+the value was, so the value changed: `#788294`, which is the **darkest**
+step that clears AA on every ground the sheet puts text on, so the change
+is the smallest one available rather than a comfortable one.
+
+**Measured from the rendered page rather than from the two hex values**,
+because the ground is a composite: the body carries a radial gradient over
+`--bg` and a card carries one over `--s1`. Sampling the painted pixels and
+reading the text colour the browser paints with:
+
+| Pair, as rendered | Ratio |
+|---|---|
+| `--dim` on the page | 5.26:1 |
+| `--dim` at the gradient's edge | 5.25:1 |
+| `--dim` on a card | 4.98:1 |
+| `--dim` at a card's deepest | 4.87:1 |
+| `--muted` on the page | 7.01:1 |
+| `--text` on a card | 16.24:1 |
+
+**And looked at, because the number is not the whole test.** The three text
+tokens still rank as a ranking: text, then muted, then dim, at both widths
+on the home and on the connect screen. The gap between muted and dim is
+narrower than it was - which is what passing costs - and there is no darker
+step available, because a darker one fails on the raised card. The two
+constraints meet at this value.
 
 The keyboard and touch checks were clean on all four directions once the
 ring and the target size were in, and every direction used the theme's own
