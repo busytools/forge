@@ -112,8 +112,9 @@ pub struct SDKSessionInfo {
     pub created_at: Option<u64>,
 }
 
-/// One user / assistant message from a session transcript, as
-/// returned by `get_session_messages()`.
+/// One row of a session transcript, as returned by
+/// `get_session_messages()`: a turn, or a `system` frame the scan keeps
+/// for a view to draw.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionMessage {
     /// Message kind.
@@ -123,7 +124,8 @@ pub struct SessionMessage {
     pub uuid: String,
     /// Session this message belongs to.
     pub session_id: String,
-    /// Raw Anthropic API message (role, content, usage, …).
+    /// Raw Anthropic API message (role, content, usage, …) for a turn.
+    /// For a `system` kind the row itself, which nests no envelope.
     pub message: Value,
     /// Always `None` for top-level messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,35 +140,37 @@ pub struct SessionMessage {
     pub tool_use_result: Option<Value>,
 }
 
-/// A session transcript's replayable messages plus the compaction count
+/// A session transcript's replayable rows plus the compaction count
 /// recovered from the same pass over the file.
 ///
 /// The count cannot be derived from `messages`: a `compact_boundary` row
-/// is `type: "system"` and never becomes a `SessionMessage`.
+/// is counted on the way past and never becomes a `SessionMessage`.
+/// `system` rows generally do not: a turn's hook summary is the exception.
 #[derive(Debug, Default)]
 pub struct SessionHistory {
-    /// User / assistant turns, in file order.
+    /// The rows that replay, in file order.
     pub messages: Vec<SessionMessage>,
     /// `compact_boundary` rows seen in the transcript.
     pub compaction_count: u32,
 }
 
-/// A session transcript's messages synthesized into wire shape, plus the
+/// A session transcript's rows synthesized into wire shape, plus the
 /// compaction count recovered from the same pass over the file.
 ///
 /// The count cannot be derived from `messages`: a `compact_boundary` row
 /// is `type: "system"` and is never synthesized.
 #[derive(Debug, Default)]
 pub struct ConversationHistory {
-    /// User / assistant turns, in file order, each stamped with the
+    /// The frames that replay, in file order, each stamped with the
     /// session it was read for.
     pub messages: Vec<Message>,
     /// `compact_boundary` rows seen in the transcript.
     pub compaction_count: u32,
 }
 
-/// User / assistant discriminator. Wire shape:
-/// `Literal["user", "assistant"]` on `SessionMessage.type`.
+/// What a [`SessionMessage`] holds. The two halves the SDK knows are its
+/// own `Literal["user", "assistant"]` on `SessionMessage.type`; `System` is
+/// forge's, for a frame the SDK does not read back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionMessageKind {
@@ -174,6 +178,10 @@ pub enum SessionMessageKind {
     User,
     /// Assistant turn.
     Assistant,
+    /// A `system` frame with something to replay: a turn's hook summary is
+    /// the one the scan keeps. Its `message` is the frame itself, because a
+    /// system row has no inner envelope.
+    System,
 }
 
 /// Possible connection statuses for an MCP server. Wire shape:
