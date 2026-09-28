@@ -58,16 +58,49 @@ pub use forge_primitives::TurnErrorClass;
 /// keyed by `tool_id` in `DomainSession.pending_interactions`.
 /// `Command::RespondPermission` / `RespondQuestion` look up the
 /// matching slot and send the outcome down the oneshot.
+///
+/// The request rides beside the sender so a view that attached after the
+/// prompt landed still draws what it offers. The stream is a mirror with no
+/// backlog, so the update that carried it is gone by then, and the dock's
+/// whole point is answering from a view that was not there when it arrived.
 pub enum PendingInteractionSlot {
-    Permission(oneshot::Sender<PermissionOutcome>),
-    Question(oneshot::Sender<QuestionOutcome>),
+    Permission { tx: oneshot::Sender<PermissionOutcome>, request: Box<PermissionRequest> },
+    Question { tx: oneshot::Sender<QuestionOutcome>, request: Box<QuestionRequest> },
+}
+
+/// What a seat is held on, as the core kept it: the prompt a view that
+/// attached late has no other way to read.
+#[derive(Clone)]
+pub enum PendingAsk {
+    Permission(Box<PermissionRequest>),
+    Question(Box<QuestionRequest>),
+}
+
+impl PendingAsk {
+    /// The tool call this prompt is about, which is the id an answer names.
+    pub fn tool_id(&self) -> &str {
+        match self {
+            Self::Permission(request) => &request.tool_call.tool_call_id,
+            Self::Question(request) => &request.tool_call.tool_call_id,
+        }
+    }
+}
+
+impl PendingInteractionSlot {
+    /// The request this slot is holding, which is what it offers.
+    pub fn ask(&self) -> PendingAsk {
+        match self {
+            Self::Permission { request, .. } => PendingAsk::Permission(request.clone()),
+            Self::Question { request, .. } => PendingAsk::Question(request.clone()),
+        }
+    }
 }
 
 impl std::fmt::Debug for PendingInteractionSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Permission(_) => f.write_str("PendingInteractionSlot::Permission"),
-            Self::Question(_) => f.write_str("PendingInteractionSlot::Question"),
+            Self::Permission { .. } => f.write_str("PendingInteractionSlot::Permission"),
+            Self::Question { .. } => f.write_str("PendingInteractionSlot::Question"),
         }
     }
 }
@@ -870,6 +903,15 @@ pub enum SessionUpdate {
         tool_id: String,
         request: QuestionRequest,
     },
+    /// The interaction `tool_id` was answered, so every view holding the
+    /// prompt can drop it. Answering leaves the pending set either way,
+    /// and this is the only thing that says so on the stream: without it a
+    /// second view keeps drawing a prompt that is already settled. The TUI
+    /// never met that, because it is the only view.
+    PendingInteractionResolved {
+        key: SessionSlot,
+        tool_id: String,
+    },
     McpOperationError {
         key: SessionSlot,
         error: McpOperationError,
@@ -1180,6 +1222,7 @@ impl SessionUpdate {
             | Self::SetModelFailed { key, .. }
             | Self::PermissionRequest { key, .. }
             | Self::QuestionRequest { key, .. }
+            | Self::PendingInteractionResolved { key, .. }
             | Self::McpOperationError { key, .. }
             | Self::TurnComplete { key, .. }
             | Self::TurnCancelled { key }
@@ -1276,6 +1319,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("tool_id", tool_id)
                 .finish_non_exhaustive(),
+            Self::PendingInteractionResolved { key, tool_id } => f
+                .debug_struct("PendingInteractionResolved")
+                .field("key", key)
+                .field("tool_id", tool_id)
+                .finish(),
             Self::McpOperationError { key, .. } => {
                 f.debug_struct("McpOperationError").field("key", key).finish_non_exhaustive()
             }

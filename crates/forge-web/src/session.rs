@@ -51,7 +51,7 @@ use serde_json::Value;
 use crate::home::{Home, Row, Seed, State};
 use crate::icons;
 use crate::server::WebState;
-use crate::stream::Live;
+use crate::stream::{COMPOSER_EVENT, Live, SESSION_EVENT};
 use crate::work::WorkState;
 
 /// The handle that brings the projects rail back, and the one that brings
@@ -298,10 +298,33 @@ async fn shell(
             // the swap replaced would take every one of them with it.
             body hx-ext="sse, morph" sse-connect=(events_path(slot)) sse-close="close" {
                 (icons::sprite())
-                div #live sse-swap="session" hx-swap="morph:outerHTML" hx-target="#session-body" {
+                // Two listeners on one connection, each on a wrapper its own
+                // event never replaces: htmx re-processes what it swaps in,
+                // so a listener on the region itself would register another
+                // per event. The pane boxes sit inside the wrapper and
+                // outside the region, which is the only place a swap leaves
+                // their state alone.
+                div #live sse-swap=(SESSION_EVENT) hx-swap="morph:outerHTML"
+                    hx-target="#session-body" {
                     input type="checkbox" id="l" hidden;
                     input type="checkbox" id="r" hidden;
-                    (columns(home, slot, messages, live_turn, compacting, roster, agents).await)
+                    div .app {
+                        (columns(home, slot, messages, live_turn, compacting, roster, agents).await)
+                        div #composer-slot sse-swap=(COMPOSER_EVENT) hx-swap="morph:outerHTML"
+                            hx-target="#comp" {
+                            div .composer {
+                                (crate::composer::render(
+                                    home,
+                                    slot,
+                                    roster,
+                                    agents,
+                                    "",
+                                    crate::composer::Draft::Known,
+                                )
+                                .await)
+                            }
+                        }
+                    }
                 }
                 script src="/vendor/htmx.js" {}
                 script src="/vendor/htmx-sse.js" {}
@@ -329,9 +352,9 @@ pub(crate) async fn session_region(
     columns(&home, slot, conversation, live_turn, compacting, &roster, &agents).await
 }
 
-/// The seat a route names, when the roster holds it. A project's own lead
-/// seat exists whether or not it has ever run; a worker's exists only while
-/// the roster can name it.
+/// The seat a route names, when the roster holds it. A caller that has
+/// already walked the core for its own render passes the two walks in
+/// through [`resolve`] instead, so one page walks once.
 pub(crate) fn seat(
     surface: &ViewSurface,
     org: &str,
@@ -340,13 +363,7 @@ pub(crate) fn seat(
 ) -> Option<SessionSlot> {
     let roster = surface.roster();
     let agents = surface.agents();
-    let found = roster.projects.iter().find(|seat| seat.org == org && seat.name == project)?;
-    if label == "lead" {
-        return Some(SessionSlot::lead(org, project));
-    }
-    let named = agents.for_project(&found.key).iter().any(|row| row.label == label)
-        || surface.workers().for_project(&found.key).iter().any(|row| row.label == label);
-    named.then(|| SessionSlot::worker(org, project, label))
+    resolve(surface, &roster, &agents, org, project, label)
 }
 
 /// The page's three columns, which the first render and every swap both
@@ -396,7 +413,6 @@ async fn columns(
 
     html! {
     div #session-body {
-        div .app {
                 aside .rail .left {
                     div .banner {
                         span .t { "projects" }
@@ -432,11 +448,9 @@ async fn columns(
                             tail.as_ref(),
                         ))
                     }
-                    div .composer {
-                        (crate::composer::render(home, slot, roster, agents, "").await)
-                    }
                 }
                 aside .rail .right {
+
                     div .banner {
                         span .t { "inspector" }
                         span .n .ml { (slot.project()) }
@@ -444,8 +458,7 @@ async fn columns(
                     }
                     div .scroll { (inspector(home, roster, slot, messages).await) }
                 }
-            }
-        }
+    }
     }
 }
 
