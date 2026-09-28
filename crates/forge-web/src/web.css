@@ -7,6 +7,18 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* One focus treatment, on every control the sheet can reach: an accent ring
+   with an offset, so it reads on any ground and clears a border rather than
+   sitting on it. `:focus-visible` rather than `:focus`, so a pointer press
+   does not draw it while a Tab still does.
+   Without this the sheet had no ring at all and the one rule that touched
+   focus removed it (`.line .txt`), which leaves a keyboard user unable to
+   see where they are. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 :root {
   /* --ui and --mono are injected from [web] font, not declared here: at
      equal specificity a stack in this block lands after the injected one
@@ -741,6 +753,13 @@ details.msg[open] > summary .arw { color: var(--teal); }
    columns to give way before the letters do. */
 @media (max-width: 560px) {
   .tibody { grid-template-columns: 1fr; width: auto; }
+
+  /* A thumb, not a cursor. The by-width checks measured the layout and never
+     the reach, and the smallest controls here - the composer's send, the
+     dock's option rows, a section's disclosure - are 20 to 28px tall. 44 is
+     the size a finger needs, and it is applied at the phone breakpoint rather
+     than everywhere so a desktop pointer keeps the tighter rows. */
+  button, input, select, textarea, details > summary { min-height: 44px; }
 }
 
 /* A delivery keeps the lines it arrived with: its body is often a second
@@ -819,7 +838,11 @@ details.msg[open] > summary .arw { color: var(--teal); }
   font-size: var(--fs-prose); line-height: 1.5; background: none; border: 0;
   padding: 0; resize: none; overflow-y: auto; max-height: 40vh;
   field-sizing: content; }
-.line .txt:focus { outline: none; }
+/* The box's own border is this field's focus indicator, so the ring is
+   suppressed for a POINTER press only: `:not(:focus-visible)` keeps the ring
+   for Tab and drops it otherwise. Removing it outright is the anti-pattern
+   the rule above exists to end. */
+.line .txt:focus:not(:focus-visible) { outline: none; }
 .line .txt::placeholder { color: var(--dim); font-style: italic; }
 .send { color: var(--accent); padding-top: 3px; background: none; border: 0;
   cursor: pointer; display: flex; }
