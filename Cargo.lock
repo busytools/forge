@@ -1257,6 +1257,7 @@ version = "1.0.92"
 dependencies = [
  "anyhow",
  "axum",
+ "clap",
  "forge-primitives",
  "forge-server",
  "forge-workspace",

@@ -122,6 +122,12 @@ impl Fleet {
         self.workspace.emit_for_test(update);
     }
 
+    /// Give a project a task, so a fixture can read one back rather than
+    /// answering with an empty list a reader cannot tell from a missing field.
+    pub fn seed_task(&self, task: forge_primitives::tasks::Task) {
+        self.workspace.seed_test_task(task);
+    }
+
     /// [`Self::emit`], reporting whether a subscriber was there to take it.
     ///
     /// `false` once nothing is listening, which is how a test tells a
