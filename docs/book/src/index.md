@@ -18,7 +18,8 @@ three things sharing a repository:
   the home - every project under its org, what each agent is doing, and
   what needs you, kept live over a stream the page subscribes to - and a
   page per session at `/session/{org}/{project}/{label}`, carrying the
-  projects rail, the chat column and the inspector.
+  projects rail, the chat column, the inspector and the composer, and
+  kept live by a stream of its own.
 
 forge never calls the Anthropic API itself. It spawns `claude` and
 talks to it, so the CLI stays the thing that runs the agent loop.

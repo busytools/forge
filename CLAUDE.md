@@ -68,10 +68,11 @@ forge-test-harness ─→ primitives + sdk + workspace
   process that already owns the sessions, so a second view costs a
   listener rather than a second cron scheduler. Server-rendered markup
   over axum: the home, kept live by a stream the page subscribes to, and
-  a page per session at `/session/{org}/{project}/{label}`. It never
-  names a crate under `forge-sessions`: reads of the core and of a
-  working tree both go through that crate, which re-exports what a view
-  needs.
+  a page per session at `/session/{org}/{project}/{label}`, carrying the
+  projects rail, the chat column, the inspector and the composer, and
+  kept live by a stream of its own. It never names a crate under
+  `forge-sessions`: reads of the core and of a working tree both go
+  through that crate, which re-exports what a view needs.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
@@ -166,8 +167,10 @@ plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk
 through them; the web view reads its project roster and agent rows, the
 account pool, the worker registry, connector subscriptions and dictation
-state through those, the claude version through the tenth, and the
-conversation, header, inspector and the prompt it answers through
+state through those, the claude version through the tenth, its
+composer's data through `slash_commands`, `forge_commands`, `subagents`,
+`emoji`, `file_index` and `respect_gitignore`, and the conversation,
+header, inspector and the prompt it answers through
 `conversation`, `header`, `mcp_servers`, `processes`, `monitors` and
 `pending_ask`, and dispatches its composer's send, its prompt answers and
 its take's controls. `subagents` is the
