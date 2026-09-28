@@ -136,6 +136,35 @@ Five patterns get caught in review repeatedly:
   actions go through `dispatch`; query-style refreshes are direct
   methods.
 
+## The server stack and the client stack
+
+Two stacks, and one test decides which side a thing is on: **does removing
+it change what the data IS, or only how it is DRAWN?** Only drawn means it
+belongs to the client.
+
+- **The server stack** is `forge-server` and everything under it: what a
+  client reads of the core, the records as a view sees them, the folds, the
+  working tree as state, and the socket that carries it. It is what a client
+  cannot work out for itself, and it is the same for every client.
+- **The client stack** is whatever draws: `forge-tui` today, whatever lands
+  beside it after. Glyphs, colours, weights, spacing, an order chosen for
+  display, the label a row is spelled with, the stripping of a command's
+  escape sequences - any choice about appearance rather than a fact about
+  the session.
+
+Three things hold at the line:
+
+- **The client relies on the server completely, and `forge.toml` stays the
+  single source of truth.** So the server MAY hold a catalogue, a set, an
+  index or a setting that a client reads - that is the server doing its job.
+  What it may NOT hold is the decision about how any of it appears.
+- **The server owns no git-level presentation.** It carries the working tree
+  as state - the branch, what changed - and nothing that renders one: no
+  diff, no tree, no colouring, no highlighted excerpt.
+- **A thing the TUI needs moves into `forge-tui`; it is never dropped.** A
+  thing both need keeps its home on the server with only the presentation
+  half leaving, and the terminal works out of the box at every step.
+
 ## The TUI and workspace contract
 
 One entry point in each direction, and the workspace's stream fans out
