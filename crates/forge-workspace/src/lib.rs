@@ -26,7 +26,8 @@
 //!   attach is handed what was emitted before it as well, so a notice
 //!   raised during boot is not lost. [`Workspace::subscribe_observer`]
 //!   is the same stream for a consumer that reads but answers no
-//!   prompt.
+//!   prompt, and [`Workspace::subscribe_mirror`] is that stream without
+//!   the pre-attach backlog, which is what a view takes.
 //!
 //! No callback hooks. No shared mutable state. TUI does not hold an
 //! `Arc<AgentHandle>`: every outbound call goes through

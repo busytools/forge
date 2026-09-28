@@ -70,9 +70,9 @@ forge-test-harness ─→ primitives + sdk + workspace
   over axum: the home, kept live by a stream the page subscribes to, and
   a page per session at `/session/{org}/{project}/{label}`, carrying the
   projects rail, the chat column, the inspector and the composer, and
-  kept live by a stream of its own. It never names a crate under
-  `forge-sessions`: reads of the core and of a working tree both go
-  through that crate, which re-exports what a view needs.
+  kept live by a stream of its own. It never names `forge-workspace`:
+  reads of the core and of a working tree both go through
+  `forge-sessions`, which re-exports what a view needs.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
