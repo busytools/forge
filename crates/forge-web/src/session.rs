@@ -175,6 +175,9 @@ pub async fn page(
     let Some(slot) = resolve(&state.surface, &roster, &agents, org, project, label) else {
         return Found::Absent;
     };
+    // Serving the page is this view showing the seat, which is what its
+    // diamond waits for.
+    Live::lock(&state.live).seen(&slot);
     let messages = read_conversation(&state.surface, &slot, roster.cwd_for(&slot)).await;
     // The page's first render is before any stream is attached, so it draws
     // no live turn row: the stream's opening event follows at once, and it is
