@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
 import { DEFAULT_MARK, DEFAULT_WEB_PORT, MARK_NAMES } from '../wire/types';
-import { attempt, displayAddress, normalizeAddress } from './attempt';
+import { attempt, displayAddress, normalizeAddress, submitAttempt } from './attempt';
 
 describe('the address a person types', () => {
   it('takes a bare host and port, and adds the path the server serves', () => {
@@ -72,6 +72,53 @@ describe('one attempt', () => {
       url: 'ws://box:8790/socket',
       settings: { mark: null, theme: null, font: null },
     });
+  });
+});
+
+describe('one submit, as the screen sees it', () => {
+  /**
+   * The button is re-enabled on BOTH paths. A transition that only cleared
+   * `busy` on the way to the home is a button stuck reading "Connecting"
+   * with no reason and no way out, which is indistinguishable from a
+   * connection still running.
+   */
+  it('clears busy and carries the reason when a connection is refused', async () => {
+    const next = await submitAttempt('box:8790', () => Promise.reject(new Error('timed out')));
+    expect(next.busy, 'a refused connection left the button disabled').toBe(false);
+    expect(next.connected).toBeNull();
+    expect(next.failure).toEqual({
+      ok: false,
+      kind: 'unreachable',
+      why: 'Nothing answered at box:8790: timed out',
+    });
+  });
+
+  it('clears busy on a bad address too', async () => {
+    const next = await submitAttempt('::::');
+    expect(next.busy).toBe(false);
+    expect(next.failure?.kind).toBe('address');
+    expect(next.connected).toBeNull();
+  });
+
+  it('clears busy and carries where to go when the connection took', async () => {
+    const next = await submitAttempt('box:8790');
+    expect(next.busy).toBe(false);
+    expect(next.failure).toBeNull();
+    expect(next.connected).toEqual({
+      url: 'ws://box:8790/socket',
+      settings: { mark: null, theme: null, font: null },
+    });
+  });
+
+  /**
+   * The caller writes `busy` from the answer rather than from a `finally`,
+   * which holds only while this cannot reject.
+   */
+  it('never rejects, however the connection failed', async () => {
+    const boom = () => Promise.reject(new Error('boom'));
+    await expect(submitAttempt('box:8790', boom)).resolves.toHaveProperty('busy', false);
+    await expect(submitAttempt('::::', boom)).resolves.toHaveProperty('busy', false);
+    await expect(submitAttempt('box:8790')).resolves.toHaveProperty('busy', false);
   });
 });
 

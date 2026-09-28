@@ -96,6 +96,36 @@ export async function attempt(
   }
 }
 
+/** Where the screen is after one submit, and where it goes if it took. */
+export interface Submit {
+  busy: boolean;
+  failure: Extract<Attempt, { ok: false }> | null;
+  connected: { url: string; settings: ClientSettings } | null;
+}
+
+/**
+ * One submit, as the screen's next state.
+ *
+ * The symptom this exists for is a state transition - a button stuck
+ * reading "Connecting" with the failure never shown - and a transition taken
+ * out of the component is one a test can drive. `svelte/server` renders
+ * markup and cannot click, and the client carries no DOM renderer, so a
+ * click is not assertable and the decision behind it is.
+ *
+ * **It cannot reject**, because `attempt` cannot: every path out of a
+ * connection, thrown or answered, is one of these two shapes. That is what
+ * lets the caller write `busy` from the answer rather than from a `finally`.
+ */
+export async function submitAttempt(
+  address: string,
+  connect: (input: string) => Promise<Attempt> = connectTo,
+): Promise<Submit> {
+  const answer = await attempt(address, connect);
+  return answer.ok
+    ? { busy: false, failure: null, connected: { url: answer.url, settings: answer.settings } }
+    : { busy: false, failure: answer, connected: null };
+}
+
 /**
  * Connect, and answer with what the greeting carried.
  *

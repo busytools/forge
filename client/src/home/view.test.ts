@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import type { AgentRow, HomeWire, Lifecycle } from '../wire/home';
+import type { AccountLoadingRow, AgentRow, DictateModel, HomeWire, Lifecycle } from '../wire/home';
 import { homeFrom, homeWire } from '../wire/home';
 import {
   artifactLabel,
@@ -264,6 +264,20 @@ describe('the update notice', () => {
     expect(availableVersion('2.1.9', '2.1.10')).toBe('2.1.10');
   });
 
+  /**
+   * A prerelease or build suffix comes off the patch component and not the
+   * rest of it: reading the token whole would make npm's own `2.1.290-pre.1`
+   * unparseable, so a prerelease would never draw a notice at all.
+   */
+  it('reads past a prerelease or build suffix on the patch', () => {
+    expect(availableVersion('2.1.280', '2.1.290-pre.1')).toBe('2.1.290-pre.1');
+    expect(availableVersion('2.1.280', '2.1.290+build.7')).toBe('2.1.290+build.7');
+    // Two names for one triple are not an update, which is the port's own
+    // rule: the suffix comes off before the comparison, so a prerelease of
+    // the version already installed draws nothing.
+    expect(availableVersion('2.1.290-pre.1', '2.1.290')).toBeNull();
+  });
+
   it('carries the answer on the header', () => {
     const header = (installed: string, latest: string) =>
       homeView({ ...homeWire, cli_version: { installed, latest } }, '').header;
@@ -422,14 +436,54 @@ describe('what a row says', () => {
   });
 
   /**
-   * A lifecycle this client is older than is turned into a known one where
-   * it enters, so `markOf`'s switch stays exhaustive: a state added to the
-   * core is a compile error there until its mark is written.
+   * Every one of `homeFrom`'s narrow arms, because each is a value this
+   * client is older than turned into a known one where it enters.
+   *
+   * The lifecycle arm keeps `markOf`'s switch exhaustive. The model-state
+   * arm is the one that would otherwise reach a renderer that reads a
+   * property off it: an unknown string there is not a card drawn wrongly,
+   * it is a page that does not draw.
    */
   it('narrows a lifecycle it does not know as the snapshot is read', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET.agents[0], lifecycle: 'Resting' as never }] };
     const lead = homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead;
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
+  });
+
+  it('narrows a pending kind it does not know', () => {
+    const unknown = { ...FLEET, agents: [{ ...FLEET.agents[0], pending: 'elicit' as never }] };
+    expect(homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead.pending).toBe('permission');
+  });
+
+  it('narrows an account state it does not know', () => {
+    const loading = homeWire.accounts.loading[0] as AccountLoadingRow;
+    const unknown: HomeWire = {
+      ...homeWire,
+      accounts: { ...homeWire.accounts, loading: [{ ...loading, state: 'renewing' as never }] },
+    };
+    const accounts = homeView(homeFrom(unknown), '').band.find((card) => card.title === 'accounts');
+    // `loading` is the fallback, so an unknown account reads as none ready
+    // rather than as an alarming number.
+    expect(accounts?.value).toBe('0 ready');
+    expect(accounts?.tone).toBe('warn');
+  });
+
+  it('narrows a dictation state it does not know rather than crashing on it', () => {
+    const unknown: HomeWire = {
+      ...homeWire,
+      dictate: {
+        ...homeWire.dictate,
+        snapshot: {
+          models: [
+            { role: 'transcribing', file: 'a.gguf', state: 'warming' } as unknown as DictateModel,
+          ],
+          failure: null,
+        },
+      },
+    };
+    const card = homeView(homeFrom(unknown), '').band.find((entry) => entry.title === 'dictation');
+    expect(card?.detail).toBe('waiting');
+    expect(card?.value).toBe('0 of 1 loaded');
   });
 });
 

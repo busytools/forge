@@ -1,7 +1,7 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
   import type { ClientSettings } from '../wire/types';
-  import { attempt, DEFAULT_ADDRESS, type Attempt } from './attempt';
+  import { DEFAULT_ADDRESS, submitAttempt, type Attempt } from './attempt';
 
   let {
     settings,
@@ -19,19 +19,14 @@
     event.preventDefault();
     busy = true;
     failure = null;
-    try {
-      const answer = await attempt(address);
-      if (answer.ok) {
-        onconnect({ url: answer.url, settings: answer.settings });
-        return;
-      }
-      failure = answer;
-    } finally {
-      // In `finally` rather than on each path: a throw from `attempt` would
-      // otherwise leave the button disabled reading "Connecting" forever,
-      // which is the same screen as a connection still in progress.
-      busy = false;
-    }
+    // No `finally`: `submitAttempt` cannot reject, so every path out of a
+    // connection arrives here as one of two shapes and the button is
+    // re-enabled on both. A throw would leave it disabled reading
+    // "Connecting", which is the same screen as a connection still running.
+    const next = await submitAttempt(address);
+    busy = next.busy;
+    failure = next.failure;
+    if (next.connected) onconnect(next.connected);
   }
 </script>
 

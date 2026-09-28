@@ -2,6 +2,7 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
+import type { AgentRow } from '../wire/home';
 import { homeWire, type HomeWire } from '../wire/home';
 import Home from './Home.svelte';
 
@@ -68,6 +69,26 @@ describe('the home page as it draws', () => {
    * The row's mark reaches the page, which the view test cannot see: it
    * asserts the mapping, not that a component draws what the mapping says.
    */
+  /**
+   * The link a row carries is built by `hrefForSlot`, and the fixture's
+   * label is `lead`, so a raw template in place of the encoder passes every
+   * other test. A label with a space in it is what tells them apart.
+   */
+  it('encodes the seat a row links to', () => {
+    const wire = {
+      ...homeWire,
+      agents: [
+        {
+          ...(homeWire.agents[0] as AgentRow),
+          // The fixture's project, so the row is drawn at all: an agent whose
+          // slot names no project in `projects` contributes no row.
+          slot: { org: 'TestOrg', project: 'proj', label: 'two words' },
+        },
+      ],
+    };
+    expect(draw({ wire })).toContain('href="/session/TestOrg/proj/two%20words"');
+  });
+
   it('draws the mark its state names on the row', () => {
     const body = draw();
     expect(body, 'the row drew no lifecycle class').toContain('class="row idle"');

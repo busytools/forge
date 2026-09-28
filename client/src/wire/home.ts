@@ -20,7 +20,7 @@ export type Lifecycle =
   | 'Failed'
   | 'LoggedOut';
 
-/** `PendingInteractionKind`: the three asks a row can name. */
+/** `PendingInteractionKind`: the two asks a row can name. */
 export type PendingKind = 'question' | 'permission';
 
 /** `forge_gateway::LoadingState`, as the account pool reports it. */

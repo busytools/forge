@@ -176,23 +176,30 @@ export function followable(artifact: string): string | null {
   return (match[2] ?? '') === '' ? null : trimmed;
 }
 
-/** One model's state as the card's detail line words it. */
+/**
+ * The five states that cross as a bare string, as the card's detail words
+ * them. A `Record` over the union rather than a `switch`, so a state the
+ * core adds is a compile error here and no string ever reaches an `in`.
+ */
+const MODEL_STATE_WORDS: Record<Extract<DictateModelState, string>, string> = {
+  pending: 'waiting',
+  verifying: 'verifying',
+  fetched: 'fetched',
+  loading: 'loading',
+  ready: 'loaded',
+};
+
+/**
+ * One model's state as the card's detail line words it.
+ *
+ * The lookup's `?? 'failed'` is the total function, not a fallback path:
+ * `homeFrom` has already turned a state outside the five into `pending`, so
+ * the only way to reach it is a boundary that stopped narrowing - and a card
+ * that reads `failed` says so, where a missing entry would draw a blank.
+ */
 export function modelState(state: DictateModelState): string {
-  if (typeof state === 'string') {
-    switch (state) {
-      case 'pending':
-        return 'waiting';
-      case 'fetched':
-        return 'fetched';
-      case 'loading':
-        return 'loading';
-      case 'ready':
-        return 'loaded';
-      case 'verifying':
-        return 'verifying';
-    }
-  }
-  return 'downloading' in state ? 'fetching' : 'failed';
+  if (typeof state !== 'string') return 'downloading' in state ? 'fetching' : 'failed';
+  return MODEL_STATE_WORDS[state] ?? 'failed';
 }
 
 /** Why preflight stopped, in the two words the card has room for. */
