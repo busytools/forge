@@ -148,13 +148,32 @@ impl ViewSurface {
     /// for the first file named after the session: that pays the walk per
     /// call and takes whichever copy of the same session it meets first. A
     /// slot with no live session, or one whose cwd no record places, reads as
-    /// an empty conversation.
+    /// an empty conversation, and records which of the two it was, so a view
+    /// drawing nothing can say which of them it met rather than only that it
+    /// has nothing to draw.
     pub fn conversation(&self, slot: &SessionSlot, cwd_raw: &Path) -> ConversationHistory {
         let Some(session_id) = self.workspace.running_session_id_for(slot) else {
+            tracing::debug!(
+                event_name = "conversation_no_pooled_session",
+                org = slot.org(),
+                project = slot.project(),
+                label = slot.label(),
+                "no session is pooled for this slot, so nothing here can find its \
+                 transcript; drawing the conversation empty",
+            );
             return ConversationHistory::default();
         };
         let cwd_raw = if cwd_raw.as_os_str().is_empty() {
             let Some(recorded) = self.workspace.cwd_for_session(slot) else {
+                tracing::debug!(
+                    event_name = "conversation_cwd_unplaced",
+                    org = slot.org(),
+                    project = slot.project(),
+                    label = slot.label(),
+                    session_id = %session_id,
+                    "no record places this session's working directory, so its transcript \
+                     cannot be looked up; drawing the conversation empty",
+                );
                 return ConversationHistory::default();
             };
             PathBuf::from(recorded)
@@ -379,6 +398,97 @@ mod tests {
         assert_eq!(read_b.messages.len(), 3, "and the neighbour reads its own, not this one");
         let none = surface.conversation(&idle, &cwd);
         assert!(none.messages.is_empty(), "no occupant reads as empty");
+    }
+
+    /// Every record a site emitted while the capture was installed.
+    #[derive(Clone, Default)]
+    struct Caught(Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+    /// Every field the record carried, as `name=value`, so a test reads the
+    /// `event_name` and the slot off the site that emitted it.
+    #[derive(Default)]
+    struct Fields(String);
+
+    impl tracing::field::Visit for Fields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if !self.0.is_empty() {
+                self.0.push(' ');
+            }
+            let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push((*event.metadata().level(), fields.0));
+        }
+    }
+
+    /// Everything `emit` logs while it runs.
+    fn logged(emit: impl FnOnce()) -> Vec<(tracing::Level, String)> {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        emit();
+        caught.0.lock().expect("capture").clone()
+    }
+
+    /// A view drawing an empty conversation with nothing recorded gives a
+    /// reader no way to tell a session with no transcript from a read that
+    /// never happened, so each of the two silent paths says which it was,
+    /// and names the slot it was silent for.
+    #[test]
+    fn an_empty_conversation_records_which_kind_of_empty_it_was() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _updates) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+
+        // Whether one record carries `event_name`, at debug, naming all three
+        // parts of `slot`: the org, project and label a reader acts on.
+        let names = |events: &[(tracing::Level, String)], event_name: &str, slot: &SessionSlot| {
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::DEBUG
+                    && fields.contains(event_name)
+                    && fields.contains(&format!(r#"org="{}""#, slot.org()))
+                    && fields.contains(&format!(r#"project="{}""#, slot.project()))
+                    && fields.contains(&format!(r#"label="{}""#, slot.label()))
+            })
+        };
+
+        let idle = SessionSlot::lead("TestOrg", "forge");
+        let no_session = logged(|| {
+            let read = surface.conversation(&idle, Path::new("/tmp"));
+            assert!(read.messages.is_empty(), "a slot with no occupant still reads as empty");
+        });
+        assert!(
+            names(&no_session, "conversation_no_pooled_session", &idle),
+            "the slot with no pooled session is named, and so is what was missing: \
+             {no_session:?}",
+        );
+
+        let unplaced = SessionSlot::lead("TestOrg", "not-a-project");
+        workspace.seed_test_running_session_id(&unplaced, SESSION_A);
+        let no_cwd = logged(|| {
+            let read = surface.conversation(&unplaced, Path::new(""));
+            assert!(read.messages.is_empty(), "an unplaced cwd still reads as empty");
+        });
+        let read_as_the_other =
+            no_cwd.iter().any(|(_, fields)| fields.contains("conversation_no_pooled_session"));
+        assert!(
+            names(&no_cwd, "conversation_cwd_unplaced", &unplaced)
+                && no_cwd.iter().any(|(_, fields)| fields.contains(SESSION_A))
+                && !read_as_the_other,
+            "a cwd no record places is named as its own reason and not as the other one, \
+             for the session it could not place: {no_cwd:?}",
+        );
     }
 }
 
