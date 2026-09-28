@@ -412,40 +412,46 @@ being ignored. Keys an older forge read here (`trusted_marketplaces`,
 
 ## `[web]`
 
-The web view: HTTP served from the process that already owns the
-sessions rather than a second one. On by default, so a restart leaves it
-serving.
+The socket: one WebSocket served from the process that already owns the
+sessions, so a client costs a listener rather than a second scheduler.
+On by default, so a restart leaves it serving.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | boolean | `true` | Whether the server starts with forge. `false` is the opt-out, and the TUI is identical either way. |
-| `port` | integer | `8790` | The port the server binds on `bind`, and a browser is pointed at it by hand. `0` fails the load outright (`WebPortInvalid`), and so does the gateway's own port (`WebPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the view is disabled: a stale port on a section that never binds cannot stop the boot. |
-| `bind` | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching the view from another machine means naming that machine's interface here, usually the WireGuard address, and anything public needs something in front of it. |
-| `mark` | string | unset, drawing panes | The mark on the page header, on the browser tab and in the empty state, by name: `panes`, `klin`, `lanes`, `f_slab`, `split`, `spine`, `grid`, `clamp`, `strike`, `nest`, `chamfer`, `tally` or `stencil_f`. A fixed set rather than a file path, so every option is one forge has drawn. |
+| `port` | integer | `8790` | The port the server binds on `bind`, and a client is pointed at it by hand. `0` fails the load outright (`WebPortInvalid`), and so does the gateway's own port (`WebPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the socket is disabled: a stale port on a section that never binds cannot stop the boot. |
+| `bind` | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching it from another machine means naming that machine's interface here, usually the WireGuard address. **forge is reached over loopback or a private network and is never exposed publicly.** That is the whole reason the socket carries no authentication - the private network is what the access control stands on, not a proxy to be added in front of a public bind. |
+| `mark` | string | unset, drawing panes | The mark a client draws, by name: `panes`, `klin`, `lanes`, `f_slab`, `split`, `spine`, `grid`, `clamp`, `strike`, `nest`, `chamfer`, `tally` or `stencil_f`. A fixed set rather than a file path, so every option is one forge has drawn. |
 | `theme` | string | unset, drawing dark | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background. |
 | `font` | string | unset, drawing Inter for prose and Fira Code for code | The typefaces, by name. Both are vendored, served from the process and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
 
-A row's motion is not configurable. The TUI's spinner styles name glyph
-cycles, which is a terminal idiom the web view has none of, and its own
-marks move by state: the working mark turns in 900ms and the starting one
-in 1500ms, and that difference is how the page tells them apart.
+A row's motion is not configurable. Each view animates its own: the
+TUI's spinner styles name glyph cycles, which is a terminal idiom a
+client has none of, and the marks move by state - the working mark turns
+in 900ms and the starting one in 1500ms, and that difference is how a
+reader tells them apart.
 
 An unset name is not an error and not a fallback: it means the built-in.
 A name forge does not ship fails the load with the key and the value in
 the message (`WebNameUnknown`, `web mark = "anvilish" ... names nothing
 forge ships; this key picks by name, never by path`), because a setting
 that is quietly ignored reads as the key not working. Like the port
-checks, none of them run while the view is disabled.
+checks, none of them run while the socket is disabled.
+
+`mark`, `theme` and `font` are a client's settings rather than this
+server's, and the socket carries them to a client on connect, so a client
+never reads `forge.toml` for itself and the file stays the one source of
+truth. Nothing in forge draws them: the terminal has its own palette and
+the socket serves no page.
 
 The server starts no subsystem of its own - no cron scheduler, no
-connector, no second gateway - so the cost of the extra view is the
-listener and the requests. It serves the home - every project under its
-org, what each agent is doing, and what needs you, kept live by a stream
-the page subscribes to - and a page per session at
-`/session/{org}/{project}/{label}`, with that session's projects rail,
-chat column, inspector and composer, kept live by a stream of its own. A
-bind that fails is logged and does not stop forge; the TUI is not
-downstream of the web view.
+connector, no second gateway - so the cost of a client is the listener
+and the messages. The socket carries the whole view surface: the home and
+every session, a snapshot of each on subscribe and every update after it,
+with a client's commands going back the other way. **No page is served
+from here.** A client is its own program and draws everything itself; the
+socket hands it data. A bind that fails is logged and does not stop
+forge; the TUI is not downstream of the socket.
 
 ## Unknown keys
 
@@ -585,7 +591,7 @@ picker to enter chat.
 `auto_start` therefore controls what is warm when you arrive, not what
 you land on.
 
-The web view comes up on `[web] bind:port` during the same boot, unless
+The socket comes up on `[web] bind:port` during the same boot, unless
 `[web] enabled` is false.
 
 ## Config versus state
