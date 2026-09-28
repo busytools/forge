@@ -76,6 +76,16 @@ pub enum PendingAsk {
     Question(Box<QuestionRequest>),
 }
 
+impl PendingAsk {
+    /// The tool call this prompt is about, which is the id an answer names.
+    pub fn tool_id(&self) -> &str {
+        match self {
+            Self::Permission(request) => &request.tool_call.tool_call_id,
+            Self::Question(request) => &request.tool_call.tool_call_id,
+        }
+    }
+}
+
 impl PendingInteractionSlot {
     /// The request this slot is holding, which is what it offers.
     pub fn ask(&self) -> PendingAsk {

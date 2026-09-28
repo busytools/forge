@@ -313,7 +313,15 @@ async fn shell(
                         div #composer-slot sse-swap=(COMPOSER_EVENT) hx-swap="morph:outerHTML"
                             hx-target="#comp" {
                             div .composer {
-                                (crate::composer::render(home, slot, roster, agents, "").await)
+                                (crate::composer::render(
+                                    home,
+                                    slot,
+                                    roster,
+                                    agents,
+                                    "",
+                                    crate::composer::Draft::Keep,
+                                )
+                                .await)
                             }
                         }
                     }

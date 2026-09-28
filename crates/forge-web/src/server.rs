@@ -164,7 +164,18 @@ async fn composer_region(
     };
     let home = crate::session::context(&wiring.state, wiring.bound);
     let draft = crate::composer::draft_of(query.as_deref());
-    crate::composer::render(&home, &slot, &roster, &agents, &draft).await.into_response()
+    // The box asking for itself is the reader typing: its own field, its own
+    // words, so the field is the one it drew.
+    crate::composer::render(
+        &home,
+        &slot,
+        &roster,
+        &agents,
+        &draft,
+        crate::composer::Draft::Keep,
+    )
+    .await
+    .into_response()
 }
 
 /// The box's send: the draft goes to the seat as its next prompt.
@@ -174,11 +185,23 @@ async fn send_to(
     body: String,
 ) -> Response {
     let draft = crate::composer::field(&body, "draft").unwrap_or_default();
-    act(&wiring, &org, &project, &label, |slot| forge_sessions::Command::Prompt {
-        key: slot.clone(),
-        text: draft,
-        attachments: Vec::new(),
-    })
+    if draft.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "there is nothing to send").into_response();
+    }
+    act(
+        &wiring,
+        &org,
+        &project,
+        &label,
+        // The one response that replaces the field: the reader's words have
+        // gone to the core, so a box that kept them would send them twice.
+        crate::composer::Draft::Replace,
+        |slot| forge_sessions::Command::Prompt {
+            key: slot.clone(),
+            text: draft,
+            attachments: Vec::new(),
+        },
+    )
     .await
 }
 
@@ -200,22 +223,32 @@ async fn answer_prompt(
         return (StatusCode::NOT_FOUND, "no session slot by that name").into_response();
     };
     // The prompt's own detail is the view's, so an answer names the option
-    // and the invoke is built from the core's copy of what it offered.
+    // and the invoke is built from the core's copy of what it offered - the
+    // stream's inside the boot window, the core's after it.
     let held = Live::lock(&wiring.state.live).snapshot().composer;
-    let Some(command) =
-        crate::composer::answer(&held, &slot, &tool_id, option_id.as_deref(), notes.as_deref())
-    else {
-        return (
-            StatusCode::CONFLICT,
-            "that prompt is no longer holding this seat, or its options never reached this view",
-        )
+    let kept = wiring.state.surface.pending_ask(&slot);
+    let Some(command) = crate::composer::answer(
+        &held,
+        kept.as_ref(),
+        &slot,
+        &tool_id,
+        option_id.as_deref(),
+        notes.as_deref(),
+    ) else {
+        // The core has let the prompt go. Answering with the region rather
+        // than a 409 is what makes the click do something: htmx swaps on
+        // two hundred, and a swapped region drawn from a core that holds
+        // nothing is the box, so the stale dock clears itself.
+        return composer_region_of(&wiring, &slot, crate::composer::Draft::Keep)
+            .await
             .into_response();
     };
     if let Err(error) = wiring.state.surface.dispatch(command) {
         return (StatusCode::CONFLICT, format!("no session to answer for: {error}"))
             .into_response();
     }
-    composer_region_of(&wiring, &slot).await.into_response()
+    // An answer is not the reader's words, so the box keeps them.
+    composer_region_of(&wiring, &slot, crate::composer::Draft::Keep).await.into_response()
 }
 
 /// The take's controls: start, submit or abandon.
@@ -236,13 +269,22 @@ async fn dictate(
                 .into_response();
         }
     };
-    act(&wiring, &org, &project, &label, move |slot| {
-        if start {
-            forge_sessions::Command::DictateStart { key: slot.clone() }
-        } else {
-            forge_sessions::Command::DictateStop { key: slot.clone(), submit: action == "stop" }
-        }
-    })
+    act(
+        &wiring,
+        &org,
+        &project,
+        &label,
+        // A take's controls change the row, not the words: the box keeps
+        // whatever the reader has typed while the take runs.
+        crate::composer::Draft::Keep,
+        move |slot| {
+            if start {
+                forge_sessions::Command::DictateStart { key: slot.clone() }
+            } else {
+                forge_sessions::Command::DictateStop { key: slot.clone(), submit: action == "stop" }
+            }
+        },
+    )
     .await
 }
 
@@ -257,6 +299,7 @@ async fn act(
     org: &str,
     project: &str,
     label: &str,
+    draft: crate::composer::Draft,
     command: impl FnOnce(&forge_primitives::SessionSlot) -> forge_sessions::Command,
 ) -> Response {
     let surface = &wiring.state.surface;
@@ -268,14 +311,18 @@ async fn act(
     if let Err(error) = surface.dispatch(command(&slot)) {
         return (StatusCode::CONFLICT, format!("no session to send to: {error}")).into_response();
     }
-    composer_region_of(wiring, &slot).await.into_response()
+    composer_region_of(wiring, &slot, draft).await.into_response()
 }
 
 /// The composer region for a seat the caller has already resolved.
-async fn composer_region_of(wiring: &Wiring, slot: &forge_primitives::SessionSlot) -> Markup {
+async fn composer_region_of(
+    wiring: &Wiring,
+    slot: &forge_primitives::SessionSlot,
+    draft: crate::composer::Draft,
+) -> Markup {
     let surface = &wiring.state.surface;
     let home = crate::session::context(&wiring.state, wiring.bound);
-    crate::composer::render(&home, slot, &surface.roster(), &surface.agents(), "").await
+    crate::composer::render(&home, slot, &surface.roster(), &surface.agents(), "", draft).await
 }
 
 /// One vendored script: the page's own, as published. An unknown name is a

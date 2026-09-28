@@ -136,6 +136,10 @@ impl Live {
             | SessionUpdate::TurnCancelled { .. }
             | SessionUpdate::PermissionRequest { .. }
             | SessionUpdate::QuestionRequest { .. }
+            // Answering moves the seat out of the rail's needs-you group and
+            // drops the inspector's pending row, so it redraws a row even
+            // though it is the composer that asked for it.
+            | SessionUpdate::PendingInteractionResolved { .. }
             | SessionUpdate::WorkerStatusChanged { .. } => true,
             // Everything else is the conversation, which this page does
             // not show.
@@ -258,7 +262,15 @@ fn session_updates(
                         // take's twenty readings a second are the composer's
                         // news alone, and because a morph of the columns must
                         // never reach the field being typed into.
-                        (appended || asked.fleet || handed_over, asked.composer)
+                        //
+                        // Anything that redraws the columns redraws the
+                        // composer too: what the box draws from the seat's own
+                        // row - whether it is blocked, whether it has a hint,
+                        // whether a prompt waits - changes with the row, and a
+                        // blocked seat has no field to type in, so no input
+                        // event would come to refresh it.
+                        let columns = appended || asked.fleet || handed_over;
+                        (columns, asked.composer || columns)
                     }
                     _ = tick.tick() => (true, false),
                 };
@@ -283,7 +295,17 @@ fn session_updates(
                     let home = crate::session::context(&wiring.state, wiring.bound);
                     let roster = wiring.state.surface.roster();
                     let agents = wiring.state.surface.agents();
-                    let region = crate::composer::render(&home, &slot, &roster, &agents, "").await;
+                    // A push is never the reader's own act, so the box keeps
+                    // whatever they have typed.
+                    let region = crate::composer::render(
+                        &home,
+                        &slot,
+                        &roster,
+                        &agents,
+                        "",
+                        crate::composer::Draft::Keep,
+                    )
+                    .await;
                     events.push(Ok(Event::default()
                         .event(COMPOSER_EVENT)
                         .data(region.into_string())));

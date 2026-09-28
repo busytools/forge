@@ -362,5 +362,8 @@ fn config(config_dir: &Path, orgs: &[(&str, &[&str])]) -> String {
         "[[accounts]]\ndisplay_name = \"Acct\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
             .to_owned(),
     );
+    // Dictation on, so the composer draws the control that starts a take:
+    // an install with it off has no way in at all.
+    sections.push(format!("[dictate]\nenabled = true\nmodels_dir = \"{}\"\n", config_dir.join("models").display()));
     sections.concat()
 }

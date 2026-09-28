@@ -10856,6 +10856,65 @@ mod worker_activity_tests {
         );
     }
 
+    /// What a view that attached after the prompt landed reads: the request
+    /// the core kept beside the answer's oneshot, which is the only place it
+    /// survives a stream that carries it once. It answers with the same
+    /// precedence the kind does, or the two reads disagree about which
+    /// prompt is on top - one naming a question while the other hands back
+    /// the permission prompt it outranks.
+    #[test]
+    fn pending_ask_reads_the_request_the_core_kept() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let held = |name: &str, slots: Vec<PendingInteractionSlot>| {
+            let key = SessionSlot::from_str_for_test(name);
+            let domain = ws.register_domain_session(key.clone(), None);
+            {
+                let mut guard = domain.lock();
+                for (index, slot) in slots.into_iter().enumerate() {
+                    guard.pending_interactions.insert(format!("{name}-{index}"), slot);
+                }
+            }
+            key
+        };
+        let permission = || {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            testing::test_permission(tx)
+        };
+        let question = || {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            testing::test_question(tx)
+        };
+
+        assert!(
+            ws.pending_ask(&SessionSlot::from_str_for_test("a-none")).is_none(),
+            "a slot holding nothing kept nothing to read back",
+        );
+
+        let prompted = held("a-permission", vec![permission()]);
+        let ask = ws.pending_ask(&prompted).expect("a held permission prompt reads back");
+        assert!(
+            matches!(ask, crate::protocol::PendingAsk::Permission(_)),
+            "and reads back as the kind it is",
+        );
+        assert_eq!(ask.tool_id(), testing::TEST_TOOL_ID, "naming the call an answer addresses");
+
+        let asked = held("a-question", vec![question()]);
+        let ask = ws.pending_ask(&asked).expect("a held question reads back");
+        assert!(
+            matches!(ask, crate::protocol::PendingAsk::Question(_)),
+            "and reads back as the kind it is",
+        );
+
+        let both = held("a-both", vec![permission(), question()]);
+        assert!(
+            matches!(
+                ws.pending_ask(&both),
+                Some(crate::protocol::PendingAsk::Question(_))
+            ),
+            "a question outranks the permission prompt beside it here too",
+        );
+    }
+
     /// Background work is a fact about the session rather than about who
     /// is looking, so the read is slot-shaped and answers from the slot's
     /// own domain: a lead has background work too.

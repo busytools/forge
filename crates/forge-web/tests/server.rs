@@ -1312,6 +1312,17 @@ async fn the_pane_state_crosses_the_swapped_region() {
     );
     // The handler keeps that state by key, so a section without one is a
     // section whose state the next swap drops.
+    // Every pane rule names the app the boxes are siblings of, by the hop
+    // the markup actually has. A rule reaching through the swapped region
+    // matches nothing once the app is not inside it, and the handles go
+    // dead at every width with nothing but a browser to say so.
+    for rule in sheet.split("#l:checked ~ ").skip(1).chain(sheet.split("#r:checked ~ ").skip(1)) {
+        let target = rule.split([' ', ',', '{']).next().unwrap_or_default();
+        assert_eq!(
+            target, ".app",
+            "a pane rule reaches the app in one hop, got {target:?} in {rule:.60}",
+        );
+    }
     for block in page.split("<details").skip(1) {
         let head = block.split('>').next().unwrap_or_default();
         assert!(head.contains("data-k="), "every section carries a key: <details{head}>");
@@ -1321,8 +1332,8 @@ async fn the_pane_state_crosses_the_swapped_region() {
     assert!(reads.peek().is_some(), "the sheet reads the boxes");
     for (at, _) in reads {
         assert!(
-            sheet[at..].starts_with(":checked ~ #session-body"),
-            "every rule that reads a box crosses the region to reach the app: {}",
+            sheet[at..].starts_with(":checked ~ .app"),
+            "every rule that reads a box reaches the app, which the box is a sibling of: {}",
             &sheet[at..(at + 60).min(sheet.len())],
         );
     }
@@ -2872,7 +2883,10 @@ async fn an_empty_draft_renders_the_placeholder() {
 
     assert!(page.contains("Type a message\u{2026}"), "the placeholder is the box's own: {page}");
     assert!(!page.contains("class=\"ac\""), "and no list is open with nothing typed: {page}");
-    assert!(!page.contains("class=\"foot\""), "and no keys are advertised with no draft: {page}");
+    assert!(
+        !page.contains("class=\"k\""),
+        "and no keys are advertised with no draft: {page}",
+    );
 }
 
 /// A seat cannot take input while it is held on a prompt, so the box is
@@ -2907,8 +2921,14 @@ async fn the_box_offers_the_keys_it_honours() {
     let (_status, page) = composer(&config, "push it once CI is green").await;
 
     assert!(page.contains("push it once CI is green"), "the draft is the box's content: {page}");
-    assert!(page.contains("hx-post=\"/session/Busytools/forge/lead/composer/send\""), "{page}");
-    assert!(page.contains("\u{21b5}") && page.contains("send"), "the keys it honours: {page}");
+    assert!(
+        page.contains("hx-post=\"/session/Busytools/forge/lead/send\""),
+        "the control posts to the seat, not to the region it lives in: {page}",
+    );
+    assert!(
+        page.contains("</span> send"),
+        "and the keys it honours are named: {page}",
+    );
 }
 
 /// The composer is served as part of the session page, at the foot of the
@@ -3247,7 +3267,11 @@ async fn every_dock_option_is_a_control_that_answers() {
     let (_status, page) = composer(&config, "").await;
 
     assert_eq!(page.matches("<button class=\"lbl\"").count(), 5, "one control per option: {page}");
-    assert_eq!(page.matches("composer/answer").count(), 5, "each posting an answer: {page}");
+    assert_eq!(
+        page.matches("/session/Busytools/forge/lead/answer").count(),
+        5,
+        "each posting an answer to the seat: {page}",
+    );
     assert!(
         page.contains("&quot;option_id&quot;:&quot;edits&quot;"),
         "naming the option rather than the outcome: {page}",
@@ -3622,23 +3646,72 @@ async fn the_list_says_a_row_cannot_be_chosen_yet() {
     );
 }
 
-/// A take's cancel is a control that acts: it posts the abandon, and the
-/// row carries no reason it cannot.
+/// A live take's controls submit and abandon it. The mic is the one that
+/// submits - the TUI's own rule, where the key that opens a take closes it -
+/// and the row's cancel abandons. Catches a take that can only be abandoned,
+/// which leaves the landed words and the landed beat unreachable from the
+/// page however well the route serves them.
 #[tokio::test]
-async fn a_takes_cancel_acts() {
+async fn a_live_takes_controls_submit_and_abandon_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
     fleet.emit(started(1));
     settle().await;
 
-    let (_status, page) = composer(&config, "").await;
+    let (_status, page) = composer(&config, "a draft while the take runs").await;
 
-    assert!(page.contains("composer/dictate"), "the row's cancel posts a stop: {page}");
+    assert!(
+        page.contains(r#"hx-vals="{&quot;action&quot;:&quot;stop&quot;}""#),
+        "the mic submits the take it started: {page}",
+    );
+    assert!(
+        page.contains(r#"hx-vals="{&quot;action&quot;:&quot;cancel&quot;}""#),
+        "and the row's cancel abandons it: {page}",
+    );
+    assert!(page.contains("/session/Busytools/forge/lead/dictate"), "{page}");
     assert!(
         !page.contains("stopping a take is not available yet"),
-        "and carries no refusal: {page}",
+        "and neither carries a refusal: {page}",
     );
+}
+
+/// The URL a control posts to is a URL a route serves, and nothing but this
+/// reads one side and uses it. A markup assertion pins the string it finds
+/// and a dispatch test posts to the route table, so both stay green while
+/// the click does nothing at all: htmx does not swap a 404.
+#[tokio::test]
+async fn every_control_posts_to_a_url_a_route_serves() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::PermissionRequest {
+        key: lead(),
+        tool_id: "test-tool".to_owned(),
+        request: permission(),
+    });
+    settle().await;
+
+    // Both faces of the composer: the dock, and the box with a take running.
+    let (_status, dock) = composer(&config, "").await;
+    fleet.emit(started(1));
+    settle().await;
+    let (_status, typed) = composer(&config, "a draft").await;
+
+    let mut posted = 0;
+    for region in [&dock, &typed] {
+        for url in region.split("hx-post=\"").skip(1).filter_map(|rest| rest.split('"').next()) {
+            posted += 1;
+            let (status, _body) = post(&config, url, "draft=anything").await;
+            assert_ne!(
+                status,
+                reqwest::StatusCode::NOT_FOUND,
+                "{url} is a URL no route serves, so the control does nothing: {region}",
+            );
+        }
+    }
+    assert!(posted >= 2, "the composer posts somewhere in both of its faces");
 }
 
 /// The dock's rows are live choices again, which is what the marker means:
@@ -3797,6 +3870,10 @@ async fn a_send_with_no_session_is_refused() {
     // No intercept: the command has to reach the core for the core to
     // refuse it, which is the thing under test.
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let seat = SessionSlot::lead("Personal", "dotfiles");
+    let holds_a_session =
+        || fleet.surface().agents().all().iter().any(|row| row.slot == seat);
+    assert!(!holds_a_session(), "precondition: nothing is behind this seat");
 
     let (status, body) =
         post(&config, "/session/Personal/dotfiles/lead/send", "draft=anyone").await;
@@ -3806,7 +3883,7 @@ async fn a_send_with_no_session_is_refused() {
         body.contains("no session to send to"),
         "and the refusal says why rather than nothing: {body}",
     );
-    assert!(fleet.dispatched().is_empty(), "with nothing queued for later: {body}");
+    assert!(!holds_a_session(), "with nothing created for it to deliver later");
 }
 
 /// The dictation controls start and stop a take, which is the only thing
@@ -3844,15 +3921,29 @@ async fn the_dictation_controls_reach_the_core() {
     );
 }
 
-/// Every control the composer draws now does what it says, so none of them
-/// carries the refusal it used to: a reason on a control that can act is a
-/// lie about the control.
+/// Every control that can act does what it says, so none of them carries
+/// the refusal it used to: a reason on a control that can act is a lie
+/// about the control. One refusal stays, and it is pinned here rather than
+/// left to be found against a broader claim - the autocomplete's rows,
+/// whose pick moves a caret the server cannot see.
 #[tokio::test]
-async fn no_control_refuses_any_more() {
+async fn nothing_that_can_act_is_drawn_unavailable() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
-    fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
+    fleet.advertise(
+        &SessionSlot::lead("Busytools", "forge"),
+        vec![forge_primitives::AvailableCommand::new("model", "Switch model")],
+        Vec::new(),
+    );
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, list_page) = composer(&config, "/m").await;
+    assert!(
+        list_page.contains("class=\"ac\"") && list_page.contains("not available yet"),
+        "the list is the one surface that says a row cannot be chosen yet: {list_page}",
+    );
+
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
     fleet.emit(SessionUpdate::PermissionRequest {
         key: lead(),
         tool_id: "tu-1".to_owned(),
@@ -3864,8 +3955,8 @@ async fn no_control_refuses_any_more() {
     let (_status, dock_page) = composer(&config, "").await;
 
     for page in [&box_page, &dock_page] {
-        assert!(!page.contains("not available yet"), "nothing refuses now: {page}");
-        assert!(!page.contains("disabled"), "and nothing is drawn unavailable: {page}");
+        assert!(!page.contains("not available yet"), "no control that can act refuses: {page}");
+        assert!(!page.contains("disabled"), "and none is drawn unavailable: {page}");
     }
     assert!(dock_page.contains("hx-post"), "the dock's options post an answer: {dock_page}");
 }
@@ -3923,5 +4014,192 @@ fn process(pid: u32, parent_pid: u32, name: &str, command: &str, memory_mb: u64)
         name: name.to_owned(),
         command: command.to_owned(),
         memory_bytes: memory_mb * 1024 * 1024,
+    }
+}
+
+/// A prompt the core still holds answers from the core's own copy, which is
+/// the case the retention exists for: the stream carried the request once
+/// and kept it nowhere, so a view that attached late has only what the core
+/// kept beside the answer's oneshot. Catches a render that draws options an
+/// answer cannot reach, where the click looks like nothing happened.
+#[tokio::test]
+async fn the_prompt_the_core_kept_is_answered_from_the_core() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.intercept_dispatch();
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Question);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    // Nothing is emitted: this view attached after the prompt landed.
+    let (status, region) = composer(&config, "").await;
+    assert!(status.is_success(), "the dock draws from the core's copy: {region}");
+
+    let (status, _body) = post(
+        &config,
+        "/session/Busytools/forge/lead/answer",
+        "tool_id=test-tool&option_id=staging",
+    )
+    .await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "and the option it drew answers");
+    let dispatched = fleet.dispatched();
+    assert_eq!(dispatched.len(), 1, "exactly one command: {dispatched:?}");
+    let forge_sessions::Command::RespondQuestion { tool_id, outcome, .. } = &dispatched[0] else {
+        panic!("an answer is a question response: {:?}", dispatched[0]);
+    };
+    assert_eq!(tool_id, "test-tool", "addressed to the prompt the core holds");
+    let forge_primitives::QuestionOutcome::Answered { selected_option_ids, .. } = outcome else {
+        panic!("a chosen option is an answer: {outcome:?}");
+    };
+    assert_eq!(selected_option_ids, &vec!["staging".to_owned()]);
+}
+
+/// A prompt the core has let go answers with the box rather than with a
+/// refusal nothing swaps: htmx does not swap a 409, so a stale dock would
+/// keep drawing and the click would do nothing, repeatably.
+#[tokio::test]
+async fn a_prompt_the_core_let_go_answers_with_the_box() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.intercept_dispatch();
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::PermissionRequest {
+        key: lead(),
+        tool_id: "test-tool".to_owned(),
+        request: permission(),
+    });
+    settle().await;
+    fleet.clear_test_pending(&lead());
+
+    let (status, body) = post(
+        &config,
+        "/session/Busytools/forge/lead/answer",
+        "tool_id=test-tool&option_id=once",
+    )
+    .await;
+
+    assert_eq!(status, reqwest::StatusCode::OK, "the click swaps something: {body}");
+    assert!(body.contains("id=\"draft\""), "and what it swaps in is the box: {body}");
+    assert!(fleet.dispatched().is_empty(), "with nothing dispatched for a prompt that is gone");
+}
+
+/// A send with nothing in it is refused rather than dispatched: an empty
+/// prompt is what the TUI refuses at its own UI layer, and a request that
+/// arrives anyway is owed the same answer.
+#[tokio::test]
+async fn an_empty_send_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.intercept_dispatch();
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, body) = post(&config, "/session/Busytools/forge/lead/send", "draft=%20%20").await;
+
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST, "nothing to send says so");
+    assert!(body.contains("nothing to send"), "and says what: {body}");
+    assert!(fleet.dispatched().is_empty(), "with nothing dispatched: {body}");
+}
+
+/// A page opened on a seat that cannot take input draws the composer outside
+/// the region the stream swaps, on an event of its own. Catches the composer
+/// being folded back into the columns' morph, which is what wiped a draft
+/// the reader had typed and left the dock drawing only on a keystroke.
+#[tokio::test]
+async fn the_composer_has_its_own_event_and_target() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _ct, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    let region = page.find("id=\"session-body\"").expect("the region the columns' event swaps");
+    let slot = page.find("id=\"composer-slot\"").expect("the composer's own wrapper");
+    let target = page.find("id=\"comp\"").expect("the box the composer's event swaps");
+    assert!(
+        region < slot && slot < target,
+        "the composer sits beside the region, not inside it: {page}",
+    );
+    assert!(
+        page.contains("sse-swap=\"composer\"") && page.contains("hx-target=\"#comp\""),
+        "with a listener of its own aimed at the box: {page}",
+    );
+    let region_markup = &page[region..slot];
+    assert!(
+        !region_markup.contains("sse-swap=\"composer\""),
+        "and no composer listener inside the region a morph replaces: {region_markup:.200}",
+    );
+}
+
+/// The region of the `nth` composer event the stream sends, or `None` when
+/// it does not arrive within five seconds.
+async fn nth_composer_event(response: reqwest::Response, nth: usize) -> Option<String> {
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut seen = String::new();
+    loop {
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .ok()??;
+        seen.push_str(&String::from_utf8_lossy(&chunk.ok()?));
+        if seen.matches("event: composer").count() >= nth {
+            return seen.rsplit("event: composer").next().map(str::to_owned);
+        }
+    }
+}
+
+/// A prompt settled in the core redraws the box on a view that never held
+/// the request: its dock draws from the core's record of what is pending,
+/// so this view's copy of the prompt is not what decides. Catches a fold
+/// that answers only for the copy it happens to hold, which leaves the dock
+/// drawing over a prompt the core has let go.
+#[tokio::test]
+async fn a_prompt_settled_elsewhere_redraws_the_composer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(SessionUpdate::PendingInteractionResolved {
+        key: lead(),
+        tool_id: "a-prompt-this-view-never-folded".to_owned(),
+    });
+
+    let region = nth_composer_event(stream, 1).await.expect("the box redraws");
+    assert!(region.contains("id=\"comp\""), "and what it draws is the box: {region}");
+}
+
+/// An option the prompt never offered is not an answer. The outcome is
+/// built from the core's own list, so a browser naming an id of its own
+/// neither allows what the prompt never offered nor rejects the call by
+/// inventing one. Catches an arm that forwards whatever arrives.
+#[tokio::test]
+async fn an_option_the_prompt_never_offered_is_not_an_answer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.intercept_dispatch();
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Question);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    for (tool_id, option_id, what) in [
+        ("test-tool", "made-up", "an option the question never offered"),
+        ("not-even-the-tool", "staging", "a call the seat is not holding"),
+    ] {
+        let (status, body) = post(
+            &config,
+            "/session/Busytools/forge/lead/answer",
+            &format!("tool_id={tool_id}&option_id={option_id}"),
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            reqwest::StatusCode::OK,
+            "the click swaps something rather than a refusal nothing draws ({what}): {body}",
+        );
+        assert!(
+            fleet.dispatched().is_empty(),
+            "and nothing is dispatched for {what}, which the core does not hold",
+        );
     }
 }

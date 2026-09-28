@@ -1,9 +1,10 @@
-//! The read surface a view uses: named verbs by subject, returning
-//! values that carry no terminal type.
+//! The surface a view uses: named read verbs by subject, returning values
+//! that carry no terminal type, and one dispatch verb for what a view acts
+//! with.
 //!
-//! Writes stay on `Workspace::dispatch` and changes on
-//! `Workspace::subscribe`; this is the read half, so a second view
-//! attaches to the core without reading it.
+//! [`ViewSurface::dispatch`] is a verb rather than an accessor, so a second
+//! view is handed the commands it needs and not the whole core, and changes
+//! arrive on [`ViewSurface::subscribe`].
 
 pub mod accounts;
 pub mod agents;

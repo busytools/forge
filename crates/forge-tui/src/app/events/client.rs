@@ -4336,4 +4336,68 @@ mod focus_seam_tests {
             "a background wake's connect must never move focus",
         );
     }
+
+    /// A prompt settled in the core drops out of this view's queue even
+    /// when another view is the one that answered: the update is the only
+    /// thing that says so, and this view has usually popped its own copy
+    /// already. The prompt behind it waits its turn, so the drop is by tool
+    /// id rather than a drain.
+    #[test]
+    fn a_settled_prompt_drops_out_of_the_queue_it_was_waiting_in() {
+        let mut app = App::test_default();
+        let key = SessionSlot::from_str_for_test("settled-prompt");
+        {
+            let session = app
+                .sessions
+                .entry(key.clone())
+                .or_insert_with(|| UiSession::new(key.clone(), "test-project"));
+            session.prompt_queue.push_back(prompt_state("tc-1"));
+            session.prompt_queue.push_back(prompt_state("tc-2"));
+        }
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::PendingInteractionResolved {
+                key: key.clone(),
+                tool_id: "tc-1".to_owned(),
+            },
+        );
+
+        let waiting: Vec<String> = app
+            .session_mut(&key)
+            .expect("the bucket stays")
+            .prompt_queue
+            .iter()
+            .map(|prompt| prompt.tool_id.clone())
+            .collect();
+        assert_eq!(
+            waiting,
+            vec!["tc-2".to_owned()],
+            "the settled prompt goes and the one behind it stays",
+        );
+    }
+
+    /// A queued prompt, built the way the request path builds one.
+    fn prompt_state(tool_id: &str) -> crate::app::prompt::PromptState {
+        crate::app::prompt::PromptState::from_permission(
+            tool_id.to_owned(),
+            forge_primitives::permission_ui::PermissionRequest {
+                tool_call: forge_primitives::session_update::ToolCall {
+                    tool_call_id: tool_id.to_owned(),
+                    title: "Bash".to_owned(),
+                    kind: forge_primitives::ToolKind::Execute,
+                    status: forge_primitives::ToolCallStatus::Pending,
+                    content: Vec::new(),
+                    raw_input: None,
+                    raw_output: None,
+                    output_metadata: None,
+                    task_metadata: None,
+                    locations: Vec::new(),
+                    meta: None,
+                },
+                options: Vec::new(),
+                display: None,
+            },
+        )
+    }
 }

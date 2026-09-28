@@ -268,7 +268,22 @@ impl SessionTask {
                     // Drop oneshots from the previous identity so parked
                     // forwarder tasks exit instead of waiting on
                     // tool_call_ids the new session will never produce.
-                    self.domain.lock().pending_interactions.clear();
+                    // Each one is announced: a view drawing a dock from the
+                    // request it folded would otherwise keep offering a
+                    // prompt the core has let go.
+                    let dropped: Vec<String> = self
+                        .domain
+                        .lock()
+                        .pending_interactions
+                        .drain()
+                        .map(|(tool_id, _)| tool_id)
+                        .collect();
+                    for tool_id in dropped {
+                        self.emit(SessionUpdate::PendingInteractionResolved {
+                            key: self.key.clone(),
+                            tool_id,
+                        });
+                    }
                     // Expire any inflight peer asks targeting this
                     // session's project: the OLD session UUID is gone
                     // (the user just `/clear`-ed, `/new`-ed, logged
@@ -490,6 +505,12 @@ impl SessionTask {
                         && let PendingInteractionSlot::Permission { tx, .. } = pending
                     {
                         let _ = tx.send(forge_primitives::PermissionOutcome::Cancelled);
+                        // An observer that folded the request keeps drawing
+                        // it otherwise, and its answer reaches nothing.
+                        self.emit(SessionUpdate::PendingInteractionResolved {
+                            key: self.key.clone(),
+                            tool_id: tool_call_id.clone(),
+                        });
                     }
                     tracing::warn!(
                         target: "forge_workspace::session_task",
@@ -536,6 +557,12 @@ impl SessionTask {
                         && let PendingInteractionSlot::Question { tx, .. } = pending
                     {
                         let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
+                        // An observer that folded the request keeps drawing
+                        // it otherwise, and its answer reaches nothing.
+                        self.emit(SessionUpdate::PendingInteractionResolved {
+                            key: self.key.clone(),
+                            tool_id: tool_call_id.clone(),
+                        });
                     }
                     tracing::warn!(
                         target: "forge_workspace::session_task",
@@ -3430,7 +3457,7 @@ provider = "anthropic"
         let (_cmd_tx, command_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
         let update_tx = UpdateFanout::default();
-        let _update_rx = update_tx.subscribe(SubscriberRole::Answering);
+        let mut update_rx = update_tx.subscribe(SubscriberRole::Answering);
         let domain = Arc::new(parking_lot::Mutex::new(empty_domain()));
         let (response_tx, mut response_rx) =
             oneshot::channel::<forge_primitives::PermissionOutcome>();
@@ -3479,6 +3506,23 @@ provider = "anthropic"
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed)
             ),
             "forwarder receiver must observe Closed after the sender was dropped"
+        );
+        // The drop is announced, or a view drawing a dock from the request
+        // it folded keeps offering a prompt the core has let go, and every
+        // click on it reaches nothing.
+        let announced: Vec<String> = std::iter::from_fn(|| update_rx.try_recv().ok())
+            .filter_map(|update| match update {
+                SessionUpdate::PendingInteractionResolved { key, tool_id } => {
+                    assert_eq!(key, SessionSlot::from_str_for_test("old-uuid"));
+                    Some(tool_id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            announced,
+            vec!["stale_tool_id".to_owned()],
+            "a dropped prompt is announced with its own tool id",
         );
     }
 
