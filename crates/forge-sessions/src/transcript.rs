@@ -80,7 +80,18 @@ pub enum ChatUnit {
     /// terminal stamps it off its own clock as the result arrives, while a
     /// turn read from a transcript carries the instant the CLI wrote instead
     /// and lets the view render it.
-    TurnReport(TurnInfo),
+    TurnReport {
+        info: TurnInfo,
+        /// What names the row, which is what a view keys its open state on:
+        /// the instant the turn's own first row carried, so a row inserted
+        /// above it leaves it named the same. Absent for a turn the fold
+        /// placed no clock on and whose frame carried no id, which is a row
+        /// a view does not remember open rather than one it remembers under
+        /// a neighbour's name. Two turns opening on one clock would share it,
+        /// and the fold gives the second one a name of its own, so no two rows
+        /// in a conversation carry one name.
+        key: Option<String>,
+    },
 }
 
 /// One family's calls inside a group.
@@ -166,6 +177,9 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     let mut model: Option<String> = None;
     let mut thinking: Option<u64> = None;
     let mut traced = TurnTrace::default();
+    // The names this fold has already given out, so a second turn opening on
+    // one clock takes its own rather than the first turn's.
+    let mut keys: HashMap<String, usize> = HashMap::new();
     // The last state the session reported. A conversation read from a
     // transcript reports none, so a page opened fresh draws its last turn's
     // row here; a live session's trailing turn is left to the view's own
@@ -206,12 +220,13 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
         // A settled turn's row, which the view draws under the work it
         // accounts for. It arrives as a message of its own rather than as a
         // block, so it ends the run the calls before it built.
-        if let Message::Result { .. } = message {
+        if let Message::Result { uuid, .. } = message {
             flush(&mut run, &mut units);
             flush_peers(&mut peers, &mut units);
             if let Some(mut info) = turn_report(message, model.as_deref(), &mut prev_api) {
                 info.thinking_tokens = thinking.take();
-                units.push(ChatUnit::TurnReport(info));
+                let key = take_key(&mut keys, traced.opened.clone(), uuid.as_deref());
+                units.push(ChatUnit::TurnReport { info, key });
             }
             traced = TurnTrace::default();
             running_turn = false;
@@ -224,7 +239,7 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
         if let Some(running) = session_running_state(message) {
             flush(&mut run, &mut units);
             flush_peers(&mut peers, &mut units);
-            close_traced(&mut traced, &mut units, true);
+            close_traced(&mut traced, &mut units, true, &mut keys);
             running_turn = running;
             continue;
         }
@@ -244,7 +259,7 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
                         // A peer message is a user row the CLI answered as a
                         // turn of its own, so the block above it belongs to
                         // the turn before: that turn's row lands here.
-                        close_traced(&mut traced, &mut units, true);
+                        close_traced(&mut traced, &mut units, true, &mut keys);
                         peers.push(card);
                     }
                     TextUnit::Unit(unit) => {
@@ -254,7 +269,7 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
                         // whether a person wrote it or a delivery carried it,
                         // so the work above it draws its row first.
                         if !assistant {
-                            close_traced(&mut traced, &mut units, true);
+                            close_traced(&mut traced, &mut units, true, &mut keys);
                         }
                         units.push(unit);
                     }
@@ -269,7 +284,7 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
                     if !absorb_typed(&mut units, &text) {
                         flush(&mut run, &mut units);
                         flush_peers(&mut peers, &mut units);
-                        close_traced(&mut traced, &mut units, true);
+                        close_traced(&mut traced, &mut units, true, &mut keys);
                         units.push(ChatUnit::UserTurn { text });
                     }
                 }
@@ -295,7 +310,7 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     // the view draws that turn's row itself. Every other turn is closed by
     // the turn after it, or by the result that reported it.
     if !running_turn {
-        close_traced(&mut traced, &mut units, false);
+        close_traced(&mut traced, &mut units, false, &mut keys);
     }
     units
 }
@@ -430,9 +445,15 @@ impl TurnTrace {
 /// or a state frame. A turn closing at the end of a conversation has nothing
 /// saying it, and needs its own last frame to have stopped rather than handed
 /// back for a tool call.
-fn close_traced(trace: &mut TurnTrace, units: &mut Vec<ChatUnit>, known_over: bool) {
+fn close_traced(
+    trace: &mut TurnTrace,
+    units: &mut Vec<ChatUnit>,
+    known_over: bool,
+    keys: &mut HashMap<String, usize>,
+) {
     if trace.drew_work() && (known_over || trace.stopped_of_its_own_accord()) {
-        units.push(ChatUnit::TurnReport(trace.report()));
+        let key = take_key(keys, trace.opened.clone(), None);
+        units.push(ChatUnit::TurnReport { info: trace.report(), key });
     }
     *trace = TurnTrace::default();
 }
@@ -454,6 +475,31 @@ fn is_dispatched(message: &Message) -> bool {
         return false;
     };
     names_a_dispatch(parent.as_deref())
+}
+
+/// What names a settled row: the instant the turn's own first row carried,
+/// which survives an insertion above it where a count of the rows before it
+/// does not.
+///
+/// Two turns can open on one clock - the CLI writes a command and its answer
+/// in the same millisecond - and the page keeps ONE map of the rows it has
+/// been told to open, so two rows sharing a name would open and close
+/// together. No transcript measured emits such a pair, and what stops one
+/// today is `drew_work`, a guard about a turn drawing rather than about its
+/// being named, so a name already taken in this fold takes an ordinal instead
+/// of resting on that. Deterministic for a fixed transcript, unique within
+/// one. The frame's own id stands in for a turn the fold placed no clock on,
+/// and a turn with neither is named by nothing rather than by someone else's
+/// name.
+fn take_key(
+    keys: &mut HashMap<String, usize>,
+    opened: Option<String>,
+    frame: Option<&str>,
+) -> Option<String> {
+    let base = opened.or_else(|| frame.map(str::to_owned))?;
+    let nth = keys.entry(base.clone()).or_insert(0);
+    *nth += 1;
+    Some(if *nth == 1 { base } else { format!("{base}#{nth}") })
 }
 
 /// Add one call to the conversation: a peer card, a question's card, a
@@ -1737,7 +1783,7 @@ mod tests {
         let reported: Vec<Option<u64>> = render_units(&captured("compact"))
             .into_iter()
             .filter_map(|unit| match unit {
-                ChatUnit::TurnReport(info) => Some(info.api_ms),
+                ChatUnit::TurnReport { info, .. } => Some(info.api_ms),
                 _ => None,
             })
             .collect();
@@ -1763,7 +1809,7 @@ mod tests {
         let reported: Vec<Option<u64>> = render_units(&results[2..])
             .into_iter()
             .filter_map(|unit| match unit {
-                ChatUnit::TurnReport(info) => Some(info.api_ms),
+                ChatUnit::TurnReport { info, .. } => Some(info.api_ms),
                 _ => None,
             })
             .collect();
@@ -1790,7 +1836,7 @@ mod tests {
         let reported = render_units(&captured("exit_plan_mode"))
             .into_iter()
             .find_map(|unit| match unit {
-                ChatUnit::TurnReport(info) => Some(info.thinking_tokens),
+                ChatUnit::TurnReport { info, .. } => Some(info.thinking_tokens),
                 _ => None,
             })
             .expect("the capture has a settled turn");
@@ -1948,10 +1994,149 @@ mod turn_report_tests {
         units
             .iter()
             .filter_map(|unit| match unit {
-                ChatUnit::TurnReport(info) => Some(info),
+                ChatUnit::TurnReport { info, .. } => Some(info),
                 _ => None,
             })
             .collect()
+    }
+
+    /// What each settled row is named, in the order the fold emitted them.
+    fn keys(units: &[ChatUnit]) -> Vec<Option<String>> {
+        units
+            .iter()
+            .filter_map(|unit| match unit {
+                ChatUnit::TurnReport { key, .. } => Some(key.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// One result frame, as the wire sends it: the turn it closes, and the
+    /// id that frame carries.
+    fn result_frame(uuid: Option<&str>) -> Message {
+        Message::Result {
+            subtype: "success".to_owned(),
+            session_id: "session".to_owned(),
+            is_error: false,
+            num_turns: 1,
+            duration_ms: 41_059,
+            duration_api_ms: 40_742,
+            stop_reason: None,
+            total_cost_usd: Some(0.16),
+            usage: None,
+            result: None,
+            structured_output: None,
+            model_usage: None,
+            permission_denials: None,
+            errors: None,
+            uuid: uuid.map(str::to_owned),
+            terminal_reason: None,
+        }
+    }
+
+    /// A settled row is named for the turn it is rather than for its place:
+    /// the name is the instant the turn's own first row carried, so a turn
+    /// inserted above another leaves that one named the same. A count of the
+    /// rows drawn before it renames every row after the insertion.
+    #[test]
+    fn a_settled_row_is_named_for_its_turn_and_not_for_its_place() {
+        let first = [
+            user_at("first", "2026-04-22T04:15:27.000Z"),
+            assistant_at("done", "2026-04-22T04:18:08.000Z", StopReason::EndTurn, None),
+            user_at("second", "2026-04-22T05:00:00.000Z"),
+            assistant_at("done", "2026-04-22T05:01:00.000Z", StopReason::EndTurn, None),
+        ];
+        // The same conversation with a turn inserted above the last one.
+        let inserted = [
+            user_at("first", "2026-04-22T04:15:27.000Z"),
+            assistant_at("done", "2026-04-22T04:18:08.000Z", StopReason::EndTurn, None),
+            user_at("inserted", "2026-04-22T04:30:00.000Z"),
+            assistant_at("done", "2026-04-22T04:31:00.000Z", StopReason::EndTurn, None),
+            user_at("second", "2026-04-22T05:00:00.000Z"),
+            assistant_at("done", "2026-04-22T05:01:00.000Z", StopReason::EndTurn, None),
+        ];
+
+        assert_eq!(
+            keys(&render_units(&first)),
+            [
+                Some("2026-04-22T04:15:27.000Z".to_owned()),
+                Some("2026-04-22T05:00:00.000Z".to_owned()),
+            ],
+            "each row is named for its own turn's opening instant",
+        );
+        assert_eq!(
+            keys(&render_units(&inserted)).last(),
+            Some(&Some("2026-04-22T05:00:00.000Z".to_owned())),
+            "and an inserted turn leaves the row after it named the same",
+        );
+    }
+
+    /// A turn the wire settled is named the way a turn read back is: the
+    /// instant its own first row carried. The frame's id is the fallback for
+    /// a turn the fold placed no clock on, and naming the row for the frame
+    /// instead would rename every one of them across a reload.
+    #[test]
+    fn a_wire_settled_turn_is_named_for_its_opening_instant() {
+        let messages = [
+            user_at("ship it", "2026-04-22T04:15:27.000Z"),
+            assistant_at("Shipped.", "2026-04-22T04:18:08.000Z", StopReason::EndTurn, None),
+            result_frame(Some("result-1")),
+        ];
+
+        assert_eq!(
+            keys(&render_units(&messages)),
+            [Some("2026-04-22T04:15:27.000Z".to_owned())],
+            "the turn's own instant, not the id of the frame that reported it",
+        );
+    }
+
+    /// A turn the fold can place no clock on and whose frame carried no id
+    /// is named by nothing at all. A row a view does not remember open is
+    /// the safe answer; a name it shares with a neighbour is the one that
+    /// opens the wrong body.
+    #[test]
+    fn a_turn_nothing_can_name_carries_no_name() {
+        assert_eq!(
+            keys(&render_units(&[result_frame(None)])),
+            [None],
+            "no clock and no frame id, so no name rather than another row's",
+        );
+    }
+
+    /// A turn the fold placed no clock on takes the id of the frame that
+    /// reported it. The arm is reachable rather than belt-and-braces: the
+    /// baselines carry result frames with no timestamp, so a fold can meet
+    /// one with nothing in the trace to name it by.
+    #[test]
+    fn a_turn_with_no_clock_takes_the_frame_id() {
+        assert_eq!(
+            keys(&render_units(&[result_frame(Some("result-1"))])),
+            [Some("result-1".to_owned())],
+            "nothing opened a trace, so the frame's own id names the row",
+        );
+    }
+
+    /// Two turns can open on one clock - the CLI writes a command and its
+    /// answer in the same millisecond - and the page keeps ONE map of the
+    /// rows it has been told to open, so two rows sharing a name open and
+    /// close together. The second turn takes a name of its own.
+    #[test]
+    fn two_turns_opening_on_one_clock_do_not_share_a_name() {
+        let messages = [
+            user_at("first", "2026-04-22T04:15:27.000Z"),
+            assistant_at("done", "2026-04-22T04:15:27.000Z", StopReason::EndTurn, None),
+            user_at("second", "2026-04-22T04:15:27.000Z"),
+            assistant_at("done", "2026-04-22T04:15:27.000Z", StopReason::EndTurn, None),
+        ];
+
+        assert_eq!(
+            keys(&render_units(&messages)),
+            [
+                Some("2026-04-22T04:15:27.000Z".to_owned()),
+                Some("2026-04-22T04:15:27.000Z#2".to_owned()),
+            ],
+            "the second turn is named its own rather than the first's",
+        );
     }
 
     /// A transcript holds no result frame, so a turn read from one draws its
@@ -1992,24 +2177,7 @@ mod turn_report_tests {
         let messages = [
             user_at("ship it", "2026-04-22T04:15:27.000Z"),
             assistant_at("Shipped.", "2026-04-22T04:18:08.000Z", StopReason::EndTurn, None),
-            Message::Result {
-                subtype: "success".to_owned(),
-                session_id: "session".to_owned(),
-                is_error: false,
-                num_turns: 1,
-                duration_ms: 41_059,
-                duration_api_ms: 40_742,
-                stop_reason: None,
-                total_cost_usd: Some(0.16),
-                usage: None,
-                result: None,
-                structured_output: None,
-                model_usage: None,
-                permission_denials: None,
-                errors: None,
-                uuid: None,
-                terminal_reason: None,
-            },
+            result_frame(None),
         ];
         let units = render_units(&messages);
 

@@ -842,26 +842,108 @@ async fn the_git_section_groups_a_directory_once() {
     }
 }
 
-/// The section's summary counts what its own body lists, so a file the
-/// body does not carry cannot inflate the count into a truncation note
-/// that is not true.
+/// The section's summary counts what has moved in the working tree, which
+/// is the same movement the project's row on the home counts, and an
+/// untracked file is part of it. The list below the summary is the smaller
+/// set a diff can show, and that difference is the two questions rather
+/// than two answers to one.
 #[tokio::test]
-async fn the_git_section_summary_counts_what_it_lists() {
+async fn the_git_section_summary_counts_the_movement_the_row_counts() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
     fleet.start("Busytools", "forge").expect("forge is declared");
     let repo = dir.path().join("forge");
     repo_with(repo.as_path(), 3);
-    // Untracked, so the working tree's own count includes it and the diff
-    // the section lists cannot.
+    // Untracked, so it is in the working tree's count and in nothing the
+    // diff below can list.
     std::fs::write(repo.join("untracked.txt"), "new\n").expect("write");
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
 
-    assert!(page.contains("3 files"), "the summary counts the three it lists: {page}");
-    assert!(!page.contains("4 files"), "and not the untracked one it cannot: {page}");
-    assert_eq!(page.matches("<div class=\"file\">").count(), 3, "three files are listed: {page}");
+    assert!(
+        page.contains("<span class=\"c2\">main \u{b7} 4 files</span>"),
+        "the summary counts the untracked file with the rest: {page}",
+    );
+    assert_eq!(
+        page.matches("<div class=\"file\">").count(),
+        3,
+        "and the body still lists the three a diff has: {page}",
+    );
+
+    let (_status, _content_type, home) = get(&config, "/").await;
+    assert!(
+        home.contains("<span class=\"files\">4 files</span>"),
+        "the row on the home counts the same four, so one fact has one source: {home}",
+    );
+}
+
+/// A tree whose only movement is untracked files: the summary counts it and
+/// the scan cannot list it, so the section says what the count is over rather
+/// than opening on nothing. The count is what makes this state need the line.
+#[tokio::test]
+async fn a_tree_the_scan_cannot_list_says_what_the_list_left_out() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    let repo = dir.path().join("forge");
+    repo_with(repo.as_path(), 1);
+    // The one tracked change goes away, leaving the untracked file alone:
+    // porcelain 1, and nothing the scan can list.
+    git(repo.as_path(), &["checkout", "--", "."]);
+    std::fs::write(repo.join("untracked.txt"), "new\n").expect("write");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<span class=\"c2\">main \u{b7} 1 file</span>"),
+        "the summary counts the untracked file: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"k\">not in the diff</span>"),
+        "and the body says which file the count is over: {page}",
+    );
+    assert!(
+        page.contains("<details class=\"sec\" open data-k=\"sec-git\">"),
+        "so the section opens on it rather than leading the inspector closed: {page}",
+    );
+}
+
+/// The note under the list is the list's own shortfall, not the tree's. Ten
+/// entries move in this tree and the scan can carry seven, so the note says
+/// two rather than three: the untracked file its cap could not reach either
+/// way is reconciled by the row above it, and counting it here as well would
+/// say the same file twice.
+#[tokio::test]
+async fn the_note_counts_the_lists_shortfall_and_not_the_trees() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    let repo = dir.path().join("forge");
+    repo_with(repo.as_path(), 9);
+    std::fs::write(repo.join("untracked.txt"), "new\n").expect("write");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<span class=\"c2\">main \u{b7} 10 files</span>"),
+        "the summary counts every entry the tree moved: {page}",
+    );
+    assert_eq!(page.matches("<div class=\"file\">").count(), 7, "the list holds the cap: {page}");
+    assert!(
+        page.contains("\u{2026}and 2 more"),
+        "the note is the nine the scan found less the seven it carries: {page}",
+    );
+    assert!(
+        !page.contains("\u{2026}and 3 more"),
+        "and not the tree's ten less those seven, which would count the untracked file twice: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"k\">not in the diff</span>"),
+        "the untracked file is reconciled by its own row instead: {page}",
+    );
 }
 
 /// A clean tree with no pull request has nothing to open on, so the section
@@ -1382,6 +1464,21 @@ async fn a_turn_read_from_a_transcript_draws_its_own_row() {
         page.matches("class=\"turninfo\"").count(),
         2,
         "each turn draws its own row: {page}",
+    );
+    // The live row's own name is `turn-live`, so the property is the digit
+    // after the prefix rather than the prefix on its own.
+    let named_by_place = page
+        .split("data-k=\"turn-")
+        .skip(1)
+        .any(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_digit()));
+    assert!(!named_by_place, "no row is named by its place in the conversation: {page}");
+    assert!(
+        page.contains("data-k=\"2026-04-22T04:15:27.000Z\""),
+        "the first row is named for its own turn, so nothing inserted above it renames it: {page}",
+    );
+    assert!(
+        page.contains("data-k=\"2026-04-22T04:20:00.000Z\""),
+        "and the second for its own: {page}",
     );
     assert!(page.contains("2m 41s"), "the first turn's own wall clock: {page}");
     assert!(page.contains("1m 30s"), "and the second's: {page}");
