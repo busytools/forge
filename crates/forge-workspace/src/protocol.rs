@@ -1534,6 +1534,10 @@ pub enum DispatchError {
     UnknownSession(SessionSlot),
     #[error("session task for key {0:?} has closed its command channel")]
     SessionClosed(SessionSlot),
+    #[error(
+        "no prompt of that kind is waiting on {tool_id} for key {key:?}: it has been answered, or it asked something else"
+    )]
+    NoPromptWaiting { key: SessionSlot, tool_id: String },
 }
 
 #[cfg(test)]

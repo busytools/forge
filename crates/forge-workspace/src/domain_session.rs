@@ -177,6 +177,27 @@ pub struct DomainSession {
 }
 
 impl DomainSession {
+    /// Whether a permission prompt is still waiting on `tool_id`.
+    ///
+    /// The session task asks the same question as it pops the slot, and this
+    /// asks it where a refusal can still reach a caller: by the time the task
+    /// sees the answer, the click has already happened.
+    pub fn awaits_permission(&self, tool_id: &str) -> bool {
+        matches!(
+            self.pending_interactions.get(tool_id),
+            Some(PendingInteractionSlot::Permission { .. }),
+        )
+    }
+
+    /// The same for a question. A prompt answered already, or one that asked
+    /// something else, is a dock that is gone.
+    pub fn awaits_question(&self, tool_id: &str) -> bool {
+        matches!(
+            self.pending_interactions.get(tool_id),
+            Some(PendingInteractionSlot::Question { .. }),
+        )
+    }
+
     /// Construct a fresh `DomainSession` bound to `key` with the
     /// given `conn`. Pre-spawn / pre-Connect callers pass `None` to
     /// register a placeholder domain whose handle slot fills in once

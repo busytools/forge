@@ -187,6 +187,33 @@ async fn a_command_that_answers_through_a_reply_requires_reply_to() {
     assert!(why.contains("reply_to"), "and says which field in the sentence: {why}");
 }
 
+/// Answering a prompt that is not waiting - already answered on another
+/// client, or a prompt of another kind - is a click on a dock that is gone.
+/// The core used to log it and report `Ok(())`, so the socket sent nothing and
+/// the reader had no way to learn why nothing happened.
+#[tokio::test]
+async fn an_answer_to_a_prompt_that_is_gone_is_refused() {
+    let mut socket = connected().await;
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::RespondPermission {
+                key: lead_seat(),
+                tool_id: "nothing-is-waiting".to_owned(),
+                outcome: forge_primitives::permission_ui::PermissionOutcome::Cancelled,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+        panic!("silence here is the click that did nothing");
+    };
+    assert_eq!(what, "dispatch", "the refusal is the core's own: {why}");
+    assert!(why.contains("nothing-is-waiting"), "and it names the prompt: {why}");
+}
+
 /// A command aimed at a seat forge holds no session for is answered with an
 /// error naming it - never a panic, and never a silent success.
 #[tokio::test]

@@ -3489,6 +3489,36 @@ impl Workspace {
                 return Ok(());
             }
         }
+        // A prompt already answered, or one that asked something else, is a
+        // dock that is gone: the reader's click did nothing. The session task
+        // itself just logs that, and by the time it sees the answer the caller
+        // is long gone - so it is refused here, the last layer that can still
+        // tell one.
+        match &cmd {
+            Command::RespondPermission { key, tool_id, .. } => {
+                let waiting = self
+                    .domain_session_for(key)
+                    .is_some_and(|domain| domain.lock().awaits_permission(tool_id));
+                if !waiting {
+                    return Err(DispatchError::NoPromptWaiting {
+                        key: key.clone(),
+                        tool_id: tool_id.clone(),
+                    });
+                }
+            }
+            Command::RespondQuestion { key, tool_id, .. } => {
+                let waiting = self
+                    .domain_session_for(key)
+                    .is_some_and(|domain| domain.lock().awaits_question(tool_id));
+                if !waiting {
+                    return Err(DispatchError::NoPromptWaiting {
+                        key: key.clone(),
+                        tool_id: tool_id.clone(),
+                    });
+                }
+            }
+            _ => {}
+        }
         if let Some(key) = cmd.key() {
             // The /dictate override edits are workspace state on the
             // DomainSession, never agent traffic: apply inline and
