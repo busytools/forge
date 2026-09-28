@@ -143,6 +143,12 @@ pub struct ToolLeaf {
     /// The tool's own label, for a row that names the tool rather than
     /// its family.
     pub label: &'static str,
+    /// The CLI's own name for the tool.
+    ///
+    /// Beside the label rather than instead of it: the label is the word a
+    /// row draws and holds no way back to the tool, so a client handed only
+    /// that can draw the card and cannot say which call it is.
+    pub name: String,
     /// The tool's title: the file, command or query it names.
     pub title: String,
     /// The command a call ran, when it ran one. Separate from the title
@@ -827,6 +833,7 @@ pub(crate) fn leaf(
         id: id.to_owned(),
         row: family_row(name).0,
         label: tool_label(name),
+        name: name.to_owned(),
         // What the row names, resolved the way the terminal's own tree
         // resolves it: a search call's target is its pattern, a read's is
         // its path, and a call the builders have no target for keeps the

@@ -755,6 +755,11 @@ mod tests {
                 "lead",
                 &[
                     r#"{"type":"user","message":{"role":"user","content":"hello"},"session_id":"s"}"#,
+                    // A tool call, so the fixture pins a group's rows: the
+                    // class it keys on, the word it draws and the tool's own
+                    // name.
+                    r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls","description":"List files"}}]}}"#,
+                    r#"{"type":"user","uuid":"u2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"a\nb"}]}}"#,
                     r#"{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
                 ],
             )
@@ -936,6 +941,49 @@ mod tests {
             surface.processes(&seat).map(|held| held.scanned_at),
             Some(fresh),
             "a snapshot inside the window is the answer rather than a reason to walk",
+        );
+    }
+
+    /// The handle a client needs to identify a call. `Task` is the case that
+    /// shows why the leaf carries both: its row draws the word `Subagent`,
+    /// and that word leads back to no tool, so a client handed only the label
+    /// can draw the card and cannot say which call it is.
+    #[tokio::test]
+    async fn a_groups_leaves_carry_the_tools_name_beside_its_label() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &[
+                    r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"go"},"session_id":"s"}"#,
+                    r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"description":"investigate","prompt":"look"}}]}}"#,
+                    r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+                ],
+            )
+            .expect("the transcript seeds");
+        let surface = fleet.surface();
+        let seat = fixture_seat();
+        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
+
+        let all = surface.folded_units(&seat, &cwd);
+        let leaf = all
+            .iter()
+            .find_map(|unit| match unit {
+                ChatUnit::ToolGroup { families, .. } => {
+                    families.iter().flat_map(|family| family.calls.iter()).next()
+                }
+                _ => None,
+            })
+            .expect("the fold produced a group with a call in it");
+
+        assert_eq!(leaf.name, "Task", "the leaf names the tool the CLI ran");
+        assert_eq!(
+            leaf.label, "Subagent",
+            "and the word its row draws is a different thing, which is why both are carried",
         );
     }
 
