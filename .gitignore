@@ -10,3 +10,7 @@ Cargo.lock.tmp
 .direnv/
 .claude/*.local.md
 .superpowers/
+# Any depth: a node_modules outside client/ is build output too, and the
+# unicode gate enumerates untracked files, so an un-ignored one is scanned.
+node_modules/
+client/dist/
