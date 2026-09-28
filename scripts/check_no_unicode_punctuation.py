@@ -73,10 +73,18 @@ EXCLUDE_DIRS_ANY_DEPTH = {
     "node_modules",
 }
 
-# Captured wire data only. `reference-captures/` is NOT excluded: its
-# `.jsonl` captures already fall outside INCLUDE_SUFFIXES, and the one
-# thing a path exclusion there would hide is the forge-authored README.
-EXCLUDE_PATH_SUBSTRINGS = ("/crates/forge-test-harness/baselines/",)
+# Somebody else's bytes, which this repo cannot fix and does not author.
+# `reference-captures/` is NOT excluded: its `.jsonl` captures already fall
+# outside INCLUDE_SUFFIXES, and the one thing a path exclusion there would
+# hide is the forge-authored README. The three named files are the web
+# view's vendored scripts; `VENDOR.md` beside them is forge-authored and
+# stays scanned.
+EXCLUDE_PATH_SUBSTRINGS = (
+    "/crates/forge-test-harness/baselines/",
+    "/crates/forge-web/assets/htmx.min.js",
+    "/crates/forge-web/assets/htmx-sse.min.js",
+    "/crates/forge-web/assets/idiomorph-ext.min.js",
+)
 
 
 def is_scanned(path: Path) -> bool:
