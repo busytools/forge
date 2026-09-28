@@ -789,7 +789,17 @@ inspected.
     of a state, and axe over the rendered markup as a page test
     (`client/src/a11y.test.ts`) - contrast is not covered there, because
     jsdom performs no layout, so it stays a rule checked where the token
-    set is. The structural comparison against the mock and measured
+    set is. **The fuller UX checklist is the `ui-ux-pro-max` skill**,
+    whose guidelines are ordered accessibility first. **The order of
+    authority is the mockup, then this standard, then the skill's
+    generic guidance** - a salvaged or approved look is not
+    re-litigated by a database of styles - and **that order holds
+    whether or not the skill is installed**, because the skill is a
+    user-level plugin rather than something this repo carries: a
+    contributor without it applies the checks above from this rule
+    alone. The page reviewer's brief and the fan-out charters carry the
+    order, so a worker meets it before it is writing. The structural
+    comparison against the mock and measured
     geometry at 1600 and 430 go in the PR body, and a page's final word
     is Ved looking at it. **And the shipped app carries no fixture, no
     mock data and no dev-only default**: its only input is the server

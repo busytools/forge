@@ -32,6 +32,7 @@
 The Svelte app that connects to a running forge and draws it. Its surfaces
 have pages here in the same way the TUI's do, current state only.
 
+- [Connect](./ui/client/connect.md)
 - [Home](./ui/client/home.md)
 
 # Contributor

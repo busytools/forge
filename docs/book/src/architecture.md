@@ -287,6 +287,12 @@ rendering, and a page that draws a healthy state for an unknown one is
 a defect rather than a gap. Accessibility is a rule: semantic markup,
 every interactive element reachable by keyboard, no colour as the only
 carrier of a state, and axe over the rendered markup as a page test.
+The fuller UX checklist is the `ui-ux-pro-max` skill, whose guidelines
+are ordered accessibility first. The order of authority is the mockup,
+then this standard, then the skill's generic guidance - a salvaged or
+approved look is not re-litigated by a database of styles - and that
+order holds whether or not the skill is installed, since it is a
+user-level plugin rather than something this repo carries.
 
 **And the shipped app is a shell.** Its only input is the server URL: it
 carries no fixture, no mock data and no dev-only default, draws nothing

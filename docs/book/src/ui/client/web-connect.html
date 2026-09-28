@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; connect</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@100..900&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --r: 10px;
+    --fs-prose: 17px; --fs-base: 15.5px; --fs-data: 14px;
+    --fs-label: 12.5px; --fs-title: 18px;
+    --pad: 16px;
+  }
+
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: var(--fs-base);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { padding: 30px 40px 64px; }
+
+  /* ---------- the door: one column, four rows, nothing that moves ---------- */
+
+  .door { max-width: 30rem; margin: 12vh auto 0; }
+
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .mark { width: 30px; height: 30px; flex: 0 0 30px; color: var(--accent); }
+  .brand .mark svg { display: block; width: 100%; height: 100%; }
+  .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+
+  /* The address is the headline. No box: a border here would read as
+     paperwork, and an address is what this screen is about. */
+  .addr { margin-top: 40px; }
+  .addr input {
+    display: block; width: 100%;
+    background: none; border: 0; padding: 0 0 10px;
+    color: var(--text);
+    /* The size the wordmark already uses, so no new step in the scale is
+       invented: mono at this size reads heavier than the sans beside it,
+       which is what puts the address above the brand rather than level
+       with it. */
+    font-family: var(--mono); font-size: 22px; font-weight: 500;
+    letter-spacing: -.01em;
+  }
+  .addr input:focus { outline: none; }
+  .addr input::selection { background: rgba(244,118,0,.3); }
+
+  /* One element doing two jobs: the address's underline, and the
+     connection's progress while it is being asked. */
+  .rule { position: relative; height: 1px; background: var(--line); overflow: hidden; }
+  .rule::after { content: ""; position: absolute; inset: 0; opacity: 0; }
+  .door[data-state="connecting"] .rule { background: rgba(244,118,0,.22); }
+  .door[data-state="connecting"] .rule::after {
+    opacity: 1; width: 38%; background: var(--accent);
+    animation: ask 1.15s cubic-bezier(.5,0,.5,1) infinite;
+  }
+  .door[data-state="failed"] .rule { background: var(--bad); }
+
+  @keyframes ask {
+    from { transform: translateX(-100%); }
+    to   { transform: translateX(264%); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .door[data-state="connecting"] .rule::after { animation: none; width: 100%; }
+  }
+
+  .say { margin-top: 12px; color: var(--dim); font-size: var(--fs-data); }
+  .door[data-state="failed"] .say { color: var(--bad); }
+  .door[data-state="connecting"] .say { color: var(--muted); }
+  .say code { font-family: var(--mono); color: var(--text); }
+
+  .act { margin-top: 26px; }
+  .act button {
+    background: var(--s2); border: 1px solid var(--line); border-radius: var(--r);
+    padding: 11px 20px; color: var(--text);
+    font-family: var(--ui); font-size: var(--fs-base); font-weight: 600;
+    cursor: pointer;
+  }
+  .act button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .act button:disabled { color: var(--dim); cursor: default; }
+
+  .lede { margin-top: 34px; color: var(--dim); font-size: var(--fs-data); }
+
+  /* ---------- the mock's own scaffolding, dropped before any comparison ---------- */
+
+  .demo-switch {
+    display: inline-flex; align-items: center; gap: 8px; margin-top: 26px;
+    color: var(--dim); font-size: var(--fs-data); cursor: pointer;
+  }
+  .demo-switch .box {
+    width: 13px; height: 13px; border-radius: 3px;
+    border: 1px solid var(--muted); flex: 0 0 13px;
+  }
+  #demo:checked ~ .wrap .demo-switch .box { background: var(--accent); border-color: var(--accent); }
+  .demo-panel { display: none; margin-top: 34px; border-top: 1px solid var(--line); padding-top: 22px; }
+  #demo:checked ~ .wrap .demo-panel { display: block; }
+
+  .cat { margin-top: 26px; }
+  .cat h4 { font-size: var(--fs-label); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .cat .why { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--dim); margin-left: 8px; }
+  /* The live door carries 12vh of its own to sit below the top of a real
+     window; a specimen beside a label must not. */
+  .stage { max-width: 30rem; margin-top: 18px; }
+  .stage .door { margin-top: 0; }
+</style>
+</head>
+<body>
+
+<input type="checkbox" id="demo" hidden checked>
+
+<div class="wrap">
+
+  <div class="door" data-state="idle">
+    <div class="brand">
+      <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+      <span class="word">forge</span>
+    </div>
+
+    <div class="addr">
+      <input id="address" name="address" type="text" value="127.0.0.1:8790"
+             autocomplete="off" autocapitalize="off" spellcheck="false">
+      <div class="rule"></div>
+    </div>
+    <p class="say">the port forge serves on by default</p>
+
+    <div class="act"><button type="submit">Connect</button></div>
+
+    <p class="lede">Draws a forge that is already running.</p>
+  </div>
+
+  <label class="demo-switch" for="demo" data-mock-ignore>
+    <span class="box"></span> show every state (uncheck for the screen alone)
+  </label>
+
+  <div class="demo-panel" data-mock-ignore>
+    <h3>states reference &middot; the whole vocabulary, none of it live</h3>
+
+    <div class="cat">
+      <h4>idle <span class="why">the default is right almost always, so nothing asks for anything</span></h4>
+      <div class="stage">
+        <div class="door" data-state="idle">
+          <div class="addr">
+            <input type="text" value="127.0.0.1:8790" readonly>
+            <div class="rule"></div>
+          </div>
+          <p class="say">the port forge serves on by default</p>
+          <div class="act"><button type="button">Connect</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>connecting <span class="why">the underline it already has becomes the progress, so no second graphic is added</span></h4>
+      <div class="stage">
+        <div class="door" data-state="connecting">
+          <div class="addr">
+            <input type="text" value="127.0.0.1:8790" readonly>
+            <div class="rule"></div>
+          </div>
+          <p class="say">asking this address for its projects</p>
+          <div class="act"><button type="button" disabled>Connecting</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>failed <span class="why">the reason sits where the reassurance was, so the eye does not travel</span></h4>
+      <div class="stage">
+        <div class="door" data-state="failed">
+          <div class="addr">
+            <input type="text" value="127.0.0.1:8790" readonly>
+            <div class="rule"></div>
+          </div>
+          <p class="say">nothing answered there. If forge is running, check that <code>[web] enabled</code> is not set to <code>false</code> in <code>forge.toml</code>.</p>
+          <div class="act"><button type="button">Try again</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>failed, address not usable <span class="why">a typo is a different answer from silence, so it says so</span></h4>
+      <div class="stage">
+        <div class="door" data-state="failed">
+          <div class="addr">
+            <input type="text" value="::::" readonly>
+            <div class="rule"></div>
+          </div>
+          <p class="say">:::: is not an address. It wants a host and a port, like 127.0.0.1:8790.</p>
+          <div class="act"><button type="button">Try again</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

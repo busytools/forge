@@ -6,7 +6,7 @@ from one snapshot of the `home` subject, and redrawn from the update stream
 after it. The drawing it is held against is
 [web-home.html](./web-home.html), beside this page.
 
-The app opens on the [connect screen](#the-connect-screen) rather than here,
+The app opens on the [connect screen](./connect.md) rather than here,
 because its only input is the server URL. Until a server answers there is
 nothing to draw, and the client never falls back to bundled data.
 
@@ -74,11 +74,3 @@ horizontally at either width.
 The sheet's own breakpoints are at 1280, 980, 760 and 560. This page's
 columns are all in the header and the band, so it has no collapse of its own
 to check at the middle two.
-
-## The connect screen
-
-Where the app opens. It takes the address forge is serving on, pre-filled
-with the loopback port, and a failed connection is a screen rather than a
-blank app: the reason is named, and a connection nothing answered points at
-`[web] enabled` in `forge.toml`, since a socket switched off refuses in
-silence with nothing wrong at either end.
