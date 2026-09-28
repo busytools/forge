@@ -1,5 +1,6 @@
 //! `GET /events`: the page's subscription, one stream per tab.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -50,6 +51,9 @@ const TICK: Duration = Duration::from_secs(10);
 #[derive(Default)]
 pub struct Live {
     unseen: Unseen,
+    /// The seats a page is open on, by how many connections are showing
+    /// them: a turn finishing on one of those is a turn the reader watched.
+    attached: HashMap<SessionSlot, usize>,
     composer: Composer,
 }
 
@@ -81,6 +85,25 @@ impl Live {
         self.unseen.clear(slot);
     }
 
+    /// A page is open on `slot`, which is this view showing it, so a mark
+    /// armed before the page opened goes with it. Counted, because two tabs
+    /// on one seat are one seat still being shown.
+    pub fn attach(&mut self, slot: &SessionSlot) {
+        *self.attached.entry(slot.clone()).or_default() += 1;
+        self.unseen.clear(slot);
+    }
+
+    /// One page on `slot` has gone. The seat is let go with the last of them.
+    pub fn detach(&mut self, slot: &SessionSlot) {
+        let Some(count) = self.attached.get_mut(slot) else {
+            return;
+        };
+        *count -= 1;
+        if *count == 0 {
+            self.attached.remove(slot);
+        }
+    }
+
     /// Fold one update in, answering what it asks of each page.
     ///
     /// The filter is what keeps a busy turn from re-sending the fleet for
@@ -97,8 +120,12 @@ impl Live {
                 {
                     // A turn finished on a session this page is not
                     // showing, so the row earns its diamond until the
-                    // session is opened.
-                    self.unseen.mark_completed(key);
+                    // session is opened. A seat a page is open on has
+                    // already shown it, so it earns nothing, and the row
+                    // settles out of running like any other.
+                    if !self.attached.contains_key(key) {
+                        self.unseen.mark_completed(key);
+                    }
                     true
                 }
                 Message::System { subtype, data, .. } if subtype == "session_state_changed" => {
@@ -169,6 +196,29 @@ impl Redraw {
     }
 }
 
+/// A page's own stream, holding its seat for as long as the connection
+/// lives.
+struct Held {
+    state: Arc<WebState>,
+    slot: SessionSlot,
+}
+
+impl Held {
+    /// Take the seat up for this connection.
+    fn new(state: Arc<WebState>, slot: SessionSlot) -> Self {
+        Live::lock(&state.live).attach(&slot);
+        Self { state, slot }
+    }
+}
+
+/// The seat is let go when the connection ends, which is a tab closing or a
+/// browser dropping it.
+impl Drop for Held {
+    fn drop(&mut self) {
+        Live::lock(&self.state.live).detach(&self.slot);
+    }
+}
+
 /// The session page's own stream: its own subscription and its own baseline
 /// read, taken in that order.
 ///
@@ -184,6 +234,7 @@ pub async fn session_events(
     let Some(slot) = crate::session::seat(&wiring.state.surface, &org, &project, &label) else {
         return (StatusCode::NOT_FOUND, "no session slot by that name").into_response();
     };
+    let held = Held::new(Arc::clone(&wiring.state), slot.clone());
     let receiver = wiring.state.surface.subscribe();
     let cwd = wiring.state.surface.roster().cwd_for(&slot);
     let conversation = crate::session::read_conversation(&wiring.state.surface, &slot, cwd).await;
@@ -203,7 +254,7 @@ pub async fn session_events(
             async move { Ok(Event::default().event(SESSION_EVENT).data(region.into_string())) },
         )
     };
-    let updates = session_updates(receiver, wiring, slot, conversation, LiveTurn::default());
+    let updates = session_updates(receiver, wiring, slot, conversation, LiveTurn::default(), held);
     let stream = opening.chain(updates).chain(stream::once(async {
         Ok(Event::default().event(CLOSE_EVENT).data("the core's stream ended"))
     }));
@@ -223,6 +274,7 @@ fn session_updates(
     slot: SessionSlot,
     conversation: Vec<Message>,
     live: LiveTurn,
+    held: Held,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + TICK, TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -230,9 +282,11 @@ fn session_updates(
         // The compaction flag rides the carried state with the conversation
         // and the live turn. A local inside the step would be rebuilt false
         // on every yielded region, so the line would go at the next tick
-        // rather than when the session said the compaction ended.
-        (receiver, wiring, slot, conversation, live, false, tick),
-        |(mut receiver, wiring, slot, conversation, live, mut compacting, mut tick)| async move {
+        // rather than when the session said the compaction ended. `held` is
+        // carried for the same reason its own type exists: it is dropped
+        // with this stream, which is the connection ending.
+        (receiver, wiring, slot, conversation, live, false, tick, held),
+        |(mut receiver, wiring, slot, conversation, live, mut compacting, mut tick, held)| async move {
             let mut conversation = conversation;
             let mut live = live;
             loop {
@@ -324,7 +378,7 @@ fn session_updates(
                 }
                 return Some((
                     stream::iter(events),
-                    (receiver, wiring, slot, conversation, live, compacting, tick),
+                    (receiver, wiring, slot, conversation, live, compacting, tick, held),
                 ));
             }
         },
@@ -480,10 +534,14 @@ fn region_events(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use axum::extract::{Path, State};
     use forge_primitives::{Message, SessionSlot};
     use forge_sessions::SessionUpdate;
 
-    use super::Live;
+    use super::{Live, session_events};
+    use crate::server::Wiring;
 
     /// A dispatched agent's frame lands in the conversation the page holds,
     /// and the fold draws nothing for it. Both halves matter: the chat is not
@@ -640,6 +698,142 @@ mod tests {
         let unseen = live.snapshot().unseen;
         assert!(unseen.is_unseen(&other), "and earns its own diamond");
         assert!(unseen.is_unseen(&slot), "without clearing the first slot's");
+    }
+
+    /// A turn that finishes on a seat whose page is open is a turn the reader
+    /// watched, so it earns no diamond - and the row still redraws, because
+    /// the turn that was running has ended.
+    #[test]
+    fn an_attached_seat_earns_no_diamond_and_still_settles() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+        live.attach(&slot);
+
+        assert!(
+            live.apply(&appended(&slot, result_message("success", false))).fleet,
+            "the row settles out of running, so the page is redrawn",
+        );
+        assert!(
+            !live.snapshot().unseen.is_unseen(&slot),
+            "and the page that is open on it has shown the turn",
+        );
+    }
+
+    /// The other half: with the page gone, a completion is unlooked again.
+    #[test]
+    fn a_seat_arms_again_once_its_page_closes() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+        live.attach(&slot);
+        live.detach(&slot);
+
+        assert!(
+            live.apply(&appended(&slot, result_message("success", false))).fleet,
+            "the diamond is the home's news again",
+        );
+        assert!(
+            live.snapshot().unseen.is_unseen(&slot),
+            "so a seat nobody is showing earns its diamond",
+        );
+    }
+
+    /// Two tabs on one seat are two connections and one seat still being
+    /// shown. Catches holding the attachment as a flag, where closing either
+    /// tab re-arms a mark the other tab is still displaying.
+    #[test]
+    fn two_pages_on_one_seat_hold_it_until_both_close() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+        live.attach(&slot);
+        live.attach(&slot);
+        live.detach(&slot);
+
+        live.apply(&appended(&slot, result_message("success", false)));
+        assert!(
+            !live.snapshot().unseen.is_unseen(&slot),
+            "the tab still open on it has shown the turn",
+        );
+
+        live.detach(&slot);
+        live.apply(&appended(&slot, result_message("success", false)));
+        assert!(
+            live.snapshot().unseen.is_unseen(&slot),
+            "and with both gone the seat is unlooked again",
+        );
+    }
+
+    /// The window between the page being served and its stream attaching: a
+    /// completion landing in it would otherwise sit on a page that is open.
+    #[test]
+    fn attaching_clears_a_mark_that_armed_before_it() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+        live.apply(&appended(&slot, result_message("success", false)));
+        assert!(live.snapshot().unseen.is_unseen(&slot), "precondition: the turn armed it");
+
+        live.attach(&slot);
+        assert!(
+            !live.snapshot().unseen.is_unseen(&slot),
+            "the page opening is the reader being shown the seat",
+        );
+    }
+
+    /// A seat nobody is showing leaves the map rather than sitting in it at
+    /// zero, which on a process up for a week is a seat-shaped leak.
+    #[test]
+    fn a_closed_page_leaves_no_entry_behind() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+        live.attach(&slot);
+        assert_eq!(live.attached.len(), 1, "precondition: the seat is held");
+
+        live.detach(&slot);
+        assert!(
+            live.attached.is_empty(),
+            "the last page closing takes the seat out of the map: {:?}",
+            live.attached,
+        );
+    }
+
+    /// The handler is what holds the seat, and the response it hands back is
+    /// what carries the guard: the seat is held from the moment the
+    /// connection's stream exists and let go when that stream drops. Catches
+    /// a handler that registers the seat without keeping the guard, which
+    /// nothing else here can see - the seat stays attached, so it is
+    /// suppressed for the life of the process, and the page that opened it
+    /// is long gone.
+    #[tokio::test]
+    async fn the_handler_holds_the_seat_for_its_connection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = forge_sessions::testing::Fleet::in_dir(dir.path(), &[("Org", &["forge"])])
+            .expect("the fleet builds");
+        fleet.start("Org", "forge").expect("the project is declared");
+        let state = Arc::new(crate::server::WebState::new(
+            fleet.surface(),
+            Arc::new(crate::work::WorkCache::new()),
+            forge_primitives::WebConfig::default(),
+        ));
+        let wiring = Wiring {
+            bound: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            state: Arc::clone(&state),
+        };
+        let slot = SessionSlot::lead("Org", "forge");
+
+        let response = session_events(
+            State(wiring),
+            Path(("Org".to_owned(), "forge".to_owned(), "lead".to_owned())),
+        )
+        .await;
+        assert!(
+            Live::lock(&state.live).attached.contains_key(&slot),
+            "the connection is served with its seat held",
+        );
+
+        drop(response);
+        assert!(
+            !Live::lock(&state.live).attached.contains_key(&slot),
+            "and the seat is let go when the connection drops, rather than staying suppressed",
+        );
     }
 
     /// The bulk of the stream is the conversation, which this page does not
