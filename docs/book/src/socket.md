@@ -47,16 +47,25 @@ never draws an empty snapshot as a broken page.
 
 ## What a client sends
 
-**`subscribe {what}`** - answered with a `snapshot` of the whole subject.
-The subscription this opens is the one updates arrive on.
+**`subscribe {what, answering}`** - answered with a `snapshot` of the whole
+subject. The subscription this opens is the one updates arrive on.
 
-**A subscription answers as well as watches.** A permission request or a
-question delivered to a subscribed client is one that client can answer,
-so a client that subscribes is the one the core waits on. A client that
-only wants to watch should say so rather than leave a prompt parked.
+**`answering` declares whether this client can answer a prompt, and it is
+off unless you say otherwise.** The core parks a turn on the reply of
+whoever registered as answering, so a client that does not say so is never
+handed a prompt it would have to show - a read-only dashboard cannot hang
+a turn by ignoring one. A client with a dock to answer from sets it true
+in its first subscribe, and the connection registers with the core
+accordingly before it forwards anything.
+
+Neither way takes the pre-attach backlog: it goes to the first subscriber,
+and the view that draws the boot notice is the terminal. A client reads
+what it missed from the subject's snapshot.
 
 **`unsubscribe {what}`** - nothing comes back, because the client asked to
-stop hearing.
+stop hearing. Note that a second `subscribe` to one subject adds a second
+entry rather than replacing the first, so one `unsubscribe` drops both;
+subscribe once per subject, or unsubscribe as many times as you subscribed.
 
 **`more {conversation, before, turns}`** - a page of a session's
 transcript, newest turn last, as whole turns.
@@ -67,16 +76,24 @@ made of is the server's business. `null` means there is nothing above the
 page it came with, and that is where a walk backwards ends.
 
 **`command {command, reply_to?}`** - any of the core's own commands, as
-the core's own enum. Omit `reply_to` and the command is fire-and-forget:
-its effect arrives through the subscription, which is why a client
-subscribes before it acts.
+the core's own enum. For most of them `reply_to` is optional: omit it and
+the command is fire-and-forget, because its effect arrives through the
+subscription, which is why a client subscribes before it acts.
 
-Four commands carry an answer, and **each answers with its own type**: a
-worker spawn with a worker-spawn reply, a despawn with a despawn result,
-and the review pair with a `bool` and a review set. One channel cannot
-carry four different answers, so the reply type follows the command.
-Refusals are replies too: a command that could not be carried out answers
-in its own type, not with an `error`.
+**Four commands require it**: a worker spawn, a despawn, and the review
+pair. Their outcome rides the reply and no update carries it, so a client
+that omitted `reply_to` would not be declining a reply - it would be
+declining to learn whether the work happened. Omitting it is refused, with
+a sentence naming the field.
+
+**Each of the four answers with its own type**: a spawn with a
+worker-spawn reply, a despawn with a despawn result, and the review pair
+with a `bool` and a review set. One channel cannot carry four different
+answers, so the reply type follows the command. A refusal arrives in that
+same reply, as the body of the answer rather than as an `error` - which is
+what the four are for. A command that is *not* one of the four refuses as
+an `error` like anything else the core declines, whether or not a reply
+was asked for.
 
 ## What a client receives
 
@@ -88,11 +105,67 @@ in its own type, not with an `error`.
 - `reply` - in answer to a command that asked for one.
 - `error` - `what` failed and `why`, in the core's own words.
 
+## What a subject carries
+
+The whole set, so a client author can see what is reachable without
+reading the code. A subject's `snapshot` carries all of it, and its
+`update`s carry the pieces that change.
+
+**`home`** is the fleet: every project, every account, and the app-level
+facts a row is drawn from.
+
+| Field | What it is |
+|---|---|
+| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate), `tasks`, `crons`, `would_bind`, and `chip` - the account the row binds and its state. |
+| `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, and why it failed if it did. |
+| `unseen` | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it. |
+| `accounts` | Loading state per account, whether all of them settled, the gateway listener's ready state and port, each account's cached usage snapshot, and the org views with budget and unusable reasons. |
+| `plugins` | Every remembered plugin update, latest write per installed entry. |
+| `workers` | The live workers per project, with their charters and slots. |
+| `connectors` | Gotify's connection and subscriptions, Slack's workspaces, subscriptions and load failure. |
+| `dictate` | Whether dictation is on, the per-model fetch and load state, where the models land, and the device a pick has moved to. |
+| `cli_version` | The installed and latest `claude` versions. |
+| `forge_version`, `forge_version_short` | Which forge build is serving the socket. A client draws these rather than its own version. |
+| `service_status` | The statuspage's last answer, `null` for healthy or unreachable. |
+| `fatal_error` | The last fatal error the core held, `null` when there has been none. |
+
+**`session <org>/<project>/<label>`** is one seat: its record, its
+conversation, and what the composer is doing.
+
+| Field | What it is |
+|---|---|
+| `slot` | The seat itself. |
+| `header` | The resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, and whether a turn is in flight. |
+| `conversation` | The transcript's messages, oldest first, with the compaction count. |
+| `work` | The working tree as state: branch, how much changed, and whether git runs here. |
+| `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference. |
+| `mcp` | The session's MCP servers, their status and tools, and the failure when the read did not complete. |
+| `processes` | The last walk of the session's process tree, or `null` for a seat nothing has walked. Taken on the reads that encode a subject, so it is never older than the walk's own window. |
+| `monitors` | The watches the session has running. |
+| `pending_ask` | The prompt the seat is waiting on, `null` when there is none. |
+| `reviews` | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty. |
+| `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue. |
+| `state` | The seat's scan cwd and what it dictates with, where it has overridden the defaults. |
+| `composer` | What the composer is doing: a take in flight with its meter and phase, the line a finished take left, whether the session is compacting, and a sign-in it is waiting on. The ask it is answering rides `pending_ask` rather than being copied here. |
+
 ## What is not here
 
 - **The diff.** A session's working tree arrives as state - its branch and
   how much changed - and not as a diff. A full diff is a heavier read, and
   it is a surface of its own.
+- **A monitor's output tail.** A `MonitorRecord` carries the path the
+  watched command writes to, and that path is on the server's machine: the
+  live tail is not reachable over this socket. It is a deliberate gap
+  rather than an oversight, and a small one - the finished output lands in
+  the conversation like any other tool result, which the transcript does
+  carry. A client that wants the running tail has to be on the machine.
+- **The extensions surface.** Only the update records cross, above.
+  Installing, updating, rolling back and repairing a plugin are the
+  `claude plugin` CLI, and the page that drives them reads its inventory
+  from the config dir rather than through the view surface - so neither the
+  inventory nor the actions are here. Filed as its own piece of work.
+- **The emoji set.** Which shortcodes exist is the typeahead's own
+  business, so a client carries its own set rather than being handed one.
 - **Any rendering.** Glyphs, colours, weights, spacing, the order of a
   list and the label a row is spelled with are the client's. The test is
   whether removing a thing changes what the data IS or only how it is
