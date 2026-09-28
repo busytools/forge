@@ -174,6 +174,17 @@ impl Fleet {
         let _commands = self.workspace.install_testing_stub(&slot);
     }
 
+    /// Catch every command the core is dispatched, so a test can assert
+    /// what a view asked for without driving a session.
+    pub fn intercept_dispatch(&self) {
+        self.workspace.enable_test_dispatch_intercept();
+    }
+
+    /// The commands caught since the last call.
+    pub fn dispatched(&self) -> Vec<forge_workspace::Command> {
+        self.workspace.drain_test_dispatch_buffer()
+    }
+
     /// Give `slot` the core's own record of a spawn that failed, as the
     /// connection-failure path leaves one.
     pub fn fail_spawn(&self, org: &str, project: &str, label: &str, reason: &str) {
@@ -189,6 +200,12 @@ impl Fleet {
     /// asked a person for something reads.
     pub fn seed_test_pending_interaction(&self, slot: &SessionSlot, kind: PendingKind) {
         self.workspace.seed_test_pending_interaction(slot, kind);
+    }
+
+    /// Let go of everything parked on `slot`, which is the half of answering
+    /// that is the core's.
+    pub fn clear_test_pending(&self, slot: &SessionSlot) {
+        self.workspace.clear_test_pending(slot);
     }
 
     /// Hold `slot` waiting to be let in, the way a session that cannot
@@ -353,5 +370,11 @@ fn config(config_dir: &Path, orgs: &[(&str, &[&str])]) -> String {
         "[[accounts]]\ndisplay_name = \"Acct\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
             .to_owned(),
     );
+    // Dictation on, so the composer draws the control that starts a take:
+    // an install with it off has no way in at all.
+    sections.push(format!(
+        "[dictate]\nenabled = true\nmodels_dir = \"{}\"\n",
+        config_dir.join("models").display()
+    ));
     sections.concat()
 }

@@ -151,28 +151,31 @@ Work top-down; first match wins.
     subsystem of its own.
 11. **A wire-conformance scenario?** -> `forge-test-harness`.
 
-**The view surface's read verbs are built.** A view reads the core
+**The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
 `cli_version`, `conversation`, `slash_commands`, `forge_commands`,
 `subagents`, `emoji`,
 `file_index`, `respect_gitignore`, `header`, `mcp_servers`,
-`processes`, `monitors` - and receives changes through
-`subscribe()`. All twenty-one exist in `forge-sessions`, and the TUI reads
+`processes`, `monitors` and `pending_ask` - receives changes through
+`subscribe()`, and acts through `dispatch()`, which is a verb rather than
+an accessor so a view is handed the commands it needs and not the whole
+core. All twenty-two exist in `forge-sessions`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk
 through them; the web view reads its project roster and agent rows, the
 account pool, the worker registry, connector subscriptions and dictation
 state through those, the claude version through the tenth, and the
-conversation, header and inspector through `conversation`, `header`,
-`mcp_servers`, `processes` and `monitors`. `subagents` is the
+conversation, header, inspector and the prompt it answers through
+`conversation`, `header`, `mcp_servers`, `processes`, `monitors` and
+`pending_ask`, and dispatches its composer's send, its prompt answers and
+its take's controls. `subagents` is the
 CLI's catalogue of the agent types that exist, not a record of the ones
 that ran: an instance's cards and the calls under them are folded from
 the conversation it appears in. What the migration has
-not reached is the write half: user actions still go through
-`dispatch(Command)` on the workspace rather than a surface verb, and the
-five refreshes that ask the core for a new snapshot are still direct
+not reached is the five refreshes that ask the core for a new snapshot:
+they are still direct
 `Workspace` calls, so `forge-tui` keeps its `forge-workspace` dependency
 and the arrow above is not yet one-way. A read a second view would want
 goes on that surface; a read only the TUI makes stays a plain method.

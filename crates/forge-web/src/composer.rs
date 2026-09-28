@@ -12,10 +12,14 @@ use std::time::Instant;
 
 use forge_primitives::Message;
 use forge_primitives::SessionSlot;
-use forge_primitives::permission_ui::{PermissionOptionKind, PermissionRequest};
-use forge_primitives::question::QuestionRequest;
+use forge_primitives::permission_ui::{PermissionOptionKind, PermissionOutcome, PermissionRequest};
+use forge_primitives::question::{QuestionAnnotation, QuestionOutcome, QuestionRequest};
 use forge_primitives::session_update::ToolCall;
 use forge_sessions::SessionUpdate;
+// One prompt as the composer draws it, whichever copy it came from: the
+// wire's, or the one the core kept beside the answer's oneshot for a view
+// that attached after it landed.
+use forge_sessions::surface::PendingAsk as Ask;
 use forge_sessions::surface::{AgentRow, Agents, DictateOutcome, PendingKind, Roster, ViewSurface};
 use maud::{Markup, html};
 
@@ -23,9 +27,9 @@ use crate::home::{Home, State};
 use crate::icons;
 use crate::stream::Live;
 
-/// What a control says when the path that would carry out the click is not
-/// built. Named once so the box, the dock and a take cannot drift into
-/// three different apologies for the same missing half.
+/// What the autocomplete list says when a row cannot be chosen yet. The
+/// pick moves a caret and a selection the server cannot see, so it is the
+/// list's own key handling rather than anything the write path carries.
 const NO_DISPATCH: &str = "not available yet";
 
 /// How many file rows the `@` list shows, matching the TUI's own cap. The
@@ -55,18 +59,20 @@ const METER_CEILING_DB: f32 = 0.0;
 /// a pulse, so the quietest one still has to be visible as one.
 const METER_FLOOR_PERCENT: f32 = 12.0;
 
-/// The draft a request carries, decoded. A browser escapes a form field
-/// with `%XX` and `+`, so the text the box was drawn for is the text the
-/// browser had, byte for byte.
+/// The draft a request carries, decoded.
 pub(crate) fn draft_of(raw_query: Option<&str>) -> String {
-    let Some(value) = raw_query.and_then(|query| {
-        query
-            .split('&')
-            .filter_map(|pair| pair.split_once('='))
-            .find_map(|(key, value)| (key == "draft").then_some(value))
-    }) else {
-        return String::new();
-    };
+    field(raw_query.unwrap_or_default(), "draft").unwrap_or_default()
+}
+
+/// One form field out of a request, decoded. A browser escapes a form field
+/// with `%XX` and `+`, so the value a control sent is the one the server
+/// reads, byte for byte. The query and the body are the same shape, so both
+/// come through here.
+pub(crate) fn field(raw: &str, name: &str) -> Option<String> {
+    let value = raw
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find_map(|(key, value)| (key == name).then_some(value))?;
     let mut bytes = Vec::with_capacity(value.len());
     let mut chars = value.bytes();
     while let Some(byte) = chars.next() {
@@ -79,7 +85,78 @@ pub(crate) fn draft_of(raw_query: Option<&str>) -> String {
             other => bytes.push(other),
         }
     }
-    String::from_utf8_lossy(&bytes).into_owned()
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The command one option of a held prompt answers with, or `None` when this
+/// view is not the one holding it.
+///
+/// The outcome is built here from the option the core offered rather than
+/// from anything the browser sent: an option's own action is what the CLI
+/// decides on, and a browser naming its own could allow what the prompt
+/// never offered.
+pub(crate) fn answer(
+    held: &Composer,
+    kept: Option<&Ask>,
+    slot: &SessionSlot,
+    tool_id: &str,
+    option_id: Option<&str>,
+    notes: Option<&str>,
+) -> Option<forge_sessions::Command> {
+    // Resolved the way the render resolves it, and for the same reason: a
+    // view that attached after the prompt landed, or one holding two
+    // prompts, has only the core's copy of this one.
+    let ask = held.ask(slot).filter(|ask| ask.tool_id() == tool_id).or(kept)?;
+    match ask {
+        Ask::Permission(request) if request.tool_call.tool_call_id == tool_id => {
+            // The option is looked up in the core's own list, never taken
+            // from the request: an id the prompt never offered yields
+            // nothing rather than an outcome the browser chose.
+            let option = request
+                .options
+                .iter()
+                .find(|option| Some(option.option_id.as_str()) == option_id)?;
+            Some(forge_sessions::Command::RespondPermission {
+                key: slot.clone(),
+                tool_id: tool_id.to_owned(),
+                outcome: PermissionOutcome::Selected {
+                    option_id: option.option_id.clone(),
+                    action: option.action.clone(),
+                    notes_text: notes.map(str::to_owned),
+                    edited_input: None,
+                },
+            })
+        }
+        Ask::Question(request) if request.tool_call.tool_call_id == tool_id => {
+            // The same lookup the permission arm makes: a question's options
+            // are the core's, so an id it never offered is not an answer.
+            let chosen = match option_id {
+                Some(option_id) => request
+                    .prompt
+                    .options
+                    .iter()
+                    .find(|option| option.option_id == option_id)
+                    .map(|option| vec![option.option_id.clone()])?,
+                None => Vec::new(),
+            };
+            let annotation = notes
+                .filter(|notes| !notes.trim().is_empty())
+                .map(|notes| QuestionAnnotation { preview: None, notes: Some(notes.to_owned()) });
+            // The TUI's own rule: nothing chosen and nothing said is not an
+            // answer, it is a rejection.
+            let outcome = if chosen.is_empty() && annotation.is_none() {
+                QuestionOutcome::Cancelled
+            } else {
+                QuestionOutcome::Answered { selected_option_ids: chosen, annotation }
+            };
+            Some(forge_sessions::Command::RespondQuestion {
+                key: slot.clone(),
+                tool_id: tool_id.to_owned(),
+                outcome,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn hex(byte: u8) -> Option<u8> {
@@ -91,6 +168,23 @@ fn hex(byte: u8) -> Option<u8> {
     }
 }
 
+/// What a render knows about the field it draws.
+///
+/// The browser holds the text, so only the request that carried it, and the
+/// send that took it, know what it says. A push knows neither, and that is
+/// the state the box has to be drawn around: the field keeps its element and
+/// the controls its text earned stay drawn, because nothing else submits
+/// this form and a push that dropped them would take the only way to send.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Draft {
+    /// The request carried the field's text.
+    Known,
+    /// A push: the browser holds the text and the server does not.
+    Unknown,
+    /// The send took the words, so the field is drawn empty to match.
+    Cleared,
+}
+
 /// Render the composer for `slot`, with `draft` standing in the box.
 pub async fn render(
     home: &Home<'_>,
@@ -98,21 +192,31 @@ pub async fn render(
     roster: &Roster,
     agents: &Agents,
     draft: &str,
+    draft_state: Draft,
 ) -> Markup {
     let live = Live::lock(home.live).snapshot();
     let held = &live.composer;
     let row = agents.all().iter().find(|row| &row.slot == slot);
     let state =
         row.map_or(State::NeverStarted, |row| crate::home::state_of_agent(row, &live.unseen));
-    let endpoint = format!("{}/composer", crate::session::href(slot));
+    // Two bases, and the difference is the whole of it: the box fetches its
+    // own region, and a control posts to the seat it belongs to. One base
+    // for both is a URL no route serves, and htmx swaps nothing on a 404, so
+    // the click looks like nothing happened.
+    let seat = crate::session::href(slot);
+    let region = format!("{seat}/composer");
+    // The stream's copy is the newest. The core's is the one a view that
+    // attached after the prompt landed has at all: the wire carried it once
+    // and kept it nowhere else.
+    let kept = home.surface.pending_ask(slot);
 
     html! {
-        form #comp .comp hx-get=(endpoint) hx-target="#comp" hx-swap="outerHTML"
+        form #comp .comp hx-get=(region) hx-target="#comp" hx-swap="outerHTML"
             hx-trigger="input delay:150ms" {
             @if let Some(blocked) = blocked(state, row, slot, held) {
-                (blocked_box(&blocked))
+                (blocked_box(&blocked, draft_state))
             } @else if let Some(pending) = row.and_then(|row| row.pending) {
-                (dock(row, pending, held.ask(slot)))
+                (dock(row, pending, held.ask(slot).or(kept.as_ref()), &seat, draft_state))
             } @else {
                 (hint(row, held.sign_in(slot)))
                 (popover(home, slot, roster, draft).await)
@@ -121,6 +225,8 @@ pub async fn render(
                     held.take(slot),
                     held.notice(slot),
                     dictation_offered(home),
+                    &seat,
+                    draft_state,
                 ))
             }
         }
@@ -183,10 +289,11 @@ fn blocked(
     }
 }
 
-fn blocked_box(blocked: &Blocked) -> Markup {
+fn blocked_box(blocked: &Blocked, draft_state: Draft) -> Markup {
     html! {
         div class=(if blocked.bad { "box err" } else { "box" }) {
             div .blocked {
+                (parked_field(draft_state))
                 span .b1 {
                     @if !blocked.bad {
                         span .ring {}
@@ -244,6 +351,8 @@ fn box_markup(
     take: Option<&Take>,
     notice: Option<&Notice>,
     dictation: bool,
+    endpoint: &str,
+    draft_state: Draft,
 ) -> Markup {
     // A landed take puts its words where the reader was about to type, so
     // the box holds the draft and the words together. Nothing else changes
@@ -260,29 +369,38 @@ fn box_markup(
         (None, true) => " done",
         (None, false) => "",
     };
-    let filled = !draft.is_empty();
-    let refusing = refusing(filled, dictation, take.is_some());
+    // A push does not know the reader's text, and the field it keeps may
+    // hold some, so what that text earned stays drawn. Whitespace is not
+    // text: the send route refuses it and the button would advertise a
+    // click that cannot happen.
+    let filled = draft_state == Draft::Unknown || !draft.trim().is_empty();
     html! {
         div class=(format!("box{state}")) {
             @if let Some(take) = take {
-                (dictation_row(take))
+                (dictation_row(take, endpoint))
             } @else if let Some(notice) = notice.filter(|notice| notice.line().is_some()) {
                 div class=(format!("notice {}", notice.tone())) { (notice.line().unwrap_or_default()) }
             }
             div .line {
                 textarea #draft .txt name="draft" rows="3" autocomplete="off" spellcheck="false"
+                    hx-preserve[draft_state != Draft::Cleared]
                     placeholder="Type a message\u{2026}" { (&draft) }
                 @if filled {
-                    button .send type="button" disabled=(NO_DISPATCH) title=(NO_DISPATCH) {
+                    button .send type="submit" hx-post=(format!("{endpoint}/send"))
+                        hx-include="#draft" hx-target="#comp" hx-swap="outerHTML"
+                        title="send" {
                         (icons::icon("send", ""))
                     }
                 }
             }
-            @if !refusing.is_empty() {
+            @if filled || dictation {
                 div .foot {
-                    span .off { (refusing) }
+                    @if filled {
+                        span .k { "\u{21b5}" } " send "
+                        span .k { "\u{21e7}\u{21b5}" } " newline"
+                    }
                     @if dictation {
-                        (mic_control())
+                        (mic_control(endpoint, take.is_some()))
                     }
                 }
             }
@@ -290,32 +408,20 @@ fn box_markup(
     }
 }
 
-/// The box's controls that cannot act, in the order they sit. Every one of
-/// them needs the write half of the view surface, so the box names them in
-/// one line the reader can see: a reason living only in a disabled
-/// control's `title` is a reason nobody reads, because a disabled control
-/// takes no pointer events.
-fn refusing(draft: bool, dictation: bool, take: bool) -> String {
-    let mut controls = Vec::new();
-    if draft {
-        controls.push("sending");
+/// The control that starts a take, and while one runs, the one that submits
+/// it - the TUI's own rule, where the key that opens a take is the key that
+/// closes it. The mockup draws no way in, since every take it draws is
+/// already running, so the affordance is here rather than missing.
+fn mic_control(endpoint: &str, running: bool) -> Markup {
+    let action = if running { "stop" } else { "start" };
+    html! {
+        button .mic type="submit" hx-post=(format!("{endpoint}/dictate"))
+            hx-vals=(format!(r#"{{"action":"{action}"}}"#))
+            hx-target="#comp" hx-swap="outerHTML"
+            title=(if running { "submit the take" } else { "start a take" }) {
+            (icons::icon("mic", ""))
+        }
     }
-    if dictation {
-        controls.push("dictation");
-    }
-    if take {
-        controls.push("stopping a take");
-    }
-    let Some((last, rest)) = controls.split_last() else {
-        return String::new();
-    };
-    let named = if rest.is_empty() {
-        (*last).to_owned()
-    } else {
-        format!("{} and {last}", rest.join(", "))
-    };
-    let verb = if controls.len() == 1 { "is" } else { "are" };
-    format!("{named} {verb} {NO_DISPATCH}")
 }
 
 /// The draft with a take's words at its end, which is where the caret was.
@@ -324,18 +430,6 @@ fn joined(draft: &str, words: &str) -> String {
         format!("{draft}{words}")
     } else {
         format!("{draft} {words}")
-    }
-}
-
-/// The control that would start a take. The mockup draws no way in - every
-/// take it draws is already running - so the affordance is here rather than
-/// missing, refusing with the reason every other unwired control gives.
-fn mic_control() -> Markup {
-    html! {
-        button .mic type="button" disabled=(NO_DISPATCH)
-            title=(format!("starting a take is {NO_DISPATCH}")) {
-            (icons::icon("mic", ""))
-        }
     }
 }
 
@@ -403,7 +497,7 @@ impl Take {
     }
 }
 
-fn dictation_row(take: &Take) -> Markup {
+fn dictation_row(take: &Take, endpoint: &str) -> Markup {
     let tone = if take.phase == Phase::Transcribing { " tr" } else { "" };
     let label = match (take.phase, take.progress) {
         (_, (done, Some(total))) => format!("transcribing {done}/{total}"),
@@ -424,8 +518,9 @@ fn dictation_row(take: &Take) -> Markup {
                 }
             }
             span .lbl { (label) }
-            button .esc type="button" disabled=(NO_DISPATCH)
-                title=(format!("stopping a take is {NO_DISPATCH}")) { "esc cancel" }
+            button .esc type="submit" hx-post=(format!("{endpoint}/dictate"))
+                hx-vals=r#"{"action":"cancel"}"# hx-target="#comp" hx-swap="outerHTML"
+                title="abandon the take" { "esc cancel" }
         }
     }
 }
@@ -695,33 +790,53 @@ fn marked(text: &str, query: &str) -> Markup {
 
 // ---------- the dock ----------
 
-/// One prompt as the composer draws it: what the wire said it offers.
-#[derive(Clone)]
-enum Ask {
-    Permission(Box<PermissionRequest>),
-    Question(Box<QuestionRequest>),
-}
-
 /// The prompt dock: the box morphed, because the eye is already there.
 ///
 /// Which prompt waits is the core's answer, read through the seat's row.
-/// What it offers came off the wire once and is not retained anywhere, so
-/// it is `None` for a view that attached after the prompt landed - and that
-/// case says so rather than drawing a box that would read as nothing
-/// pending.
-fn dock(row: Option<&AgentRow>, kind: PendingKind, ask: Option<&Ask>) -> Markup {
+/// What it offers is the core's too: the request is kept beside the
+/// answer's oneshot, so a view that attached after the prompt landed draws
+/// the options from there. The fallback is the window between those two
+/// reads, and it says so rather than drawing a box that would read as
+/// nothing pending.
+fn dock(
+    row: Option<&AgentRow>,
+    kind: PendingKind,
+    ask: Option<&Ask>,
+    endpoint: &str,
+    draft_state: Draft,
+) -> Markup {
     html! {
         div .dock {
+            (parked_field(draft_state))
             @if let Some(depth) = row.map(|row| row.pending_depth).filter(|depth| *depth > 1) {
                 div .queue { "\u{25bc} " (depth - 1) " more pending" }
             }
             @match ask {
-                Some(Ask::Permission(request)) => (permission_dock(request)),
-                Some(Ask::Question(request)) => (question_dock(request)),
+                Some(Ask::Permission(request)) => (permission_dock(request, endpoint)),
+                Some(Ask::Question(request)) => (question_dock(request, endpoint)),
                 None => (unknown_dock(kind)),
             }
-            div .keys { span .off { "answering is " (NO_DISPATCH) } }
         }
+    }
+}
+
+/// The field the box was drawn with, kept while the dock is up.
+///
+/// A push cannot carry the reader's text - the browser holds it - and a node
+/// the new markup does not have is removed, so the field has to be present
+/// for the browser to keep its own, with the same id and the same preserve
+/// marker. The sheet hides it under the dock and the box shows it again.
+///
+/// It is drawn with the box's own attributes rather than as a bare slot,
+/// because which node ends up in the box is the browser's business: a page
+/// whose first render is a parked one - a seat that has not started, or one
+/// already holding a prompt - hands this node to the box, and a field with
+/// no name contributes nothing to `hx-include` and would send nothing.
+fn parked_field(draft_state: Draft) -> Markup {
+    html! {
+        textarea #draft .txt name="draft" rows="3" autocomplete="off" spellcheck="false"
+            hx-preserve[draft_state != Draft::Cleared]
+            placeholder="Type a message\u{2026}" {}
     }
 }
 
@@ -737,7 +852,7 @@ fn unknown_dock(kind: PendingKind) -> Markup {
     }
 }
 
-fn permission_dock(request: &PermissionRequest) -> Markup {
+fn permission_dock(request: &PermissionRequest, endpoint: &str) -> Markup {
     let call = &request.tool_call;
     let display = request.display.clone().unwrap_or_default();
     let title = display
@@ -765,15 +880,16 @@ fn permission_dock(request: &PermissionRequest) -> Markup {
                 div class=(opt_class(index)) {
                     span .cur { @if index == 0 { "\u{25b8}" } }
                     (icons::icon(option_icon(option.kind), option_tone(option.kind)))
-                    (option_control(&option.name))
+                    (option_control(&option.name, endpoint, &call.tool_call_id, &option.option_id))
                 }
             }
         }
     }
 }
 
-fn question_dock(request: &QuestionRequest) -> Markup {
+fn question_dock(request: &QuestionRequest, endpoint: &str) -> Markup {
     let prompt = &request.prompt;
+    let tool_id = &request.tool_call.tool_call_id;
     html! {
         div .head {
             span .qm { "?" }
@@ -788,34 +904,48 @@ fn question_dock(request: &QuestionRequest) -> Markup {
                 div class=(opt_class(index)) {
                     span .cur { @if index == 0 { "\u{25b8}" } }
                     span .box2 {}
-                    (option_control(&option.label))
+                    (option_control(&option.label, endpoint, tool_id, &option.option_id))
                 }
             }
+            // The escape hatch the mockup draws: it answers the question
+            // with words instead of a choice, which is an answer the CLI
+            // accepts with nothing selected.
             div .opt {
                 span .cur {}
                 span .box2 {}
-                (option_control("Tell Claude something else:"))
+                button .lbl type="submit" hx-post=(format!("{endpoint}/answer"))
+                    hx-include="closest .dock" hx-vals=(format!(r#"{{"tool_id":"{tool_id}"}}"#))
+                    hx-target="#comp" hx-swap="outerHTML" {
+                    "Tell Claude something else:"
+                }
             }
         }
-        textarea .notes name="notes" rows="1" disabled=(NO_DISPATCH) {}
+        // What the reader has typed here is theirs, and a push cannot carry
+        // it, so the field is preserved like the box's own. The id names the
+        // question rather than the field: words written for one question are
+        // not an answer to the next, and a fresh id is a fresh field.
+        textarea .notes id=(format!("notes-{tool_id}"))
+            name="notes" rows="1" hx-preserve
+            placeholder="answer with your own words" {}
     }
 }
 
-/// What an option's row carries: the first is the one a key would take, and
-/// every one of them is marked as unable to answer, so the row does not keep
-/// the styling of a live choice while its control refuses.
+/// What an option's row carries: the first is the one a key would take.
 fn opt_class(index: usize) -> &'static str {
     match index {
-        0 => "opt sel off",
-        _ => "opt off",
+        0 => "opt sel",
+        _ => "opt",
     }
 }
 
-/// One option, as the control it will be once answering is wired.
-fn option_control(label: &str) -> Markup {
+/// One option, as the control it is: it answers the prompt it was drawn for,
+/// and names the option the core offered rather than the outcome, which only
+/// the core may build.
+fn option_control(label: &str, endpoint: &str, tool_id: &str, option_id: &str) -> Markup {
     html! {
-        button .lbl type="button" disabled=(NO_DISPATCH)
-            title=(format!("answering is {NO_DISPATCH}")) { (label) }
+        button .lbl type="submit" hx-post=(format!("{endpoint}/answer"))
+            hx-vals=(format!(r#"{{"tool_id":"{tool_id}","option_id":"{option_id}"}}"#))
+            hx-target="#comp" hx-swap="outerHTML" { (label) }
     }
 }
 
@@ -880,9 +1010,16 @@ struct SignIn {
 }
 
 impl Composer {
-    /// Fold one update in. An update about a take this view is no longer
-    /// drawing is dropped rather than drawn over the newer one.
-    pub fn apply(&mut self, update: &SessionUpdate) {
+    /// Fold one update in, answering whether a composer has to be redrawn.
+    ///
+    /// An arm that consumes what it resolves answers for the update rather
+    /// than for the state it landed on, because the boot's fold applies
+    /// every update before a session stream sees it: a take's end read off
+    /// what a second application changed would be false for whoever applied
+    /// second, and the box would keep drawing a take the fold had taken.
+    /// Every other arm is answered by its own guard, which holds the same
+    /// way on both applications.
+    pub fn apply(&mut self, update: &SessionUpdate) -> bool {
         match update {
             SessionUpdate::DictateStarted { key, floor_db, generation } => {
                 // A new take supersedes whatever the seat was doing, its
@@ -890,38 +1027,51 @@ impl Composer {
                 // draft the browser holds.
                 self.takes.insert(key.clone(), Take::new(*floor_db, *generation));
                 self.notices.remove(key);
+                true
             }
             SessionUpdate::DictateLevel { key, peak_db } => {
                 // The wire carries no generation on a level, and the
                 // stream is one order per seat, so the take it belongs to
                 // is whichever is live: the level that arrives after one
-                // ended finds none and is dropped.
+                // ended finds none and is dropped. The other seat's page
+                // must not be redrawn for it either: a take's fifty
+                // readings a second are news to the composer holding it.
                 if let Some(take) = self.takes.get_mut(key) {
                     take.push(*peak_db);
+                    return true;
                 }
+                false
             }
             SessionUpdate::DictateTranscribing { key } => {
                 if let Some(take) = self.takes.get_mut(key) {
                     take.phase = Phase::Transcribing;
+                    return true;
                 }
+                false
             }
             SessionUpdate::DictateProgress { key, generation, done, total } => {
                 if let Some(take) = self.takes.get_mut(key)
                     && take.generation == *generation
                 {
                     take.progress = (*done, *total);
+                    return true;
                 }
+                false
             }
             SessionUpdate::DictateEnded { key, outcome, generation } => {
-                // A resolver for a take the composer has already replaced
-                // is about a take that is over.
-                if self.takes.get(key).is_none_or(|take| take.generation != *generation) {
-                    return;
+                // The take goes only if it is the one this resolves - a
+                // refusal resolves none, and a tail from a take that is gone
+                // is not this one - but the answer is the seat's either way,
+                // because the fold that ran first already took the state.
+                if matches!(outcome, DictateOutcome::Refused { .. })
+                    || self.takes.get(key).is_some_and(|take| take.generation == *generation)
+                {
+                    let floor_db = self.takes.remove(key).map_or(-50.0, |take| take.floor_db);
+                    if let Some(notice) = Notice::of(outcome, floor_db) {
+                        self.notices.insert(key.clone(), notice);
+                    }
                 }
-                let floor_db = self.takes.remove(key).map_or(-50.0, |take| take.floor_db);
-                if let Some(notice) = Notice::of(outcome, floor_db) {
-                    self.notices.insert(key.clone(), notice);
-                }
+                true
             }
             SessionUpdate::AuthRequired { key, method_name, method_description } => {
                 self.sign_ins.insert(
@@ -931,12 +1081,33 @@ impl Composer {
                         method_description: method_description.clone(),
                     },
                 );
+                true
             }
             SessionUpdate::PermissionRequest { key, request, .. } => {
                 self.asks.insert(key.clone(), Ask::Permission(Box::new(request.clone())));
+                true
             }
             SessionUpdate::QuestionRequest { key, request, .. } => {
                 self.asks.insert(key.clone(), Ask::Question(Box::new(request.clone())));
+                true
+            }
+            // The prompt is settled, so the dock goes. This is the only
+            // thing on the stream that says so: answering leaves the core's
+            // pending set either way, and a view that answered from another
+            // seat's page would otherwise keep drawing it.
+            SessionUpdate::PendingInteractionResolved { key, tool_id } => {
+                let held = match self.asks.get(key) {
+                    Some(Ask::Permission(request)) => &request.tool_call.tool_call_id == tool_id,
+                    Some(Ask::Question(request)) => &request.tool_call.tool_call_id == tool_id,
+                    None => false,
+                };
+                if held {
+                    self.asks.remove(key);
+                }
+                // True whatever this view held: the prompt is gone from the
+                // core, and a view that never had the ask still draws the
+                // dock from the core's own record of what is pending.
+                true
             }
             // The CLI announces a compaction on the status frame and
             // clears it with a null, which is the only place either is
@@ -945,15 +1116,24 @@ impl Composer {
                 if let Message::System { subtype, data, .. } = msg
                     && subtype == "status"
                 {
+                    // True for either status rather than for the change it
+                    // makes: the boot's own fold applies every update first,
+                    // so a second application sees no difference and a
+                    // difference is not what the answer is about - the status
+                    // frame is the composer's news and the box is redrawn.
                     let field = data.get("status");
                     if field.and_then(serde_json::Value::as_str) == Some("compacting") {
                         self.compacting.insert(key.clone());
-                    } else if field.is_some_and(serde_json::Value::is_null) {
+                        return true;
+                    }
+                    if field.is_some_and(serde_json::Value::is_null) {
                         self.compacting.remove(key);
+                        return true;
                     }
                 }
+                false
             }
-            _ => {}
+            _ => false,
         }
     }
 
@@ -975,5 +1155,114 @@ impl Composer {
 
     fn sign_in(&self, slot: &SessionSlot) -> Option<&SignIn> {
         self.sign_ins.get(slot)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A prompt settled in the core redraws the box wherever it is drawn,
+    /// this view's own copy included or not: the dock answers to the core's
+    /// record of what is pending, so an answer that went only to the copy
+    /// this view held would leave a dock sitting over a prompt that is gone.
+    /// The copy it did hold goes with it, or the view keeps drawing an ask
+    /// the core has settled.
+    #[test]
+    fn a_settled_prompt_drops_the_copy_this_view_held() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let request: PermissionRequest = serde_json::from_value(serde_json::json!({
+            "tool_call": {
+                "tool_call_id": "held-1",
+                "title": "Bash",
+                "kind": "execute",
+                "status": "pending",
+                "content": [],
+                "locations": [],
+                "raw_input": {"command": "ls"},
+            },
+            "options": [],
+        }))
+        .expect("a permission request off the wire");
+        composer.asks.insert(slot.clone(), Ask::Permission(Box::new(request)));
+
+        assert!(
+            composer.apply(&SessionUpdate::PendingInteractionResolved {
+                key: slot.clone(),
+                tool_id: "held-1".to_owned(),
+            }),
+            "the box redraws for a prompt this view held",
+        );
+        assert!(composer.ask(&slot).is_none(), "and the copy it held is gone with it");
+
+        assert!(
+            composer.apply(&SessionUpdate::PendingInteractionResolved {
+                key: slot,
+                tool_id: "a-prompt-this-view-never-folded".to_owned(),
+            }),
+            "the box redraws for a settled prompt this view never folded too",
+        );
+    }
+
+    /// A take's readings are the composer's news only for the seat holding
+    /// it. A level for a seat this fold has no take for - another session's
+    /// page, or the tail of one that ended - must draw nothing, or fifty
+    /// readings a second redraw a region that cannot have changed for the
+    /// whole length of a take. Catches an arm that answers for the update
+    /// rather than for whether it applies.
+    #[test]
+    fn a_level_for_a_seat_with_no_take_is_not_news() {
+        let mut composer = Composer::default();
+
+        assert!(
+            !composer.apply(&SessionUpdate::DictateLevel {
+                key: SessionSlot::lead("Busytools", "forge"),
+                peak_db: -20.0,
+            }),
+            "a level with no take to draw it in is not this box's news",
+        );
+    }
+
+    /// The answer is about the update, not about the state it landed on. Two
+    /// things apply each update to this fold - the boot's own and the page's
+    /// stream - so an arm that answers for what it changed is false for
+    /// whoever applies second, and a take's end arrives with the take the
+    /// first application already took. Catches that guard.
+    #[test]
+    fn a_takes_end_is_the_boxes_news_even_with_the_take_gone() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+
+        assert!(
+            composer.apply(&SessionUpdate::DictateEnded {
+                key: slot,
+                outcome: DictateOutcome::NoAudio { peak_db: -61.0, seconds: 3 },
+                generation: 7,
+            }),
+            "an end that resolves a take this fold no longer holds still redraws the box",
+        );
+    }
+
+    /// A take that could not start is a reason the box owes the reader: it
+    /// resolves no take, so its generation matches nothing this view holds
+    /// and the guard would answer "not mine" to a take that never existed,
+    /// leaving the control a click that says nothing.
+    #[test]
+    fn a_refused_take_draws_its_reason() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+
+        assert!(
+            composer.apply(&SessionUpdate::DictateEnded {
+                key: slot.clone(),
+                outcome: DictateOutcome::Refused { message: "no microphone".to_owned() },
+                generation: 0,
+            }),
+            "a take that never started still redraws the box",
+        );
+        let notice =
+            composer.notice(&slot).expect("the refusal is held").line().expect("and draws a line");
+        assert_eq!(notice, "no microphone", "with the core's own reason");
     }
 }

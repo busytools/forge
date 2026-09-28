@@ -16,6 +16,98 @@ use crate::update_fanout::{SubscriberRole, UpdateFanout};
 use crate::workspace::{KickRequest, PendingInteractionKind, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
 
+/// The tool id a parked test prompt answers to, so a test addresses the one
+/// it seeded rather than a key it has to know how the fixture built.
+#[cfg(any(test, feature = "testing"))]
+pub const TEST_TOOL_ID: &str = "test-tool";
+
+/// A permission prompt for a fixture to park on a seat: the smallest one a
+/// dock can draw, carrying the id [`TEST_TOOL_ID`] answers to. A fixture is
+/// the only place a prompt is invented, so it says what it invents.
+#[cfg(any(test, feature = "testing"))]
+pub(crate) fn test_permission(
+    tx: tokio::sync::oneshot::Sender<forge_primitives::PermissionOutcome>,
+) -> crate::protocol::PendingInteractionSlot {
+    use forge_primitives::permission_ui::{
+        PermissionAction, PermissionOption, PermissionOptionKind,
+    };
+
+    let request = forge_primitives::PermissionRequest {
+        tool_call: test_tool_call("Bash", forge_primitives::ToolKind::Execute, Some("ls")),
+        options: vec![PermissionOption {
+            option_id: "allow_once".to_owned(),
+            name: "Allow once".to_owned(),
+            kind: PermissionOptionKind::Allow,
+            action: PermissionAction::Allow,
+        }],
+        display: None,
+    };
+    crate::protocol::PendingInteractionSlot::Permission { tx, request: Box::new(request) }
+}
+
+/// The tool call a fixture's prompt is about.
+#[cfg(any(test, feature = "testing"))]
+fn test_tool_call(
+    title: &str,
+    kind: forge_primitives::ToolKind,
+    command: Option<&str>,
+) -> forge_primitives::ToolCall {
+    forge_primitives::ToolCall {
+        tool_call_id: TEST_TOOL_ID.to_owned(),
+        title: title.to_owned(),
+        kind,
+        status: forge_primitives::ToolCallStatus::Pending,
+        content: Vec::new(),
+        raw_input: command.map(|command| serde_json::json!({ "command": command })),
+        raw_output: None,
+        output_metadata: None,
+        task_metadata: None,
+        locations: Vec::new(),
+        meta: None,
+    }
+}
+
+/// The same, for a question.
+#[cfg(any(test, feature = "testing"))]
+pub(crate) fn test_question(
+    tx: tokio::sync::oneshot::Sender<forge_primitives::QuestionOutcome>,
+) -> crate::protocol::PendingInteractionSlot {
+    use forge_primitives::question::{QuestionOption, QuestionPrompt};
+
+    let request = forge_primitives::QuestionRequest {
+        tool_call: test_tool_call("AskUserQuestion", forge_primitives::ToolKind::Think, None),
+        prompt: QuestionPrompt {
+            question: "Which environment?".to_owned(),
+            header: "Environments".to_owned(),
+            multi_select: false,
+            options: vec![QuestionOption {
+                option_id: "staging".to_owned(),
+                label: "Staging".to_owned(),
+                description: None,
+                preview: None,
+            }],
+        },
+        question_index: 0,
+        total_questions: 1,
+    };
+    crate::protocol::PendingInteractionSlot::Question { tx, request: Box::new(request) }
+}
+
+/// [`test_permission`] or [`test_question`] with a receiver nobody keeps.
+#[cfg(any(test, feature = "testing"))]
+fn test_prompt(kind: PendingInteractionKind) -> crate::protocol::PendingInteractionSlot {
+    match kind {
+        PendingInteractionKind::Permission => {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            test_permission(tx)
+        }
+        PendingInteractionKind::Question => {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            test_question(tx)
+        }
+    }
+}
+
 #[cfg(any(test, feature = "testing"))]
 impl Workspace {
     /// Mark a session as having completed its Connected handshake by
@@ -480,20 +572,19 @@ impl Workspace {
     /// driving the wire. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_pending_interaction(&self, slot: &SessionSlot, kind: PendingInteractionKind) {
-        let pending = match kind {
-            PendingInteractionKind::Question => {
-                let (tx, _rx) = tokio::sync::oneshot::channel();
-                crate::protocol::PendingInteractionSlot::Question(tx)
-            }
-            PendingInteractionKind::Permission => {
-                let (tx, _rx) = tokio::sync::oneshot::channel();
-                crate::protocol::PendingInteractionSlot::Permission(tx)
-            }
-        };
         let domain = self
             .domain_session_for(slot)
             .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
-        domain.lock().pending_interactions.insert(slot.display(), pending);
+        domain.lock().pending_interactions.insert(TEST_TOOL_ID.to_owned(), test_prompt(kind));
+    }
+
+    /// Let go of everything parked on `slot`, which is half of what
+    /// answering does: the other half is the update that says so. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn clear_test_pending(&self, slot: &SessionSlot) {
+        if let Some(domain) = self.domain_session_for(slot) {
+            domain.lock().pending_interactions.clear();
+        }
     }
 
     /// Hold `slot` waiting to be let in, the state a session that cannot
@@ -520,17 +611,7 @@ impl Workspace {
             .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
         let mut domain = domain.lock();
         for index in 0..count {
-            let pending = match kind {
-                PendingInteractionKind::Question => {
-                    let (tx, _rx) = tokio::sync::oneshot::channel();
-                    crate::protocol::PendingInteractionSlot::Question(tx)
-                }
-                PendingInteractionKind::Permission => {
-                    let (tx, _rx) = tokio::sync::oneshot::channel();
-                    crate::protocol::PendingInteractionSlot::Permission(tx)
-                }
-            };
-            domain.pending_interactions.insert(format!("tool-{index}"), pending);
+            domain.pending_interactions.insert(format!("test-tool-{index}"), test_prompt(kind));
         }
     }
 
