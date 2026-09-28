@@ -4,9 +4,10 @@ Forbid em-dash / en-dash / horizontal-bar / curly quotes in
 forge-authored source, docs and config. Ellipsis U+2026 is ALLOWED
 (legitimate truncation glyph in TUI render). The captured test baselines
 are excluded - they mirror upstream wire payloads byte-for-byte and may
-legitimately carry Unicode prose from the CLI's own logs. Nothing else
-is: forge-authored prose that happens to sit beside captured data is
-still scanned. Files git ignores (.gitignore / .git/info/exclude, e.g.
+legitimately carry Unicode prose from the CLI's own logs - along with the
+web view's three vendored scripts, which are somebody else's bytes.
+Nothing else is: forge-authored prose that happens to sit beside captured
+data is still scanned, `VENDOR.md` included. Files git ignores (.gitignore / .git/info/exclude, e.g.
 local audit scratch) are skipped too: the gate polices committable forge
 files, not whatever scratch happens to sit in the working tree.
 
@@ -79,11 +80,16 @@ EXCLUDE_DIRS_ANY_DEPTH = {
 # hide is the forge-authored README. The three named files are the web
 # view's vendored scripts; `VENDOR.md` beside them is forge-authored and
 # stays scanned.
-EXCLUDE_PATH_SUBSTRINGS = (
-    "/crates/forge-test-harness/baselines/",
-    "/crates/forge-web/assets/htmx.min.js",
-    "/crates/forge-web/assets/htmx-sse.min.js",
-    "/crates/forge-web/assets/idiomorph-ext.min.js",
+#
+# Repo-relative, and matched as a path prefix rather than a substring: these
+# entries began with a leading `/` and were tested with `in`, so neither half
+# could ever match what `git ls-files` returns and the baselines directory was
+# scanned while the failure message claimed to exclude it.
+EXCLUDE_PATH_PREFIXES = (
+    "crates/forge-test-harness/baselines",
+    "crates/forge-web/assets/htmx.min.js",
+    "crates/forge-web/assets/htmx-sse.min.js",
+    "crates/forge-web/assets/idiomorph-ext.min.js",
 )
 
 
@@ -99,8 +105,12 @@ def should_skip_dir(path: Path) -> bool:
 
 
 def should_skip_file(path: Path) -> bool:
-    s = str(path)
-    return any(sub in s for sub in EXCLUDE_PATH_SUBSTRINGS)
+    parts = path.parts
+    for prefix in EXCLUDE_PATH_PREFIXES:
+        want = Path(prefix).parts
+        if parts[: len(want)] == want:
+            return True
+    return False
 
 
 def walk(root: Path):
@@ -191,7 +201,10 @@ def main(argv):
         file=sys.stderr,
     )
     print("  - Ellipsis U+2026 is ALLOWED (truncation glyph).", file=sys.stderr)
-    print("  - Only the captured test baselines are excluded.", file=sys.stderr)
+    print(
+        "  - Excluded: the captured test baselines, and the three vendored scripts.",
+        file=sys.stderr,
+    )
     print(
         "  When the codepoint is functionally required (render glyph), use the Rust",
         file=sys.stderr,

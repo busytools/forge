@@ -14,5 +14,3 @@ Cargo.lock.tmp
 # unicode gate enumerates untracked files, so an un-ignored one is scanned.
 node_modules/
 client/dist/
-# Running scripts/check_no_unicode_punctuation.py leaves this behind.
-__pycache__/
