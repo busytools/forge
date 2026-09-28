@@ -9,6 +9,7 @@ use anyhow::Result;
 use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_agent::env::cli_version::CliVersionInfo;
+use forge_primitives::cloud::service_status::ServiceIssue;
 use forge_primitives::{AvailableAgent, AvailableCommand, PeerInflightStats, SDKSessionInfo};
 
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
@@ -186,6 +187,15 @@ pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String);
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
+/// One composed Slack message held for a decision: the session that asked,
+/// the draft itself, and the sender the blocked `slack__post` handler awaits.
+///
+/// The draft rides beside the sender for the same reason the permission and
+/// question requests do - the stream carries it once, so a view that attached
+/// after it landed has nothing else to draw the dock from.
+pub(crate) type ParkedSlackDraft =
+    (SessionSlot, forge_primitives::slack::SlackDraft, tokio::sync::oneshot::Sender<bool>);
+
 /// spawned [`forge_agent::Agent`] handles, one per active session.
 ///
 /// Construct via [`Workspace::new`]; consume via
@@ -396,6 +406,16 @@ pub struct Workspace {
     /// rather than in the view that happened to probe first; `None` until
     /// the boot probe lands.
     cli_version: Arc<Mutex<Option<CliVersionInfo>>>,
+    /// The last fatal error, held so a view that was not subscribed when it
+    /// fired can still learn of it: the update carries no state of its own
+    /// and nothing else in the core records it.
+    last_fatal_error: Mutex<Option<forge_primitives::error::AppError>>,
+    /// The statuspage's last answer, held so a view that attached after the
+    /// probe landed can read it rather than having missed the one update
+    /// that carried it. `None` until the probe answers.
+    service_status: Arc<Mutex<Option<ServiceIssue>>>,
+    /// Idempotence guard for the service-status probe.
+    service_status_probe_started: std::sync::atomic::AtomicBool,
     /// Idempotence guard for the claude version probe: a second start
     /// would leave two loops each spawning `claude --version` and reaching
     /// npm.
@@ -443,12 +463,10 @@ pub struct Workspace {
     /// a persistent failure says so once rather than on every tick.
     pub(crate) slack_author_failures: Mutex<std::collections::HashSet<(String, String)>>,
     /// Composed Slack messages held for the user's decision, keyed by
-    /// draft id and carrying the session that asked. The sender is what
-    /// the blocked `slack__post` handler awaits; removing the entry is
-    /// what answers it. The owner is stored beside it so an answer is
-    /// only ever applied by the session it was addressed to.
-    pub(crate) slack_drafts:
-        Mutex<HashMap<uuid::Uuid, (SessionSlot, tokio::sync::oneshot::Sender<bool>)>>,
+    /// draft id and carrying the session that asked. The owner is stored
+    /// beside it so an answer is only ever applied by the session it was
+    /// addressed to.
+    pub(crate) slack_drafts: Mutex<HashMap<uuid::Uuid, ParkedSlackDraft>>,
     /// Slack messages handed to a session recently, keyed by
     /// `(project, owner, conversation, ts)`. A sweep re-runs a batch
     /// whenever a 429 lands mid-sweep, a watermark write fails, or the
@@ -613,6 +631,62 @@ type CliVersionProber = Box<dyn Fn() -> CliVersionProbe + Send + Sync>;
 /// The real probe: `claude --version` and npm's `latest` dist-tag.
 fn real_cli_version_prober() -> CliVersionProber {
     Box::new(|| Box::pin(forge_agent::env::cli_version::fetch_info()))
+}
+
+/// One service-status probe call, boxed for the same reason the version
+/// probe's is.
+type ServiceStatusProbe =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<ServiceIssue>> + Send>>;
+
+/// How the service-status probe gets its answer. `Workspace::new` passes the
+/// real fetch; a test passes a script, so the boot path is drivable without
+/// reaching the statuspage.
+type ServiceStatusProber = Box<dyn Fn() -> ServiceStatusProbe + Send + Sync>;
+
+/// The real probe: the public statuspage summary.
+fn real_service_status_prober() -> ServiceStatusProber {
+    Box::new(|| Box::pin(forge_agent::cloud::service_status::fetch_service_status()))
+}
+
+/// Kick off the statuspage probe on the tokio runtime: one fetch, then the
+/// answer is held. A caller with no runtime gets a warn and holds no status
+/// rather than a task nobody would run.
+fn spawn_background_service_status_probe(
+    started: &std::sync::atomic::AtomicBool,
+    service_status: &Arc<Mutex<Option<ServiceIssue>>>,
+    update_tx: &UpdateFanout,
+    prober: ServiceStatusProber,
+) {
+    if started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let run = run_service_status_probe(Arc::clone(service_status), update_tx.clone(), prober);
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(run);
+    } else {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "service_status_probe_skipped",
+            "no tokio runtime at construction; the statuspage is not probed and no view reads a service status this run",
+        );
+    }
+}
+
+/// The statuspage probe, off the boot path. Its answer is held before it is
+/// announced, so a view that attaches afterwards reads it rather than having
+/// missed the one update that carried it.
+async fn run_service_status_probe(
+    service_status: Arc<Mutex<Option<ServiceIssue>>>,
+    update_tx: UpdateFanout,
+    prober: ServiceStatusProber,
+) {
+    let Some(issue) = prober().await else {
+        return;
+    };
+    let update =
+        SessionUpdate::ServiceStatus { severity: issue.severity, message: issue.message.clone() };
+    *service_status.lock() = Some(issue);
+    let _ = update_tx.send(update);
 }
 
 /// Kick off the claude version probe on the tokio runtime: one fetch at
@@ -1306,6 +1380,9 @@ impl Workspace {
         // The version facts are the same for every viewer, so the core
         // probes them once and both views read one answer.
         let cli_version = Arc::new(Mutex::new(None));
+        // The statuspage answer is the same for every viewer too, and it
+        // has to outlive the view that used to fetch it.
+        let service_status: Arc<Mutex<Option<ServiceIssue>>> = Arc::new(Mutex::new(None));
         let workspace = Self {
             config_dir,
             config,
@@ -1344,6 +1421,9 @@ impl Workspace {
             catalog_loaded,
             catalog_scan_started,
             cli_version,
+            last_fatal_error: Mutex::new(None),
+            service_status,
+            service_status_probe_started: std::sync::atomic::AtomicBool::new(false),
             cli_version_probe_started: std::sync::atomic::AtomicBool::new(false),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
@@ -1372,6 +1452,7 @@ impl Workspace {
         if let Some(prober) = cli_version_prober {
             workspace.start_cli_version_probe(prober);
         }
+        workspace.start_service_status_probe(real_service_status_prober());
         if workspace.db.lock().is_none() {
             // One user-visible notice for the whole best-effort-persist
             // class (spinner override, durable crons, subscriptions): the
@@ -4249,7 +4330,58 @@ impl Workspace {
     /// landed: the stream is a mirror with no backlog, so the update that
     /// carried the request is gone, and the request beside the answer's
     /// oneshot is what is left.
+    /// Record a fatal error, so a view that was not attached when it fired
+    /// can still read it.
+    pub(crate) fn record_fatal_error(&self, error: forge_primitives::error::AppError) {
+        *self.last_fatal_error.lock() = Some(error);
+    }
+
+    /// The last fatal error, or `None` when nothing has failed fatally.
+    ///
+    /// A fatal error is App-level: it names the startup that could not
+    /// happen rather than a seat, and it arrives once. Without this the
+    /// only way to know is to have been subscribed when it went out.
+    pub fn last_fatal_error(&self) -> Option<forge_primitives::error::AppError> {
+        self.last_fatal_error.lock().clone()
+    }
+
+    /// The statuspage's last answer, or `None`.
+    ///
+    /// `None` covers both "every relevant component is operational" and
+    /// "the statuspage could not be reached", which is the fetch's own
+    /// contract rather than something invented here - and a view that draws
+    /// nothing for it draws what the terminal always drew.
+    ///
+    /// The core probes rather than the view because the answer is the same
+    /// for every viewer and because it must outlive any one of them: a
+    /// client built after the terminal is gone would otherwise never see a
+    /// service status at all.
+    pub fn service_status(&self) -> Option<ServiceIssue> {
+        self.service_status.lock().clone()
+    }
+
+    /// Kick off the statuspage probe. Idempotent, and off the boot path.
+    fn start_service_status_probe(&self, prober: ServiceStatusProber) {
+        spawn_background_service_status_probe(
+            &self.service_status_probe_started,
+            &self.service_status,
+            &self.update_tx,
+            prober,
+        );
+    }
+
     pub fn pending_ask(&self, slot: &SessionSlot) -> Option<crate::protocol::PendingAsk> {
+        // A parked Slack draft comes first, and before the domain lookup:
+        // it is held in its own registry rather than in the session's
+        // pending set, so a seat with no domain can still be holding one.
+        let drafted = {
+            let parked = self.slack_drafts.lock();
+            parked.values().find(|(owner, _, _)| owner == slot).map(|(_, draft, _)| draft.clone())
+        };
+        if let Some(draft) = drafted {
+            return Some(crate::protocol::PendingAsk::SlackDraft(Box::new(draft)));
+        }
+
         let domain = self.domain_session_for(slot)?;
         let guard = domain.lock();
         let question = guard
@@ -10928,7 +11060,11 @@ mod worker_activity_tests {
             matches!(ask, crate::protocol::PendingAsk::Permission(_)),
             "and reads back as the kind it is",
         );
-        assert_eq!(ask.tool_id(), testing::TEST_TOOL_ID, "naming the call an answer addresses");
+        assert_eq!(
+            ask.tool_id(),
+            Some(testing::TEST_TOOL_ID),
+            "naming the call an answer addresses"
+        );
 
         let asked = held("a-question", vec![question()]);
         let ask = ws.pending_ask(&asked).expect("a held question reads back");
@@ -10941,6 +11077,88 @@ mod worker_activity_tests {
         assert!(
             matches!(ws.pending_ask(&both), Some(crate::protocol::PendingAsk::Question(_))),
             "a question outranks the permission prompt beside it here too",
+        );
+    }
+
+    /// The statuspage answer is the same for every viewer, and it has to
+    /// outlive the view that used to fetch it: the terminal owned this
+    /// probe, so without moving it a client built after the terminal is
+    /// gone would never see a service status at all. The answer is held as
+    /// well as announced, so a view that attached after the one update that
+    /// carried it can still read it.
+    #[tokio::test]
+    async fn the_service_status_is_held_and_announced() {
+        use forge_primitives::cloud::service_status::{ServiceIssue, ServiceSeverity};
+
+        let (ws, mut rx) = Workspace::testing_stub();
+        let found = ServiceIssue {
+            severity: ServiceSeverity::Warning,
+            message: "Claude Code status: degraded.".to_owned(),
+        };
+        let prober: ServiceStatusProber = {
+            let found = found.clone();
+            Box::new(move || {
+                let found = found.clone();
+                Box::pin(async move { Some(found) })
+            })
+        };
+
+        assert!(ws.service_status().is_none(), "nothing has been probed yet");
+
+        run_service_status_probe(
+            std::sync::Arc::clone(&ws.service_status),
+            ws.update_tx().clone(),
+            prober,
+        )
+        .await;
+
+        assert_eq!(
+            ws.service_status(),
+            Some(found),
+            "the answer the probe found is the answer the read hands back",
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(SessionUpdate::ServiceStatus { .. })),
+            "and the one update that carried it still goes out",
+        );
+    }
+
+    /// A seat can be held on a Slack draft, which the registry parks on a
+    /// reply exactly the way a permission or a question is parked - the
+    /// same shape, the same awaited answer, a different kind.
+    ///
+    /// The record had no room for it, so a view that attached after the
+    /// draft landed could not read that one was waiting: a record named
+    /// for a category has to carry every member of it, or the name says
+    /// it is complete when it is not.
+    #[test]
+    fn a_parked_slack_draft_reads_back_as_the_third_kind() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let seat = SessionSlot::from_str_for_test("a-draft");
+        let draft = forge_primitives::slack::SlackDraft {
+            id: uuid::Uuid::new_v4(),
+            workspace: "acme".to_owned(),
+            conversation: "C1".to_owned(),
+            conversation_label: "acme".to_owned(),
+            thread_ts: None,
+            text: "hello".to_owned(),
+            tool: "slack__post".to_owned(),
+        };
+        let (_id, _decision) = ws.register_slack_draft(&seat, draft);
+
+        let ask = ws.pending_ask(&seat).expect("a parked draft reads back");
+
+        assert!(
+            matches!(ask, crate::protocol::PendingAsk::SlackDraft(_)),
+            "and reads back as the kind it is",
+        );
+        assert!(
+            ask.tool_id().is_none(),
+            "a draft is answered by its own id, so it names no tool call",
+        );
+        assert!(
+            ws.pending_ask(&SessionSlot::from_str_for_test("a-bystander")).is_none(),
+            "and a seat holding nothing is not handed another seat's draft",
         );
     }
 

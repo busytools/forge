@@ -6,6 +6,7 @@
 //! rather than deriving anything: a view reads the session instead of
 //! folding the update stream a second time.
 
+use forge_primitives::runtime::AvailableModel;
 use forge_primitives::{CurrentModel, EffortLevel, MonitorRecord, PermissionMode, SessionSlot};
 
 use crate::surface::ViewSurface;
@@ -37,6 +38,14 @@ pub struct SessionHeader {
     pub permission_mode: Option<PermissionMode>,
     /// How full the context window is, from the bridge's last answer.
     pub context: ContextUsage,
+    /// The model catalogue the session's connect resolved against, which a
+    /// picker draws its rows from. Empty for a session nothing has started.
+    pub available_models: Vec<AvailableModel>,
+    /// Whether a turn is in flight, from the core's own OR of the stamped
+    /// signal and the wire-lagged one: the two disagree in the window
+    /// between a prompt being routed and its echo arriving, so a read of
+    /// either alone is wrong for one of them.
+    pub turn_in_flight: bool,
 }
 
 impl ViewSurface {
@@ -52,6 +61,8 @@ impl ViewSurface {
                 effort: EffortLevel::Max,
                 permission_mode: None,
                 context: ContextUsage::default(),
+                available_models: Vec::new(),
+                turn_in_flight: false,
             };
         };
         let held = domain.lock();
@@ -60,6 +71,8 @@ impl ViewSurface {
             effort: held.observed_effort.unwrap_or(held.configured_effort),
             permission_mode: held.observed_permission_mode.or(held.configured_permission_mode),
             context: held.context_usage.unwrap_or_default(),
+            available_models: held.available_models.clone(),
+            turn_in_flight: held.turn_in_flight(),
         }
     }
 
@@ -104,6 +117,7 @@ impl ViewSurface {
 mod tests {
     use std::sync::Arc;
 
+    use forge_primitives::runtime::{AvailableModel, RuntimeSessionState};
     use forge_primitives::{
         CurrentModel, EffortLevel, MonitorRecord, MonitorStatus, PermissionMode, SessionSlot,
     };
@@ -152,6 +166,56 @@ mod tests {
         );
         assert_eq!(header.context.percent, Some(62), "and the context reading comes through");
         assert_eq!(header.context.max_tokens, Some(1_000_000), "with the window it is a share of");
+    }
+
+    /// A picker has no rows and a chat cannot tell whether the turn it is
+    /// watching has finished, because neither fact is reachable: the
+    /// catalogue and the turn's presence are held by the core and read by
+    /// nothing. Both are carried here.
+    #[test]
+    fn the_header_carries_the_catalogue_and_the_turn() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let lead = seat("forge");
+        let domain = workspace.register_domain_session(lead.clone(), None);
+        {
+            let mut held = domain.lock();
+            held.available_models = vec![
+                AvailableModel::new("claude-opus-5", "Opus"),
+                AvailableModel::new("sonnet", "S"),
+            ];
+            held.turn_pending = true;
+        }
+
+        let header = surface.header(&lead);
+
+        assert_eq!(
+            header.available_models.len(),
+            2,
+            "the catalogue the connect resolved against is readable, or a picker draws no rows",
+        );
+        assert!(header.turn_in_flight, "and a turn the core stamped as pending reads as in flight");
+    }
+
+    /// The other input of the OR, and the reason it is an OR: `turn_pending`
+    /// is stamped synchronously and `runtime_state` is wire-lagged, so a
+    /// read that trusted either alone would be wrong for one of the two.
+    #[test]
+    fn a_wire_lagged_running_state_alone_still_reads_as_in_flight() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let lead = seat("forge");
+        let domain = workspace.register_domain_session(lead.clone(), None);
+        {
+            let mut held = domain.lock();
+            held.runtime_state = Some(RuntimeSessionState::Running);
+            held.turn_pending = false;
+        }
+
+        assert!(
+            surface.header(&lead).turn_in_flight,
+            "the wire-lagged state alone still says a turn is in flight",
+        );
     }
 
     /// Effort has two sources and a session that has not used a tool yet

@@ -73,6 +73,25 @@ impl ViewSurface {
     /// What the seat at `slot` is held on, as the core kept it, so a view
     /// that attached after a prompt landed still draws what it offers.
     /// `None` when the seat is holding nothing.
+    /// The last fatal error, or `None` when nothing has failed fatally.
+    ///
+    /// App-level rather than the seat's: it names a startup that could not
+    /// happen. It is held because the update carries no state of its own,
+    /// so a view that attached afterwards has no other way to learn of it.
+    pub fn fatal_error(&self) -> Option<forge_primitives::error::AppError> {
+        self.workspace.last_fatal_error()
+    }
+
+    /// The statuspage's last answer, or `None`.
+    ///
+    /// App-level: the answer is the same for every viewer, so the core
+    /// probes it once and every view reads this rather than fetching its
+    /// own. `None` covers both a healthy statuspage and one that could not
+    /// be reached, which is the fetch's own contract.
+    pub fn service_status(&self) -> Option<forge_primitives::cloud::service_status::ServiceIssue> {
+        self.workspace.service_status()
+    }
+
     pub fn pending_ask(&self, slot: &SessionSlot) -> Option<PendingAsk> {
         self.workspace.pending_ask(slot)
     }

@@ -177,7 +177,6 @@ fn run() -> anyhow::Result<()> {
         // can drain the pool after the event loop returns.
         let mut app = forge_tui::app::create_app(&cli, Arc::clone(&workspace));
 
-        forge_tui::app::start_service_status_check(&app);
         let result = forge_tui::app::run_tui(&mut app).await;
 
         let exit_error = app.exit_error.take();

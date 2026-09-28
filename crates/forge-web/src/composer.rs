@@ -85,7 +85,7 @@ pub(crate) fn answer(
     // Resolved the way the render resolves it, and for the same reason: a
     // view that attached after the prompt landed, or one holding two
     // prompts, has only the core's copy of this one.
-    let ask = held.ask(slot).filter(|ask| ask.tool_id() == tool_id).or(kept)?;
+    let ask = held.ask(slot).filter(|ask| ask.tool_id() == Some(tool_id)).or(kept)?;
     match ask {
         Ask::Permission(request) if request.tool_call.tool_call_id == tool_id => {
             // The option is looked up in the core's own list, never taken
@@ -679,7 +679,11 @@ fn dock(
             @match ask {
                 Some(Ask::Permission(request)) => (permission_dock(request, endpoint)),
                 Some(Ask::Question(request)) => (question_dock(request, endpoint)),
-                None => (unknown_dock(kind)),
+                // A draft reads back through `pending_ask` now, and this
+                // page has no dock for one - it drew the unknown line for a
+                // seat holding a draft before, and it still does. The dock
+                // is the client's, and this crate stops being started.
+                Some(Ask::SlackDraft(_)) | None => (unknown_dock(kind)),
             }
             (dock_keys(ask))
         }

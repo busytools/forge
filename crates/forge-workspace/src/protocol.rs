@@ -71,18 +71,28 @@ pub enum PendingInteractionSlot {
 
 /// What a seat is held on, as the core kept it: the prompt a view that
 /// attached late has no other way to read.
+///
+/// The three kinds are every member of the category, not the two the dock
+/// happened to draw first: a Slack draft parks on a reply the same way a
+/// permission and a question do, so a record carrying two of the three
+/// told a builder the category was covered when it was not.
 #[derive(Clone)]
 pub enum PendingAsk {
     Permission(Box<PermissionRequest>),
     Question(Box<QuestionRequest>),
+    SlackDraft(Box<forge_primitives::slack::SlackDraft>),
 }
 
 impl PendingAsk {
     /// The tool call this prompt is about, which is the id an answer names.
-    pub fn tool_id(&self) -> &str {
+    ///
+    /// `None` for a Slack draft: it is answered by `Command::RespondSlackPost`
+    /// with the draft's own id, and names no tool call at all.
+    pub fn tool_id(&self) -> Option<&str> {
         match self {
-            Self::Permission(request) => &request.tool_call.tool_call_id,
-            Self::Question(request) => &request.tool_call.tool_call_id,
+            Self::Permission(request) => Some(&request.tool_call.tool_call_id),
+            Self::Question(request) => Some(&request.tool_call.tool_call_id),
+            Self::SlackDraft(_) => None,
         }
     }
 }

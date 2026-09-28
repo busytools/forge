@@ -269,7 +269,9 @@ impl Composer {
                 let held = match self.asks.get(key) {
                     Some(Ask::Permission(request)) => &request.tool_call.tool_call_id == tool_id,
                     Some(Ask::Question(request)) => &request.tool_call.tool_call_id == tool_id,
-                    None => false,
+                    // A draft is answered by its own id rather than by a tool
+                    // call, so a resolved interaction never names one.
+                    Some(Ask::SlackDraft(_)) | None => false,
                 };
                 if held {
                     self.asks.remove(key);

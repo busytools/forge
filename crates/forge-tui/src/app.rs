@@ -33,7 +33,6 @@ pub(crate) mod prompt;
 pub(crate) mod replay;
 pub(crate) mod review_waiting;
 pub(crate) mod selection;
-mod service_status_check;
 pub mod session;
 mod session_runtime;
 pub(crate) mod slash;
@@ -60,7 +59,6 @@ pub use input::{InputState, TypedChar};
 pub use launchpad::LaunchpadState;
 pub use prompt::{PromptMode, PromptSource, PromptState};
 pub(crate) use selection::normalize_selection;
-pub use service_status_check::start_service_status_check;
 pub use spinner_picker::SpinnerPickerState;
 pub(crate) use state::cache_metrics;
 #[cfg(any(test, feature = "testing"))]
