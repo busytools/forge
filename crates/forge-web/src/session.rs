@@ -1137,7 +1137,7 @@ fn section(open: bool, icon_name: &str, name: &str, summary: &str, body: &Markup
 /// it, the pull request that tree belongs to, and the files themselves.
 fn git_section(work: &WorkState, diff: Option<&GitDiffSnapshot>) -> Markup {
     let (open, summary, body) = match diff {
-        Some(diff) => (git_has_body(work, diff), git_summary(diff), git_body(work, diff)),
+        Some(diff) => (git_has_body(work, diff), git_summary(work, diff), git_body(work, diff)),
         None => (false, String::new(), Markup::default()),
     };
     section(open, "git", "git", &summary, &body)
@@ -1151,35 +1151,54 @@ fn git_has_body(work: &WorkState, diff: &GitDiffSnapshot) -> bool {
         || matches!(diff.worktree, LayerState::Populated(_))
         || layer_note(&diff.worktree).is_some()
         || crate::home::gate_line(work.gate).is_some()
+        || unlisted(work, &diff.worktree).is_some()
 }
 
-/// The section's line: the branch, and how many files the body below it
-/// lists. Both come from the one scan, so the count cannot describe a
-/// different read than the list does. The working tree's own count is a
-/// different read again - it includes untracked files, which a diff
-/// cannot show - and deriving this line from it would put a number over a
-/// list that does not match it.
-fn git_summary(diff: &GitDiffSnapshot) -> String {
+/// The scan's own layer, as the counts below read it.
+fn worktree_stats(diff: &GitDiffSnapshot) -> Option<&GitDiffStats> {
+    match &diff.worktree {
+        LayerState::Populated(stats) => Some(stats),
+        LayerState::Clean | LayerState::ScanFailed => None,
+    }
+}
+
+/// How many of the working tree's changes the list in the body cannot carry.
+/// The summary above counts the tree and the body draws what the scan found,
+/// which falls short of it for a file the diff has no content for - untracked,
+/// or a binary it skips - and for the files past the scan's own cap, which
+/// the list's own note accounts for. A layer that could not be read says so
+/// itself, and its zero files are not a list that came up short. A difference
+/// the wrong way round is the two reads answering from different instants of
+/// their caches, so it reads as none rather than as a negative.
+fn unlisted(work: &WorkState, layer: &LayerState<GitDiffStats>) -> Option<usize> {
+    let listed = match layer {
+        LayerState::Populated(stats) => stats.total_files,
+        LayerState::Clean => 0,
+        LayerState::ScanFailed => return None,
+    };
+    work.changed?.checked_sub(listed).filter(|unlisted| *unlisted > 0)
+}
+
+/// The section's line: the branch the tree is on and what has moved in it,
+/// counted the way the project's row on the home counts it, so the two
+/// surfaces state one fact rather than two. The count includes untracked
+/// files, which the list below cannot show: the count is what moved, and
+/// the list is what a diff has. The branch still comes from the scan,
+/// because only it can say a HEAD is detached.
+fn git_summary(work: &WorkState, diff: &GitDiffSnapshot) -> String {
     let branch = match &diff.branch {
         GitBranch::Named(name) => Some(name.as_str()),
         GitBranch::Detached => Some("detached"),
         GitBranch::NoRepo | GitBranch::Unknown => None,
     };
-    let files = match &diff.worktree {
-        LayerState::Populated(stats) => Some(stats.total_files),
-        LayerState::Clean | LayerState::ScanFailed => None,
-    };
-    crate::home::branch_and_files(branch, files)
+    crate::home::branch_and_files(branch, work.changed)
 }
 
 /// What has moved, the PR it belongs to, and the files by directory. The
 /// per-file status the mock draws is not here: the scan reports numstat,
 /// not `M`/`A`.
 fn git_body(work: &WorkState, diff: &GitDiffSnapshot) -> Markup {
-    let stats = match &diff.worktree {
-        LayerState::Populated(stats) => Some(stats),
-        LayerState::Clean | LayerState::ScanFailed => None,
-    };
+    let stats = worktree_stats(diff);
     let files = stats.map_or(&[][..], |stats| stats.files.as_slice());
     html! {
         @if let Some(pr) = &diff.pr {
@@ -1197,6 +1216,20 @@ fn git_body(work: &WorkState, diff: &GitDiffSnapshot) -> Markup {
                     span .pm { "+" (stats.total_added) }
                     " "
                     span .mm { "\u{2212}" (stats.total_removed) }
+                }
+            }
+        }
+        // The summary counts the tree; the list draws what a diff has, so
+        // the number above is reconciled here rather than left as a count
+        // the reader can open and find nothing under. The row names no
+        // cause: a file the diff skipped and one it has no content for both
+        // land here, and only the counts tell them apart.
+        @if let Some(unlisted) = unlisted(work, &diff.worktree) {
+            div .kv {
+                span .k { "not in the diff" }
+                span .v {
+                    (unlisted) " "
+                    @if unlisted == 1 { "file" } @else { "files" }
                 }
             }
         }
