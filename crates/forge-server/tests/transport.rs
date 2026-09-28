@@ -159,6 +159,57 @@ fn a_prompt_for(org: &str, project: &str, label: &str) -> Command {
     }
 }
 
+/// A turn that finishes while nobody is showing the seat leaves a mark, and
+/// the mark is exactly the fact a client cannot reconstruct: a transcript says
+/// the turn ended, never that it ended unwatched. It rides the home snapshot,
+/// so a client attaching afterwards learns it rather than waiting for the next
+/// turn to end.
+#[tokio::test]
+async fn a_turn_that_finished_unwatched_marks_its_row() {
+    let (url, fleet) = a_server().await;
+    // A mark is drawn on a row, so the seat has to have one: the home lists a
+    // project's agents, and a seat nothing has started is not among them.
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
+    let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
+        panic!("the subscribe is answered with a snapshot first")
+    };
+
+    // A turn ends with this connection watching the home and not the seat, so
+    // nobody is showing it. Reading the update back is what proves the fold
+    // ran before the next subscription is served.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "s",
+        }))
+        .expect("parse a result message"),
+    });
+    assert!(
+        matches!(next_server(&mut socket).await, ServerMessage::Update { .. }),
+        "the completion reaches the home as a row change",
+    );
+
+    let mut fresh = connect(&url).await;
+    send(&mut fresh, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
+    let ServerMessage::Snapshot { data, .. } = next_server(&mut fresh).await else {
+        panic!("expected the home snapshot")
+    };
+
+    let unseen = data["unseen"].as_array().expect("the home carries the marks");
+    assert!(
+        unseen.iter().any(|slot| slot["label"] == "lead" && slot["project"] == "proj"),
+        "the seat whose turn went unwatched is marked: {unseen:?}",
+    );
+}
+
 /// Four commands report through `reply_to` and have no update behind them, so
 /// a client that omits it is not opting out of a reply - it is opting out of
 /// knowing whether the work happened. The refusal names the field rather than

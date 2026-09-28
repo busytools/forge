@@ -70,6 +70,13 @@ impl<T> From<std::result::Result<T, String>> for ReadWire<T> {
 pub struct HomeWire {
     pub projects: Vec<ProjectWire>,
     pub agents: Vec<AgentRow>,
+    /// The seats whose last turn finished while no client was showing them.
+    ///
+    /// The terminal draws a mark per row from this, and it is the fact a
+    /// viewer cannot reconstruct: a turn that ended before a client attached
+    /// leaves nothing in the transcript to say it went unwatched, so a client
+    /// reading only the records would draw every row as settled.
+    pub unseen: Vec<SessionSlot>,
     pub accounts: AccountsWire,
     pub plugins: PluginsWire,
     pub workers: Vec<WorkersWire>,
@@ -483,6 +490,7 @@ pub(crate) async fn walk_processes_if_stale(
 async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
     let roster = surface.roster();
     let accounts = surface.accounts();
+    let agents = surface.agents();
     let connectors = surface.connectors(None);
     let dictate = surface.dictate();
     let workers = surface.workers();
@@ -560,7 +568,16 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         fatal_error: encode(
             surface.fatal_error().and_then(|error| serde_json::to_value(error).ok()),
         ),
-        agents: surface.agents().all().to_vec(),
+        agents: agents.all().to_vec(),
+        unseen: {
+            let live = crate::live::Live::lock(&state.live).snapshot();
+            agents
+                .all()
+                .iter()
+                .map(|row| row.slot.clone())
+                .filter(|slot| live.unseen.is_unseen(slot))
+                .collect()
+        },
         projects,
     }
 }

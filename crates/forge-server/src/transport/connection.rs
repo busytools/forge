@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::TransportState;
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{encode_subject, page, walk_processes_if_stale};
+use crate::live::Live;
 use crate::{Command, SessionUpdate};
 
 /// The protocol this server speaks.
@@ -86,6 +87,12 @@ async fn drive(socket: &mut WebSocket, state: &TransportState) -> anyhow::Result
             // would silently stop delivering while the socket stayed open.
             heard = next_update(&mut updates) => {
                 let Some(update) = heard else { break };
+                // Folded BEFORE the filter, and for every update rather than
+                // the watched ones: the marks and the composer's state are
+                // what the stream has said, not what this client asked to
+                // hear, and a client that subscribes later reads them from its
+                // snapshot rather than waiting for the next turn to end.
+                Live::lock(&state.live).apply(&update);
                 if watched.iter().any(|what| what.covers(&update)) {
                     send(socket, ServerMessage::Update { update: Box::new(update) }).await?;
                 }
@@ -156,6 +163,13 @@ async fn handle_client(
             Ok(data) => {
                 // Watched only once the subject is one this server can
                 // answer for: a refused subscribe leaves nothing to hear.
+                //
+                // A seat subscription is also this connection SHOWING the
+                // seat, which is what keeps a turn finishing on it from
+                // arming a mark nobody needs: the reader is looking at it.
+                if let Subject::Session(slot) = &what {
+                    Live::lock(&state.live).attach(slot);
+                }
                 watched.push(what.clone());
                 send(socket, ServerMessage::Snapshot { subject: what, data }).await
             }
@@ -255,7 +269,12 @@ async fn handle_client(
         ClientMessage::Unsubscribe { what } => {
             // No answer: the client asked to stop hearing, and there is
             // nothing to say back. The stream is already this socket's own,
-            // so dropping the subject from `watched` is the whole of it.
+            // so dropping the subject from `watched` is the whole of it - and
+            // a seat it stops showing is let go with it, counted, because two
+            // subscriptions to one seat are one seat still being shown.
+            if let Subject::Session(slot) = &what {
+                Live::lock(&state.live).detach(slot);
+            }
             watched.retain(|held| held != &what);
             Ok(())
         }
