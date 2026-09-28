@@ -5,7 +5,7 @@
 //! markup is a pure function of data a test can build by hand.
 
 use std::net::SocketAddr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use forge_primitives::tasks::{Task, TaskStatus};
@@ -23,7 +23,9 @@ use crate::work::{Gate, WorkCache, WorkState};
 
 /// Everything the home draws with.
 pub struct Home<'a> {
-    pub surface: &'a ViewSurface,
+    /// The core as a read handle, an `Arc` because a walk moves it into
+    /// the blocking task that reads a tree.
+    pub surface: &'a Arc<ViewSurface>,
     pub work: &'a WorkCache,
     /// What the stream has told the view.
     pub live: &'a Mutex<Live>,

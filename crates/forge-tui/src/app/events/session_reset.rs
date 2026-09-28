@@ -106,6 +106,11 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
         index.clear();
     }
     app.clear_active_session_background_task_registry();
+    // The core drops its monitor set on every connect, and nothing can
+    // settle an entry the new occupant never started.
+    if let Some(monitors) = app.monitors_mut() {
+        monitors.clear();
+    }
     app.focus = super::super::FocusManager::default();
     if let Some(commands) = app.available_commands_mut() {
         commands.clear();

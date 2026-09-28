@@ -76,6 +76,11 @@ impl Live {
         LiveState { unseen: self.unseen.clone(), composer: self.composer.clone() }
     }
 
+    /// This view has shown `slot`, so nothing about it is unseen.
+    pub fn seen(&mut self, slot: &SessionSlot) {
+        self.unseen.clear(slot);
+    }
+
     /// Fold one update in, answering what it asks of each page.
     ///
     /// The filter is what keeps a busy turn from re-sending the fleet for
@@ -97,11 +102,9 @@ impl Live {
                     true
                 }
                 Message::System { subtype, data, .. } if subtype == "session_state_changed" => {
-                    // Work started again, which supersedes a completion
-                    // nobody looked at. Clearing on OPEN is the real
-                    // semantic and lands with the row's route; this only
-                    // bounds the mark until then, so it cannot outlive the
-                    // turn it reported.
+                    // Work started again, which supersedes the completion
+                    // the diamond marks. Serving the seat's page clears it
+                    // too, so this is the clear for a seat nobody opened.
                     if forge_sessions::translate::state_parsing::parse_runtime_session_state(
                         data.get("state"),
                     ) == Some(RuntimeSessionState::Running)
@@ -549,10 +552,9 @@ mod tests {
         .expect("parse a state message")
     }
 
-    /// The diamond is bounded by the work it reported: a session that
-    /// started again, or a slot a fresh occupant took, is not an unlooked
-    /// completion. Clearing on open is the real semantic and lands with
-    /// the row's route.
+    /// A diamond goes when its seat moves on without being looked at: work
+    /// started again, or a fresh occupant took the slot. The other clear,
+    /// the seat's page being served, is pinned through the route.
     #[test]
     fn starting_work_again_clears_the_diamond() {
         let slot = SessionSlot::lead("Org", "forge");

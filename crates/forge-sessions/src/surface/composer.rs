@@ -1,11 +1,13 @@
-//! `slash_commands()`, `subagents()`, `file_index()`, `emoji()`: what
-//! the composer's four autocomplete triggers read.
+//! `slash_commands()`, `subagents()`, `forge_commands()`, `file_index()`,
+//! `respect_gitignore()`, `emoji()`: what the composer's four autocomplete
+//! triggers read.
 //!
 //! Two of them are facts about a session - what the CLI advertised - so
-//! the core holds them and these verbs read through it. The other two
-//! have no session in them at all: the emoji table and the file walk are
-//! view-side data, so `forge-sessions` owns both and no view keeps a
-//! copy.
+//! the core holds them and these verbs read through it. The other four
+//! have no session in them at all: forge's own command table, the emoji
+//! table and the file walk are view-side data, so `forge-sessions` owns
+//! them and no view keeps a copy, and the walk's ignore preference is the
+//! user's own, which the core reads on the walk's behalf.
 //!
 //! The tests here read the two session facts through a fixture that
 //! writes the core's fields directly, so they pin the reads and not the
@@ -16,6 +18,7 @@ use std::path::Path;
 
 use forge_primitives::{AvailableAgent, AvailableCommand, SessionSlot};
 
+use crate::commands::ForgeCommand;
 use crate::emoji::{self, Emoji};
 use crate::file_index::FileIndex;
 use crate::surface::ViewSurface;
@@ -31,9 +34,11 @@ impl ViewSurface {
     /// frame.
     ///
     /// The wire carries the names bare, so the leading slash is added
-    /// here: a caller renders `name` as it comes back. Forge's own
-    /// commands are not in this list - a view that renders the `/`
-    /// dropdown needs those too, and they are still the TUI's (#1213).
+    /// here: a caller renders `name` as it comes back.
+    ///
+    /// Forge's own commands are not in this list. A view rendering the `/`
+    /// dropdown reads those from [`Self::forge_commands`], and a name in
+    /// both is forge's, which handles it rather than forwarding it.
     pub fn slash_commands(&self, slot: &SessionSlot) -> Vec<AvailableCommand> {
         self.workspace
             .available_commands_for(slot)
@@ -43,6 +48,18 @@ impl ViewSurface {
                 ..command
             })
             .collect()
+    }
+
+    /// forge's own commands, which a view offers beside the ones the CLI
+    /// advertises: a `/` dropdown is built from this table and
+    /// [`Self::slash_commands`] together, so the two views cannot show
+    /// different lists.
+    ///
+    /// A name here shadows the CLI's row for the same name
+    /// (`crate::commands::is_forge_command`), because forge handles it
+    /// rather than forwarding it.
+    pub fn forge_commands() -> &'static [ForgeCommand] {
+        crate::commands::FORGE_COMMANDS
     }
 
     /// The subagents the CLI last advertised for `slot`, retained by the
@@ -59,17 +76,32 @@ impl ViewSurface {
     /// [`Self::conversation`] reads a whole transcript: a caller offloads
     /// it rather than running it in a handler.
     ///
-    /// Gitignore is always respected here. The TUI reads the user's own
-    /// preference for that out of the CLI settings document, so a session
-    /// with it turned off shows ignored files in one view and not the
-    /// other; passing the preference in is a core-side read this does not
-    /// have yet (#1214).
+    /// The walk runs the way the user asked for it: gitignore is honoured
+    /// unless the CLI's own `respectGitignore` preference turns it off.
+    /// The preference is read here rather than parsed by a view, and read
+    /// on each walk rather than held, so a flip reaches this read at once.
+    /// The terminal answers from the same rule but on its own cadence: it
+    /// re-reads the document when its settings reload, so a flip mid-run
+    /// moves this list first and its own at the next reload.
     ///
-    /// No `self`: nothing here is a fact about the core, so the two reads
-    /// that need no session are reached at the surface rather than
-    /// through an instance of it.
-    pub fn file_index(root: &Path) -> FileIndex {
-        FileIndex::scan(root, true)
+    /// `self` is for that read alone: nothing else here is a fact about
+    /// the core, so the emoji table and the command table are reached at
+    /// the surface rather than through an instance of it.
+    pub fn file_index(&self, root: &Path) -> FileIndex {
+        FileIndex::scan(root, self.respect_gitignore())
+    }
+
+    /// The user's own `respectGitignore`, the preference
+    /// [`Self::file_index`] walks with. Read on each call from the CLI's
+    /// per-user preferences document, which is the core's document rather
+    /// than a view's.
+    ///
+    /// A caller that caches a walk reads this to key its cache: the
+    /// preference decides what the walk returns, so a cached walk is only
+    /// an answer for the preference it was built under.
+    pub fn respect_gitignore(&self) -> bool {
+        let preferences = self.workspace.user_preferences();
+        crate::file_index::respect_gitignore(preferences.as_ref())
     }
 
     /// The emoji a `:query` matches, best first, at most `limit` of them.
@@ -177,12 +209,42 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(root.path().join("src")).expect("mkdir");
         std::fs::write(root.path().join("src/main.rs"), "").expect("write");
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        // The walk's ignore preference comes from the CLI's per-user
+        // document, which this fixture holds rather than the machine's.
+        workspace.seed_test_user_preferences(serde_json::json!({}));
 
-        let index = ViewSurface::file_index(root.path());
+        let index = ViewSurface::new(std::sync::Arc::clone(&workspace)).file_index(root.path());
 
         assert!(index.entries.contains_key("src/main.rs"), "the walk reaches the files");
         let ranked = index.visible("main", 10);
         assert_eq!(ranked.len(), 1, "and the verb's own ranking finds them: {ranked:?}");
         assert_eq!(ranked[0].rel_path, "src/main.rs");
+    }
+
+    /// The preference is read on each walk rather than held: the user can
+    /// flip it while forge runs, and the walk a view asks for next has to
+    /// answer the new one rather than the one forge started with.
+    #[test]
+    fn file_index_walks_under_the_preference_read_at_that_call() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join(".git")).expect("mkdir");
+        std::fs::write(root.path().join(".gitignore"), "ignored.rs\n").expect("write");
+        std::fs::write(root.path().join("ignored.rs"), "").expect("write");
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        workspace.seed_test_user_preferences(serde_json::json!({}));
+        let surface = ViewSurface::new(std::sync::Arc::clone(&workspace));
+
+        assert!(
+            !surface.file_index(root.path()).entries.contains_key("ignored.rs"),
+            "the walk respects the file while the preference says so",
+        );
+
+        workspace.seed_test_user_preferences(serde_json::json!({"respectGitignore": false}));
+
+        assert!(
+            surface.file_index(root.path()).entries.contains_key("ignored.rs"),
+            "and takes the preference read at the next call",
+        );
     }
 }

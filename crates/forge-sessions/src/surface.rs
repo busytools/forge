@@ -198,6 +198,7 @@ mod tests {
     use forge_workspace::Workspace;
 
     use super::{SessionUpdate, ViewSurface};
+    use crate::test_support::logged;
 
     /// The claude versions are facts about the world rather than about a
     /// viewer, so a view reads the core's answer instead of probing for
@@ -398,47 +399,6 @@ mod tests {
         assert_eq!(read_b.messages.len(), 3, "and the neighbour reads its own, not this one");
         let none = surface.conversation(&idle, &cwd);
         assert!(none.messages.is_empty(), "no occupant reads as empty");
-    }
-
-    /// Every record a site emitted while the capture was installed.
-    #[derive(Clone, Default)]
-    struct Caught(Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
-
-    /// Every field the record carried, as `name=value`, so a test reads the
-    /// `event_name` and the slot off the site that emitted it.
-    #[derive(Default)]
-    struct Fields(String);
-
-    impl tracing::field::Visit for Fields {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            if !self.0.is_empty() {
-                self.0.push(' ');
-            }
-            let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
-        }
-    }
-
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            let mut fields = Fields::default();
-            event.record(&mut fields);
-            self.0.lock().expect("capture").push((*event.metadata().level(), fields.0));
-        }
-    }
-
-    /// Everything `emit` logs while it runs.
-    fn logged(emit: impl FnOnce()) -> Vec<(tracing::Level, String)> {
-        use tracing_subscriber::layer::SubscriberExt;
-
-        let caught = Caught::default();
-        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
-        emit();
-        caught.0.lock().expect("capture").clone()
     }
 
     /// A view drawing an empty conversation with nothing recorded gives a

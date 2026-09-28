@@ -9,6 +9,7 @@ use forge_primitives::SessionSlot;
 use forge_primitives::git_diff::{GitDiffSnapshot, RepoGate};
 use forge_sessions::file_index::FileIndex;
 use forge_sessions::git_diff;
+use forge_sessions::surface::ViewSurface;
 
 /// How long a read answers for. Everything inside the window is served
 /// from the cache, which is what keeps a page render off a subprocess.
@@ -77,6 +78,11 @@ struct Entry {
     /// The file walk the composer's `@` list reads. Its own window again:
     /// a walk costs more than the row's read and less than the full scan.
     file_index: Option<Arc<FileIndex>>,
+    /// The ignore preference read for that walk, `None` until one lands.
+    /// The walk's answer depends on it, so it is part of what the cache is
+    /// a cache of: a flip re-walks rather than serving the old answer for
+    /// the rest of the window.
+    files_respecting: Option<bool>,
     files_read_at: Instant,
     /// Held across a refresh so two callers for one slot do not both probe
     /// the same tree.
@@ -92,6 +98,7 @@ impl Entry {
             diff: None,
             diff_read_at: Instant::now(),
             file_index: None,
+            files_respecting: None,
             files_read_at: Instant::now(),
             refreshing: Arc::default(),
         }
@@ -185,7 +192,21 @@ impl WorkCache {
     /// The walk is blocking, so it runs off the reactor. A walk that
     /// panicked reads as no files rather than as the page's problem: the
     /// same answer a root that is not there gives.
-    pub async fn files(&self, slot: &SessionSlot, root: &Path) -> Arc<FileIndex> {
+    ///
+    /// The surface comes along because the walk runs with the user's own
+    /// gitignore preference, which is the core's read rather than the
+    /// view's: the terminal's `@` list answers from the same rule. That read
+    /// is a file parse, so it happens off the reactor too, whether the call
+    /// walks or answers from the cache.
+    pub async fn files(
+        &self,
+        surface: &Arc<ViewSurface>,
+        slot: &SessionSlot,
+        root: &Path,
+    ) -> Arc<FileIndex> {
+        let reader = Arc::clone(surface);
+        let respecting =
+            tokio::task::spawn_blocking(move || reader.respect_gitignore()).await.unwrap_or(true);
         let refreshing = {
             let mut entries = self.entries();
             Arc::clone(&entries.entry(slot.clone()).or_insert_with(|| Entry::new(root)).refreshing)
@@ -196,7 +217,9 @@ impl WorkCache {
             if let Some(index) = entries
                 .get(slot)
                 .filter(|entry| {
-                    entry.cwd == root && entry.files_read_at.elapsed() < REFRESH_INTERVAL
+                    entry.cwd == root
+                        && entry.files_respecting == Some(respecting)
+                        && entry.files_read_at.elapsed() < REFRESH_INTERVAL
                 })
                 .and_then(|entry| entry.file_index.as_ref())
             {
@@ -204,15 +227,23 @@ impl WorkCache {
             }
         }
         let walked = root.to_owned();
-        let index = Arc::new(
-            tokio::task::spawn_blocking(move || FileIndex::scan(&walked, true))
-                .await
-                .unwrap_or_default(),
-        );
+        let surface = Arc::clone(surface);
+        let (walked_index, walked_under) = tokio::task::spawn_blocking(move || {
+            // Read beside the walk rather than at the cache check below: the
+            // two reads are a moment apart, and this is the one the entry
+            // stores. A walk that panicked keeps the key it was asked for,
+            // which is why this is not `unwrap_or_default`.
+            let respecting = surface.respect_gitignore();
+            (surface.file_index(&walked), respecting)
+        })
+        .await
+        .unwrap_or_else(|_| (FileIndex::default(), respecting));
+        let index = Arc::new(walked_index);
         let mut entries = self.entries();
         let entry = entries.entry(slot.clone()).or_insert_with(|| Entry::new(root));
         root.clone_into(&mut entry.cwd);
         entry.file_index = Some(Arc::clone(&index));
+        entry.files_respecting = Some(walked_under);
         entry.files_read_at = Instant::now();
         index
     }
@@ -391,6 +422,36 @@ mod tests {
             second.changed,
             Some(0),
             "a read inside the refresh window answers what the cache holds",
+        );
+    }
+
+    /// A walk is an answer for the preference it was built under, so a flip
+    /// inside the window re-walks: the preference decides which files come
+    /// back, and serving the old answer for the rest of the window is the two
+    /// views disagreeing for five seconds.
+    #[tokio::test]
+    async fn a_flip_inside_the_window_re_walks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = forge_sessions::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["tree"])])
+            .expect("fleet");
+        let root = dir.path().join("tree");
+        std::fs::create_dir_all(root.join(".git")).expect("mkdir");
+        std::fs::write(root.join(".gitignore"), "ignored.rs\n").expect("write");
+        std::fs::write(root.join("ignored.rs"), "").expect("write");
+        let cache = WorkCache::new();
+
+        let first = cache.files(&fleet.surface(), &slot(), &root).await;
+        assert!(
+            !first.entries.contains_key("ignored.rs"),
+            "precondition: the walk respects the file",
+        );
+
+        fleet.set_user_preferences(serde_json::json!({ "respectGitignore": false }));
+        let second = cache.files(&fleet.surface(), &slot(), &root).await;
+
+        assert!(
+            second.entries.contains_key("ignored.rs"),
+            "a flip inside the window re-walks rather than serving the old answer",
         );
     }
 }
