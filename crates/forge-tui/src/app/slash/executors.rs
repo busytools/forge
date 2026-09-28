@@ -8,6 +8,38 @@ use crate::app::App;
 use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
 use forge_workspace::SessionUpdate;
 
+/// One command's handler.
+type Handler = fn(&mut App, &[&str]) -> bool;
+
+/// The commands the terminal handles itself: the name as it is typed, and
+/// the handler for it. A name missing here falls to the unknown-command
+/// fallback, so this list and
+/// `forge_sessions::commands::FORGE_COMMANDS` are the same set - the table
+/// is what both views offer, and a name it carries that nothing here answers
+/// would be advertised by both dropdowns and refused when typed.
+const HANDLERS: &[(&str, Handler)] = &[
+    ("/compact", handle_compact_submit),
+    ("/dictate", handle_dictate_submit),
+    ("/diff", handle_diff_submit),
+    ("/effort", handle_effort_submit),
+    ("/extensions", handle_extensions_submit),
+    ("/gateway", handle_gateway_submit),
+    ("/launchpad", handle_launchpad_submit),
+    ("/mode", handle_mode_submit),
+    ("/model", handle_model_submit),
+    ("/new", handle_new_session_submit),
+    ("/resume", handle_resume_submit),
+    ("/spinner", handle_spinner_submit),
+    ("/usage", handle_usage_submit),
+];
+
+/// The names [`HANDLERS`] answers, for the test that compares them with the
+/// shared table.
+#[cfg(test)]
+pub(super) fn handled_names() -> Vec<&'static str> {
+    HANDLERS.iter().map(|(name, _)| *name).collect()
+}
+
 /// Handle slash command submission.
 ///
 /// Returns `true` if the slash input was fully handled and should not be sent as a prompt.
@@ -31,21 +63,9 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             _ => {}
         }
     }
-    match parsed.name {
-        "/dictate" => handle_dictate_submit(app, &parsed.args),
-        "/compact" => handle_compact_submit(app, &parsed.args),
-        "/diff" => handle_diff_submit(app, &parsed.args),
-        "/effort" => handle_effort_submit(app, &parsed.args),
-        "/launchpad" => handle_launchpad_submit(app, &parsed.args),
-        "/extensions" => handle_extensions_submit(app, &parsed.args),
-        "/gateway" => handle_gateway_submit(app, &parsed.args),
-        "/mode" => handle_mode_submit(app, &parsed.args),
-        "/model" => handle_model_submit(app, &parsed.args),
-        "/new" => handle_new_session_submit(app, &parsed.args),
-        "/resume" => handle_resume_submit(app, &parsed.args),
-        "/spinner" => handle_spinner_submit(app, &parsed.args),
-        "/usage" => handle_usage_submit(app, &parsed.args),
-        _ => handle_unknown_submit(app, parsed.name),
+    match HANDLERS.iter().find(|(name, _)| *name == parsed.name) {
+        Some((_, handler)) => handler(app, &parsed.args),
+        None => handle_unknown_submit(app, parsed.name),
     }
 }
 

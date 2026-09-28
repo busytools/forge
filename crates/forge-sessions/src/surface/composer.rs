@@ -1,11 +1,11 @@
-//! `slash_commands()`, `subagents()`, `file_index()`, `emoji()`: what
-//! the composer's four autocomplete triggers read.
+//! `slash_commands()`, `subagents()`, `forge_commands()`, `file_index()`,
+//! `emoji()`: what the composer's four autocomplete triggers read.
 //!
 //! Two of them are facts about a session - what the CLI advertised - so
-//! the core holds them and these verbs read through it. The other two
-//! have no session in them at all: the emoji table and the file walk are
-//! view-side data, so `forge-sessions` owns both and no view keeps a
-//! copy.
+//! the core holds them and these verbs read through it. The other three
+//! have no session in them at all: forge's own command table, the emoji
+//! table and the file walk are view-side data, so `forge-sessions` owns
+//! them and no view keeps a copy.
 //!
 //! The tests here read the two session facts through a fixture that
 //! writes the core's fields directly, so they pin the reads and not the
@@ -16,6 +16,7 @@ use std::path::Path;
 
 use forge_primitives::{AvailableAgent, AvailableCommand, SessionSlot};
 
+use crate::commands::ForgeCommand;
 use crate::emoji::{self, Emoji};
 use crate::file_index::FileIndex;
 use crate::surface::ViewSurface;
@@ -31,9 +32,11 @@ impl ViewSurface {
     /// frame.
     ///
     /// The wire carries the names bare, so the leading slash is added
-    /// here: a caller renders `name` as it comes back. Forge's own
-    /// commands are not in this list - a view that renders the `/`
-    /// dropdown needs those too, and they are still the TUI's (#1213).
+    /// here: a caller renders `name` as it comes back.
+    ///
+    /// Forge's own commands are not in this list. A view rendering the `/`
+    /// dropdown reads those from [`Self::forge_commands`], and a name in
+    /// both is forge's, which handles it rather than forwarding it.
     pub fn slash_commands(&self, slot: &SessionSlot) -> Vec<AvailableCommand> {
         self.workspace
             .available_commands_for(slot)
@@ -43,6 +46,18 @@ impl ViewSurface {
                 ..command
             })
             .collect()
+    }
+
+    /// forge's own commands, which a view offers beside the ones the CLI
+    /// advertises: a `/` dropdown is built from this table and
+    /// [`Self::slash_commands`] together, so the two views cannot show
+    /// different lists.
+    ///
+    /// A name here shadows the CLI's row for the same name
+    /// (`crate::commands::is_forge_command`), because forge handles it
+    /// rather than forwarding it.
+    pub fn forge_commands() -> &'static [ForgeCommand] {
+        crate::commands::FORGE_COMMANDS
     }
 
     /// The subagents the CLI last advertised for `slot`, retained by the

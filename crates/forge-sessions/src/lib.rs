@@ -1,14 +1,16 @@
 //! What a view needs and nothing about how it renders.
 //!
 //! Holds the read surface a view uses, the peer envelope parsing and the
-//! outbound peer calls, the tool family table, the transcript fold that
-//! turns a conversation's wire messages into the units a view draws, the
-//! policy that folds a run of blocks, and the two reads of a pty's own
-//! output: its escape sequences, and a Monitor's watched-command tail.
+//! outbound peer calls, the tool family table, forge's own slash
+//! commands, the transcript fold that turns a conversation's wire
+//! messages into the units a view draws, the policy that folds a run of
+//! blocks, and the two reads of a pty's own output: its escape
+//! sequences, and a Monitor's watched-command tail.
 //! The reducers that derive the TUI's session records are still in the
 //! TUI.
 
 pub mod ansi;
+pub mod commands;
 pub mod delivery;
 pub mod emoji;
 pub mod envelope;
