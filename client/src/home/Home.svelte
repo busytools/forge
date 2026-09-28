@@ -69,7 +69,9 @@
           <span class="counts">{countsOf(org)}</span>
         </h2>
         <ul class="list">
-          {#each org.projects as project (project.lead.slot.label + project.lead.name)}
+          <!-- Org-scoped: two orgs may declare a project of the same name, and
+               a key that collided would leave one of them unrendered. -->
+          {#each org.projects as project (`${project.lead.slot.org}/${project.lead.slot.project}`)}
             <li class="node">
               <Row row={project.lead} {now} refused={project.refused} />
               {#if project.workers.length > 0}

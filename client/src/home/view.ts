@@ -56,8 +56,6 @@ export interface Row {
   pending: 'question' | 'permission' | null;
   reason: string | null;
   lastActivity: WireTime | null;
-  /** `false` for a project nobody has started. */
-  started: boolean;
 }
 
 /** One org's projects, in the order `forge.toml` declares them. */
@@ -76,7 +74,6 @@ export interface Header {
 
 export interface HomeView {
   header: Header;
-  mark: string | null;
   band: BandCard[];
   orgs: OrgSection[];
 }
@@ -283,7 +280,6 @@ function rowOf(agent: AgentRow, name: string): Row {
     pending: agent.pending,
     reason: agent.reason,
     lastActivity: agent.last_activity,
-    started: true,
   };
 }
 
@@ -298,7 +294,6 @@ function dormantRow(project: ProjectView, lastRan: WireTime | null): Row {
     pending: null,
     reason: null,
     lastActivity: lastRan,
-    started: false,
   };
 }
 
@@ -351,7 +346,6 @@ export function homeView(wire: HomeWire, address: string): HomeView {
       installed: wire.cli_version?.installed ?? null,
       latest: wire.cli_version?.latest ?? null,
     },
-    mark: null,
     band: band(wire, address),
     orgs,
   };
