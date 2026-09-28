@@ -1,5 +1,6 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
+  import type { HomeWire } from '../wire/home';
   import type { ClientSettings } from '../wire/types';
   import { DEFAULT_ADDRESS, submitAttempt, type Attempt } from './attempt';
 
@@ -8,7 +9,11 @@
     onconnect,
   }: {
     settings: ClientSettings;
-    onconnect: (connected: { url: string; settings: ClientSettings }) => void;
+    onconnect: (connected: {
+      url: string;
+      settings: ClientSettings;
+      wire: HomeWire | null;
+    }) => void;
   } = $props();
 
   let address = $state(DEFAULT_ADDRESS);

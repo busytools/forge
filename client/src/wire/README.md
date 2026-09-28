@@ -1,7 +1,14 @@
 # The wire fixtures
 
-The server's own test fixtures, copied here so the pages type their props
-against the shapes the server actually sends.
+The server's own test fixtures, copied so the pages type their props against
+the shapes the server actually sends.
+
+**They live at `client/src/dev/fixtures/`, not beside this file.** The
+directory is `dev/` because the shipped app carries no fixture: the bytes are
+read by `dev/fixture.ts` behind a DEV guard and by `dev/fixture.data.ts` for
+tests, and `dev/fixture.test.ts` builds the app and fails if they reach the
+bundle. What is here is the record, the types they are read through, and the
+narrowing at the boundary.
 
 ## Where the copies came from
 

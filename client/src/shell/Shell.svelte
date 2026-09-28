@@ -2,6 +2,7 @@
   import Sprite from '../components/Sprite.svelte';
   import { hrefFor, parseRoute, type Route } from '../routes';
   import { applySettings } from '../theme';
+  import type { HomeWire } from '../wire/home';
   import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
   import Router from './Router.svelte';
 
@@ -15,6 +16,7 @@
   let route = $state<Route>(onDoor ? { name: 'connect' } : opened);
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
   let address = $state('');
+  let wire = $state<HomeWire | null>(null);
 
   if (onDoor) history.replaceState(null, '', hrefFor({ name: 'connect' }));
 
@@ -35,9 +37,10 @@
     history.pushState(null, '', hrefFor(next));
   }
 
-  function connect(connected: { url: string; settings: ClientSettings }) {
+  function connect(connected: { url: string; settings: ClientSettings; wire: HomeWire | null }) {
     settings = connected.settings;
     address = connected.url;
+    wire = connected.wire;
     go({ name: 'home' });
   }
 
@@ -74,4 +77,4 @@
 <!-- Once per page: a `<use>` reference resolves against the document it is in. -->
 <Sprite />
 
-<Router {route} {settings} {address} onconnect={connect} />
+<Router {route} {settings} {address} {wire} onconnect={connect} />

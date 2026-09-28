@@ -8,13 +8,21 @@
  * reason, whatever is underneath.
  */
 
+import { loadFixtureHome } from '../dev/fixture';
+import type { HomeWire } from '../wire/home';
 import { DEFAULT_SETTINGS, DEFAULT_WEB_PORT, type ClientSettings } from '../wire/types';
 
 /** The address the form opens on: the loopback port forge serves on. */
 export const DEFAULT_ADDRESS = `127.0.0.1:${DEFAULT_WEB_PORT}`;
 
 export type Attempt =
-  | { ok: true; url: string; settings: ClientSettings }
+  /**
+   * `wire` is the home snapshot the connection produced, and `null` in a
+   * production build: a real one arrives on the socket, which is the other
+   * half of this base. Nothing bundled stands in for it - the app's only
+   * input is the server URL.
+   */
+  | { ok: true; url: string; settings: ClientSettings; wire: HomeWire | null }
   /**
    * `address` is an address this app cannot use, and the reader can fix it.
    * `unreachable` is a well-formed address nothing answered on, where the
@@ -104,7 +112,7 @@ export async function attempt(
 export interface Submit {
   busy: boolean;
   failure: Extract<Attempt, { ok: false }> | null;
-  connected: { url: string; settings: ClientSettings } | null;
+  connected: { url: string; settings: ClientSettings; wire: HomeWire | null } | null;
 }
 
 /**
@@ -126,7 +134,11 @@ export async function submitAttempt(
 ): Promise<Submit> {
   const answer = await attempt(address, connect);
   return answer.ok
-    ? { busy: false, failure: null, connected: { url: answer.url, settings: answer.settings } }
+    ? {
+        busy: false,
+        failure: null,
+        connected: { url: answer.url, settings: answer.settings, wire: answer.wire },
+      }
     : { busy: false, failure: answer, connected: null };
 }
 
@@ -143,11 +155,15 @@ export async function submitAttempt(
  * It resolves rather than being `async`, because this body has nothing to
  * await and `require-await` is right to say so. The signature is the seam
  * all the same: Task 2's body awaits a socket here and changes no caller.
+ *
+ * The snapshot it carries is the fixture in a DEVELOPMENT build and `null`
+ * otherwise, which is what lets the home be looked at without a running
+ * forge while shipping nothing. `loadFixtureHome` is the DEV-guarded dynamic
+ * import, so a production build has no fixture to reach.
  */
-export function connectTo(input: string): Promise<Attempt> {
+export async function connectTo(input: string): Promise<Attempt> {
   const normalized = normalizeAddress(input);
-  if ('why' in normalized) {
-    return Promise.resolve({ ok: false, kind: 'address', why: normalized.why });
-  }
-  return Promise.resolve({ ok: true, url: normalized.url, settings: DEFAULT_SETTINGS });
+  if ('why' in normalized) return { ok: false, kind: 'address', why: normalized.why };
+  const wire = await loadFixtureHome();
+  return { ok: true, url: normalized.url, settings: DEFAULT_SETTINGS, wire };
 }

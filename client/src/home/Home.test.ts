@@ -2,10 +2,13 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
-import { homeWire, type HomeWire } from '../wire/home';
+import { homeWire } from '../dev/fixture.data';
+import type { HomeWire } from '../wire/home';
 import Home from './Home.svelte';
 
-const draw = (props: Record<string, unknown> = {}) => render(Home, { props }).body;
+/** `wire` is required of the component, so the fixture is the test's default. */
+const draw = (props: Record<string, unknown> = {}) =>
+  render(Home, { props: { wire: homeWire, ...props } }).body;
 
 const withCli = (installed: string | null, latest: string | null): HomeWire => ({
   ...homeWire,

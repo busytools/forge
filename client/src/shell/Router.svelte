@@ -1,26 +1,45 @@
 <script lang="ts">
   import Connect from '../connect/Connect.svelte';
+  import Fixture from '../dev/Fixture.svelte';
   import Home from '../home/Home.svelte';
   import type { Route } from '../routes';
+  import type { HomeWire } from '../wire/home';
   import type { ClientSettings } from '../wire/types';
 
   let {
     route,
     settings,
     address,
+    wire,
     onconnect,
   }: {
     route: Route;
     settings: ClientSettings;
     address: string;
-    onconnect: (connected: { url: string; settings: ClientSettings }) => void;
+    wire: HomeWire | null;
+    onconnect: (connected: {
+      url: string;
+      settings: ClientSettings;
+      wire: HomeWire | null;
+    }) => void;
   } = $props();
 </script>
 
 {#if route.name === 'connect'}
   <Connect {settings} {onconnect} />
 {:else if route.name === 'home'}
-  <Home {address} mark={settings.mark} />
+  {#if wire}
+    <Home {wire} {address} mark={settings.mark} />
+  {:else}
+    <!-- No server has answered, and the app's only input is its URL: the
+         connect screen stays rather than a page falling back to bundled
+         data. -->
+    <Connect {settings} {onconnect} />
+  {/if}
+{:else if route.name === 'fixture' && import.meta.env.DEV}
+  <!-- Behind the same guard as the loader: the connect screen stays the front
+       door in every build, and the route renders nothing without it. -->
+  <Fixture />
 {:else if route.name === 'session'}
   <!-- Task 5 draws the session page here, from `src/session/`. -->
   <div class="wrap"><p class="pending">The session page is next.</p></div>

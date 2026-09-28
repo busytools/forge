@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
 import { DEFAULT_MARK, DEFAULT_WEB_PORT, MARK_NAMES } from '../wire/types';
+import { homeWire } from '../dev/fixture.data';
 import { attempt, displayAddress, normalizeAddress, submitAttempt } from './attempt';
 
 describe('the address a person types', () => {
@@ -71,6 +72,9 @@ describe('one attempt', () => {
       ok: true,
       url: 'ws://box:8790/socket',
       settings: { mark: null, theme: null, font: null },
+      // The fixture answers in a test environment, which is a DEVELOPMENT
+      // build; a production one carries no snapshot until the socket lands.
+      wire: homeWire,
     });
   });
 });
@@ -107,6 +111,7 @@ describe('one submit, as the screen sees it', () => {
     expect(next.connected).toEqual({
       url: 'ws://box:8790/socket',
       settings: { mark: null, theme: null, font: null },
+      wire: homeWire,
     });
   });
 

@@ -13,6 +13,8 @@ export type Route =
   | { name: 'home' }
   | { name: 'session'; slot: SessionSlot }
   | { name: 'connect' }
+  /** A development route: the home drawn from the fixture, with no server. */
+  | { name: 'fixture' }
   | { name: 'notFound' };
 
 /** The route a path names. Anything the server does not serve is `notFound`. */
@@ -20,6 +22,7 @@ export function parseRoute(path: string): Route {
   const segments = path.split('/').filter((segment) => segment !== '');
   if (segments.length === 0) return { name: 'home' };
   if (segments.length === 1 && segments[0] === 'connect') return { name: 'connect' };
+  if (segments.length === 1 && segments[0] === 'fixture') return { name: 'fixture' };
   if (segments.length === 4 && segments[0] === 'session') {
     const [, org, project, label] = segments as [string, string, string, string];
     return {
@@ -37,6 +40,8 @@ export function hrefFor(route: Route): string {
       return '/';
     case 'connect':
       return '/connect';
+    case 'fixture':
+      return '/fixture';
     case 'session':
       return `/session/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}`;
     case 'notFound':

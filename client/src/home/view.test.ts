@@ -2,8 +2,9 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
+import { homeWire } from '../dev/fixture.data';
 import type { AgentRow, DictateModel, HomeWire, Lifecycle } from '../wire/home';
-import { homeFrom, homeWire } from '../wire/home';
+import { homeFrom } from '../wire/home';
 import {
   artifactLabel,
   availableVersion,

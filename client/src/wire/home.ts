@@ -6,7 +6,6 @@
  * store instead, that is the one binding that changes.
  */
 
-import fixture from './home.json';
 import type { SessionSlot } from './types';
 
 /** `SessionLifecycleState`, as the core's own enum serialises. */
@@ -207,25 +206,12 @@ export function homeFrom(data: HomeWire): HomeWire {
 }
 
 /**
- * The server's fixture, and the shapes above are checked against it: a field
- * the fixture does not carry is a compile error here rather than a runtime
- * `undefined` on a page.
+ * Where a snapshot enters the client: `homeFrom` narrows it, and the fixture
+ * that a test or the dev route hands it lives under `src/dev/`, which no
+ * shipped build reaches.
  *
- * The casts are `resolveJsonModule`'s - it widens a JSON string to `string`,
- * so a member typed as a union of literals cannot be narrowed from the file -
- * and `homeFrom` narrows each of those straight afterwards. Every OTHER field
- * is checked by the spread, which is the half that catches a fixture drifting
- * away from the types.
+ * The fixture's own casts are `resolveJsonModule`'s - it widens a JSON string
+ * to `string`, so a member typed as a union of literals cannot be narrowed
+ * from the file - and each is applied where that fixture is read, with a line
+ * saying so.
  */
-export const homeWire: HomeWire = homeFrom({
-  ...fixture,
-  agents: fixture.agents as AgentRow[],
-  accounts: { ...fixture.accounts, loading: fixture.accounts.loading as AccountLoadingRow[] },
-  dictate: {
-    ...fixture.dictate,
-    snapshot: {
-      ...fixture.dictate.snapshot,
-      models: fixture.dictate.snapshot.models as DictateModel[],
-    },
-  },
-});

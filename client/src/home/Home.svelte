@@ -2,20 +2,21 @@
   import Brand from '../components/Brand.svelte';
   import Card from '../components/Card.svelte';
   import Row from '../components/Row.svelte';
-  import { homeWire, type HomeWire } from '../wire/home';
+  import type { HomeWire } from '../wire/home';
   import { countsOf, homeView } from './view';
 
   /**
    * The home: every project, its agents, their states, and what needs you.
    *
-   * `wire` defaults to the server's own fixture while the socket is the other
-   * half of this base, and is the one binding a store replaces.
+   * `wire` is required and has no default, because the app's only input is
+   * the server URL: a page that fell back to bundled data when a server was
+   * absent is the failure the standard names.
    */
   let {
+    wire,
     address = '',
     mark = null,
-    wire = homeWire,
-  }: { address?: string; mark?: string | null; wire?: HomeWire } = $props();
+  }: { wire: HomeWire; address?: string; mark?: string | null } = $props();
 
   const view = $derived(homeView(wire, address));
   // One clock for the page: every row's `when` reads against the same now,
