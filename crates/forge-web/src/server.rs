@@ -92,7 +92,7 @@ pub async fn start(state: WebState) -> Result<Option<SocketAddr>, WebError> {
     // One folding subscription for the process, taken after the listener
     // is up and before anything can be served. It is a mirror: it takes no
     // backlog, so the view that renders prompts keeps the boot notice.
-    tokio::spawn(crate::stream::fold(state.surface.subscribe(), Arc::clone(&state)));
+    tokio::spawn(crate::stream::fold(state.surface.subscribe_mirror(), Arc::clone(&state)));
     let wiring = Wiring { bound, state };
     tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, router(wiring)).await {

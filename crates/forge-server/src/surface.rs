@@ -118,9 +118,25 @@ impl ViewSurface {
     /// after one already has inherits no backlog.
     ///
     /// A consumer that reads the stream and renders no prompt takes
-    /// `Workspace::subscribe_observer` instead.
+    /// [`Self::subscribe_mirror`] instead.
     pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
         self.workspace.subscribe()
+    }
+
+    /// The core's own update stream for a consumer that reads it WITHOUT
+    /// answering, and keeps no backlog.
+    ///
+    /// **The caller this exists for is a process-wide fold.** It folds into
+    /// state of its own and never replies, so the answering role would park
+    /// a permission, question or Slack draft waiting on an answer nobody
+    /// sends. And it attaches at boot, before the terminal does, so taking
+    /// the backlog would take the boot notice from the view that renders
+    /// prompts - the notice belongs to whichever subscription attaches
+    /// first, and a fold is not the view that draws it.
+    ///
+    /// A view with a dock to answer from takes [`Self::subscribe`].
+    pub fn subscribe_mirror(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+        self.workspace.subscribe_mirror()
     }
 
     /// The projects, their sessions, and the per-project lists the
@@ -279,6 +295,31 @@ mod tests {
         assert!(
             matches!(subscribed.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
             "a view attaching through this verb takes the stream whole, held notice included",
+        );
+    }
+
+    /// The other half of the pair, and the reason both verbs exist: a fold
+    /// attaching through the mirror takes no backlog, so the notice held
+    /// before anyone attached reaches the view that renders prompts instead
+    /// of being swallowed by whichever subscription happened to attach
+    /// first - which at boot is the fold, not the terminal.
+    ///
+    /// The fold also does not answer, so putting it on the answering verb
+    /// would park every prompt it draws waiting on a reply nobody sends.
+    #[tokio::test]
+    async fn a_surface_mirror_leaves_the_backlog_for_the_view_that_renders_prompts() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+
+        workspace.emit_for_test(SessionUpdate::CatalogLoaded);
+
+        let mut mirror = surface.subscribe_mirror();
+        assert!(mirror.try_recv().is_err(), "a fold attaching through the mirror takes no backlog");
+
+        let mut answering = workspace.subscribe();
+        assert!(
+            matches!(answering.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            "the held notice is still there for the subscriber that renders prompts",
         );
     }
 
