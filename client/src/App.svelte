@@ -1,1 +1,5 @@
-<h1>forge</h1>
+<script lang="ts">
+  import Shell from './shell/Shell.svelte';
+</script>
+
+<Shell />
