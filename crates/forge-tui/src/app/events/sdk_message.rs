@@ -89,8 +89,8 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::ThinkingTokens { estimated_tokens_delta, .. } => {
             handle_thinking_tokens(app, estimated_tokens_delta);
         }
-        Message::StopHookSummary { actions, hook_infos, .. } => {
-            handle_stop_hook_summary(app, actions, hook_infos);
+        Message::StopHookSummary { actions, hook_infos, parent_tool_use_id, .. } => {
+            handle_stop_hook_summary(app, actions, hook_infos, parent_tool_use_id.as_deref());
         }
         Message::CompactBoundary { trigger, pre_tokens, .. } => {
             handle_compact_boundary(app, &trigger, pre_tokens);
@@ -150,7 +150,13 @@ fn handle_stop_hook_summary(
     app: &mut App,
     actions: u32,
     hook_infos: Vec<forge_primitives::StopHookInfo>,
+    parent_tool_use_id: Option<&str>,
 ) {
+    // A dispatched agent's hook is not this turn's, the same rule its other
+    // frames are suppressed by.
+    if forge_sessions::transcript::names_a_dispatch(parent_tool_use_id) {
+        return;
+    }
     let Some(message_idx) = app.active_turn_assistant_idx() else {
         return;
     };
@@ -1866,7 +1872,7 @@ fn record_live_turn_usage(
     message: &forge_primitives::AssistantEnvelope,
     parent_tool_use_id: Option<&str>,
 ) {
-    if app.replay_in_progress || parent_tool_use_id.is_some() {
+    if app.replay_in_progress || forge_sessions::transcript::names_a_dispatch(parent_tool_use_id) {
         return;
     }
     let Some(usage) = message.usage else {
@@ -2627,6 +2633,39 @@ mod stamp_turn_info_tests {
             app.active_viewport_mut().expect("active session").oldest_stale_index(),
             Some(0),
             "the stamp must invalidate the layout itself, not lean on turn exit doing it",
+        );
+    }
+
+    /// A dispatched agent's hook summary is not this turn's. The chat
+    /// suppresses the agent's other frames, and its hook chip is the same
+    /// leak on the surface the terminal draws.
+    #[test]
+    fn a_dispatched_agents_hook_summary_does_not_bind_to_the_turn() {
+        let hook = |parent: Option<&str>| forge_primitives::Message::StopHookSummary {
+            actions: 2,
+            hook_infos: Vec::new(),
+            has_output: true,
+            level: "suggestion".to_owned(),
+            prevented_continuation: false,
+            stop_reason: String::new(),
+            tool_use_id: "toolu_hook".to_owned(),
+            parent_tool_use_id: parent.map(str::to_owned),
+            session_id: "s".to_owned(),
+            uuid: "hooks-1".to_owned(),
+        };
+
+        let mut app = app_with_assistant();
+        app.bind_active_turn_assistant_to_tail();
+        handle_sdk_message(&mut app, hook(Some("toolu_dispatch")));
+        assert!(
+            app.last_stop_hook_summary().is_none(),
+            "a dispatched agent's hook does not bind to the session's turn",
+        );
+
+        handle_sdk_message(&mut app, hook(None));
+        assert!(
+            app.last_stop_hook_summary().is_some_and(|summary| summary.actions == 2),
+            "and the session's own hook binds as it always did",
         );
     }
 }

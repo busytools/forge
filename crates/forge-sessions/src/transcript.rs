@@ -186,10 +186,19 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     // live row.
     let mut running_turn = false;
     for message in messages {
+        // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
+        if is_dispatched(message) {
+            continue;
+        }
         // What the turn's hooks did. A frame reporting none of them draws
         // nothing, which is the terminal's rule too.
         if let Message::StopHookSummary { actions, hook_infos, uuid, .. } = message {
             if *actions > 0 {
+                // The calls before it end here, as they do at any other
+                // unit: a hook frame lands at the end of a turn's work, and
+                // a chip above the calls it followed reads as out of order.
+                flush(&mut run, &mut units);
+                flush_peers(&mut peers, &mut units);
                 units.push(ChatUnit::Hooks {
                     key: uuid.clone(),
                     actions: *actions,
@@ -447,6 +456,25 @@ fn close_traced(
         units.push(ChatUnit::TurnReport { info: trace.report(), key });
     }
     *trace = TurnTrace::default();
+}
+
+/// Whether a `parent_tool_use_id` names the dispatch a frame ran under. Set
+/// and non-empty: the wire spells "no dispatch" as null, and the terminal
+/// reads the same field with the same guard for the frames it folds.
+pub fn names_a_dispatch(parent_tool_use_id: Option<&str>) -> bool {
+    parent_tool_use_id.is_some_and(|parent| !parent.trim().is_empty())
+}
+
+/// A frame a sub-agent produced. What it narrates and calls belongs to the
+/// SUBAGENTS surface, never to the session's own conversation.
+fn is_dispatched(message: &Message) -> bool {
+    let (Message::Assistant { parent_tool_use_id: parent, .. }
+    | Message::User { parent_tool_use_id: parent, .. }
+    | Message::StopHookSummary { parent_tool_use_id: parent, .. }) = message
+    else {
+        return false;
+    };
+    names_a_dispatch(parent.as_deref())
 }
 
 /// What names a settled row: the instant the turn's own first row carried,
@@ -1006,6 +1034,58 @@ mod tests {
         families.iter().enumerate().map(|(n, family)| tool_call_at(family, n)).collect()
     }
 
+    /// A turn's hook summary, as the wire sends it.
+    fn stop_hook(actions: u32) -> Message {
+        Message::StopHookSummary {
+            actions,
+            hook_infos: Vec::new(),
+            has_output: true,
+            level: "suggestion".to_owned(),
+            prevented_continuation: false,
+            stop_reason: String::new(),
+            tool_use_id: "toolu_hook".to_owned(),
+            parent_tool_use_id: None,
+            session_id: "session".to_owned(),
+            uuid: "hooks-1".to_owned(),
+        }
+    }
+
+    /// The hook chip is the page's own unit, and it obeys the rules the
+    /// terminal's chip does: it draws after the calls it followed, a frame
+    /// reporting no hooks draws nothing, and a dispatched agent's hooks are
+    /// not the session's.
+    #[test]
+    fn a_hook_frame_draws_after_the_run_it_followed() {
+        let units = render_units(&[tool_call_at("read", 1), stop_hook(2)]);
+        assert_eq!(units.len(), 2, "the chip is a unit of its own");
+        assert!(matches!(units[0], ChatUnit::ToolGroup { .. }), "after the calls it followed");
+        assert!(matches!(units[1], ChatUnit::Hooks { .. }), "with the chip last");
+
+        assert!(
+            render_units(&[stop_hook(0)]).is_empty(),
+            "a frame reporting no hooks draws nothing",
+        );
+        assert!(
+            render_units(&[dispatched(stop_hook(2))]).is_empty(),
+            "and a dispatched agent's hook is not the session's",
+        );
+    }
+
+    /// The same frame as it arrives from a sub-agent: the dispatch's own
+    /// tool-use id in `parent_tool_use_id`, which is how the wire names the
+    /// agent a frame belongs to.
+    fn dispatched(mut message: Message) -> Message {
+        match &mut message {
+            Message::Assistant { parent_tool_use_id, .. }
+            | Message::User { parent_tool_use_id, .. }
+            | Message::StopHookSummary { parent_tool_use_id, .. } => {
+                *parent_tool_use_id = Some("toolu_dispatch".to_owned());
+            }
+            other => panic!("no sub-agent produces a frame of this shape: {other:?}"),
+        }
+        message
+    }
+
     fn assistant_text(text: &str) -> Message {
         assistant(vec![ContentBlock::Text { text: text.to_owned() }])
     }
@@ -1425,6 +1505,70 @@ mod tests {
             panic!("a user turn");
         };
         assert_eq!(text, "and keep the multiSelect case too", "carrying what the user typed");
+    }
+
+    /// A sub-agent's frames are not the chat's. The terminal suppresses
+    /// them - `handle_assistant` drops a parented frame's text and thinking,
+    /// scoping its calls to the SUBAGENTS inspector - and the drawing says
+    /// the same in one line. The control rides in the same test: the same
+    /// three frames without a parent id ARE the conversation, so a fold
+    /// that dropped them all could not pass this.
+    #[test]
+    fn a_sub_agents_frames_are_not_the_chat() {
+        let prompt = user(vec![ContentBlock::Text { text: "run the tests".to_owned() }]);
+        let prose = assistant_text("the second one failed");
+        let call = tool_call("search");
+
+        let child: Vec<Message> =
+            [prompt.clone(), prose.clone(), call.clone()].into_iter().map(dispatched).collect();
+        assert!(
+            render_units(&child).is_empty(),
+            "a sub-agent's prompt, prose and calls draw nothing in the parent's chat",
+        );
+
+        let parent = [prompt, prose, call];
+        assert_eq!(
+            render_units(&parent).len(),
+            3,
+            "and the same three frames are the conversation when the agent is the session's own",
+        );
+
+        // An empty id names no dispatch, and the terminal reads the field
+        // the same way: a frame carrying one is the session's own.
+        let mut blank = assistant_text("the session's own line");
+        if let Message::Assistant { parent_tool_use_id, .. } = &mut blank {
+            *parent_tool_use_id = Some(String::new());
+        }
+        assert_eq!(render_units(&[blank]).len(), 1, "an empty id is not a dispatch");
+
+        // A parent that names nothing the session dispatched: the guard
+        // reads the field rather than looking the id up, and the wire has
+        // frames parented to a uuid with no dispatch behind it at all.
+        let mut stray = assistant_text("parented to something else");
+        if let Message::Assistant { parent_tool_use_id, .. } = &mut stray {
+            *parent_tool_use_id = Some("8f3c1d20-0a4b-4c6e-9d21-77e5a0b3c914".to_owned());
+        }
+        assert!(
+            render_units(&[stray]).is_empty(),
+            "a parent that names no dispatch still suppresses the frame",
+        );
+    }
+
+    /// A sub-agent works while its session's own turn does, so its calls
+    /// arrive inside a run of the main agent's. They must not join the
+    /// group: the header would count them and the families would list a
+    /// server the session never called.
+    #[test]
+    fn a_sub_agents_call_does_not_join_the_sessions_group() {
+        let interleaved =
+            [tool_call_at("read", 1), dispatched(tool_call("search")), tool_call_at("read", 2)];
+        let units = render_units(&interleaved);
+        assert_eq!(units.len(), 1, "the run is one group either way");
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        assert_eq!(families.len(), 1, "with the session's own family alone");
+        assert_eq!(families[0].calls.len(), 2, "and its own two calls under it");
     }
 
     /// Every call carries its own status, and the group summarises the

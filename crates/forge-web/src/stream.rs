@@ -27,8 +27,12 @@ use crate::unseen::Unseen;
 /// interactive state to preserve, so a wholesale swap is the whole answer.
 const FLEET_EVENT: &str = "fleet";
 
-/// The same, for the session page's own stream.
-const SESSION_EVENT: &str = "session";
+/// The same, for the session page's own stream. Two events on it: the
+/// columns' region, and the composer's. They are apart because a morph of
+/// the region that held the composer reaches the field the reader is typing
+/// into - measured, a draft left alone came back empty after two ticks.
+pub(crate) const SESSION_EVENT: &str = "session";
+pub(crate) const COMPOSER_EVENT: &str = "composer";
 
 /// The event that says the stream is over. The browser reconnects a
 /// stream that just ends, so the page closes this one when it hears it.
@@ -72,18 +76,16 @@ impl Live {
         LiveState { unseen: self.unseen.clone(), composer: self.composer.clone() }
     }
 
-    /// Fold one update in, answering whether the page has to be redrawn.
+    /// Fold one update in, answering what it asks of each page.
     ///
     /// The filter is what keeps a busy turn from re-sending the fleet for
-    /// every token of it: only the updates that can change what this page
-    /// draws redraw it.
-    pub fn apply(&mut self, update: &SessionUpdate) -> bool {
-        // The composer draws states the core announces once and keeps none
-        // of, so it folds everything. It does not force a redraw: the region
-        // this stream re-sends is the fleet's, and a take's twenty readings
-        // a second are not news about a row.
-        self.composer.apply(update);
-        match update {
+    /// every token of it: only the updates that can change what a page
+    /// draws redraw it. Two answers rather than one, because the pages are
+    /// different: a take's twenty readings a second are the composer's news
+    /// and not the fleet's, and the fleet's region carries no composer.
+    pub fn apply(&mut self, update: &SessionUpdate) -> Redraw {
+        let composer = self.composer.apply(update);
+        let fleet = match update {
             SessionUpdate::ChatAppended { key, msg } => match msg {
                 Message::Result { is_error, subtype, .. }
                     if is_success_result(*is_error, subtype) =>
@@ -134,11 +136,33 @@ impl Live {
             | SessionUpdate::TurnCancelled { .. }
             | SessionUpdate::PermissionRequest { .. }
             | SessionUpdate::QuestionRequest { .. }
+            // Answering moves the seat out of the rail's needs-you group and
+            // drops the inspector's pending row, so it redraws a row even
+            // though it is the composer that asked for it.
+            | SessionUpdate::PendingInteractionResolved { .. }
             | SessionUpdate::WorkerStatusChanged { .. } => true,
             // Everything else is the conversation, which this page does
             // not show.
             _ => false,
-        }
+        };
+        Redraw { fleet, composer }
+    }
+}
+
+/// What one update asks of the two pages that fold the stream: the fleet
+/// region, which draws rows and marks, and the composer, which draws a
+/// take, a prompt and a sign-in. An update can be news to one and not the
+/// other, so one answer cannot serve both.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Redraw {
+    pub fleet: bool,
+    pub composer: bool,
+}
+
+impl Redraw {
+    /// Whether either page has to be redrawn.
+    pub fn any(self) -> bool {
+        self.fleet || self.composer
     }
 }
 
@@ -209,12 +233,12 @@ fn session_updates(
             let mut conversation = conversation;
             let mut live = live;
             loop {
-                let redraw = tokio::select! {
+                let (columns, composer) = tokio::select! {
                     update = receiver.recv() => {
                         let update = update?;
                         // The rail and the inspector draw the fleet, so an
                         // update they redraw for redraws this page too.
-                        let fleet = Live::lock(&wiring.state.live).apply(&update);
+                        let asked = Live::lock(&wiring.state.live).apply(&update);
                         let replaced = replacement(&update, &slot);
                         let handed_over = replaced.is_some();
                         if let Some(history) = replaced {
@@ -232,30 +256,77 @@ fn session_updates(
                                 compacting = state;
                             }
                         }
-                        appended || fleet || handed_over
+                        // Two regions, two events, and an update can ask for
+                        // both: a prompt redraws the row that reports it and
+                        // the dock that answers it. They are apart because a
+                        // take's twenty readings a second are the composer's
+                        // news alone, and because a morph of the columns must
+                        // never reach the field being typed into.
+                        //
+                        // A row change redraws the box as well: what it draws
+                        // from the seat's own row - whether it is blocked,
+                        // whether it has a hint, whether a prompt waits -
+                        // changes with the row, and a blocked seat has no
+                        // field to type in, so no input event would come to
+                        // refresh it. A message does not: the box holds none
+                        // of the conversation, and pushing it would redraw the
+                        // field and the send control it earned from a draft
+                        // the server cannot see.
+                        let columns = appended || asked.fleet || handed_over;
+                        (columns, asked.composer || asked.fleet)
                     }
-                    _ = tick.tick() => true,
+                    // The tick redraws the box too. Nothing has been said,
+                    // so the seat may have gone away under a page drawing it
+                    // live, and a click would then reach a core holding no
+                    // session: the pushed box keeps the field and the
+                    // controls it earned, so the redraw costs the reader
+                    // nothing.
+                    _ = tick.tick() => (true, true),
                 };
-                if !redraw {
+                if !columns && !composer {
                     continue;
                 }
-                let region = crate::session::session_region(
-                    &wiring.state,
-                    wiring.bound,
-                    &slot,
-                    &conversation,
-                    Some(&live),
-                    compacting,
-                )
-                .await;
-                let event = Event::default().event(SESSION_EVENT).data(region.into_string());
+                let mut events: Vec<Result<Event, Infallible>> = Vec::new();
+                if columns {
+                    let region = crate::session::session_region(
+                        &wiring.state,
+                        wiring.bound,
+                        &slot,
+                        &conversation,
+                        Some(&live),
+                        compacting,
+                    )
+                    .await;
+                    events
+                        .push(Ok(Event::default().event(SESSION_EVENT).data(region.into_string())));
+                }
+                if composer {
+                    let home = crate::session::context(&wiring.state, wiring.bound);
+                    let roster = wiring.state.surface.roster();
+                    let agents = wiring.state.surface.agents();
+                    // A push is never the reader's own act, so the box keeps
+                    // whatever they have typed.
+                    let region = crate::composer::render(
+                        &home,
+                        &slot,
+                        &roster,
+                        &agents,
+                        "",
+                        crate::composer::Draft::Unknown,
+                    )
+                    .await;
+                    events.push(Ok(Event::default()
+                        .event(COMPOSER_EVENT)
+                        .data(region.into_string())));
+                }
                 return Some((
-                    Ok(event),
+                    stream::iter(events),
                     (receiver, wiring, slot, conversation, live, compacting, tick),
                 ));
             }
         },
     )
+    .flatten()
 }
 
 /// The conversation a replacement hands over, when it is this seat's.
@@ -387,8 +458,10 @@ fn region_events(
     stream::unfold((receiver, wiring, tick), |(mut receiver, wiring, mut tick)| async move {
         loop {
             let redraw = tokio::select! {
+                // The home's region draws rows and no composer, so a take's
+                // readings are not its news and do not re-send it.
                 update = receiver.recv() => {
-                    Live::lock(&wiring.state.live).apply(&update?)
+                    Live::lock(&wiring.state.live).apply(&update?).fleet
                 }
                 _ = tick.tick() => true,
             };
@@ -408,6 +481,43 @@ mod tests {
     use forge_sessions::SessionUpdate;
 
     use super::Live;
+
+    /// A dispatched agent's frame lands in the conversation the page holds,
+    /// and the fold draws nothing for it. Both halves matter: the chat is not
+    /// its surface, and the SUBAGENTS section reads the same slice, so a
+    /// filter at the stream would empty that section instead.
+    #[test]
+    fn a_dispatched_frame_reaches_the_conversation_and_draws_nothing() {
+        use super::append;
+
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let mut conversation: Vec<Message> = Vec::new();
+        let child = serde_json::from_value::<Message>(serde_json::json!({
+            "type": "assistant",
+            "session_id": "s",
+            "parent_tool_use_id": "toolu_dispatch",
+            "message": {
+                "id": "msg_child",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{"type": "text", "text": "a dispatched agent working"}],
+            },
+        }))
+        .expect("a parented frame");
+
+        let appended = append(
+            &SessionUpdate::ChatAppended { key: slot.clone(), msg: child },
+            &slot,
+            &mut conversation,
+        );
+
+        assert!(appended, "the frame is appended, not filtered at the stream");
+        assert_eq!(conversation.len(), 1, "and the conversation holds it");
+        assert!(
+            forge_sessions::transcript::render_units(&conversation).is_empty(),
+            "while the chat draws nothing for it",
+        );
+    }
 
     fn result_message(subtype: &str, is_error: bool) -> Message {
         serde_json::from_value(serde_json::json!({
@@ -448,7 +558,7 @@ mod tests {
         assert!(live.snapshot().unseen.is_unseen(&slot), "precondition: the turn armed it");
 
         assert!(
-            live.apply(&appended(&slot, session_state("running"))),
+            live.apply(&appended(&slot, session_state("running"))).fleet,
             "a turn starting redraws the page",
         );
         assert!(
@@ -509,20 +619,20 @@ mod tests {
         let mut live = Live::new();
 
         assert!(
-            !live.apply(&appended(&slot, result_message("error_during_execution", true))),
+            !live.apply(&appended(&slot, result_message("error_during_execution", true))).fleet,
             "a turn that failed is not a turn that finished",
         );
         assert!(!live.snapshot().unseen.is_unseen(&slot), "so nothing is unseen");
 
         assert!(
-            live.apply(&appended(&slot, result_message("success", false))),
+            live.apply(&appended(&slot, result_message("success", false))).fleet,
             "a finished turn redraws the page",
         );
         assert!(live.snapshot().unseen.is_unseen(&slot), "and leaves the diamond");
 
         let other = SessionSlot::lead("Org", "other");
         assert!(
-            live.apply(&appended(&other, result_message("success", false))),
+            live.apply(&appended(&other, result_message("success", false))).fleet,
             "a second slot's finish is the same kind of event",
         );
         let unseen = live.snapshot().unseen;
@@ -538,15 +648,17 @@ mod tests {
         let mut live = Live::new();
 
         assert!(
-            !live.apply(&SessionUpdate::ChatAppended {
-                key: slot,
-                msg: serde_json::from_value(serde_json::json!({
-                    "type": "user",
-                    "message": { "role": "user", "content": "hello" },
-                    "session_id": "s",
-                }))
-                .expect("parse a user message"),
-            }),
+            !live
+                .apply(&SessionUpdate::ChatAppended {
+                    key: slot,
+                    msg: serde_json::from_value(serde_json::json!({
+                        "type": "user",
+                        "message": { "role": "user", "content": "hello" },
+                        "session_id": "s",
+                    }))
+                    .expect("parse a user message"),
+                })
+                .any(),
             "a chat message is not something this page draws",
         );
     }
@@ -554,24 +666,21 @@ mod tests {
     /// A take's readings are the composer's news, not the fleet's. The
     /// region this stream re-sends draws rows, so redrawing it for every
     /// level would rebuild the whole page twenty times a second while a
-    /// take runs. Catches the composer's fold forcing the fleet's redraw.
+    /// take runs - and a composer still has to redraw for them, or the meter
+    /// never moves. Catches either answer being taken for the other.
     #[test]
-    fn a_takes_readings_do_not_redraw_the_fleet() {
+    fn a_takes_readings_redraw_the_composer_and_not_the_fleet() {
         let slot = SessionSlot::lead("Org", "forge");
         let mut live = Live::new();
 
-        assert!(
-            !live.apply(&SessionUpdate::DictateStarted {
-                key: slot.clone(),
-                floor_db: -50.0,
-                generation: 1,
-            }),
-            "a take starting is not a row changing",
-        );
-        assert!(
-            !live.apply(&SessionUpdate::DictateLevel { key: slot, peak_db: -20.0 }),
-            "nor is a level reading",
-        );
+        for update in [
+            SessionUpdate::DictateStarted { key: slot.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateLevel { key: slot.clone(), peak_db: -20.0 },
+        ] {
+            let redraw = live.apply(&update);
+            assert!(!redraw.fleet, "{update:?} is not a row changing");
+            assert!(redraw.composer, "{update:?} is the composer's to draw");
+        }
     }
 
     /// The updates that land after the listener binds, and that a page
@@ -587,7 +696,7 @@ mod tests {
             SessionUpdate::DictateAvailability,
             SessionUpdate::CliVersionChanged,
         ] {
-            assert!(live.apply(&update), "{update:?} is exactly a render wake-up");
+            assert!(live.apply(&update).fleet, "{update:?} is exactly a render wake-up");
         }
     }
 }

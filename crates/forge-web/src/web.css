@@ -337,16 +337,20 @@ details[open] > summary .arw { transform: rotate(90deg); }
 }
 /* Placed rather than auto-flowed: a collapsed pane leaves its column empty,
    and auto-flowing the rest along moves the conversation into the rail's
-   column and blanks the page. */
-.app > .rail.left { grid-column: 1; }
-.app > main.chat { grid-column: 2; }
-.app > .rail.right { grid-column: 3; }
-/* checked is COLLAPSED. The boxes sit beside the swapped region rather than
-   inside it, so the rules reach through it to the app they size. */
-#l:checked ~ #session-body .app { --rail-l: 0px; }
-#r:checked ~ #session-body .app { --rail-r: 0px; }
-#l:checked ~ #session-body .app .rail.left,
-#r:checked ~ #session-body .app .rail.right { display: none; }
+   column and blanks the page. A descendant, not a child: the page puts a
+   contents wrapper between the app and these three, and a child hop over it
+   matches nothing. */
+.app .rail.left { grid-column: 1; }
+.app main.chat { grid-column: 2; }
+.app .rail.right { grid-column: 3; }
+/* checked is COLLAPSED. The boxes are siblings of the app, not of anything
+   inside it, so the rules reach it in one hop - and the selector names the
+   app rather than the region, because a region the stream replaces is one
+   the rules would stop matching the moment it did. */
+#l:checked ~ .app { --rail-l: 0px; }
+#r:checked ~ .app { --rail-r: 0px; }
+#l:checked ~ .app .rail.left,
+#r:checked ~ .app .rail.right { display: none; }
 .pane-tog { display: flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
   color: var(--muted); border: 1px solid transparent; }
@@ -355,8 +359,8 @@ details[open] > summary .arw { transform: rotate(90deg); }
 /* Both handles sit with the title on a phone; on a wide screen the
    inspector's goes to the far right, past the facts. */
 .sess .tog-r { order: 99; }
-#l:checked ~ #session-body .app .pane-tog.tog-l,
-#r:checked ~ #session-body .app .pane-tog.tog-r {
+#l:checked ~ .app .pane-tog.tog-l,
+#r:checked ~ .app .pane-tog.tog-r {
   color: var(--accent); background: rgba(244,118,0,.1); border-color: rgba(244,118,0,.3); }
 
 .rail { display: flex; flex-direction: column; overflow: hidden; border-radius: 16px;
@@ -524,14 +528,18 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 @media (max-width: 1280px) {
   .app { grid-template-columns: var(--rail-l) minmax(0,1fr); }
   .rail.right { display: none; }
-  #r:checked ~ #session-body .app .rail.right {
+  #r:checked ~ .app .rail.right {
     display: flex; position: fixed; inset: 0; z-index: 40; border-radius: 0;
   }
 }
 
 @media (max-width: 980px) {
   .app { grid-template-columns: minmax(0,1fr); }
-  .app > main.chat { grid-column: 1; }
+  /* One column, so the chat goes back to the first. Named through the app,
+     or the placement rule's own grid-column wins and the chat lands in an
+     implicit second column that takes the width, leaving the composer -
+     which is on column one - zero pixels wide. */
+  .app main.chat { grid-column: 1; }
   .sess { flex-wrap: wrap; gap: 8px; }
   .sess .facts { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
   /* Wrapped, the dots between the facts are noise rather than separators. */
@@ -539,10 +547,10 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   .sess .tog-r { order: 0; }
   .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
   .rail.left, .rail.right { display: none; }
-  #l:checked ~ #session-body .app .rail.left { display: flex; }
-  #r:checked ~ #session-body .app .rail.right { display: flex; }
-  #l:checked ~ #session-body .app,
-  #r:checked ~ #session-body .app { --rail-l: 0px; --rail-r: 0px; }
+  #l:checked ~ .app .rail.left { display: flex; }
+  #r:checked ~ .app .rail.right { display: flex; }
+  #l:checked ~ .app,
+  #r:checked ~ .app { --rail-l: 0px; --rail-r: 0px; }
 }
 
 /* ---------- narrow: a phone is a client too ---------- */
@@ -804,17 +812,15 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .line .txt::placeholder { color: var(--dim); font-style: italic; }
 .send { color: var(--accent); padding-top: 3px; background: none; border: 0;
   cursor: pointer; display: flex; }
-.send[disabled] { cursor: default; opacity: .45; }
 .foot { display: flex; align-items: center; gap: 10px; padding-left: 25px;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 .foot .mic { margin-left: auto; background: none; border: 0; padding: 0;
   color: currentColor; display: flex; cursor: pointer; }
-.foot .mic[disabled] { cursor: default; opacity: .45; }
 
-/* The line the composer puts where the mockup puts key hints: every control
-   it names needs the write half of the view surface, so the box, the list
-   and the dock each say what cannot be done rather than advertising a key
-   that nothing reads. */
+/* The line a composer puts where the mockup puts key hints. The box's names
+   the keys it honours; the list's says the one thing it cannot do, because
+   choosing a row needs the page's own key handling rather than a command
+   the core carries. */
 .keys { display: flex; gap: 14px; font-family: var(--mono);
   font-size: var(--fs-label); color: var(--dim); }
 .ac .keys { padding: 7px 13px; border-top: 1px solid var(--line); }
@@ -834,7 +840,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .dict .lbl { color: var(--dim); }
 .dict .esc { margin-left: auto; color: var(--dim); background: none; border: 0;
   font-family: inherit; font-size: inherit; padding: 0; cursor: pointer; }
-.dict .esc[disabled] { cursor: default; opacity: .45; }
 /* The meter is a history of levels, not bars pulsing in place: each cell is
    one past sample, and the track is pinned right so the newest reading is
    always at the right edge and the history flows off the left one. */
@@ -847,6 +852,12 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .wave.tr .wtr i { background: #26354a; }
 .wave.tr .wtr i.mid { background: #2f486d; }
 .wave.tr .wtr i.hot { background: #365582; }
+
+/* The field the dock and the blocked box carry so the browser keeps the
+   reader's text, which neither of them draws. Its own styles come from the
+   box it goes back into, because a preserved node is the one the browser
+   already had. */
+.dock #draft, .blocked #draft { display: none; }
 
 /* A notice shares the row with the take and wins it. */
 .notice { font-family: var(--mono); font-size: var(--fs-data); padding-left: 25px; }
@@ -892,6 +903,17 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .ac .it .p em { font-style: normal; color: var(--accent); }
 .ac .it .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The page puts the composer beside the region its stream swaps rather
+   than inside it, so a morph of the columns cannot reach the field being
+   typed into. Both wrappers dissolve, so the composer is still a grid item
+   of the app and still sits under the chat column. */
+#session-body, #composer-slot { display: contents; }
+.app { grid-template-rows: minmax(0, 1fr) auto; }
+.composer { grid-column: 2; grid-row: 2; }
+@media (max-width: 980px) {
+  .composer { grid-column: 1; }
+}
+
 .ac .it.sel { background: rgba(244,118,0,.09); }
 .ac .it.sel .p { color: var(--text); }
 /* The marker says a key would take this row, and no key can: it is drawn
@@ -925,18 +947,11 @@ details.msg[open] > summary .arw { color: var(--teal); }
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
 .opt.sel { background: rgba(244,118,0,.1); }
 .opt.sel .lbl { color: var(--text); font-weight: 600; }
-/* An option whose control cannot answer does not keep the styling of one
-   that can: the selected row's emphasis goes with the choice it advertises. */
-.opt.off .cur { color: var(--dim); }
-.opt.off .lbl, .opt.off.sel .lbl { color: var(--dim); font-weight: 400; }
-.opt .lbl[disabled] { cursor: default; }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
   border: 1.5px solid var(--line); display: grid; place-items: center; }
 .dock .notes { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
   padding: 7px 11px; font-family: inherit; font-size: var(--fs-base); color: var(--text);
   background: rgba(13,17,26,.6); resize: none; }
-.dock .notes[disabled] { color: var(--dim); }
-.opt.off .ic { opacity: .6; }
 
 @media (prefers-reduced-motion: reduce) {
   .dict .dot, .blocked .ring { animation: none; }

@@ -51,7 +51,7 @@ use serde_json::Value;
 use crate::home::{Home, Row, Seed, State};
 use crate::icons;
 use crate::server::WebState;
-use crate::stream::Live;
+use crate::stream::{COMPOSER_EVENT, Live, SESSION_EVENT};
 use crate::work::WorkState;
 
 /// The handle that brings the projects rail back, and the one that brings
@@ -232,7 +232,12 @@ pub(crate) fn apply_to_live_turn(msg: &Message, live: &mut LiveTurn) {
             let delta = u64::try_from(*estimated_tokens_delta).unwrap_or(0);
             live.thinking_tokens = Some(live.thinking_tokens.unwrap_or(0).saturating_add(delta));
         }
-        Message::Assistant { message: envelope, .. } => {
+        Message::Assistant { message: envelope, parent_tool_use_id, .. } => {
+            // A dispatched agent's usage is not this turn's, which is the
+            // fold's own rule for the frames it draws.
+            if transcript::names_a_dispatch(parent_tool_use_id.as_deref()) {
+                return;
+            }
             if let Some(usage) = &envelope.usage {
                 live.record(envelope.id.clone(), live_usage(usage));
             }
@@ -293,10 +298,33 @@ async fn shell(
             // the swap replaced would take every one of them with it.
             body hx-ext="sse, morph" sse-connect=(events_path(slot)) sse-close="close" {
                 (icons::sprite())
-                div #live sse-swap="session" hx-swap="morph:outerHTML" hx-target="#session-body" {
+                // Two listeners on one connection, each on a wrapper its own
+                // event never replaces: htmx re-processes what it swaps in,
+                // so a listener on the region itself would register another
+                // per event. The pane boxes sit inside the wrapper and
+                // outside the region, which is the only place a swap leaves
+                // their state alone.
+                div #live sse-swap=(SESSION_EVENT) hx-swap="morph:outerHTML"
+                    hx-target="#session-body" {
                     input type="checkbox" id="l" hidden;
                     input type="checkbox" id="r" hidden;
-                    (columns(home, slot, messages, live_turn, compacting, roster, agents).await)
+                    div .app {
+                        (columns(home, slot, messages, live_turn, compacting, roster, agents).await)
+                        div #composer-slot sse-swap=(COMPOSER_EVENT) hx-swap="morph:outerHTML"
+                            hx-target="#comp" {
+                            div .composer {
+                                (crate::composer::render(
+                                    home,
+                                    slot,
+                                    roster,
+                                    agents,
+                                    "",
+                                    crate::composer::Draft::Known,
+                                )
+                                .await)
+                            }
+                        }
+                    }
                 }
                 script src="/vendor/htmx.js" {}
                 script src="/vendor/htmx-sse.js" {}
@@ -324,9 +352,9 @@ pub(crate) async fn session_region(
     columns(&home, slot, conversation, live_turn, compacting, &roster, &agents).await
 }
 
-/// The seat a route names, when the roster holds it. A project's own lead
-/// seat exists whether or not it has ever run; a worker's exists only while
-/// the roster can name it.
+/// The seat a route names, when the roster holds it. A caller that has
+/// already walked the core for its own render passes the two walks in
+/// through [`resolve`] instead, so one page walks once.
 pub(crate) fn seat(
     surface: &ViewSurface,
     org: &str,
@@ -335,13 +363,7 @@ pub(crate) fn seat(
 ) -> Option<SessionSlot> {
     let roster = surface.roster();
     let agents = surface.agents();
-    let found = roster.projects.iter().find(|seat| seat.org == org && seat.name == project)?;
-    if label == "lead" {
-        return Some(SessionSlot::lead(org, project));
-    }
-    let named = agents.for_project(&found.key).iter().any(|row| row.label == label)
-        || surface.workers().for_project(&found.key).iter().any(|row| row.label == label);
-    named.then(|| SessionSlot::worker(org, project, label))
+    resolve(surface, &roster, &agents, org, project, label)
 }
 
 /// The page's three columns, which the first render and every swap both
@@ -391,7 +413,6 @@ async fn columns(
 
     html! {
     div #session-body {
-        div .app {
                 aside .rail .left {
                     div .banner {
                         span .t { "projects" }
@@ -427,11 +448,9 @@ async fn columns(
                             tail.as_ref(),
                         ))
                     }
-                    div .composer {
-                        (crate::composer::render(home, slot, roster, agents, "").await)
-                    }
                 }
                 aside .rail .right {
+
                     div .banner {
                         span .t { "inspector" }
                         span .n .ml { (slot.project()) }
@@ -439,8 +458,7 @@ async fn columns(
                     }
                     div .scroll { (inspector(home, roster, slot, messages).await) }
                 }
-            }
-        }
+    }
     }
 }
 
@@ -2417,5 +2435,44 @@ mod tests {
             None,
             "a scan that ran and found nothing is not a failure",
         );
+    }
+
+    /// A sub-agent's turn is not this turn. Its frames arrive while the
+    /// session's own turn is in flight, and the terminal leaves them out of
+    /// the running tally entirely - the row would otherwise bill the
+    /// session's turn for every agent it dispatched.
+    #[test]
+    fn a_sub_agents_usage_is_not_the_turns() {
+        let mut live = LiveTurn::default();
+        apply_to_live_turn(&assistant_frame("msg_child", Some("toolu_dispatch")), &mut live);
+        assert!(
+            live.totals().is_none(),
+            "a dispatched agent's frame leaves the turn with nothing to report",
+        );
+
+        apply_to_live_turn(&assistant_frame("msg_own", None), &mut live);
+        assert_eq!(
+            live.totals().map(|usage| usage.input_tokens),
+            Some(7),
+            "and the session's own frame is the one that counts",
+        );
+    }
+
+    /// One assistant frame as the wire sends it, with the input-side usage
+    /// the turn row counts.
+    fn assistant_frame(id: &str, parent: Option<&str>) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "session_id": "s",
+            "parent_tool_use_id": parent,
+            "message": {
+                "id": id,
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{"type": "text", "text": "working"}],
+                "usage": {"input_tokens": 7, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+            },
+        }))
+        .expect("an assistant frame")
     }
 }
