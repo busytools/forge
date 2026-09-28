@@ -514,6 +514,7 @@ pub(crate) fn load_history_messages(
             let kind = match m.kind {
                 forge_primitives::SessionMessageKind::User => "user",
                 forge_primitives::SessionMessageKind::Assistant => "assistant",
+                forge_primitives::SessionMessageKind::System => "system",
             };
             serde_json::json!({
                 "type": kind,
@@ -531,7 +532,8 @@ pub(crate) fn load_history_messages(
     for msg in &mut synthesized {
         match msg {
             forge_primitives::Message::Assistant { session_id: s, .. }
-            | forge_primitives::Message::User { session_id: s, .. } => {
+            | forge_primitives::Message::User { session_id: s, .. }
+            | forge_primitives::Message::StopHookSummary { session_id: s, .. } => {
                 session_id.clone_into(s);
             }
             _ => {}
@@ -2260,6 +2262,50 @@ mod tests {
             })
             .collect();
         assert_eq!(stamped, [session_id, session_id], "and every message carries its own id");
+    }
+
+    /// A turn's hooks are on disk as a `system/stop_hook_summary` row and
+    /// nowhere else, so a page that opens the conversation fresh had no
+    /// line saying the turn ran any. The whole read carries it: the scan
+    /// keeps the row and the synthesizer decodes it into the frame the
+    /// fold draws.
+    #[test]
+    fn session_history_carries_a_turns_hook_summary() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let session_id = "3f6a2b91-8c4d-4e02-9a17-5b7c0d3e6f84";
+        // The row's own id differs from the one asked for, so the caller's
+        // stamp is what puts `session_id` on the frame: with the row's own
+        // id here the stamp could be deleted and the assertion would not
+        // notice.
+        let row_session = "9e7c4d51-6a38-42f0-b1c7-3d5e8a2f64b9";
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let turn = "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_01\",\"role\":\"assistant\",\"model\":\"claude-opus-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n";
+        let hooks = format!(
+            "{{\"type\":\"system\",\"subtype\":\"stop_hook_summary\",\"hookCount\":1,\
+             \"hookInfos\":[{{\"command\":\"just fmt\",\"durationMs\":1400}}],\
+             \"hasOutput\":false,\"level\":\"suggestion\",\"preventedContinuation\":false,\
+             \"stopReason\":\"\",\"toolUseID\":\"toolu_hook\",\"uuid\":\"h1\",\
+             \"sessionId\":\"{row_session}\"}}\n"
+        );
+        let jsonl = format!("{turn}{hooks}");
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
+
+        let read = crate::session_history(config_dir.path(), session_id, "");
+
+        assert_eq!(read.messages.len(), 2, "the turn and its hook row both read back");
+        let forge_primitives::Message::StopHookSummary {
+            actions,
+            hook_infos,
+            session_id: stamped,
+            ..
+        } = &read.messages[1]
+        else {
+            panic!("the hook row arrives as the frame the fold draws: {:?}", read.messages);
+        };
+        assert_eq!(*actions, 1, "carrying what the turn's hooks did");
+        assert_eq!(hook_infos[0].command, "just fmt", "and each one that ran");
+        assert_eq!(stamped, session_id, "stamped with the session it was read for");
     }
 
     /// A slot with no transcript yet reads as empty, and does not fall

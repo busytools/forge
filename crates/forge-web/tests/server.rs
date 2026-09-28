@@ -2184,6 +2184,100 @@ async fn a_turns_hooks_are_drawn_as_the_chip() {
     assert!(region.contains("just check \u{b7} 1m 02s"), "with how long it took: {region}");
 }
 
+/// The same row, on a page nobody watched arrive. A turn's hooks are on disk
+/// as a `system/stop_hook_summary` row and the read dropped every `system`
+/// row, so the chip was a surface that existed only while the page was
+/// live. A fresh load has the identical row and draws it.
+#[tokio::test]
+async fn a_turns_hooks_draw_on_a_fresh_load() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"the layout pass is in"}]}}"#,
+                r#"{"type":"system","subtype":"stop_hook_summary","hookCount":2,"hookInfos":[{"command":"just fmt","durationMs":1400},{"command":"just check","durationMs":62000}],"hookErrors":[],"hasOutput":true,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"toolu_hook","uuid":"hooks-1","sessionId":"s"}"#,
+                r#"{"type":"assistant","message":{"id":"m2","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"the sweep is done"}]}}"#,
+                r#"{"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[{"command":"just tidy","durationMs":300}],"hookErrors":[],"hasOutput":true,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"toolu_hook2","uuid":"hooks-2","sessionId":"s"}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains("the layout pass is in"), "the turn the hooks belong to draws: {page}");
+    assert!(
+        page.matches("class=\"hooks\"").count() == 2,
+        "one chip per turn whose hooks ran, which is what the mockup draws: {page}",
+    );
+    assert!(
+        page.contains("hook summary \u{b7} 2 actions"),
+        "with the count the row carries: {page}",
+    );
+    assert!(page.contains("just fmt \u{b7} 1.4s"), "and what each one ran: {page}");
+    assert!(page.contains("hook summary \u{b7} 1 action"), "or its singular: {page}");
+    assert!(page.contains("just tidy \u{b7} 0.3s"), "for the turn after it: {page}");
+}
+
+/// A sub-agent's frames reach this page's stream, and the chat draws none of
+/// them. The drawing says the SUBAGENTS section is the only surface an agent
+/// has, the terminal suppresses the same frames, and the inspector's note on
+/// this very page repeats it. The session's own line rides in the same
+/// region as the control, so a chat that drew nothing at all would not pass.
+#[tokio::test]
+async fn the_chat_draws_none_of_a_sub_agents_frames() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    let key = SessionSlot::lead("Busytools", "forge");
+    for (text, parent) in [
+        ("a dispatched agent thinking out loud", Some("toolu_dispatch")),
+        ("the session's own line", None),
+    ] {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: key.clone(),
+            msg: assistant_saying(text, parent),
+        });
+    }
+    let region = nth_session_event(stream, 3).await.expect("the region after both frames");
+
+    assert!(region.contains("the session's own line"), "the session's own prose draws: {region}");
+    assert!(
+        !region.contains("a dispatched agent thinking out loud"),
+        "and a dispatched agent's does not: {region}",
+    );
+}
+
+/// One assistant frame with a line of its own, as the wire sends it.
+/// `parent` is the dispatch's tool-use id, which is what makes the frame a
+/// sub-agent's.
+fn assistant_saying(text: &str, parent: Option<&str>) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "assistant",
+        "session_id": "s",
+        "parent_tool_use_id": parent,
+        "message": {
+            "id": format!("msg-{}", parent.unwrap_or("own")),
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [{"type": "text", "text": text}],
+        },
+    }))
+    .expect("an assistant frame")
+}
+
 /// A compaction in flight says so, from the session's own status frame, and
 /// stops saying so when the frame says it ended.
 #[tokio::test]

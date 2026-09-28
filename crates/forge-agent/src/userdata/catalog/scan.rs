@@ -151,13 +151,31 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
                 compaction_count = compaction_count.saturating_add(1);
                 continue;
             }
+            // What the turn's hooks did. A system row is the frame the wire
+            // sends, so it is kept whole; the one field the frame's decoder
+            // spells differently is the session.
+            Some("system")
+                if value.get("subtype").and_then(Value::as_str) == Some("stop_hook_summary") =>
+            {
+                let mut frame = value.clone();
+                if let Some(record) = frame.as_object_mut() {
+                    record.insert("session_id".into(), Value::String(session_in_row(&value)));
+                }
+                (SessionMessageKind::System, Some(frame))
+            }
             _ => continue,
         };
-        if value.get("parent_tool_use_id").is_some_and(|v| !v.is_null()) {
+        // The same rule the fold reads a frame by: a parent id that names a
+        // dispatch, which on the wire is never empty and never null.
+        if value
+            .get("parent_tool_use_id")
+            .and_then(Value::as_str)
+            .is_some_and(|parent| !parent.trim().is_empty())
+        {
             continue;
         }
         let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default().to_string();
-        let sess = value.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
+        let sess = session_in_row(&value);
         let timestamp = value.get("timestamp").and_then(Value::as_str).map(str::to_owned);
         out.push(SessionMessage {
             kind,
@@ -170,6 +188,17 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
         });
     }
     SessionHistory { messages: out, compaction_count }
+}
+
+/// The session a transcript row belongs to. The wire spells it
+/// `session_id`; a row the CLI wrote spells it `sessionId`.
+fn session_in_row(value: &Value) -> String {
+    value
+        .get("session_id")
+        .or_else(|| value.get("sessionId"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Build a `{"role":"user","content":[{queued_command}]}` envelope from
@@ -1171,6 +1200,42 @@ mod tests {
         let jsonl = r#"{"type":"user","message":{"role":"user","content":"one"},"uuid":"u1","session_id":"s1"}
 "#;
         assert_eq!(parse_session_messages(jsonl.as_bytes()).compaction_count, 0);
+    }
+
+    /// A turn's hooks are durable only as a `system/stop_hook_summary` row,
+    /// and the scan dropped every `system` row that was not a compaction
+    /// boundary, so a view opening the page fresh had nothing to draw the
+    /// hook row from. The row is carried in the shape the wire sends, so the
+    /// same decoder turns it into the frame the fold reads.
+    #[test]
+    fn parse_session_messages_keeps_a_stop_hook_summary() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"one"},"uuid":"u1","session_id":"s1"}
+{"type":"system","subtype":"stop_hook_summary","hookCount":2,"hookInfos":[{"command":"just fmt","durationMs":1400},{"command":"just check","durationMs":62000}],"hookErrors":[],"hasOutput":true,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"toolu_hook","timestamp":"2026-09-04T00:57:38.264Z","uuid":"h1","sessionId":"s1","cwd":"/proj"}
+{"type":"system","subtype":"other_thing","uuid":"x1","session_id":"s1"}
+"#;
+        let history = parse_session_messages(jsonl.as_bytes());
+
+        assert_eq!(history.messages.len(), 2, "the hook row joins the turn, and nothing else does");
+        assert!(
+            matches!(history.messages[1].kind, SessionMessageKind::System),
+            "kept as the system row it is",
+        );
+        assert_eq!(
+            history.messages[1].uuid, "h1",
+            "under its own id, which is what a view keys on"
+        );
+        assert_eq!(history.messages[1].timestamp.as_deref(), Some("2026-09-04T00:57:38.264Z"));
+
+        let frame: forge_primitives::Message =
+            serde_json::from_value(history.messages[1].message.clone())
+                .expect("the kept row decodes as the frame the wire sends");
+        let forge_primitives::Message::StopHookSummary { actions, hook_infos, .. } = frame else {
+            panic!("a hook summary");
+        };
+        assert_eq!(actions, 2, "carrying the count the row reports");
+        assert_eq!(hook_infos.len(), 2, "and one entry per hook behind it");
+        assert_eq!(hook_infos[0].command, "just fmt", "each naming what it ran");
+        assert_eq!(hook_infos[1].duration_ms, Some(62000), "and how long it took");
     }
 
     #[test]

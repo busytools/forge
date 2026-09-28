@@ -232,7 +232,12 @@ pub(crate) fn apply_to_live_turn(msg: &Message, live: &mut LiveTurn) {
             let delta = u64::try_from(*estimated_tokens_delta).unwrap_or(0);
             live.thinking_tokens = Some(live.thinking_tokens.unwrap_or(0).saturating_add(delta));
         }
-        Message::Assistant { message: envelope, .. } => {
+        Message::Assistant { message: envelope, parent_tool_use_id, .. } => {
+            // A dispatched agent's usage is not this turn's, which is the
+            // fold's own rule for the frames it draws.
+            if transcript::names_a_dispatch(parent_tool_use_id.as_deref()) {
+                return;
+            }
             if let Some(usage) = &envelope.usage {
                 live.record(envelope.id.clone(), live_usage(usage));
             }
@@ -2417,5 +2422,44 @@ mod tests {
             None,
             "a scan that ran and found nothing is not a failure",
         );
+    }
+
+    /// A sub-agent's turn is not this turn. Its frames arrive while the
+    /// session's own turn is in flight, and the terminal leaves them out of
+    /// the running tally entirely - the row would otherwise bill the
+    /// session's turn for every agent it dispatched.
+    #[test]
+    fn a_sub_agents_usage_is_not_the_turns() {
+        let mut live = LiveTurn::default();
+        apply_to_live_turn(&assistant_frame("msg_child", Some("toolu_dispatch")), &mut live);
+        assert!(
+            live.totals().is_none(),
+            "a dispatched agent's frame leaves the turn with nothing to report",
+        );
+
+        apply_to_live_turn(&assistant_frame("msg_own", None), &mut live);
+        assert_eq!(
+            live.totals().map(|usage| usage.input_tokens),
+            Some(7),
+            "and the session's own frame is the one that counts",
+        );
+    }
+
+    /// One assistant frame as the wire sends it, with the input-side usage
+    /// the turn row counts.
+    fn assistant_frame(id: &str, parent: Option<&str>) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "session_id": "s",
+            "parent_tool_use_id": parent,
+            "message": {
+                "id": id,
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{"type": "text", "text": "working"}],
+                "usage": {"input_tokens": 7, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+            },
+        }))
+        .expect("an assistant frame")
     }
 }
