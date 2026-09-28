@@ -55,9 +55,8 @@ forge-test-harness ─→ primitives + sdk + workspace
   run of blocks, the transcript
   fold that turns a conversation's messages into the units a view draws,
   the fold that turns a session's dispatches into the sub-agent instances
-  a view draws, the two reads of a pty's own text: its escape sequences
-  and a Monitor's watched-command output tail, and the socket that carries
-  all of it to whatever is drawing.
+  a view draws, a Monitor's watched-command output tail, and the socket
+  that carries all of it to whatever is drawing.
   Sits between `forge-workspace` and the clients, so a second client
   attaches beside the TUI rather than duplicating it. Nothing here may
   depend on a view. It reaches the workspace for the one thing a session
@@ -146,10 +145,12 @@ Work top-down; first match wins.
 9. **A widget, screen, key binding, mouse handler, or per-session
    presentation state?** -> `forge-tui`. Render in `ui/`, dispatch +
    state in `app/`.
-10. **A view that is not the TUI?** (an HTTP route, its markup, its own
-    per-view state) -> `forge-web`. Sits beside `forge-tui` on the same
-    core: a read of the core goes through the view surface in
-    `forge-server`, never `forge-workspace`, and it starts no
+10. **A view that is not the TUI?** (its pages, its markup, its own
+    per-view state) -> a crate of its own, built against the socket in
+    `forge-server` rather than against the core. `forge-web` is the one
+    that exists, parked until it is rebuilt that way. Either way it sits
+    beside `forge-tui` on the same core, reads through the view surface
+    in `forge-server` and never `forge-workspace`, and starts no
     subsystem of its own.
 11. **A wire-conformance scenario?** -> `forge-test-harness`.
 

@@ -184,7 +184,7 @@ fn run() -> anyhow::Result<()> {
                 }
                 Err(error) => tracing::error!(
                     target: forge_tui::logging::targets::APP_LIFECYCLE,
-                    event_name = "web_view_bind_failed",
+                    event_name = "server_socket_bind_failed",
                     error = %error,
                     "the socket is not serving; the TUI is unaffected",
                 ),
@@ -192,7 +192,7 @@ fn run() -> anyhow::Result<()> {
         } else {
             tracing::debug!(
                 target: forge_tui::logging::targets::APP_LIFECYCLE,
-                event_name = "web_view_disabled",
+                event_name = "server_socket_disabled",
                 "[web] enabled = false; nothing is serving this run",
             );
         }

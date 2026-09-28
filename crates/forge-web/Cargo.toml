@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The web view: HTTP served beside the TUI, from the process that owns the sessions"
+description = "The web view, parked: it served HTTP beside the TUI until the socket took the port"
 
 [dependencies]
 forge-primitives = { workspace = true }

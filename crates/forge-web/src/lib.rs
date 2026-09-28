@@ -1,5 +1,7 @@
-//! The web view: an HTTP view beside the TUI, in the same process, so the
-//! cron scheduler and the connectors start once rather than twice.
+//! The web view, parked. It served an HTTP view beside the TUI, in the same
+//! process; the socket took the port those pages were on, so nothing serves
+//! them until a client is built against it. The pages below still compile and
+//! their tests still run; nothing reaches them.
 //!
 //! It serves the home and a session, both over `forge-server`, which
 //! re-exports the git plumbing and the wire parsers a view needs: it names
