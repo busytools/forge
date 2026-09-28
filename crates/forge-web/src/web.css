@@ -998,3 +998,16 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .sb .sa .tt .tg { color: var(--muted); }
 .sb .sa .settled { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   padding: 0 12px 9px; }
+
+/* ---------- how a row gives way where the value is the point ----------
+
+   A schedule row inverts the shared row rule above it: the next-fire is what
+   the row is for and the label is only its context, so the label shortens and
+   the value keeps its own width. Scoped here on purpose - a server row and a
+   process row keep the shared rule, where the name is the thing scanned for.
+   The floor under the label is 30% rather than the shared 35%, and the value
+   is capped at what that floor leaves it, so one too wide for the column
+   ellipsises rather than running past the rail. The 12px is this row's own
+   gap, so a change to one is a change to the other. */
+.sec[data-k="sec-schedules"] .sb .kv .k { flex: 1 1 auto; min-width: 30%; }
+.sec[data-k="sec-schedules"] .sb .kv .v { flex: 0 0 auto; max-width: calc(70% - 12px); }

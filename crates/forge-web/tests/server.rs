@@ -3785,3 +3785,96 @@ fn process(pid: u32, parent_pid: u32, name: &str, command: &str, memory_mb: u64)
         memory_bytes: memory_mb * 1024 * 1024,
     }
 }
+
+// ---------- how a row gives way: the schedules section and a command row
+// (#1228, #1229) ----------
+
+/// The scope a schedule row's own rule is written against, which is the
+/// section the page puts those rows in.
+const SCHEDULES_SCOPE: &str = ".sec[data-k=\"sec-schedules\"]";
+
+/// A schedule row inverts the shared row rule: the next-fire is what the row
+/// is for and the label is its context, so the label is the half that gives
+/// way and the value keeps its width.
+///
+/// Read off the served sheet, because the sheet is what a browser measures.
+/// A value left shrinkable is what squeezed a next-fire to nothing once a
+/// label passed forty-eight characters; a value that cannot give way at all
+/// is what ran 34.8px past the row and 4.8px past the rail, with its own tail
+/// cut and no ellipsis. Both halves are pinned here because the fix for one
+/// is the other's failure.
+#[tokio::test]
+async fn the_schedule_row_gives_up_its_label_and_keeps_its_value() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    let value = blocks_for(&sheet, &format!("{SCHEDULES_SCOPE} .sb .kv .v"));
+    assert!(
+        value.iter().any(|block| block.contains("flex: 0 0 auto")),
+        "the next-fire keeps its own width instead of shrinking: {value:?}",
+    );
+    assert!(
+        value.iter().any(|block| block.contains("max-width: calc(70% - 12px)")),
+        "bounded by what the label's floor leaves it, so it cannot run past the rail: {value:?}",
+    );
+    let label = blocks_for(&sheet, &format!("{SCHEDULES_SCOPE} .sb .kv .k"));
+    assert!(
+        label
+            .iter()
+            .any(|block| block.contains("min-width: 30%") && block.contains("flex: 1 1 auto")),
+        "and the label is the half that shortens, with a floor so it cannot vanish: {label:?}",
+    );
+    let row = shared_blocks(&sheet, ".kv", "display: flex");
+    assert_eq!(row.len(), 1, "one shared row rule, left as it was");
+    assert!(
+        row[0].contains("gap: 12px"),
+        "and its gap is the 12px the value's cap subtracts, so retuning one means retuning the other: {row:?}",
+    );
+    // Counted rather than read off the shared block: the scoped selector ends
+    // in the shared one's text, so one list holds both, and a second copy
+    // written at the shared selector is the way this reaches every section.
+    let rules = blocks_for(&sheet, ".sb .kv .v");
+    let inverted: Vec<&String> =
+        rules.iter().filter(|block| block.contains("flex: 0 0 auto")).collect();
+    assert_eq!(inverted.len(), 1, "one rule carries the inversion: {inverted:?}");
+    assert!(
+        inverted[0].contains("max-width: calc(70% - 12px)"),
+        "and it is the scoped rule, not a copy written at the shared selector: {inverted:?}",
+    );
+}
+
+/// The blocks a selector is written in that begin with `first`. [`blocks_for`]
+/// matches substrings, and a scoped selector here ends in the shared one's
+/// text, so the shared block is the one carrying the shared declaration rather
+/// than whichever the sheet writes last.
+fn shared_blocks(css: &str, selector: &str, first: &str) -> Vec<String> {
+    blocks_for(css, selector).into_iter().filter(|block| block.starts_with(first)).collect()
+}
+
+/// The scope that rule is written against is the one the page puts a schedule
+/// row inside, so the inversion reaches the rows rather than sitting in the
+/// sheet matching nothing.
+#[tokio::test]
+async fn the_schedule_rows_sit_inside_the_scope_the_sheet_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.add_cron("forge", "stand-up").expect("forge is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    let scope = page
+        .find("data-k=\"sec-schedules\"")
+        .expect("the schedules section carries the scope the sheet's rule names");
+    let body = &page[scope..];
+    let end = body.find("</details>").expect("and the section closes");
+    let rows = &body[..end];
+    assert!(
+        rows.contains("<div class=\"kv\">"),
+        "a row, not just a heading, sits inside it: {rows}"
+    );
+    assert!(rows.contains("stand-up"), "with the project's own cron among them: {rows}");
+}
