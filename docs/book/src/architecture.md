@@ -156,9 +156,12 @@ boot reaches a view.
 
 A subscriber declares whether it can answer the workspace's prompts.
 The TUI does, so a permission or question request delivered to it keeps
-its turn alive; a consumer that only reads takes `subscribe_observer()`
-instead, and a request that reaches no answering subscriber is resolved
-`Cancelled` rather than parked on a reply nobody will send.
+its turn alive; a consumer that only reads takes an observing
+subscription instead, which for a view is `subscribe_mirror()` through
+the surface (`subscribe_observer()` is the same stream for an observer
+that wants the pre-attach backlog), and a request that reaches no
+answering subscriber is resolved `Cancelled` rather than parked on a
+reply nobody will send.
 
 That is the whole contract. There are no callback hooks and no shared
 mutable state. Nothing under

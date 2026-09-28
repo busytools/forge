@@ -756,9 +756,9 @@ inspected.
       hand-roll only what nothing maintains.
     - **Keeping all the information is not in tension with this.** A
       session page shows everything a session has - context, git and PR,
-      tasks, MCP servers, processes, subagents, schedules - because
-      nothing here is dropped to look modern. What changes is the
-      presentation, not the content.
+      tasks, MCP servers, processes, monitors, subagents, gotify, slack,
+      schedules - because nothing here is dropped to look modern. What
+      changes is the presentation, not the content.
 
 ## Claude Code worktree interop
 
