@@ -158,12 +158,15 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
         }
         let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default().to_string();
         let sess = value.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
+        let timestamp = value.get("timestamp").and_then(Value::as_str).map(str::to_owned);
         out.push(SessionMessage {
             kind,
             uuid,
             session_id: sess,
             message: message.unwrap_or(Value::Null),
             parent_tool_use_id: None,
+            timestamp,
+            tool_use_result: value.get("toolUseResult").filter(|result| !result.is_null()).cloned(),
         });
     }
     SessionHistory { messages: out, compaction_count }

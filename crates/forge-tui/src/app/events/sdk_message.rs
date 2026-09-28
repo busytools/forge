@@ -2163,6 +2163,7 @@ mod stamp_turn_info_tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 
@@ -2666,6 +2667,7 @@ mod assistant_lifecycle_gate_tests {
             parent_tool_use_id: None,
             error: None,
             uuid: None,
+            timestamp: None,
         }
     }
 
@@ -3115,6 +3117,7 @@ mod thinking_tokens_clear_on_user_tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 
@@ -3127,6 +3130,7 @@ mod thinking_tokens_clear_on_user_tests {
             // Non-null tool_use_result marks this as a mid-turn
             // tool-result echo, NOT a genuine user prompt.
             tool_use_result: Some(serde_json::json!({})),
+            timestamp: None,
         }
     }
 
@@ -3407,6 +3411,7 @@ mod inbound_message_surfacing_tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 
@@ -4562,6 +4567,7 @@ mod submit_result_race_tests {
             parent_tool_use_id: None,
             error: None,
             uuid: None,
+            timestamp: None,
         }
     }
 

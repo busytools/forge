@@ -402,6 +402,11 @@ fn report_unterminated_tool_calls(app: &App, history: &[forge_primitives::Messag
 pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primitives::Message]) {
     let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
+    // A resume opens a session with nothing in flight, so the previous
+    // occupant's estimate is not this one's. The rows cannot clear it on the
+    // way past: a tool-result row carries the CLI's record of its result,
+    // which is what marks a frame mid-turn rather than a turn of its own.
+    app.set_latest_thinking_tokens(None);
     if let Some(stats) = app.history_retention_stats_mut() {
         *stats = super::super::state::HistoryRetentionStats::default();
     }
@@ -562,6 +567,7 @@ mod tests {
             parent_tool_use_id: None,
             error: None,
             uuid: None,
+            timestamp: None,
         }
     }
 
@@ -584,6 +590,7 @@ mod tests {
             parent_tool_use_id: None,
             error: None,
             uuid: None,
+            timestamp: None,
         }
     }
 
@@ -609,6 +616,7 @@ mod tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 
@@ -631,6 +639,7 @@ mod tests {
             parent_tool_use_id: None,
             error: None,
             uuid: None,
+            timestamp: None,
         }
     }
 
@@ -641,6 +650,7 @@ mod tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 
@@ -760,6 +770,110 @@ mod tests {
             load_resume_history(&mut app, history);
         });
         (capture, app)
+    }
+
+    /// The chat as it reaches the screen, one string per frame row.
+    fn render_chat(app: &mut App) -> Vec<String> {
+        let (width, height) = (120_u16, 40_u16);
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::chat::render(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, width, height),
+                    app,
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect()
+    }
+
+    /// A session's rows as the read used to hand them over: no row clock and
+    /// no tool-result record, since the scan kept neither.
+    fn a_settled_turn() -> Vec<Message> {
+        vec![
+            historical_user_text("run it"),
+            historical_tool_use("toolu_1"),
+            historical_tool_result("toolu_1", false),
+            historical_assistant("all done"),
+        ]
+    }
+
+    /// The same rows with the two fields the read now carries, stamped on.
+    /// Every user row takes a result record, a plain prompt included: the
+    /// wire sends one on its tool-result echoes and the walk must be as
+    /// indifferent to a surplus as to the absence it saw before.
+    fn as_the_read_now_carries_them(rows: &mut [Message]) {
+        for (n, row) in rows.iter_mut().enumerate() {
+            let clock = Some(format!("2026-04-22T04:15:{:02}.000Z", 27 + n));
+            match row {
+                Message::Assistant { timestamp, .. } => *timestamp = clock,
+                Message::User { timestamp, tool_use_result, .. } => {
+                    *timestamp = clock;
+                    *tool_use_result = Some(serde_json::json!({"stdout": "ok"}));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The read now keeps a row's own clock and its record of a tool result,
+    /// and both reach the resume walk. The terminal reads neither: its frame
+    /// is drawn from the run's blocks, so a resumed session must not start
+    /// drawing something new because the read stopped dropping fields.
+    #[test]
+    fn the_reads_new_row_fields_do_not_reach_the_terminal_frame() {
+        let mut before = resumed_with_pinned_tip(&a_settled_turn());
+        let before_frame = render_chat(&mut before);
+
+        let mut stamped = a_settled_turn();
+        as_the_read_now_carries_them(&mut stamped);
+        let mut after = resumed_with_pinned_tip(&stamped);
+
+        assert!(
+            before_frame.iter().any(|row| row.contains("all done")),
+            "the frame holds the resumed turn, so the comparison below is not two blanks",
+        );
+        assert_eq!(
+            before_frame,
+            render_chat(&mut after),
+            "the terminal draws a resumed turn from the same rows it always did",
+        );
+    }
+
+    /// A resume opens a session with nothing in flight, so an estimate the
+    /// previous occupant left behind is not this one's. The rows cannot
+    /// clear it: every user row the read now hands over carries a result
+    /// record, which is what marks a frame as mid-turn rather than a turn.
+    #[test]
+    fn a_resume_clears_the_previous_occupants_thinking_estimate() {
+        let mut rows = a_settled_turn();
+        as_the_read_now_carries_them(&mut rows);
+        let mut app = App::test_default();
+        app.set_latest_thinking_tokens(Some(150));
+
+        load_resume_history(&mut app, &rows);
+
+        assert_eq!(app.latest_thinking_tokens(), None, "a resume carries no estimate in");
+    }
+
+    /// [`capture_replay_of`]'s walk with the welcome top pinned, so a frame
+    /// comparison sees only what the walk drew: the welcome picks a tip at
+    /// random on every build.
+    fn resumed_with_pinned_tip(history: &[Message]) -> App {
+        let mut app = App::test_default();
+        let mut welcome = app.build_welcome_message();
+        App::apply_welcome_tip_seed(&mut welcome, 7);
+        app.push_message_tracked(welcome);
+        load_resume_history(&mut app, history);
+        app
     }
 
     /// The replayed shapes a tool call can reach: completed, failed,
@@ -1120,6 +1234,7 @@ mod tests {
             parent_tool_use_id: None,
             error: None,
             uuid: None,
+            timestamp: None,
         };
         let history = vec![
             historical_user_text("run both"),
@@ -1338,6 +1453,7 @@ mod tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 
@@ -1351,6 +1467,7 @@ mod tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 

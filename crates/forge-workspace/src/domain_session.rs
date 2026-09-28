@@ -152,9 +152,6 @@ pub struct DomainSession {
     /// on the same terms: the answer until a hook reports one. `None`
     /// when the launch pinned none.
     pub configured_permission_mode: Option<PermissionMode>,
-    /// Hook-observed sub-agent attribution: the `tool_use_id` a
-    /// sub-agent fired, against the agent type that fired it.
-    pub subagent_attribution: HashMap<String, String>,
     /// The MCP servers this session last saw, from its own bridge: MCP
     /// is configured per session, so this is not an account-wide fact.
     pub mcp_servers: Option<McpServers>,
@@ -204,7 +201,6 @@ impl DomainSession {
             observed_effort: None,
             configured_effort: EffortLevel::Max,
             configured_permission_mode: None,
-            subagent_attribution: HashMap::new(),
             mcp_servers: None,
             context_usage: None,
             current_model: None,

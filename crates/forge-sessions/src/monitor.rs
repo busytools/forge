@@ -1,69 +1,56 @@
-//! Read the watched-command stdout from the Monitor
-//! task's `output_file` and return the last N lines for the
-//! Inspector's MONITORS tail.
+//! The watched command's own output: the tail of the file a Monitor
+//! streams it to.
 //!
-//! The CLI's local-bash Monitor flavour streams the command's stdout
-//! to a file on disk (path carried via `task_notification.output_file`,
-//! confirmed in
-//! `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/monitor.jsonl`)
-//! rather than over the wire. Without reading that file, the tail
-//! only ever surfaces the "Monitor X stream ended" summary line.
-//! This helper tails the file's last `max_lines` lines so the
-//! MONITORS section shows the actual command output.
+//! The CLI's local-bash Monitor flavour writes the command's stdout to a
+//! file on disk and names it in `task_notification.output_file` rather
+//! than sending it over the wire (confirmed in
+//! `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/monitor.jsonl`),
+//! so the tail is a file read either view performs.
 
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::ui::highlight;
+use crate::ansi::strip_ansi;
 
-/// #289: real-world Monitor commands (cargo build, npm install,
-/// progress-bar tools) emit ANSI colour codes + carriage returns +
-/// the occasional BEL/backspace. Storing the raw bytes in
-/// `MonitorEntry.output_tail` leaks them into ratatui's render path,
-/// which interprets them as terminal control sequences and corrupts
-/// the screen. Sanitise at read-time so the per-frame render path
-/// stays cheap and the stored tail is plain text.
+/// Real-world Monitor commands (cargo build, npm install, progress-bar
+/// tools) emit ANSI colour codes plus carriage returns and the occasional
+/// BEL or backspace. Carrying those bytes to a renderer corrupts the
+/// terminal and prints as noise in a page, so they are dropped at read
+/// time and what is kept is plain text.
 ///
-/// Two-stage: `strip_ansi` covers CSI + OSC sequences (same helper +
-/// semantics as the Bash tool output path at
-/// `crate::ui::tool_call::standard`). The trailing `filter` drops
-/// control bytes that aren't escape sequences (`\r` `\b` BEL `\u{0C}`)
-/// plus any lingering `\u{1b}` that slipped past `strip_ansi` (a
-/// non-CSI/OSC ESC variant). Tabs and printable Unicode pass through.
+/// Two-stage: [`strip_ansi`] covers CSI and OSC sequences; the trailing
+/// filter drops control bytes that are not escape sequences (`\r` `\b`
+/// BEL `\u{0C}`) plus any `\u{1b}` that slipped past it. Tabs and
+/// printable Unicode pass through.
 fn sanitize_for_render(raw: &str) -> String {
-    highlight::strip_ansi(raw)
+    strip_ansi(raw)
         .chars()
         .filter(|c| !matches!(c, '\r' | '\u{08}' | '\u{07}' | '\u{0C}' | '\u{1B}'))
         .collect()
 }
 
-/// Largest slice of the file read per refresh. Monitor output_files
-/// grow without bound (cargo build, npm install), and this runs inline
-/// on the TUI event loop per progress tick, so we seek to within this
-/// window of the end rather than re-reading the whole file each time.
-/// 64 KiB comfortably holds the last `OUTPUT_TAIL_MAX` lines for any
-/// realistic line length.
-const TAIL_WINDOW_BYTES: u64 = 64 * 1024;
+/// Largest slice of the file read at a time. Monitor output files grow
+/// without bound (cargo build, npm install) and this runs inline on a
+/// view's own tick, so the read seeks to within this window of the end
+/// rather than reading the whole file each time. 64 KiB comfortably holds
+/// the last few lines at any realistic line length.
+pub const TAIL_WINDOW_BYTES: u64 = 64 * 1024;
 
 /// Read the last `max_lines` lines of `path` into a `Vec` ordered
 /// oldest-first. Returns `None` on any read error (file missing,
-/// permission denied, mid-write corruption) so the caller can
-/// distinguish "couldn't read, don't replace the prior tail" from
-/// "file is genuinely empty". The empty-file case returns
-/// `Some(vec![])`.
+/// permission denied, a read that failed) so the caller can distinguish
+/// "could not read, keep the tail already held" from "the file is
+/// genuinely empty". The empty-file case returns `Some(vec![])`.
 ///
-/// Only the final [`TAIL_WINDOW_BYTES`] are read: for a larger file we
-/// seek to `len - TAIL_WINDOW_BYTES` and drop the first (probably
+/// Only the final [`TAIL_WINDOW_BYTES`] are read: for a larger file the
+/// read seeks to `len - TAIL_WINDOW_BYTES` and drops the first (probably
 /// partial) line after the seek. Files under the window are read whole.
-/// Trailing partial lines (the file is still growing) are tolerated:
-/// `BufRead::lines` yields `Some(Err(_))` for the unterminated chunk
-/// and we silently skip it.
-///
-/// Errors emit `tracing::warn!` with the path + reason so operators
-/// see why the tail looks empty without forge panicking on a
-/// transient filesystem hiccup.
+/// A file the watched command is still writing is read as it stands: an
+/// unterminated final line comes back as `Ok` and is kept. The one line
+/// that is dropped for good is one that is not valid UTF-8, which is
+/// skipped on every read rather than once.
 pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String>> {
     if max_lines == 0 {
         return Some(Vec::new());
@@ -72,7 +59,6 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
         Ok(f) => f,
         Err(err) => {
             tracing::warn!(
-                target: crate::logging::targets::APP_SESSION,
                 event_name = "monitor_output_file_open_failed",
                 message = "could not open Monitor output_file; tail unavailable",
                 outcome = "failure",
@@ -102,13 +88,18 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
                 ring.push_back(sanitize_for_render(&text));
             }
             Err(err) => {
-                // Mid-write partial line or transient IO error; skip
-                // the chunk and keep going. The next refresh will
-                // pick up a complete view.
-                tracing::warn!(
-                    target: crate::logging::targets::APP_SESSION,
-                    event_name = "monitor_output_file_partial_read",
-                    message = "Monitor output_file read yielded a partial line; skipping",
+                // A line that is not valid UTF-8, or a read that failed.
+                // An unterminated final line does not reach here: `lines`
+                // hands that back as `Ok` and it is kept. The line is
+                // skipped and the others stand, which is forge's own
+                // reading of the session's own output rather than a problem
+                // with forge, so it is not a warning. The decodable case is
+                // not transient either: those bytes are skipped on every
+                // read, while a failed read may well come right at the
+                // next one.
+                tracing::debug!(
+                    event_name = "monitor_output_file_line_unreadable",
+                    message = "Monitor output_file holds a line that could not be read; skipping it",
                     outcome = "skipped",
                     path = %path.display(),
                     error_kind = ?err.kind(),
@@ -185,11 +176,11 @@ mod tests {
 
     #[test]
     fn read_output_file_tail_strips_ansi_and_control_chars() {
-        // #289: real-world Monitor commands (cargo build, npm install, anything
-        // with progress bars) emit ANSI colour codes + carriage returns for
-        // in-place line updates + the occasional BEL/backspace. Raw bytes
-        // would corrupt ratatui's render; the tail reader sanitises at read
-        // time so the per-frame render path stays cheap.
+        // Real-world Monitor commands (cargo build, npm install, anything
+        // with progress bars) emit ANSI colour codes + carriage returns
+        // for in-place line updates + the occasional BEL/backspace. Raw
+        // bytes would corrupt a renderer; the tail reader sanitises at
+        // read time so the per-frame render path stays cheap.
         let raw = "\
 \x1b[32mline 1 green\x1b[0m\n\
 line 2 with \rcarriage return\n\

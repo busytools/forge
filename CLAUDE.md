@@ -51,8 +51,11 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-sessions`** - what a view needs and nothing about how it
   renders: the read surface a view uses, the session records as a view
   sees them, the peer envelope parsing in both directions, the tool
-  family table, the policy that folds a run of blocks, and the transcript
-  fold that turns a conversation's messages into the units a view draws.
+  family table, the policy that folds a run of blocks, the transcript
+  fold that turns a conversation's messages into the units a view draws,
+  the fold that turns a session's dispatches into the sub-agent instances
+  a view draws, and the two reads of a pty's own text: its escape
+  sequences, and a Monitor's watched-command output tail.
   Sits between `forge-workspace` and the views, so a second view attaches
   beside the TUI rather than duplicating it. Nothing here may depend on a
   view. It reaches the workspace for the one thing a session record cannot
@@ -151,18 +154,20 @@ Work top-down; first match wins.
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
 `cli_version`, `conversation`, `slash_commands`, `subagents`, `emoji`,
-`file_index`, `header`, `subagent_attribution`, `mcp_servers`,
+`file_index`, `header`, `mcp_servers`,
 `processes`, `monitors` - and receives changes through
-`subscribe()`. All twenty exist in `forge-sessions`, and the TUI reads
+`subscribe()`. All nineteen exist in `forge-sessions`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk
 through them; the web view reads its project roster and agent rows, the
 account pool, the worker registry, connector subscriptions and dictation
-state through those, the claude version through the tenth, and its
-session header and inspector through the last five. `subagents` is the
-CLI's catalogue of the agent types that exist; `subagent_attribution` is
-the per-session record of which of them ran which tool call. What the migration has
+state through those, the claude version through the tenth, and the
+conversation, header and inspector through `conversation`, `header`,
+`mcp_servers`, `processes` and `monitors`. `subagents` is the
+CLI's catalogue of the agent types that exist, not a record of the ones
+that ran: an instance's cards and the calls under them are folded from
+the conversation it appears in. What the migration has
 not reached is the write half: user actions still go through
 `dispatch(Command)` on the workspace rather than a surface verb, and the
 five refreshes that ask the core for a new snapshot are still direct
