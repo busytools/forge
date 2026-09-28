@@ -39,3 +39,6 @@ forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
 tempfile = { workspace = true }
 # The connectors fixture seeds durable subscriptions, which are keyed by id.
 uuid = { workspace = true }
+# A test reads back the records a site emitted, which needs a subscriber to
+# catch them with.
+tracing-subscriber = { workspace = true }
