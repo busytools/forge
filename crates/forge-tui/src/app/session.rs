@@ -805,6 +805,11 @@ impl UiSession {
         // torn down; mirrors must not either.
         self.dictate_overrides = forge_workspace::DictateOverrides::default();
         self.mcp = McpState::default();
+        // Parity, not paint: the chat draws a monitor from its tool call's
+        // stamped status rather than from this set, but the doc above keeps
+        // this function and the App-level mirror moving together, and the core
+        // drops its own set once a failure reaches the apply path.
+        self.monitors.clear();
     }
 }
 

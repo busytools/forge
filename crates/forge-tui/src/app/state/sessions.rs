@@ -261,6 +261,12 @@ impl super::App {
         if let Some(bucket) = self.active_bucket_mut() {
             bucket.dictate_overrides = forge_workspace::DictateOverrides::default();
         }
+        // The active arm's half of the parity `UiSession::clear_runtime_identity`
+        // describes: that one serves the background bucket, this one the tab
+        // the user is watching.
+        if let Some(monitors) = self.monitors_mut() {
+            monitors.clear();
+        }
     }
 
     /// The active tab's forge.toml project name, backing the Inspector
