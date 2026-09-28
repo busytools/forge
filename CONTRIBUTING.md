@@ -17,15 +17,17 @@ we can agree the direction before you write it.
 just check
 ```
 
-That is `cargo fmt --check`, the Unicode punctuation gate,
-`cargo clippy --all-targets --workspace -- -D warnings` once per feature
-set (with and without `--all-features`),
+That is `cargo fmt --check`, the Unicode punctuation gate, the client's
+Prettier check, ESLint, `svelte-check` and `tsc --noEmit` and then its
+vitest run, `cargo clippy --all-targets --workspace -- -D warnings` once
+per feature set (with and without `--all-features`),
 `cargo nextest run --workspace --all-features`, and
 `cargo doc --workspace --no-deps --all-features`, all with
 `RUSTFLAGS=-D warnings` on the clippy, test and doc steps. Get it
-green before you open a pull request. It is CI's set minus three jobs:
-CI also runs `cargo check --release` and `just check-feature-configs`, and
-it builds, typechecks and tests the client, which no cargo recipe reaches.
+green before you open a pull request. It is CI's set minus two jobs:
+CI also runs `cargo check --release` and `just check-feature-configs`.
+One command decides both stacks, so its verdict line names the first
+failing step whichever side it is on.
 
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later
