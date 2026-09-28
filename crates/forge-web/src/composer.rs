@@ -1000,8 +1000,7 @@ impl Composer {
                 // is the seat's whatever it was drawing: the click that
                 // asked for it is owed an answer either way.
                 let refused = matches!(outcome, DictateOutcome::Refused { .. });
-                if !refused
-                    && self.takes.get(key).is_none_or(|take| take.generation != *generation)
+                if !refused && self.takes.get(key).is_none_or(|take| take.generation != *generation)
                 {
                     return false;
                 }
@@ -1127,11 +1126,8 @@ mod tests {
             }),
             "a take that never started still redraws the box",
         );
-        let notice = composer
-            .notice(&slot)
-            .expect("the refusal is held")
-            .line()
-            .expect("and draws a line");
+        let notice =
+            composer.notice(&slot).expect("the refusal is held").line().expect("and draws a line");
         assert_eq!(notice, "no microphone", "with the core's own reason");
     }
 }
