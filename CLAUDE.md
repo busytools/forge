@@ -761,6 +761,37 @@ inspected.
       schedules - because nothing here is dropped to look modern. What
       changes is the presentation, not the content.
 
+22. **The client is gated like the Rust side, and it is a shell.** `just
+    check` runs the client's steps too - Prettier, ESLint on
+    typescript-eslint's type-checked configs, `svelte-check`, `tsc
+    --noEmit`, then vitest - so one command decides both stacks and its
+    verdict line names the first failing step. **Denied as errors**, the
+    analogue of the denied Rust lints: `any`, non-null assertion,
+    `@ts-ignore`, `innerHTML`, `eval` and floating promises; a waiver
+    carries a line saying why. `client/tsconfig.json` keeps
+    `noUncheckedIndexedAccess`, `noImplicitReturns`, `noUnusedLocals`,
+    `noUnusedParameters` and `exactOptionalPropertyTypes`. **An unknown
+    value from the wire is narrowed once, where it enters**
+    (`client/src/wire/`), so every union downstream stays exhaustive and
+    a variant the server adds is a compile error rather than a render
+    crash; a cast at that boundary carries a line saying why. **Every
+    state a page can be in - loading, empty, failed, unknown - has a
+    rendering**; a page that draws a healthy state for an unknown one is
+    a defect, not a gap. Accessibility is a rule rather than a review:
+    semantic markup, every interactive element reachable by keyboard,
+    focus moved and returned deliberately, no colour as the only carrier
+    of a state, and axe over the rendered markup as a page test
+    (`client/src/a11y.test.ts`) - contrast is not covered there, because
+    jsdom performs no layout, so it stays a rule checked where the token
+    set is. The structural comparison against the mock and measured
+    geometry at 1600 and 430 go in the PR body, and a page's final word
+    is Ved looking at it. **And the shipped app carries no fixture, no
+    mock data and no dev-only default**: its only input is the server
+    URL, and it draws nothing but the connect screen until a server
+    answers on it. The fixtures live under `client/src/dev/` and
+    `client/src/dev/fixture.test.ts` builds the app and fails if one
+    reaches the bundle.
+
 ## Claude Code worktree interop
 
 Non-guessable external conventions, recorded so forge does not reinvent

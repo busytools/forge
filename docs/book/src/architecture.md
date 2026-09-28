@@ -250,3 +250,38 @@ The [UI surface pages](./ui/workspace.md) under `ui/` in this book are
 the visual reference for every surface `forge-tui` can currently
 render, with mockups, glyph tables and colour tables. They are scoped
 to current state only.
+
+## The client's standard
+
+The client under `client/` is a Svelte app that connects to a running
+forge and draws it. It is gated like the Rust side rather than beside
+it: `just check` runs Prettier, ESLint on typescript-eslint's
+type-checked configs, `svelte-check`, `tsc --noEmit` and then vitest,
+so one command decides both stacks and its verdict line names the first
+failing step whichever side it is on.
+
+The rules a gate cannot see are the same shape as the ones above. The
+denied constructs are `any`, non-null assertion, `@ts-ignore`,
+`innerHTML`, `eval` and floating promises, and a waiver carries a line
+saying why, the way an `#[allow]` does. `client/tsconfig.json` keeps
+`noUncheckedIndexedAccess`, `noImplicitReturns`, `noUnusedLocals`,
+`noUnusedParameters` and `exactOptionalPropertyTypes`, because
+`noImplicitReturns` being off is what once let a lifecycle fall out of a
+match and return `undefined`, which threw at render instead of failing
+the build.
+
+An unknown value from the wire is narrowed once, where it enters, under
+`client/src/wire/`, so every union downstream stays exhaustive and a
+variant the server adds is a compile error rather than a render crash.
+Every state a page can be in - loading, empty, failed, unknown - has a
+rendering, and a page that draws a healthy state for an unknown one is
+a defect rather than a gap. Accessibility is a rule: semantic markup,
+every interactive element reachable by keyboard, no colour as the only
+carrier of a state, and axe over the rendered markup as a page test.
+
+**And the shipped app is a shell.** Its only input is the server URL: it
+carries no fixture, no mock data and no dev-only default, draws nothing
+but the connect screen until a server answers, and never falls back to
+bundled data. The fixtures live under `client/src/dev/` and
+`client/src/dev/fixture.test.ts` builds the app and fails if one reaches
+the bundle.
