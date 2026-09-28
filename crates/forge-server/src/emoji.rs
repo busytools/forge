@@ -1,10 +1,13 @@
-//! Slack-style `:shortcode:` emoji, and the ranking its typeahead
-//! applies. View-side data with no session in it, so it lives here
-//! rather than in either view: the table is the same for every reader,
-//! and a second copy would drift.
+//! Slack-style `:shortcode:` emoji: the set, and the lookups over it.
+//!
+//! View-side data with no session in it, so it lives here rather than in
+//! either view: the table is the same for every reader, and a second copy
+//! would drift. **The set is here; the order a typeahead offers it in is
+//! the typeahead's**, so what this module answers is which shortcodes a
+//! query selects, never which of them is best.
 
-/// Characters after the `:` before the picker opens. One is too eager -
-/// `:D` and a bare `: ` would both pop a dropdown mid-sentence.
+/// Characters a query needs before it selects anything. One is too eager -
+/// `:D` and a bare `: ` would both select mid-sentence.
 pub const MIN_QUERY_CHARS: usize = 2;
 
 /// One shortcode / glyph pair.
@@ -22,30 +25,16 @@ pub fn is_shortcode_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '+' | '-')
 }
 
-/// Rank matches for `query`: exact first, then shortcodes that start
-/// with it, then the rest of the substring matches. Ties break
-/// alphabetically, which the table's own ordering already provides.
-pub fn matches(query: &str) -> Vec<&'static Emoji> {
+/// The shortcodes `query` selects, in the table's own order.
+///
+/// The order is the table's rather than a ranking: which of these is the
+/// best one to offer first is a typeahead's decision, and two typeaheads
+/// are free to decide it differently.
+pub fn matching(query: &str) -> Vec<&'static Emoji> {
     if query.chars().count() < MIN_QUERY_CHARS {
         return Vec::new();
     }
-    let mut scored: Vec<(u8, &'static Emoji)> = TABLE
-        .iter()
-        .filter_map(|emoji| {
-            let rank = if emoji.name == query {
-                0
-            } else if emoji.name.starts_with(query) {
-                1
-            } else if emoji.name.contains(query) {
-                2
-            } else {
-                return None;
-            };
-            Some((rank, emoji))
-        })
-        .collect();
-    scored.sort_by_key(|(rank, emoji)| (*rank, emoji.name));
-    scored.into_iter().map(|(_, emoji)| emoji).collect()
+    TABLE.iter().filter(|emoji| emoji.name.contains(query)).collect()
 }
 
 /// Look up an exact shortcode. Backs the closing-colon shorthand so
@@ -70,7 +59,12 @@ pub fn count() -> usize {
 /// Sorted by `name` so ranking ties break alphabetically for free and
 /// additions land as a readable one-line diff.
 #[rustfmt::skip]
-static TABLE: &[Emoji] = &[
+/// Every shortcode forge knows, sorted by name.
+///
+/// Public because a typeahead that ranks its own way needs the whole set
+/// rather than a selection from it: the ranking is what it provides, so
+/// what it asks this module for is the table.
+pub static TABLE: &[Emoji] = &[
     Emoji { name: "+1", glyph: "\u{1F44D}" },
     Emoji { name: "-1", glyph: "\u{1F44E}" },
     Emoji { name: "100", glyph: "\u{1F4AF}" },
@@ -284,7 +278,7 @@ static TABLE: &[Emoji] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{Emoji, TABLE, exact, is_shortcode_char, matches};
+    use super::{Emoji, TABLE, exact, is_shortcode_char, matching};
 
     #[test]
     fn table_is_sorted_and_has_no_duplicate_shortcodes() {
@@ -311,39 +305,23 @@ mod tests {
 
     #[test]
     fn empty_and_short_queries_yield_no_candidates() {
-        assert!(matches("").is_empty());
-        assert!(matches("r").is_empty(), "one char is below MIN_QUERY_CHARS");
-        assert!(!matches("ro").is_empty());
+        assert!(matching("").is_empty());
+        assert!(matching("r").is_empty(), "one char is below MIN_QUERY_CHARS");
+        assert!(!matching("ro").is_empty());
     }
 
+    /// The order is the table's and nothing here reorders it. `clap` starts
+    /// with `cl` and `alarm_clock` only contains it, so a ranked selection
+    /// would lead with `clap` and this one leads with the table's own first
+    /// row.
     #[test]
-    fn ranking_puts_exact_then_prefix_ahead_of_substring() {
-        let ranked = matches("check");
-        assert_eq!(ranked.first().map(|e| e.name), Some("check"), "exact match leads");
-
-        let ranked = matches("rocket");
-        assert_eq!(ranked.first().map(|e| e.name), Some("rocket"));
-
-        let ranked = matches("art");
-        let names: Vec<&str> = ranked.iter().map(|e| e.name).collect();
-        let art_pos = names.iter().position(|n| *n == "art").expect("art matches");
-        let heart_pos = names.iter().position(|n| *n == "heart").expect("heart contains art");
-        assert!(art_pos < heart_pos, "prefix match ranks ahead of substring: {names:?}");
-    }
-
-    /// The case the composer's own autocomplete is read against: `:sm`
-    /// ranks every shortcode that starts with the query ahead of one that
-    /// merely contains it. `smile` leads among the prefix matches because
-    /// it is first alphabetically, which is the documented tie-break.
-    #[test]
-    fn a_prefix_match_ranks_ahead_of_a_substring_match() {
-        let ranked = matches("sm");
-        let names: Vec<&str> = ranked.iter().map(|e| e.name).collect();
-        assert_eq!(names.first(), Some(&"smile"), "the first prefix match leads: {names:?}");
-        assert!(
-            names.iter().position(|n| *n == "sweat_smile").is_some_and(|at| at > 2),
-            "and a substring match ranks behind every prefix one: {names:?}",
-        );
+    fn a_query_selects_in_the_tables_own_order() {
+        let names: Vec<&str> = matching("cl").iter().map(|e| e.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted, "the selection is the table's order, not a ranking: {names:?}");
+        assert_eq!(names.first(), Some(&"alarm_clock"));
+        assert!(names.contains(&"clap"), "the prefix match is in it, just not first");
     }
 
     #[test]
@@ -356,7 +334,7 @@ mod tests {
     /// can hold a borrowed match without owning the table.
     #[test]
     fn a_match_carries_the_shortcode_and_its_glyph() {
-        let smile: &Emoji = matches("smile").first().expect("a match");
+        let smile: &Emoji = matching("smile").first().expect("a match");
         assert_eq!(smile.name, "smile");
         assert_eq!(smile.glyph, "\u{1F604}");
     }

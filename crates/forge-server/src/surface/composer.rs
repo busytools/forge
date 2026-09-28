@@ -104,23 +104,25 @@ impl ViewSurface {
         crate::file_index::respect_gitignore(preferences.as_ref())
     }
 
-    /// The emoji a `:query` matches, best first, at most `limit` of them.
+    /// The emoji a `:query` selects, at most `limit` of them.
+    ///
+    /// In the table's own order rather than a ranked one: which of these a
+    /// dropdown offers first is the dropdown's decision, so a caller that
+    /// wants them ranked ranks them itself, over
+    /// [`crate::emoji::TABLE`].
+    ///
     /// The cap is the caller's here for the same reason it is on
     /// [`FileIndex::visible`]: a dropdown and a page want different ones.
+    /// It caps the RESULT, not a viewport: the dropdown's own numbers are
+    /// two hundred candidates with a ten-row window scrolled over those, so
+    /// a caller passing ten here gets ten and no way to reach row eleven.
     ///
-    /// This caps the RESULT, not a viewport, so a caller that wants every
-    /// row reachable passes a limit at least as wide as the table. The
-    /// dropdown's own numbers are two hundred candidates with a ten-row
-    /// window scrolled over those; ten is the window, not the cap, and a
-    /// caller passing ten here gets the top ten and no way to reach row
-    /// eleven.
-    ///
-    /// A query below two characters matches nothing, which is what keeps
+    /// A query below two characters selects nothing, which is what keeps
     /// `:D` and `10:30` from opening a picker.
     pub fn emoji(query: &str, limit: usize) -> Vec<&'static Emoji> {
-        let mut matches = emoji::matches(query);
-        matches.truncate(limit);
-        matches
+        let mut selected = emoji::matching(query);
+        selected.truncate(limit);
+        selected
     }
 }
 
@@ -183,19 +185,21 @@ mod tests {
     }
 
     /// The emoji table is view-side data, so the verb answers with no
-    /// session at all, and it ranks the way the TUI's picker does.
+    /// session at all - and it answers with the set the query selects
+    /// rather than a ranked list, because the ranking is the picker's.
     #[test]
-    fn emoji_ranks_a_query_the_way_the_picker_does() {
-        let ranked = ViewSurface::emoji("sm", 10);
+    fn emoji_selects_a_query_and_leaves_the_ranking_to_the_picker() {
+        let names: Vec<&str> =
+            ViewSurface::emoji("cl", 10).iter().map(|e| e.name).collect();
 
         assert_eq!(
-            ranked.first().map(|e| e.name),
-            Some("smile"),
-            "the first prefix match leads, alphabetically: {:?}",
-            ranked.iter().map(|e| e.name).collect::<Vec<_>>(),
+            names.first(),
+            Some(&"alarm_clock"),
+            "the selection is the table's own order; a ranked one would lead with clap",
         );
+        assert!(names.contains(&"clap"), "and the prefix match is in it, just not first");
         assert_eq!(
-            ViewSurface::emoji("sm", 2).len(),
+            ViewSurface::emoji("cl", 2).len(),
             2,
             "and the caller's cap is the one that bites"
         );

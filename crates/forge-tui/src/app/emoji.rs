@@ -7,7 +7,37 @@
 //! a picker.
 
 use super::{App, FocusTarget, dialog::DialogState};
-pub use forge_server::emoji::{Emoji, exact, is_shortcode_char, matches};
+pub use forge_server::emoji::{Emoji, exact, is_shortcode_char};
+
+/// Rank matches for `query`: exact first, then shortcodes that start
+/// with it, then the rest of the substring matches. Ties break
+/// alphabetically, which the table's own ordering already provides.
+///
+/// The ranking lives here rather than beside the table: which match a
+/// typeahead offers first is the typeahead's decision, and the table is
+/// only the set it decides over.
+pub fn matches(query: &str) -> Vec<&'static Emoji> {
+    if query.chars().count() < forge_server::emoji::MIN_QUERY_CHARS {
+        return Vec::new();
+    }
+    let mut scored: Vec<(u8, &'static Emoji)> = forge_server::emoji::TABLE
+        .iter()
+        .filter_map(|emoji| {
+            let rank = if emoji.name == query {
+                0
+            } else if emoji.name.starts_with(query) {
+                1
+            } else if emoji.name.contains(query) {
+                2
+            } else {
+                return None;
+            };
+            Some((rank, emoji))
+        })
+        .collect();
+    scored.sort_by_key(|(rank, emoji)| (*rank, emoji.name));
+    scored.into_iter().map(|(_, emoji)| emoji).collect()
+}
 
 /// Max candidates shown in the dropdown. The list is dense (one glyph +
 /// one short name per row), so a shorter window than the file picker's
@@ -356,5 +386,39 @@ mod tests {
         assert_ne!(first.name, second.name, "Down moves to the next row");
         press(&mut app, crossterm::event::KeyCode::Enter);
         assert_eq!(app.input().expect("active session").text(), second.glyph);
+    }
+
+    /// The ranking a dropdown is read against, on queries where the table's
+    /// own order would answer differently: `alarm_clock` contains `cl` and
+    /// sorts first, so a version that handed back the table's order leads
+    /// with it rather than with `clap`.
+    #[test]
+    fn the_ranking_puts_exact_then_prefix_ahead_of_substring() {
+        assert_eq!(matches("check").first().map(|e| e.name), Some("check"), "exact leads");
+        assert_eq!(matches("rocket").first().map(|e| e.name), Some("rocket"));
+
+        let names: Vec<&str> = matches("cl").iter().map(|e| e.name).collect();
+        assert_eq!(names.first(), Some(&"clap"), "the prefix match leads: {names:?}");
+        assert!(
+            names.iter().position(|n| *n == "alarm_clock").is_some_and(|at| at > 0),
+            "and the substring match is behind it rather than in front: {names:?}",
+        );
+    }
+
+    /// The tie-break: `bar_chart` contains `cha` and sorts first, so the
+    /// prefix matches have to be put in front of it, and the first of those
+    /// is the alphabetically first.
+    #[test]
+    fn a_prefix_match_ranks_ahead_of_a_substring_match() {
+        let names: Vec<&str> = matches("cha").iter().map(|e| e.name).collect();
+        assert_eq!(
+            names.first(),
+            Some(&"chart_with_downwards_trend"),
+            "the first prefix match leads: {names:?}",
+        );
+        assert!(
+            names.iter().position(|n| *n == "bar_chart").is_some_and(|at| at > 0),
+            "and the substring match ranks behind it: {names:?}",
+        );
     }
 }
