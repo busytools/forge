@@ -11,8 +11,8 @@ forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
 forge-server      ->  primitives + workspace
-forge-web         ->  primitives + server
-forge-tui         ->  primitives + workspace + server + web
+forge-web         ->  primitives + server (parked: nothing depends on it yet)
+forge-tui         ->  primitives + workspace + server
 forge-test-harness->  primitives + sdk
 ```
 
@@ -26,7 +26,7 @@ forge-test-harness->  primitives + sdk
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
 | `forge-server` | What a view needs and nothing about how it renders: the read surface a view uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, forge's own slash commands, the policy that folds a run of blocks, the transcript fold that turns a conversation's messages into the units a view draws, the fold that turns a session's dispatches into the sub-agent instances a view draws, and the two reads of a pty's own text: its escape sequences, and a Monitor's watched-command output tail. Holds no terminal types, so a second view attaches beside the TUI rather than duplicating it. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. |
-| `forge-web` | The web view: HTTP served beside the TUI, from the process that owns the sessions. axum plus server-rendered markup: the home, kept live by a stream the page subscribes to, and a page per session carrying the projects rail, the chat column, the inspector and the composer, kept live by a stream of its own. Reads the core through the view surface in `forge-server`, git plumbing included; it never names `forge-workspace`, and starts no subsystem of its own. |
+| `forge-web` | The web view, parked: the socket took the port its pages were served on, so nothing serves them until a client lands. axum plus server-rendered markup - a home and a page per session, each kept live by a stream - reading the core through the view surface in `forge-server`, git plumbing included, and never naming `forge-workspace`. Nothing depends on it; the client is built against the socket, and this crate is deleted then. |
 | `forge-tui` | The view layer. Rendering, key and mouse handling, per-session presentation state. Ships the `forge` binary. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. Dev tooling, not in the runtime path. |
 

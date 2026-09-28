@@ -12,8 +12,8 @@ forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + gateway
 forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
 forge-server     ───→ primitives + workspace
-forge-web        ───→ primitives + server
-forge-tui        ───→ primitives + workspace + server + web (no direct agent dep)
+forge-web        ───→ primitives + server (parked: nothing depends on it yet)
+forge-tui        ───→ primitives + workspace + server (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```
 
@@ -65,15 +65,14 @@ forge-test-harness ─→ primitives + sdk + workspace
   the agent layer stays behind the workspace facade the way it does for
   the TUI. The name is this crate; forge's in-process MCP server is
   unrelated and is named as the `forge` MCP server.
-- **`forge-web`** - the web view: HTTP served beside the TUI, in the
-  process that already owns the sessions, so a second view costs a
-  listener rather than a second cron scheduler. Server-rendered markup
-  over axum: the home, kept live by a stream the page subscribes to, and
-  a page per session at `/session/{org}/{project}/{label}`, carrying the
-  projects rail, the chat column, the inspector and the composer, and
-  kept live by a stream of its own. It never names `forge-workspace`:
-  reads of the core and of a working tree both go through
-  `forge-server`, which re-exports what a view needs.
+- **`forge-web`** - the web view, parked. It served a page per session
+  from the process that owns the sessions; the socket took the port those
+  pages were on, so nothing serves them until a client lands. It stays a
+  workspace member and keeps compiling, and nothing depends on it: the
+  client is built against the socket, and this crate is deleted then. Its
+  pages were server-rendered markup over axum, and it never named
+  `forge-workspace`: reads of the core and of a working tree both went
+  through `forge-server`, which re-exports what a view needs.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`

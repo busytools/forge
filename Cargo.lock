@@ -1304,7 +1304,6 @@ dependencies = [
  "forge-server",
  "forge-test-harness",
  "forge-tui",
- "forge-web",
  "forge-workspace",
  "futures",
  "image",

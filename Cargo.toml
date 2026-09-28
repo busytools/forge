@@ -127,7 +127,8 @@ forge-agent = { path = "crates/forge-agent", version = "=1.0.92" }
 forge-dictate = { path = "crates/forge-dictate", version = "=1.0.92" }
 forge-workspace = { path = "crates/forge-workspace", version = "=1.0.92" }
 forge-server = { path = "crates/forge-server", version = "=1.0.92" }
-forge-web = { path = "crates/forge-web", version = "=1.0.92" }
+# forge-web is still a member and still builds, but nothing depends on it
+# until a client lands, so it has no alias here.
 
 # Dev-only
 pretty_assertions = "1"
