@@ -39,13 +39,17 @@ export function normalizeAddress(input: string): { url: string } | { why: string
   try {
     parsed = new URL(withScheme);
   } catch {
-    return { why: `${trimmed} is not an address. It wants a host and a port, like ${DEFAULT_ADDRESS}.` };
+    return {
+      why: `${trimmed} is not an address. It wants a host and a port, like ${DEFAULT_ADDRESS}.`,
+    };
   }
 
   if (parsed.protocol === 'http:') parsed.protocol = 'ws:';
   if (parsed.protocol === 'https:') parsed.protocol = 'wss:';
   if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
-    return { why: `${parsed.protocol} is not a socket. Use ws:// or wss://, or just ${DEFAULT_ADDRESS}.` };
+    return {
+      why: `${parsed.protocol} is not a socket. Use ws:// or wss://, or just ${DEFAULT_ADDRESS}.`,
+    };
   }
   if (parsed.hostname === '') {
     return { why: `${trimmed} names no host. It wants one, like ${DEFAULT_ADDRESS}.` };
@@ -135,9 +139,15 @@ export async function submitAttempt(
  * screen draws the fixture the server committed. Task 2 replaces the body
  * with the real `connect(url)`; `attempt` above is what turns its rejections
  * into the screen's own vocabulary, and no caller changes.
+ *
+ * It resolves rather than being `async`, because this body has nothing to
+ * await and `require-await` is right to say so. The signature is the seam
+ * all the same: Task 2's body awaits a socket here and changes no caller.
  */
-export async function connectTo(input: string): Promise<Attempt> {
+export function connectTo(input: string): Promise<Attempt> {
   const normalized = normalizeAddress(input);
-  if ('why' in normalized) return { ok: false, kind: 'address', why: normalized.why };
-  return { ok: true, url: normalized.url, settings: DEFAULT_SETTINGS };
+  if ('why' in normalized) {
+    return Promise.resolve({ ok: false, kind: 'address', why: normalized.why });
+  }
+  return Promise.resolve({ ok: true, url: normalized.url, settings: DEFAULT_SETTINGS });
 }

@@ -53,7 +53,7 @@ describe('the palette', () => {
 
     const reads = new Set(
       [...sheet.matchAll(/var\((--[a-z0-9-]+)/g)]
-        .map((match) => match[1] as string)
+        .map((match) => match[1])
         .filter((token) => !local.includes(token) && !stacks.has(token) && !retired.has(token)),
     );
     expect(reads.size, 'the sheet reads the palette somewhere').toBeGreaterThan(0);
@@ -100,7 +100,7 @@ describe('the typefaces', () => {
   /** The stack asks for the families the sheet declares faces for. */
   it('asks for the faces the sheet ships', () => {
     const declared = [...sheet.matchAll(/@font-face\s*{[^}]*font-family:\s*"([^"]+)"/g)].map(
-      (match) => match[1] as string,
+      (match) => match[1],
     );
     expect(declared).toHaveLength(3);
     const builtIn = fontStack(null);

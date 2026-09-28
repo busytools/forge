@@ -218,6 +218,6 @@ export const homeWire: HomeWire = homeFrom({
     snapshot: {
       ...fixture.dictate.snapshot,
       models: fixture.dictate.snapshot.models as DictateModel[],
-    } as DictateWire['snapshot'],
+    },
   },
 });

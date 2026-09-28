@@ -12,5 +12,11 @@
   so assistive tech is told to skip it.
 -->
 <span class={klass}>
+  <!--
+    The mark is a constant table of SVG bodies compiled from `brand.rs`,
+    chosen by a name the server refuses at boot if it is unknown. No user or
+    server value is interpolated, and the body is markup rather than text.
+  -->
+  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
   <svg viewBox="0 0 24 24" aria-hidden="true">{@html brandPath(name)}</svg>
 </span>

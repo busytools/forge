@@ -10,8 +10,6 @@
  * caller and nothing else.
  */
 
-import { DEFAULT_MARK, type MarkName } from './wire/types';
-
 const PANES =
   '<g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/>';
 
@@ -31,7 +29,8 @@ const PATHS: Record<string, string> = {
   strike:
     '<g fill="currentColor"><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(45 12 12)"/><rect x="9.9" y="1" width="4.2" height="22" rx="2.1" transform="rotate(-45 12 12)"/></g>',
   nest: '<g fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3.9" y="3.9" width="16.2" height="16.2" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.8"/></g>',
-  chamfer: '<path fill="currentColor" d="M7 3h9l5 5v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z"/>',
+  chamfer:
+    '<path fill="currentColor" d="M7 3h9l5 5v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z"/>',
   tally:
     '<g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M3.5 6.5V17.5M8.5 5V19M13.5 5V19M18.5 6.5V17.5M2.4 17.2 21.6 6.8"/></g>',
   stencil_f:
@@ -46,7 +45,7 @@ const PATHS: Record<string, string> = {
  * The server refuses a name outside the shipped set at boot, so the fallback
  * is the renderer's backstop rather than a path a config reaches.
  */
-export function brandPath(name: MarkName | null | string): string {
+export function brandPath(name: string | null): string {
   if (name === null) return PANES;
   return PATHS[name] ?? PANES;
 }

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import type { AccountLoadingRow, AgentRow, DictateModel, HomeWire, Lifecycle } from '../wire/home';
+import type { AgentRow, DictateModel, HomeWire, Lifecycle } from '../wire/home';
 import { homeFrom, homeWire } from '../wire/home';
 import {
   artifactLabel,
@@ -116,8 +116,8 @@ describe('the fleet the snapshot describes', () => {
   it('puts each project under its own org and counts what is live', () => {
     const view = homeView(FLEET, '');
     expect(view.orgs.map((org) => org.name)).toEqual(['Busytools', 'Personal']);
-    expect(countsOf(view.orgs[0] as OrgSection)).toBe('2 live');
-    expect(countsOf(view.orgs[1] as OrgSection)).toBe('1 live');
+    expect(countsOf(view.orgs[0])).toBe('2 live');
+    expect(countsOf(view.orgs[1])).toBe('1 live');
     expect(view.orgs[0]?.projects.map((entry) => entry.lead.name)).toEqual(['forge', 'notes']);
   });
 
@@ -168,7 +168,12 @@ describe('a row over the fleet', () => {
     const lead = view.orgs[0]?.projects[0]?.lead;
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
     expect(lead?.pending).toBe('permission');
-    expect(view.header).toEqual({ liveAgents: 1, projects: 1, installed: '1.0.0', update: '1.1.0' });
+    expect(view.header).toEqual({
+      liveAgents: 1,
+      projects: 1,
+      installed: '1.0.0',
+      update: '1.1.0',
+    });
   });
 
   it('draws the band with the address a reader recognises, not the socket URL', () => {
@@ -188,12 +193,12 @@ describe('a row over the fleet', () => {
     const wire: HomeWire = {
       ...homeWire,
       agents: [],
-      projects: [{ ...(homeWire.projects[0] as HomeWire['projects'][0]), sessions: [] }],
+      projects: [{ ...homeWire.projects[0], sessions: [] }],
     };
     const view = homeView(wire, '');
     const lead = view.orgs[0]?.projects[0]?.lead;
     expect(lead?.state).toEqual({ kind: 'never-started' });
-    expect(whenOf(lead as Row, Date.now())).toBe('never');
+    expect(whenOf(lead, Date.now())).toBe('never');
 
     // The same project with a session behind it is asleep instead: a forge
     // restart leaves every project in that case, so reading the lifecycle
@@ -202,7 +207,7 @@ describe('a row over the fleet', () => {
       ...wire,
       projects: [
         {
-          ...(wire.projects[0] as HomeWire['projects'][0]),
+          ...wire.projects[0],
           sessions: [{ last_activity: { secs_since_epoch: 0, nanos_since_epoch: 0 } }],
         },
       ],
@@ -216,7 +221,7 @@ describe('a row over the fleet', () => {
   it('promotes a backgrounded task to running, and leaves idle alone without one', () => {
     const wire = (has_background_work: boolean): HomeWire => ({
       ...homeWire,
-      agents: [{ ...(homeWire.agents[0] as AgentRow), has_background_work }],
+      agents: [{ ...homeWire.agents[0], has_background_work }],
     });
     expect(homeView(wire(true), '').orgs[0]?.projects[0]?.lead.state).toEqual({
       kind: 'lifecycle',
@@ -233,7 +238,7 @@ describe('a row over the fleet', () => {
   });
 
   it('names the one refusal it can decide, and none it cannot', () => {
-    const project = homeWire.projects[0] as HomeWire['projects'][0];
+    const project = homeWire.projects[0];
     expect(refusal({ ...project, has_model: false })).toBe(
       'no model declared - add `model` to this project',
     );
@@ -456,16 +461,15 @@ describe('what a row says', () => {
   });
 
   it('narrows an account state it does not know', () => {
-    const loading = homeWire.accounts.loading[0] as AccountLoadingRow;
+    const loading = homeWire.accounts.loading[0];
     const unknown: HomeWire = {
       ...homeWire,
       accounts: { ...homeWire.accounts, loading: [{ ...loading, state: 'renewing' as never }] },
     };
-    const accounts = homeView(homeFrom(unknown), '').band.find((card) => card.title === 'accounts');
-    // `loading` is the fallback, so an unknown account reads as none ready
-    // rather than as an alarming number.
-    expect(accounts?.value).toBe('0 ready');
-    expect(accounts?.tone).toBe('warn');
+    // The FIELD, not a rendering of it. `band()` tells `ready` from `bailed`
+    // and nothing else, so an unknown state draws the identical card to the
+    // narrowed one and a card assertion cannot see this arm at all.
+    expect(homeFrom(unknown).accounts.loading[0]?.state).toBe('loading');
   });
 
   it('narrows a dictation state it does not know rather than crashing on it', () => {

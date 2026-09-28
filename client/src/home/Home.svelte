@@ -36,7 +36,9 @@
         the update notice both cross in `cli_version`.
       -->
       {#if view.header.installed}claude {view.header.installed}{/if}
-      {#if view.header.update}{' \u{b7} '}<span class="upd">{"\u{2191}"} v{view.header.update} available</span>{/if}
+      {#if view.header.update}{' \u{b7} '}<span class="upd"
+          >{'\u{2191}'} v{view.header.update} available</span
+        >{/if}
     </div>
     <div class="totals">
       <!--

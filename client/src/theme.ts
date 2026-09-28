@@ -13,7 +13,7 @@
  * to change and no component branches for it.
  */
 
-import type { ClientSettings, FontName, ThemeName } from './wire/types';
+import type { ClientSettings } from './wire/types';
 
 /** The built-in pair, drawn with the faces shipped in `public/fonts/`. */
 const BUILT_IN_FONT = {
@@ -66,7 +66,7 @@ const DARK: Record<string, string> = {
  * outside `THEME_NAMES`, which the server refuses at boot. A second palette
  * joins here.
  */
-export function rootTokens(_theme: ThemeName | null | string): Record<string, string> {
+export function rootTokens(_theme: string | null): Record<string, string> {
   return DARK;
 }
 
@@ -78,7 +78,7 @@ export function rootTokens(_theme: ThemeName | null | string): Record<string, st
  * server refuses such a config at boot, and dressing it as the built-in pair
  * would make an ignored name read as the key working.
  */
-export function fontStack(name: FontName | null | string): { ui: string; mono: string } | null {
+export function fontStack(name: string | null): { ui: string; mono: string } | null {
   if (name === null) return BUILT_IN_FONT;
   if (name === 'system') return SYSTEM_FONT;
   return null;

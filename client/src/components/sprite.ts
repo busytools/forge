@@ -12,6 +12,4 @@ import sprite from '../assets/sprite.svg?raw';
 export const SPRITE = sprite;
 
 /** Every id the sprite defines, without its `i-` prefix. */
-export const ICONS = [...sprite.matchAll(/<symbol id="i-([a-z0-9-]+)"/g)].map(
-  (match) => match[1] as string,
-);
+export const ICONS = [...sprite.matchAll(/<symbol id="i-([a-z0-9-]+)"/g)].map((match) => match[1]);

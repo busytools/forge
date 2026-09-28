@@ -22,7 +22,10 @@ export function parseRoute(path: string): Route {
   if (segments.length === 1 && segments[0] === 'connect') return { name: 'connect' };
   if (segments.length === 4 && segments[0] === 'session') {
     const [, org, project, label] = segments as [string, string, string, string];
-    return { name: 'session', slot: { org: decode(org), project: decode(project), label: decode(label) } };
+    return {
+      name: 'session',
+      slot: { org: decode(org), project: decode(project), label: decode(label) },
+    };
   }
   return { name: 'notFound' };
 }

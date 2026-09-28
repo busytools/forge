@@ -7,11 +7,7 @@
    * One row. A lead and a worker share every column, and the state arrives
    * already decided - nothing here recomputes it.
    */
-  let {
-    row,
-    now,
-    refused = null,
-  }: { row: Row; now: number; refused?: string | null } = $props();
+  let { row, now, refused = null }: { row: Row; now: number; refused?: string | null } = $props();
 
   const mark = $derived(markOf(row.state));
   const href = $derived(row.task?.artifact ? followable(row.task.artifact) : null);
@@ -36,7 +32,7 @@
       <span class="txt">{row.task.subject}</span>
       <span class="st">{row.task.chip}</span>
       {#if row.task.artifact && href}
-        <a href={href} target="_blank" rel="noreferrer">{artifactLabel(row.task.artifact)}</a>
+        <a {href} target="_blank" rel="noreferrer">{artifactLabel(row.task.artifact)}</a>
       {:else if row.task.artifact}
         {artifactLabel(row.task.artifact)}
       {/if}

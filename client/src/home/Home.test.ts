@@ -2,7 +2,6 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
-import type { AgentRow } from '../wire/home';
 import { homeWire, type HomeWire } from '../wire/home';
 import Home from './Home.svelte';
 
@@ -79,7 +78,7 @@ describe('the home page as it draws', () => {
       ...homeWire,
       agents: [
         {
-          ...(homeWire.agents[0] as AgentRow),
+          ...homeWire.agents[0],
           // The fixture's project, so the row is drawn at all: an agent whose
           // slot names no project in `projects` contributes no row.
           slot: { org: 'TestOrg', project: 'proj', label: 'two words' },
@@ -93,8 +92,6 @@ describe('the home page as it draws', () => {
     const body = draw();
     expect(body, 'the row drew no lifecycle class').toContain('class="row idle"');
     expect(body).toContain('class="dot live"');
-    expect(body, 'the row drew no link to its seat').toContain(
-      'href="/session/TestOrg/proj/lead"',
-    );
+    expect(body, 'the row drew no link to its seat').toContain('href="/session/TestOrg/proj/lead"');
   });
 });

@@ -23,8 +23,9 @@ and a hand-edited copy here would be the drift this pair exists to prevent.
 **Do not re-sync them yet. This is the reconciliation Task 2 starts with.**
 
 As of `a2cadb2b842cce588c8d75f55f7e6339de3542a8` the server's `home.json` is
-blob `bbc3f97c`, first reshaped at `5b3b2667` and unchanged since. Four
-things moved, and three of them are the reads this slice reported missing:
+blob `bbc3f97c`, first reshaped at `5b3b2667` and unchanged since. **All four
+reads this slice reported missing have arrived**, and `dictate.enabled` came
+with them:
 
 - **Each entry of `projects` is now `{project, work, tasks, would_bind}`**
   rather than a bare project. So `HomeWire.projects` no longer describes

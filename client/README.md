@@ -35,6 +35,7 @@ test sees. It is here because the plan's salvage set names it and because
 the session and composer tasks run in parallel and cannot edit this shared
 base. The first icon belongs to Task 5's inspector, and that is where the
 sprite stops being dead weight.
+
 - `src/theme.ts` - the palettes and typeface stacks the names resolve to.
   The greeting carries the NAMES; the values live here, and there is no
   client-side reader of `forge.toml` by any path.
@@ -51,12 +52,12 @@ carries a name for each, not a value.
 so the client leaves them empty rather than guessing at them. Each is a
 read the server would have to add; none is a client defect.
 
-| Cell it feeds | What is missing |
-|---|---|
-| `.row .where` | the per-row working tree. `home.rs` reads it from `WorkCache` per row, and `HomeWire` carries no work - the twentieth record has the working tree for a *session*, not for a home row. |
-| `.row .what`, and `.st` with it | tasks. `HomeWire` carries none, so a row cannot show the task it holds, its status chip, or its artifact link. The header's task total goes with it. |
-| the refusal line | `would_bind`. `has_model` crosses, so `no model declared` is drawn; `no usable accounts` needs whether an account would bind, which does not cross. Until it is wired, a row draws the same middot whether a spawn would be allowed or the answer is unknown. |
-| the header's version | forge's own version. `home.rs` draws `env!("CARGO_PKG_VERSION")` and nothing on the wire carries it. The claude version and the update notice both do, and are drawn. |
+| Cell it feeds                   | What is missing                                                                                                                                                                                                                                               |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.row .where`                   | the per-row working tree. `home.rs` reads it from `WorkCache` per row, and `HomeWire` carries no work - the twentieth record has the working tree for a _session_, not for a home row.                                                                        |
+| `.row .what`, and `.st` with it | tasks. `HomeWire` carries none, so a row cannot show the task it holds, its status chip, or its artifact link. The header's task total goes with it.                                                                                                          |
+| the refusal line                | `would_bind`. `has_model` crosses, so `no model declared` is drawn; `no usable accounts` needs whether an account would bind, which does not cross. Until it is wired, a row draws the same middot whether a spawn would be allowed or the answer is unknown. |
+| the header's version            | forge's own version. `home.rs` draws `env!("CARGO_PKG_VERSION")` and nothing on the wire carries it. The claude version and the update notice both do, and are drawn.                                                                                         |
 
 A fifth is a view state rather than a read: the **unseen** mark. The
 server's `Live` owns it and does not encode it yet, so the client draws the

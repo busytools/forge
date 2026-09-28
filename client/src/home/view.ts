@@ -224,10 +224,10 @@ export function failureFile(failure: DictateFailure): string {
 function parseSemverTriple(value: string): [number, number, number] | null {
   const parts = value.split('.');
   if (parts.length < 3) return null;
-  const major = Number.parseInt(parts[0] as string, 10);
-  const minor = Number.parseInt(parts[1] as string, 10);
+  const major = Number.parseInt(parts[0], 10);
+  const minor = Number.parseInt(parts[1], 10);
   let digits = '';
-  for (const char of parts[2] as string) {
+  for (const char of parts[2]) {
     if (char < '0' || char > '9') break;
     digits += char;
   }
@@ -241,7 +241,7 @@ function isStrictlyNewer(lhs: string, rhs: string): boolean {
   const b = parseSemverTriple(rhs);
   if (a === null || b === null) return false;
   for (let i = 0; i < 3; i += 1) {
-    if ((a[i] as number) !== (b[i] as number)) return (a[i] as number) > (b[i] as number);
+    if (a[i] !== b[i]) return a[i] > b[i];
   }
   return false;
 }
@@ -280,7 +280,12 @@ export function whenOf(row: Row, now: number): string {
 export function band(wire: HomeWire, address: string): BandCard[] {
   const gateway = wire.accounts.gateway;
   const gatewayCard: BandCard = gateway.bind_error
-    ? { title: 'gateway', tone: 'bad', value: `failed :${gateway.port}`, detail: gateway.bind_error }
+    ? {
+        title: 'gateway',
+        tone: 'bad',
+        value: `failed :${gateway.port}`,
+        detail: gateway.bind_error,
+      }
     : gateway.ready
       ? {
           title: 'gateway',
@@ -292,19 +297,25 @@ export function band(wire: HomeWire, address: string): BandCard[] {
 
   const models = wire.dictate.snapshot.models;
   const failure = wire.dictate.snapshot.failure;
-  const dictation: BandCard = models.length === 0
-    ? { title: 'dictation', tone: 'off', value: 'off', detail: 'enabled = false' }
-    : failure !== null
-      ? { title: 'dictation', tone: 'bad', value: failureKind(failure), detail: failureFile(failure) }
-      : (() => {
-          const ready = models.filter((model) => model.state === 'ready').length;
-          return {
+  const dictation: BandCard =
+    models.length === 0
+      ? { title: 'dictation', tone: 'off', value: 'off', detail: 'enabled = false' }
+      : failure !== null
+        ? {
             title: 'dictation',
-            tone: ready === models.length ? 'ready' : 'warn',
-            value: `${ready} of ${models.length} loaded`,
-            detail: models.map((model) => modelState(model.state)).join(', '),
-          };
-        })();
+            tone: 'bad',
+            value: failureKind(failure),
+            detail: failureFile(failure),
+          }
+        : (() => {
+            const ready = models.filter((model) => model.state === 'ready').length;
+            return {
+              title: 'dictation',
+              tone: ready === models.length ? 'ready' : 'warn',
+              value: `${ready} of ${models.length} loaded`,
+              detail: models.map((model) => modelState(model.state)).join(', '),
+            };
+          })();
 
   const ready = wire.accounts.loading.filter((row) => row.state === 'ready').length;
   const bailed = wire.accounts.loading.filter((row) => row.state === 'bailed').length;
@@ -377,7 +388,8 @@ function rowOf(agent: AgentRow, name: string): Row {
 function dormantRow(project: ProjectView, lastRan: WireTime | null): Row {
   return {
     slot: { org: project.org, project: project.name, label: 'lead' },
-    state: lastRan === null ? { kind: 'never-started' } : { kind: 'lifecycle', lifecycle: 'Sleeping' },
+    state:
+      lastRan === null ? { kind: 'never-started' } : { kind: 'lifecycle', lifecycle: 'Sleeping' },
     name: project.name,
     place: { branch: null, files: null },
     task: null,
@@ -412,7 +424,7 @@ export function homeView(wire: HomeWire, address: string): HomeView {
     // A project's row is its lead, and the home names it for the project:
     // the lead's label is its identity, not what the row is called here.
     const started = rows.length > 0;
-    const lead = started ? rowOf(rows[0] as AgentRow, project.name) : dormantRow(project, lastRan);
+    const lead = started ? rowOf(rows[0], project.name) : dormantRow(project, lastRan);
     const workers = rows.slice(1).map((agent) => rowOf(agent, agent.label));
 
     const section = orgs.find((org) => org.name === project.org);

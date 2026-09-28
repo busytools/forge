@@ -7,7 +7,7 @@ import { ICONS, SPRITE } from './sprite';
 /** The ids a mockup asks for, as `<use href="#i-...">`. */
 function idsUsedBy(mock: string): Set<string> {
   const html = readFileSync(new URL(mock, import.meta.url), 'utf8');
-  return new Set([...html.matchAll(/href="#i-([a-z0-9-]+)"/g)].map((match) => match[1] as string));
+  return new Set([...html.matchAll(/href="#i-([a-z0-9-]+)"/g)].map((match) => match[1]));
 }
 
 describe('the icon sprite', () => {
