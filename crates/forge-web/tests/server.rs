@@ -3615,10 +3615,10 @@ async fn a_seat_with_nothing_running_gets_the_reason_not_a_box() {
         page.contains("</span>not running</span>"),
         "in the composer's own line, which is the same wording the chat column uses: {page}",
     );
-    assert!(
-        page.contains("id=\"draft\"") && page.contains("hx-preserve"),
-        "and the field it was drawn with is kept parked rather than dropped: {page}",
-    );
+    let blocked = page.find("class=\"blocked\"").expect("the reason the box is not drawn");
+    let field = page.find("id=\"draft\"").expect("the field it was drawn with");
+    assert!(field > blocked, "kept parked inside the reason rather than drawn as a box: {page}");
+    assert!(page[field..].contains("hx-preserve"), "and marked so the browser keeps it: {page}");
 }
 
 /// The box's send is a control that acts: it posts the draft to the seat,
@@ -4115,10 +4115,10 @@ async fn a_starting_seat_is_connecting() {
         "a spawn that has not connected says so: {page}",
     );
     assert!(page.contains("class=\"blocked\""), "and the box is the reason: {page}");
-    assert!(
-        page.contains("id=\"draft\"") && page.contains("hx-preserve"),
-        "and the field it was drawn with is kept parked rather than dropped: {page}",
-    );
+    let blocked = page.find("class=\"blocked\"").expect("the reason the box is not drawn");
+    let field = page.find("id=\"draft\"").expect("the field it was drawn with");
+    assert!(field > blocked, "kept parked inside the reason rather than drawn as a box: {page}");
+    assert!(page[field..].contains("hx-preserve"), "and marked so the browser keeps it: {page}");
 }
 
 /// A spawn that failed is a failure the reader has to act on, not a wait,
@@ -4154,10 +4154,13 @@ async fn a_compacting_session_says_so_until_it_clears() {
     let (_status, page) = composer(&config, "").await;
 
     assert!(page.contains("Compacting context"), "the CLI's own status is drawn: {page}");
+    let blocked = page.find("class=\"blocked\"").expect("the reason the box is not drawn");
+    let field = page.find("id=\"draft\"").expect("the field it was drawn with");
     assert!(
-        page.contains("id=\"draft\"") && page.contains("hx-preserve"),
-        "and the box is gone while it runs, with the reader's field parked: {page}",
+        field > blocked,
+        "and the box is gone while it runs, with the reader's field parked inside the reason: {page}",
     );
+    assert!(page[field..].contains("hx-preserve"), "and marked so the browser keeps it: {page}");
 
     fleet.emit(SessionUpdate::ChatAppended { key: lead(), msg: status_null() });
     settle().await;
@@ -4452,7 +4455,10 @@ async fn a_docks_rows_read_as_live_choices() {
     let (_status, page) = composer(&config, "").await;
 
     assert!(page.contains("class=\"opt sel\""), "the first row is marked: {page}");
-    assert!(!page.contains("class=\"off\""), "with nothing demoted: {page}");
+    // A space before it: the demoted marker is a class among others
+    // (`class="opt sel off"`), and the field's own `autocomplete="off"`
+    // ends in the word without the space.
+    assert!(!page.contains(" off\""), "with nothing demoted: {page}");
 }
 
 /// The meter's window is long enough to fill the slot it sits in. The

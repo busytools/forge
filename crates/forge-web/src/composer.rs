@@ -995,12 +995,13 @@ struct SignIn {
 impl Composer {
     /// Fold one update in, answering whether a composer has to be redrawn.
     ///
-    /// The answer is about the update rather than about the state it landed
-    /// on: the boot's fold applies every update before a session stream
-    /// sees it, so an answer read off what a second application changed
-    /// would be false for every update the composer owns. An update about a
-    /// take this view is no longer drawing is still folded - the guards
-    /// keep it from drawing over a newer take - and still answers true.
+    /// An arm that consumes what it resolves answers for the update rather
+    /// than for the state it landed on, because the boot's fold applies
+    /// every update before a session stream sees it: a take's end read off
+    /// what a second application changed would be false for whoever applied
+    /// second, and the box would keep drawing a take the fold had taken.
+    /// Every other arm is answered by its own guard, which holds the same
+    /// way on both applications.
     pub fn apply(&mut self, update: &SessionUpdate) -> bool {
         match update {
             SessionUpdate::DictateStarted { key, floor_db, generation } => {
@@ -1015,25 +1016,30 @@ impl Composer {
                 // The wire carries no generation on a level, and the
                 // stream is one order per seat, so the take it belongs to
                 // is whichever is live: the level that arrives after one
-                // ended finds none and is dropped.
+                // ended finds none and is dropped. The other seat's page
+                // must not be redrawn for it either: a take's fifty
+                // readings a second are news to the composer holding it.
                 if let Some(take) = self.takes.get_mut(key) {
                     take.push(*peak_db);
+                    return true;
                 }
-                true
+                false
             }
             SessionUpdate::DictateTranscribing { key } => {
                 if let Some(take) = self.takes.get_mut(key) {
                     take.phase = Phase::Transcribing;
+                    return true;
                 }
-                true
+                false
             }
             SessionUpdate::DictateProgress { key, generation, done, total } => {
                 if let Some(take) = self.takes.get_mut(key)
                     && take.generation == *generation
                 {
                     take.progress = (*done, *total);
+                    return true;
                 }
-                true
+                false
             }
             SessionUpdate::DictateEnded { key, outcome, generation } => {
                 // The take goes only if it is the one this resolves - a
@@ -1179,6 +1185,25 @@ mod tests {
                 tool_id: "a-prompt-this-view-never-folded".to_owned(),
             }),
             "the box redraws for a settled prompt this view never folded too",
+        );
+    }
+
+    /// A take's readings are the composer's news only for the seat holding
+    /// it. A level for a seat this fold has no take for - another session's
+    /// page, or the tail of one that ended - must draw nothing, or fifty
+    /// readings a second redraw a region that cannot have changed for the
+    /// whole length of a take. Catches an arm that answers for the update
+    /// rather than for whether it applies.
+    #[test]
+    fn a_level_for_a_seat_with_no_take_is_not_news() {
+        let mut composer = Composer::default();
+
+        assert!(
+            !composer.apply(&SessionUpdate::DictateLevel {
+                key: SessionSlot::lead("Busytools", "forge"),
+                peak_db: -20.0,
+            }),
+            "a level with no take to draw it in is not this box's news",
         );
     }
 
