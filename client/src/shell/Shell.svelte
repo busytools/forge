@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Sprite from '../components/Sprite.svelte';
   import { hrefFor, parseRoute, type Route } from '../routes';
   import { applySettings } from '../theme';
   import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
@@ -69,5 +70,8 @@
   same-named wrapper here would hand the shell the session's columns.
 -->
 <svelte:body onclick={follow} />
+
+<!-- Once per page: a `<use>` reference resolves against the document it is in. -->
+<Sprite />
 
 <Router {route} {settings} {address} onconnect={connect} />
