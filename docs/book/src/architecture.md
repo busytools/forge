@@ -86,9 +86,9 @@ through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
 `cli_version`, `conversation`, `slash_commands`, `forge_commands`,
 `subagents`, `emoji`,
-`file_index`, `header`, `mcp_servers`,
+`file_index`, `respect_gitignore`, `header`, `mcp_servers`,
 `processes`, `monitors` - and receives changes through
-`subscribe()`. All twenty exist in `forge-sessions`, and the TUI reads
+`subscribe()`. All twenty-one exist in `forge-sessions`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk

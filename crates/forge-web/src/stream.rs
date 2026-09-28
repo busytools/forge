@@ -409,6 +409,43 @@ mod tests {
 
     use super::Live;
 
+    /// A dispatched agent's frame lands in the conversation the page holds,
+    /// and the fold draws nothing for it. Both halves matter: the chat is not
+    /// its surface, and the SUBAGENTS section reads the same slice, so a
+    /// filter at the stream would empty that section instead.
+    #[test]
+    fn a_dispatched_frame_reaches_the_conversation_and_draws_nothing() {
+        use super::append;
+
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let mut conversation: Vec<Message> = Vec::new();
+        let child = serde_json::from_value::<Message>(serde_json::json!({
+            "type": "assistant",
+            "session_id": "s",
+            "parent_tool_use_id": "toolu_dispatch",
+            "message": {
+                "id": "msg_child",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{"type": "text", "text": "a dispatched agent working"}],
+            },
+        }))
+        .expect("a parented frame");
+
+        let appended = append(
+            &SessionUpdate::ChatAppended { key: slot.clone(), msg: child },
+            &slot,
+            &mut conversation,
+        );
+
+        assert!(appended, "the frame is appended, not filtered at the stream");
+        assert_eq!(conversation.len(), 1, "and the conversation holds it");
+        assert!(
+            forge_sessions::transcript::render_units(&conversation).is_empty(),
+            "while the chat draws nothing for it",
+        );
+    }
+
     fn result_message(subtype: &str, is_error: bool) -> Message {
         serde_json::from_value(serde_json::json!({
             "type": "result",

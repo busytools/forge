@@ -100,6 +100,22 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
                     timestamp,
                 });
             }
+            // A system frame has no inner envelope: the scan hands the row
+            // whole, and it is already the shape the wire sends, so the
+            // same decoder turns it into the frame a reader draws. A row
+            // missing a typed field decodes as a generic `Message::System`
+            // rather than failing, which the fold draws nothing for, so the
+            // Err arm is for a shape this cannot currently take.
+            "system" => match serde_json::from_value::<Message>(message_value.clone()) {
+                Ok(frame) => out.push(frame),
+                Err(err) => tracing::warn!(
+                    target: "agent.history",
+                    event_name = "replay_system_frame_undecoded",
+                    ?message_value,
+                    %err,
+                    "synthesize_replay_messages: failed to decode a system frame; entry skipped",
+                ),
+            },
             _ => {}
         }
     }

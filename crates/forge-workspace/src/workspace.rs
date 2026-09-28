@@ -501,6 +501,12 @@ pub struct Workspace {
     /// real `forge.toml`. Empty in production.
     #[cfg(any(test, feature = "testing"))]
     test_extra_projects: Mutex<Vec<LoadedProject>>,
+    /// Test-only stand-in for the CLI's per-user preferences document, so
+    /// a view fixture reads an ignore preference without the machine's
+    /// real `$HOME/.claude.json`. `None` means no fixture seeded one, and
+    /// the read goes to the file.
+    #[cfg(any(test, feature = "testing"))]
+    test_user_preferences: Mutex<Option<serde_json::Value>>,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>`, the account key
@@ -1360,6 +1366,8 @@ impl Workspace {
             command_intercept: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_extra_projects: Mutex::new(Vec::new()),
+            #[cfg(any(test, feature = "testing"))]
+            test_user_preferences: Mutex::new(None),
         };
         if let Some(prober) = cli_version_prober {
             workspace.start_cli_version_probe(prober);
@@ -5821,6 +5829,20 @@ impl Workspace {
     ) -> Option<forge_agent::userdata::settings::SettingsDocuments> {
         let handle = self.agent_handle_for(key)?;
         Some(handle.settings_documents(cwd))
+    }
+
+    /// The CLI's per-user preferences document, from `$HOME/.claude.json`.
+    ///
+    /// Read on each call rather than held, because the user can change a
+    /// preference while forge runs.
+    pub fn user_preferences(&self) -> Option<serde_json::Value> {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            if let Some(seeded) = self.test_user_preferences.lock().clone() {
+                return Some(seeded);
+            }
+        }
+        forge_agent::userdata::settings::user_preferences()
     }
 
     /// Resolve the agent's configured config_dir for `key`. Returns

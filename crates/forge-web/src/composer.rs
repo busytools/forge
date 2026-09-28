@@ -589,7 +589,7 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
         }
         Trigger::File => {
             let index = match roster.cwd_for(slot) {
-                Some(cwd) => home.work.files(slot, &cwd).await,
+                Some(cwd) => home.work.files(home.surface, slot, &cwd).await,
                 None => std::sync::Arc::default(),
             };
             let found = index.visible(query, FILE_ROWS);

@@ -69,6 +69,9 @@ impl Fleet {
         // app-support base, so a fixture gets a durable layer without
         // opening a second handle on the same file.
         let workspace = Arc::new(Workspace::new_for_test(config_dir.to_owned())?);
+        // An empty document, so no fixture reads the machine's own
+        // `$HOME/.claude.json` for a preference.
+        workspace.seed_test_user_preferences(serde_json::json!({}));
         Ok(Self {
             surface: Arc::new(ViewSurface::new(Arc::clone(&workspace))),
             workspace,
@@ -91,6 +94,12 @@ impl Fleet {
     /// line without a real `claude --version` and npm probe.
     pub fn set_cli_version(&self, installed: Option<&str>, latest: Option<&str>) {
         self.workspace.seed_test_cli_version(installed, latest);
+    }
+
+    /// Hold the CLI's per-user preferences document, so a view test reads a
+    /// preference of its own rather than the machine's.
+    pub fn set_user_preferences(&self, preferences: serde_json::Value) {
+        self.workspace.seed_test_user_preferences(preferences);
     }
 
     /// Give `project` a live lead session, registering the domain a spawn

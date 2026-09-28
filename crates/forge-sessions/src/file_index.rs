@@ -13,12 +13,24 @@ pub struct FileIndex {
     pub entries: BTreeMap<String, FileCandidate>,
 }
 
+/// Whether a walk honours gitignore, from the CLI's per-user preferences
+/// document: its `respectGitignore` key, absent or not a boolean reading
+/// as `true`, which is the CLI's own default and what the terminal's `@`
+/// list does. Both views read the key here, so neither can drift on how
+/// it is read.
+pub fn respect_gitignore(preferences: Option<&serde_json::Value>) -> bool {
+    preferences
+        .and_then(|document| document.get("respectGitignore"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+}
+
 impl FileIndex {
-    /// Walk `root` once and index what is under it. `respect_gitignore`
-    /// is the reader's own preference, which the walker honours.
-    pub fn scan(root: &Path, respect_gitignore: bool) -> Self {
+    /// Walk `root` once and index what is under it. `honour_gitignore` is
+    /// the reader's own preference, which the walker honours.
+    pub fn scan(root: &Path, honour_gitignore: bool) -> Self {
         let entries =
-            forge_workspace::env::file_index::collect_candidates(root, root, respect_gitignore)
+            forge_workspace::env::file_index::collect_candidates(root, root, honour_gitignore)
                 .into_iter()
                 .map(|candidate| (candidate.rel_path.clone(), candidate))
                 .collect();
@@ -79,7 +91,7 @@ fn match_tier(candidate: &FileCandidate, query_lower: &str) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileCandidate, FileIndex, rank_and_truncate_candidates};
+    use super::{FileCandidate, FileIndex, rank_and_truncate_candidates, respect_gitignore};
 
     fn candidate(rel_path: &str) -> FileCandidate {
         FileCandidate {
@@ -88,6 +100,25 @@ mod tests {
             basename_lower: rel_path.rsplit('/').next().unwrap_or(rel_path).to_lowercase(),
             depth: rel_path.matches('/').count(),
         }
+    }
+
+    /// The preference is the document's own key, and the CLI's default is
+    /// to respect the file: a reader with no document, or one that never
+    /// set the key, hides ignored files.
+    #[test]
+    fn the_ignore_preference_is_the_documents_key_and_defaults_to_true() {
+        use serde_json::json;
+
+        assert!(respect_gitignore(None), "no document reads as the CLI's own default");
+        assert!(respect_gitignore(Some(&json!({}))), "and so does one without the key");
+        assert!(
+            !respect_gitignore(Some(&json!({"respectGitignore": false}))),
+            "the key is what the walk follows",
+        );
+        assert!(
+            respect_gitignore(Some(&json!({"respectGitignore": "no"}))),
+            "and a value that is not a boolean reads as the default rather than as off",
+        );
     }
 
     /// The walk is recursive and keys every file by its path from the

@@ -276,10 +276,6 @@ pub fn opus_version_pin(document: &Value) -> Result<Option<String>, ()> {
     read_string(document, &["env", ANTHROPIC_DEFAULT_OPUS_MODEL_ENV])
 }
 
-pub fn respect_gitignore(document: &Value) -> Result<bool, ()> {
-    Ok(read_bool(document, &["respectGitignore"])?.unwrap_or(true))
-}
-
 pub fn language(document: &Value) -> Result<Option<String>, ()> {
     read_string(document, &["language"])
 }
@@ -578,7 +574,6 @@ mod tests {
 
         // Forge defaults `defaultMode` to `Auto` when missing.
         assert_eq!(default_permission_mode(&document), Ok(DefaultPermissionMode::Auto));
-        assert_eq!(respect_gitignore(&document), Ok(true));
         assert_eq!(output_style(&document), Ok(OutputStyle::Default));
         assert_eq!(model(&document), Ok(None));
     }
@@ -586,14 +581,12 @@ mod tests {
     #[test]
     fn persisted_setting_readers_reject_invalid_values() {
         let invalid_output_style = serde_json::json!({ "outputStyle": "Verbose" });
-        let invalid_gitignore = serde_json::json!({ "respectGitignore": "yes" });
         let invalid_model = serde_json::json!({ "model": true });
         let invalid_permission_mode = serde_json::json!({
             "permissions": { "defaultMode": "not-a-mode" }
         });
 
         assert_eq!(output_style(&invalid_output_style), Err(()));
-        assert_eq!(respect_gitignore(&invalid_gitignore), Err(()));
         assert_eq!(model(&invalid_model), Err(()));
         assert_eq!(default_permission_mode(&invalid_permission_mode), Err(()));
     }

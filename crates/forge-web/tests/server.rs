@@ -842,26 +842,108 @@ async fn the_git_section_groups_a_directory_once() {
     }
 }
 
-/// The section's summary counts what its own body lists, so a file the
-/// body does not carry cannot inflate the count into a truncation note
-/// that is not true.
+/// The section's summary counts what has moved in the working tree, which
+/// is the same movement the project's row on the home counts, and an
+/// untracked file is part of it. The list below the summary is the smaller
+/// set a diff can show, and that difference is the two questions rather
+/// than two answers to one.
 #[tokio::test]
-async fn the_git_section_summary_counts_what_it_lists() {
+async fn the_git_section_summary_counts_the_movement_the_row_counts() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
     fleet.start("Busytools", "forge").expect("forge is declared");
     let repo = dir.path().join("forge");
     repo_with(repo.as_path(), 3);
-    // Untracked, so the working tree's own count includes it and the diff
-    // the section lists cannot.
+    // Untracked, so it is in the working tree's count and in nothing the
+    // diff below can list.
     std::fs::write(repo.join("untracked.txt"), "new\n").expect("write");
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
 
-    assert!(page.contains("3 files"), "the summary counts the three it lists: {page}");
-    assert!(!page.contains("4 files"), "and not the untracked one it cannot: {page}");
-    assert_eq!(page.matches("<div class=\"file\">").count(), 3, "three files are listed: {page}");
+    assert!(
+        page.contains("<span class=\"c2\">main \u{b7} 4 files</span>"),
+        "the summary counts the untracked file with the rest: {page}",
+    );
+    assert_eq!(
+        page.matches("<div class=\"file\">").count(),
+        3,
+        "and the body still lists the three a diff has: {page}",
+    );
+
+    let (_status, _content_type, home) = get(&config, "/").await;
+    assert!(
+        home.contains("<span class=\"files\">4 files</span>"),
+        "the row on the home counts the same four, so one fact has one source: {home}",
+    );
+}
+
+/// A tree whose only movement is untracked files: the summary counts it and
+/// the scan cannot list it, so the section says what the count is over rather
+/// than opening on nothing. The count is what makes this state need the line.
+#[tokio::test]
+async fn a_tree_the_scan_cannot_list_says_what_the_list_left_out() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    let repo = dir.path().join("forge");
+    repo_with(repo.as_path(), 1);
+    // The one tracked change goes away, leaving the untracked file alone:
+    // porcelain 1, and nothing the scan can list.
+    git(repo.as_path(), &["checkout", "--", "."]);
+    std::fs::write(repo.join("untracked.txt"), "new\n").expect("write");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<span class=\"c2\">main \u{b7} 1 file</span>"),
+        "the summary counts the untracked file: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"k\">not in the diff</span>"),
+        "and the body says which file the count is over: {page}",
+    );
+    assert!(
+        page.contains("<details class=\"sec\" open data-k=\"sec-git\">"),
+        "so the section opens on it rather than leading the inspector closed: {page}",
+    );
+}
+
+/// The note under the list is the list's own shortfall, not the tree's. Ten
+/// entries move in this tree and the scan can carry seven, so the note says
+/// two rather than three: the untracked file its cap could not reach either
+/// way is reconciled by the row above it, and counting it here as well would
+/// say the same file twice.
+#[tokio::test]
+async fn the_note_counts_the_lists_shortfall_and_not_the_trees() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    let repo = dir.path().join("forge");
+    repo_with(repo.as_path(), 9);
+    std::fs::write(repo.join("untracked.txt"), "new\n").expect("write");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<span class=\"c2\">main \u{b7} 10 files</span>"),
+        "the summary counts every entry the tree moved: {page}",
+    );
+    assert_eq!(page.matches("<div class=\"file\">").count(), 7, "the list holds the cap: {page}");
+    assert!(
+        page.contains("\u{2026}and 2 more"),
+        "the note is the nine the scan found less the seven it carries: {page}",
+    );
+    assert!(
+        !page.contains("\u{2026}and 3 more"),
+        "and not the tree's ten less those seven, which would count the untracked file twice: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"k\">not in the diff</span>"),
+        "the untracked file is reconciled by its own row instead: {page}",
+    );
 }
 
 /// A clean tree with no pull request has nothing to open on, so the section
@@ -1382,6 +1464,21 @@ async fn a_turn_read_from_a_transcript_draws_its_own_row() {
         page.matches("class=\"turninfo\"").count(),
         2,
         "each turn draws its own row: {page}",
+    );
+    // The live row's own name is `turn-live`, so the property is the digit
+    // after the prefix rather than the prefix on its own.
+    let named_by_place = page
+        .split("data-k=\"turn-")
+        .skip(1)
+        .any(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_digit()));
+    assert!(!named_by_place, "no row is named by its place in the conversation: {page}");
+    assert!(
+        page.contains("data-k=\"2026-04-22T04:15:27.000Z\""),
+        "the first row is named for its own turn, so nothing inserted above it renames it: {page}",
+    );
+    assert!(
+        page.contains("data-k=\"2026-04-22T04:20:00.000Z\""),
+        "and the second for its own: {page}",
     );
     assert!(page.contains("2m 41s"), "the first turn's own wall clock: {page}");
     assert!(page.contains("1m 30s"), "and the second's: {page}");
@@ -2085,6 +2182,100 @@ async fn a_turns_hooks_are_drawn_as_the_chip() {
     assert!(region.contains("hook summary \u{b7} 2 actions"), "with its count: {region}");
     assert!(region.contains("just fmt \u{b7} 1.4s"), "and what each one ran: {region}");
     assert!(region.contains("just check \u{b7} 1m 02s"), "with how long it took: {region}");
+}
+
+/// The same row, on a page nobody watched arrive. A turn's hooks are on disk
+/// as a `system/stop_hook_summary` row and the read dropped every `system`
+/// row, so the chip was a surface that existed only while the page was
+/// live. A fresh load has the identical row and draws it.
+#[tokio::test]
+async fn a_turns_hooks_draw_on_a_fresh_load() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"the layout pass is in"}]}}"#,
+                r#"{"type":"system","subtype":"stop_hook_summary","hookCount":2,"hookInfos":[{"command":"just fmt","durationMs":1400},{"command":"just check","durationMs":62000}],"hookErrors":[],"hasOutput":true,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"toolu_hook","uuid":"hooks-1","sessionId":"s"}"#,
+                r#"{"type":"assistant","message":{"id":"m2","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"the sweep is done"}]}}"#,
+                r#"{"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[{"command":"just tidy","durationMs":300}],"hookErrors":[],"hasOutput":true,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"toolu_hook2","uuid":"hooks-2","sessionId":"s"}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(page.contains("the layout pass is in"), "the turn the hooks belong to draws: {page}");
+    assert!(
+        page.matches("class=\"hooks\"").count() == 2,
+        "one chip per turn whose hooks ran, which is what the mockup draws: {page}",
+    );
+    assert!(
+        page.contains("hook summary \u{b7} 2 actions"),
+        "with the count the row carries: {page}",
+    );
+    assert!(page.contains("just fmt \u{b7} 1.4s"), "and what each one ran: {page}");
+    assert!(page.contains("hook summary \u{b7} 1 action"), "or its singular: {page}");
+    assert!(page.contains("just tidy \u{b7} 0.3s"), "for the turn after it: {page}");
+}
+
+/// A sub-agent's frames reach this page's stream, and the chat draws none of
+/// them. The drawing says the SUBAGENTS section is the only surface an agent
+/// has, the terminal suppresses the same frames, and the inspector's note on
+/// this very page repeats it. The session's own line rides in the same
+/// region as the control, so a chat that drew nothing at all would not pass.
+#[tokio::test]
+async fn the_chat_draws_none_of_a_sub_agents_frames() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet.seed_transcript("Busytools", "forge", "lead", &[]).expect("an empty transcript");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    let key = SessionSlot::lead("Busytools", "forge");
+    for (text, parent) in [
+        ("a dispatched agent thinking out loud", Some("toolu_dispatch")),
+        ("the session's own line", None),
+    ] {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: key.clone(),
+            msg: assistant_saying(text, parent),
+        });
+    }
+    let region = nth_session_event(stream, 3).await.expect("the region after both frames");
+
+    assert!(region.contains("the session's own line"), "the session's own prose draws: {region}");
+    assert!(
+        !region.contains("a dispatched agent thinking out loud"),
+        "and a dispatched agent's does not: {region}",
+    );
+}
+
+/// One assistant frame with a line of its own, as the wire sends it.
+/// `parent` is the dispatch's tool-use id, which is what makes the frame a
+/// sub-agent's.
+fn assistant_saying(text: &str, parent: Option<&str>) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "assistant",
+        "session_id": "s",
+        "parent_tool_use_id": parent,
+        "message": {
+            "id": format!("msg-{}", parent.unwrap_or("own")),
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [{"type": "text", "text": text}],
+        },
+    }))
+    .expect("an assistant frame")
 }
 
 /// A compaction in flight says so, from the session's own status frame, and
@@ -4249,6 +4440,56 @@ async fn each_list_draws_its_own_mark() {
     let (_status, page) = composer(&config, "@home").await;
     assert!(page.contains("class=\"ac\""), "a file query opens the file list: {page}");
     assert!(page.contains("href=\"#i-file\""), "which draws the file mark: {page}");
+}
+
+/// One file is gitignored in the fleet's project tree, and one is not.
+fn seed_ignored_tree(dir: &tempfile::TempDir) {
+    let root = dir.path().join("forge");
+    std::fs::create_dir_all(root.join(".git")).expect("mkdir");
+    std::fs::write(root.join(".gitignore"), "ignored.rs\n").expect("write");
+    std::fs::write(root.join("ignored.rs"), "").expect("write");
+    std::fs::write(root.join("visible.rs"), "").expect("write");
+}
+
+/// The walk runs with the user's own gitignore preference, so a second view
+/// answers as the terminal does for one tree: with `respectGitignore` off,
+/// the file the tree's own `.gitignore` names is offered.
+#[tokio::test]
+async fn the_file_list_follows_the_ignore_preference() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    seed_ignored_tree(&dir);
+    fleet.set_user_preferences(serde_json::json!({ "respectGitignore": false }));
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "@ignored").await;
+
+    assert!(
+        page.contains("<em>ignored</em>.rs"),
+        "an ignored file is offered once the preference is off: {page}",
+    );
+}
+
+/// The same tree with the preference unset offers it not at all: an absent
+/// key reads as the CLI's own default, which is to respect the file. The
+/// walk is then asked for the other file, because a list that came back
+/// empty for any other reason reads the same as a hidden one.
+#[tokio::test]
+async fn the_file_list_hides_ignored_files_by_default() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    seed_ignored_tree(&dir);
+    fleet.set_user_preferences(serde_json::json!({}));
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "@ignored").await;
+    assert!(!page.contains("class=\"ac\""), "no list opens for a file the tree ignores: {page}");
+
+    let (_status, page) = composer(&config, "@visible").await;
+    assert!(
+        page.contains("<em>visible</em>.rs"),
+        "and the same tree is walked for a file it does not ignore: {page}",
+    );
 }
 
 /// The filter is a window over the candidates and not the whole set: a list
