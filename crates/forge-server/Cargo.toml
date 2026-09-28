@@ -20,13 +20,22 @@ testing = ["forge-workspace/testing", "forge-workspace/test-helpers"]
 workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+# The socket. The pin and its other two features come from the workspace,
+# so `ws` is added here rather than the shared pin being moved.
+axum = { workspace = true, features = ["ws"] }
 forge-primitives = { workspace = true }
 forge-workspace = { workspace = true }
+# A socket's incoming messages are a `futures_util::Stream`.
+futures-util = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # The subscription verb hands out the workspace's own receiver, and naming
-# that type is a tokio channel.
-tokio = { workspace = true, features = ["sync"] }
+# that type is a tokio channel. `net` is the listener the socket binds:
+# the workspace's own set does not carry it, and without it
+# `tokio::net::TcpListener` reads as a missing item rather than a missing
+# feature.
+tokio = { workspace = true, features = ["sync", "net"] }
 # The Monitor tail read reports a file it could not open, which is a
 # diagnosis a reader makes from the log rather than from the page.
 tracing = { workspace = true }
@@ -40,6 +49,9 @@ forge-server = { path = ".", features = ["testing"] }
 # so they need `Workspace::testing_stub`, its seeding helpers, and the
 # `forge.toml` fixture `Workspace::new_for_test` builds from a tempdir.
 forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
+# The test's own client for the socket, because a test that opens one has to
+# speak the protocol from the other side.
+tokio-tungstenite = { workspace = true }
 tempfile = { workspace = true }
 # The connectors fixture seeds durable subscriptions, which are keyed by id.
 uuid = { workspace = true }

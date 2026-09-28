@@ -11,15 +11,19 @@
 //! a caller that wants a panic is the one that asks for it.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use forge_primitives::SessionSlot;
 use forge_primitives::tasks::{Task, TaskStatus};
-use forge_primitives::{CronEntry, CronId, CronKind};
+use forge_primitives::{CronEntry, CronId, CronKind, WebConfig};
 use forge_workspace::{ProjectKey, Workspace};
 
 use crate::SessionUpdate;
+use crate::live::Live;
 use crate::surface::{PendingKind, ViewSurface};
+use crate::transport::TransportState;
+use crate::work::WorkCache;
 
 /// What a fixture hands back when it cannot build what was asked for.
 pub type FixtureError = Box<dyn std::error::Error + Send + Sync>;
@@ -55,6 +59,34 @@ pub struct Fleet {
 /// The session id a seeded transcript belongs to. One per fleet is enough:
 /// a test that needs two reads two slots against their own files.
 const SEEDED_SESSION: &str = "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45";
+
+impl TransportState {
+    /// A server over a fixture fleet, for a test that opens a socket.
+    pub fn for_test() -> Result<Self, FixtureError> {
+        let fleet = Fleet::in_dir(&scratch_dir(), &[("TestOrg", &["proj"])])?;
+        Ok(Self {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(Live::new()),
+            config: WebConfig::default(),
+        })
+    }
+}
+
+/// A directory under the system temp dir, one per call.
+///
+/// `Fleet` writes a store under the directory it is given and needs it to
+/// outlive the fixture, so the directory is left in place rather than
+/// cleaned up. This module ships with the library, so it cannot reach for a
+/// temp-file crate: a dev-dependency is not in scope here.
+fn scratch_dir() -> std::path::PathBuf {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    std::env::temp_dir().join(format!(
+        "forge-server-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
 
 impl Fleet {
     /// A fleet whose `forge.toml` declares one project per name under each

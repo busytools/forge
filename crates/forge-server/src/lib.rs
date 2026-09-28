@@ -29,6 +29,7 @@ mod test_support;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod transcript;
+pub mod transport;
 pub mod unseen;
 pub mod work;
 
