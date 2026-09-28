@@ -214,7 +214,7 @@ pub async fn render(
         form #comp .comp hx-get=(region) hx-target="#comp" hx-swap="outerHTML"
             hx-trigger="input delay:150ms" {
             @if let Some(blocked) = blocked(state, row, slot, held) {
-                (blocked_box(&blocked))
+                (blocked_box(&blocked, draft_state))
             } @else if let Some(pending) = row.and_then(|row| row.pending) {
                 (dock(row, pending, held.ask(slot).or(kept.as_ref()), &seat, draft_state))
             } @else {
@@ -289,10 +289,11 @@ fn blocked(
     }
 }
 
-fn blocked_box(blocked: &Blocked) -> Markup {
+fn blocked_box(blocked: &Blocked, draft_state: Draft) -> Markup {
     html! {
         div class=(if blocked.bad { "box err" } else { "box" }) {
             div .blocked {
+                (parked_field(draft_state))
                 span .b1 {
                     @if !blocked.bad {
                         span .ring {}
@@ -892,7 +893,12 @@ fn question_dock(request: &QuestionRequest, endpoint: &str) -> Markup {
                 }
             }
         }
-        textarea .notes name="notes" rows="1"
+        // What the reader has typed here is theirs, and a push cannot carry
+        // it, so the field is preserved like the box's own. The id names the
+        // question rather than the field: words written for one question are
+        // not an answer to the next, and a fresh id is a fresh field.
+        textarea .notes id=(format!("notes-{tool_id}"))
+            name="notes" rows="1" hx-preserve
             placeholder="answer with your own words" {}
     }
 }
@@ -1078,12 +1084,19 @@ impl Composer {
                 if let Message::System { subtype, data, .. } = msg
                     && subtype == "status"
                 {
+                    // True for either status rather than for the change it
+                    // makes: the boot's own fold applies every update first,
+                    // so a second application sees no difference and a
+                    // difference is not what the answer is about - the status
+                    // frame is the composer's news and the box is redrawn.
                     let field = data.get("status");
                     if field.and_then(serde_json::Value::as_str) == Some("compacting") {
-                        return self.compacting.insert(key.clone());
+                        self.compacting.insert(key.clone());
+                        return true;
                     }
                     if field.is_some_and(serde_json::Value::is_null) {
-                        return self.compacting.remove(key);
+                        self.compacting.remove(key);
+                        return true;
                     }
                 }
                 false

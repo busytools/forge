@@ -853,10 +853,11 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .wave.tr .wtr i.mid { background: #2f486d; }
 .wave.tr .wtr i.hot { background: #365582; }
 
-/* The field the dock carries so the browser keeps the reader's text, which
-   the dock itself never draws. Its own styles come from the box it goes back
-   into, because a preserved node is the one the browser already had. */
-.dock #draft { display: none; }
+/* The field the dock and the blocked box carry so the browser keeps the
+   reader's text, which neither of them draws. Its own styles come from the
+   box it goes back into, because a preserved node is the one the browser
+   already had. */
+.dock #draft, .blocked #draft { display: none; }
 
 /* A notice shares the row with the take and wins it. */
 .notice { font-family: var(--mono); font-size: var(--fs-data); padding-left: 25px; }

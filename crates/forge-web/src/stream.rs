@@ -275,7 +275,13 @@ fn session_updates(
                         let columns = appended || asked.fleet || handed_over;
                         (columns, asked.composer || asked.fleet)
                     }
-                    _ = tick.tick() => (true, false),
+                    // The tick redraws the box too. Nothing has been said,
+                    // so the seat may have gone away under a page drawing it
+                    // live, and a click would then reach a core holding no
+                    // session: the pushed box keeps the field and the
+                    // controls it earned, so the redraw costs the reader
+                    // nothing.
+                    _ = tick.tick() => (true, true),
                 };
                 if !columns && !composer {
                     continue;

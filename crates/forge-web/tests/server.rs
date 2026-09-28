@@ -3598,7 +3598,8 @@ async fn an_empty_draft_renders_the_placeholder() {
 
 /// A seat cannot take input while it is held on a prompt, so the box is
 /// replaced by the reason rather than drawn as an input that would drop
-/// what was typed into it. Catches a composer that renders live-looking
+/// what was typed into it, and the field it was drawn with is kept out of
+/// sight rather than removed. Catches a composer that renders live-looking
 /// controls over a session that is not running.
 #[tokio::test]
 async fn a_seat_with_nothing_running_gets_the_reason_not_a_box() {
@@ -3614,7 +3615,10 @@ async fn a_seat_with_nothing_running_gets_the_reason_not_a_box() {
         page.contains("</span>not running</span>"),
         "in the composer's own line, which is the same wording the chat column uses: {page}",
     );
-    assert!(!page.contains("id=\"draft\""), "and there is no input to lose a draft in: {page}");
+    assert!(
+        page.contains("id=\"draft\"") && page.contains("hx-preserve"),
+        "and the field it was drawn with is kept parked rather than dropped: {page}",
+    );
 }
 
 /// The box's send is a control that acts: it posts the draft to the seat,
@@ -3907,8 +3911,14 @@ fn permission() -> forge_primitives::permission_ui::PermissionRequest {
 
 /// A question, as the CLI sends it.
 fn question() -> forge_primitives::question::QuestionRequest {
+    question_from("tu-2")
+}
+
+/// The same question asked by a named call, so a test can hold two of them
+/// apart: what the reader typed for one is not an answer to the next.
+fn question_from(tool_id: &str) -> forge_primitives::question::QuestionRequest {
     serde_json::from_value(serde_json::json!({
-        "tool_call": tool_call("tu-2", "AskUserQuestion", &serde_json::json!({})),
+        "tool_call": tool_call(tool_id, "AskUserQuestion", &serde_json::json!({})),
         "prompt": {
             "question": "Pick the environments to deploy to.",
             "header": "Environments",
@@ -4105,7 +4115,10 @@ async fn a_starting_seat_is_connecting() {
         "a spawn that has not connected says so: {page}",
     );
     assert!(page.contains("class=\"blocked\""), "and the box is the reason: {page}");
-    assert!(!page.contains("id=\"draft\""), "with no input to type into: {page}");
+    assert!(
+        page.contains("id=\"draft\"") && page.contains("hx-preserve"),
+        "and the field it was drawn with is kept parked rather than dropped: {page}",
+    );
 }
 
 /// A spawn that failed is a failure the reader has to act on, not a wait,
@@ -4141,7 +4154,10 @@ async fn a_compacting_session_says_so_until_it_clears() {
     let (_status, page) = composer(&config, "").await;
 
     assert!(page.contains("Compacting context"), "the CLI's own status is drawn: {page}");
-    assert!(!page.contains("id=\"draft\""), "and the box is gone while it runs: {page}");
+    assert!(
+        page.contains("id=\"draft\"") && page.contains("hx-preserve"),
+        "and the box is gone while it runs, with the reader's field parked: {page}",
+    );
 
     fleet.emit(SessionUpdate::ChatAppended { key: lead(), msg: status_null() });
     settle().await;
@@ -4844,13 +4860,32 @@ async fn the_composer_has_its_own_event_and_target() {
 /// The region of the `nth` composer event the stream sends, or `None` when
 /// it does not arrive within five seconds.
 async fn nth_composer_event(response: reqwest::Response, nth: usize) -> Option<String> {
+    nth_composer_event_within(response, nth, std::time::Duration::from_secs(5)).await
+}
+
+/// The same, for a caller waiting on something slower than an update - the
+/// stream's own tick, which is armed one interval out.
+async fn nth_composer_event_within(
+    response: reqwest::Response,
+    nth: usize,
+    within: std::time::Duration,
+) -> Option<String> {
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
     let mut seen = String::new();
+    // The deadline is the caller's, not each read's: a stream that keeps
+    // sending something else - a tick, another seat's news - would otherwise
+    // keep the wait alive for as long as it keeps talking.
+    let deadline = std::time::Instant::now() + within;
     loop {
-        let chunk =
-            tokio::time::timeout(std::time::Duration::from_secs(5), stream.next()).await.ok()??;
-        seen.push_str(&String::from_utf8_lossy(&chunk.ok()?));
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        let Ok(Some(Ok(chunk))) = tokio::time::timeout(left, stream.next()).await else {
+            return None;
+        };
+        seen.push_str(&String::from_utf8_lossy(&chunk));
         if seen.matches("event: composer").count() >= nth {
             return seen.rsplit("event: composer").next().map(str::to_owned);
         }
@@ -5124,9 +5159,17 @@ async fn the_apps_children_are_reached_through_the_wrapper() {
     }
 
     let (_status, _content_type, sheet) = get(&config, "/web.css").await;
-    if let Some(at) = sheet.find(".app > ") {
-        let rule = sheet[at..].split([' ', ',', '{']).next().unwrap_or_default();
-        panic!("{rule} hops over the wrapper, which no child of the app is behind");
+    // Read rather than matched as one string: `.app>.rail` and `.app >main.chat`
+    // are the same hop, and a guard that only knows the spaced spelling is the
+    // one a later hand slips past.
+    let mut rest = sheet.as_str();
+    while let Some(at) = rest.find(".app") {
+        let tail = &rest[at + 4..];
+        if tail.trim_start().starts_with('>') {
+            let rule = rest[at..].split(['{', ',']).next().unwrap_or_default();
+            panic!("{rule} hops over the wrapper, which no child of the app is behind");
+        }
+        rest = tail;
     }
     for child in [".rail.left", "main.chat", ".rail.right"] {
         assert!(
@@ -5271,4 +5314,101 @@ async fn only_the_sends_answer_replaces_the_field() {
         sent.contains("placeholder=\"Type a message\u{2026}\"></textarea>"),
         "drawn empty, because the words went to the core: {sent}",
     );
+}
+
+/// A blocked box carries the field too. It draws the reason instead of the
+/// box, and a push rendered as blocked would otherwise leave the page with no
+/// field at all: the reader's words go with the element, because a preserved
+/// node the new markup does not have is removed. A compacting seat reaches
+/// this on its own, with no update the reader caused.
+#[tokio::test]
+async fn a_blocked_push_keeps_the_readers_field() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead(),
+        msg: forge_primitives::Message::System {
+            subtype: "status".to_owned(),
+            session_id: None,
+            data: serde_json::json!({"status": "compacting"}),
+        },
+    });
+
+    let region = nth_composer_event(stream, 1).await.expect("the push redraws the box");
+    assert!(
+        region.contains("class=\"blocked\""),
+        "the box says why it is not taking input: {region}"
+    );
+    assert!(region.contains("id=\"draft\""), "and still carries the reader's field: {region}");
+    assert!(region.contains("hx-preserve"), "marked so the browser keeps its own: {region}");
+
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+    assert!(
+        sheet.contains(".blocked #draft"),
+        "and the sheet never draws it: the field belongs to the box",
+    );
+}
+
+/// What the reader types into a question's notes is theirs, and a push cannot
+/// carry it, so the field is kept the way the box's own is. The id names the
+/// question rather than the field: words written for one question are not an
+/// answer to the next, and a fresh id is a fresh field.
+#[tokio::test]
+async fn the_notes_field_belongs_to_its_question() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Question);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::QuestionRequest {
+        key: lead(),
+        tool_id: "tu-2".to_owned(),
+        request: question(),
+    });
+    settle().await;
+
+    let (_status, page) = composer(&config, "").await;
+    assert!(
+        page.contains("id=\"notes-tu-2\""),
+        "the notes field is named for the question it answers: {page}",
+    );
+    let notes = page.find("id=\"notes-tu-2\"").expect("the notes field");
+    assert!(
+        page[notes..].contains("hx-preserve"),
+        "and kept across a push, like the box's own: {page}",
+    );
+
+    // The next question is a different field, so what was typed for this one
+    // cannot come back as an answer to it.
+    fleet.emit(SessionUpdate::QuestionRequest {
+        key: lead(),
+        tool_id: "tu-9".to_owned(),
+        request: question_from("tu-9"),
+    });
+    settle().await;
+    let (_status, next) = composer(&config, "").await;
+    assert!(next.contains("id=\"notes-tu-9\""), "the next question names its own: {next}");
+    assert!(!next.contains("id=\"notes-tu-2\""), "and the last one's field is gone: {next}");
+}
+
+/// The tick redraws the box as well as the columns. Nothing has been said, so
+/// a seat may have gone away under a page that draws it live, and a click
+/// would reach a core holding no session. Catches a tick that redraws the
+/// columns alone, which leaves the box looking live with nothing behind it.
+#[tokio::test]
+async fn the_tick_redraws_the_box() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+
+    // Nothing is emitted: the only thing the stream has to say is its own
+    // tick, which the connection arms for one interval out.
+    let region = nth_composer_event_within(stream, 1, std::time::Duration::from_secs(13))
+        .await
+        .expect("the tick redraws the box");
+    assert!(region.contains("id=\"draft\""), "and what it draws is the box: {region}");
 }
