@@ -1,3 +1,4 @@
+pub(crate) mod ansi;
 mod autocomplete;
 pub(crate) mod chat;
 pub(crate) mod chat_tree;

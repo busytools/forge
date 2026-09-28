@@ -277,7 +277,11 @@ impl super::App {
             &path,
             crate::app::state::types::MonitorEntry::OUTPUT_TAIL_MAX,
         ) {
-            self.replace_monitor_output_tail_by_task_id(task_id, &lines);
+            // The read hands over what the command wrote; a terminal drawing
+            // it is what has to drop the sequences it would obey.
+            let drawn: Vec<String> =
+                lines.iter().map(|line| crate::ui::ansi::sanitize_for_render(line)).collect();
+            self.replace_monitor_output_tail_by_task_id(task_id, &drawn);
         }
     }
 

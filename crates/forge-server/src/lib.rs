@@ -9,7 +9,6 @@
 //! The reducers that derive the TUI's session records are still in the
 //! TUI.
 
-pub mod ansi;
 pub mod commands;
 pub mod composer;
 pub mod delivery;
