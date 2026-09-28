@@ -1253,6 +1253,7 @@ name = "forge-server"
 version = "1.0.92"
 dependencies = [
  "forge-primitives",
+ "forge-server",
  "forge-workspace",
  "serde",
  "serde_json",

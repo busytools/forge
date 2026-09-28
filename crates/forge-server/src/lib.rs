@@ -11,12 +11,14 @@
 
 pub mod ansi;
 pub mod commands;
+pub mod composer;
 pub mod delivery;
 pub mod emoji;
 pub mod envelope;
 pub mod family;
 pub mod file_index;
 pub mod grouping;
+pub mod live;
 pub mod model;
 pub mod monitor;
 pub mod peer_outbound;
@@ -27,6 +29,8 @@ mod test_support;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod transcript;
+pub mod unseen;
+pub mod work;
 
 /// The core's update protocol, as a view reads it. It is the same type the
 /// same call hands the TUI, so nothing here wraps or renames it.

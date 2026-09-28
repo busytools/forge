@@ -13,9 +13,7 @@ mod server;
 mod session;
 mod stream;
 pub mod theme;
-mod unseen;
-mod work;
 
+pub use forge_server::unseen::Unseen;
+pub use forge_server::work::{WorkCache, WorkState};
 pub use server::{WebError, WebState, start};
-pub use unseen::Unseen;
-pub use work::{WorkCache, WorkState};

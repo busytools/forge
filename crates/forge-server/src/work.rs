@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use crate::file_index::FileIndex;
+use crate::git_diff;
+use crate::surface::ViewSurface;
 use forge_primitives::SessionSlot;
 use forge_primitives::git_diff::{GitDiffSnapshot, RepoGate};
-use forge_server::file_index::FileIndex;
-use forge_server::git_diff;
-use forge_server::surface::ViewSurface;
 
 /// How long a read answers for. Everything inside the window is served
 /// from the cache, which is what keeps a page render off a subprocess.
@@ -432,8 +432,8 @@ mod tests {
     #[tokio::test]
     async fn a_flip_inside_the_window_re_walks() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let fleet = forge_server::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["tree"])])
-            .expect("fleet");
+        let fleet =
+            crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["tree"])]).expect("fleet");
         let root = dir.path().join("tree");
         std::fs::create_dir_all(root.join(".git")).expect("mkdir");
         std::fs::write(root.join(".gitignore"), "ignored.rs\n").expect("write");

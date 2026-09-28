@@ -17,9 +17,9 @@ use forge_server::surface::{
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::brand;
-use crate::stream::Live;
-use crate::unseen::Unseen;
-use crate::work::{Gate, WorkCache, WorkState};
+use forge_server::live::Live;
+use forge_server::unseen::Unseen;
+use forge_server::work::{Gate, WorkCache, WorkState};
 
 /// Everything the home draws with.
 pub struct Home<'a> {

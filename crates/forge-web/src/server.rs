@@ -13,9 +13,10 @@ use forge_server::surface::ViewSurface;
 use maud::{Markup, PreEscaped, html};
 
 use crate::home::{Home, render, render_region};
-use crate::stream::{Live, events, session_events};
-use crate::work::WorkCache;
+use crate::stream::{events, session_events};
 use crate::{brand, theme};
+use forge_server::live::Live;
+use forge_server::work::WorkCache;
 
 /// The stylesheet, vendored rather than read from disk: the pages are
 /// served from the process, and a view that needed a file beside it would

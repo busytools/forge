@@ -32,6 +32,10 @@ tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# This crate's own tests drive the fleet fixture `testing` gates, so a
+# scoped `cargo nextest run -p forge-server` (no --all-features) compiles
+# them the way a workspace build already does.
+forge-server = { path = ".", features = ["testing"] }
 # The surface's equivalence tests read the same workspace the TUI reads,
 # so they need `Workspace::testing_stub`, its seeding helpers, and the
 # `forge.toml` fixture `Workspace::new_for_test` builds from a tempdir.
