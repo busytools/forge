@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { hrefFor, parseRoute } from './routes';
+import { hrefFor, hrefForSlot, parseRoute } from './routes';
 
 describe('the URLs the server serves', () => {
   it('resolves the home at the root', () => {
@@ -39,5 +39,29 @@ describe('the URLs the server serves', () => {
     expect(route.name).toBe('session');
     if (route.name !== 'session') return;
     expect(parseRoute(hrefFor(route))).toEqual(route);
+  });
+
+  /**
+   * A row's link is built by `hrefForSlot`, and one encoder is the point:
+   * a label with a space or a slash in it has to arrive back as the same
+   * label, or the two halves of this module disagree about one address.
+   */
+  it('escapes a segment that would otherwise change the path', () => {
+    const slot = { org: 'Busytools', project: 'forge', label: 'two words/and-ch#1' };
+    expect(hrefForSlot(slot)).toBe('/session/Busytools/forge/two%20words%2Fand-ch%231');
+    expect(parseRoute(hrefForSlot(slot))).toEqual({ name: 'session', slot });
+  });
+
+  /**
+   * A bare `%` is not valid percent-encoding and `decodeURIComponent`
+   * throws on it. Every popstate parses the URL, so an unguarded decode
+   * blanks the whole page rather than one segment.
+   */
+  it('leaves a segment it cannot percent-decode as it arrived', () => {
+    expect(() => parseRoute('/session/O/P/100%')).not.toThrow();
+    expect(parseRoute('/session/O/P/100%')).toEqual({
+      name: 'session',
+      slot: { org: 'O', project: 'P', label: '100%' },
+    });
   });
 });

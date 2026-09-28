@@ -14,7 +14,15 @@
  */
 
 import { displayAddress } from '../connect/attempt';
-import type { AgentRow, HomeWire, Lifecycle, ProjectView, WireTime } from '../wire/home';
+import type {
+  AgentRow,
+  DictateFailure,
+  DictateModelState,
+  HomeWire,
+  Lifecycle,
+  ProjectView,
+  WireTime,
+} from '../wire/home';
 
 /** How loud a band card is. */
 export type Tone = 'ready' | 'warn' | 'bad' | 'off';
@@ -69,7 +77,8 @@ export interface Header {
   liveAgents: number;
   projects: number;
   installed: string | null;
-  latest: string | null;
+  /** The version to name when npm has a newer one than the installed CLI. */
+  update: string | null;
 }
 
 export interface HomeView {
@@ -167,6 +176,79 @@ export function followable(artifact: string): string | null {
   return (match[2] ?? '') === '' ? null : trimmed;
 }
 
+/** One model's state as the card's detail line words it. */
+export function modelState(state: DictateModelState): string {
+  if (typeof state === 'string') {
+    switch (state) {
+      case 'pending':
+        return 'waiting';
+      case 'fetched':
+        return 'fetched';
+      case 'loading':
+        return 'loading';
+      case 'ready':
+        return 'loaded';
+      case 'verifying':
+        return 'verifying';
+    }
+  }
+  return 'downloading' in state ? 'fetching' : 'failed';
+}
+
+/** Why preflight stopped, in the two words the card has room for. */
+export function failureKind(failure: DictateFailure): string {
+  return 'hash_mismatch' in failure ? 'hash mismatch' : 'failed';
+}
+
+/**
+ * The file a failure names, which a hash mismatch is the reason for: the
+ * card says which bytes are wrong rather than that something went wrong.
+ */
+export function failureFile(failure: DictateFailure): string {
+  if ('hash_mismatch' in failure) {
+    const parts = failure.hash_mismatch.path.replace(/\/+$/, '').split('/');
+    return parts[parts.length - 1] ?? failure.hash_mismatch.path;
+  }
+  if ('cancelled' in failure) return 'stopped';
+  return failure.other.message;
+}
+
+/** `MAJOR.MINOR.PATCH`, ignoring a `-pre.1` or `+build` suffix on the patch. */
+function parseSemverTriple(value: string): [number, number, number] | null {
+  const parts = value.split('.');
+  if (parts.length < 3) return null;
+  const major = Number.parseInt(parts[0] as string, 10);
+  const minor = Number.parseInt(parts[1] as string, 10);
+  let digits = '';
+  for (const char of parts[2] as string) {
+    if (char < '0' || char > '9') break;
+    digits += char;
+  }
+  const patch = Number.parseInt(digits, 10);
+  if (!Number.isInteger(major) || !Number.isInteger(minor) || !Number.isInteger(patch)) return null;
+  return [major, minor, patch];
+}
+
+function isStrictlyNewer(lhs: string, rhs: string): boolean {
+  const a = parseSemverTriple(lhs);
+  const b = parseSemverTriple(rhs);
+  if (a === null || b === null) return false;
+  for (let i = 0; i < 3; i += 1) {
+    if ((a[i] as number) !== (b[i] as number)) return (a[i] as number) > (b[i] as number);
+  }
+  return false;
+}
+
+/**
+ * The published version to name, when npm has a newer one than the installed
+ * CLI. Both sides are required, so a probe that resolved only one names
+ * nothing rather than claiming an update it cannot see.
+ */
+export function availableVersion(installed: string | null, latest: string | null): string | null {
+  if (installed === null || latest === null) return null;
+  return isStrictlyNewer(latest, installed) ? latest : null;
+}
+
 /** How long ago `at` was, in the shortest unit that reads. */
 export function elapsedLabel(at: WireTime, now: number): string {
   const seconds = Math.max(0, Math.floor(now / 1000) - at.secs_since_epoch);
@@ -202,17 +284,18 @@ export function band(wire: HomeWire, address: string): BandCard[] {
       : { title: 'gateway', tone: 'warn', value: 'binding', detail: 'inference listener' };
 
   const models = wire.dictate.snapshot.models;
+  const failure = wire.dictate.snapshot.failure;
   const dictation: BandCard = models.length === 0
     ? { title: 'dictation', tone: 'off', value: 'off', detail: 'enabled = false' }
-    : wire.dictate.snapshot.failure !== null
-      ? { title: 'dictation', tone: 'bad', value: 'failed', detail: 'a model could not be fetched' }
+    : failure !== null
+      ? { title: 'dictation', tone: 'bad', value: failureKind(failure), detail: failureFile(failure) }
       : (() => {
           const ready = models.filter((model) => model.state === 'ready').length;
           return {
             title: 'dictation',
             tone: ready === models.length ? 'ready' : 'warn',
             value: `${ready} of ${models.length} loaded`,
-            detail: models.map((model) => model.state).join(', '),
+            detail: models.map((model) => modelState(model.state)).join(', '),
           };
         })();
 
@@ -344,7 +427,10 @@ export function homeView(wire: HomeWire, address: string): HomeView {
       liveAgents: wire.agents.length,
       projects: wire.projects.length,
       installed: wire.cli_version?.installed ?? null,
-      latest: wire.cli_version?.latest ?? null,
+      update: availableVersion(
+        wire.cli_version?.installed ?? null,
+        wire.cli_version?.latest ?? null,
+      ),
     },
     band: band(wire, address),
     orgs,

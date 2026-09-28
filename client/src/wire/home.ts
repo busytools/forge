@@ -84,14 +84,30 @@ export interface AccountsWire {
   orgs: unknown[];
 }
 
+/** Why preflight stopped, carrying its own reason. */
+export type DictateFailure =
+  | { hash_mismatch: { path: string; expected: string; actual: string; size: number } }
+  | { cancelled: { kept: number; total: number } }
+  | { other: { message: string } };
+
+/** How far one model has got. */
+export type DictateModelState =
+  | 'pending'
+  | 'verifying'
+  | 'fetched'
+  | 'loading'
+  | 'ready'
+  | { downloading: { downloaded: number; total: number; resumed_from: number | null } }
+  | { failed: DictateFailure };
+
 export interface DictateModel {
   role: string;
   file: string;
-  state: string;
+  state: DictateModelState;
 }
 
 export interface DictateWire {
-  snapshot: { models: DictateModel[]; failure: unknown };
+  snapshot: { models: DictateModel[]; failure: DictateFailure | null };
   models_dir: string | null;
 }
 
@@ -108,18 +124,100 @@ export interface HomeWire {
   fatal_error: unknown;
 }
 
+/** The lifecycles the core names. A value outside these is one this client is older than. */
+const LIFECYCLES: Lifecycle[] = [
+  'Sleeping',
+  'Spawning',
+  'Idle',
+  'Running',
+  'Attention',
+  'AuthRequired',
+  'Failed',
+  'LoggedOut',
+];
+
+const PENDING: PendingKind[] = ['question', 'permission'];
+const LOADING: LoadingState[] = ['loading', 'ready', 'bailed'];
+/** The states that cross as a bare string; the other two are objects. */
+const MODEL_STATES: Extract<DictateModelState, string>[] = [
+  'pending',
+  'verifying',
+  'fetched',
+  'loading',
+  'ready',
+];
+
+/** One of `known`, or `fallback` when the value is one this client is older than. */
+function narrow<T extends string>(value: string, known: T[], fallback: T): T {
+  return (known as string[]).includes(value) ? (value as T) : fallback;
+}
+
+/**
+ * The snapshot as the types above describe it, with a value outside the
+ * shipped set turned into a known one.
+ *
+ * **The members that are a union of literals are narrowed HERE and not in a
+ * renderer.** `markOf`'s switch is exhaustive so that a lifecycle added to
+ * the core fails a build until its mark is written; a `default` arm would
+ * trade that for a state that silently draws the neutral mark forever. So
+ * the unknown value is caught where it enters, and the renderer keeps the
+ * compile-time guarantee.
+ *
+ * A fallback is the least-alarming member rather than the true one: an
+ * unknown lifecycle is a client older than its server, and a row that says
+ * `idle` is drawn without claiming a state the session may not be in.
+ */
+export function homeFrom(data: HomeWire): HomeWire {
+  return {
+    ...data,
+    agents: data.agents.map((agent) => ({
+      ...agent,
+      lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
+      pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
+    })),
+    accounts: {
+      ...data.accounts,
+      loading: data.accounts.loading.map((row) => ({
+        ...row,
+        state: narrow(row.state, LOADING, 'loading'),
+      })),
+    },
+    dictate: {
+      ...data.dictate,
+      snapshot: {
+        ...data.dictate.snapshot,
+        models: data.dictate.snapshot.models.map((model) => ({
+          ...model,
+          state:
+            typeof model.state !== 'string'
+              ? model.state
+              : narrow(model.state, MODEL_STATES, 'pending'),
+        })),
+      },
+    },
+  };
+}
+
 /**
  * The server's fixture, and the shapes above are checked against it: a field
  * the fixture does not carry is a compile error here rather than a runtime
  * `undefined` on a page.
  *
- * The two casts are `resolveJsonModule`'s: it widens a JSON string to
- * `string`, so the members typed as unions of literals cannot be narrowed
- * from the file. Every OTHER field is checked by the spread, which is the
- * half that catches a fixture drifting away from the types.
+ * The casts are `resolveJsonModule`'s - it widens a JSON string to `string`,
+ * so a member typed as a union of literals cannot be narrowed from the file -
+ * and `homeFrom` narrows each of those straight afterwards. Every OTHER field
+ * is checked by the spread, which is the half that catches a fixture drifting
+ * away from the types.
  */
-export const homeWire: HomeWire = {
+export const homeWire: HomeWire = homeFrom({
   ...fixture,
   agents: fixture.agents as AgentRow[],
   accounts: { ...fixture.accounts, loading: fixture.accounts.loading as AccountLoadingRow[] },
-};
+  dictate: {
+    ...fixture.dictate,
+    snapshot: {
+      ...fixture.dictate.snapshot,
+      models: fixture.dictate.snapshot.models as DictateModel[],
+    } as DictateWire['snapshot'],
+  },
+});

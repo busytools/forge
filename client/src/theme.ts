@@ -8,6 +8,11 @@
  *
  * Every surface reads these tokens and nothing else, so a theme is one place
  * to change and no component branches for it.
+ *
+ * The greeting carries the NAMES - `dark`, `system`, `klin` - and this file
+ * holds the values they resolve to. A name outside the shipped set resolves
+ * to nothing, which is the server's boot refusal rather than a client
+ * fallback.
  */
 
 import type { ClientSettings, FontName, ThemeName } from './wire/types';
@@ -81,6 +86,14 @@ export function fontStack(name: FontName | null | string): { ui: string; mono: s
   return null;
 }
 
+/** The one thing a root has to offer: somewhere to hang a custom property. */
+export interface StyleTarget {
+  style: {
+    setProperty(token: string, value: string): void;
+    removeProperty(token: string): void;
+  };
+}
+
 /**
  * Apply what the greeting carried, to the document root.
  *
@@ -88,7 +101,7 @@ export function fontStack(name: FontName | null | string): { ui: string; mono: s
  * ties with the sheet's own `:root` on specificity and loses on document
  * order, which is how a font stack silently does nothing.
  */
-export function applySettings(settings: ClientSettings, root: HTMLElement): void {
+export function applySettings(settings: ClientSettings, root: StyleTarget): void {
   for (const [token, value] of Object.entries(rootTokens(settings.theme))) {
     root.style.setProperty(token, value);
   }

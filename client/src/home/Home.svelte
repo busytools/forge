@@ -2,19 +2,22 @@
   import Brand from '../components/Brand.svelte';
   import Card from '../components/Card.svelte';
   import Row from '../components/Row.svelte';
-  import { homeWire } from '../wire/home';
+  import { homeWire, type HomeWire } from '../wire/home';
   import { countsOf, homeView } from './view';
 
   /**
    * The home: every project, its agents, their states, and what needs you.
    *
-   * The snapshot is the server's own fixture while the socket is the other
-   * half of this base. `homeView` is what a store would feed instead, and
-   * nothing above it changes when one does.
+   * `wire` defaults to the server's own fixture while the socket is the other
+   * half of this base, and is the one binding a store replaces.
    */
-  let { address = '', mark = null }: { address?: string; mark?: string | null } = $props();
+  let {
+    address = '',
+    mark = null,
+    wire = homeWire,
+  }: { address?: string; mark?: string | null; wire?: HomeWire } = $props();
 
-  const view = $derived(homeView(homeWire, address));
+  const view = $derived(homeView(wire, address));
   // One clock for the page: every row's `when` reads against the same now,
   // so two rows a second apart cannot draw the same age differently.
   const now = Date.now();
@@ -23,7 +26,7 @@
 <div class="wrap">
   <header class="top">
     <div class="brand">
-      <Brand {mark} />
+      <Brand name={mark} />
       <span class="word">forge</span>
     </div>
     <div class="versions">
@@ -33,7 +36,7 @@
         the update notice both cross in `cli_version`.
       -->
       {#if view.header.installed}claude {view.header.installed}{/if}
-      {#if view.header.latest}{' \u{b7} '}<span class="upd">{"\u{2191}"} v{view.header.latest} available</span>{/if}
+      {#if view.header.update}{' \u{b7} '}<span class="upd">{"\u{2191}"} v{view.header.update} available</span>{/if}
     </div>
     <div class="totals">
       <!--
@@ -53,7 +56,7 @@
 
   {#if view.orgs.length === 0}
     <div class="empty">
-      <Brand {mark} />
+      <Brand name={mark} />
       <p class="t">No projects yet</p>
       <p class="d">
         Projects come from <code>forge.toml</code>. Add an

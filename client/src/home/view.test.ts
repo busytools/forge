@@ -3,16 +3,23 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import type { AgentRow, HomeWire, Lifecycle } from '../wire/home';
-import { homeWire } from '../wire/home';
+import { homeFrom, homeWire } from '../wire/home';
 import {
   artifactLabel,
+  availableVersion,
+  chipFor,
   countsOf,
   elapsedLabel,
+  failureFile,
+  failureKind,
   followable,
   homeView,
   markOf,
+  modelState,
   refusal,
+  waitingOn,
   whenOf,
+  type OrgSection,
   type Row,
   type RowState,
 } from './view';
@@ -54,6 +61,96 @@ describe('the row marks', () => {
   });
 });
 
+/** A fleet wide enough to reach the shapes one fixture cannot: two orgs, two projects in one of them, two agents in one project. */
+const FLEET: HomeWire = {
+  ...homeWire,
+  cli_version: { installed: '2.1.280', latest: '2.1.290' },
+  projects: [
+    { ...project('Busytools', 'forge'), has_model: true, sessions: [] },
+    { ...project('Busytools', 'notes'), has_model: true, sessions: [] },
+    { ...project('Personal', 'dotfiles'), has_model: true, sessions: [] },
+  ],
+  agents: [
+    agent('Busytools', 'forge', 'lead', 'Running'),
+    agent('Busytools', 'forge', 'w1', 'Idle'),
+    agent('Busytools', 'notes', 'lead', 'Sleeping'),
+    agent('Personal', 'dotfiles', 'lead', 'Idle'),
+  ],
+};
+
+function project(org: string, name: string): HomeWire['projects'][number] {
+  return {
+    key: `${org}-${name}`,
+    name,
+    org,
+    path: `/p/${name}`,
+    display_path: `/p/${name}`,
+    accounts: ['Acct'],
+    fallback_accounts: [],
+    has_model: true,
+    sessions: [],
+  };
+}
+
+function agent(org: string, project: string, label: string, lifecycle: Lifecycle): AgentRow {
+  return {
+    slot: { org, project, label },
+    label,
+    lifecycle,
+    has_background_work: false,
+    pending: null,
+    pending_depth: 0,
+    last_activity: null,
+    reason: null,
+  };
+}
+
+describe('the fleet the snapshot describes', () => {
+  /**
+   * One fixture is one project with one agent, so a second org, a second
+   * project in an org and any worker row are unreachable. Three separate
+   * readings go wrong on a real fleet and none of them on the fixture: an
+   * org's live count, the name a worker row carries, and the header's two
+   * numbers swapped.
+   */
+  it('puts each project under its own org and counts what is live', () => {
+    const view = homeView(FLEET, '');
+    expect(view.orgs.map((org) => org.name)).toEqual(['Busytools', 'Personal']);
+    expect(countsOf(view.orgs[0] as OrgSection)).toBe('2 live');
+    expect(countsOf(view.orgs[1] as OrgSection)).toBe('1 live');
+    expect(view.orgs[0]?.projects.map((entry) => entry.lead.name)).toEqual(['forge', 'notes']);
+  });
+
+  it('names a worker row for the worker and only the lead for its project', () => {
+    const forge = homeView(FLEET, '').orgs[0]?.projects[0];
+    expect(forge?.lead.name).toBe('forge');
+    expect(forge?.workers.map((worker) => worker.name)).toEqual(['w1']);
+    expect(forge?.workers[0]?.slot.label).toBe('w1');
+  });
+
+  it('counts agents and projects as themselves, not one as the other', () => {
+    const header = homeView(FLEET, '').header;
+    expect(header.liveAgents, 'the header read the project count as agents').toBe(4);
+    expect(header.projects, 'the header read the agent count as projects').toBe(3);
+  });
+
+  it('says what it counts for every shape of org', () => {
+    const busytools = (wire: HomeWire) =>
+      homeView(wire, '').orgs.find((org) => org.name === 'Busytools') as OrgSection;
+    // Every agent of one project gone, which leaves that project dormant and
+    // its sibling live. Dropping only the lead would not: a worker row still
+    // means somebody started it.
+    const withoutForge: HomeWire = {
+      ...FLEET,
+      agents: FLEET.agents.filter((row) => row.slot.project !== 'forge'),
+    };
+
+    expect(countsOf(busytools({ ...FLEET, agents: [] })), 'nothing live').toBe('2 asleep');
+    expect(countsOf(busytools(FLEET)), 'nothing asleep').toBe('2 live');
+    expect(countsOf(busytools(withoutForge)), 'both').toBe('1 live \u{b7} 1 asleep');
+  });
+});
+
 describe('a row over the fleet', () => {
   it('groups a project under its org and names the lead row for the project', () => {
     const view = homeView(homeWire, '127.0.0.1:8790');
@@ -71,7 +168,7 @@ describe('a row over the fleet', () => {
     const lead = view.orgs[0]?.projects[0]?.lead;
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
     expect(lead?.pending).toBe('permission');
-    expect(view.header).toEqual({ liveAgents: 1, projects: 1, installed: '1.0.0', latest: '1.1.0' });
+    expect(view.header).toEqual({ liveAgents: 1, projects: 1, installed: '1.0.0', update: '1.1.0' });
   });
 
   it('draws the band with the address a reader recognises, not the socket URL', () => {
@@ -143,6 +240,196 @@ describe('a row over the fleet', () => {
     // Whether an account would bind is not in the snapshot, so a project
     // that has a model draws no refusal rather than a guessed one.
     expect(refusal({ ...project, has_model: true })).toBeNull();
+  });
+});
+
+describe('the update notice', () => {
+  /**
+   * Both sides have to resolve and the published one has to be strictly
+   * newer. A probe that resolved only one side cannot say whether an update
+   * is available, and a token that will not parse is not a version.
+   */
+  it('names the published version only when it is strictly newer', () => {
+    expect(availableVersion('2.1.280', '2.1.290')).toBe('2.1.290');
+    expect(availableVersion('2.0.99', '2.1.0')).toBe('2.1.0');
+    expect(availableVersion('2.1.280', '2.1.280')).toBeNull();
+    expect(availableVersion('2.1.290', '2.1.280')).toBeNull();
+    expect(availableVersion(null, '2.1.290')).toBeNull();
+    expect(availableVersion('2.1.280', null)).toBeNull();
+    expect(availableVersion('2.1.280', 'latest')).toBeNull();
+    expect(availableVersion('2.1.280', '2.x.0')).toBeNull();
+  });
+
+  it('compares numbers rather than the strings', () => {
+    expect(availableVersion('2.1.9', '2.1.10')).toBe('2.1.10');
+  });
+
+  it('carries the answer on the header', () => {
+    const header = (installed: string, latest: string) =>
+      homeView({ ...homeWire, cli_version: { installed, latest } }, '').header;
+    expect(header('2.1.280', '2.1.290').update).toBe('2.1.290');
+    expect(header('2.1.280', '2.1.280').update).toBeNull();
+  });
+});
+
+describe('the dictation card', () => {
+  /**
+   * Two of the seven states cross as objects rather than strings, so a
+   * first-run download would otherwise render `pending, [object Object]` on
+   * the front page.
+   */
+  it('words every model state the way the server words it', () => {
+    expect(modelState('pending')).toBe('waiting');
+    expect(modelState({ downloading: { downloaded: 1, total: 2, resumed_from: null } })).toBe(
+      'fetching',
+    );
+    expect(modelState('verifying')).toBe('verifying');
+    expect(modelState('fetched')).toBe('fetched');
+    expect(modelState('loading')).toBe('loading');
+    expect(modelState('ready')).toBe('loaded');
+    expect(modelState({ failed: { other: { message: 'x' } } })).toBe('failed');
+  });
+
+  /**
+   * A hash mismatch names the file whose bytes are wrong, and a preflight
+   * the user stopped says so rather than sending them after a network
+   * problem that does not exist.
+   */
+  it('names the file a mismatch is about, and reads a stop as a stop', () => {
+    const mismatch = {
+      hash_mismatch: { path: '/models/s1-mini-f16.gguf', expected: 'a', actual: 'b', size: 1 },
+    };
+    expect(failureKind(mismatch)).toBe('hash mismatch');
+    expect(failureFile(mismatch)).toBe('s1-mini-f16.gguf');
+
+    const cancelled = { cancelled: { kept: 1, total: 2 } };
+    expect(failureKind(cancelled)).toBe('failed');
+    expect(failureFile(cancelled)).toBe('stopped');
+
+    expect(failureFile({ other: { message: 'the disk is full' } })).toBe('the disk is full');
+  });
+
+  it('draws the card from the words rather than the wire tokens', () => {
+    const band = (dictate: HomeWire['dictate']) => homeView({ ...homeWire, dictate }, '').band;
+    const card = (dictate: HomeWire['dictate']) =>
+      band(dictate).find((entry) => entry.title === 'dictation');
+
+    // The committed fixture: two models, both pending.
+    expect(card(homeWire.dictate)?.detail).toBe('waiting, waiting');
+    expect(card(homeWire.dictate)?.value).toBe('0 of 2 loaded');
+
+    const ready = {
+      snapshot: {
+        models: [
+          { role: 'transcribing', file: 'a.gguf', state: 'ready' as const },
+          { role: 'normalization', file: 'b.gguf', state: 'ready' as const },
+        ],
+        failure: null,
+      },
+      models_dir: null,
+    };
+    expect(card(ready)?.tone).toBe('ready');
+    expect(card(ready)?.detail).toBe('loaded, loaded');
+
+    const stopped = {
+      snapshot: {
+        models: [{ role: 'transcribing', file: 'a.gguf', state: 'pending' as const }],
+        failure: { cancelled: { kept: 1, total: 2 } },
+      },
+      models_dir: null,
+    };
+    expect(card(stopped)?.tone).toBe('bad');
+    expect(card(stopped)?.detail).toBe('stopped');
+  });
+});
+
+describe('the band', () => {
+  /**
+   * Every decision on the strip: a bind error is bad and names the port it
+   * failed on, a listener still coming up is a warning, an account that
+   * bailed is bad, and the accounts card counts ready separately from
+   * bailed. A stub replacing any of these three cards wholesale is green
+   * without this.
+   */
+  const card = (wire: HomeWire, title: string) =>
+    homeView(wire, '127.0.0.1:8790').band.find((entry) => entry.title === title);
+
+  it('reads the gateway listener', () => {
+    const gateway = (gateway: HomeWire['accounts']['gateway']) =>
+      card({ ...homeWire, accounts: { ...homeWire.accounts, gateway } }, 'gateway');
+    expect(gateway({ ready: true, port: 8787, bind_error: null })).toEqual({
+      title: 'gateway',
+      tone: 'ready',
+      value: 'bound :8787',
+      detail: 'inference listener',
+    });
+    expect(gateway({ ready: false, port: 8787, bind_error: null })?.tone).toBe('warn');
+    expect(gateway({ ready: true, port: 9, bind_error: 'address in use' })).toEqual({
+      title: 'gateway',
+      tone: 'bad',
+      value: 'failed :9',
+      detail: 'address in use',
+    });
+  });
+
+  it('reads the account pool', () => {
+    const accounts = (loading: HomeWire['accounts']['loading'], all_loaded: boolean) =>
+      card({ ...homeWire, accounts: { ...homeWire.accounts, loading, all_loaded } }, 'accounts');
+    const row = (state: HomeWire['accounts']['loading'][number]['state']) => ({
+      display_name: 'Acct',
+      state,
+      last_error: null,
+      retry_after: null,
+      auth: 'token',
+    });
+
+    expect(accounts([row('ready'), row('ready')], true)).toEqual({
+      title: 'accounts',
+      tone: 'ready',
+      value: '2 ready',
+      detail: 'probed',
+    });
+    expect(accounts([row('loading')], false)?.tone, 'still probing').toBe('warn');
+    expect(accounts([row('ready'), row('bailed')], true)).toEqual({
+      title: 'accounts',
+      tone: 'bad',
+      value: '1 ready \u{b7} 1 bailed',
+      detail: 'probed',
+    });
+  });
+
+  it('reads dictation as off when the config turned it off', () => {
+    expect(
+      card(
+        { ...homeWire, dictate: { snapshot: { models: [], failure: null }, models_dir: null } },
+        'dictation',
+      ),
+    ).toEqual({ title: 'dictation', tone: 'off', value: 'off', detail: 'enabled = false' });
+  });
+});
+
+describe('what a row says', () => {
+  it('names the two asks differently', () => {
+    expect(waitingOn('question')).toBe('asked you a question');
+    expect(waitingOn('permission')).toBe('a permission prompt is waiting');
+  });
+
+  it('reads a task status as a chip', () => {
+    expect(chipFor('in_progress')).toBe('in progress');
+    expect(chipFor('completed')).toBe('done');
+    expect(chipFor('pending')).toBe('pending');
+    expect(chipFor('blocked')).toBe('blocked');
+  });
+
+  /**
+   * A lifecycle this client is older than is turned into a known one where
+   * it enters, so `markOf`'s switch stays exhaustive: a state added to the
+   * core is a compile error there until its mark is written.
+   */
+  it('narrows a lifecycle it does not know as the snapshot is read', () => {
+    const unknown = { ...FLEET, agents: [{ ...FLEET.agents[0], lifecycle: 'Resting' as never }] };
+    const lead = homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead;
+    expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
   });
 });
 
