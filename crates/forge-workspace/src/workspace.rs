@@ -140,7 +140,8 @@ pub(crate) struct KickRequest {
 /// Per-session chip the Projects pane renders next to each row.
 /// Carries the assigned account display name + the visual-state
 /// category derived by `Workspace::session_chip_for`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct SessionChipInfo {
     /// Account `display_name` from forge.toml `[[accounts]]`.
     pub account_name: String,
@@ -151,7 +152,8 @@ pub struct SessionChipInfo {
 
 /// Visual category for a session chip. The renderer maps these to
 /// foreground colors + (for `Bailed` alone) a leading `⚠ ` glyph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionChipState {
     /// Account is Ready and within budget. DIM foreground.
     Normal,

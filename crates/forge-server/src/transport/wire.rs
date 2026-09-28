@@ -123,6 +123,13 @@ pub struct ProjectWire {
     /// `project.has_model`, which is what tells the two reasons a spawn cannot
     /// run apart.
     pub would_bind: bool,
+    /// The account this project's row chips, and its state.
+    ///
+    /// The terminal draws the chip from `Roster::chip_for`, which derives the
+    /// state from the project's model and the account pool. `has_model` is not
+    /// enough to derive it from, so a client could draw the row and not the
+    /// chip it carries.
+    pub chip: Option<forge_workspace::SessionChipInfo>,
 }
 
 /// The plugin inventory and its update records.
@@ -489,6 +496,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
             tasks: roster.tasks_for_project(&project.name),
             crons: roster.crons_for_project(&project.name),
             would_bind: roster.would_bind(&project.key),
+            chip: roster.chip_for(&project.key),
             project: project.clone(),
         });
     }
@@ -1128,6 +1136,38 @@ mod tests {
             "and the device it moved to is on the dictate read: {home}",
         );
         let _ = cwd;
+    }
+
+    /// The account a project's row chips, and its state.
+    ///
+    /// The state is derived from the project's model and the account pool, so
+    /// `has_model` is not enough to draw it from - a client could draw the row
+    /// and not the chip on it.
+    ///
+    /// The fixture's projects declare no model, so nothing binds and the chip
+    /// is absent here: what this pins is the field being on the row at all,
+    /// and the POPULATED case is the acceptance walk's, against a config whose
+    /// projects do declare one.
+    #[tokio::test]
+    async fn a_projects_row_carries_the_chip_field() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        let rows = encoded["projects"].as_array().expect("the home carries project rows");
+
+        assert!(rows[0].get("chip").is_some(), "the row carries a chip: {}", rows[0]);
+        assert_eq!(
+            rows[0]["project"]["has_model"], false,
+            "and this fixture's project declares no model, which is why the chip is absent",
+        );
     }
 
     /// The terminal draws a project's SCHEDULES section from a read the wire

@@ -21,7 +21,8 @@
       },
       "tasks": [],
       "crons": [],
-      "would_bind": false
+      "would_bind": false,
+      "chip": null
     }
   ],
   "agents": [
