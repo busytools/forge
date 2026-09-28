@@ -189,8 +189,7 @@ mod tests {
     /// rather than a ranked list, because the ranking is the picker's.
     #[test]
     fn emoji_selects_a_query_and_leaves_the_ranking_to_the_picker() {
-        let names: Vec<&str> =
-            ViewSurface::emoji("cl", 10).iter().map(|e| e.name).collect();
+        let names: Vec<&str> = ViewSurface::emoji("cl", 10).iter().map(|e| e.name).collect();
 
         assert_eq!(
             names.first(),
