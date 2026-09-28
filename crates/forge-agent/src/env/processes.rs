@@ -29,10 +29,18 @@
 //! tracked task descriptions on top of matching OS processes via
 //! cmdline lookup, then renders the merged view.
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use forge_primitives::McpServerStatus;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+/// How old a snapshot may be before another walk replaces it.
+///
+/// One constant for every walker. The terminal walks the seat it is showing
+/// and the socket walks the seat a client reads, so a cadence held separately
+/// by each would let two readers add up to a busier machine than either
+/// intended.
+pub const SCAN_STALENESS: Duration = Duration::from_secs(1);
 
 /// Snapshot of `claude`'s descendant processes at one point in time.
 /// Always succeeds - failures (sysinfo errors, process gone) collapse

@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 
 use super::TransportState;
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
-use super::wire::{encode_subject, page};
+use super::wire::{encode_subject, page, walk_processes_if_stale};
 use crate::Command;
 
 /// The protocol this server speaks.
@@ -134,7 +134,8 @@ async fn handle_client(
             dispatch(socket, state, *command, reply_to).await
         }
         ClientMessage::More { conversation, before, turns } => {
-            let Some(cwd) = state.surface.roster().cwd_for(&conversation) else {
+            let roster = state.surface.roster();
+            let Some(cwd) = roster.cwd_for(&conversation) else {
                 return send(
                     socket,
                     ServerMessage::Error {
@@ -144,6 +145,15 @@ async fn handle_client(
                 )
                 .await;
             };
+            // Reading a seat is watching it, so paging refreshes the walk the
+            // same way subscribing does. The window in the walk is what keeps
+            // a client paging a long conversation from walking on every page.
+            walk_processes_if_stale(
+                &state.surface,
+                &conversation,
+                roster.claude_pid(&conversation),
+            )
+            .await;
             // The fold runs over the WHOLE conversation and the window slices
             // its result, so a row is always a whole turn. Slicing messages
             // instead is what would hand a client half a tool-call group.

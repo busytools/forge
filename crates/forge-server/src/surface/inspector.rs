@@ -100,6 +100,16 @@ impl ViewSurface {
         self.workspace.process_snapshot(slot)
     }
 
+    /// Store a walk's answer, which is the write half of [`Self::processes`].
+    ///
+    /// One store for both walkers: the terminal walks the seat it is showing
+    /// and the socket walks the seat a client reads. A second store would let
+    /// the two answers drift, and two writers through one store of one shape
+    /// is the whole of the sharing.
+    pub fn store_process_snapshot(&self, slot: &SessionSlot, snapshot: Option<ProcessSnapshot>) {
+        self.workspace.store_process_snapshot(slot, snapshot);
+    }
+
     /// The monitors the session has running, and the ones that settled
     /// while it did, folded from the wire.
     ///

@@ -19,7 +19,7 @@ use forge_primitives::review::{ReviewSet, ReviewThread};
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
 use forge_primitives::{GotifySubscription, SessionSlot};
-use forge_workspace::env::processes::ProcessSnapshot;
+use forge_workspace::env::processes::{ProcessSnapshot, SCAN_STALENESS, scan};
 use forge_workspace::{AccountLoadingRow, GatewayOrgView, McpServers, ProjectView, WorkerEntry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -399,8 +399,49 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
             let Some(cwd) = roster.cwd_for(slot) else {
                 anyhow::bail!("forge holds no session for {slot:?}");
             };
+            walk_processes_if_stale(surface, slot, roster.claude_pid(slot)).await;
             Ok(serde_json::to_value(session(state, surface, slot, &cwd).await?)?)
         }
+    }
+}
+
+/// Walk `slot`'s process tree when the snapshot the core holds is missing or
+/// older than [`SCAN_STALENESS`], and store what the walk found.
+///
+/// A view cannot take this walk itself: it shells out to the OS while the
+/// surface's reads are synchronous, so a walk on that path would block a
+/// render. The socket takes it on the reads that encode a subject instead, and
+/// writes through the same store the terminal writes through, so a client
+/// built after the terminal is gone still finds a snapshot rather than a seat
+/// nothing ever walked.
+///
+/// No extra commands: those are the session's live backgrounded `local_bash`
+/// commands, and the roster a terminal derives them from is the terminal's own
+/// per-session state rather than a fact the core holds.
+pub(crate) async fn walk_processes_if_stale(
+    surface: &ViewSurface,
+    slot: &SessionSlot,
+    pid: Option<u32>,
+) {
+    let Some(pid) = pid else {
+        return;
+    };
+    let stale = surface
+        .processes(slot)
+        .is_none_or(|held| held.scanned_at.elapsed().is_ok_and(|age| age >= SCAN_STALENESS));
+    if !stale {
+        return;
+    }
+    // `sysinfo`'s refresh is a CPU-bound system call rather than async I/O, so
+    // it runs on the blocking pool instead of on this task.
+    match tokio::task::spawn_blocking(move || scan(pid, &[])).await {
+        Ok(snapshot) => surface.store_process_snapshot(slot, Some(snapshot)),
+        Err(error) => tracing::warn!(
+            event_name = "process_walk_failed",
+            %error,
+            slot = %slot.display(),
+            "the process walk did not finish; the seat keeps the snapshot it had",
+        ),
     }
 }
 
@@ -678,9 +719,11 @@ mod tests {
 
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, SystemTime};
 
     use super::*;
     use crate::surface::PendingKind;
+    use crate::testing::ViewFacts;
     use crate::work::WorkCache;
 
     /// Where the fixture fleet is built. Fixed rather than per-run, so the
@@ -825,5 +868,102 @@ mod tests {
                     .expect("parse");
             assert_eq!(encoded, expected, "{} changed shape", fixture.display());
         }
+    }
+
+    /// The walk nothing but the terminal used to take.
+    ///
+    /// A client built after the terminal is gone would draw PROCESSES empty
+    /// forever: no message in this protocol ever produced a snapshot, so the
+    /// field read `null` for every seat no terminal happened to be watching.
+    /// The socket walks it on the reads that encode a subject.
+    #[tokio::test]
+    async fn a_stale_process_snapshot_is_walked_and_stored_where_both_readers_find_it() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let seat = fixture_seat();
+        let stale = SystemTime::now() - Duration::from_secs(60);
+        fleet.seed_view_facts(
+            &seat,
+            ViewFacts {
+                process_snapshot: Some(ProcessSnapshot {
+                    processes: Vec::new(),
+                    scanned_at: stale,
+                }),
+                ..ViewFacts::default()
+            },
+        );
+        let surface = fleet.surface();
+        assert_eq!(
+            surface.processes(&seat).map(|held| held.scanned_at),
+            Some(stale),
+            "the fixture holds a snapshot the window has expired",
+        );
+
+        walk_processes_if_stale(&surface, &seat, Some(std::process::id())).await;
+
+        let walked = surface.processes(&seat).expect("the walk stored a snapshot");
+        assert!(
+            walked.scanned_at > stale,
+            "a snapshot past the window is walked again, and stored through the store the terminal writes",
+        );
+    }
+
+    /// The window. A client that re-reads a seat in a loop must not be able to
+    /// make the socket walk more often than the terminal's own cadence does.
+    #[tokio::test]
+    async fn a_fresh_process_snapshot_is_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let seat = fixture_seat();
+        let fresh = SystemTime::now();
+        fleet.seed_view_facts(
+            &seat,
+            ViewFacts {
+                process_snapshot: Some(ProcessSnapshot {
+                    processes: Vec::new(),
+                    scanned_at: fresh,
+                }),
+                ..ViewFacts::default()
+            },
+        );
+        let surface = fleet.surface();
+
+        walk_processes_if_stale(&surface, &seat, Some(std::process::id())).await;
+
+        assert_eq!(
+            surface.processes(&seat).map(|held| held.scanned_at),
+            Some(fresh),
+            "a snapshot inside the window is the answer rather than a reason to walk",
+        );
+    }
+
+    /// A seat with nothing behind it has no tree to walk, and what it holds is
+    /// kept rather than replaced by an empty walk. An invented empty snapshot
+    /// would draw as `no processes` where the truth is `nothing known`.
+    #[tokio::test]
+    async fn a_seat_with_no_claude_process_keeps_the_snapshot_it_had() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let seat = fixture_seat();
+        let held = SystemTime::now() - Duration::from_secs(60);
+        fleet.seed_view_facts(
+            &seat,
+            ViewFacts {
+                process_snapshot: Some(ProcessSnapshot { processes: Vec::new(), scanned_at: held }),
+                ..ViewFacts::default()
+            },
+        );
+        let surface = fleet.surface();
+
+        walk_processes_if_stale(&surface, &seat, None).await;
+
+        assert_eq!(
+            surface.processes(&seat).map(|snapshot| snapshot.scanned_at),
+            Some(held),
+            "a seat with no process to walk keeps the snapshot it had rather than inventing an empty one",
+        );
     }
 }

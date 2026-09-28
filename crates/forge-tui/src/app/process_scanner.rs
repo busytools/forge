@@ -18,7 +18,7 @@ use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use forge_workspace::SessionSlot;
-use forge_workspace::env::processes::ProcessSnapshot;
+use forge_workspace::env::processes::{ProcessSnapshot, SCAN_STALENESS};
 
 use crate::app::App;
 use crate::app::session::UiSession;
@@ -27,15 +27,6 @@ use crate::app::session::UiSession;
 /// at 1 s; the actual `sysinfo` refresh runs at most every
 /// [`SNAPSHOT_STALENESS`].
 const TICKER_INTERVAL: Duration = Duration::from_secs(1);
-
-/// How fresh the snapshot must be before we skip a refresh. 1 s
-/// matches [`TICKER_INTERVAL`] so a refresh effectively fires on
-/// (nearly) every tick - the panel reads as live. The sysinfo scan
-/// runs in ~50-100 ms on the blocking pool, so per-tick cost is
-/// negligible on multi-core machines and doesn't stall the UI loop.
-/// If the panel becomes a CPU hotspot on some machines, bumping
-/// this back to 2 s is a one-line revert.
-const SNAPSHOT_STALENESS: Duration = Duration::from_secs(1);
 
 /// Max events to apply per drain pump tick - same budget as
 /// `file_index` / `git_diff` so all three scanners share a single
@@ -267,10 +258,11 @@ fn apply_timer_tick(app: &mut App) {
 }
 
 /// True when the session needs a fresh scan: no snapshot yet OR the
-/// last one is older than [`SNAPSHOT_STALENESS`].
+/// last one is older than [`SCAN_STALENESS`], which is the cadence a
+/// client's read of the same seat walks on.
 fn should_refresh(session: &UiSession) -> bool {
     match session.process_last_refreshed_at {
         None => true,
-        Some(last) => last.elapsed() >= SNAPSHOT_STALENESS,
+        Some(last) => last.elapsed() >= SCAN_STALENESS,
     }
 }
