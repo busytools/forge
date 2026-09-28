@@ -333,6 +333,7 @@ async fn shell(
                 script src="/vendor/htmx-sse.js" {}
                 script src="/vendor/idiomorph.js" {}
                 script { (PreEscaped(DETAIL_STATE)) }
+                script { (PreEscaped(crate::composer::COMPOSER_KEYS)) }
             }
         }
     }

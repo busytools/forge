@@ -334,13 +334,16 @@ fn session_updates(
                         let columns = appended || asked.fleet || handed_over;
                         (columns, asked.composer || asked.fleet)
                     }
-                    // The tick redraws the box too. Nothing has been said,
-                    // so the seat may have gone away under a page drawing it
-                    // live, and a click would then reach a core holding no
-                    // session: the pushed box keeps the field and the
-                    // controls it earned, so the redraw costs the reader
-                    // nothing.
-                    _ = tick.tick() => (true, true),
+                    // The tick redraws the columns alone. A pushed box is
+                    // drawn from a draft the server does not have, so its
+                    // region carries no list: measured on a live page, a tick
+                    // that redrew the composer closed an open autocomplete
+                    // ten seconds after the stream attached. The seat that
+                    // goes away with nothing said is covered instead by the
+                    // routes, which answer a failed dispatch with the box the
+                    // core would draw rather than with a refusal nothing
+                    // swaps.
+                    _ = tick.tick() => (true, false),
                 };
                 if !columns && !composer {
                     continue;

@@ -193,12 +193,21 @@ async fn send_to(
             .await
             .into_response();
     }
-    if let Err(error) = surface.dispatch(forge_sessions::Command::Prompt {
-        key: slot.clone(),
-        text: draft,
-        attachments: Vec::new(),
-    }) {
-        return (StatusCode::CONFLICT, format!("no session to send to: {error}")).into_response();
+    if surface
+        .dispatch(forge_sessions::Command::Prompt {
+            key: slot.clone(),
+            text: draft,
+            attachments: Vec::new(),
+        })
+        .is_err()
+    {
+        // The seat has no session behind it, and the box the core would draw
+        // for it says so. The field is left alone: the words never reached
+        // the core, so there is nothing to send twice, and a box that
+        // replaced the reader's field would destroy what they wrote.
+        return composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "")
+            .await
+            .into_response();
     }
     // The one response that replaces the field: the reader's words have gone
     // to the core, so a box that kept them would send them twice.
@@ -243,8 +252,14 @@ async fn answer_prompt(
             .await
             .into_response();
     };
-    if let Err(error) = wiring.state.surface.dispatch(command) {
-        return (StatusCode::CONFLICT, format!("no session to answer for: {error}"))
+    if wiring.state.surface.dispatch(command).is_err() {
+        // The answer never reached a session, so the region comes back drawn
+        // from the core as it stands now. A status htmx will not swap leaves
+        // a dock that predates the session's death inert and stuck: its
+        // options post into nothing and its field is parked, so the reader
+        // cannot even type to force a refetch.
+        return composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "")
+            .await
             .into_response();
     }
     // An answer is not the reader's words, so the box keeps them.
@@ -291,9 +306,10 @@ async fn dictate(
 /// Resolve the seat a control posted to, run `command` for it, and answer
 /// with the composer region, so the page swaps in what the action produced.
 ///
-/// A seat with no session is refused with the reason rather than queued:
-/// the composer draws no box there, so a request that arrives anyway went
-/// round the page and is owed an answer rather than a silence.
+/// A command that reaches no session is answered with the region the core
+/// would draw rather than queued and rather than refused with a status htmx
+/// will not swap: the seat's own state is the reason, and the reader sees it
+/// on the page.
 async fn act(
     wiring: &Wiring,
     org: &str,
@@ -308,8 +324,11 @@ async fn act(
     let Some(slot) = crate::session::resolve(surface, &roster, &agents, org, project, label) else {
         return (StatusCode::NOT_FOUND, "no session slot by that name").into_response();
     };
-    if let Err(error) = surface.dispatch(command(&slot)) {
-        return (StatusCode::CONFLICT, format!("no session to send to: {error}")).into_response();
+    if surface.dispatch(command(&slot)).is_err() {
+        // As above: the seat's own state is the refusal, drawn rather than
+        // returned, because a status htmx will not swap is a click that
+        // looks like nothing happened.
+        return composer_region_of(wiring, &slot, draft, "").await.into_response();
     }
     composer_region_of(wiring, &slot, draft, "").await.into_response()
 }
