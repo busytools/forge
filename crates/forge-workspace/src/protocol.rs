@@ -120,7 +120,8 @@ impl std::fmt::Debug for PendingInteractionSlot {
 /// that the new worker was issued and the tag value applied. Threaded
 /// back to the calling `agents__spawn` Tool impl via the oneshot
 /// receiver so the LLM sees `{session_id, tag}` in the tool result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct WorkerSpawnReply {
     pub session_id: String,
     pub tag: String,
@@ -143,7 +144,8 @@ pub struct WorkerSpawnReply {
 }
 
 /// Which session a worker spawn landed on, as the spawn tool reports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionChoice {
     /// The label's prior session was found and resumed.
     Resumed,
@@ -156,7 +158,8 @@ pub enum SessionChoice {
 
 /// Outcome of a [`Command::DespawnWorker`], sent back to the calling
 /// `agents__despawn` Tool via the command's `respond` oneshot.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DespawnResult {
     /// The worker was torn down (subprocess killed, dropped from
     /// `live_workers`, inflight asks expired). `worktree_cleanup_warning`

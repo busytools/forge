@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use forge_primitives::SessionSlot;
+use forge_server::Command;
 use forge_server::live::Live;
 use forge_server::surface::SessionUpdate;
 use forge_server::testing::Fleet;
@@ -147,6 +148,47 @@ async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
     // which is the gateway's subject and a different record entirely. Asserting the
     // wrong key here would fail for a reason that looks like the encoder's fault.
     assert!(data.get("projects").is_some(), "the home snapshot carries its projects: {data}");
+}
+
+/// A prompt aimed at a seat.
+fn a_prompt_for(org: &str, project: &str, label: &str) -> Command {
+    Command::Prompt {
+        key: SessionSlot::for_label(org, project, Some(label)),
+        text: "hello".to_owned(),
+        attachments: Vec::new(),
+    }
+}
+
+/// A command aimed at a seat forge holds no session for is answered with an
+/// error naming it - never a panic, and never a silent success.
+#[tokio::test]
+async fn a_command_for_a_seat_that_is_not_there_answers_with_an_error() {
+    let mut socket = connected().await;
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(a_prompt_for("Nowhere", "nothing", "lead")),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+        panic!("expected an error")
+    };
+    // Which refusal, not merely that one arrived: an arm that echoed the whole message back
+    // would carry the seat's name in its `Debug` and satisfy the assertion below while
+    // having dispatched nothing at all.
+    assert_eq!(
+        what, "dispatch",
+        "the refusal comes from the core, not from this server declining the message: {why}",
+    );
+    // This rests on WHICH refusal the surface returns: `UnknownSession(slot)` renders the
+    // slot through `{:?}` so the seat's name is in the sentence, while `NoActiveSession`
+    // renders as "no active session" and carries no seat at all. If this assertion fails on
+    // the seat's name, the question is which variant came back - not whether the error
+    // reached the client, because the `let else` above already proved that.
+    assert!(why.contains("Nowhere"), "the error names the seat: {why}");
 }
 
 /// A subscription hears the updates its subject receives and no others.

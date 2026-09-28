@@ -7,10 +7,12 @@ use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use futures_util::StreamExt;
+use tokio::sync::oneshot;
 
 use super::TransportState;
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::encode_subject;
+use crate::Command;
 
 /// The protocol this server speaks.
 ///
@@ -128,9 +130,12 @@ async fn handle_client(
                 .await
             }
         },
-        // Unsubscribe, Command and More arrive in Tasks 7 and 8. Until then
-        // they answer rather than being dropped, so a client is never left
-        // waiting on one.
+        ClientMessage::Command { command, reply_to } => {
+            dispatch(socket, state, *command, reply_to).await
+        }
+        // Unsubscribe and More arrive in Task 8. Until then they answer
+        // rather than being dropped, so a client is never left waiting on
+        // one.
         other => {
             send(
                 socket,
@@ -148,4 +153,124 @@ async fn send(socket: &mut WebSocket, message: ServerMessage) -> anyhow::Result<
     let text = serde_json::to_string(&message)?;
     socket.send(Message::Text(text.into())).await?;
     Ok(())
+}
+
+/// Dispatch one command, and answer a client that asked for an answer.
+///
+/// Success sends nothing extra: the update arrives through the subscription
+/// the client already has, which is why a client subscribes before it acts.
+async fn dispatch(
+    socket: &mut WebSocket,
+    state: &TransportState,
+    command: Command,
+    reply_to: Option<u64>,
+) -> anyhow::Result<()> {
+    // A view acts through the same facade it reads through, and a refusal is
+    // the core's own sentence rather than this layer's opinion of it.
+    //
+    // The four reply-carrying commands take a sender the wire deliberately
+    // does not carry, and each carries its OWN reply type - a spawned worker
+    // answers with a `WorkerSpawnReply`, a despawn with a `DespawnResult`,
+    // and the review pair with a `bool` and a `ReviewSet`. So the channel is
+    // built per arm and handed to the shared helper with its own receiver:
+    // one channel cannot carry four different answers.
+    match command {
+        Command::SpawnWorker {
+            project_key,
+            label,
+            charter,
+            spawned_by,
+            resume_existing,
+            kick,
+            resume_kick,
+            interactive,
+            from_boot_respawn,
+            ..
+        } => {
+            let (tx, rx) = oneshot::channel();
+            let command = Command::SpawnWorker {
+                project_key,
+                label,
+                charter,
+                spawned_by,
+                resume_existing,
+                kick,
+                resume_kick,
+                interactive,
+                from_boot_respawn,
+                return_to: Some(tx),
+            };
+            answered(socket, state, command, reply_to, rx).await
+        }
+        Command::DespawnWorker { project_key, label, force, .. } => {
+            let (tx, rx) = oneshot::channel();
+            let command = Command::DespawnWorker { project_key, label, force, respond: Some(tx) };
+            answered(socket, state, command, reply_to, rx).await
+        }
+        Command::UpsertReviewThread { project, branch, thread, .. } => {
+            let (tx, rx) = oneshot::channel();
+            let command =
+                Command::UpsertReviewThread { project, branch, thread, respond: Some(tx) };
+            answered(socket, state, command, reply_to, rx).await
+        }
+        Command::SubmitReview { project, branch, summary, thread_ids, origin, .. } => {
+            let (tx, rx) = oneshot::channel();
+            let command = Command::SubmitReview {
+                project,
+                branch,
+                summary,
+                thread_ids,
+                origin,
+                respond: Some(tx),
+            };
+            answered(socket, state, command, reply_to, rx).await
+        }
+        // Every other command is fire-and-forget: success sends nothing
+        // extra, because the update arrives through the subscription the
+        // client already has.
+        other => match state.surface.dispatch(other) {
+            Ok(()) => Ok(()),
+            Err(refusal) => {
+                send(
+                    socket,
+                    ServerMessage::Error { what: "dispatch".to_owned(), why: refusal.to_string() },
+                )
+                .await
+            }
+        },
+    }
+}
+
+/// Dispatch a reply-carrying command, and answer the client that asked.
+///
+/// A client that asked for an answer always hears one - INCLUDING a refusal,
+/// so it is never left watching a channel that stays empty.
+async fn answered<T: serde::Serialize>(
+    socket: &mut WebSocket,
+    state: &TransportState,
+    command: Command,
+    reply_to: Option<u64>,
+    answer: oneshot::Receiver<T>,
+) -> anyhow::Result<()> {
+    let outcome = state.surface.dispatch(command);
+    let Some(to) = reply_to else {
+        // Nobody asked, so a refusal has nowhere to go but the log. The
+        // command was dispatched either way.
+        if let Err(refusal) = outcome {
+            tracing::debug!(
+                target: "forge_server::transport",
+                event_name = "dispatch_refused",
+                %refusal,
+                "a command nobody awaited a reply for was refused",
+            );
+        }
+        return Ok(());
+    };
+
+    let body = match (outcome, answer.await) {
+        (Ok(()), Ok(reply)) => serde_json::to_value(reply)?,
+        (Err(refusal), _) => serde_json::to_value(refusal.to_string())?,
+        (Ok(()), Err(_)) => serde_json::to_value("the session closed before answering")?,
+    };
+    send(socket, ServerMessage::Reply { reply_to: to, body }).await
 }
