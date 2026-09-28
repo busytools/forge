@@ -20,6 +20,7 @@ pub const ASSISTANT_PREFIX: &str = "<|im_start|>assistant\n<think>\n\n</think>\n
 /// `semi-formal` with contractions expanded" is wrong and there is no
 /// dialling this a little further in either direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Styling {
     /// Lowercase throughout, apostrophes stripped, colloquialisms kept.
     /// Measured to mangle technical terms, rendering MMAP as "mmapped here".
@@ -49,6 +50,7 @@ impl Styling {
 
 /// Whether the model may turn enumerable content into a bulleted list.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Structure {
     /// Sentences and paragraphs throughout.
     #[default]
@@ -72,6 +74,7 @@ impl Structure {
 /// Destination conventions. Not a domain or vocabulary hint: it will not
 /// protect technical terms, which are a [`Styling`] concern.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Context {
     /// Flowing text.
     #[default]

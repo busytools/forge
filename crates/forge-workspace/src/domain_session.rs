@@ -29,7 +29,7 @@ use crate::protocol::PendingInteractionSlot;
 
 /// The MCP servers a session's bridge last reported, and the failure
 /// standing beside them when the read did not complete.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct McpServers {
     pub servers: Vec<McpServerStatus>,
     /// Why the read failed, when it did. A failed read carries an empty
@@ -41,7 +41,7 @@ pub struct McpServers {
 /// How full the session's context window is, from the bridge's last
 /// answer. Both halves are `Option` because the upstream probe reports
 /// them independently.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContextUsage {
     pub percent: Option<u8>,
     pub max_tokens: Option<u64>,

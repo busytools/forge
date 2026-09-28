@@ -8,7 +8,7 @@ use std::path::Path;
 pub use forge_workspace::env::file_index::FileCandidate;
 
 /// The files under one root, keyed by their path relative to it.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct FileIndex {
     pub entries: BTreeMap<String, FileCandidate>,
 }

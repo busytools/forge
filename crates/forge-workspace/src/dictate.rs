@@ -115,6 +115,7 @@ impl DictateOverrides {
 /// clear them all. Enter on an already-set row re-sets the same value;
 /// there is no per-axis clear, so the reset row is the only way back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DictateOverrideUpdate {
     Styling(forge_dictate::normalize::Styling),
     Structure(forge_dictate::normalize::Structure),
@@ -127,6 +128,7 @@ pub enum DictateOverrideUpdate {
 /// variant: the field is `None` until a pick lands. A pick overrides
 /// the pin for every session until forge restarts.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DictateDeviceChoice {
     /// Record from the system default input, whatever the pin names.
     System,
@@ -316,7 +318,8 @@ impl DictateSettings {
 /// What a model is for. Preflight labels the row by role and prints the
 /// file underneath, because the role is what a reader is scanning for
 /// and the file is the detail they want only when something is wrong.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DictateRole {
     Transcribing,
     Normalization,
@@ -332,7 +335,8 @@ impl DictateRole {
 }
 
 /// How far one model has got.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DictateModelState {
     /// Nothing has started on this one.
     Pending,
@@ -356,7 +360,8 @@ pub enum DictateModelState {
 ///
 /// Every variant ends the run: there is no degraded dictation to fall
 /// back to, so the screen names the way out and forge quits.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DictateFailure {
     /// A file is the right length and the wrong bytes. Reported rather
     /// than repaired - discarding a multi-gigabyte file somebody put
@@ -381,7 +386,7 @@ impl DictateFailure {
 }
 
 /// One model's row in preflight.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DictateModel {
     pub role: DictateRole,
     /// File name as the spec records it, including the extension.
@@ -393,7 +398,7 @@ pub struct DictateModel {
 ///
 /// `models` is empty when `[dictate] enabled` is false, and preflight
 /// then draws no Dictation section at all.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DictateSnapshot {
     pub models: Vec<DictateModel>,
     /// Set once, and never cleared for the run: nothing re-probes a

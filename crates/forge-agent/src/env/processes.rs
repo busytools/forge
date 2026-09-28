@@ -37,7 +37,7 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 /// Snapshot of `claude`'s descendant processes at one point in time.
 /// Always succeeds - failures (sysinfo errors, process gone) collapse
 /// to an empty `processes` vec.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProcessSnapshot {
     /// Sorted descendants of the supplied `claude_pid`. Sort order:
     /// memory descending - most resource-hungry processes first so
@@ -53,7 +53,7 @@ pub struct ProcessSnapshot {
 /// builder needs (PID + cmdline + memory for the metadata line) +
 /// the cmdline-matching needed for wire-tracked overlay
 /// (`process_cmdline_matches_tool_input`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProcessEntry {
     /// OS process identifier.
     pub pid: u32,

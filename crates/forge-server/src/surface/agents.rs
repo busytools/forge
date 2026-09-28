@@ -12,6 +12,7 @@ use crate::surface::ViewSurface;
 /// One agent as a view reads it. A lead and a worker are the same row:
 /// which project spawned it, and what nests under what, are the view's
 /// business rather than the row's.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentRow {
     pub slot: SessionSlot,
     /// The worker's own label, or `"lead"` for a project's own agent.

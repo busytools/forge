@@ -17,6 +17,7 @@ use crate::work::WorkCache;
 
 mod connection;
 pub mod envelope;
+pub mod wire;
 
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the live state a

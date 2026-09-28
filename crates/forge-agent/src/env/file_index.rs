@@ -22,7 +22,7 @@ const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// writer cannot starve the cancel check at the top of the loop.
 const WATCH_BATCH_CAP: usize = 1024;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FileCandidate {
     pub rel_path: String,
     pub rel_path_lower: String,

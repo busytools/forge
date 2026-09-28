@@ -186,6 +186,7 @@ pub enum DespawnResult {
 /// `Removed` carries the last-known snapshot for symmetry but the TUI
 /// reducer treats it as a delete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WorkerStatusAction {
     Added,
     Removed,
@@ -202,6 +203,7 @@ pub enum WorkerStatusAction {
 /// the worktree is on disk. Every other emitter reports
 /// [`Self::untouched`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WorktreeDisposition {
     /// Nothing to report on: either the worker was spawned outside a
     /// git repo, or its spawn failed before it had a worktree.
@@ -790,6 +792,7 @@ impl std::fmt::Debug for Command {
 /// [`forge_dictate::Outcome`]: the TUI words the notices, so it gets
 /// the observations and keeps the crate's error shapes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DictateOutcome {
     /// Words to insert at the composer's caret. `truncated` means the
     /// take hit the capture cap or the decode budget and is partial.
@@ -818,6 +821,7 @@ pub enum DictateOutcome {
 /// states one; forge has no keyless form, because a role it cannot
 /// state is one it would have to guess.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SpawnRole {
     Lead,
     Worker {

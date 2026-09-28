@@ -1,0 +1,99 @@
+{
+  "slot": {
+    "org": "TestOrg",
+    "project": "proj",
+    "label": "lead"
+  },
+  "state": {
+    "slot": {
+      "org": "TestOrg",
+      "project": "proj",
+      "label": "lead"
+    },
+    "scan_cwd": "<fixture>/proj"
+  },
+  "header": {
+    "model": null,
+    "effort": "max",
+    "permission_mode": null,
+    "context": {
+      "percent": null,
+      "max_tokens": null
+    },
+    "available_models": [],
+    "turn_in_flight": false
+  },
+  "mcp": null,
+  "processes": null,
+  "monitors": [],
+  "pending_ask": {
+    "kind": "permission",
+    "request": {
+      "tool_call": {
+        "tool_call_id": "test-tool",
+        "title": "Bash",
+        "kind": "execute",
+        "status": "pending",
+        "content": [],
+        "raw_input": {
+          "command": "ls"
+        },
+        "raw_output": null,
+        "output_metadata": null,
+        "task_metadata": null,
+        "locations": [],
+        "meta": null
+      },
+      "options": [
+        {
+          "option_id": "allow_once",
+          "name": "Allow once",
+          "kind": "allow",
+          "action": {
+            "kind": "allow"
+          }
+        }
+      ],
+      "display": null
+    }
+  },
+  "conversation": {
+    "messages": [
+      {
+        "type": "user",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        },
+        "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        "parent_tool_use_id": null
+      }
+    ],
+    "compaction_count": 0
+  },
+  "slash_commands": [],
+  "subagents": [],
+  "file_index": {
+    "entries": {}
+  },
+  "reviews": {
+    "threads": {
+      "outcome": "read",
+      "value": []
+    },
+    "reviews": {
+      "outcome": "read",
+      "value": []
+    }
+  },
+  "work": {
+    "branch": null,
+    "changed": null,
+    "gate": "gone"
+  }
+}

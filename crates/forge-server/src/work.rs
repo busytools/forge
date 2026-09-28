@@ -21,7 +21,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// `gate` is what tells the two cases apart: a directory outside a
 /// repository, a working tree that is gone, and a git that would not run
 /// all leave both fields empty and want different lines on the row.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkState {
     pub branch: Option<String>,
     pub changed: Option<usize>,
@@ -30,7 +30,8 @@ pub struct WorkState {
 
 /// The repo gate, as a view reads it. Its own type so the view does not
 /// have to name the scanner's.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Gate {
     /// Git answered: there is a repository here, and whatever the two
     /// fields say about it is the whole truth.

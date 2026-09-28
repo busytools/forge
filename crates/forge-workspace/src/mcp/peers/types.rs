@@ -123,6 +123,7 @@ pub const REPLY_TOOL: &str = "agents__tell";
 
 /// Wire kind of a peer message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WrappedKind {
     /// `agents__ask` from sender. Recipient replies with
     /// `in_reply_to` set to this id.

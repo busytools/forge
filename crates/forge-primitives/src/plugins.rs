@@ -16,6 +16,7 @@ pub struct PluginDetails {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PluginCapability {
     Skill,
     Mcp,
@@ -146,6 +147,7 @@ pub struct PluginsCliActionSuccess {
 
 /// Lifecycle of one row in a plugin update run or update check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PluginRunRowStatus {
     /// Queued for the run, not started yet.
     Queued,
