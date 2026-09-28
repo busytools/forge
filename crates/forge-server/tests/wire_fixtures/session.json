@@ -10,7 +10,12 @@
       "project": "proj",
       "label": "lead"
     },
-    "scan_cwd": "<fixture>/proj"
+    "scan_cwd": "<fixture>/proj",
+    "dictate_overrides": {
+      "styling": null,
+      "structure": null,
+      "context": null
+    }
   },
   "header": {
     "model": null,

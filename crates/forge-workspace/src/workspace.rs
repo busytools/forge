@@ -2268,6 +2268,15 @@ impl Workspace {
     ///
     /// When the audio stack cannot be enumerated at all; the overlay
     /// renders the message in place of a list.
+    /// The device this process records from, once a `/dictate` pick moved it.
+    ///
+    /// Volatile and process-wide rather than per session: a pick overrides the
+    /// `[dictate] device` pin for every session until forge restarts, which is
+    /// why it rides the dictate read rather than a session's state.
+    pub fn dictate_device_pick(&self) -> Option<crate::dictate::DictateDeviceChoice> {
+        self.dictate_device_pick.lock().clone()
+    }
+
     pub fn dictate_device_catalog(&self) -> Result<crate::dictate::DictateDeviceCatalog, String> {
         let devices = forge_dictate::devices().map_err(|error| error.to_string())?;
         Ok(crate::dictate::DictateDeviceCatalog {

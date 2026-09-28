@@ -237,6 +237,9 @@ pub struct DictateWire {
     pub enabled: bool,
     pub snapshot: Value,
     pub models_dir: Option<std::path::PathBuf>,
+    /// The input a pick has moved this process to, over the configured pin.
+    /// `None` means the pin stands.
+    pub device: Option<forge_workspace::DictateDeviceChoice>,
 }
 
 /// One session, as a client sees it: every read a session-scoped view makes.
@@ -269,6 +272,8 @@ pub struct SessionWire {
 pub struct SessionStateWire {
     pub slot: SessionSlot,
     pub scan_cwd: std::path::PathBuf,
+    /// What this session dictates with, where it has overridden the defaults.
+    pub dictate_overrides: forge_workspace::DictateOverrides,
 }
 
 /// The session's header facts, including the two a client cannot otherwise
@@ -538,6 +543,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
             enabled: dictate.enabled,
             snapshot: serde_json::to_value(dictate.snapshot).unwrap_or(Value::Null),
             models_dir: dictate.models_dir,
+            device: dictate.device,
         },
         cli_version: surface.cli_version().and_then(|version| serde_json::to_value(version).ok()),
         forge_version: crate::FORGE_VERSION.to_owned(),
@@ -618,7 +624,11 @@ async fn session(
             threads: ReadWire::from(reviews.threads),
             reviews: ReadWire::from(reviews.reviews),
         },
-        state: SessionStateWire { slot: state_at.slot, scan_cwd: state_at.scan_cwd },
+        state: SessionStateWire {
+            slot: state_at.slot,
+            scan_cwd: state_at.scan_cwd,
+            dictate_overrides: state_at.dictate_overrides,
+        },
         work,
     })
 }
@@ -1067,6 +1077,57 @@ mod tests {
             leaf.label, "Subagent",
             "and the word its row draws is a different thing, which is why both are carried",
         );
+    }
+
+    /// A client could set a session's dictation and move the process's input,
+    /// and no record carried either back: three commands crossed the wire and
+    /// nothing read what they had set.
+    #[tokio::test]
+    async fn the_dictation_a_client_set_comes_back() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let seat = fixture_seat();
+        // A session has to exist for the override to land on, which is why
+        // this is a seat with a live agent rather than a bare project.
+        fleet.install_agent("TestOrg", "proj", "lead");
+        let surface = fleet.surface();
+        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
+
+        surface
+            .dispatch(crate::Command::SetDictateOverride {
+                key: seat.clone(),
+                update: forge_workspace::DictateOverrideUpdate::Styling(
+                    forge_dictate::normalize::Styling::SemiFormal,
+                ),
+            })
+            .expect("the session's override is applied");
+        surface
+            .dispatch(crate::Command::SetDictateDevice {
+                key: seat.clone(),
+                pick: Some(forge_workspace::DictateDeviceChoice::Device("a-mic".to_owned())),
+            })
+            .expect("the device pick is applied");
+
+        let state = TransportState {
+            surface: Arc::clone(&surface),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let session = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
+        assert_eq!(
+            session["state"]["dictate_overrides"]["styling"], "semi_formal",
+            "the override the client set is the override it reads back: {session}",
+        );
+
+        let home = encode_subject(&state, &Subject::Home).await.expect("encode");
+        assert_eq!(
+            home["dictate"]["device"]["device"], "a-mic",
+            "and the device it moved to is on the dictate read: {home}",
+        );
+        let _ = cwd;
     }
 
     /// The terminal draws a project's SCHEDULES section from a read the wire

@@ -56,6 +56,10 @@ forge-server = { path = ".", features = ["testing"] }
 # so they need `Workspace::testing_stub`, its seeding helpers, and the
 # `forge.toml` fixture `Workspace::new_for_test` builds from a tempdir.
 forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
+# A session's dictation overrides are this crate's to carry, and their axes
+# are `forge-dictate`'s types, so the test that they arrive populated names
+# them here rather than asserting a shape without a value.
+forge-dictate = { workspace = true }
 tempfile = { workspace = true }
 # The connectors fixture seeds durable subscriptions, which are keyed by id.
 uuid = { workspace = true }
