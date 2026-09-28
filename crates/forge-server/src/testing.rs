@@ -122,6 +122,14 @@ impl Fleet {
         self.workspace.emit_for_test(update);
     }
 
+    /// [`Self::emit`], reporting whether a subscriber was there to take it.
+    ///
+    /// `false` once nothing is listening, which is how a test tells a
+    /// subscription still attached from one that went with its socket.
+    pub fn emit_and_report(&self, update: SessionUpdate) -> bool {
+        self.workspace.emit_for_test_reported(update)
+    }
+
     /// Hold a claude version snapshot, so a view test renders a version
     /// line without a real `claude --version` and npm probe.
     pub fn set_cli_version(&self, installed: Option<&str>, latest: Option<&str>) {

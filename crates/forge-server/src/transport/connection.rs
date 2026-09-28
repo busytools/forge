@@ -9,7 +9,7 @@ use axum::response::Response;
 use futures_util::StreamExt;
 
 use super::TransportState;
-use super::envelope::{ClientMessage, ClientSettings, ServerMessage};
+use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::encode_subject;
 
 /// The protocol this server speaks.
@@ -56,62 +56,92 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
     }
 }
 
-/// Read what a client sends, and answer every message it sends.
+/// Read what a client sends, and hear what its subscriptions asked for.
 ///
-/// Every arm answers: a client is never left waiting on a message this
-/// server chose to drop, which is the failure that reads as a hang rather
-/// than as an error.
+/// Every client message is answered: a client is never left waiting on a
+/// message this server chose to drop, which is the failure that reads as a
+/// hang rather than as an error.
 async fn drive(socket: &mut WebSocket, state: &TransportState) -> anyhow::Result<()> {
-    while let Some(msg) = socket.next().await {
-        let Message::Text(text) = msg? else {
-            continue;
-        };
-        let Ok(client) = serde_json::from_str::<ClientMessage>(&text) else {
-            send(
-                socket,
-                ServerMessage::Error {
-                    what: "client_message".to_owned(),
-                    why: "that is not a message this server knows".to_owned(),
-                },
-            )
-            .await?;
-            continue;
-        };
-        match client {
-            ClientMessage::Subscribe { what } => match encode_subject(state, &what).await {
-                Ok(data) => {
-                    send(socket, ServerMessage::Snapshot { subject: what, data }).await?;
+    // This socket's own stream, handed over by the surface. Every caller
+    // gets one, so a second client attaches beside the first rather than
+    // stealing its events, and dropping the socket drops this with it -
+    // which is what keeps a subscription from outliving its connection.
+    let mut updates = state.surface.subscribe();
+    let mut watched: Vec<Subject> = Vec::new();
+
+    loop {
+        tokio::select! {
+            msg = socket.next() => {
+                let Some(msg) = msg else { break };   // the client went away
+                handle_client(socket, state, &mut watched, msg?).await?;
+            }
+            // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
+            // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
+            // would silently stop delivering while the socket stayed open.
+            heard = updates.recv() => {
+                let Some(update) = heard else { break };
+                if watched.iter().any(|what| what.covers(&update)) {
+                    send(socket, ServerMessage::Update { update: Box::new(update) }).await?;
                 }
-                // A seat nobody has started is an ANSWER rather than a
-                // silence: the client learns why, and never draws an empty
-                // snapshot as a broken page.
-                Err(refusal) => {
-                    send(
-                        socket,
-                        ServerMessage::Error {
-                            what: "subscribe".to_owned(),
-                            why: refusal.to_string(),
-                        },
-                    )
-                    .await?;
-                }
-            },
-            // Unsubscribe, Command and More arrive in Tasks 6, 7 and 8.
-            // Until then they answer rather than being dropped, so a client
-            // is never left waiting on one.
-            other => {
-                send(
-                    socket,
-                    ServerMessage::Error {
-                        what: "not_yet".to_owned(),
-                        why: format!("this server does not serve {other:?} yet"),
-                    },
-                )
-                .await?;
             }
         }
     }
     Ok(())
+}
+
+/// Answer one client message.
+async fn handle_client(
+    socket: &mut WebSocket,
+    state: &TransportState,
+    watched: &mut Vec<Subject>,
+    msg: Message,
+) -> anyhow::Result<()> {
+    let Message::Text(text) = msg else {
+        return Ok(());
+    };
+    let Ok(client) = serde_json::from_str::<ClientMessage>(&text) else {
+        return send(
+            socket,
+            ServerMessage::Error {
+                what: "client_message".to_owned(),
+                why: "that is not a message this server knows".to_owned(),
+            },
+        )
+        .await;
+    };
+    match client {
+        ClientMessage::Subscribe { what } => match encode_subject(state, &what).await {
+            Ok(data) => {
+                // Watched only once the subject is one this server can
+                // answer for: a refused subscribe leaves nothing to hear.
+                watched.push(what.clone());
+                send(socket, ServerMessage::Snapshot { subject: what, data }).await
+            }
+            // A seat nobody has started is an ANSWER rather than a
+            // silence: the client learns why, and never draws an empty
+            // snapshot as a broken page.
+            Err(refusal) => {
+                send(
+                    socket,
+                    ServerMessage::Error { what: "subscribe".to_owned(), why: refusal.to_string() },
+                )
+                .await
+            }
+        },
+        // Unsubscribe, Command and More arrive in Tasks 7 and 8. Until then
+        // they answer rather than being dropped, so a client is never left
+        // waiting on one.
+        other => {
+            send(
+                socket,
+                ServerMessage::Error {
+                    what: "not_yet".to_owned(),
+                    why: format!("this server does not serve {other:?} yet"),
+                },
+            )
+            .await
+        }
+    }
 }
 
 async fn send(socket: &mut WebSocket, message: ServerMessage) -> anyhow::Result<()> {

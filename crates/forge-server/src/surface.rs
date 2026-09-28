@@ -96,20 +96,31 @@ impl ViewSurface {
         self.workspace.pending_ask(slot)
     }
 
-    /// The core's own update stream, as a mirror of it. Every caller gets
-    /// a receiver of its own, so a second view attaches beside the first
-    /// rather than stealing its events.
+    /// The core's own update stream. Every caller gets a receiver of its
+    /// own, so a second view attaches beside the first rather than stealing
+    /// its events.
     ///
-    /// This is the form for a view that renders no prompt: the observer
-    /// role, and no replay of what was emitted before the caller attached,
-    /// because it reads what it needs from the read verbs when it is
-    /// asked. Both halves are deliberate and neither suits the TUI, which
-    /// is the view that DOES render prompts and answer them - moving it
-    /// onto this verb would make it an observer, and every permission and
-    /// question request would resolve `Cancelled` instead of reaching a
-    /// person. It stays on `Workspace::subscribe`.
+    /// **A caller on this verb is a frontend that renders AND answers
+    /// prompts.** A permission, question or Slack-draft request is parked on
+    /// a reply, and the paths that raise one resolve it `Cancelled` when no
+    /// subscriber can answer - so a view that draws a dock while declaring
+    /// itself an observer draws prompts that are already dead, and a turn
+    /// fails rather than waiting for the person looking at it. Whoever
+    /// subscribes here answers through `dispatch`, which is the same path
+    /// the TUI uses.
+    ///
+    /// This was the mirror's role while the TUI was the only frontend and
+    /// the only thing that answered. A second view that renders makes that
+    /// reason stop holding.
+    ///
+    /// The first caller to attach is handed what was emitted before it as
+    /// well, so a notice raised during boot is not lost; a caller attaching
+    /// after one already has inherits no backlog.
+    ///
+    /// A consumer that reads the stream and renders no prompt takes
+    /// `Workspace::subscribe_observer` instead.
     pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
-        self.workspace.subscribe_mirror()
+        self.workspace.subscribe()
     }
 
     /// The projects, their sessions, and the per-project lists the
@@ -242,11 +253,21 @@ mod tests {
 
     /// The mirror is the call site, not the fanout. Both verbs sit on one
     /// `UpdateFanout`, whose own test pins its two halves; what this pins
-    /// is which half each one calls, because repointing the surface's verb
-    /// at `Workspace::subscribe` steals the boot notice from the view that
-    /// renders prompts and every other test in the tree stays green.
+    /// is which half each one calls.
+    ///
+    /// **A view attaching through this verb renders AND answers prompts, and
+    /// it takes the stream whole.** The two travel together on purpose: the
+    /// verb that hands over the backlog is the verb that answers, because
+    /// both belong to the frontend that draws a dock. A view pointed at the
+    /// mirror instead draws prompts that are already dead - the workspace
+    /// resolves a permission, question or Slack draft `Cancelled` when no
+    /// subscriber can answer - and nothing in a build or a test would say so.
+    ///
+    /// This is the one place in the tree that tells the two apart: every
+    /// other test answers an update that was emitted after it attached, and
+    /// green either way.
     #[tokio::test]
-    async fn a_surface_mirror_leaves_the_backlog_for_a_workspace_subscriber() {
+    async fn a_surface_subscriber_answers_and_takes_the_stream_whole() {
         let (workspace, _dir) = crate::surface::testing::workspace();
         let surface = ViewSurface::new(Arc::clone(&workspace));
 
@@ -254,18 +275,10 @@ mod tests {
         // whichever caller attaches first.
         workspace.emit_for_test(SessionUpdate::CatalogLoaded);
 
-        let mut mirror = surface.subscribe();
+        let mut subscribed = surface.subscribe();
         assert!(
-            mirror.try_recv().is_err(),
-            "a view attaching through the surface takes no backlog, since the held notice \
-             belongs to the view that renders prompts",
-        );
-
-        let mut answering = workspace.subscribe();
-        assert!(
-            matches!(answering.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
-            "the notice held before any caller attached is still there for the workspace \
-             subscriber, which is what the mirror left it for",
+            matches!(subscribed.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            "a view attaching through this verb takes the stream whole, held notice included",
         );
     }
 

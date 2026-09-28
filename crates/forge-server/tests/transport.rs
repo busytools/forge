@@ -5,11 +5,16 @@
 // not reach it: the denied lints fire on a file that is entirely test code.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use forge_primitives::SessionSlot;
+use forge_server::live::Live;
+use forge_server::surface::SessionUpdate;
+use forge_server::testing::Fleet;
 use forge_server::transport::TransportState;
 use forge_server::transport::envelope::{ClientMessage, ServerMessage, Subject};
 use forge_server::transport::serve;
+use forge_server::work::WorkCache;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -17,20 +22,39 @@ use tokio_tungstenite::tungstenite::Message;
 type Client =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// A client connected to a server this test started, with the greeting
-/// already read: every test below starts from a stream whose next message is
-/// the answer to what it sends.
-async fn connected() -> Client {
-    let state = Arc::new(TransportState::for_test().expect("the fixture builds"));
+/// The seat the fixture fleet declares.
+fn lead_seat() -> SessionSlot {
+    SessionSlot::lead("TestOrg", "proj")
+}
+
+/// A server over a fresh fixture fleet, the URL to reach it, and the fleet
+/// itself so a test can drive the core as well as the socket.
+///
+/// The config directory is kept rather than dropped with the fleet: the
+/// workspace's store lives under it, and a surface whose files vanished
+/// under it is not what a test means to exercise.
+async fn a_server() -> (String, Fleet) {
+    let dir = tempfile::tempdir().expect("tempdir").keep();
+    let fleet = Fleet::in_dir(&dir, &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let state = Arc::new(TransportState {
+        surface: fleet.surface(),
+        work: Arc::new(WorkCache::new()),
+        live: Mutex::new(Live::new()),
+        config: forge_primitives::WebConfig::default(),
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     tokio::spawn(async move {
         let _ = serve(state, listener).await;
     });
+    (format!("ws://{addr}/socket"), fleet)
+}
 
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/socket"))
-        .await
-        .expect("the socket opens");
+/// A client connected to a server this test started, with the greeting
+/// already read: every test below starts from a stream whose next message is
+/// the answer to what it sends.
+async fn connect(url: &str) -> Client {
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.expect("the socket opens");
     let msg = socket.next().await.expect("a greeting").expect("no error");
     let text = msg.to_text().expect("text").to_owned();
     let greeting: ServerMessage = serde_json::from_str(&text).expect("the greeting decodes");
@@ -39,6 +63,28 @@ async fn connected() -> Client {
         "the first thing the server says is its greeting, not {text}",
     );
     socket
+}
+
+/// A client on a server of its own, for a test that needs no fleet.
+async fn connected() -> Client {
+    let (url, _fleet) = a_server().await;
+    connect(&url).await
+}
+
+/// Waits for the server to notice its client went away.
+///
+/// The socket closing is local to the client; the server finds out when its
+/// own read fails, which is a scheduling hop away. Polling is honest because
+/// the property IS "eventually", and it is bounded so a server that never
+/// notices fails the test that waits rather than hanging it.
+async fn wait_for_the_server_to_notice(fleet: &Fleet) -> bool {
+    for _ in 0..200 {
+        if !fleet.emit_and_report(SessionUpdate::CatalogLoaded) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    false
 }
 
 async fn send(socket: &mut Client, message: ClientMessage) {
@@ -101,4 +147,87 @@ async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
     // which is the gateway's subject and a different record entirely. Asserting the
     // wrong key here would fail for a reason that looks like the encoder's fault.
     assert!(data.get("projects").is_some(), "the home snapshot carries its projects: {data}");
+}
+
+/// A subscription hears the updates its subject receives and no others.
+#[tokio::test]
+async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home }).await;
+    let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
+        panic!("the subscribe is answered with a snapshot first")
+    };
+
+    // An App-level update names no slot, which is what the home subscription is for.
+    fleet.emit(SessionUpdate::CatalogLoaded);
+    assert!(
+        matches!(next_server(&mut socket).await, ServerMessage::Update { .. }),
+        "a home subscriber hears an App-level update",
+    );
+
+    // And one that names a seat is not the home's business. The evidence is ORDER, never a
+    // timeout: waiting for the update to NOT arrive would hang on the correct behaviour, so
+    // the test asks for something whose answer must come next and asserts THAT is what it got.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home }).await;
+    let msg = next_server(&mut socket).await;
+    assert!(
+        matches!(msg, ServerMessage::Snapshot { .. }),
+        "a seat's update must not reach a home subscriber; the snapshot should be next: {msg:?}",
+    );
+}
+
+/// Two clients on one seat both hear it: the second neither steals the
+/// first's stream nor sees half of it.
+#[tokio::test]
+async fn two_sockets_on_one_seat_both_hear_it() {
+    let (url, fleet) = a_server().await;
+    let mut first = connect(&url).await;
+    let mut second = connect(&url).await;
+    for socket in [&mut first, &mut second] {
+        send(socket, ClientMessage::Subscribe { what: Subject::Session(lead_seat()) }).await;
+        let ServerMessage::Snapshot { .. } = next_server(socket).await else {
+            panic!("a seat that exists is answered with its snapshot")
+        };
+    }
+
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+
+    assert!(
+        matches!(next_server(&mut first).await, ServerMessage::Update { .. }),
+        "the first client hears the seat it subscribed to",
+    );
+    assert!(
+        matches!(next_server(&mut second).await, ServerMessage::Update { .. }),
+        "and the second must not have stolen the first's stream",
+    );
+}
+
+/// A subscription does not outlive its socket, which on a long-lived server
+/// is a subscription-shaped leak.
+#[tokio::test]
+async fn a_dropped_socket_leaves_no_subscription_behind() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home }).await;
+    let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
+        panic!("the subscribe is answered with a snapshot")
+    };
+    // Precondition, so the assertion below is about a subscription that went
+    // away rather than about one that was never made.
+    assert!(
+        fleet.emit_and_report(SessionUpdate::CatalogLoaded),
+        "precondition: the socket's own subscription is attached",
+    );
+
+    // Closed politely rather than dropped: the server is told the client is
+    // going, which is the path a page navigating away takes.
+    socket.close(None).await.expect("the client says goodbye");
+    drop(socket);
+
+    assert!(
+        wait_for_the_server_to_notice(&fleet).await,
+        "a subscription must not outlive its socket",
+    );
 }

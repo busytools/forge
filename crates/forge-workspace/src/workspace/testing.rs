@@ -155,6 +155,17 @@ impl Workspace {
         let _ = self.update_tx.send(update);
     }
 
+    /// [`Self::emit_for_test`], reporting whether a subscriber was there to
+    /// take it.
+    ///
+    /// A dead subscriber is dropped from the registry on the next send, so
+    /// the answer is `false` once nothing is listening - which is how a test
+    /// tells a subscription still attached from one that went with its
+    /// socket.
+    pub fn emit_for_test_reported(&self, update: SessionUpdate) -> bool {
+        self.update_tx.send(update)
+    }
+
     /// Hold a claude version snapshot, so a cross-crate test can render the
     /// version line without a real `claude --version` and npm probe.
     /// Test-only.

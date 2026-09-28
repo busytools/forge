@@ -19,6 +19,25 @@ pub enum Subject {
     Session(SessionSlot),
 }
 
+impl Subject {
+    /// Whether an update belongs to what this subscription asked for.
+    ///
+    /// The workspace already decides which seat a variant routes to, so this
+    /// ASKS it rather than matching the variants. A match over all
+    /// fifty-five would be large, it looks like the real work, and one wrong
+    /// arm gives a client that either never hears something or hears
+    /// everything - neither of which fails a build.
+    pub fn covers(&self, update: &SessionUpdate) -> bool {
+        match (self, update.slot()) {
+            // A variant that names no seat is App-level, which is exactly
+            // what a home subscription is for.
+            (Self::Home, None) => true,
+            (Self::Session(seat), Some(to)) => seat == to,
+            _ => false,
+        }
+    }
+}
+
 /// What a client sends.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
