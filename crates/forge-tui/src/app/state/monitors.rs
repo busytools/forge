@@ -308,6 +308,56 @@ mod tests {
     use crate::app::state::tests::make_test_app;
     use pretty_assertions::assert_eq;
 
+    /// The strip the server used to do at read time now happens here, where
+    /// the terminal draws it - and nothing asserted it, so the line could be
+    /// deleted and no test would fail. The drawn text is what this pins.
+    #[test]
+    fn a_monitors_tail_is_stripped_where_the_terminal_draws_it() {
+        use crate::app::state::types::{MonitorEntry, MonitorStatus};
+        use std::collections::VecDeque;
+
+        let path = std::env::temp_dir().join("forge-monitor-tail-strip-test.txt");
+        std::fs::write(&path, "\u{1b}[32mgreen\u{1b}[0m\rline\u{07}\n").expect("write");
+
+        let mut app = App::test_default();
+        app.monitors_mut().expect("active session").push(MonitorEntry {
+            tool_use_id: "tu-mon-strip".to_owned(),
+            task_id: Some("task-mon-strip".to_owned()),
+            description: "demo".to_owned(),
+            command: "cargo build".to_owned(),
+            persistent: true,
+            timeout_ms: 0,
+            status: MonitorStatus::Running,
+            output_file: Some(path.clone()),
+            output_tail: VecDeque::new(),
+            expanded_in_inspector: false,
+        });
+
+        app.refresh_monitor_output_tail_from_file("task-mon-strip");
+
+        let tail: Vec<String> = app
+            .monitors()
+            .iter()
+            .find(|entry| entry.task_id.as_deref() == Some("task-mon-strip"))
+            .expect("the entry is there")
+            .output_tail
+            .iter()
+            .cloned()
+            .collect();
+
+        assert!(
+            tail.iter().all(|line| !line.contains('\u{1b}')
+                && !line.contains('\r')
+                && !line.contains('\u{07}')),
+            "the escapes and movement bytes come off before the terminal draws them: {tail:?}",
+        );
+        assert!(
+            tail.iter().any(|line| line.contains("green")),
+            "and the words the command wrote are still there: {tail:?}",
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn replace_monitor_output_tail_stamps_tool_call_info_and_bumps_dirty() {
         use crate::agent::model::ToolCallStatus;
