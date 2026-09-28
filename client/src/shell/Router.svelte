@@ -1,5 +1,6 @@
 <script lang="ts">
   import Connect from '../connect/Connect.svelte';
+  import Home from '../home/Home.svelte';
   import type { Route } from '../routes';
   import type { ClientSettings } from '../wire/types';
 
@@ -19,8 +20,7 @@
 {#if route.name === 'connect'}
   <Connect {settings} {onconnect} />
 {:else if route.name === 'home'}
-  <!-- Task 4 draws the home here, from `src/home/`. -->
-  <div class="wrap"><p class="pending">The home is next.</p></div>
+  <Home {address} mark={settings.mark} />
 {:else if route.name === 'session'}
   <!-- Task 5 draws the session page here, from `src/session/`. -->
   <div class="wrap"><p class="pending">The session page is next.</p></div>
