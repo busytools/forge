@@ -79,17 +79,6 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
     }
 }
 
-/// The id the bucket at `key` currently runs under, for the wire-shaped
-/// frames the TUI forges for its own chat echo. Empty while the bucket
-/// has not connected yet - the echo's `session_id` is a display field
-/// nothing routes on.
-fn bucket_session_id(app: &App, key: &SessionSlot) -> String {
-    app.sessions
-        .get(key)
-        .and_then(|bucket| bucket.session_id.as_ref())
-        .map_or_else(String::new, |id| id.as_str().to_owned())
-}
-
 /// Per-session event multiplexer. Each [`SessionUpdate`] is routed
 /// to the [`crate::app::session::UiSession`] bucket it targets via the
 /// envelope's [`SessionUpdate::slot`] accessor.
@@ -112,6 +101,15 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
     // Polled events can arrive unchanged; their reducer clears this so a
     // no-op response doesn't wake the render loop.
     let mut redraw = is_active_or_global;
+    // A delivery the workspace injected draws as a turn of its own, forged
+    // from the update rather than read off the wire: the CLI does not echo a
+    // prompt it was handed on stdin. Before the match because the forge takes
+    // the whole update, which the match moves.
+    if let Some(key) = target_key.as_ref()
+        && let Some(turn) = forge_sessions::delivery::delivery_turn(&update, key)
+    {
+        apply_session_update_chat_appended(app, key, turn);
+    }
     match update {
         SessionUpdate::Spawning { key, project_name, cwd, display_name } => {
             apply_session_update_spawning(app, key, &project_name, &cwd, &display_name);
@@ -519,109 +517,14 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             }
             app.needs_redraw = true;
         }
-        SessionUpdate::PeerEnvelopeAppended { key, wrapped } => {
-            // Workspace no longer forges an SDK `Message::User`
-            // carrying peer prose - it emits the typed envelope
-            // here and the TUI builds the synthetic chat-side
-            // user-turn from real fields. The prose is the same
-            // string the recipient's LLM sees via Command::Prompt,
-            // so the existing `forge_sessions::envelope::detect_inbound` matcher
-            // in the SDK-message reducer still recognises it.
-            let synthetic = forge_primitives::Message::User {
-                message: forge_primitives::UserEnvelope {
-                    role: "user".to_owned(),
-                    content: vec![forge_primitives::ContentBlock::Text {
-                        text: {
-                            let prose = wrapped.to_prose();
-                            assert_envelope_parses(&prose, "peer_envelope");
-                            prose
-                        },
-                    }],
-                },
-                session_id: bucket_session_id(app, &key),
-                parent_tool_use_id: None,
-                uuid: None,
-                tool_use_result: None,
-                timestamp: None,
-            };
-            apply_session_update_chat_appended(app, &key, synthetic);
-        }
-        SessionUpdate::GotifyNotificationAppended { key, notification } => {
-            // Mirror the peer-envelope path: forge a synthetic user turn
-            // from the notification's prose (the same text the session's
-            // LLM sees via Command::Prompt), so `forge_sessions::envelope::detect_inbound`
-            // recognises the `[Gotify ...]` prefix and renders the distinct
-            // notification block.
-            let synthetic = forge_primitives::Message::User {
-                message: forge_primitives::UserEnvelope {
-                    role: "user".to_owned(),
-                    content: vec![forge_primitives::ContentBlock::Text {
-                        text: {
-                            let prose = notification.to_prose();
-                            assert_envelope_parses(&prose, "gotify_notification");
-                            prose
-                        },
-                    }],
-                },
-                session_id: bucket_session_id(app, &key),
-                parent_tool_use_id: None,
-                uuid: None,
-                tool_use_result: None,
-                timestamp: None,
-            };
-            apply_session_update_chat_appended(app, &key, synthetic);
-        }
-        SessionUpdate::SlackMessageAppended { key, prose } => {
-            // Mirror the gotify path: the workspace hands over the same prose
-            // the session's LLM receives, so `forge_sessions::envelope::detect_inbound`
-            // recognises the `[Slack ...]` header and renders the block.
-            let synthetic = forge_primitives::Message::User {
-                message: forge_primitives::UserEnvelope {
-                    role: "user".to_owned(),
-                    content: vec![forge_primitives::ContentBlock::Text {
-                        text: {
-                            assert_envelope_parses(&prose, "slack_message");
-                            prose
-                        },
-                    }],
-                },
-                session_id: bucket_session_id(app, &key),
-                parent_tool_use_id: None,
-                uuid: None,
-                tool_use_result: None,
-                timestamp: None,
-            };
-            apply_session_update_chat_appended(app, &key, synthetic);
-        }
-        SessionUpdate::CronPromptAppended { key, text } => {
-            // Mirror the gotify path: forge a synthetic user turn wrapping
-            // the fired prompt in a display-only `[Cron]` prefix so
-            // `forge_sessions::envelope::detect_inbound` recognises it and renders the
-            // distinct cron block (+ inherits the #383 delivered-turn
-            // spinner). The subprocess receives the raw prompt via a
-            // separate Command::Prompt, so the bracket never reaches the LLM.
-            let synthetic = forge_primitives::Message::User {
-                message: forge_primitives::UserEnvelope {
-                    role: "user".to_owned(),
-                    content: vec![forge_primitives::ContentBlock::Text {
-                        text: {
-                            let prose = format!("[Cron]\n\n{text}");
-                            assert_envelope_parses(&prose, "cron_prompt");
-                            prose
-                        },
-                    }],
-                },
-                session_id: bucket_session_id(app, &key),
-                parent_tool_use_id: None,
-                uuid: None,
-                tool_use_result: None,
-                timestamp: None,
-            };
-            apply_session_update_chat_appended(app, &key, synthetic);
-        }
-        // The event's existence is the availability signal; nothing
-        // caches it.
-        SessionUpdate::DictateAvailability => {}
+        // The four deliveries were forged above, before the match.
+        // `DictateAvailability`'s existence is the availability signal;
+        // nothing caches either.
+        SessionUpdate::PeerEnvelopeAppended { .. }
+        | SessionUpdate::GotifyNotificationAppended { .. }
+        | SessionUpdate::SlackMessageAppended { .. }
+        | SessionUpdate::CronPromptAppended { .. }
+        | SessionUpdate::DictateAvailability => {}
         SessionUpdate::DictateStarted { key, floor_db, generation } => {
             app.dictate_take_pending = false;
             if let Some(bucket) = app.session_mut(&key) {
@@ -1272,29 +1175,6 @@ fn apply_mcp_snapshot_presentation(
 /// viewport); [`apply_sdk_message_presentation`] temp-swaps
 /// `active_session_key` to route background sessions through the
 /// same path.
-/// The four envelope reducers - peer, gotify, cron and slack - forge a
-/// synthetic `Message::User` whose only job is to be re-parsed by
-/// `detect_inbound`. If that parse fails
-/// the chat echo is dropped silently while the LLM still receives the
-/// prose via `Command::Prompt` - the agent works on a message the user
-/// never saw arrive. forge-workspace cannot depend on forge-tui, so no
-/// test spans the round trip; this is the assertion that catches a
-/// prose-format drift at runtime.
-fn assert_envelope_parses(prose: &str, source: &'static str) {
-    if forge_sessions::envelope::detect_inbound(prose).is_none() {
-        let head: String = prose.chars().take(120).collect();
-        tracing::error!(
-            target: crate::logging::targets::APP_SESSION,
-            event_name = "envelope_prose_unrecognised",
-            source,
-            outcome = "chat_echo_dropped",
-            prose_head = %head,
-            "forged envelope prose did not match detect_inbound; the LLM still \
-             received it but the user will not see it",
-        );
-    }
-}
-
 pub(super) fn apply_session_update_chat_appended(
     app: &mut App,
     key: &SessionSlot,
@@ -1791,6 +1671,19 @@ mod tests {
         assert!(!app.needs_redraw, "needs_redraw must stay false for background-session events");
     }
 
+    fn connected_for(key: &SessionSlot) -> SessionUpdate {
+        SessionUpdate::Connected {
+            key: key.clone(),
+            session_id: forge_primitives::SessionId::new(key.display()),
+            cwd: "/proj".to_owned(),
+            current_model: test_current_model(),
+            available_models: Vec::new(),
+            mode: None,
+            history: Vec::new(),
+            compaction_count: 0,
+        }
+    }
+
     fn session_replaced_for(key: &SessionSlot, session_id: &str, cwd: &str) -> SessionUpdate {
         SessionUpdate::SessionReplaced {
             key: key.clone(),
@@ -1856,6 +1749,55 @@ mod tests {
         assert!(!bucket.pending_cancel, "a replaced session has no cancel in flight");
         assert!(!bucket.is_compacting);
         assert!(!bucket.pending_compact_clear);
+    }
+
+    /// A new occupant inherits nothing, whichever event announced it and
+    /// whichever arm applied it. The core drops its monitor set on every
+    /// connect rather than only on a replacement, so a set left here would
+    /// draw a monitor nothing can settle and block the all-terminal clear
+    /// for its siblings.
+    #[test]
+    fn a_new_occupant_starts_with_no_monitor_set() {
+        use crate::app::state::types::{MonitorEntry, MonitorStatus};
+
+        for background in [false, true] {
+            for replaced in [false, true] {
+                let mut app = App::test_default();
+                let (key_a, key_b) = seed_two_sessions(&mut app);
+                let key = if background { key_b.clone() } else { key_a.clone() };
+                app.sessions.get_mut(&key).expect("the target bucket").monitors.push(
+                    MonitorEntry {
+                        tool_use_id: "tu-mon".to_owned(),
+                        task_id: Some("task-mon".to_owned()),
+                        description: "cargo build".to_owned(),
+                        command: "cargo build".to_owned(),
+                        persistent: true,
+                        timeout_ms: 0,
+                        status: MonitorStatus::Running,
+                        output_file: None,
+                        output_tail: std::collections::VecDeque::new(),
+                        expanded_in_inspector: false,
+                    },
+                );
+
+                apply_session_update(
+                    &mut app,
+                    if replaced {
+                        session_replaced_for(&key, "replacement", "/proj")
+                    } else {
+                        connected_for(&key)
+                    },
+                );
+
+                let bucket = app.sessions.get(&key).expect("the slot keeps its bucket");
+                assert!(
+                    bucket.monitors.is_empty(),
+                    "a set left on the {} bucket after {} can never settle",
+                    if background { "background" } else { "active" },
+                    if replaced { "a replacement" } else { "a plain connect" },
+                );
+            }
+        }
     }
 
     /// Foreground twin: replacing the session the user is watching

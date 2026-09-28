@@ -20,6 +20,8 @@ pub mod monitor;
 pub mod peer_outbound;
 pub mod subagents;
 pub mod surface;
+#[cfg(test)]
+mod test_support;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod transcript;
