@@ -61,7 +61,12 @@
     font-family: var(--mono); font-size: 22px; font-weight: 500;
     letter-spacing: -.01em;
   }
+  /* The input has no box, so the focus indicator is the rule beneath it -
+     the same mechanism the sheet uses for the composer's box
+     (`.box:focus-within`), where the border takes the accent and the inner
+     input drops its outline because the container carries it. */
   .addr input:focus { outline: none; }
+  .addr:focus-within .rule { background: var(--accent); }
   .addr input::selection { background: rgba(244,118,0,.3); }
 
   /* One element doing two jobs: the address's underline, and the
@@ -83,7 +88,10 @@
     .door[data-state="connecting"] .rule::after { animation: none; width: 100%; }
   }
 
-  .say { margin-top: 12px; color: var(--dim); font-size: var(--fs-data); }
+  /* `--dim` measures 3.51:1 on this ground, under AA's 4.5:1 for normal
+     text, so the quiet lines read in `--muted` (7.01:1) and are made quiet
+     by position and size instead. */
+  .say { margin-top: 12px; color: var(--muted); font-size: var(--fs-data); }
   .door[data-state="failed"] .say { color: var(--bad); }
   .door[data-state="connecting"] .say { color: var(--muted); }
   .say code { font-family: var(--mono); color: var(--text); }
@@ -98,7 +106,7 @@
   .act button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   .act button:disabled { color: var(--dim); cursor: default; }
 
-  .lede { margin-top: 34px; color: var(--dim); font-size: var(--fs-data); }
+  .lede { margin-top: 34px; color: var(--muted); font-size: var(--fs-data); }
 
   /* ---------- the mock's own scaffolding, dropped before any comparison ---------- */
 

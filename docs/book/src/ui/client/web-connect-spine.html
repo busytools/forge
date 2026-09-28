@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; connect, the state-spine direction</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@100..900&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --r: 10px;
+    --fs-prose: 17px; --fs-base: 15.5px; --fs-data: 14px;
+    --fs-label: 12.5px; --fs-title: 18px;
+  }
+
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: var(--fs-base);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { padding: 30px 40px 64px; }
+  .door { max-width: 32rem; margin: 12vh auto 0; }
+
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .mark { width: 26px; height: 26px; flex: 0 0 26px; color: var(--accent); }
+  .brand .mark svg { display: block; width: 100%; height: 100%; }
+  .brand .word { font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
+
+  /* The block's shape is the design: three rows, the same three in every
+     state, so the only thing that changes is what each one is true of. */
+  .spine {
+    margin-top: 22px;
+    background: var(--s1); border: 1px solid var(--line); border-radius: var(--r);
+    padding: 20px 22px 22px;
+  }
+
+  .steps { list-style: none; }
+  .steps li {
+    display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 12px;
+    align-items: start; position: relative; padding-bottom: 16px;
+  }
+  .steps li:last-child { padding-bottom: 0; }
+  /* the spine itself: a hairline between the markers, so the three rows read
+     as one run rather than three separate facts */
+  .steps li:not(:last-child)::before {
+    content: ""; position: absolute; left: 5px; top: 16px; bottom: 2px; width: 1px; background: var(--line);
+  }
+  .steps .mk {
+    width: 11px; height: 11px; border-radius: 50%; margin-top: 5px;
+    border: 2px solid var(--dim); background: none;
+  }
+  .steps .done .mk { background: var(--accent); border-color: var(--accent); }
+  .steps .now .mk { border-color: var(--accent); animation: beat 1.15s ease-in-out infinite; }
+  .steps .stop .mk { background: var(--bad); border-color: var(--bad); }
+  .steps .wait .mk { opacity: .5; }
+
+  @keyframes beat { 0%,100% { box-shadow: 0 0 0 0 rgba(244,118,0,.4); } 50% { box-shadow: 0 0 0 5px rgba(244,118,0,0); } }
+  @media (prefers-reduced-motion: reduce) { .steps .now .mk { animation: none; } }
+
+  /* The rehearsal labels read in `--muted` rather than `--dim`: `--dim`
+     measures 3.51:1 on this ground, under AA's 4.5:1 for normal text, and
+     12.5px uppercase is normal text by any reading. */
+  .steps .k {
+    font-size: var(--fs-label); letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+  }
+  .steps .v { margin-top: 2px; }
+  .steps .v.addr { font-family: var(--mono); font-size: var(--fs-title); font-weight: 500; letter-spacing: -.01em; }
+  .steps .v.said { color: var(--muted); font-size: var(--fs-data); }
+  .steps .stop .v.said, .steps .stop .k { color: var(--bad); }
+  .steps .wait .v.said { color: var(--muted); }
+  .steps .v code { font-family: var(--mono); color: var(--text); }
+
+  .steps input {
+    display: block; width: 100%;
+    background: none; border: 0; padding: 0;
+    color: var(--text); font-family: var(--mono); font-size: var(--fs-title);
+    font-weight: 500; letter-spacing: -.01em;
+  }
+  /* The input has no box, so focus is shown on the block that already has
+     one: its border takes the accent, the same container-carries-it shape
+     the sheet uses for the composer's box. */
+  .steps input:focus { outline: none; }
+  .spine:focus-within { border-color: var(--accent); }
+  .steps input::selection { background: rgba(244,118,0,.3); }
+
+  .act { margin-top: 18px; display: flex; align-items: center; gap: 14px; }
+  .act button {
+    background: var(--s2); border: 1px solid var(--line); border-radius: var(--r);
+    padding: 11px 20px; color: var(--text);
+    font-family: var(--ui); font-size: var(--fs-base); font-weight: 600; cursor: pointer;
+  }
+  .act button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .act button:disabled { color: var(--dim); cursor: default; }
+  .act .lede { color: var(--muted); font-size: var(--fs-data); }
+
+  .demo-switch { display: inline-flex; align-items: center; gap: 8px; margin-top: 40px; color: var(--dim); font-size: var(--fs-data); cursor: pointer; }
+  .demo-switch .box { width: 13px; height: 13px; border-radius: 3px; border: 1px solid var(--muted); flex: 0 0 13px; }
+  #demo:checked ~ .wrap .demo-switch .box { background: var(--accent); border-color: var(--accent); }
+  .demo-panel { display: none; margin-top: 34px; border-top: 1px solid var(--line); padding-top: 22px; }
+  #demo:checked ~ .wrap .demo-panel { display: block; }
+  .cat { margin-top: 26px; }
+  .cat h4 { font-size: var(--fs-label); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .cat .why { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--dim); margin-left: 8px; }
+  .stage { max-width: 32rem; margin-top: 16px; }
+  .stage .door { margin: 0; }
+</style>
+</head>
+<body>
+
+<input type="checkbox" id="demo" hidden checked>
+
+<div class="wrap">
+
+  <div class="door">
+    <div class="brand">
+      <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+      <span class="word">forge</span>
+    </div>
+
+    <div class="spine">
+      <ol class="steps">
+        <li class="done">
+          <span class="mk" aria-hidden="true"></span>
+          <span><span class="k">address</span>
+            <input id="address" name="address" type="text" value="127.0.0.1:8790"
+                   autocomplete="off" autocapitalize="off" spellcheck="false"
+                   aria-label="the address forge is serving on"></span>
+        </li>
+        <li class="wait">
+          <span class="mk" aria-hidden="true"></span>
+          <span><span class="k">asking</span>
+            <span class="v said">the port forge serves on by default</span></span>
+        </li>
+        <li class="wait">
+          <span class="mk" aria-hidden="true"></span>
+          <span><span class="k">projects</span>
+            <span class="v said">waiting</span></span>
+        </li>
+      </ol>
+    </div>
+
+    <div class="act">
+      <button type="submit">Connect</button>
+      <span class="lede">Draws a forge that is already running.</span>
+    </div>
+  </div>
+
+  <label class="demo-switch" for="demo" data-mock-ignore>
+    <span class="box"></span> show every state (uncheck for the screen alone)
+  </label>
+
+  <div class="demo-panel" data-mock-ignore>
+    <h3>states reference &middot; the block is the same three rows in every state</h3>
+
+    <div class="cat">
+      <h4>idle <span class="why">row one is settled, the other two are waiting on you</span></h4>
+      <div class="stage">
+        <div class="door">
+          <div class="spine">
+            <ol class="steps">
+              <li class="done"><span class="mk"></span><span><span class="k">address</span><input type="text" value="127.0.0.1:8790" readonly aria-label="the address"></span></li>
+              <li class="wait"><span class="mk"></span><span><span class="k">asking</span><span class="v said">the port forge serves on by default</span></span></li>
+              <li class="wait"><span class="mk"></span><span><span class="k">projects</span><span class="v said">waiting</span></span></li>
+            </ol>
+          </div>
+          <div class="act"><button type="button">Connect</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>connecting <span class="why">row two is the one that is true now, and the button is not yours</span></h4>
+      <div class="stage">
+        <div class="door">
+          <div class="spine">
+            <ol class="steps">
+              <li class="done"><span class="mk"></span><span><span class="k">address</span><input type="text" value="127.0.0.1:8790" readonly aria-label="the address"></span></li>
+              <li class="now"><span class="mk"></span><span><span class="k">asking</span><span class="v said">this address, for its projects</span></span></li>
+              <li class="wait"><span class="mk"></span><span><span class="k">projects</span><span class="v said">waiting</span></span></li>
+            </ol>
+          </div>
+          <div class="act"><button type="button" disabled>Connecting</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>failed <span class="why">the run stopped at row two, and row three never happened</span></h4>
+      <div class="stage">
+        <div class="door">
+          <div class="spine">
+            <ol class="steps">
+              <li class="done"><span class="mk"></span><span><span class="k">address</span><input type="text" value="127.0.0.1:8790" readonly aria-label="the address"></span></li>
+              <li class="stop"><span class="mk"></span><span><span class="k">asking</span><span class="v said">nothing answered there. If forge is running, check that <code>[web] enabled</code> is not <code>false</code> in <code>forge.toml</code>.</span></span></li>
+              <li class="wait"><span class="mk"></span><span><span class="k">projects</span><span class="v said">not reached</span></span></li>
+            </ol>
+          </div>
+          <div class="act"><button type="button">Try again</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>failed, address not usable <span class="why">the run stopped at row one instead, and says so</span></h4>
+      <div class="stage">
+        <div class="door">
+          <div class="spine">
+            <ol class="steps">
+              <li class="stop"><span class="mk"></span><span><span class="k">address</span><input type="text" value="::::" readonly aria-label="the address"></span></li>
+              <li class="wait"><span class="mk"></span><span><span class="k">asking</span><span class="v said">:::: is not an address. It wants a host and a port, like 127.0.0.1:8790.</span></span></li>
+              <li class="wait"><span class="mk"></span><span><span class="k">projects</span><span class="v said">not reached</span></span></li>
+            </ol>
+          </div>
+          <div class="act"><button type="button">Try again</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

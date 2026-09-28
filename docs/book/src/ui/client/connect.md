@@ -6,6 +6,20 @@ port. The drawing beside this page is
 [web-connect.html](./web-connect.html), and the home it leads to is
 [Home](./home.md).
 
+## The direction, chosen
+
+Four were drawn and Ved picked this one, 2026-09-29: *"I kind of like the
+webconnect.html vibe more than the prompt spine, or type. Let's stick
+with that webconnect.html."* The other three are kept beside it as the
+record of the choice, the way `docs/mockups/web-logo-options-2.html`
+keeps the mark's.
+
+| Direction | Kept as | Why it lost |
+|---|---|---|
+| `web-connect-prompt.html` | the record | its own vernacular was the point, and it read as a shell pretending to be a form once a button had to be reachable by pointer as well as by Enter |
+| `web-connect-spine.html` | the record | the three-step block is honest but it spends the screen's whole top on a process where the common case is one press |
+| `web-connect-type.html` | the record | the most minimal of the four, and the address at the sheet's largest step is thinner than the wordmark beside it, so the page has no first thing to read |
+
 ## What it is for
 
 One developer, on their own machine, who has either just started `forge`
@@ -84,3 +98,35 @@ then progressive disclosure of a form. The subject is a one-field
 utility, not a landing page, so the address took the hero slot and the
 field stayed visible. The mark shrank back to the size it is on every
 other page.
+
+## What the audit found
+
+All four directions were put through the UX checklist before they went
+anywhere, and two findings came out of it. Both were in the sheet rather
+than in a drawing, so both are fixed there and every surface gets them.
+
+**No focus ring anywhere.** The sheet defined no `:focus-visible` at all,
+and the one rule that touched focus removed it outright, so a keyboard
+user could not see where they were. It now carries one accent ring with an
+offset on every control it can reach, and the composer's own rule
+suppresses it for a pointer press only. Checked by tabbing through a real
+page rather than by reading the rule: a row's link draws a 2px accent
+outline at a 2px offset.
+
+**No minimum touch target.** The by-width checks measured the layout and
+never the reach, and the smallest controls were 20 to 28px tall against
+the 44 a finger needs. Every form control now takes 44px at the phone
+breakpoint, where before nothing did.
+
+The contrast pair was measured rather than trusted to the token's name,
+and it found a third: **`--dim` is 3.51:1 on the page's own background**,
+under the 4.5:1 that normal text needs, and it carries 12.5 and 13.5px
+labels in about fifty places across the sheet. That one is not fixed here,
+because it is the palette's VALUE and the palette arrives from the server:
+`#788294` would clear it at 5.26:1 on the background and 4.87:1 on the
+raised surface, and changing it moves every surface at once. It is
+recorded rather than applied.
+
+The keyboard and touch checks were clean on all four directions once the
+ring and the target size were in, and every direction used the theme's own
+tokens, so none of them needed a palette of its own.

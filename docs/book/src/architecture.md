@@ -251,7 +251,7 @@ the visual reference for every surface `forge-tui` can currently
 render, with mockups, glyph tables and colour tables. They are scoped
 to current state only.
 
-The [client's pages](./ui/client/home.md) live under `ui/client/` and
+The [client's pages](./ui/client/index.md) live under `ui/client/` and
 hold the same role for the client, with the drawing each surface is held
 against beside it rather than in `docs/mockups/`. Both sets are current
 state only, and a surface's page lands in the same change as the
@@ -287,12 +287,15 @@ rendering, and a page that draws a healthy state for an unknown one is
 a defect rather than a gap. Accessibility is a rule: semantic markup,
 every interactive element reachable by keyboard, no colour as the only
 carrier of a state, and axe over the rendered markup as a page test.
-The fuller UX checklist is the `ui-ux-pro-max` skill, whose guidelines
-are ordered accessibility first. The order of authority is the mockup,
-then this standard, then the skill's generic guidance - a salvaged or
-approved look is not re-litigated by a database of styles - and that
-order holds whether or not the skill is installed, since it is a
-user-level plugin rather than something this repo carries.
+The design skills are picked up when the work is something a person will
+look at, and before the code is written rather than at review time:
+`frontend-design` to originate a look that has no drawing behind it, and
+`ui-ux-pro-max` with its family for the quality checklist, the tokens and
+the component specs. The order of authority is the mockup, then this
+standard, then the skills' generic guidance - a salvaged or approved look
+is not re-litigated by a database of styles - and that order holds
+whether or not they are installed, since they are user-level plugins
+rather than something this repo carries.
 
 **And the shipped app is a shell.** Its only input is the server URL: it
 carries no fixture, no mock data and no dev-only default, draws nothing
