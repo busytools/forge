@@ -193,12 +193,20 @@ async fn send_to(
             .await
             .into_response();
     }
-    if let Err(error) = surface.dispatch(forge_sessions::Command::Prompt {
-        key: slot.clone(),
-        text: draft,
-        attachments: Vec::new(),
-    }) {
-        return (StatusCode::CONFLICT, format!("no session to send to: {error}")).into_response();
+    if surface
+        .dispatch(forge_sessions::Command::Prompt {
+            key: slot.clone(),
+            text: draft,
+            attachments: Vec::new(),
+        })
+        .is_err()
+    {
+        // The seat has no session behind it, and the box the core would draw
+        // for it says so. A refusal htmx does not swap would leave the click
+        // looking like nothing happened.
+        return composer_region_of(&wiring, &slot, crate::composer::Draft::Cleared, "")
+            .await
+            .into_response();
     }
     // The one response that replaces the field: the reader's words have gone
     // to the core, so a box that kept them would send them twice.
@@ -308,8 +316,11 @@ async fn act(
     let Some(slot) = crate::session::resolve(surface, &roster, &agents, org, project, label) else {
         return (StatusCode::NOT_FOUND, "no session slot by that name").into_response();
     };
-    if let Err(error) = surface.dispatch(command(&slot)) {
-        return (StatusCode::CONFLICT, format!("no session to send to: {error}")).into_response();
+    if surface.dispatch(command(&slot)).is_err() {
+        // As above: the seat's own state is the refusal, drawn rather than
+        // returned, because a status htmx will not swap is a click that
+        // looks like nothing happened.
+        return composer_region_of(wiring, &slot, draft, "").await.into_response();
     }
     composer_region_of(wiring, &slot, draft, "").await.into_response()
 }

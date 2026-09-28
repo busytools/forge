@@ -27,11 +27,6 @@ use crate::home::{Home, State};
 use crate::icons;
 use crate::stream::Live;
 
-/// What the autocomplete list says when a row cannot be chosen yet. The
-/// pick moves a caret and a selection the server cannot see, so it is the
-/// list's own key handling rather than anything the write path carries.
-const NO_DISPATCH: &str = "not available yet";
-
 /// How many file rows the `@` list shows, matching the TUI's own cap. The
 /// two views cannot name each other's constants, so the number is declared
 /// here as well as there.
@@ -657,11 +652,15 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
         Trigger::Command => {
             let commands = home.surface.slash_commands(slot);
             let count = commands.len();
-            let rows: Vec<Markup> = commands
+            let rows: Vec<(String, Markup)> = commands
                 .iter()
                 .filter(|command| matches_query(&[&command.name, &command.description], query))
                 .take(CANDIDATES)
-                .map(|command| row(&command.name, &command.description, None, query))
+                // The read hands the names back with their slash on, so the
+                // row's own text is already what a pick writes.
+                .map(|command| {
+                    (command.name.clone(), row(&command.name, &command.description, None, query))
+                })
                 .collect();
             ("cmd", "commands".to_owned(), count.to_string(), rows)
         }
@@ -671,26 +670,31 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
                 None => std::sync::Arc::default(),
             };
             let found = index.visible(query, FILE_ROWS);
-            let rows: Vec<Markup> =
-                found.iter().map(|file| row(&file.rel_path, "", None, query)).collect();
+            let rows: Vec<(String, Markup)> = found
+                .iter()
+                .map(|file| (format!("@{}", file.rel_path), row(&file.rel_path, "", None, query)))
+                .collect();
             ("file", "files & folders".to_owned(), format!("{FILE_ROWS} max"), rows)
         }
         Trigger::Agent => {
             let agents = home.surface.subagents(slot);
-            let rows: Vec<Markup> = agents
+            let rows: Vec<(String, Markup)> = agents
                 .iter()
                 .filter(|agent| matches_query(&[&agent.name, &agent.description], query))
                 .take(AGENT_ROWS)
-                .map(|agent| row(&agent.name, &agent.description, None, query))
+                .map(|agent| {
+                    (format!("&{}", agent.name), row(&agent.name, &agent.description, None, query))
+                })
                 .collect();
             ("bot", "subagents".to_owned(), format!("{AGENT_ROWS} max"), rows)
         }
         Trigger::Emoji => {
             let found = forge_sessions::surface::ViewSurface::emoji(query, CANDIDATES);
-            let rows: Vec<Markup> = found
+            let rows: Vec<(String, Markup)> = found
                 .iter()
                 .map(|emoji| {
-                    row(&format!(":{}:", emoji.name), "", Some(emoji.glyph.to_owned()), query)
+                    let shortcode = format!(":{}:", emoji.name);
+                    (shortcode.clone(), row(&shortcode, "", Some(emoji.glyph.to_owned()), query))
                 })
                 .collect();
             let count = forge_sessions::emoji::count();
@@ -714,17 +718,21 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
             // in full pushes the box past the viewport, where a page that
             // is one viewport tall clips it and the reader types blind.
             div .rows {
-                @for (index, row) in rows.into_iter().enumerate() {
-                    div class=(if index == 0 { "it sel" } else { "it" }) {
+                @for (index, (insert, row)) in rows.into_iter().enumerate() {
+                    div class=(if index == 0 { "it sel" } else { "it" }) data-ins=(insert) {
                         span .cur { @if index == 0 { "\u{25b8}" } }
                         (row)
                     }
                 }
             }
-            // The list is drawn, not yet choosable, and it is the one place
-            // in the composer that could leave that unsaid: a selected row
-            // advertises a key that nothing here reads.
-            div .keys { span .off { "choosing a row is " (NO_DISPATCH) } }
+            // The keys the list answers to, which are the page's own: the
+            // row a pick writes is the one marked, and what it writes is the
+            // value its `data-ins` carries rather than the drawing here.
+            div .keys {
+                span { span .k { "\u{2191}\u{2193}" } " select" }
+                span { span .k { "\u{21b5}" } " choose" }
+                span { span .k { "esc" } " close" }
+            }
         }
     }
 }
@@ -798,6 +806,102 @@ fn dock(
                 Some(Ask::Permission(request)) => (permission_dock(request, endpoint)),
                 Some(Ask::Question(request)) => (question_dock(request, endpoint)),
                 None => (unknown_dock(kind)),
+            }
+            (dock_keys(matches!(ask, Some(Ask::Question(_)))))
+        }
+    }
+}
+
+/// The composer's keys, which are the page's own: every one of them drives a
+/// control the page already draws, so nothing here posts anything itself.
+///
+/// Nothing binds to a node. The region is replaced under the reader - by a
+/// push, or by the page's own GET while they type - so one listener on the
+/// document reads whatever is drawn now, and the three surfaces it serves
+/// are the box, the prompt dock and the list.
+pub(crate) const COMPOSER_KEYS: &str = r"
+(() => {
+  // A NodeList indexes and iterates but has no findIndex, so the rows are
+  // spread before they are searched.
+  const marked = (rows) => {
+    const at = [...rows].findIndex((row) => row.classList.contains('sel'));
+    return at < 0 ? 0 : at;
+  };
+  const move = (rows, step) => {
+    if (!rows.length) return;
+    const was = marked(rows);
+    const next = (was + step + rows.length) % rows.length;
+    rows.forEach((row, index) => {
+      row.classList.toggle('sel', index === next);
+      const cur = row.querySelector('.cur');
+      if (cur) cur.textContent = index === next ? '▸' : '';
+    });
+    rows[next].scrollIntoView({ block: 'nearest' });
+  };
+  const startOfToken = (text) => {
+    const at = text.search(/\S+$/);
+    return at < 0 ? text.length : at;
+  };
+  document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.isComposing || event.altKey || event.metaKey) return;
+    const comp = document.querySelector('#comp');
+    if (!comp) return;
+    const field = comp.querySelector('#draft');
+    const typing = field && document.activeElement === field;
+    const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
+
+    const list = comp.querySelectorAll('.ac .it');
+    if (list.length && typing) {
+      if (step) { event.preventDefault(); move(list, step); return; }
+      if (event.key === 'Escape') { event.preventDefault(); comp.querySelector('.ac').remove(); return; }
+      if (event.key === 'Enter') {
+        const value = list[marked(list)].dataset.ins;
+        event.preventDefault();
+        field.value = field.value.slice(0, startOfToken(field.value)) + value + ' ';
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+    }
+
+    const dock = comp.querySelector('.dock');
+    if (dock) {
+      const opts = dock.querySelectorAll('.opt');
+      if (step) { event.preventDefault(); move(opts, step); return; }
+      if (event.key === 'Enter') {
+        const control = opts[marked(opts)] && opts[marked(opts)].querySelector('.lbl');
+        if (control) { event.preventDefault(); control.click(); }
+        return;
+      }
+      if (event.key === 'Escape') {
+        const reject = [...opts].find((opt) => opt.querySelector('.no'));
+        const control = reject && reject.querySelector('.lbl');
+        if (control) { event.preventDefault(); control.click(); }
+        return;
+      }
+    }
+
+    if (typing && event.key === 'Enter' && !event.shiftKey) {
+      const send = comp.querySelector('.send');
+      if (send) { event.preventDefault(); send.click(); }
+    }
+  });
+})();";
+
+/// The keys line the mockup draws under a dock's options: what the page
+/// reads while the prompt is up.
+///
+/// A question's line drops the mockup's toggle. Its rows draw the boxes the
+/// mockup draws and the answer the page can send carries one option, so a
+/// toggle would name a key that cannot do what it says, which is the defect
+/// the line exists to avoid.
+fn dock_keys(question: bool) -> Markup {
+    let (moved, confirmed) = if question { ("move", "submit") } else { ("select", "confirm") };
+    html! {
+        div .keys {
+            span { span .k { "\u{2191}\u{2193}" } " " (moved) }
+            span { span .k { "\u{21b5}" } " " (confirmed) }
+            @if !question {
+                span { span .k { "esc" } " reject" }
             }
         }
     }

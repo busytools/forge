@@ -4441,28 +4441,6 @@ async fn the_window_holds_more_candidates_than_it_shows() {
     assert!(page.contains(">40<"), "and the header counts them: {page}");
 }
 
-/// The list says a row cannot be chosen, which is the one place in the
-/// composer that could leave it unsaid: a selected row advertises a key that
-/// nothing reads, and every other unwired control refuses in text.
-#[tokio::test]
-async fn the_list_says_a_row_cannot_be_chosen_yet() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let fleet = fleet(dir.path());
-    fleet.advertise(
-        &SessionSlot::lead("Busytools", "forge"),
-        vec![forge_primitives::AvailableCommand::new("model", "Switch model")],
-        Vec::new(),
-    );
-    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
-
-    let (_status, page) = composer(&config, "/m").await;
-
-    assert!(
-        page.contains("choosing a row is not available yet"),
-        "the list says what it cannot do: {page}",
-    );
-}
-
 /// A live take's controls submit and abandon it. The mic is the one that
 /// submits - the TUI's own rule, where the key that opens a take closes it -
 /// and the row's cancel abandons. Catches a take that can only be abandoned,
@@ -4680,11 +4658,12 @@ async fn answering_the_dock_reaches_the_core() {
     );
 }
 
-/// A send from a seat nothing is running behind is refused rather than
-/// queued: the composer draws no box there, so a request that arrives
-/// anyway is a caller going round the page, and it says so.
+/// A send from a seat nothing is running behind is answered with the box the
+/// core would draw for it, which says why. The refusal is the seat's own
+/// state rather than a status htmx will not swap, so the click that asked
+/// still changes what is on the page.
 #[tokio::test]
-async fn a_send_with_no_session_is_refused() {
+async fn a_send_with_no_session_answers_with_the_seat() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     // No intercept: the command has to reach the core for the core to
@@ -4697,11 +4676,9 @@ async fn a_send_with_no_session_is_refused() {
     let (status, body) =
         post(&config, "/session/Personal/dotfiles/lead/send", "draft=anyone").await;
 
-    assert_ne!(status, reqwest::StatusCode::OK, "a seat with no session takes no message");
-    assert!(
-        body.contains("no session to send to"),
-        "and the refusal says why rather than nothing: {body}",
-    );
+    assert_eq!(status, reqwest::StatusCode::OK, "the click swaps the box: {body}");
+    assert!(body.contains("class=\"blocked\""), "which is the reason it takes no input: {body}");
+    assert!(body.contains("not running"), "and says what that reason is: {body}");
     assert!(!holds_a_session(), "with nothing created for it to deliver later");
 }
 
@@ -4742,9 +4719,8 @@ async fn the_dictation_controls_reach_the_core() {
 
 /// Every control that can act does what it says, so none of them carries
 /// the refusal it used to: a reason on a control that can act is a lie
-/// about the control. One refusal stays, and it is pinned here rather than
-/// left to be found against a broader claim - the autocomplete's rows,
-/// whose pick moves a caret the server cannot see.
+/// about the control. The last one went with the pick, which the page's own
+/// keys now write, so nothing in the composer refuses anything.
 #[tokio::test]
 async fn nothing_that_can_act_is_drawn_unavailable() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -4758,8 +4734,12 @@ async fn nothing_that_can_act_is_drawn_unavailable() {
 
     let (_status, list_page) = composer(&config, "/m").await;
     assert!(
-        list_page.contains("class=\"ac\"") && list_page.contains("not available yet"),
-        "the list is the one surface that says a row cannot be chosen yet: {list_page}",
+        list_page.contains("class=\"ac\"") && list_page.contains("class=\"keys\""),
+        "the list draws, and names the keys that choose a row: {list_page}",
+    );
+    assert!(
+        !list_page.contains("not available yet"),
+        "with nothing refusing: {list_page}",
     );
 
     fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
@@ -5549,22 +5529,160 @@ async fn a_take_that_ends_reaches_the_box() {
     assert!(!region.contains("class=\"dict\""), "with the take's row gone: {region}");
 }
 
-/// The tick redraws the box as well as the columns. Nothing has been said, so
-/// a seat may have gone away under a page that draws it live, and a click
-/// would reach a core holding no session. Catches a tick that redraws the
-/// columns alone, which leaves the box looking live with nothing behind it.
+/// The tick redraws the columns alone. A pushed box is drawn from a draft
+/// the server does not have, so its region carries no list: measured on a
+/// live page, a tick that redrew the composer closed an open autocomplete
+/// ten seconds after the stream attached. Catches a tick that redraws the
+/// box, which takes the reader's list with it.
 #[tokio::test]
-async fn the_tick_redraws_the_box() {
+async fn the_tick_leaves_the_box_alone() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
+    let up = fleet.start("Busytools", "forge");
+    assert!(up.is_ok(), "the seat is live");
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
     let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
 
     // Nothing is emitted: the only thing the stream has to say is its own
     // tick, which the connection arms for one interval out.
-    let region = nth_composer_event_within(stream, 1, std::time::Duration::from_secs(13))
-        .await
-        .expect("the tick redraws the box");
-    assert!(region.contains("id=\"draft\""), "and what it draws is the box: {region}");
+    assert!(
+        !composer_event_within(stream, std::time::Duration::from_secs(13)).await,
+        "the tick redraws the columns and leaves the box where it is",
+    );
+}
+
+/// The dock names the keys it answers to, in the mock's own wording, and
+/// names only those: a key on the line that does nothing is the same defect
+/// as a control that does nothing.
+#[tokio::test]
+async fn the_dock_names_the_keys_it_answers_to() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.seed_test_pending_interaction(&lead(), PendingKind::Permission);
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    fleet.emit(SessionUpdate::PermissionRequest {
+        key: lead(),
+        tool_id: "tu-1".to_owned(),
+        request: permission(),
+    });
+    settle().await;
+
+    let (_status, page) = composer(&config, "").await;
+
+    let keys = page.find("class=\"keys\"").expect("the dock draws a keys line");
+    let line = &page[keys..];
+    let line = &line[..line.find("</div>").expect("the line closes")];
+    for part in ["\u{2191}\u{2193}", "select", "\u{21b5}", "confirm", "esc", "reject"] {
+        assert!(line.contains(part), "the dock names {part:?}: {line}");
+    }
+
+    fleet.emit(SessionUpdate::PermissionRequest {
+        key: lead(),
+        tool_id: "tu-1".to_owned(),
+        request: permission(),
+    });
+    let question = question();
+    let (_status, page) = {
+        fleet.emit(SessionUpdate::QuestionRequest {
+            key: lead(),
+            tool_id: "tu-2".to_owned(),
+            request: question,
+        });
+        settle().await;
+        composer(&config, "").await
+    };
+    let keys = page.find("class=\"keys\"").expect("the question dock draws its own line");
+    let line = &page[keys..];
+    let line = &line[..line.find("</div>").expect("the line closes")];
+    for part in ["\u{2191}\u{2193}", "move", "\u{21b5}", "submit"] {
+        assert!(line.contains(part), "the question dock names {part:?}: {line}");
+    }
+    assert!(
+        !line.contains("space") && !line.contains("toggle"),
+        "and promises no toggle, because the answer sends one option: {line}",
+    );
+}
+
+/// A list row carries what a pick writes into the field. The row the reader
+/// sees is a drawing of the item - the sheet shortens a long path, and their
+/// own query is marked inside it - so the value travels beside the drawing
+/// rather than being read back out of it.
+#[tokio::test]
+async fn a_list_row_carries_what_a_pick_writes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.advertise(
+        &SessionSlot::lead("Busytools", "forge"),
+        vec![forge_primitives::AvailableCommand::new("model", "Switch model")],
+        Vec::new(),
+    );
+    let project = dir.path().join("forge");
+    std::fs::create_dir_all(project.join("crates/forge-web/src")).expect("mkdir");
+    std::fs::write(project.join("crates/forge-web/src/home.rs"), "").expect("write");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "/m").await;
+    assert!(
+        page.contains("data-ins=\"/model\""),
+        "the command's row carries the command a pick writes: {page}",
+    );
+
+    let (_status, page) = composer(&config, "@home").await;
+    assert!(
+        page.contains("data-ins=\"@crates/forge-web/src/home.rs\""),
+        "and a file's row carries the mention, whole, rather than the shortened drawing: {page}",
+    );
+}
+
+/// The list names the keys that choose a row, and the refusal it used to
+/// carry is gone with the refusal: a row that can be picked under a line
+/// saying it cannot is the same defect in text as a control that does
+/// nothing.
+#[tokio::test]
+async fn the_list_names_the_keys_that_choose_a_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    fleet.advertise(
+        &SessionSlot::lead("Busytools", "forge"),
+        vec![forge_primitives::AvailableCommand::new("model", "Switch model")],
+        Vec::new(),
+    );
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, page) = composer(&config, "/m").await;
+
+    let keys = page.find("class=\"keys\"").expect("the list draws a keys line");
+    let line = &page[keys..];
+    let line = &line[..line.find("</div>").expect("the line closes")];
+    for part in ["\u{2191}\u{2193}", "select", "\u{21b5}", "choose", "esc", "close"] {
+        assert!(line.contains(part), "the list names {part:?}: {line}");
+    }
+    assert!(
+        !page.contains("not available yet"),
+        "and nothing in the composer refuses any more: {page}",
+    );
+}
+
+/// The page ships the listener the composer's lines advertise. A drawn key
+/// that nothing reads is the defect the lines exist to avoid, and the
+/// listener is the only part of it a request can see: what it does with a
+/// key is the browser's to show.
+#[tokio::test]
+async fn the_page_ships_the_keys_the_composer_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    let script = page.find("addEventListener('keydown'").expect("the page reads keys");
+    let script = &page[script..];
+    for named in ["ArrowDown", "ArrowUp", "Escape", "shiftKey", "dataset.ins"] {
+        assert!(script.contains(named), "the listener reads {named:?}: {script:.400}");
+    }
+    assert!(
+        script.contains("#comp"),
+        "and it reads the composer region rather than binding to a node a swap replaces: {script:.400}",
+    );
 }
