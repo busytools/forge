@@ -4,7 +4,7 @@
 use crate::app::{PromptMode, PromptSource, PromptState};
 use crate::ui::theme;
 use crate::ui::wrap::wrap_plain;
-use forge_primitives::permission_ui::PermissionOptionKind;
+use forge_primitives::permission_interaction::PermissionOptionKind;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

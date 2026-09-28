@@ -296,7 +296,7 @@ async fn an_answer_to_a_prompt_that_is_gone_is_refused() {
             command: Box::new(Command::RespondPermission {
                 key: lead_seat(),
                 tool_id: "nothing-is-waiting".to_owned(),
-                outcome: forge_primitives::permission_ui::PermissionOutcome::Cancelled,
+                outcome: forge_primitives::permission_interaction::PermissionOutcome::Cancelled,
             }),
             reply_to: None,
         },

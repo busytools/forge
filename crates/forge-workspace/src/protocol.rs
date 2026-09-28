@@ -31,7 +31,7 @@ use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_primitives::error::AppError;
 use forge_primitives::permission::PermissionMode;
-use forge_primitives::permission_ui::{PermissionOutcome, PermissionRequest};
+use forge_primitives::permission_interaction::{PermissionOutcome, PermissionRequest};
 use forge_primitives::plugins::{
     PluginUpdateRun, PluginUpdateTrigger, PluginsCliActionSuccess, PluginsInventorySnapshot,
 };

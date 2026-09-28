@@ -3,7 +3,7 @@
 //! option-picker / notes-editor / edit-input dispatch state machine.
 
 use crossterm::event::{KeyCode, KeyEvent};
-use forge_primitives::permission_ui::{PermissionOption, PermissionRequest};
+use forge_primitives::permission_interaction::{PermissionOption, PermissionRequest};
 use forge_primitives::question::{QuestionPrompt, QuestionRequest};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -81,14 +81,14 @@ impl PromptState {
     pub fn from_permission(tool_id: String, request: PermissionRequest) -> Self {
         let mut options = request.options;
         let already_has_notes = options.iter().any(|o| {
-            matches!(o.kind, forge_primitives::permission_ui::PermissionOptionKind::Notes)
+            matches!(o.kind, forge_primitives::permission_interaction::PermissionOptionKind::Notes)
         });
         if !already_has_notes {
             options.push(PermissionOption {
                 option_id: "tell_claude".into(),
                 name: "Tell Claude something else".into(),
-                kind: forge_primitives::permission_ui::PermissionOptionKind::Notes,
-                action: forge_primitives::permission_ui::PermissionAction::Deny,
+                kind: forge_primitives::permission_interaction::PermissionOptionKind::Notes,
+                action: forge_primitives::permission_interaction::PermissionAction::Deny,
             });
         }
 
@@ -120,7 +120,7 @@ impl PromptState {
     /// the last option. The caret starts on the first option, which is
     /// where a `(Recommended)` option was hoisted.
     pub fn from_question(tool_id: String, request: QuestionRequest) -> Self {
-        use forge_primitives::permission_ui::{
+        use forge_primitives::permission_interaction::{
             PermissionAction, PermissionOption, PermissionOptionKind,
         };
         // Convert wire question options to permission-option shape (so
@@ -166,7 +166,7 @@ impl PromptState {
         key: forge_primitives::SessionSlot,
         draft: forge_primitives::slack::SlackDraft,
     ) -> Self {
-        use forge_primitives::permission_ui::{
+        use forge_primitives::permission_interaction::{
             PermissionAction, PermissionOption, PermissionOptionKind,
         };
         let options = vec![
@@ -258,7 +258,7 @@ pub enum PromptKeyOutcome {
 /// or transitions the prompt into an editor sub-mode if the focused
 /// option implies one.
 pub fn handle_key_option_picker(prompt: &mut PromptState, key: KeyEvent) -> PromptKeyOutcome {
-    use forge_primitives::permission_ui::PermissionOptionKind as Kind;
+    use forge_primitives::permission_interaction::PermissionOptionKind as Kind;
     let len = prompt.options.len();
     if len == 0 {
         return PromptKeyOutcome::Unhandled;
@@ -339,7 +339,7 @@ pub fn handle_key_editing_input(prompt: &mut PromptState, key: KeyEvent) -> Prom
 /// consumed (no further routing); `false` if it should fall through
 /// to the normal key handler.
 pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
-    use forge_primitives::permission_ui::PermissionOptionKind as Kind;
+    use forge_primitives::permission_interaction::PermissionOptionKind as Kind;
 
     // A live take owns the first Esc over the dock: it is abandoned
     // and the prompt stands for the next one.
@@ -422,7 +422,7 @@ pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
 /// `RespondQuestion` (depending on the prompt's source). After the
 /// pop, restore any captured input draft if the queue is now empty.
 pub fn submit_prompt(app: &mut crate::app::App) {
-    use forge_primitives::permission_ui::{PermissionOptionKind, PermissionOutcome};
+    use forge_primitives::permission_interaction::{PermissionOptionKind, PermissionOutcome};
     use forge_primitives::question::{QuestionAnnotation, QuestionOutcome};
 
     let Some(key) = app.active_session_key.clone() else {
@@ -533,7 +533,7 @@ pub fn submit_prompt(app: &mut crate::app::App) {
             // approval, and the handler fails closed on anything that is
             // not an explicit yes.
             let approved = prompt.options.get(prompt.focused_option_index).is_some_and(|option| {
-                option.action == forge_primitives::permission_ui::PermissionAction::Allow
+                option.action == forge_primitives::permission_interaction::PermissionAction::Allow
             });
             crate::app::events::turn::dispatch_slack_post_outcome(app, asking, draft.id, approved);
         }
@@ -546,7 +546,7 @@ pub fn submit_prompt(app: &mut crate::app::App) {
 /// workspace. After the pop, restore any captured input draft if the
 /// queue is now empty.
 pub fn cancel_prompt(app: &mut crate::app::App) {
-    use forge_primitives::permission_ui::PermissionOutcome;
+    use forge_primitives::permission_interaction::PermissionOutcome;
     use forge_primitives::question::QuestionOutcome;
 
     let Some(key) = app.active_session_key.clone() else {
@@ -635,7 +635,7 @@ pub fn restore_draft_if_empty_queue(app: &mut crate::app::App) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use forge_primitives::permission_ui::{PermissionAction, PermissionOptionKind};
+    use forge_primitives::permission_interaction::{PermissionAction, PermissionOptionKind};
     use forge_primitives::session_update::ToolCall;
 
     /// A session whose queue head is a permission prompt with its
@@ -1147,7 +1147,10 @@ pub(crate) mod tests {
         match outcome {
             forge_primitives::PermissionOutcome::Selected { option_id, action, .. } => {
                 assert_eq!(option_id, "allow_once");
-                assert!(matches!(action, forge_primitives::permission_ui::PermissionAction::Allow));
+                assert!(matches!(
+                    action,
+                    forge_primitives::permission_interaction::PermissionAction::Allow
+                ));
             }
             forge_primitives::PermissionOutcome::Cancelled => {
                 panic!("expected Selected, got Cancelled");

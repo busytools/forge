@@ -28,7 +28,7 @@ pub const TEST_TOOL_ID: &str = "test-tool";
 pub(crate) fn test_permission(
     tx: tokio::sync::oneshot::Sender<forge_primitives::PermissionOutcome>,
 ) -> crate::protocol::PendingInteractionSlot {
-    use forge_primitives::permission_ui::{
+    use forge_primitives::permission_interaction::{
         PermissionAction, PermissionOption, PermissionOptionKind,
     };
 

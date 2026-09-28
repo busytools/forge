@@ -374,7 +374,7 @@ pub struct CompactionBoundary {
     pub pre_tokens: u64,
 }
 
-pub use forge_primitives::permission_ui::{
+pub use forge_primitives::permission_interaction::{
     PermissionAction, PermissionDisplay, PermissionOption, PermissionOptionKind, PermissionOutcome,
     PermissionRequest,
 };

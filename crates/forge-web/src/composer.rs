@@ -10,7 +10,9 @@
 use std::time::Instant;
 
 use forge_primitives::SessionSlot;
-use forge_primitives::permission_ui::{PermissionOptionKind, PermissionOutcome, PermissionRequest};
+use forge_primitives::permission_interaction::{
+    PermissionOptionKind, PermissionOutcome, PermissionRequest,
+};
 use forge_primitives::question::{QuestionAnnotation, QuestionOutcome, QuestionRequest};
 use forge_primitives::session_update::ToolCall;
 use forge_server::composer::{Composer, Notice, Phase, SignIn, Take};

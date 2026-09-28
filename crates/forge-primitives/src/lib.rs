@@ -33,8 +33,9 @@
 //! - [`session_update`] - wire-side support types for streaming session events
 //!   (chunks, tool calls, tool-call updates, plan entries, output
 //!   metadata).
-//! - [`permission_ui`] - UI-side permission-prompt request/response
-//!   shapes (distinct from the wire-side decisions in
+//! - [`permission_interaction`] - the shapes one permission interaction
+//!   is made of: the request the CLI raises, the options it offers, and
+//!   the answer a person gives (distinct from the wire-side decisions in
 //!   [`permissions`]).
 //! - [`question`] - `AskUserQuestion` request/response shapes.
 //! - [`mcp_ui_sync`] - MCP UI events (`McpOperationError`).
@@ -62,7 +63,7 @@ pub mod messages;
 pub mod options;
 pub mod peers;
 pub mod permission;
-pub mod permission_ui;
+pub mod permission_interaction;
 pub mod permissions;
 pub mod plugins;
 pub mod project_key;
@@ -108,7 +109,7 @@ pub use messages::{
 pub use options::{SdkPluginConfig, SystemPromptKind};
 pub use peers::PeerInflightStats;
 pub use permission::PermissionMode;
-pub use permission_ui::{
+pub use permission_interaction::{
     PermissionDisplay, PermissionOption, PermissionOutcome, PermissionRequest,
 };
 pub use permissions::{

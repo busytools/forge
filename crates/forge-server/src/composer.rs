@@ -371,7 +371,7 @@ impl Composer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_primitives::permission_ui::PermissionRequest;
+    use forge_primitives::permission_interaction::PermissionRequest;
 
     /// The copy it did hold goes with it, or the view keeps drawing an ask
     /// the core has settled.

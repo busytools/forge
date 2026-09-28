@@ -9,7 +9,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use forge_primitives::permission_ui::{
+use forge_primitives::permission_interaction::{
     PermissionAction, PermissionOption, PermissionOptionKind, PermissionRequest,
 };
 use forge_primitives::session_update::ToolCall;
