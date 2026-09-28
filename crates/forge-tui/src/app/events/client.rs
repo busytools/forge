@@ -1662,6 +1662,19 @@ mod tests {
         assert!(!app.needs_redraw, "needs_redraw must stay false for background-session events");
     }
 
+    fn connected_for(key: &SessionSlot) -> SessionUpdate {
+        SessionUpdate::Connected {
+            key: key.clone(),
+            session_id: forge_primitives::SessionId::new(key.display()),
+            cwd: "/proj".to_owned(),
+            current_model: test_current_model(),
+            available_models: Vec::new(),
+            mode: None,
+            history: Vec::new(),
+            compaction_count: 0,
+        }
+    }
+
     fn session_replaced_for(key: &SessionSlot, session_id: &str, cwd: &str) -> SessionUpdate {
         SessionUpdate::SessionReplaced {
             key: key.clone(),
@@ -1727,6 +1740,55 @@ mod tests {
         assert!(!bucket.pending_cancel, "a replaced session has no cancel in flight");
         assert!(!bucket.is_compacting);
         assert!(!bucket.pending_compact_clear);
+    }
+
+    /// A new occupant inherits nothing, whichever event announced it and
+    /// whichever arm applied it. The core drops its monitor set on every
+    /// connect rather than only on a replacement, so a set left here would
+    /// draw a monitor nothing can settle and block the all-terminal clear
+    /// for its siblings.
+    #[test]
+    fn a_new_occupant_starts_with_no_monitor_set() {
+        use crate::app::state::types::{MonitorEntry, MonitorStatus};
+
+        for background in [false, true] {
+            for replaced in [false, true] {
+                let mut app = App::test_default();
+                let (key_a, key_b) = seed_two_sessions(&mut app);
+                let key = if background { key_b.clone() } else { key_a.clone() };
+                app.sessions.get_mut(&key).expect("the target bucket").monitors.push(
+                    MonitorEntry {
+                        tool_use_id: "tu-mon".to_owned(),
+                        task_id: Some("task-mon".to_owned()),
+                        description: "cargo build".to_owned(),
+                        command: "cargo build".to_owned(),
+                        persistent: true,
+                        timeout_ms: 0,
+                        status: MonitorStatus::Running,
+                        output_file: None,
+                        output_tail: std::collections::VecDeque::new(),
+                        expanded_in_inspector: false,
+                    },
+                );
+
+                apply_session_update(
+                    &mut app,
+                    if replaced {
+                        session_replaced_for(&key, "replacement", "/proj")
+                    } else {
+                        connected_for(&key)
+                    },
+                );
+
+                let bucket = app.sessions.get(&key).expect("the slot keeps its bucket");
+                assert!(
+                    bucket.monitors.is_empty(),
+                    "a set left on the {} bucket after {} can never settle",
+                    if background { "background" } else { "active" },
+                    if replaced { "a replacement" } else { "a plain connect" },
+                );
+            }
+        }
     }
 
     /// Foreground twin: replacing the session the user is watching

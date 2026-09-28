@@ -120,6 +120,9 @@ fn apply_connected_presentation(
             bucket.available_commands.clear();
             bucket.available_agents.clear();
             bucket.turn_state.agents_emitted_this_turn = false;
+            // The core drops its monitor set on every connect; a stranded
+            // entry here would never settle.
+            bucket.monitors.clear();
             // The active arm writes this unconditionally on the same
             // event, and for the same reason: a respawn that pins no
             // model must not leave the outgoing occupant's request

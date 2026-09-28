@@ -1455,11 +1455,12 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
 /// describe a subprocess tree.
 ///
 /// This mirrors the view's own reset on the same events, so what it holds
-/// is what a view draws. Three facts are deliberately not here, because
-/// the view's reset does not touch them either: the sub-agent attribution
-/// and the monitor set outlive the run they came from, and the process
-/// walk is cleared where a view learns the cwd moved, which is its own
-/// path rather than this one.
+/// is what a view draws. Two facts are deliberately not here, because the
+/// view's reset does not touch them either: the sub-agent attribution
+/// outlives the run it came from, and the process walk is cleared where a
+/// view learns the cwd moved, which is its own path rather than this one.
+/// The monitor set is not one of them - `hold_view_facts` clears it on the
+/// same event, and every view's reset does too.
 fn clear_runtime_identity(domain: &mut DomainSession) {
     domain.observed_permission_mode = None;
     domain.observed_effort = None;

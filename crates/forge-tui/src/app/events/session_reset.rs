@@ -106,6 +106,11 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
         index.clear();
     }
     app.clear_active_session_background_task_registry();
+    // The core drops its monitor set on every connect, and nothing can
+    // settle an entry the new occupant never started.
+    if let Some(monitors) = app.monitors_mut() {
+        monitors.clear();
+    }
     app.focus = super::super::FocusManager::default();
     if let Some(commands) = app.available_commands_mut() {
         commands.clear();
@@ -770,6 +775,84 @@ mod tests {
             load_resume_history(&mut app, history);
         });
         (capture, app)
+    }
+
+    /// A resumed session draws the hook row its transcript carries, through
+    /// the whole chain: the scan on disk, the synthesizer, the resume walk
+    /// and the render. The scan kept every `system` row out before, so the
+    /// chip drew only while a page watched the turn land. The control is the
+    /// same transcript without the row, so a renderer that drew a chip from
+    /// nothing would not pass.
+    #[test]
+    fn a_resumed_session_draws_its_hook_row() {
+        let resumed = |hooks: Hooks| {
+            let config_dir = tempfile::tempdir().expect("tempdir");
+            let session_id = "5c1f8a30-2d74-4b19-8e6a-0f3b7c2d9e51";
+            let project = config_dir.path().join("projects").join("any-project-key");
+            std::fs::create_dir_all(&project).expect("project dir");
+            let turn = concat!(
+                r#"{"type":"user","message":{"role":"user","content":"run the sweep"},"uuid":"u1","sessionId":"S"}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"id":"msg_01","role":"assistant","model":"claude-opus-4-5","content":[{"type":"text","text":"the sweep is done"}]},"uuid":"a1","sessionId":"S"}"#,
+                "\n",
+            );
+            let row = |count: u32| {
+                format!(
+                    "{{\"type\":\"system\",\"subtype\":\"stop_hook_summary\",\"hookCount\":{count},\
+                     \"hookInfos\":[{{\"command\":\"just fmt\",\"durationMs\":1400}}],\
+                     \"hookErrors\":[],\"hasOutput\":true,\"level\":\"suggestion\",\
+                     \"preventedContinuation\":false,\"stopReason\":\"\",\
+                     \"toolUseID\":\"toolu_hook\",\"timestamp\":\"2026-09-04T00:57:38.264Z\",\
+                     \"uuid\":\"h1\",\"sessionId\":\"S\"}}\n"
+                )
+            };
+            let body = match hooks {
+                Hooks::Two => format!("{turn}{}", row(2)),
+                // A row the read keeps and the walk summarises, with nothing
+                // for the chip to draw: the renderer's hide-at-zero gate is
+                // the only thing keeping it off the frame.
+                Hooks::None => format!("{turn}{}", row(0)),
+                Hooks::Absent => turn.to_owned(),
+            };
+            std::fs::write(project.join(format!("{session_id}.jsonl")), body).expect("write");
+            forge_workspace::session_history(config_dir.path(), session_id, "")
+        };
+
+        let read = resumed(Hooks::Two);
+        assert_eq!(read.messages.len(), 3, "fixture guard: the read carries the hook row");
+        let (_, mut app) = capture_replay_of(&read.messages);
+        let rows = render_chat(&mut app);
+        assert!(
+            rows.iter().any(|row| row.contains("hook summary")),
+            "the resumed chat draws the row the transcript carries: {rows:?}",
+        );
+
+        let zero = resumed(Hooks::None);
+        assert_eq!(zero.messages.len(), 3, "fixture guard: the zero-action row is read too");
+        let (_, mut app) = capture_replay_of(&zero.messages);
+        let rows = render_chat(&mut app);
+        assert!(
+            !rows.iter().any(|row| row.contains("hook summary")),
+            "and draws no chip for a turn whose hooks reported nothing: {rows:?}",
+        );
+
+        let absent = resumed(Hooks::Absent);
+        assert_eq!(absent.messages.len(), 2, "fixture guard: this transcript has no hook row");
+        let (_, mut app) = capture_replay_of(&absent.messages);
+        let rows = render_chat(&mut app);
+        assert!(
+            !rows.iter().any(|row| row.contains("hook summary")),
+            "nor for a turn with no hook row at all: {rows:?}",
+        );
+    }
+
+    /// What the hook row says about a turn's hooks: two of them, a row
+    /// reporting none, or no row at all.
+    #[derive(Clone, Copy)]
+    enum Hooks {
+        Two,
+        None,
+        Absent,
     }
 
     /// The chat as it reaches the screen, one string per frame row.
