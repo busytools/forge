@@ -6,7 +6,9 @@
       "org": "TestOrg",
       "path": "<fixture>/proj",
       "display_path": "<fixture>/proj",
-      "accounts": ["Acct"],
+      "accounts": [
+        "Acct"
+      ],
       "fallback_accounts": [],
       "has_model": false,
       "sessions": []
@@ -53,7 +55,9 @@
     "orgs": [
       {
         "org": "TestOrg",
-        "accounts": ["Acct"],
+        "accounts": [
+          "Acct"
+        ],
         "fallback_accounts": [],
         "rows": [
           {

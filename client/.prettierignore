@@ -1,4 +1,7 @@
 # Byte-identical to crates/forge-web/src/web.css by design; reformatting breaks the salvage claim.
 src/assets/web.css
 # Pinned by hash in src/wire/README.md against the server's fixtures.
-src/wire/*.json
+src/dev/fixtures/*.json
+# Build output.
+dist/
+node_modules/

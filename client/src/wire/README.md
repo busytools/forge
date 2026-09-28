@@ -20,7 +20,7 @@ git show origin/forge-server-socket:crates/forge-server/tests/wire_fixtures/home
 git show origin/forge-server-socket:crates/forge-server/tests/wire_fixtures/session.json
 ```
 
-`home.json` is blob `3913de88`, which that branch still carried unchanged
+`home.json` is blob `3913de88e96eb6bf29c131dc430ac11d6a958164`, which that branch still carried unchanged
 at `3f0d755d`. It stays that way here: `crates/forge-server/tests/transport.rs`
 pins both shapes with a test, so a fixture cannot drift on the server side,
 and a hand-edited copy here would be the drift this pair exists to prevent.
@@ -45,7 +45,7 @@ with them:
   is the header version nothing carried.
 - **`dictate` gains `enabled`**, beside `snapshot` and `models_dir`.
 
-`session.json` is blob `ade18792` and has not moved.
+`session.json` is blob `ade18792d222c48fda31e807283844bae41c75ba` and has not moved.
 
 So `homeFrom`'s types, `view.ts`'s gather and the README's table of absent
 reads all describe the pre-`5b3b2667` shape. Re-syncing is one commit and
