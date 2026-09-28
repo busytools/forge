@@ -767,8 +767,14 @@ inspected.
     --noEmit`, then vitest - so one command decides both stacks and its
     verdict line names the first failing step. **Denied as errors**, the
     analogue of the denied Rust lints: `any`, non-null assertion,
-    `@ts-ignore`, `innerHTML`, `eval` and floating promises; a waiver
-    carries a line saying why. `client/tsconfig.json` keeps
+    `@ts-ignore`, `innerHTML`, `eval` and floating promises. **A waiver
+    carries its reason, and which form it takes is not free:** an inline
+    suppression comment in TypeScript is blocked by a hook in this repo,
+    so a waiver there is a scoped entry in `client/eslint.config.js`
+    saying why - and fixing the code so it needs none comes first. The
+    `{@html}` pair in `Sprite.svelte` and `Brand.svelte` is the worked
+    example of the inline form, which templates do allow.
+    `client/tsconfig.json` keeps
     `noUncheckedIndexedAccess`, `noImplicitReturns`, `noUnusedLocals`,
     `noUnusedParameters` and `exactOptionalPropertyTypes`. **An unknown
     value from the wire is narrowed once, where it enters**

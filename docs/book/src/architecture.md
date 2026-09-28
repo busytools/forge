@@ -268,8 +268,11 @@ failing step whichever side it is on.
 
 The rules a gate cannot see are the same shape as the ones above. The
 denied constructs are `any`, non-null assertion, `@ts-ignore`,
-`innerHTML`, `eval` and floating promises, and a waiver carries a line
-saying why, the way an `#[allow]` does. `client/tsconfig.json` keeps
+`innerHTML`, `eval` and floating promises, and a waiver carries its
+reason the way an `#[allow]` does. The form is not free: a hook in this
+repo blocks an inline suppression comment in TypeScript, so a waiver
+there is a scoped entry in `client/eslint.config.js` - and fixing the
+code so it needs none comes first. `client/tsconfig.json` keeps
 `noUncheckedIndexedAccess`, `noImplicitReturns`, `noUnusedLocals`,
 `noUnusedParameters` and `exactOptionalPropertyTypes`, because
 `noImplicitReturns` being off is what once let a lifecycle fall out of a
