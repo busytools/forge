@@ -2,17 +2,15 @@
  * The palettes and typefaces forge ships, by the names `[web] theme` and
  * `[web] font` take - the client half of `crates/forge-web/src/theme.rs`.
  *
- * The values arrive from the server in the greeting rather than from a file
- * here: `forge.toml` is the server's, one source means one reader, and a
- * second reader is how the two drift.
+ * The greeting carries the NAMES - `dark`, `system`, `klin` - and this file
+ * holds the values they resolve to. So the client reads no config file: one
+ * source means one reader, and what crosses is which of forge's shipped sets
+ * to draw with rather than the set itself. A name outside the shipped list
+ * resolves to nothing, which is the server's boot refusal rather than a
+ * client fallback.
  *
  * Every surface reads these tokens and nothing else, so a theme is one place
  * to change and no component branches for it.
- *
- * The greeting carries the NAMES - `dark`, `system`, `klin` - and this file
- * holds the values they resolve to. A name outside the shipped set resolves
- * to nothing, which is the server's boot refusal rather than a client
- * fallback.
  */
 
 import type { ClientSettings, FontName, ThemeName } from './wire/types';

@@ -27,6 +27,14 @@ npm run typecheck
 - `src/components/` - the pieces every page draws with: the row, the band
   card, the lifecycle mark, the brand mark, the icon sprite. One theme, one
   copy of each.
+
+**The sprite is inlined by the shell on every page and nothing yet points at
+it.** No page in the base slice draws an icon, so `Icon.svelte` has no
+caller and removing `<Sprite />` from `Shell.svelte` would break nothing a
+test sees. It is here because the plan's salvage set names it and because
+the session and composer tasks run in parallel and cannot edit this shared
+base. The first icon belongs to Task 5's inspector, and that is where the
+sprite stops being dead weight.
 - `src/theme.ts` - the palettes and typeface stacks the names resolve to.
   The greeting carries the NAMES; the values live here, and there is no
   client-side reader of `forge.toml` by any path.
@@ -69,20 +77,3 @@ match, so a cold load of `/` lands on the door. The not-found page's own
 link points at `/`, which routes to the home. So the same URL is two pages
 depending on how you arrived, and a reload flips it. The fix belongs with
 the socket: gate the home on a connection once a store holds one.
-
-## Four reads the home snapshot does not carry
-
-`crates/forge-web/src/home.rs` draws cells the home snapshot cannot fill,
-so the client leaves them empty rather than guessing at them. Each is a
-read the server would have to add; none is a client defect.
-
-| Cell it feeds | What is missing |
-|---|---|
-| `.row .where` | the per-row working tree. `home.rs` reads it from `WorkCache` per row, and `HomeWire` carries no work - the twentieth record has the working tree for a *session*, not for a home row. |
-| `.row .what`, and `.st` with it | tasks. `HomeWire` carries none, so a row cannot show the task it holds, its status chip, or its artifact link. The header's task total goes with it. |
-| the refusal line | `would_bind`. `has_model` crosses, so `no model declared` is drawn; `no usable accounts` needs whether an account would bind, which does not cross. |
-| the header's version | forge's own version. `home.rs` draws `env!("CARGO_PKG_VERSION")` and nothing on the wire carries it. The claude version and the update notice both do, and are drawn. |
-
-A fifth is a view state rather than a read: the **unseen** mark. The
-server's `Live` owns it and does not encode it yet, so the client draws the
-state when it is handed one and computes none itself.
