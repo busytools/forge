@@ -4,10 +4,25 @@ import { describe, expect, it } from 'vitest';
 
 import { ICONS, SPRITE } from './sprite';
 
+/**
+ * Every first capture group. `noUncheckedIndexedAccess` types an indexed
+ * match as `string | undefined` because it cannot know the pattern has a
+ * group; the loop says both that it does and that this code does not assume
+ * it.
+ */
+function captures(text: string, pattern: RegExp): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(pattern)) {
+    const group = match[1];
+    if (group !== undefined) found.push(group);
+  }
+  return found;
+}
+
 /** The ids a mockup asks for, as `<use href="#i-...">`. */
 function idsUsedBy(mock: string): Set<string> {
   const html = readFileSync(new URL(mock, import.meta.url), 'utf8');
-  return new Set([...html.matchAll(/href="#i-([a-z0-9-]+)"/g)].map((match) => match[1]));
+  return new Set(captures(html, /href="#i-([a-z0-9-]+)"/g));
 }
 
 describe('the icon sprite', () => {

@@ -19,6 +19,7 @@ import {
   refusal,
   waitingOn,
   whenOf,
+  type HomeView,
   type OrgSection,
   type Row,
   type RowState,
@@ -105,6 +106,48 @@ function agent(org: string, project: string, label: string, lifecycle: Lifecycle
   };
 }
 
+/**
+ * The first of a list, typed. `noUncheckedIndexedAccess` makes every `[0]` a
+ * `T | undefined`, and a spread of one is a partial row rather than the
+ * declared type; a cast would say the same thing less honestly.
+ */
+function first<T>(items: T[], what: string): T {
+  const [head] = items;
+  if (head === undefined) throw new Error(`the fixture carries no ${what}`);
+  return head;
+}
+
+/** The org of that name, which the fixtures below all have. */
+function orgNamed(view: HomeView, name: string): OrgSection {
+  const org = view.orgs.find((section) => section.name === name);
+  if (org === undefined) throw new Error(`${name} is not in this view`);
+  return org;
+}
+
+/** The first row of the first project, which every fixture here draws. */
+function leadOf(view: HomeView): Row {
+  const entry = first(view.orgs, 'org').projects[0];
+  if (entry === undefined) throw new Error('the first org carries no project');
+  return entry.lead;
+}
+
+const PROJECT = first(homeWire.projects, 'project');
+const AGENT = first(homeWire.agents, 'agent');
+const LOADING = first(homeWire.accounts.loading, 'account');
+const FLEET_AGENT = first(FLEET.agents, 'agent');
+
+/** One complete row, so a test that varies one field needs no cast to say so. */
+const LEAD_ROW: Row = {
+  slot: { org: 'TestOrg', project: 'proj', label: 'lead' },
+  state: { kind: 'lifecycle', lifecycle: 'Idle' },
+  name: 'proj',
+  place: { branch: null, files: null },
+  task: null,
+  pending: null,
+  reason: null,
+  lastActivity: null,
+};
+
 describe('the fleet the snapshot describes', () => {
   /**
    * One fixture is one project with one agent, so a second org, a second
@@ -116,9 +159,12 @@ describe('the fleet the snapshot describes', () => {
   it('puts each project under its own org and counts what is live', () => {
     const view = homeView(FLEET, '');
     expect(view.orgs.map((org) => org.name)).toEqual(['Busytools', 'Personal']);
-    expect(countsOf(view.orgs[0])).toBe('2 live');
-    expect(countsOf(view.orgs[1])).toBe('1 live');
-    expect(view.orgs[0]?.projects.map((entry) => entry.lead.name)).toEqual(['forge', 'notes']);
+    expect(countsOf(orgNamed(view, 'Busytools'))).toBe('2 live');
+    expect(countsOf(orgNamed(view, 'Personal'))).toBe('1 live');
+    expect(orgNamed(view, 'Busytools').projects.map((entry) => entry.lead.name)).toEqual([
+      'forge',
+      'notes',
+    ]);
   });
 
   it('names a worker row for the worker and only the lead for its project', () => {
@@ -135,8 +181,7 @@ describe('the fleet the snapshot describes', () => {
   });
 
   it('says what it counts for every shape of org', () => {
-    const busytools = (wire: HomeWire) =>
-      homeView(wire, '').orgs.find((org) => org.name === 'Busytools') as OrgSection;
+    const busytools = (wire: HomeWire) => orgNamed(homeView(wire, ''), 'Busytools');
     // Every agent of one project gone, which leaves that project dormant and
     // its sibling live. Dropping only the lead would not: a worker row still
     // means somebody started it.
@@ -154,13 +199,12 @@ describe('the fleet the snapshot describes', () => {
 describe('a row over the fleet', () => {
   it('groups a project under its org and names the lead row for the project', () => {
     const view = homeView(homeWire, '127.0.0.1:8790');
-    const org = view.orgs.find((section) => section.name === 'TestOrg');
-    expect(org, 'the fixture project is grouped under its org').toBeDefined();
-    expect(org?.projects).toHaveLength(1);
+    const org = orgNamed(view, 'TestOrg');
+    expect(org.projects).toHaveLength(1);
     // The lead's label is its identity, not what the row is called here.
-    expect(org?.projects[0]?.lead.name).toBe('proj');
-    expect(org?.projects[0]?.lead.slot.label).toBe('lead');
-    expect(countsOf(org as NonNullable<typeof org>)).toBe('1 live');
+    expect(leadOf(view).name).toBe('proj');
+    expect(leadOf(view).slot.label).toBe('lead');
+    expect(countsOf(org)).toBe('1 live');
   });
 
   it('reads the fixture the server pinned, without re-deriving any state', () => {
@@ -193,11 +237,10 @@ describe('a row over the fleet', () => {
     const wire: HomeWire = {
       ...homeWire,
       agents: [],
-      projects: [{ ...homeWire.projects[0], sessions: [] }],
+      projects: [{ ...PROJECT, sessions: [] }],
     };
-    const view = homeView(wire, '');
-    const lead = view.orgs[0]?.projects[0]?.lead;
-    expect(lead?.state).toEqual({ kind: 'never-started' });
+    const lead = leadOf(homeView(wire, ''));
+    expect(lead.state).toEqual({ kind: 'never-started' });
     expect(whenOf(lead, Date.now())).toBe('never');
 
     // The same project with a session behind it is asleep instead: a forge
@@ -207,7 +250,7 @@ describe('a row over the fleet', () => {
       ...wire,
       projects: [
         {
-          ...wire.projects[0],
+          ...PROJECT,
           sessions: [{ last_activity: { secs_since_epoch: 0, nanos_since_epoch: 0 } }],
         },
       ],
@@ -221,7 +264,7 @@ describe('a row over the fleet', () => {
   it('promotes a backgrounded task to running, and leaves idle alone without one', () => {
     const wire = (has_background_work: boolean): HomeWire => ({
       ...homeWire,
-      agents: [{ ...homeWire.agents[0], has_background_work }],
+      agents: [{ ...AGENT, has_background_work }],
     });
     expect(homeView(wire(true), '').orgs[0]?.projects[0]?.lead.state).toEqual({
       kind: 'lifecycle',
@@ -238,13 +281,12 @@ describe('a row over the fleet', () => {
   });
 
   it('names the one refusal it can decide, and none it cannot', () => {
-    const project = homeWire.projects[0];
-    expect(refusal({ ...project, has_model: false })).toBe(
+    expect(refusal({ ...PROJECT, has_model: false })).toBe(
       'no model declared - add `model` to this project',
     );
     // Whether an account would bind is not in the snapshot, so a project
     // that has a model draws no refusal rather than a guessed one.
-    expect(refusal({ ...project, has_model: true })).toBeNull();
+    expect(refusal({ ...PROJECT, has_model: true })).toBeNull();
   });
 });
 
@@ -450,21 +492,20 @@ describe('what a row says', () => {
    * it is a page that does not draw.
    */
   it('narrows a lifecycle it does not know as the snapshot is read', () => {
-    const unknown = { ...FLEET, agents: [{ ...FLEET.agents[0], lifecycle: 'Resting' as never }] };
+    const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, lifecycle: 'Resting' as never }] };
     const lead = homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead;
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
   });
 
   it('narrows a pending kind it does not know', () => {
-    const unknown = { ...FLEET, agents: [{ ...FLEET.agents[0], pending: 'elicit' as never }] };
+    const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, pending: 'elicit' as never }] };
     expect(homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead.pending).toBe('permission');
   });
 
   it('narrows an account state it does not know', () => {
-    const loading = homeWire.accounts.loading[0];
     const unknown: HomeWire = {
       ...homeWire,
-      accounts: { ...homeWire.accounts, loading: [{ ...loading, state: 'renewing' as never }] },
+      accounts: { ...homeWire.accounts, loading: [{ ...LOADING, state: 'renewing' as never }] },
     };
     // The FIELD, not a rendering of it. `band()` tells `ready` from `bailed`
     // and nothing else, so an unknown state draws the identical card to the
@@ -479,6 +520,8 @@ describe('what a row says', () => {
         ...homeWire.dictate,
         snapshot: {
           models: [
+            // The state is deliberately outside the union, which is the whole
+            // test, so the cast is the instrument rather than a shortcut.
             { role: 'transcribing', file: 'a.gguf', state: 'warming' } as unknown as DictateModel,
           ],
           failure: null,
@@ -520,7 +563,7 @@ describe('how long ago a row last wrote', () => {
   });
 
   it('reads a live session with no transcript as now rather than an absence', () => {
-    const row = { state: { kind: 'lifecycle', lifecycle: 'Idle' }, lastActivity: null } as Row;
+    const row: Row = { ...LEAD_ROW, lastActivity: null };
     expect(whenOf(row, Date.now())).toBe('now');
   });
 });

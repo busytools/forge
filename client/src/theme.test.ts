@@ -7,6 +7,21 @@ import { FONT_NAMES, THEME_NAMES, type ClientSettings } from './wire/types';
 
 const sheet = readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8');
 
+/**
+ * Every first capture group. `noUncheckedIndexedAccess` types an indexed
+ * match as `string | undefined` because it cannot know the pattern has a
+ * group; the loop says both that it does and that this code does not assume
+ * it.
+ */
+function captures(text: string, pattern: RegExp): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(pattern)) {
+    const group = match[1];
+    if (group !== undefined) found.push(group);
+  }
+  return found;
+}
+
 /** A root that records what was hung on it, so no DOM is needed. */
 function stubRoot() {
   const set = new Map<string, string>();
@@ -52,9 +67,9 @@ describe('the palette', () => {
     const retired = new Set(['--syn-key', '--syn-str', '--syn-fn', '--add-bg', '--del-bg']);
 
     const reads = new Set(
-      [...sheet.matchAll(/var\((--[a-z0-9-]+)/g)]
-        .map((match) => match[1])
-        .filter((token) => !local.includes(token) && !stacks.has(token) && !retired.has(token)),
+      captures(sheet, /var\((--[a-z0-9-]+)/g).filter(
+        (token) => !local.includes(token) && !stacks.has(token) && !retired.has(token),
+      ),
     );
     expect(reads.size, 'the sheet reads the palette somewhere').toBeGreaterThan(0);
 
@@ -99,9 +114,7 @@ describe('the typefaces', () => {
 
   /** The stack asks for the families the sheet declares faces for. */
   it('asks for the faces the sheet ships', () => {
-    const declared = [...sheet.matchAll(/@font-face\s*{[^}]*font-family:\s*"([^"]+)"/g)].map(
-      (match) => match[1],
-    );
+    const declared = captures(sheet, /@font-face\s*{[^}]*font-family:\s*"([^"]+)"/g);
     expect(declared).toHaveLength(3);
     const builtIn = fontStack(null);
     for (const face of declared) {

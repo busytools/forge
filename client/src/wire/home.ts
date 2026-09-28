@@ -147,7 +147,15 @@ const MODEL_STATES: Extract<DictateModelState, string>[] = [
   'ready',
 ];
 
-/** One of `known`, or `fallback` when the value is one this client is older than. */
+/**
+ * One of `known`, or `fallback` when the value is one this client is older
+ * than.
+ *
+ * The two casts are the boundary's whole job: `known` is read as the strings
+ * it holds and the answer is one of them by construction, which is what lets
+ * every union downstream stay closed. `Array.includes` cannot narrow, so
+ * without them the callers would each need a cast of their own.
+ */
 function narrow<T extends string>(value: string, known: T[], fallback: T): T {
   return (known as string[]).includes(value) ? (value as T) : fallback;
 }

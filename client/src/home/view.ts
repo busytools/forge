@@ -222,12 +222,12 @@ export function failureFile(failure: DictateFailure): string {
 
 /** `MAJOR.MINOR.PATCH`, ignoring a `-pre.1` or `+build` suffix on the patch. */
 function parseSemverTriple(value: string): [number, number, number] | null {
-  const parts = value.split('.');
-  if (parts.length < 3) return null;
-  const major = Number.parseInt(parts[0], 10);
-  const minor = Number.parseInt(parts[1], 10);
+  const [majorText, minorText, patchText] = value.split('.');
+  if (majorText === undefined || minorText === undefined || patchText === undefined) return null;
+  const major = Number.parseInt(majorText, 10);
+  const minor = Number.parseInt(minorText, 10);
   let digits = '';
-  for (const char of parts[2]) {
+  for (const char of patchText) {
     if (char < '0' || char > '9') break;
     digits += char;
   }
@@ -240,10 +240,11 @@ function isStrictlyNewer(lhs: string, rhs: string): boolean {
   const a = parseSemverTriple(lhs);
   const b = parseSemverTriple(rhs);
   if (a === null || b === null) return false;
-  for (let i = 0; i < 3; i += 1) {
-    if (a[i] !== b[i]) return a[i] > b[i];
-  }
-  return false;
+  const [aMajor, aMinor, aPatch] = a;
+  const [bMajor, bMinor, bPatch] = b;
+  if (aMajor !== bMajor) return aMajor > bMajor;
+  if (aMinor !== bMinor) return aMinor > bMinor;
+  return aPatch > bPatch;
 }
 
 /**
@@ -423,9 +424,10 @@ export function homeView(wire: HomeWire, address: string): HomeView {
 
     // A project's row is its lead, and the home names it for the project:
     // the lead's label is its identity, not what the row is called here.
-    const started = rows.length > 0;
-    const lead = started ? rowOf(rows[0], project.name) : dormantRow(project, lastRan);
-    const workers = rows.slice(1).map((agent) => rowOf(agent, agent.label));
+    const [head, ...rest] = rows;
+    const started = head !== undefined;
+    const lead = head === undefined ? dormantRow(project, lastRan) : rowOf(head, project.name);
+    const workers = rest.map((agent) => rowOf(agent, agent.label));
 
     const section = orgs.find((org) => org.name === project.org);
     const entry = { lead, workers, refused: started ? null : refusal(project) };
