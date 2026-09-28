@@ -731,6 +731,16 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .tibody .l, .tibody .n { color: var(--muted); }
 .tibody .wide { grid-column: 1 / -1; }
 .tibody b { color: var(--dim); font-weight: 400; display: inline-block; width: 78px; }
+/* Two columns of cells need 458px plus the chat's insets, so a chat narrower
+   than about 486 clips them: the grid is as wide as its content and the
+   conversation scrolls sideways. Below the phone step the cells take one
+   column each, and the grid takes the room it is given rather than its
+   content's, so a figure too long for that room wraps inside it. The step
+   sits above that 486 on purpose - a phone at a larger text size needs the
+   columns to give way before the letters do. */
+@media (max-width: 560px) {
+  .tibody { grid-template-columns: 1fr; width: auto; }
+}
 
 /* A delivery keeps the lines it arrived with: its body is often a second
    line under the header the envelope carries. */

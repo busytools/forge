@@ -356,6 +356,12 @@
   .tibody .l, .tibody .n { color: var(--muted); }
   .tibody .wide { grid-column: 1 / -1; }
   .tibody b { color: var(--dim); font-weight: 400; display: inline-block; width: 78px; }
+  /* Two columns need 458px plus the chat's insets, so a chat narrower than
+     about 486 clips them; below the phone step they take one column each,
+     in the room they are given. */
+  @media (max-width: 560px) {
+    .tibody { grid-template-columns: 1fr; width: auto; }
+  }
 
   /* ---------- the live turn: a turn actually in flight ---------- */
   .livebar { display: flex; align-items: center; gap: 10px; margin: 8px 0 2px;
