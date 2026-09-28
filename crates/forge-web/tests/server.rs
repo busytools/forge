@@ -1937,10 +1937,11 @@ async fn a_command_leads_its_own_output() {
     );
 }
 
-/// A command with no description is named by the row above, so the prompt
-/// line under it would be the same words twice.
+/// A command with no description is named by the row above, and the row caps
+/// that title at three lines - so the body draws the command too, and it is
+/// the only place the whole of a long one stays readable on the page.
 #[tokio::test]
-async fn a_command_the_row_already_names_is_not_drawn_twice() {
+async fn a_command_the_row_already_names_is_still_readable_in_its_body() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
     fleet.start("Busytools", "forge").expect("forge is declared");
@@ -1962,7 +1963,10 @@ async fn a_command_the_row_already_names_is_not_drawn_twice() {
 
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(page.contains(">just check</span>"), "the row names the command: {page}");
-    assert_eq!(page.matches("just check").count(), 1, "and the body does not say it again: {page}");
+    assert!(
+        page.contains("<span class=\"pfx\">$</span> just check"),
+        "and the body draws it, where a capped title cannot reach: {page}",
+    );
     assert!(page.contains("Finished in 41.2s"), "while the output it wrote is still drawn: {page}");
 }
 
@@ -4328,4 +4332,194 @@ fn process(pid: u32, parent_pid: u32, name: &str, command: &str, memory_mb: u64)
         command: command.to_owned(),
         memory_bytes: memory_mb * 1024 * 1024,
     }
+}
+
+// ---------- how a row gives way: the schedules section and a command row
+// (#1228, #1229) ----------
+
+/// The scope a schedule row's own rule is written against, which is the
+/// section the page puts those rows in.
+const SCHEDULES_SCOPE: &str = ".sec[data-k=\"sec-schedules\"]";
+
+/// A schedule row inverts the shared row rule: the next-fire is what the row
+/// is for and the label is its context, so the label is the half that gives
+/// way and the value keeps its width.
+///
+/// Read off the served sheet, because the sheet is what a browser measures.
+/// A value left shrinkable is what squeezed a next-fire to nothing once a
+/// label passed forty-eight characters; a value that cannot give way at all
+/// is what ran 34.8px past the row and 4.8px past the rail, with its own tail
+/// cut and no ellipsis. Both halves are pinned here because the fix for one
+/// is the other's failure.
+#[tokio::test]
+async fn the_schedule_row_gives_up_its_label_and_keeps_its_value() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+
+    let value = blocks_for(&sheet, &format!("{SCHEDULES_SCOPE} .sb .kv .v"));
+    assert!(
+        value.iter().any(|block| block.contains("flex: 0 0 auto")),
+        "the next-fire keeps its own width instead of shrinking: {value:?}",
+    );
+    assert!(
+        value.iter().any(|block| block.contains("max-width: calc(70% - 12px)")),
+        "bounded by what the label's floor leaves it, so it cannot run past the rail: {value:?}",
+    );
+    let label = blocks_for(&sheet, &format!("{SCHEDULES_SCOPE} .sb .kv .k"));
+    assert!(
+        label
+            .iter()
+            .any(|block| block.contains("min-width: 30%") && block.contains("flex: 1 1 auto")),
+        "and the label is the half that shortens, with a floor so it cannot vanish: {label:?}",
+    );
+    let row = shared_blocks(&sheet, ".kv", "display: flex");
+    assert_eq!(row.len(), 1, "one shared row rule, left as it was");
+    assert!(
+        row[0].contains("gap: 12px"),
+        "and its gap is the 12px the value's cap subtracts, so retuning one means retuning the other: {row:?}",
+    );
+    // Counted rather than read off the shared block: the scoped selector ends
+    // in the shared one's text, so one list holds both, and a second copy
+    // written at the shared selector is the way this reaches every section.
+    let rules = blocks_for(&sheet, ".sb .kv .v");
+    let inverted: Vec<&String> =
+        rules.iter().filter(|block| block.contains("flex: 0 0 auto")).collect();
+    assert_eq!(inverted.len(), 1, "one rule carries the inversion: {inverted:?}");
+    assert!(
+        inverted[0].contains("max-width: calc(70% - 12px)"),
+        "and it is the scoped rule, not a copy written at the shared selector: {inverted:?}",
+    );
+}
+
+/// The blocks a selector is written in that begin with `first`. [`blocks_for`]
+/// matches substrings, and a scoped selector here ends in the shared one's
+/// text, so the shared block is the one carrying the shared declaration rather
+/// than whichever the sheet writes last.
+fn shared_blocks(css: &str, selector: &str, first: &str) -> Vec<String> {
+    blocks_for(css, selector).into_iter().filter(|block| block.starts_with(first)).collect()
+}
+
+/// The scope that rule is written against is the one the page puts a schedule
+/// row inside, so the inversion reaches the rows rather than sitting in the
+/// sheet matching nothing.
+#[tokio::test]
+async fn the_schedule_rows_sit_inside_the_scope_the_sheet_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.add_cron("forge", "stand-up").expect("forge is declared");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    let scope = page
+        .find("data-k=\"sec-schedules\"")
+        .expect("the schedules section carries the scope the sheet's rule names");
+    let body = &page[scope..];
+    let end = body.find("</details>").expect("and the section closes");
+    let rows = &body[..end];
+    assert!(
+        rows.contains("<div class=\"kv\">"),
+        "a row, not just a heading, sits inside it: {rows}"
+    );
+    assert!(rows.contains("stand-up"), "with the project's own cron among them: {rows}");
+}
+
+/// A command with no description is named by its own command in the row
+/// title, and the arguments at the end are what tell one invocation from
+/// another, so that title wraps rather than running off one line and
+/// ellipsising. It stops at three lines, and the body draws the whole
+/// command, because a capped title cannot reach its own tail.
+#[tokio::test]
+async fn a_command_row_that_is_named_by_its_command_wraps_within_a_cap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"find /tmp/rev40.R9A5 -depth -delete; find /tmp/rev41.zUeo -depth -delete; rm -f /tmp/gamarr-rev-dirs.txt; ls -d /tmp/rev40.R9A5 /tmp/rev41.zUeo 2>&1; echo done"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"done"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("<details class=\"leaf cmd\""),
+        "the row says its title is the command it ran: {page}",
+    );
+    assert!(
+        page.contains("<span class=\"pfx\">$</span> find /tmp/rev40.R9A5 -depth -delete"),
+        "and the body draws that command, where the title's own clamp cannot reach: {page}",
+    );
+    let (_status, _content_type, sheet) = get(&config, "/web.css").await;
+    let title = blocks_for(&sheet, "details.leaf.cmd > summary .tn");
+    assert!(
+        title.iter().any(|block| block.contains("white-space: normal")),
+        "so that title wraps instead of running off the one line: {title:?}",
+    );
+    assert!(
+        title.iter().any(|block| block.contains("-webkit-line-clamp: 3")),
+        "and stops at the cap a real command was measured against: {title:?}",
+    );
+    assert!(
+        !sheet.contains("details.leaf.cmd > summary {"),
+        "with nothing else about the row moved to do it",
+    );
+    let rules = blocks_for(&sheet, "details.leaf > summary .tn");
+    assert!(
+        rules.iter().any(|block| block.contains("white-space: nowrap")),
+        "and every other call's row still ellipsises on one line",
+    );
+    // No count here, unlike the schedule rule: this sheet writes the scoped
+    // selector as `details.leaf.cmd > summary .tn`, which does not contain the
+    // shared selector's text, so this list holds every block that could put
+    // the wrap on every call and one of them carrying it is the failure.
+    assert!(
+        !rules.iter().any(|block| block.contains("-webkit-line-clamp")),
+        "and the wrap not written at the shared selector, where it would reach every call: {rules:?}",
+    );
+}
+
+/// A command that carries a description is named by that description, which
+/// is a sentence rather than a command line, so its row keeps the one-line
+/// title every other call has.
+#[tokio::test]
+async fn a_command_with_a_description_keeps_the_one_line_title() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir(dir.path(), &[("Busytools", &["forge"])]).expect("the fleet builds");
+    fleet.start("Busytools", "forge").expect("forge is declared");
+    fleet.install_agent("Busytools", "forge", "lead");
+    fleet
+        .seed_transcript(
+            "Busytools",
+            "forge",
+            "lead",
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"just check","description":"run the gates"}}]}}"#,
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"    Finished in 41.2s"}]}}"#,
+            ],
+        )
+        .expect("the transcript is written");
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let (_status, _content_type, page) = get(&config, "/session/Busytools/forge/lead").await;
+
+    assert!(
+        page.contains("run the gates"),
+        "the described command's row is there to be seen at all: {page}",
+    );
+    assert!(
+        !page.contains("leaf cmd"),
+        "a described command's title is a sentence, and it keeps its one line: {page}",
+    );
 }
