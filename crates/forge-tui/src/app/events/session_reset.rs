@@ -850,6 +850,27 @@ mod tests {
         Absent,
     }
 
+    /// The frame the chat has settled on: the first frame's layout is
+    /// time-budgeted (`MeasureBudget`), so its gutter arithmetic can read a
+    /// partly-measured layout and land a user turn's mark on a different
+    /// row. A session is drawn again a frame later, and this is that frame,
+    /// which is the one a comparison of two conversations can hold still.
+    ///
+    /// The bound fails rather than returning the last frame: a comparison
+    /// that quietly holds an unsettled frame has re-imported the flake it
+    /// was written to remove.
+    fn settled_chat(app: &mut App) -> Vec<String> {
+        let mut previous = render_chat(app);
+        for _ in 0..4 {
+            let next = render_chat(app);
+            if next == previous {
+                return next;
+            }
+            previous = next;
+        }
+        panic!("the chat did not settle in five frames, so there is no frame to compare");
+    }
+
     /// The chat as it reaches the screen, one string per frame row.
     fn render_chat(app: &mut App) -> Vec<String> {
         let (width, height) = (120_u16, 40_u16);
@@ -909,7 +930,7 @@ mod tests {
     #[test]
     fn the_reads_new_row_fields_do_not_reach_the_terminal_frame() {
         let mut before = resumed_with_pinned_tip(&a_settled_turn());
-        let before_frame = render_chat(&mut before);
+        let before_frame = settled_chat(&mut before);
 
         let mut stamped = a_settled_turn();
         as_the_read_now_carries_them(&mut stamped);
@@ -921,7 +942,7 @@ mod tests {
         );
         assert_eq!(
             before_frame,
-            render_chat(&mut after),
+            settled_chat(&mut after),
             "the terminal draws a resumed turn from the same rows it always did",
         );
     }
