@@ -4452,7 +4452,7 @@ async fn a_docks_rows_read_as_live_choices() {
     let (_status, page) = composer(&config, "").await;
 
     assert!(page.contains("class=\"opt sel\""), "the first row is marked: {page}");
-    assert!(!page.contains("off\""), "with nothing demoted: {page}");
+    assert!(!page.contains("class=\"off\""), "with nothing demoted: {page}");
 }
 
 /// The meter's window is long enough to fill the slot it sits in. The
@@ -5259,12 +5259,34 @@ async fn the_dock_keeps_the_readers_field() {
         page[field..].contains("hx-preserve"),
         "with the marker that makes the browser keep its own text: {page}",
     );
+    assert_the_field_is_complete(&page);
 
     let (_status, _content_type, sheet) = get(&config, "/web.css").await;
     assert!(
         sheet.contains(".dock #draft"),
         "and the sheet never draws it: the field belongs to the box",
     );
+}
+
+/// The field as every render draws it. Both the live box and the parked one
+/// have to be the same complete field, because which node ends up in the box
+/// is the browser's business: a page whose first render is a parked one - a
+/// seat that has not started, or one already holding a prompt - hands the
+/// parked node to the box, and a field with no name sends nothing.
+fn assert_the_field_is_complete(region: &str) {
+    let at = region.find("id=\"draft\"").expect("a field");
+    let opens = region[..at].rfind('<').expect("the tag that opens it");
+    let tag = &region[opens..];
+    let tag = &tag[..tag.find('>').expect("the tag that closes it")];
+    for attr in [
+        "name=\"draft\"",
+        "rows=\"3\"",
+        "autocomplete=\"off\"",
+        "spellcheck=\"false\"",
+        "placeholder=\"Type a message\u{2026}\"",
+    ] {
+        assert!(tag.contains(attr), "the field is missing {attr}: {tag}");
+    }
 }
 
 /// Whether a composer event arrives within `within`: a stream that should
@@ -5303,6 +5325,7 @@ async fn only_the_sends_answer_replaces_the_field() {
     let (_status, typed) = composer(&config, "half a draft").await;
     assert!(typed.contains("hx-preserve"), "the reader's own render keeps the field: {typed}");
     assert!(typed.contains("half a draft"), "with their words in it: {typed}");
+    assert_the_field_is_complete(&typed);
 
     let (status, sent) = post(&config, "/session/Busytools/forge/lead/send", "draft=sent").await;
     assert_eq!(status, reqwest::StatusCode::OK, "the send answers with the box: {sent}");
@@ -5342,8 +5365,14 @@ async fn a_blocked_push_keeps_the_readers_field() {
         region.contains("class=\"blocked\""),
         "the box says why it is not taking input: {region}"
     );
-    assert!(region.contains("id=\"draft\""), "and still carries the reader's field: {region}");
-    assert!(region.contains("hx-preserve"), "marked so the browser keeps its own: {region}");
+    let blocked = region.find("class=\"blocked\"").expect("the blocked element");
+    let field = region.find("id=\"draft\"").expect("and still carries the reader's field");
+    assert!(field > blocked, "inside it, which is the nesting its own rule hides: {region}");
+    assert!(
+        region[field..].contains("hx-preserve"),
+        "marked so the browser keeps its own: {region}",
+    );
+    assert_the_field_is_complete(&region);
 
     let (_status, _content_type, sheet) = get(&config, "/web.css").await;
     assert!(
@@ -5390,7 +5419,34 @@ async fn the_notes_field_belongs_to_its_question() {
     settle().await;
     let (_status, next) = composer(&config, "").await;
     assert!(next.contains("id=\"notes-tu-9\""), "the next question names its own: {next}");
-    assert!(!next.contains("id=\"notes-tu-2\""), "and the last one's field is gone: {next}");
+}
+
+/// A take that ends is the box's news even though the fold has already
+/// taken the take: the boot fold applies every update before a session
+/// stream does, so a guard that answered for the state it changed would find
+/// the take gone, read the outcome as a stale tail, and leave the box drawn
+/// live over it until the tick. Catches that guard.
+#[tokio::test]
+async fn a_take_that_ends_reaches_the_box() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+    fleet.emit(started(7));
+    // The fold takes the take when this lands, so the stream's own
+    // application of it finds nothing: that is the whole of the trap.
+    fleet.emit(ended(
+        7,
+        forge_sessions::surface::DictateOutcome::NoAudio { peak_db: -61.0, seconds: 3 },
+    ));
+
+    let region = nth_composer_event(stream, 2).await.expect("the take's end redraws the box");
+    assert!(
+        region.contains("nothing above -50 dBFS in 3s"),
+        "and the notice it leaves is drawn: {region}",
+    );
+    assert!(!region.contains("class=\"dict\""), "with the take's row gone: {region}");
 }
 
 /// The tick redraws the box as well as the columns. Nothing has been said, so

@@ -809,8 +809,18 @@ fn dock(
 /// the new markup does not have is removed, so the field has to be present
 /// for the browser to keep its own, with the same id and the same preserve
 /// marker. The sheet hides it under the dock and the box shows it again.
+///
+/// It is drawn with the box's own attributes rather than as a bare slot,
+/// because which node ends up in the box is the browser's business: a page
+/// whose first render is a parked one - a seat that has not started, or one
+/// already holding a prompt - hands this node to the box, and a field with
+/// no name contributes nothing to `hx-include` and would send nothing.
 fn parked_field(draft_state: Draft) -> Markup {
-    html! { textarea #draft .txt hx-preserve[draft_state != Draft::Cleared] {} }
+    html! {
+        textarea #draft .txt name="draft" rows="3" autocomplete="off" spellcheck="false"
+            hx-preserve[draft_state != Draft::Cleared]
+            placeholder="Type a message\u{2026}" {}
+    }
 }
 
 /// A prompt the core reports and this view never saw the offer of.
@@ -985,9 +995,12 @@ struct SignIn {
 impl Composer {
     /// Fold one update in, answering whether a composer has to be redrawn.
     ///
-    /// An update about a take this view is no longer drawing is dropped
-    /// rather than drawn over the newer one, and drops answer false: a stale
-    /// take's tail is not news.
+    /// The answer is about the update rather than about the state it landed
+    /// on: the boot's fold applies every update before a session stream
+    /// sees it, so an answer read off what a second application changed
+    /// would be false for every update the composer owns. An update about a
+    /// take this view is no longer drawing is still folded - the guards
+    /// keep it from drawing over a newer take - and still answers true.
     pub fn apply(&mut self, update: &SessionUpdate) -> bool {
         match update {
             SessionUpdate::DictateStarted { key, floor_db, generation } => {
@@ -1005,39 +1018,35 @@ impl Composer {
                 // ended finds none and is dropped.
                 if let Some(take) = self.takes.get_mut(key) {
                     take.push(*peak_db);
-                    return true;
                 }
-                false
+                true
             }
             SessionUpdate::DictateTranscribing { key } => {
                 if let Some(take) = self.takes.get_mut(key) {
                     take.phase = Phase::Transcribing;
-                    return true;
                 }
-                false
+                true
             }
             SessionUpdate::DictateProgress { key, generation, done, total } => {
                 if let Some(take) = self.takes.get_mut(key)
                     && take.generation == *generation
                 {
                     take.progress = (*done, *total);
-                    return true;
                 }
-                false
+                true
             }
             SessionUpdate::DictateEnded { key, outcome, generation } => {
-                // A take that never started resolves nothing, so its
-                // generation matches no take this view holds and the reason
-                // is the seat's whatever it was drawing: the click that
-                // asked for it is owed an answer either way.
-                let refused = matches!(outcome, DictateOutcome::Refused { .. });
-                if !refused && self.takes.get(key).is_none_or(|take| take.generation != *generation)
+                // The take goes only if it is the one this resolves - a
+                // refusal resolves none, and a tail from a take that is gone
+                // is not this one - but the answer is the seat's either way,
+                // because the fold that ran first already took the state.
+                if matches!(outcome, DictateOutcome::Refused { .. })
+                    || self.takes.get(key).is_some_and(|take| take.generation == *generation)
                 {
-                    return false;
-                }
-                let floor_db = self.takes.remove(key).map_or(-50.0, |take| take.floor_db);
-                if let Some(notice) = Notice::of(outcome, floor_db) {
-                    self.notices.insert(key.clone(), notice);
+                    let floor_db = self.takes.remove(key).map_or(-50.0, |take| take.floor_db);
+                    if let Some(notice) = Notice::of(outcome, floor_db) {
+                        self.notices.insert(key.clone(), notice);
+                    }
                 }
                 true
             }
@@ -1170,6 +1179,26 @@ mod tests {
                 tool_id: "a-prompt-this-view-never-folded".to_owned(),
             }),
             "the box redraws for a settled prompt this view never folded too",
+        );
+    }
+
+    /// The answer is about the update, not about the state it landed on. Two
+    /// things apply each update to this fold - the boot's own and the page's
+    /// stream - so an arm that answers for what it changed is false for
+    /// whoever applies second, and a take's end arrives with the take the
+    /// first application already took. Catches that guard.
+    #[test]
+    fn a_takes_end_is_the_boxes_news_even_with_the_take_gone() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+
+        assert!(
+            composer.apply(&SessionUpdate::DictateEnded {
+                key: slot,
+                outcome: DictateOutcome::NoAudio { peak_db: -61.0, seconds: 3 },
+                generation: 7,
+            }),
+            "an end that resolves a take this fold no longer holds still redraws the box",
         );
     }
 
