@@ -113,6 +113,12 @@ pub struct ProjectWire {
     /// the per-row cost the terminal's rather than N times it.
     pub work: WorkState,
     pub tasks: Vec<forge_primitives::tasks::Task>,
+    /// The schedules this project holds.
+    ///
+    /// The terminal draws its SCHEDULES section from these, and nothing on
+    /// this wire carried them: a client could create a cron and never see it
+    /// again.
+    pub crons: Vec<forge_primitives::CronEntry>,
     /// Whether a spawn in this project would find an account. Read beside
     /// `project.has_model`, which is what tells the two reasons a spawn cannot
     /// run apart.
@@ -476,6 +482,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         projects.push(ProjectWire {
             work: state.work.snapshot(&seat, &project.path).await,
             tasks: roster.tasks_for_project(&project.name),
+            crons: roster.crons_for_project(&project.name),
             would_bind: roster.would_bind(&project.key),
             project: project.clone(),
         });
@@ -1060,6 +1067,29 @@ mod tests {
             leaf.label, "Subagent",
             "and the word its row draws is a different thing, which is why both are carried",
         );
+    }
+
+    /// The terminal draws a project's SCHEDULES section from a read the wire
+    /// never carried, so a client could create a cron and never see it again.
+    #[tokio::test]
+    async fn a_projects_schedules_ride_its_row() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.add_cron("proj", "a nightly sweep").expect("the cron is added");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        let rows = encoded["projects"].as_array().expect("the home carries project rows");
+        let crons = rows[0]["crons"].as_array().expect("and each row carries its schedules");
+
+        assert_eq!(crons.len(), 1, "the project's own cron reached the wire: {crons:?}");
+        assert_eq!(crons[0]["prompt"], "a nightly sweep");
     }
 
     /// A seat with nothing behind it has no tree to walk, and what it holds is

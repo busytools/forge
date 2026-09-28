@@ -20,6 +20,7 @@
         "gate": "gone"
       },
       "tasks": [],
+      "crons": [],
       "would_bind": false
     }
   ],
