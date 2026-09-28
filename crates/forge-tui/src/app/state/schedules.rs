@@ -3,7 +3,7 @@
 //! refreshed from the workspace, pruned on the ~1s tick and scoped to
 //! the active session's own project and team role.
 
-use forge_sessions::surface::ViewSurface;
+use forge_server::surface::ViewSurface;
 
 impl super::App {
     /// Active session's SCHEDULES entries (Inspector SCHEDULES

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use forge_primitives::SessionLifecycleState;
-use forge_sessions::surface::ViewSurface;
+use forge_server::surface::ViewSurface;
 use forge_workspace::{ProjectView, SessionChipInfo, SessionChipState};
 use ratatui::Frame;
 use ratatui::layout::Rect;

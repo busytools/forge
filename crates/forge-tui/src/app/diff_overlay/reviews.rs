@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::app::input::InputState;
 use crossterm::event::{KeyCode, KeyEvent};
 use forge_primitives::review::{ReviewStatus, ReviewThread};
-use forge_sessions::surface::ViewSurface;
+use forge_server::surface::ViewSurface;
 
 /// Parse an rfc3339 timestamp into a `SystemTime`, or `None` when it is
 /// empty / malformed.

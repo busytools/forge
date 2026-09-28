@@ -27,8 +27,8 @@ use crate::ui::chat_tree;
 use crate::ui::theme;
 use crate::ui::theme::kind_row_glyph;
 use crate::ui::tool_call::status_icon;
-use forge_sessions::family::ToolFamily;
-use forge_sessions::grouping::{KindRow, KindSummary};
+use forge_server::family::ToolFamily;
+use forge_server::grouping::{KindRow, KindSummary};
 
 /// Trailing affordance on the parent count row.
 const EXPAND_HINT: &str = "   ctrl+x to expand";
@@ -260,7 +260,7 @@ pub(crate) fn clip_to_width(s: &str, budget: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_sessions::grouping::KindLine;
+    use forge_server::grouping::KindLine;
 
     fn kl(row: KindRow, label: &str, count: usize, targets: &[&str]) -> KindLine {
         KindLine {

@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use forge_sessions::surface::ViewSurface;
+use forge_server::surface::ViewSurface;
 use forge_workspace::{
     AccountAuth, AccountLoadingRow, DictateBind, DictateFailure, DictateModel, DictateModelState,
     DictateSnapshot, LoadingState, UsageFetchStatus,

@@ -30,9 +30,9 @@ forge-connectors  ->  primitives
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
-forge-sessions    ->  primitives + workspace
-forge-web         ->  primitives + sessions
-forge-tui         ->  primitives + workspace + sessions + web
+forge-server      ->  primitives + workspace
+forge-web         ->  primitives + server
+forge-tui         ->  primitives + workspace + server + web
 forge-test-harness->  primitives + sdk
 ```
 
@@ -45,8 +45,8 @@ forge-test-harness->  primitives + sdk
 | [`forge-sdk`](crates/forge-sdk) | The `claude` subprocess. Stream-json codec, transport, control dispatch, in-process MCP host, options builder. |
 | [`forge-agent`](crates/forge-agent) | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. User-data reads, cloud calls, environment probes, event translation, tooling. |
 | [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
-| [`forge-sessions`](crates/forge-sessions) | What a view needs and nothing about how it renders: the read surface a view uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, forge's own slash commands, the policy that folds a run of blocks, the transcript fold that turns a conversation's messages into the units a view draws, the sub-agent instances a session dispatched, and the text a pty produced: its escape sequences and a Monitor's output tail. Sits between the workspace and the views. |
-| [`forge-web`](crates/forge-web) | The web view: HTTP served beside the TUI, from the process that owns the sessions. axum plus server-rendered markup: the home, kept live by a stream the page subscribes to, and a page per session carrying the projects rail, the chat column, the inspector and the composer, kept live by a stream of its own. Reads the core through the view surface in `forge-sessions`; never names `forge-workspace`, and starts no subsystem of its own. |
+| [`forge-server`](crates/forge-server) | What a view needs and nothing about how it renders: the read surface a view uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, forge's own slash commands, the policy that folds a run of blocks, the transcript fold that turns a conversation's messages into the units a view draws, the sub-agent instances a session dispatched, and the text a pty produced: its escape sequences and a Monitor's output tail. Sits between the workspace and the views. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. |
+| [`forge-web`](crates/forge-web) | The web view: HTTP served beside the TUI, from the process that owns the sessions. axum plus server-rendered markup: the home, kept live by a stream the page subscribes to, and a page per session carrying the projects rail, the chat column, the inspector and the composer, kept live by a stream of its own. Reads the core through the view surface in `forge-server`; never names `forge-workspace`, and starts no subsystem of its own. |
 | [`forge-tui`](crates/forge-tui) | The view layer, and the `forge` binary. Rendering, input handling, per-session presentation state. No direct `forge-agent` dependency. |
 | [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness: replay-based offline tests plus opt-in live capture. |
 

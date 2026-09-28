@@ -2,7 +2,7 @@
 //!
 //! The three modules keep the names they had where they were written. The
 //! glob re-exports are what let a view name every type through one path,
-//! `forge_sessions::model::`.
+//! `forge_server::model::`.
 
 pub mod agent;
 pub mod messages;

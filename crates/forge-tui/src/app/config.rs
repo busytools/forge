@@ -256,7 +256,7 @@ impl ConfigState {
 
     pub fn respect_gitignore_effective(&self) -> bool {
         // The shared rule, which the web view's file walk reads too.
-        forge_sessions::file_index::respect_gitignore(Some(&self.committed_preferences_document))
+        forge_server::file_index::respect_gitignore(Some(&self.committed_preferences_document))
     }
 
     pub fn prefers_reduced_motion_effective(&self) -> bool {

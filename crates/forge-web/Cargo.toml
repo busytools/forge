@@ -12,7 +12,7 @@ forge-primitives = { workspace = true }
 # The view surface, and the only crate under it this one may name. Reads
 # of the core and of a working tree both come from here: the git plumbing
 # arrives re-exported, so nothing here reaches past the view layer.
-forge-sessions = { workspace = true }
+forge-server = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
 maud = { workspace = true }
@@ -35,7 +35,7 @@ thiserror = { workspace = true }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
 # The view fixtures the page's own tests drive a real fleet through.
-forge-sessions = { workspace = true, features = ["testing"] }
+forge-server = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]

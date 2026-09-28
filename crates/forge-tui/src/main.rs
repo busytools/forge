@@ -146,7 +146,7 @@ fn run() -> anyhow::Result<()> {
         // the only ones. A bind that fails still boots - the TUI is not
         // downstream of this.
         let web_state = forge_web::WebState::new(
-            std::sync::Arc::new(forge_sessions::surface::ViewSurface::new(std::sync::Arc::clone(
+            std::sync::Arc::new(forge_server::surface::ViewSurface::new(std::sync::Arc::clone(
                 &workspace,
             ))),
             std::sync::Arc::new(forge_web::WorkCache::new()),

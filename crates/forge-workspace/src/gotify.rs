@@ -248,7 +248,7 @@ impl GotifyHost for SubsystemHost {
     /// dispatch it to the subscriber. This is the only place a
     /// forge-connectors match becomes a `GotifyNotification`, so the
     /// prose shape stays workspace-owned
-    /// (`forge_sessions::envelope::detect_inbound` keys on it).
+    /// (`forge_server::envelope::detect_inbound` keys on it).
     fn deliver(
         &self,
         subscription: &forge_primitives::GotifySubscription,

@@ -154,7 +154,7 @@ fn handle_stop_hook_summary(
 ) {
     // A dispatched agent's hook is not this turn's, the same rule its other
     // frames are suppressed by.
-    if forge_sessions::transcript::names_a_dispatch(parent_tool_use_id) {
+    if forge_server::transcript::names_a_dispatch(parent_tool_use_id) {
         return;
     }
     let Some(message_idx) = app.active_turn_assistant_idx() else {
@@ -423,18 +423,18 @@ enum EnvelopeKind {
 }
 
 impl EnvelopeKind {
-    fn of_inbound(kind: &forge_sessions::envelope::PeerInboundKind) -> Self {
+    fn of_inbound(kind: &forge_server::envelope::PeerInboundKind) -> Self {
         match kind {
-            forge_sessions::envelope::PeerInboundKind::Gotify { .. } => Self::Gotify,
-            forge_sessions::envelope::PeerInboundKind::Cron { .. } => Self::Cron,
-            forge_sessions::envelope::PeerInboundKind::Slack { .. } => Self::Slack,
+            forge_server::envelope::PeerInboundKind::Gotify { .. } => Self::Gotify,
+            forge_server::envelope::PeerInboundKind::Cron { .. } => Self::Cron,
+            forge_server::envelope::PeerInboundKind::Slack { .. } => Self::Slack,
             // Spelled out, not `_`: a new inbound kind must not silently
             // inherit peer traffic's unlabelled treatment and merge into it.
-            forge_sessions::envelope::PeerInboundKind::Message { .. }
-            | forge_sessions::envelope::PeerInboundKind::Question { .. }
-            | forge_sessions::envelope::PeerInboundKind::Reply { .. }
-            | forge_sessions::envelope::PeerInboundKind::DeliveryFailure { .. }
-            | forge_sessions::envelope::PeerInboundKind::WorkerSpawnFailed { .. } => Self::Peer,
+            forge_server::envelope::PeerInboundKind::Message { .. }
+            | forge_server::envelope::PeerInboundKind::Question { .. }
+            | forge_server::envelope::PeerInboundKind::Reply { .. }
+            | forge_server::envelope::PeerInboundKind::DeliveryFailure { .. }
+            | forge_server::envelope::PeerInboundKind::WorkerSpawnFailed { .. } => Self::Peer,
         }
     }
 
@@ -499,7 +499,7 @@ fn append_or_push_envelope(app: &mut App, kind: EnvelopeKind, text: &str) {
 /// constructors when it is an inbound envelope. Returns false for
 /// plain text so the caller falls through to its own rendering.
 pub(super) fn append_resume_envelope_if_present(app: &mut App, text: &str) -> bool {
-    let Some(kind) = forge_sessions::envelope::detect_inbound(text) else {
+    let Some(kind) = forge_server::envelope::detect_inbound(text) else {
         return false;
     };
     append_or_push_envelope(app, EnvelopeKind::of_inbound(&kind), text);
@@ -515,7 +515,7 @@ pub(super) fn append_resume_envelope_if_present(app: &mut App, text: &str) -> bo
 
 /// Push a peer-wrapper-prefixed user turn into the chat buffer.
 ///
-/// The detection key is `forge_sessions::envelope::detect_inbound` - same matcher
+/// The detection key is `forge_server::envelope::detect_inbound` - same matcher
 /// the renderer uses, so any envelope shape recognised at render time
 /// is also pushed here. Falls through silently for plain user echoes
 /// (the dominant case) so we don't double-push the locally-pushed
@@ -530,7 +530,7 @@ fn push_peer_envelope_user_turn_if_present(
         let ContentBlock::Text { text } = block else {
             continue;
         };
-        let Some(kind) = forge_sessions::envelope::detect_inbound(text) else {
+        let Some(kind) = forge_server::envelope::detect_inbound(text) else {
             continue;
         };
         let envelope_kind = EnvelopeKind::of_inbound(&kind);
@@ -631,8 +631,8 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
 
 /// The text a `queued_command` block's `prompt` renders as. Shared with
 /// the conversation fold, which reads the same policy from
-/// [`forge_sessions::transcript`], so the two cannot drift apart.
-pub(super) use forge_sessions::transcript::queued_command_text as extract_queued_command_text;
+/// [`forge_server::transcript`], so the two cannot drift apart.
+pub(super) use forge_server::transcript::queued_command_text as extract_queued_command_text;
 
 /// Process a `queued_command` content-block.
 ///
@@ -1872,7 +1872,7 @@ fn record_live_turn_usage(
     message: &forge_primitives::AssistantEnvelope,
     parent_tool_use_id: Option<&str>,
 ) {
-    if app.replay_in_progress || forge_sessions::transcript::names_a_dispatch(parent_tool_use_id) {
+    if app.replay_in_progress || forge_server::transcript::names_a_dispatch(parent_tool_use_id) {
         return;
     }
     let Some(usage) = message.usage else {

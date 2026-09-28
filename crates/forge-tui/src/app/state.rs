@@ -18,12 +18,12 @@ pub(crate) mod welcome;
 // Re-export all public types so external `use crate::app::state::X` paths still work.
 pub use block_cache::BlockCache;
 pub use cache_metrics::CacheMetrics;
-/// The message model moved to `forge-sessions`. Re-exported as a module so
+/// The message model moved to `forge-server`. Re-exported as a module so
 /// every `state::messages::…` and `state::tool_call_info::…` path in the
 /// view keeps resolving.
-pub use forge_sessions::model::{messages, tool_call_info};
+pub use forge_server::model::{messages, tool_call_info};
 
-pub use forge_sessions::model::{
+pub use forge_server::model::{
     AnsweredQuestion, ChatMessage, MessageBlock, MessageRenderSignature, MessageRole, NoticeBlock,
     NoticeDedupKey, RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing,
     ToolCallInfo, TurnInfo, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
@@ -732,10 +732,10 @@ pub struct App {
 impl App {
     /// The read surface over the workspace, `None` exactly when
     /// [`Self::workspace`] is.
-    pub(crate) fn surface(&self) -> Option<forge_sessions::surface::ViewSurface> {
+    pub(crate) fn surface(&self) -> Option<forge_server::surface::ViewSurface> {
         self.workspace
             .as_ref()
-            .map(|workspace| forge_sessions::surface::ViewSurface::new(Arc::clone(workspace)))
+            .map(|workspace| forge_server::surface::ViewSurface::new(Arc::clone(workspace)))
     }
 
     /// Every project and its catalog sessions; empty when there is no

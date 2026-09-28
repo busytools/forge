@@ -11,9 +11,9 @@ forge-connectors ───→ primitives
 forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + gateway
 forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
-forge-sessions   ───→ primitives + workspace
-forge-web        ───→ primitives + sessions
-forge-tui        ───→ primitives + workspace + sessions + web (no direct agent dep)
+forge-server     ───→ primitives + workspace
+forge-web        ───→ primitives + server
+forge-tui        ───→ primitives + workspace + server + web (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```
 
@@ -48,7 +48,7 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-workspace`** - multi-session orchestrator. Owns
   `DomainSession` + per-session `SessionTask` actors. Single TUI-facing
   facade.
-- **`forge-sessions`** - what a view needs and nothing about how it
+- **`forge-server`** - what a view needs and nothing about how it
   renders: the read surface a view uses, the session records as a view
   sees them, the peer envelope parsing in both directions, the tool
   family table, forge's own slash commands, the policy that folds a run
@@ -63,7 +63,8 @@ forge-test-harness ─→ primitives + sdk + workspace
   answer alone - whether a tool's input parses into a lifecycle block -
   and does that through `forge-workspace` rather than `forge-agent`, so
   the agent layer stays behind the workspace facade the way it does for
-  the TUI.
+  the TUI. The name is this crate; forge's in-process MCP server is
+  unrelated and is named as the `forge` MCP server.
 - **`forge-web`** - the web view: HTTP served beside the TUI, in the
   process that already owns the sessions, so a second view costs a
   listener rather than a second cron scheduler. Server-rendered markup
@@ -72,7 +73,7 @@ forge-test-harness ─→ primitives + sdk + workspace
   projects rail, the chat column, the inspector and the composer, and
   kept live by a stream of its own. It never names `forge-workspace`:
   reads of the core and of a working tree both go through
-  `forge-sessions`, which re-exports what a view needs.
+  `forge-server`, which re-exports what a view needs.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
@@ -139,7 +140,7 @@ Work top-down; first match wins.
 8. **A session record as a view sees it, or a decision any view would
    make over one?** (the render-ready record, the reducer that derives
    it, the policy that decides how a run of blocks folds, the peer
-   envelope parsing in both directions) -> `forge-sessions`. Sits
+   envelope parsing in both directions) -> `forge-server`. Sits
    between workspace and the views; the test is "does this render?" -
    if it does, it is the view's.
 9. **A widget, screen, key binding, mouse handler, or per-session
@@ -148,7 +149,7 @@ Work top-down; first match wins.
 10. **A view that is not the TUI?** (an HTTP route, its markup, its own
     per-view state) -> `forge-web`. Sits beside `forge-tui` on the same
     core: a read of the core goes through the view surface in
-    `forge-sessions`, never `forge-workspace`, and it starts no
+    `forge-server`, never `forge-workspace`, and it starts no
     subsystem of its own.
 11. **A wire-conformance scenario?** -> `forge-test-harness`.
 
@@ -161,7 +162,7 @@ through named verbs by subject - `roster`, `session`, `agents`,
 `processes`, `monitors` and `pending_ask` - receives changes through
 `subscribe()`, and acts through `dispatch()`, which is a verb rather than
 an accessor so a view is handed the commands it needs and not the whole
-core. All twenty-two exist in `forge-sessions`, and the TUI reads
+core. All twenty-two exist in `forge-server`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk
@@ -188,7 +189,7 @@ of work, not a prerequisite for adding to the crates.
 Legitimate splits are common (a git-diff feature touches agent +
 workspace + tui). Rule of thumb: logic/IO/subprocess -> agent;
 cross-crate shape -> primitives; multi-session state -> workspace;
-a session record as a view sees it -> sessions; anything the user
+a session record as a view sees it -> forge-server; anything the user
 sees -> TUI. The default failure mode here is "too much in
 forge-tui", so bias toward the deeper crate when unsure.
 

@@ -24,7 +24,7 @@
 //! prose header carrying: correlation id, sender identity,
 //! and (for asks) reply instructions. The recipient's LLM reads this
 //! header as part of its prompt context;
-//! `forge_sessions::envelope::detect_inbound` matches the bracket prefix
+//! `forge_server::envelope::detect_inbound` matches the bracket prefix
 //! and the recipient's TUI renders the envelope as a styled peer block
 //! (`forge-tui::ui::peer_block`).
 
@@ -173,7 +173,7 @@ pub struct WrappedPrompt {
 impl WrappedPrompt {
     /// Build the exact prose string that gets injected into the
     /// recipient's chat as a `Command::Prompt` text. The format MUST
-    /// match the prefix patterns `forge_sessions::envelope::detect_inbound`
+    /// match the prefix patterns `forge_server::envelope::detect_inbound`
     /// looks for.
     pub fn to_prose(&self) -> String {
         match self.kind {

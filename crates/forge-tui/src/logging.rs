@@ -95,7 +95,7 @@ impl LoggingRuntime {
 /// session's own tool failures and a git probe missing
 /// `refs/remotes/origin/HEAD`, which are real and are not forge's
 /// problems. At `debug` they stay readable without raising a warning
-/// that says forge is unwell. `forge_sessions` is there for the same
+/// that says forge is unwell. `forge_server` is there for the same
 /// reason: a line in a Monitor's output file that cannot be decoded is the
 /// watched command's own output rather than a problem with forge.
 /// `tui_markdown`
@@ -119,7 +119,7 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.lifecycle=debug,\
     bridge.lifecycle=debug,\
     agent.env_git=debug,\
-    forge_sessions=debug,\
+    forge_server=debug,\
     tui_markdown=error,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
@@ -427,11 +427,11 @@ mod tests {
         // miss entirely, which is the state the levels moved away from.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.tool=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
-        // `forge_sessions` carries the Monitor tail read's unreadable-line
+        // `forge_server` carries the Monitor tail read's unreadable-line
         // record, demoted there for the same reason: a line the watched
         // command wrote that cannot be decoded is that command's own
         // output. Without the directive the record never lands at all.
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_sessions=debug"));
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_server=debug"));
         // The web view's `enabled = false` record is a `debug` on
         // `app.lifecycle` because a config choice is not a problem, so
         // the target needs the directive or that record never lands.
@@ -494,7 +494,7 @@ mod tests {
         std::fs::write(&path, b"one\ntwo\n\xff\xfe not utf-8\n").expect("write the probe file");
 
         let caught = emitted_under_defaults(|| {
-            let _ = forge_sessions::monitor::read_output_file_tail(&path, 12);
+            let _ = forge_server::monitor::read_output_file_tail(&path, 12);
         });
         let _ = std::fs::remove_file(&path);
 
@@ -517,7 +517,7 @@ mod tests {
         for preset in carrying {
             let directives = preset.filter_directives();
             assert!(
-                directives.contains("forge_sessions=debug"),
+                directives.contains("forge_server=debug"),
                 "{preset:?} carries a session's own records, so it must carry the crate \
                  they live in: {directives}",
             );

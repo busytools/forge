@@ -106,7 +106,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
     // prompt it was handed on stdin. Before the match because the forge takes
     // the whole update, which the match moves.
     if let Some(key) = target_key.as_ref()
-        && let Some(turn) = forge_sessions::delivery::delivery_turn(&update, key)
+        && let Some(turn) = forge_server::delivery::delivery_turn(&update, key)
     {
         apply_session_update_chat_appended(app, key, turn);
     }

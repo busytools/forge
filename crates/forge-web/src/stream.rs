@@ -14,9 +14,9 @@ use axum::response::{IntoResponse, Response, Sse};
 use forge_primitives::Message;
 use forge_primitives::SessionSlot;
 use forge_primitives::runtime::RuntimeSessionState;
-use forge_sessions::SessionUpdate;
-use forge_sessions::model::LiveTurn;
-use forge_sessions::surface::is_success_result;
+use forge_server::SessionUpdate;
+use forge_server::model::LiveTurn;
+use forge_server::surface::is_success_result;
 use futures_util::StreamExt;
 use futures_util::stream::{self, Stream};
 use maud::Markup;
@@ -134,7 +134,7 @@ impl Live {
                     // Work started again, which supersedes the completion
                     // the diamond marks. Serving the seat's page clears it
                     // too, so this is the clear for a seat nobody opened.
-                    if forge_sessions::translate::state_parsing::parse_runtime_session_state(
+                    if forge_server::translate::state_parsing::parse_runtime_session_state(
                         data.get("state"),
                     ) == Some(RuntimeSessionState::Running)
                     {
@@ -428,7 +428,7 @@ fn replacement(update: &SessionUpdate, slot: &SessionSlot) -> Option<Vec<Message
 /// rule that matched on the body would drop a message someone really did send
 /// twice.
 fn append(update: &SessionUpdate, slot: &SessionSlot, conversation: &mut Vec<Message>) -> bool {
-    if let Some(turn) = forge_sessions::delivery::delivery_turn(update, slot) {
+    if let Some(turn) = forge_server::delivery::delivery_turn(update, slot) {
         conversation.push(turn);
         return true;
     }
@@ -543,7 +543,7 @@ mod tests {
 
     use axum::extract::{Path, State};
     use forge_primitives::{Message, SessionSlot};
-    use forge_sessions::SessionUpdate;
+    use forge_server::SessionUpdate;
 
     use super::{Live, session_events};
     use crate::server::Wiring;
@@ -580,7 +580,7 @@ mod tests {
         assert!(appended, "the frame is appended, not filtered at the stream");
         assert_eq!(conversation.len(), 1, "and the conversation holds it");
         assert!(
-            forge_sessions::transcript::render_units(&conversation).is_empty(),
+            forge_server::transcript::render_units(&conversation).is_empty(),
             "while the chat draws nothing for it",
         );
     }
@@ -810,7 +810,7 @@ mod tests {
     #[tokio::test]
     async fn the_handler_holds_the_seat_for_its_connection() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let fleet = forge_sessions::testing::Fleet::in_dir(dir.path(), &[("Org", &["forge"])])
+        let fleet = forge_server::testing::Fleet::in_dir(dir.path(), &[("Org", &["forge"])])
             .expect("the fleet builds");
         fleet.start("Org", "forge").expect("the project is declared");
         let state = Arc::new(crate::server::WebState::new(

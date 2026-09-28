@@ -6,6 +6,6 @@
 //! - [`model`] - UI-typed model describing agent state for the view
 //!   layer to render.
 
-/// The agent model moved to `forge-sessions`. Re-exported as a module so
+/// The agent model moved to `forge-server`. Re-exported as a module so
 /// every `crate::agent::model::…` path in the view keeps resolving.
-pub use forge_sessions::model::agent as model;
+pub use forge_server::model::agent as model;

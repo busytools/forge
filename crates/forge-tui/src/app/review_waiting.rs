@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 
 use forge_primitives::review::ReviewThread;
-use forge_sessions::surface::ViewSurface;
+use forge_server::surface::ViewSurface;
 use forge_workspace::SessionSlot;
 
 use crate::app::App;
@@ -93,7 +93,7 @@ pub fn hydrate_pending(app: &mut App) {
     let Some(workspace) = app.workspace.clone() else {
         return;
     };
-    let surface = forge_sessions::surface::ViewSurface::new(Arc::clone(&workspace));
+    let surface = forge_server::surface::ViewSurface::new(Arc::clone(&workspace));
     let pending: Vec<(SessionSlot, String, PathBuf, Arc<AtomicBool>)> = app
         .sessions
         .iter()

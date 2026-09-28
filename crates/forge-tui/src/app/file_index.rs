@@ -2,7 +2,7 @@
 //! filesystem walker and `notify::Watcher` themselves live in
 //! `forge_agent::env::file_index` (lifted out so the TUI doesn't
 //! shell out to OS-side I/O directly), and the index they fill plus the
-//! ranking a query is read against live in `forge_sessions::file_index`,
+//! ranking a query is read against live in `forge_server::file_index`,
 //! shared with the other view. This module:
 //!
 //! - Holds per-bucket [`FileIndexState`] (the index plus scan/watch
@@ -19,7 +19,7 @@ use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::mpsc::{Sender, TryRecvError};
 
-use forge_sessions::file_index::FileIndex;
+use forge_server::file_index::FileIndex;
 use forge_workspace::env::file_index as env;
 pub use forge_workspace::env::file_index::{FileCandidate, FileIndexChange};
 

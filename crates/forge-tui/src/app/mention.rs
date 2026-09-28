@@ -628,7 +628,7 @@ mod tests {
             },
         ];
 
-        forge_sessions::file_index::rank_and_truncate_candidates(
+        forge_server::file_index::rank_and_truncate_candidates(
             &mut candidates,
             "rs",
             crate::app::MAX_CANDIDATES,

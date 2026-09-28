@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{SessionLifecycleState, SessionSlot};
-use forge_sessions::surface::{
+use forge_server::surface::{
     AccountsView, AgentRow, CliVersionInfo, DictateFailure, DictateModelState, DictateView,
     LoadingState, PendingKind, Roster, ViewSurface,
 };

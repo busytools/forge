@@ -48,7 +48,7 @@ fn create_app_impl(
     //   Trust + file_index init handle an empty cwd cleanly; the
     //   first per-project Connected event populates the real
     //   bucket's `cwd_raw` from the agent's reported cwd.
-    let surface = forge_sessions::surface::ViewSurface::new(Arc::clone(&workspace));
+    let surface = forge_server::surface::ViewSurface::new(Arc::clone(&workspace));
     let project_path = cli
         .project
         .as_deref()
@@ -346,7 +346,7 @@ pub fn start_connection(app: &mut App) {
     // Neither half waits on the dictation weights, so the models load
     // alongside the session rather than delaying it.
     let workspace_ready =
-        forge_sessions::surface::ViewSurface::new(Arc::clone(workspace)).accounts().all_loaded;
+        forge_server::surface::ViewSurface::new(Arc::clone(workspace)).accounts().all_loaded;
     if !workspace_ready || !crate::ui::preflight::accounts_settled(app) {
         if !app.spawn_deferred_logged {
             app.spawn_deferred_logged = true;
@@ -390,7 +390,7 @@ pub fn start_connection(app: &mut App) {
     // see the right tier.
     if app.startup_project.is_none() {
         let auto_start =
-            forge_sessions::surface::ViewSurface::new(Arc::clone(workspace)).roster().auto_start();
+            forge_server::surface::ViewSurface::new(Arc::clone(workspace)).roster().auto_start();
         for project_name in auto_start {
             let cmd = forge_workspace::Command::SpawnProject {
                 project_name: project_name.clone(),
@@ -414,7 +414,7 @@ pub fn start_connection(app: &mut App) {
     // and that project is the focused spawn. The `None` arms are
     // exhaustiveness over `Option<String>`, not a reachable path.
     let auto_start =
-        forge_sessions::surface::ViewSurface::new(Arc::clone(workspace)).roster().auto_start();
+        forge_server::surface::ViewSurface::new(Arc::clone(workspace)).roster().auto_start();
     let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice())
     {
         (Some(name), _) => vec![Some(name.clone())],

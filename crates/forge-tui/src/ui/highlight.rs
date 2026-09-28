@@ -37,7 +37,7 @@ fn strip_line_controls(line: Line<'static>) -> Line<'static> {
 }
 
 pub(crate) fn render_terminal_output(text: &str) -> Vec<Line<'static>> {
-    let stripped = forge_sessions::ansi::strip_ansi(text);
+    let stripped = forge_server::ansi::strip_ansi(text);
     if diff::looks_like_unified_diff(&stripped) {
         return diff::render_raw_unified_diff(&stripped);
     }

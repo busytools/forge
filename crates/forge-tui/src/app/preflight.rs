@@ -8,7 +8,7 @@
 //! it was not.
 
 use crossterm::event::{KeyCode, KeyEvent};
-use forge_sessions::surface::ViewSurface;
+use forge_server::surface::ViewSurface;
 
 use super::App;
 use super::view::{ActiveView, set_active_view};

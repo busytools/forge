@@ -307,7 +307,7 @@ fn resolve_paths(
     // the session's config dir, so neither produces a path.
     let settings = match (home_override, bridge) {
         (None, Some(bridge)) => {
-            forge_sessions::surface::ViewSurface::new(Arc::clone(bridge.workspace))
+            forge_server::surface::ViewSurface::new(Arc::clone(bridge.workspace))
                 .roster()
                 .config_dir(bridge.key)
                 .map(|dir| dir.join(SETTINGS_FILENAME))

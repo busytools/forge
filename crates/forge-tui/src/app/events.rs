@@ -5764,7 +5764,7 @@ mod tests {
         }
 
         let owner = app.active_turn_assistant_idx().expect("active turn");
-        let live: Vec<forge_sessions::model::BlockId> = app.messages().expect("active session")
+        let live: Vec<forge_server::model::BlockId> = app.messages().expect("active session")
             [owner]
             .blocks
             .iter()

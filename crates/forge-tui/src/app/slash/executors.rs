@@ -14,7 +14,7 @@ type Handler = fn(&mut App, &[&str]) -> bool;
 /// The commands the terminal handles itself: the name as it is typed, and
 /// the handler for it. A name missing here falls to the unknown-command
 /// fallback, so this list and
-/// `forge_sessions::commands::FORGE_COMMANDS` are the same set - the table
+/// `forge_server::commands::FORGE_COMMANDS` are the same set - the table
 /// is what both views offer, and a name it carries that nothing here answers
 /// would be advertised by both dropdowns and refused when typed.
 const HANDLERS: &[(&str, Handler)] = &[
@@ -80,7 +80,7 @@ fn handle_gateway_submit(app: &mut App, args: &[&str]) -> bool {
     let Some(workspace) = app.workspace.clone() else {
         return true;
     };
-    let orgs = forge_sessions::surface::ViewSurface::new(workspace).accounts().orgs;
+    let orgs = forge_server::surface::ViewSurface::new(workspace).accounts().orgs;
     crate::app::gateway_view::open(app, orgs);
     true
 }
