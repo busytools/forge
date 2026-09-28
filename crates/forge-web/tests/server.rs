@@ -298,16 +298,7 @@ async fn a_completion_while_no_tab_is_open_earns_its_diamond() {
 
     fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
         key: forge_primitives::SessionSlot::lead("Busytools", "forge"),
-        msg: serde_json::from_value(serde_json::json!({
-            "type": "result",
-            "subtype": "success",
-            "duration_ms": 1,
-            "duration_api_ms": 1,
-            "is_error": false,
-            "num_turns": 1,
-            "session_id": "s",
-        }))
-        .expect("a result message"),
+        msg: finished_turn(),
     });
     // The fold runs in a task of its own. Two yields rather than one: the
     // first lets the fold task wake from `recv`, the second lets it run
@@ -322,6 +313,83 @@ async fn a_completion_while_no_tab_is_open_earns_its_diamond() {
     assert!(
         page.contains("class=\"row unseen\""),
         "a turn that finished while the page was closed is the diamond: {page}",
+    );
+}
+
+/// A turn that finished cleanly, which is the frame that arms the diamond.
+fn finished_turn() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "result",
+        "subtype": "success",
+        "duration_ms": 1,
+        "duration_api_ms": 1,
+        "is_error": false,
+        "num_turns": 1,
+        "session_id": "s",
+    }))
+    .expect("a finished turn")
+}
+
+/// The state class of the row whose name links to `href`, read off the page
+/// the home served. Rows are drawn in document order and each names its own
+/// link, so the row opening nearest before it is that link's row.
+fn row_class(page: &str, href: &str) -> String {
+    let link = format!("href=\"{href}\"");
+    let at = page.find(&link).unwrap_or_else(|| panic!("no row links to {href}: {page}"));
+    let opening = "<div class=\"row ";
+    let start = page[..at].rfind(opening).expect("a row's link sits inside its row");
+    let class = &page[start + opening.len()..];
+    class[..class.find('"').expect("the class is quoted")].to_owned()
+}
+
+/// Serving a session's page is this view showing that session, so its
+/// diamond goes. And only its own: the second half is the point, because a
+/// clear that wiped the set would leave the home forgetting every other
+/// completion the moment the reader opened one.
+#[tokio::test]
+async fn opening_a_session_page_clears_its_diamond_and_no_other() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    // Two live seats finish a turn with no page showing either of them.
+    for project in ["forge", "busymail"] {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: SessionSlot::lead("Busytools", project),
+            msg: finished_turn(),
+        });
+    }
+    // The fold runs in a task of its own. Two yields, for the reason the
+    // test above gives: the first wakes it from `recv`, the second runs it
+    // to the apply and back to its await.
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    let (_status, _content_type, before) = get(&config, "/").await;
+    assert_eq!(
+        row_class(&before, "/session/Busytools/forge/lead"),
+        "unseen",
+        "precondition: the finished turn armed the row: {before}",
+    );
+    assert_eq!(
+        row_class(&before, "/session/Busytools/busymail/lead"),
+        "unseen",
+        "precondition: and the other seat's with it: {before}",
+    );
+
+    let (status, _content_type, _page) = get(&config, "/session/Busytools/forge/lead").await;
+    assert_eq!(status, reqwest::StatusCode::OK, "the page is served");
+
+    let (_status, _content_type, after) = get(&config, "/").await;
+    assert_ne!(
+        row_class(&after, "/session/Busytools/forge/lead"),
+        "unseen",
+        "the seat whose page was served has been shown, so its diamond is gone: {after}",
+    );
+    assert_eq!(
+        row_class(&after, "/session/Busytools/busymail/lead"),
+        "unseen",
+        "and the seat that was not shown keeps its own: {after}",
     );
 }
 
