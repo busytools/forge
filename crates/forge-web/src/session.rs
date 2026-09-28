@@ -1,5 +1,5 @@
-//! The session page: the projects rail, the conversation, and the
-//! inspector.
+//! The session page: the projects rail, the conversation, the inspector
+//! and the composer.
 //!
 //! Three columns over one sheet. The rail and the inspector collapse to
 //! nothing and their handles live in the chat header, so a collapsed pane

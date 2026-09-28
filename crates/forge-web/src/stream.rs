@@ -1,4 +1,6 @@
-//! `GET /events`: the page's subscription, one stream per tab.
+//! The view's two streams, one subscription per tab: `GET /events` for the
+//! home, and `GET /session/{org}/{project}/{label}/events` for the session
+//! page.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
