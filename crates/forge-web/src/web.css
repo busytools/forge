@@ -337,10 +337,12 @@ details[open] > summary .arw { transform: rotate(90deg); }
 }
 /* Placed rather than auto-flowed: a collapsed pane leaves its column empty,
    and auto-flowing the rest along moves the conversation into the rail's
-   column and blanks the page. */
-.app > .rail.left { grid-column: 1; }
-.app > main.chat { grid-column: 2; }
-.app > .rail.right { grid-column: 3; }
+   column and blanks the page. A descendant, not a child: the page puts a
+   contents wrapper between the app and these three, and a child hop over it
+   matches nothing. */
+.app .rail.left { grid-column: 1; }
+.app main.chat { grid-column: 2; }
+.app .rail.right { grid-column: 3; }
 /* checked is COLLAPSED. The boxes are siblings of the app, not of anything
    inside it, so the rules reach it in one hop - and the selector names the
    app rather than the region, because a region the stream replaces is one
@@ -533,7 +535,11 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 
 @media (max-width: 980px) {
   .app { grid-template-columns: minmax(0,1fr); }
-  .app > main.chat { grid-column: 1; }
+  /* One column, so the chat goes back to the first. Named through the app,
+     or the placement rule's own grid-column wins and the chat lands in an
+     implicit second column that takes the width, leaving the composer -
+     which is on column one - zero pixels wide. */
+  .app main.chat { grid-column: 1; }
   .sess { flex-wrap: wrap; gap: 8px; }
   .sess .facts { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
   /* Wrapped, the dots between the facts are noise rather than separators. */
@@ -847,6 +853,11 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .wave.tr .wtr i.mid { background: #2f486d; }
 .wave.tr .wtr i.hot { background: #365582; }
 
+/* The field the dock carries so the browser keeps the reader's text, which
+   the dock itself never draws. Its own styles come from the box it goes back
+   into, because a preserved node is the one the browser already had. */
+.dock #draft { display: none; }
+
 /* A notice shares the row with the take and wins it. */
 .notice { font-family: var(--mono); font-size: var(--fs-data); padding-left: 25px; }
 .notice.q { color: var(--dim); }
@@ -897,9 +908,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
    of the app and still sits under the chat column. */
 #session-body, #composer-slot { display: contents; }
 .app { grid-template-rows: minmax(0, 1fr) auto; }
-.rail.left { grid-column: 1; grid-row: 1; }
-main.chat { grid-column: 2; grid-row: 1; }
-.rail.right { grid-column: 3; grid-row: 1; }
 .composer { grid-column: 2; grid-row: 2; }
 @media (max-width: 980px) {
   .composer { grid-column: 1; }

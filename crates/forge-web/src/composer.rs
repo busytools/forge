@@ -168,17 +168,21 @@ fn hex(byte: u8) -> Option<u8> {
     }
 }
 
-/// Whether the field a render draws is the one the reader is typing in.
+/// What a render knows about the field it draws.
 ///
-/// Only the send replaces it. Every other swap - a take's readings twenty
-/// times a second, a prompt for this seat or another, a compaction's
-/// status - must leave what the reader has typed, so the field is marked
-/// `hx-preserve` and the browser keeps its own element with its own text
-/// rather than taking the empty one the server drew.
+/// The browser holds the text, so only the request that carried it, and the
+/// send that took it, know what it says. A push knows neither, and that is
+/// the state the box has to be drawn around: the field keeps its element and
+/// the controls its text earned stay drawn, because nothing else submits
+/// this form and a push that dropped them would take the only way to send.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Draft {
-    Keep,
-    Replace,
+    /// The request carried the field's text.
+    Known,
+    /// A push: the browser holds the text and the server does not.
+    Unknown,
+    /// The send took the words, so the field is drawn empty to match.
+    Cleared,
 }
 
 /// Render the composer for `slot`, with `draft` standing in the box.
@@ -212,7 +216,7 @@ pub async fn render(
             @if let Some(blocked) = blocked(state, row, slot, held) {
                 (blocked_box(&blocked))
             } @else if let Some(pending) = row.and_then(|row| row.pending) {
-                (dock(row, pending, held.ask(slot).or(kept.as_ref()), &seat))
+                (dock(row, pending, held.ask(slot).or(kept.as_ref()), &seat, draft_state))
             } @else {
                 (hint(row, held.sign_in(slot)))
                 (popover(home, slot, roster, draft).await)
@@ -364,7 +368,11 @@ fn box_markup(
         (None, true) => " done",
         (None, false) => "",
     };
-    let filled = !draft.is_empty();
+    // A push does not know the reader's text, and the field it keeps may
+    // hold some, so what that text earned stays drawn. Whitespace is not
+    // text: the send route refuses it and the button would advertise a
+    // click that cannot happen.
+    let filled = draft_state == Draft::Unknown || !draft.trim().is_empty();
     html! {
         div class=(format!("box{state}")) {
             @if let Some(take) = take {
@@ -374,7 +382,7 @@ fn box_markup(
             }
             div .line {
                 textarea #draft .txt name="draft" rows="3" autocomplete="off" spellcheck="false"
-                    hx-preserve[draft_state == Draft::Keep]
+                    hx-preserve[draft_state != Draft::Cleared]
                     placeholder="Type a message\u{2026}" { (&draft) }
                 @if filled {
                     button .send type="submit" hx-post=(format!("{endpoint}/send"))
@@ -772,9 +780,16 @@ fn marked(text: &str, query: &str) -> Markup {
 /// the options from there. The fallback is the window between those two
 /// reads, and it says so rather than drawing a box that would read as
 /// nothing pending.
-fn dock(row: Option<&AgentRow>, kind: PendingKind, ask: Option<&Ask>, endpoint: &str) -> Markup {
+fn dock(
+    row: Option<&AgentRow>,
+    kind: PendingKind,
+    ask: Option<&Ask>,
+    endpoint: &str,
+    draft_state: Draft,
+) -> Markup {
     html! {
         div .dock {
+            (parked_field(draft_state))
             @if let Some(depth) = row.map(|row| row.pending_depth).filter(|depth| *depth > 1) {
                 div .queue { "\u{25bc} " (depth - 1) " more pending" }
             }
@@ -785,6 +800,16 @@ fn dock(row: Option<&AgentRow>, kind: PendingKind, ask: Option<&Ask>, endpoint: 
             }
         }
     }
+}
+
+/// The field the box was drawn with, kept while the dock is up.
+///
+/// A push cannot carry the reader's text - the browser holds it - and a node
+/// the new markup does not have is removed, so the field has to be present
+/// for the browser to keep its own, with the same id and the same preserve
+/// marker. The sheet hides it under the dock and the box shows it again.
+fn parked_field(draft_state: Draft) -> Markup {
+    html! { textarea #draft .txt hx-preserve[draft_state != Draft::Cleared] {} }
 }
 
 /// A prompt the core reports and this view never saw the offer of.
@@ -1096,16 +1121,42 @@ mod tests {
     /// this view's own copy included or not: the dock answers to the core's
     /// record of what is pending, so an answer that went only to the copy
     /// this view held would leave a dock sitting over a prompt that is gone.
+    /// The copy it did hold goes with it, or the view keeps drawing an ask
+    /// the core has settled.
     #[test]
-    fn a_settled_prompt_redraws_a_view_that_never_held_it() {
+    fn a_settled_prompt_drops_the_copy_this_view_held() {
         let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let request: PermissionRequest = serde_json::from_value(serde_json::json!({
+            "tool_call": {
+                "tool_call_id": "held-1",
+                "title": "Bash",
+                "kind": "execute",
+                "status": "pending",
+                "content": [],
+                "locations": [],
+                "raw_input": {"command": "ls"},
+            },
+            "options": [],
+        }))
+        .expect("a permission request off the wire");
+        composer.asks.insert(slot.clone(), Ask::Permission(Box::new(request)));
 
         assert!(
             composer.apply(&SessionUpdate::PendingInteractionResolved {
-                key: SessionSlot::lead("Busytools", "forge"),
+                key: slot.clone(),
+                tool_id: "held-1".to_owned(),
+            }),
+            "the box redraws for a prompt this view held",
+        );
+        assert!(composer.ask(&slot).is_none(), "and the copy it held is gone with it");
+
+        assert!(
+            composer.apply(&SessionUpdate::PendingInteractionResolved {
+                key: slot,
                 tool_id: "a-prompt-this-view-never-folded".to_owned(),
             }),
-            "the box redraws for a settled prompt this view never folded",
+            "the box redraws for a settled prompt this view never folded too",
         );
     }
 

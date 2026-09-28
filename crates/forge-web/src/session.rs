@@ -315,7 +315,7 @@ async fn shell(
                                     roster,
                                     agents,
                                     "",
-                                    crate::composer::Draft::Keep,
+                                    crate::composer::Draft::Known,
                                 )
                                 .await)
                             }

@@ -263,14 +263,17 @@ fn session_updates(
                         // news alone, and because a morph of the columns must
                         // never reach the field being typed into.
                         //
-                        // Anything that redraws the columns redraws the
-                        // composer too: what the box draws from the seat's own
-                        // row - whether it is blocked, whether it has a hint,
-                        // whether a prompt waits - changes with the row, and a
-                        // blocked seat has no field to type in, so no input
-                        // event would come to refresh it.
+                        // A row change redraws the box as well: what it draws
+                        // from the seat's own row - whether it is blocked,
+                        // whether it has a hint, whether a prompt waits -
+                        // changes with the row, and a blocked seat has no
+                        // field to type in, so no input event would come to
+                        // refresh it. A message does not: the box holds none
+                        // of the conversation, and pushing it would redraw the
+                        // field and the send control it earned from a draft
+                        // the server cannot see.
                         let columns = appended || asked.fleet || handed_over;
-                        (columns, asked.composer || columns)
+                        (columns, asked.composer || asked.fleet)
                     }
                     _ = tick.tick() => (true, false),
                 };
@@ -303,7 +306,7 @@ fn session_updates(
                         &roster,
                         &agents,
                         "",
-                        crate::composer::Draft::Keep,
+                        crate::composer::Draft::Unknown,
                     )
                     .await;
                     events.push(Ok(Event::default()

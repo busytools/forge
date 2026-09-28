@@ -166,7 +166,7 @@ async fn composer_region(
     let draft = crate::composer::draft_of(query.as_deref());
     // The box asking for itself is the reader typing: its own field, its own
     // words, so the field is the one it drew.
-    crate::composer::render(&home, &slot, &roster, &agents, &draft, crate::composer::Draft::Keep)
+    crate::composer::render(&home, &slot, &roster, &agents, &draft, crate::composer::Draft::Known)
         .await
         .into_response()
 }
@@ -178,24 +178,31 @@ async fn send_to(
     body: String,
 ) -> Response {
     let draft = crate::composer::field(&body, "draft").unwrap_or_default();
+    let surface = &wiring.state.surface;
+    let roster = surface.roster();
+    let agents = surface.agents();
+    let Some(slot) = crate::session::resolve(surface, &roster, &agents, &org, &project, &label)
+    else {
+        return (StatusCode::NOT_FOUND, "no session slot by that name").into_response();
+    };
     if draft.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "there is nothing to send").into_response();
+        // A refusal htmx can swap: a 400 leaves the click looking like
+        // nothing happened, and the box that comes back is one whose send
+        // control is gone, which is what a field with nothing in it earns.
+        return composer_region_of(&wiring, &slot, crate::composer::Draft::Known, &draft)
+            .await
+            .into_response();
     }
-    act(
-        &wiring,
-        &org,
-        &project,
-        &label,
-        // The one response that replaces the field: the reader's words have
-        // gone to the core, so a box that kept them would send them twice.
-        crate::composer::Draft::Replace,
-        |slot| forge_sessions::Command::Prompt {
-            key: slot.clone(),
-            text: draft,
-            attachments: Vec::new(),
-        },
-    )
-    .await
+    if let Err(error) = surface.dispatch(forge_sessions::Command::Prompt {
+        key: slot.clone(),
+        text: draft,
+        attachments: Vec::new(),
+    }) {
+        return (StatusCode::CONFLICT, format!("no session to send to: {error}")).into_response();
+    }
+    // The one response that replaces the field: the reader's words have gone
+    // to the core, so a box that kept them would send them twice.
+    composer_region_of(&wiring, &slot, crate::composer::Draft::Cleared, "").await.into_response()
 }
 
 /// The dock's answer. The outcome is built from the option the core offered
@@ -232,7 +239,7 @@ async fn answer_prompt(
         // than a 409 is what makes the click do something: htmx swaps on
         // two hundred, and a swapped region drawn from a core that holds
         // nothing is the box, so the stale dock clears itself.
-        return composer_region_of(&wiring, &slot, crate::composer::Draft::Keep)
+        return composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "")
             .await
             .into_response();
     };
@@ -241,7 +248,7 @@ async fn answer_prompt(
             .into_response();
     }
     // An answer is not the reader's words, so the box keeps them.
-    composer_region_of(&wiring, &slot, crate::composer::Draft::Keep).await.into_response()
+    composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "").await.into_response()
 }
 
 /// The take's controls: start, submit or abandon.
@@ -269,7 +276,7 @@ async fn dictate(
         &label,
         // A take's controls change the row, not the words: the box keeps
         // whatever the reader has typed while the take runs.
-        crate::composer::Draft::Keep,
+        crate::composer::Draft::Unknown,
         move |slot| {
             if start {
                 forge_sessions::Command::DictateStart { key: slot.clone() }
@@ -304,18 +311,22 @@ async fn act(
     if let Err(error) = surface.dispatch(command(&slot)) {
         return (StatusCode::CONFLICT, format!("no session to send to: {error}")).into_response();
     }
-    composer_region_of(wiring, &slot, draft).await.into_response()
+    composer_region_of(wiring, &slot, draft, "").await.into_response()
 }
 
-/// The composer region for a seat the caller has already resolved.
+/// The composer region for a seat the caller has already resolved, drawn
+/// with whatever the caller knows of the field's text - which for every
+/// caller but the refusal is nothing.
 async fn composer_region_of(
     wiring: &Wiring,
     slot: &forge_primitives::SessionSlot,
-    draft: crate::composer::Draft,
+    draft_state: crate::composer::Draft,
+    draft: &str,
 ) -> Markup {
     let surface = &wiring.state.surface;
     let home = crate::session::context(&wiring.state, wiring.bound);
-    crate::composer::render(&home, slot, &surface.roster(), &surface.agents(), "", draft).await
+    crate::composer::render(&home, slot, &surface.roster(), &surface.agents(), draft, draft_state)
+        .await
 }
 
 /// One vendored script: the page's own, as published. An unknown name is a
