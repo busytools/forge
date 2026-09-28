@@ -1,13 +1,15 @@
 //! `slash_commands()`, `subagents()`, `forge_commands()`, `file_index()`,
-//! `respect_gitignore()`, `emoji()`: what the composer's four autocomplete
-//! triggers read.
+//! `respect_gitignore()`: what the composer's autocomplete triggers read.
 //!
 //! Two of them are facts about a session - what the CLI advertised - so
-//! the core holds them and these verbs read through it. The other four
-//! have no session in them at all: forge's own command table, the emoji
-//! table and the file walk are view-side data, so `forge-server` owns
-//! them and no view keeps a copy, and the walk's ignore preference is the
+//! the core holds them and these verbs read through it. The other three
+//! have no session in them at all: forge's own command table and the file
+//! walk are data a view reads, and the walk's ignore preference is the
 //! user's own, which the core reads on the walk's behalf.
+//!
+//! The emoji set is not here. Which shortcodes exist and which a query
+//! selects is the typeahead's own business, so it lives with the typeahead
+//! rather than being handed to it.
 //!
 //! The tests here read the two session facts through a fixture that
 //! writes the core's fields directly, so they pin the reads and not the
@@ -19,7 +21,6 @@ use std::path::Path;
 use forge_primitives::{AvailableAgent, AvailableCommand, SessionSlot};
 
 use crate::commands::ForgeCommand;
-use crate::emoji::{self, Emoji};
 use crate::file_index::FileIndex;
 use crate::surface::ViewSurface;
 
@@ -85,8 +86,8 @@ impl ViewSurface {
     /// moves this list first and its own at the next reload.
     ///
     /// `self` is for that read alone: nothing else here is a fact about
-    /// the core, so the emoji table and the command table are reached at
-    /// the surface rather than through an instance of it.
+    /// the core, so the command table is reached at the surface rather
+    /// than through an instance of it.
     pub fn file_index(&self, root: &Path) -> FileIndex {
         FileIndex::scan(root, self.respect_gitignore())
     }
@@ -102,27 +103,6 @@ impl ViewSurface {
     pub fn respect_gitignore(&self) -> bool {
         let preferences = self.workspace.user_preferences();
         crate::file_index::respect_gitignore(preferences.as_ref())
-    }
-
-    /// The emoji a `:query` selects, at most `limit` of them.
-    ///
-    /// In the table's own order rather than a ranked one: which of these a
-    /// dropdown offers first is the dropdown's decision, so a caller that
-    /// wants them ranked ranks them itself, over
-    /// [`crate::emoji::TABLE`].
-    ///
-    /// The cap is the caller's here for the same reason it is on
-    /// [`FileIndex::visible`]: a dropdown and a page want different ones.
-    /// It caps the RESULT, not a viewport: the dropdown's own numbers are
-    /// two hundred candidates with a ten-row window scrolled over those, so
-    /// a caller passing ten here gets ten and no way to reach row eleven.
-    ///
-    /// A query below two characters selects nothing, which is what keeps
-    /// `:D` and `10:30` from opening a picker.
-    pub fn emoji(query: &str, limit: usize) -> Vec<&'static Emoji> {
-        let mut selected = emoji::matching(query);
-        selected.truncate(limit);
-        selected
     }
 }
 
@@ -182,27 +162,6 @@ mod tests {
         let agents = surface.subagents(&slot());
         assert_eq!(agents.len(), 1, "the seat's own catalogue reaches the view");
         assert_eq!(agents[0].name, "reviewer");
-    }
-
-    /// The emoji table is view-side data, so the verb answers with no
-    /// session at all - and it answers with the set the query selects
-    /// rather than a ranked list, because the ranking is the picker's.
-    #[test]
-    fn emoji_selects_a_query_and_leaves_the_ranking_to_the_picker() {
-        let names: Vec<&str> = ViewSurface::emoji("cl", 10).iter().map(|e| e.name).collect();
-
-        assert_eq!(
-            names.first(),
-            Some(&"alarm_clock"),
-            "the selection is the table's own order; a ranked one would lead with clap",
-        );
-        assert!(names.contains(&"clap"), "and the prefix match is in it, just not first");
-        assert_eq!(
-            ViewSurface::emoji("cl", 2).len(),
-            2,
-            "and the caller's cap is the one that bites"
-        );
-        assert!(ViewSurface::emoji("", 10).is_empty(), "a bare `:` holds nothing back");
     }
 
     /// The file index is walked on demand over the same walker the TUI

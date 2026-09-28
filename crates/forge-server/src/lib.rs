@@ -17,7 +17,6 @@
 pub mod commands;
 pub mod composer;
 pub mod delivery;
-pub mod emoji;
 pub mod envelope;
 pub mod family;
 pub mod file_index;

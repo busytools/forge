@@ -4573,7 +4573,9 @@ async fn each_list_draws_its_own_mark() {
     std::fs::write(project.join("src/home.rs"), "").expect("write");
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
-    for (draft, mark) in [("/m", "#i-cmd"), ("&cli", "#i-bot"), (":sm", "#i-smile")] {
+    // No emoji list: the set is the typeahead's own and this crate reads
+    // nothing of it, so a `:sm` draft opens nothing here.
+    for (draft, mark) in [("/m", "#i-cmd"), ("&cli", "#i-bot")] {
         let (_status, page) = composer(&config, draft).await;
         assert!(page.contains(&format!("href=\"{mark}\"")), "{draft} draws {mark}: {page}");
     }

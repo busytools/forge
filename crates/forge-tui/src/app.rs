@@ -10,6 +10,7 @@ pub(crate) mod dictate_key;
 pub(crate) mod dictate_picker;
 pub(crate) mod diff_overlay;
 pub(crate) mod emoji;
+pub(crate) mod emoji_set;
 pub(crate) mod events;
 pub(crate) mod extensions;
 pub(crate) mod file_index;

@@ -468,7 +468,6 @@ enum Trigger {
     Command,
     File,
     Agent,
-    Emoji,
 }
 
 /// The trigger a draft ends in, with what it is matching on. The token is
@@ -490,10 +489,6 @@ fn trigger_of(draft: &str) -> Option<(Trigger, &str)> {
     }
     if let Some(query) = token.strip_prefix('&') {
         return (!query.is_empty()).then_some((Trigger::Agent, query));
-    }
-    if let Some(query) = token.strip_prefix(':') {
-        return (query.chars().count() >= forge_server::emoji::MIN_QUERY_CHARS)
-            .then_some((Trigger::Emoji, query));
     }
     None
 }
@@ -561,18 +556,6 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
                 })
                 .collect();
             ("bot", "subagents".to_owned(), format!("{AGENT_ROWS} max"), rows)
-        }
-        Trigger::Emoji => {
-            let found = forge_server::surface::ViewSurface::emoji(query, CANDIDATES);
-            let rows: Vec<(String, Markup)> = found
-                .iter()
-                .map(|emoji| {
-                    let shortcode = format!(":{}:", emoji.name);
-                    (shortcode.clone(), row(&shortcode, "", Some(emoji.glyph.to_owned()), query))
-                })
-                .collect();
-            let count = forge_server::emoji::count();
-            ("smile", "emoji".to_owned(), format!("{count} shortcodes"), rows)
         }
     };
     // Nothing matched, so there is nothing to open on: a popover with only

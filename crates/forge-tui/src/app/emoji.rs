@@ -6,8 +6,8 @@
 //! shortcode. Without that, `http://`, `10:30` and `note:` would all pop
 //! a picker.
 
+pub use super::emoji_set::{Emoji, exact, is_shortcode_char};
 use super::{App, FocusTarget, dialog::DialogState};
-pub use forge_server::emoji::{Emoji, exact, is_shortcode_char};
 
 /// Rank matches for `query`: exact first, then shortcodes that start
 /// with it, then the rest of the substring matches. Ties break
@@ -17,10 +17,10 @@ pub use forge_server::emoji::{Emoji, exact, is_shortcode_char};
 /// typeahead offers first is the typeahead's decision, and the table is
 /// only the set it decides over.
 pub fn matches(query: &str) -> Vec<&'static Emoji> {
-    if query.chars().count() < forge_server::emoji::MIN_QUERY_CHARS {
+    if query.chars().count() < super::emoji_set::MIN_QUERY_CHARS {
         return Vec::new();
     }
-    let mut scored: Vec<(u8, &'static Emoji)> = forge_server::emoji::TABLE
+    let mut scored: Vec<(u8, &'static Emoji)> = super::emoji_set::TABLE
         .iter()
         .filter_map(|emoji| {
             let rank = if emoji.name == query {

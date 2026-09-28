@@ -25,29 +25,10 @@ pub fn is_shortcode_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '+' | '-')
 }
 
-/// The shortcodes `query` selects, in the table's own order.
-///
-/// The order is the table's rather than a ranking: which of these is the
-/// best one to offer first is a typeahead's decision, and two typeaheads
-/// are free to decide it differently.
-pub fn matching(query: &str) -> Vec<&'static Emoji> {
-    if query.chars().count() < MIN_QUERY_CHARS {
-        return Vec::new();
-    }
-    TABLE.iter().filter(|emoji| emoji.name.contains(query)).collect()
-}
-
 /// Look up an exact shortcode. Backs the closing-colon shorthand so
 /// typing `:tada:` straight through lands the glyph.
 pub fn exact(name: &str) -> Option<&'static Emoji> {
     TABLE.iter().find(|emoji| emoji.name == name)
-}
-
-/// How many shortcodes the table holds. A picker shows this so a list that
-/// is capped says what it was capped from rather than reading as the whole
-/// set.
-pub fn count() -> usize {
-    TABLE.len()
 }
 
 /// Shortcodes people already know, from the GitHub / Slack naming that
@@ -278,7 +259,7 @@ pub static TABLE: &[Emoji] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{Emoji, TABLE, exact, is_shortcode_char, matching};
+    use super::{Emoji, TABLE, exact, is_shortcode_char};
 
     #[test]
     fn table_is_sorted_and_has_no_duplicate_shortcodes() {
@@ -304,27 +285,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_short_queries_yield_no_candidates() {
-        assert!(matching("").is_empty());
-        assert!(matching("r").is_empty(), "one char is below MIN_QUERY_CHARS");
-        assert!(!matching("ro").is_empty());
-    }
-
-    /// The order is the table's and nothing here reorders it. `clap` starts
-    /// with `cl` and `alarm_clock` only contains it, so a ranked selection
-    /// would lead with `clap` and this one leads with the table's own first
-    /// row.
-    #[test]
-    fn a_query_selects_in_the_tables_own_order() {
-        let names: Vec<&str> = matching("cl").iter().map(|e| e.name).collect();
-        let mut sorted = names.clone();
-        sorted.sort_unstable();
-        assert_eq!(names, sorted, "the selection is the table's order, not a ranking: {names:?}");
-        assert_eq!(names.first(), Some(&"alarm_clock"));
-        assert!(names.contains(&"clap"), "the prefix match is in it, just not first");
-    }
-
-    #[test]
     fn exact_resolves_known_shortcodes_only() {
         assert_eq!(exact("tada").map(|e| e.glyph), Some("\u{1F389}"));
         assert_eq!(exact("definitely_not_an_emoji"), None);
@@ -334,7 +294,7 @@ mod tests {
     /// can hold a borrowed match without owning the table.
     #[test]
     fn a_match_carries_the_shortcode_and_its_glyph() {
-        let smile: &Emoji = matching("smile").first().expect("a match");
+        let smile: &Emoji = exact("smile").expect("a shortcode the table holds");
         assert_eq!(smile.name, "smile");
         assert_eq!(smile.glyph, "\u{1F604}");
     }
