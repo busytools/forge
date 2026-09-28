@@ -171,7 +171,40 @@ async fn handle_client(
             }
         },
         ClientMessage::Command { command, reply_to } => {
-            dispatch(socket, state, *command, reply_to).await
+            let command = *command;
+            // Where a command's answer goes, decided before anything acts.
+            //
+            // Four commands report through the reply and have no update behind
+            // them, so omitting `reply_to` on one of those is not a client
+            // declining a reply - it is a client declining to learn whether
+            // the work happened. Every other command is fire-and-forget: its
+            // outcome rides the subscription, so it needs no target.
+            match (reply_to, answers_through_a_reply(&command)) {
+                (Some(to), true) => dispatch_answering(socket, state, command, to).await,
+                (None, true) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "reply_to".to_owned(),
+                            why: "this command answers through `reply_to` and no update carries its outcome, so that field is required: without it a client cannot tell a refusal from success".to_owned(),
+                        },
+                    )
+                    .await
+                }
+                (_, false) => match state.surface.dispatch(command) {
+                    Ok(()) => Ok(()),
+                    Err(refusal) => {
+                        send(
+                            socket,
+                            ServerMessage::Error {
+                                what: "dispatch".to_owned(),
+                                why: refusal.to_string(),
+                            },
+                        )
+                        .await
+                    }
+                },
+            }
         }
         ClientMessage::More { conversation, before, turns } => {
             let roster = state.surface.roster();
@@ -222,11 +255,11 @@ async fn send(socket: &mut WebSocket, message: ServerMessage) -> anyhow::Result<
 ///
 /// Success sends nothing extra: the update arrives through the subscription
 /// the client already has, which is why a client subscribes before it acts.
-async fn dispatch(
+async fn dispatch_answering(
     socket: &mut WebSocket,
     state: &TransportState,
     command: Command,
-    reply_to: Option<u64>,
+    to: u64,
 ) -> anyhow::Result<()> {
     // A view acts through the same facade it reads through, and a refusal is
     // the core's own sentence rather than this layer's opinion of it.
@@ -263,18 +296,18 @@ async fn dispatch(
                 from_boot_respawn,
                 return_to: Some(tx),
             };
-            answered(socket, state, command, reply_to, rx).await
+            answered(socket, state, command, to, rx).await
         }
         Command::DespawnWorker { project_key, label, force, .. } => {
             let (tx, rx) = oneshot::channel();
             let command = Command::DespawnWorker { project_key, label, force, respond: Some(tx) };
-            answered(socket, state, command, reply_to, rx).await
+            answered(socket, state, command, to, rx).await
         }
         Command::UpsertReviewThread { project, branch, thread, .. } => {
             let (tx, rx) = oneshot::channel();
             let command =
                 Command::UpsertReviewThread { project, branch, thread, respond: Some(tx) };
-            answered(socket, state, command, reply_to, rx).await
+            answered(socket, state, command, to, rx).await
         }
         Command::SubmitReview { project, branch, summary, thread_ids, origin, .. } => {
             let (tx, rx) = oneshot::channel();
@@ -286,7 +319,7 @@ async fn dispatch(
                 origin,
                 respond: Some(tx),
             };
-            answered(socket, state, command, reply_to, rx).await
+            answered(socket, state, command, to, rx).await
         }
         // Every other command is fire-and-forget: success sends nothing
         // extra, because the update arrives through the subscription the
@@ -308,28 +341,30 @@ async fn dispatch(
 ///
 /// A client that asked for an answer always hears one - INCLUDING a refusal,
 /// so it is never left watching a channel that stays empty.
+/// Whether a command reports its outcome through the reply rather than
+/// through an update on the subscription.
+///
+/// These four are the ones with nothing behind them on the wire: a client that
+/// omits `reply_to` for one of them has no second way to learn what happened.
+fn answers_through_a_reply(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::SpawnWorker { .. }
+            | Command::DespawnWorker { .. }
+            | Command::UpsertReviewThread { .. }
+            | Command::SubmitReview { .. }
+    )
+}
+
+/// Dispatch one of those four, and send back the answer it carries.
 async fn answered<T: serde::Serialize>(
     socket: &mut WebSocket,
     state: &TransportState,
     command: Command,
-    reply_to: Option<u64>,
+    to: u64,
     answer: oneshot::Receiver<T>,
 ) -> anyhow::Result<()> {
     let outcome = state.surface.dispatch(command);
-    let Some(to) = reply_to else {
-        // Nobody asked, so a refusal has nowhere to go but the log. The
-        // command was dispatched either way.
-        if let Err(refusal) = outcome {
-            tracing::debug!(
-                target: "forge_server::transport",
-                event_name = "dispatch_refused",
-                %refusal,
-                "a command nobody awaited a reply for was refused",
-            );
-        }
-        return Ok(());
-    };
-
     let body = match (outcome, answer.await) {
         (Ok(()), Ok(reply)) => serde_json::to_value(reply)?,
         (Err(refusal), _) => serde_json::to_value(refusal.to_string())?,
