@@ -166,6 +166,15 @@ impl Workspace {
         self.update_tx.send(update)
     }
 
+    /// How many subscribers are attached right now. Test-only: a test that
+    /// watches a subscription arrive and leave reads this rather than asking
+    /// whether an emit landed, which a permanently attached listener answers
+    /// for everything.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_subscriber_count(&self) -> usize {
+        self.update_tx.count()
+    }
+
     /// Hold a claude version snapshot, so a cross-crate test can render the
     /// version line without a real `claude --version` and npm probe.
     /// Test-only.

@@ -72,15 +72,24 @@ async fn connected() -> Client {
     connect(&url).await
 }
 
-/// Waits for the server to notice its client went away.
+/// Waits for the server to notice a client went away: the subscription count
+/// falls back to what it was before that client attached.
+///
+/// A COUNT rather than an emit. "Did anyone receive" stopped answering this
+/// the moment the transport took a subscription of its own for the fold -
+/// that listener is always there, so every emit lands whatever the clients do.
 ///
 /// The socket closing is local to the client; the server finds out when its
 /// own read fails, which is a scheduling hop away. Polling is honest because
 /// the property IS "eventually", and it is bounded so a server that never
 /// notices fails the test that waits rather than hanging it.
-async fn wait_for_the_server_to_notice(fleet: &Fleet) -> bool {
+async fn wait_for_the_server_to_notice(fleet: &Fleet, attached: usize) -> bool {
     for _ in 0..200 {
-        if !fleet.emit_and_report(SessionUpdate::CatalogLoaded) {
+        // The emit is what reaps: the fan-out drops a dead subscriber when a
+        // send to it fails, so the count is read AFTER one rather than
+        // instead of it.
+        fleet.emit_and_report(SessionUpdate::CatalogLoaded);
+        if fleet.subscriber_count() < attached {
             return true;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -201,6 +210,79 @@ async fn a_running_take_is_on_the_seat_a_client_attaches_to() {
     assert_eq!(
         data["composer"]["take"]["floor_db"], -50.0,
         "with the floor its own meter measures against",
+    );
+}
+
+/// A client that goes away without unsubscribing is still a client that has
+/// gone. The attachment count decides whether a completion was watched, so a
+/// seat left attached by a dropped connection never arms a mark again - the
+/// mark is dead for every seat anyone has ever looked at.
+#[tokio::test]
+async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+
+    let attached = {
+        let mut leaving = connect(&url).await;
+        send(
+            &mut leaving,
+            ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+        )
+        .await;
+        let ServerMessage::Snapshot { .. } = next_server(&mut leaving).await else {
+            panic!("the subscribe is answered with a snapshot first")
+        };
+        // Counted WITH it attached, so the transport's own fold is in the
+        // number either way.
+        let attached = fleet.subscriber_count();
+        // Dropped without an unsubscribe, which is what a client that crashed
+        // or was closed does.
+        attached
+    };
+    assert!(
+        wait_for_the_server_to_notice(&fleet, attached).await,
+        "the server notices a client that went away: {attached} attached, {} still",
+        fleet.subscriber_count(),
+    );
+
+    // A turn now finishes with nobody showing the seat, so it has to mark it.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "s",
+        }))
+        .expect("parse a result message"),
+    });
+
+    // The fold is the transport's own task, so the mark lands a scheduling
+    // hop after the emit. Polling is honest because the property IS
+    // "eventually", and it is bounded so a fold that never runs fails this
+    // test rather than hanging it.
+    let mut fresh = connect(&url).await;
+    let mut marked = false;
+    let mut last = 0;
+    for _ in 0..200 {
+        send(&mut fresh, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
+        let ServerMessage::Snapshot { data, .. } = next_server(&mut fresh).await else {
+            panic!("expected the home snapshot")
+        };
+        let unseen = data["unseen"].as_array().expect("the home carries the marks");
+        if unseen.iter().any(|slot| slot["label"] == "lead" && slot["project"] == "proj") {
+            marked = true;
+            break;
+        }
+        last = unseen.len();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        marked,
+        "the seat the dropped client was showing is unlooked again, not still attached; marks seen: {last}",
     );
 }
 
@@ -475,12 +557,12 @@ async fn a_dropped_socket_leaves_no_subscription_behind() {
     let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
         panic!("the subscribe is answered with a snapshot")
     };
-    // Precondition, so the assertion below is about a subscription that went
-    // away rather than about one that was never made.
-    assert!(
-        fleet.emit_and_report(SessionUpdate::CatalogLoaded),
-        "precondition: the socket's own subscription is attached",
-    );
+    // Counted WITH this socket attached, so the transport's own fold - which
+    // attaches on a task of its own, a scheduling hop after the server
+    // starts - is in the number either way. What the assertion below waits
+    // for is that number FALLING, which is this socket letting go.
+    let attached = fleet.subscriber_count();
+    assert!(attached >= 1, "precondition: something is attached");
 
     // Closed politely rather than dropped: the server is told the client is
     // going, which is the path a page navigating away takes.
@@ -488,7 +570,8 @@ async fn a_dropped_socket_leaves_no_subscription_behind() {
     drop(socket);
 
     assert!(
-        wait_for_the_server_to_notice(&fleet).await,
-        "a subscription must not outlive its socket",
+        wait_for_the_server_to_notice(&fleet, attached).await,
+        "a subscription must not outlive its socket: {attached} attached, {} still",
+        fleet.subscriber_count(),
     );
 }

@@ -37,7 +37,25 @@ pub struct TransportState {
 /// decides for itself whether that is fatal - which is what keeps a busy
 /// port from becoming a new way for forge to refuse to start.
 pub async fn serve(state: Arc<TransportState>, listener: TcpListener) -> anyhow::Result<()> {
+    // The stream is folded ONCE, here, rather than by each connection: the
+    // marks and the composer's state are what the core has said, so they
+    // advance whether or not a client is attached - and a connection folding
+    // its own copy would both multiply the work by the number of clients and
+    // stop the state advancing the moment the last one left.
+    //
+    // Observing, and without the backlog: the fold renders no prompt, and the
+    // boot notice belongs to the view that does.
+    tokio::spawn(fold_the_stream(Arc::clone(&state)));
+
     let router = Router::new().route("/socket", get(connection::upgrade)).with_state(state);
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// Fold the core's stream into the live state this transport holds.
+async fn fold_the_stream(state: Arc<TransportState>) {
+    let mut updates = state.surface.subscribe_mirror();
+    while let Some(update) = updates.recv().await {
+        crate::live::Live::lock(&state.live).apply(&update);
+    }
 }

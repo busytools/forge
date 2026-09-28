@@ -136,6 +136,14 @@ impl Fleet {
         self.workspace.emit_for_test_reported(update)
     }
 
+    /// How many subscribers are attached right now, the transport's own fold
+    /// included. A test that watches a socket's subscription arrive and leave
+    /// reads this rather than asking whether an emit landed: the fold makes
+    /// every emit land, whether or not a client is there.
+    pub fn subscriber_count(&self) -> usize {
+        self.workspace.test_subscriber_count()
+    }
+
     /// Hold a claude version snapshot, so a view test renders a version
     /// line without a real `claude --version` and npm probe.
     pub fn set_cli_version(&self, installed: Option<&str>, latest: Option<&str>) {

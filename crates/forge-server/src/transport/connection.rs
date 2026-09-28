@@ -72,27 +72,46 @@ async fn drive(socket: &mut WebSocket, state: &TransportState) -> anyhow::Result
     // parks a turn on that reply rather than failing it.
     let mut updates: Option<mpsc::UnboundedReceiver<SessionUpdate>> = None;
 
+    let outcome = run_connection(socket, state, &mut watched, &mut updates).await;
+
+    // Every way out of the loop runs this, a failed read included: a client
+    // that goes away without unsubscribing is still a client that has gone,
+    // and the seats it was showing are let go with it. Leaving them attached
+    // would keep them counted as watched forever, so the mark that says a
+    // completion went unwatched would never arm for them again.
+    for what in &watched {
+        if let Subject::Session(slot) = what {
+            Live::lock(&state.live).detach(slot);
+        }
+    }
+    outcome
+}
+
+/// The connection's own loop, so that every way out of it runs the release
+/// above rather than only the clean one.
+async fn run_connection(
+    socket: &mut WebSocket,
+    state: &TransportState,
+    watched: &mut Vec<Subject>,
+    updates: &mut Option<mpsc::UnboundedReceiver<SessionUpdate>>,
+) -> anyhow::Result<()> {
     loop {
         tokio::select! {
             msg = socket.next() => {
                 let Some(msg) = msg else { break };   // the client went away
                 let msg = msg?;
                 if updates.is_none() {
-                    updates = Some(open_stream(state, &msg));
+                    *updates = Some(open_stream(state, &msg));
                 }
-                handle_client(socket, state, &mut watched, msg).await?;
+                handle_client(socket, state, watched, msg).await?;
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
             // would silently stop delivering while the socket stayed open.
-            heard = next_update(&mut updates) => {
+            heard = next_update(updates) => {
                 let Some(update) = heard else { break };
-                // Folded BEFORE the filter, and for every update rather than
-                // the watched ones: the marks and the composer's state are
-                // what the stream has said, not what this client asked to
-                // hear, and a client that subscribes later reads them from its
-                // snapshot rather than waiting for the next turn to end.
-                Live::lock(&state.live).apply(&update);
+                // The fold is the transport's, not this connection's: it runs
+                // once for the whole socket in `transport::fold_the_stream`.
                 if watched.iter().any(|what| what.covers(&update)) {
                     send(socket, ServerMessage::Update { update: Box::new(update) }).await?;
                 }
