@@ -20,7 +20,7 @@ pub enum Subject {
 }
 
 /// What a client sends.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClientMessage {
     Subscribe {
@@ -47,7 +47,7 @@ pub enum ClientMessage {
 }
 
 /// What the server sends.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerMessage {
     Greeting {
