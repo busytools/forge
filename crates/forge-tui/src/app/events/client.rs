@@ -1800,6 +1800,63 @@ mod tests {
         }
     }
 
+    /// Teardown ends the run, so the monitor set goes with it. The session
+    /// page reads that state through the core, which is the half that changes
+    /// what a surface draws; the terminal's half is parity between the two
+    /// mirror functions, because the chat draws a monitor from its tool call's
+    /// stamped status rather than from this set.
+    #[test]
+    fn an_ended_run_leaves_no_monitor_set() {
+        use crate::app::state::types::{MonitorEntry, MonitorStatus};
+
+        for background in [false, true] {
+            for ended in ["a connection failure", "an auth wait"] {
+                let mut app = App::test_default();
+                let (key_a, key_b) = seed_two_sessions(&mut app);
+                let key = if background { key_b.clone() } else { key_a.clone() };
+                app.sessions.get_mut(&key).expect("the target bucket").monitors.push(
+                    MonitorEntry {
+                        tool_use_id: "tu-mon".to_owned(),
+                        task_id: Some("task-mon".to_owned()),
+                        description: "cargo build".to_owned(),
+                        command: "cargo build".to_owned(),
+                        persistent: true,
+                        timeout_ms: 0,
+                        status: MonitorStatus::Running,
+                        output_file: None,
+                        output_tail: std::collections::VecDeque::new(),
+                        expanded_in_inspector: false,
+                    },
+                );
+
+                apply_session_update(
+                    &mut app,
+                    if ended == "a connection failure" {
+                        SessionUpdate::ConnectionFailed {
+                            key: key.clone(),
+                            message: "reader died".to_owned(),
+                            fatal: false,
+                        }
+                    } else {
+                        SessionUpdate::AuthRequired {
+                            key: key.clone(),
+                            method_name: "login".to_owned(),
+                            method_description: "Run /login to continue".to_owned(),
+                        }
+                    },
+                );
+
+                let bucket = app.sessions.get(&key).expect("the slot keeps its bucket");
+                assert!(
+                    bucket.monitors.is_empty(),
+                    "a monitor left on the {} bucket after {} can never settle",
+                    if background { "background" } else { "active" },
+                    ended,
+                );
+            }
+        }
+    }
+
     /// Foreground twin: replacing the session the user is watching
     /// swaps its occupant inside the same slot, so focus stays put and
     /// only the contents reset.

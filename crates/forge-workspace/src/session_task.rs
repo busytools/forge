@@ -1494,22 +1494,21 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
 }
 
 /// Drop every fact that describes one run of a session: the hook's mode
-/// and effort, the model it resolved, and the two bridge snapshots that
-/// describe a subprocess tree.
+/// and effort, the model it resolved, the two bridge snapshots that
+/// describe a subprocess tree, and the monitor set that run started.
 ///
 /// This mirrors the view's own reset on the same events, so what it holds
 /// is what a view draws. Two facts are deliberately not here, because the
 /// view's reset does not touch them either: the sub-agent attribution
 /// outlives the run it came from, and the process walk is cleared where a
 /// view learns the cwd moved, which is its own path rather than this one.
-/// The monitor set is not one of them - `hold_view_facts` clears it on the
-/// same event, and every view's reset does too.
 fn clear_runtime_identity(domain: &mut DomainSession) {
     domain.observed_permission_mode = None;
     domain.observed_effort = None;
     domain.current_model = None;
     domain.mcp_servers = None;
     domain.context_usage = None;
+    domain.monitors.clear();
 }
 
 /// The facts this event carries that a view other than the TUI reads
@@ -1530,7 +1529,6 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
         // A monitor started before this process did is in the transcript
         // the connect carries, so the same fold runs over it: a view
         // opening the session sees the monitor rather than nothing.
-        domain.monitors.clear();
         if let Some(history) = history_updates {
             for msg in history {
                 fold_monitor(domain, msg, MonitorOrigin::Transcript);
@@ -3387,6 +3385,36 @@ provider = "anthropic"
 
         assert_eq!(domain.runtime_state, None, "runtime_state cleared on ConnectionFailed");
         assert!(!domain.turn_pending, "turn_pending cleared on ConnectionFailed");
+    }
+
+    /// A monitor still running when the connection dies can never be settled,
+    /// and the session page reads this set directly through the view surface,
+    /// so a dead one draws as live on both surfaces until the next connect
+    /// replaces it.
+    #[test]
+    fn connection_failed_drops_the_domain_monitor_set() {
+        let mut domain = empty_domain();
+        apply_event_to_domain(&mut domain, &sdk_message(monitor_tool_use("tu-mon", "ci-watch")));
+        apply_event_to_domain(&mut domain, &sdk_message(task_started("t-mon", Some("tu-mon"))));
+        assert_eq!(domain.monitors.len(), 1, "the monitor is seeded before the failure");
+        assert_eq!(
+            domain.monitors[0].status,
+            forge_primitives::MonitorStatus::Running,
+            "and it is still running, which is what makes it unsettleable",
+        );
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::ConnectionFailed {
+                message: "reader died".to_owned(),
+                kind: SpawnFailureKind::Unclassified,
+            },
+        );
+
+        assert!(
+            domain.monitors.is_empty(),
+            "the run's monitor set does not outlive the run that held it",
+        );
     }
 
     /// A second `Connected` is a new occupant in the same slot, and it

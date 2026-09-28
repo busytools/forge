@@ -393,6 +393,49 @@ async fn opening_a_session_page_clears_its_diamond_and_no_other() {
     );
 }
 
+/// A page that is open holds its seat: a turn finishing there is a turn the
+/// reader watched, so it arms nothing, and the seat beside it still earns its
+/// own diamond.
+#[tokio::test]
+async fn an_open_page_holds_its_seat() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = fleet(dir.path());
+    let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
+
+    // The seat's own stream, held open for the rest of the test: this is the
+    // page showing it, and it stays open until the drop at the end.
+    let stream = open_stream_at(&config, "/session/Busytools/forge/lead/events").await;
+
+    for project in ["forge", "busymail"] {
+        fleet.emit(forge_sessions::SessionUpdate::ChatAppended {
+            key: SessionSlot::lead("Busytools", project),
+            msg: finished_turn(),
+        });
+    }
+    // The fold runs in a task of its own. Two yields, for the reason the
+    // diamond's own test above gives.
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    let (_status, _content_type, page) = get(&config, "/").await;
+    assert_ne!(
+        row_class(&page, "/session/Busytools/forge/lead"),
+        "unseen",
+        "the page open on this seat has shown its turn: {page}",
+    );
+    assert_eq!(
+        row_class(&page, "/session/Busytools/busymail/lead"),
+        "unseen",
+        "and the seat nobody is showing still earns its own: {page}",
+    );
+
+    // The page closes here, which is what lets the seat go. Detaching over
+    // the network is not asserted: racing the server's teardown would be a
+    // flake, so `the_handler_holds_the_seat_for_its_connection` in
+    // `stream.rs` carries that half.
+    drop(stream);
+}
+
 /// The stream says what the region should be the moment it attaches. The
 /// page is rendered before its stream opens, and a sleeping laptop or a
 /// backgrounded tab reconnects much later, so an update landing in either
