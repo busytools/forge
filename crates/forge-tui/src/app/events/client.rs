@@ -542,6 +542,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 parent_tool_use_id: None,
                 uuid: None,
                 tool_use_result: None,
+                timestamp: None,
             };
             apply_session_update_chat_appended(app, &key, synthetic);
         }
@@ -566,6 +567,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 parent_tool_use_id: None,
                 uuid: None,
                 tool_use_result: None,
+                timestamp: None,
             };
             apply_session_update_chat_appended(app, &key, synthetic);
         }
@@ -587,6 +589,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 parent_tool_use_id: None,
                 uuid: None,
                 tool_use_result: None,
+                timestamp: None,
             };
             apply_session_update_chat_appended(app, &key, synthetic);
         }
@@ -612,6 +615,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 parent_tool_use_id: None,
                 uuid: None,
                 tool_use_result: None,
+                timestamp: None,
             };
             apply_session_update_chat_appended(app, &key, synthetic);
         }
@@ -4156,6 +4160,7 @@ mod focus_seam_tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 
@@ -4176,6 +4181,7 @@ mod focus_seam_tests {
             parent_tool_use_id: None,
             error: None,
             uuid: None,
+            timestamp: None,
         }
     }
 

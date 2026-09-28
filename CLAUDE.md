@@ -51,8 +51,11 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-sessions`** - what a view needs and nothing about how it
   renders: the read surface a view uses, the session records as a view
   sees them, the peer envelope parsing in both directions, the tool
-  family table, the policy that folds a run of blocks, and the transcript
-  fold that turns a conversation's messages into the units a view draws.
+  family table, the policy that folds a run of blocks, the transcript
+  fold that turns a conversation's messages into the units a view draws,
+  the fold that turns a session's dispatches into the sub-agent instances
+  a view draws, and the two reads of a pty's own text: its escape
+  sequences, and a Monitor's watched-command output tail.
   Sits between `forge-workspace` and the views, so a second view attaches
   beside the TUI rather than duplicating it. Nothing here may depend on a
   view. It reaches the workspace for the one thing a session record cannot
@@ -151,21 +154,24 @@ Work top-down; first match wins.
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
 `cli_version`, `conversation`, `slash_commands`, `subagents`, `emoji`,
-`file_index`, `header`, `subagent_attribution`, `mcp_servers`,
+`file_index`, `header`, `mcp_servers`,
 `processes`, `monitors` and `pending_ask` - receives changes through
 `subscribe()`, and acts through `dispatch()`, which is a verb rather than
 an accessor so a view is handed the commands it needs and not the whole
-core. All twenty-one exist in `forge-sessions`, and the TUI reads
+core. All twenty exist in `forge-sessions`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk
 through them; the web view reads its project roster and agent rows, the
 account pool, the worker registry, connector subscriptions and dictation
-state through those, the claude version through the tenth, its
-session header and inspector through the last five, and dispatches its
-composer's send, its prompt answers and its take's controls. `subagents` is the
-CLI's catalogue of the agent types that exist; `subagent_attribution` is
-the per-session record of which of them ran which tool call. What the migration has
+state through those, the claude version through the tenth, and the
+conversation, header, inspector and the prompt it answers through
+`conversation`, `header`, `mcp_servers`, `processes`, `monitors` and
+`pending_ask`, and dispatches its composer's send, its prompt answers and
+its take's controls. `subagents` is the
+CLI's catalogue of the agent types that exist, not a record of the ones
+that ran: an instance's cards and the calls under them are folded from
+the conversation it appears in. What the migration has
 not reached is the five refreshes that ask the core for a new snapshot:
 they are still direct
 `Workspace` calls, so `forge-tui` keeps its `forge-workspace` dependency

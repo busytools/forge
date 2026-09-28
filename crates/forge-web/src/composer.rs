@@ -171,8 +171,8 @@ fn hex(byte: u8) -> Option<u8> {
 /// Whether the field a render draws is the one the reader is typing in.
 ///
 /// Only the send replaces it. Every other swap - a take's readings twenty
-/// times a second, a prompt for this seat or another, a compaction's status
-/// - must leave what the reader has typed, so the field is marked
+/// times a second, a prompt for this seat or another, a compaction's
+/// status - must leave what the reader has typed, so the field is marked
 /// `hx-preserve` and the browser keeps its own element with its own text
 /// rather than taking the empty one the server drew.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -995,9 +995,14 @@ impl Composer {
                 false
             }
             SessionUpdate::DictateEnded { key, outcome, generation } => {
-                // A resolver for a take the composer has already replaced
-                // is about a take that is over.
-                if self.takes.get(key).is_none_or(|take| take.generation != *generation) {
+                // A take that never started resolves nothing, so its
+                // generation matches no take this view holds and the reason
+                // is the seat's whatever it was drawing: the click that
+                // asked for it is owed an answer either way.
+                let refused = matches!(outcome, DictateOutcome::Refused { .. });
+                if !refused
+                    && self.takes.get(key).is_none_or(|take| take.generation != *generation)
+                {
                     return false;
                 }
                 let floor_db = self.takes.remove(key).map_or(-50.0, |take| take.floor_db);
@@ -1103,5 +1108,30 @@ mod tests {
             }),
             "the box redraws for a settled prompt this view never folded",
         );
+    }
+
+    /// A take that could not start is a reason the box owes the reader: it
+    /// resolves no take, so its generation matches nothing this view holds
+    /// and the guard would answer "not mine" to a take that never existed,
+    /// leaving the control a click that says nothing.
+    #[test]
+    fn a_refused_take_draws_its_reason() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+
+        assert!(
+            composer.apply(&SessionUpdate::DictateEnded {
+                key: slot.clone(),
+                outcome: DictateOutcome::Refused { message: "no microphone".to_owned() },
+                generation: 0,
+            }),
+            "a take that never started still redraws the box",
+        );
+        let notice = composer
+            .notice(&slot)
+            .expect("the refusal is held")
+            .line()
+            .expect("and draws a line");
+        assert_eq!(notice, "no microphone", "with the core's own reason");
     }
 }

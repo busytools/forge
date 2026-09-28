@@ -40,7 +40,6 @@ pub struct ViewFacts {
     pub mcp: Option<forge_workspace::McpServers>,
     pub process_snapshot: Option<forge_workspace::env::processes::ProcessSnapshot>,
     pub monitors: Vec<forge_primitives::MonitorRecord>,
-    pub subagent_attribution: std::collections::HashMap<String, String>,
 }
 
 /// A view surface over a stub workspace, plus the seeding a test needs to
@@ -255,13 +254,14 @@ impl Fleet {
     }
 
     /// Declare a task under `project`, held by the session labelled
-    /// `owner`.
+    /// `owner`, with `artifact` as what it produced.
     pub fn add_task(
         &self,
         org: &str,
         project: &str,
         subject: &str,
         owner: &str,
+        artifact: Option<&str>,
     ) -> Result<(), FixtureError> {
         self.workspace.seed_test_task(Task {
             id: subject.into(),
@@ -272,7 +272,7 @@ impl Fleet {
             status: TaskStatus::InProgress,
             owner: Some(SessionSlot::worker(org, project, owner)),
             parent: None,
-            artifact: None,
+            artifact: artifact.map(str::to_owned),
             estimate: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -328,7 +328,6 @@ impl Fleet {
         held.mcp_servers = facts.mcp;
         held.process_snapshot = facts.process_snapshot;
         held.monitors = facts.monitors;
-        held.subagent_attribution = facts.subagent_attribution;
     }
 
     fn project_view(&self, project: &str) -> Result<forge_workspace::ProjectView, FixtureError> {
@@ -364,6 +363,9 @@ fn config(config_dir: &Path, orgs: &[(&str, &[&str])]) -> String {
     );
     // Dictation on, so the composer draws the control that starts a take:
     // an install with it off has no way in at all.
-    sections.push(format!("[dictate]\nenabled = true\nmodels_dir = \"{}\"\n", config_dir.join("models").display()));
+    sections.push(format!(
+        "[dictate]\nenabled = true\nmodels_dir = \"{}\"\n",
+        config_dir.join("models").display()
+    ));
     sections.concat()
 }

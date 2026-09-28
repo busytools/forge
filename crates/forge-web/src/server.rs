@@ -166,16 +166,9 @@ async fn composer_region(
     let draft = crate::composer::draft_of(query.as_deref());
     // The box asking for itself is the reader typing: its own field, its own
     // words, so the field is the one it drew.
-    crate::composer::render(
-        &home,
-        &slot,
-        &roster,
-        &agents,
-        &draft,
-        crate::composer::Draft::Keep,
-    )
-    .await
-    .into_response()
+    crate::composer::render(&home, &slot, &roster, &agents, &draft, crate::composer::Draft::Keep)
+        .await
+        .into_response()
 }
 
 /// The box's send: the draft goes to the seat as its next prompt.

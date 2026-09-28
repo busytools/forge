@@ -18,7 +18,8 @@
 use std::collections::HashMap;
 
 use forge_primitives::messages::StopHookInfo;
-use forge_primitives::{ContentBlock, Message, ToolCallContent};
+use forge_primitives::runtime::RuntimeSessionState;
+use forge_primitives::{ContentBlock, Message, StopReason, ToolCallContent};
 
 use crate::envelope::{PeerInboundKind, detect_inbound};
 use crate::family::{ToolFamily, tool_label};
@@ -28,7 +29,7 @@ use crate::grouping::{
 use crate::model::tool_call_info::{
     AnsweredQuestion, is_ask_question_tool_name, is_monitor_tool_name,
 };
-use crate::model::{ToolCallStatus, TurnInfo};
+use crate::model::{LiveTurn, LiveUsage, ToolCallStatus, TurnInfo};
 use crate::peer_outbound::{PeerOutboundKind, detect_outbound_call};
 
 /// One thing a view draws, in the order the conversation produced it.
@@ -73,10 +74,12 @@ pub enum ChatUnit {
     /// What a settled turn did, as the view's own row draws it: the turn's
     /// wall clock, its API time, and the tokens and cost the CLI reported.
     /// The web view's row is this, built from the result frame the fold
-    /// reads; the terminal builds the same record from the live stream, so
-    /// the two draw one type rather than a copy each. `ended_at_local` is
-    /// the field they differ on: the wire carries none, so the terminal
-    /// stamps it off its own clock and this side leaves it absent.
+    /// reads or derived from the turn's own rows; the terminal builds the
+    /// same record from the live stream, so the two draw one type rather
+    /// than a copy each. `ended_at_local` is the field they differ on: the
+    /// terminal stamps it off its own clock as the result arrives, while a
+    /// turn read from a transcript carries the instant the CLI wrote instead
+    /// and lets the view render it.
     TurnReport(TurnInfo),
 }
 
@@ -116,6 +119,10 @@ pub struct Notice {
 pub struct ToolLeaf {
     /// The `tool_use` id the wire gave it.
     pub id: String,
+    /// The class this call belongs to, which a row that draws one call
+    /// rather than a family picks its glyph from. A label alone cannot
+    /// tell a server named `read` from the read family.
+    pub row: KindRow,
     /// The tool's own label, for a row that names the tool rather than
     /// its family.
     pub label: &'static str,
@@ -158,6 +165,12 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     let mut prev_api: Option<u64> = None;
     let mut model: Option<String> = None;
     let mut thinking: Option<u64> = None;
+    let mut traced = TurnTrace::default();
+    // The last state the session reported. A conversation read from a
+    // transcript reports none, so a page opened fresh draws its last turn's
+    // row here; a live session's trailing turn is left to the view's own
+    // live row.
+    let mut running_turn = false;
     for message in messages {
         // What the turn's hooks did. A frame reporting none of them draws
         // nothing, which is the terminal's rule too.
@@ -191,6 +204,19 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
                 info.thinking_tokens = thinking.take();
                 units.push(ChatUnit::TurnReport(info));
             }
+            traced = TurnTrace::default();
+            running_turn = false;
+            continue;
+        }
+        // A state frame is the turn boundary the wire alone reports, and the
+        // only place a session says one is in flight. The turn before it
+        // draws its row here, since nothing else closes it, and the state
+        // says whether the turn after it is the one running.
+        if let Some(running) = session_running_state(message) {
+            flush(&mut run, &mut units);
+            flush_peers(&mut peers, &mut units);
+            close_traced(&mut traced, &mut units, true);
+            running_turn = running;
             continue;
         }
         if let Message::Assistant { message: envelope, .. } = message {
@@ -206,11 +232,21 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
                 ContentBlock::Text { text } => match text_unit(assistant, text) {
                     TextUnit::Peer(card) => {
                         flush(&mut run, &mut units);
+                        // A peer message is a user row the CLI answered as a
+                        // turn of its own, so the block above it belongs to
+                        // the turn before: that turn's row lands here.
+                        close_traced(&mut traced, &mut units, true);
                         peers.push(card);
                     }
                     TextUnit::Unit(unit) => {
                         flush(&mut run, &mut units);
                         flush_peers(&mut peers, &mut units);
+                        // Any user row that draws as a unit opens a turn,
+                        // whether a person wrote it or a delivery carried it,
+                        // so the work above it draws its row first.
+                        if !assistant {
+                            close_traced(&mut traced, &mut units, true);
+                        }
                         units.push(unit);
                     }
                 },
@@ -224,6 +260,7 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
                     if !absorb_typed(&mut units, &text) {
                         flush(&mut run, &mut units);
                         flush_peers(&mut peers, &mut units);
+                        close_traced(&mut traced, &mut units, true);
                         units.push(ChatUnit::UserTurn { text });
                     }
                 }
@@ -238,10 +275,157 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
                 _ => {}
             }
         }
+        // Watched after the turn it may have started has been written out:
+        // a prompt's own clock belongs to the turn it opens, not to the one
+        // it ended.
+        traced.watch(message);
     }
     flush(&mut run, &mut units);
     flush_peers(&mut peers, &mut units);
+    // The trailing turn is the one a running session is still writing, and
+    // the view draws that turn's row itself. Every other turn is closed by
+    // the turn after it, or by the result that reported it.
+    if !running_turn {
+        close_traced(&mut traced, &mut units, false);
+    }
     units
+}
+
+/// What a session-state frame says about a turn being in flight: `Some(true)`
+/// when the session reports it is running one, `Some(false)` for any other
+/// state it reports, and `None` for every frame that is not a state change.
+///
+/// Two readers ask this one question: the fold, which leaves a running turn's
+/// row to the view, and the view, which draws that turn's live row.
+pub fn session_running_state(message: &Message) -> Option<bool> {
+    let Message::System { subtype, data, .. } = message else {
+        return None;
+    };
+    if subtype != "session_state_changed" {
+        return None;
+    }
+    Some(
+        crate::translate::state_parsing::parse_runtime_session_state(data.get("state"))
+            == Some(RuntimeSessionState::Running),
+    )
+}
+
+/// The facts a turn's own rows carry, gathered while the fold walks them.
+///
+/// A transcript holds no result frame, so a turn read from one has no row of
+/// its own unless one is derived here: the CLI writes that frame to the
+/// wire and not to the file.
+#[derive(Default)]
+struct TurnTrace {
+    /// The first and last clocks the turn's rows carried.
+    opened: Option<String>,
+    ended: Option<String>,
+    /// The input-side usage the turn's frames reported. `LiveTurn` is the
+    /// same accumulation a running turn shows, so the keying rule lives in
+    /// one place and a derived row cannot drift from a live one.
+    usage: LiveTurn,
+    model: Option<String>,
+    /// The stop the turn's last assistant frame reported. A frame handing
+    /// back for a tool call has not ended a turn.
+    stopped: Option<StopReason>,
+    /// Whether the turn wrote an assistant frame at all: a prompt nothing
+    /// answered draws no row, the way the terminal draws none.
+    worked: bool,
+}
+
+impl TurnTrace {
+    fn watch(&mut self, message: &Message) {
+        match message {
+            Message::Assistant { message: envelope, timestamp, .. } => {
+                self.worked = true;
+                if !envelope.model.is_empty() {
+                    self.model = Some(envelope.model.clone());
+                }
+                if let Some(usage) = &envelope.usage {
+                    self.usage.record(
+                        envelope.id.clone(),
+                        LiveUsage {
+                            input_tokens: usage.input_tokens,
+                            cache_read_tokens: usage.cache_read_input_tokens,
+                            cache_written_tokens: usage.cache_creation_input_tokens,
+                        },
+                    );
+                }
+                self.stopped = envelope.stop_reason;
+                self.clock(timestamp.as_deref());
+            }
+            Message::User { timestamp, .. } => self.clock(timestamp.as_deref()),
+            _ => {}
+        }
+    }
+
+    fn clock(&mut self, at: Option<&str>) {
+        let Some(at) = at else {
+            return;
+        };
+        self.opened.get_or_insert_with(|| at.to_owned());
+        self.ended = Some(at.to_owned());
+    }
+
+    /// The span the turn's own rows support: `None` when either end does not
+    /// parse or the pair runs backwards, which a transcript does hand back -
+    /// a replayed row carries the stamp it was written with, so it can sit
+    /// behind the row before it. The header prints a span and nothing else
+    /// where one belongs, so a turn with no usable span draws no row: a zero
+    /// there would be a measurement this row does not have.
+    fn span_ms(&self) -> Option<u64> {
+        let from = self.opened.as_deref()?;
+        let to = self.ended.as_deref()?;
+        forge_workspace::env::timezone::millis_between(from, to)
+    }
+
+    /// Whether the turn ran anything worth a row at all.
+    fn drew_work(&self) -> bool {
+        self.worked && self.span_ms().is_some()
+    }
+
+    /// Whether the turn's own last frame ended it rather than handing back
+    /// for a tool call. Only a turn closing at the end of a conversation
+    /// needs this: a turn the next prompt closed is over whatever its last
+    /// frame stopped for.
+    fn stopped_of_its_own_accord(&self) -> bool {
+        self.stopped.is_some_and(|stop| stop != StopReason::ToolUse)
+    }
+
+    /// The row the turn's own rows support. Output tokens, api time and cost
+    /// stay absent because a transcript records none of them: an assistant
+    /// row's output count is the streaming placeholder rather than a count,
+    /// and the cost is the CLI's own accounting.
+    fn report(&self) -> TurnInfo {
+        let totals = self.usage.totals();
+        TurnInfo {
+            duration_ms: self.span_ms(),
+            // The instant, not a formatted clock: the fold is a function of
+            // the messages, and which zone a reader is in is the view's to
+            // know.
+            ended_at_utc: self.ended.clone(),
+            model: self.model.clone(),
+            input_tokens: totals.map(|usage| usage.input_tokens),
+            cache_read_tokens: totals.map(|usage| usage.cache_read_tokens),
+            cache_written_tokens: totals.map(|usage| usage.cache_written_tokens),
+            ..TurnInfo::default()
+        }
+    }
+}
+
+/// Write the row a turn read from a transcript draws, then start the next
+/// turn's trace. A turn the wire already settled draws its own row and this
+/// one nothing, so the two never count one turn twice.
+///
+/// `known_over` is whether whatever closed the turn says so - the next prompt
+/// or a state frame. A turn closing at the end of a conversation has nothing
+/// saying it, and needs its own last frame to have stopped rather than handed
+/// back for a tool call.
+fn close_traced(trace: &mut TurnTrace, units: &mut Vec<ChatUnit>, known_over: bool) {
+    if trace.drew_work() && (known_over || trace.stopped_of_its_own_accord()) {
+        units.push(ChatUnit::TurnReport(trace.report()));
+    }
+    *trace = TurnTrace::default();
 }
 
 /// Add one call to the conversation: a peer card, a question's card, a
@@ -532,7 +716,7 @@ fn outbound_card(name: &str, input: &serde_json::Value) -> Option<PeerCard> {
 /// and content the shared call builder resolves, and what its result
 /// recorded. A call with no result yet reads as `Pending`, which is what the
 /// resume path hands the TUI for the same file.
-fn leaf(
+pub(crate) fn leaf(
     id: &str,
     name: &str,
     input: &serde_json::Value,
@@ -561,6 +745,7 @@ fn leaf(
     };
     ToolLeaf {
         id: id.to_owned(),
+        row: family_row(name).0,
         label: tool_label(name),
         // What the row names, resolved the way the terminal's own tree
         // resolves it: a search call's target is its pattern, a read's is
@@ -583,10 +768,10 @@ fn leaf(
 /// What one call's result recorded: the status it settled at, the row's own
 /// content, and the CLI's record beside it. All three are what the shared
 /// result builder reads.
-struct Recorded {
-    status: ToolCallStatus,
-    content: Option<serde_json::Value>,
-    result: Option<serde_json::Value>,
+pub(crate) struct Recorded {
+    pub(crate) status: ToolCallStatus,
+    pub(crate) content: Option<serde_json::Value>,
+    pub(crate) result: Option<serde_json::Value>,
 }
 
 /// One settled turn's report, from the frame that recorded it.
@@ -635,7 +820,7 @@ fn turn_report(
 /// inline in the assistant message that made the call. Reading only the
 /// user turns leaves a server tool pending for good and holds its group's
 /// aggregate there with it.
-fn result_statuses(messages: &[Message]) -> HashMap<String, Recorded> {
+pub(crate) fn result_statuses(messages: &[Message]) -> HashMap<String, Recorded> {
     let mut out = HashMap::new();
     for message in messages {
         match message {
@@ -735,6 +920,7 @@ mod tests {
             parent_tool_use_id: None,
             error: None,
             uuid: None,
+            timestamp: None,
         }
     }
 
@@ -1135,6 +1321,7 @@ mod tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
+            timestamp: None,
         }
     }
 
@@ -1166,6 +1353,7 @@ mod tests {
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: Some(recorded),
+            timestamp: None,
         }
     }
 
@@ -1532,5 +1720,375 @@ mod queued_command_tests {
         let prompt = json!({"weird": "shape"});
         let out = queued_command_text(&prompt);
         assert!(out.contains("weird"), "an unrenderable shape still shows something: {out}");
+    }
+}
+
+#[cfg(test)]
+mod turn_report_tests {
+    use forge_primitives::{
+        AssistantEnvelope, ContentBlock, Message, StopReason, Usage, UserEnvelope,
+    };
+
+    use super::{ChatUnit, render_units};
+
+    /// An assistant frame the CLI wrote at `at`, having stopped for `stop`.
+    fn assistant_at(text: &str, at: &str, stop: StopReason, usage: Option<Usage>) -> Message {
+        Message::Assistant {
+            message: AssistantEnvelope {
+                id: "msg_01".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-opus-5".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                stop_reason: Some(stop),
+                stop_sequence: None,
+                usage,
+            },
+            session_id: "session".to_owned(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+            timestamp: Some(at.to_owned()),
+        }
+    }
+
+    fn user_at(text: &str, at: &str) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+            },
+            session_id: "session".to_owned(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+            timestamp: Some(at.to_owned()),
+        }
+    }
+
+    /// A session-state frame, as the wire sends it.
+    fn state_frame(state: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "session_state_changed",
+            "state": state,
+            "uuid": format!("state-{state}"),
+            "session_id": "session",
+        }))
+        .expect("a state frame")
+    }
+
+    fn use_at(id: &str, at: &str) -> Message {
+        let Message::Assistant { message, session_id, parent_tool_use_id, error, uuid, .. } =
+            assistant_at("", at, StopReason::ToolUse, None)
+        else {
+            panic!("assistant_at builds one");
+        };
+        let mut message = message;
+        message.id = format!("msg_{id}");
+        message.content = vec![ContentBlock::ToolUse {
+            id: id.to_owned(),
+            name: "Read".to_owned(),
+            input: serde_json::json!({"file_path": "/tmp/a.rs"}),
+        }];
+        Message::Assistant {
+            message,
+            session_id,
+            parent_tool_use_id,
+            error,
+            uuid,
+            timestamp: Some(at.to_owned()),
+        }
+    }
+
+    fn reports(units: &[ChatUnit]) -> Vec<&crate::model::TurnInfo> {
+        units
+            .iter()
+            .filter_map(|unit| match unit {
+                ChatUnit::TurnReport(info) => Some(info),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A transcript holds no result frame, so a turn read from one draws its
+    /// own row or draws nothing at all. The row's clock is the rows' own:
+    /// first write to last, and the end is the instant the last row carried.
+    #[test]
+    fn a_turn_read_from_a_transcript_draws_its_own_row() {
+        let messages = [
+            user_at("make the call tree the default", "2026-04-22T04:15:27.000Z"),
+            assistant_at("Done.", "2026-04-22T04:18:08.000Z", StopReason::EndTurn, None),
+        ];
+        let units = render_units(&messages);
+
+        let [info] = reports(&units)[..] else {
+            panic!("one settled turn draws one row, got {units:?}");
+        };
+        assert_eq!(
+            info.duration_ms,
+            Some(161_000),
+            "the wall clock between the turn's own two rows",
+        );
+        assert_eq!(
+            info.ended_at_utc.as_deref(),
+            Some("2026-04-22T04:18:08.000Z"),
+            "and the end is the last row's own instant, for the view to place",
+        );
+        assert_eq!(
+            info.ended_at_local, None,
+            "which the fold does not render: the reader's zone is the view's to know",
+        );
+        assert_eq!(info.model.as_deref(), Some("claude-opus-5"), "with the model that wrote it");
+    }
+
+    /// The wire's own result closes a turn with the CLI's measurements, and
+    /// the fold must not add a second derived row on top of it.
+    #[test]
+    fn a_turn_the_wire_settled_draws_one_row_and_not_two() {
+        let messages = [
+            user_at("ship it", "2026-04-22T04:15:27.000Z"),
+            assistant_at("Shipped.", "2026-04-22T04:18:08.000Z", StopReason::EndTurn, None),
+            Message::Result {
+                subtype: "success".to_owned(),
+                session_id: "session".to_owned(),
+                is_error: false,
+                num_turns: 1,
+                duration_ms: 41_059,
+                duration_api_ms: 40_742,
+                stop_reason: None,
+                total_cost_usd: Some(0.16),
+                usage: None,
+                result: None,
+                structured_output: None,
+                model_usage: None,
+                permission_denials: None,
+                errors: None,
+                uuid: None,
+                terminal_reason: None,
+            },
+        ];
+        let units = render_units(&messages);
+
+        let [info] = reports(&units)[..] else {
+            panic!("one turn draws one row, got {units:?}");
+        };
+        assert_eq!(
+            info.duration_ms,
+            Some(41_059),
+            "and the number is the CLI's own, not one derived from the rows",
+        );
+    }
+
+    /// A turn that handed back for a tool call has not ended, so the fold
+    /// draws no row for it while it is the last thing in the conversation:
+    /// the view draws the live one while it runs.
+    #[test]
+    fn a_turn_still_calling_tools_draws_no_row_of_its_own() {
+        let messages = [
+            user_at("read the file", "2026-04-22T04:15:27.000Z"),
+            use_at("toolu_1", "2026-04-22T04:15:29.000Z"),
+        ];
+        let units = render_units(&messages);
+
+        assert!(reports(&units).is_empty(), "nothing ended this turn: {units:?}");
+    }
+
+    /// A turn the transcript has already closed draws its row whatever its
+    /// last frame stopped for: the rows after it are the CLI's own write that
+    /// the turn is over, which is what a turn ending on a tool call and
+    /// reopened by a row nobody typed looks like.
+    #[test]
+    fn a_turn_the_transcript_closed_draws_its_row() {
+        let messages = [
+            user_at("run the skill", "2026-04-22T04:15:27.000Z"),
+            use_at("toolu_1", "2026-04-22T04:15:29.000Z"),
+            user_at("Base directory for this skill: /tmp/skill", "2026-04-22T04:15:31.000Z"),
+        ];
+        let units = render_units(&messages);
+
+        let [info] = reports(&units)[..] else {
+            panic!("the closed turn draws its row, got {units:?}");
+        };
+        assert_eq!(info.duration_ms, Some(2_000), "over its own two rows");
+    }
+
+    /// A pair of row clocks that runs backwards or does not parse gives no
+    /// span, and the header prints a span where one belongs: a turn with no
+    /// usable pair draws no row rather than a zeroed clock. A replayed row
+    /// carries the stamp it was written with, so the backwards pair is real.
+    #[test]
+    fn a_turn_whose_clocks_give_no_span_draws_no_row() {
+        let backwards = [
+            user_at("count it", "2026-04-22T04:18:08.000Z"),
+            assistant_at("done", "2026-04-22T04:15:27.000Z", StopReason::EndTurn, None),
+        ];
+        assert!(
+            reports(&render_units(&backwards)).is_empty(),
+            "a span that runs backwards is not one",
+        );
+
+        let unreadable = [
+            user_at("count it", "2026-04-22T04:15:27.000Z"),
+            assistant_at("done", "nope", StopReason::EndTurn, None),
+        ];
+        assert!(
+            reports(&render_units(&unreadable)).is_empty(),
+            "and neither is a clock that does not parse",
+        );
+    }
+
+    /// A turn whose frames carried no clock draws no row: a report is not a
+    /// place to invent a time, and the header would otherwise print a zero
+    /// where the turn's own clock goes.
+    #[test]
+    fn a_turn_with_no_row_clocks_draws_no_row() {
+        let messages = [
+            Message::User {
+                message: UserEnvelope {
+                    role: "user".to_owned(),
+                    content: vec![ContentBlock::Text { text: "no clocks here".to_owned() }],
+                },
+                session_id: "session".to_owned(),
+                parent_tool_use_id: None,
+                uuid: None,
+                tool_use_result: None,
+                timestamp: None,
+            },
+            Message::Assistant {
+                message: AssistantEnvelope {
+                    id: "msg_01".to_owned(),
+                    role: "assistant".to_owned(),
+                    model: "claude-opus-5".to_owned(),
+                    content: vec![ContentBlock::Text { text: "nor here".to_owned() }],
+                    stop_reason: Some(StopReason::EndTurn),
+                    stop_sequence: None,
+                    usage: None,
+                },
+                session_id: "session".to_owned(),
+                parent_tool_use_id: None,
+                error: None,
+                uuid: None,
+                timestamp: None,
+            },
+        ];
+        let units = render_units(&messages);
+
+        assert!(
+            reports(&units).is_empty(),
+            "a row of dashes and a zeroed clock says less than none: {units:?}",
+        );
+    }
+
+    /// The row carries the input side the assistant frames reported, summed
+    /// once per message, and nothing a transcript cannot support. The counts
+    /// that stay absent are the ones the row has no record of, so a later
+    /// pass filling a dash from another field fails here rather than shipping
+    /// a number the transcript never wrote.
+    #[test]
+    fn a_read_rows_counts_are_summed_once_per_message() {
+        let usage = Usage {
+            input_tokens: 7,
+            output_tokens: 999,
+            cache_read_input_tokens: 1_000,
+            cache_creation_input_tokens: 200,
+        };
+        let messages = [
+            user_at("count it", "2026-04-22T04:15:27.000Z"),
+            assistant_at("part one", "2026-04-22T04:15:31.000Z", StopReason::ToolUse, Some(usage)),
+            assistant_at("part two", "2026-04-22T04:15:33.000Z", StopReason::EndTurn, Some(usage)),
+        ];
+        let units = render_units(&messages);
+
+        let [info] = reports(&units)[..] else {
+            panic!("one settled turn draws one row, got {units:?}");
+        };
+        assert_eq!(info.input_tokens, Some(7), "one message, counted once");
+        assert_eq!(info.cache_read_tokens, Some(1_000), "and its cache reads once too");
+        assert_eq!(info.cache_written_tokens, Some(200), "including what it wrote");
+        assert_eq!(
+            info.output_tokens, None,
+            "an assistant frame's output count is a streaming placeholder, not a count",
+        );
+        assert_eq!(info.api_ms, None, "and no turn writes the API clock to a transcript");
+        assert_eq!(info.session_cost_usd, None, "nor the cost, which the CLI keeps to itself");
+        assert_eq!(
+            info.thinking_tokens, None,
+            "nor the reasoning estimate, which only deltas carry"
+        );
+    }
+
+    /// A session-state frame is the boundary the wire alone reports: a turn
+    /// the transcript left open is closed by it, and the state says whether
+    /// the turn after it is running.
+    #[test]
+    fn a_state_frame_closes_the_turn_before_it_and_holds_the_one_after() {
+        let read_then_running = [
+            user_at("count it", "2026-04-22T04:15:27.000Z"),
+            assistant_at("done", "2026-04-22T04:18:08.000Z", StopReason::EndTurn, None),
+            state_frame("running"),
+        ];
+        assert_eq!(
+            reports(&render_units(&read_then_running)).len(),
+            1,
+            "a turn read from a transcript keeps its row when the next one starts",
+        );
+
+        let running = [
+            state_frame("running"),
+            user_at("and then", "2026-04-22T04:20:00.000Z"),
+            assistant_at("more", "2026-04-22T04:21:00.000Z", StopReason::EndTurn, None),
+        ];
+        assert!(
+            reports(&render_units(&running)).is_empty(),
+            "the turn the session is running draws the view's live row, not one from here",
+        );
+
+        let settled = [
+            state_frame("running"),
+            user_at("and then", "2026-04-22T04:20:00.000Z"),
+            assistant_at("more", "2026-04-22T04:21:00.000Z", StopReason::EndTurn, None),
+            state_frame("idle"),
+        ];
+        assert_eq!(
+            reports(&render_units(&settled)).len(),
+            1,
+            "and nothing running leaves the row to the fold again",
+        );
+    }
+
+    /// A turn the next prompt closed draws its row whatever the session
+    /// reports: the gate belongs to the trailing turn alone.
+    #[test]
+    fn a_closed_turn_draws_while_a_later_one_runs() {
+        let messages = [
+            user_at("first", "2026-04-22T04:15:27.000Z"),
+            assistant_at("one", "2026-04-22T04:16:00.000Z", StopReason::EndTurn, None),
+            state_frame("running"),
+            user_at("second", "2026-04-22T04:20:00.000Z"),
+        ];
+        assert_eq!(
+            reports(&render_units(&messages)).len(),
+            1,
+            "the first turn's row survives a running second",
+        );
+    }
+
+    /// Two turns each draw their own row, in the order they ran.
+    #[test]
+    fn each_turn_draws_its_own_row() {
+        let messages = [
+            user_at("first", "2026-04-22T04:15:27.000Z"),
+            assistant_at("one", "2026-04-22T04:16:00.000Z", StopReason::EndTurn, None),
+            user_at("second", "2026-04-22T04:20:00.000Z"),
+            assistant_at("two", "2026-04-22T04:21:30.000Z", StopReason::EndTurn, None),
+        ];
+        let units = render_units(&messages);
+
+        let finished: Vec<Option<u64>> = reports(&units).iter().map(|i| i.duration_ms).collect();
+        assert_eq!(
+            finished,
+            [Some(33_000), Some(90_000)],
+            "each turn's own span, not the session's",
+        );
     }
 }

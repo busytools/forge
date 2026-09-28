@@ -36,6 +36,9 @@ pub enum Message {
         /// Stable identifier for this assistant turn - the CLI
         /// `AssistantMessage.uuid`.
         uuid: Option<String>,
+        /// When the CLI wrote this frame, RFC 3339. The only record of when
+        /// a turn ran that a transcript holds: no result frame reaches one.
+        timestamp: Option<String>,
     },
 
     /// A user turn - user prompts or tool-result envelopes.
@@ -55,6 +58,9 @@ pub enum Message {
         /// forge-sdk passes it through as a
         /// [`Value`] since the upstream type is `dict[str, Any]`.
         tool_use_result: Option<Value>,
+        /// When the CLI wrote this frame, RFC 3339. The only record of when
+        /// a turn ran that a transcript holds: no result frame reaches one.
+        timestamp: Option<String>,
     },
 
     /// Out-of-band system event - `subtype` discriminates (e.g. `"init"`).
@@ -912,6 +918,8 @@ enum MessageRepr {
         error: Option<AssistantMessageError>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         uuid: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<String>,
     },
     User {
         message: UserEnvelope,
@@ -922,6 +930,8 @@ enum MessageRepr {
         uuid: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_use_result: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<String>,
     },
     System(SystemRepr),
     RateLimitEvent {
@@ -1145,16 +1155,36 @@ struct GenericSystemRepr {
 impl From<MessageRepr> for Message {
     fn from(repr: MessageRepr) -> Self {
         match repr {
-            MessageRepr::Assistant { message, session_id, parent_tool_use_id, error, uuid } => {
-                Message::Assistant { message, session_id, parent_tool_use_id, error, uuid }
-            }
+            MessageRepr::Assistant {
+                message,
+                session_id,
+                parent_tool_use_id,
+                error,
+                uuid,
+                timestamp,
+            } => Message::Assistant {
+                message,
+                session_id,
+                parent_tool_use_id,
+                error,
+                uuid,
+                timestamp,
+            },
             MessageRepr::User {
                 message,
                 session_id,
                 parent_tool_use_id,
                 uuid,
                 tool_use_result,
-            } => Message::User { message, session_id, parent_tool_use_id, uuid, tool_use_result },
+                timestamp,
+            } => Message::User {
+                message,
+                session_id,
+                parent_tool_use_id,
+                uuid,
+                tool_use_result,
+                timestamp,
+            },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
                 task_id,
                 description,
@@ -1417,12 +1447,36 @@ impl From<MessageRepr> for Message {
 impl From<Message> for MessageRepr {
     fn from(msg: Message) -> Self {
         match msg {
-            Message::Assistant { message, session_id, parent_tool_use_id, error, uuid } => {
-                MessageRepr::Assistant { message, session_id, parent_tool_use_id, error, uuid }
-            }
-            Message::User { message, session_id, parent_tool_use_id, uuid, tool_use_result } => {
-                MessageRepr::User { message, session_id, parent_tool_use_id, uuid, tool_use_result }
-            }
+            Message::Assistant {
+                message,
+                session_id,
+                parent_tool_use_id,
+                error,
+                uuid,
+                timestamp,
+            } => MessageRepr::Assistant {
+                message,
+                session_id,
+                parent_tool_use_id,
+                error,
+                uuid,
+                timestamp,
+            },
+            Message::User {
+                message,
+                session_id,
+                parent_tool_use_id,
+                uuid,
+                tool_use_result,
+                timestamp,
+            } => MessageRepr::User {
+                message,
+                session_id,
+                parent_tool_use_id,
+                uuid,
+                tool_use_result,
+                timestamp,
+            },
             Message::System { subtype, session_id, data } => {
                 // `data` now carries the full shape (including `type`,
                 // `subtype`, `session_id`). On the way back out, strip

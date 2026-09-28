@@ -10907,10 +10907,7 @@ mod worker_activity_tests {
 
         let both = held("a-both", vec![permission(), question()]);
         assert!(
-            matches!(
-                ws.pending_ask(&both),
-                Some(crate::protocol::PendingAsk::Question(_))
-            ),
+            matches!(ws.pending_ask(&both), Some(crate::protocol::PendingAsk::Question(_))),
             "a question outranks the permission prompt beside it here too",
         );
     }
