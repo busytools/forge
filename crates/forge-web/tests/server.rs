@@ -1465,6 +1465,21 @@ async fn a_turn_read_from_a_transcript_draws_its_own_row() {
         2,
         "each turn draws its own row: {page}",
     );
+    // The live row's own name is `turn-live`, so the property is the digit
+    // after the prefix rather than the prefix on its own.
+    let named_by_place = page
+        .split("data-k=\"turn-")
+        .skip(1)
+        .any(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_digit()));
+    assert!(!named_by_place, "no row is named by its place in the conversation: {page}");
+    assert!(
+        page.contains("data-k=\"2026-04-22T04:15:27.000Z\""),
+        "the first row is named for its own turn, so nothing inserted above it renames it: {page}",
+    );
+    assert!(
+        page.contains("data-k=\"2026-04-22T04:20:00.000Z\""),
+        "and the second for its own: {page}",
+    );
     assert!(page.contains("2m 41s"), "the first turn's own wall clock: {page}");
     assert!(page.contains("1m 30s"), "and the second's: {page}");
     assert!(page.contains("14\u{2191}"), "the counts its own frames reported: {page}");

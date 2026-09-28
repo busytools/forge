@@ -7,7 +7,6 @@
 //! reads the core through the view surface: this module holds no state of
 //! its own.
 
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -384,7 +383,7 @@ async fn columns(
                 div .compacting { span .ring {} "Compacting context\u{2026}" }
             }
             @if let Some(live) = live {
-                (turn_report_row(&live_report(live, Instant::now()), true, "turn-live"))
+                (turn_report_row(&live_report(live, Instant::now()), true, Some("turn-live")))
             }
         }
     });
@@ -1527,7 +1526,6 @@ pub(crate) async fn read_conversation(
 /// The conversation, as the fold's units read: the user's own turns on their
 /// own, and everything the assistant did in one work block after each.
 fn conversation(units: &[ChatUnit], cwd: Option<&Path>, tail: Option<&Markup>) -> Markup {
-    let rows = Cell::new(0usize);
     let turns = turns(units);
     // The tail is the live turn's row and the compaction line, and it draws
     // inside the last work block, because that is where the settled row lands
@@ -1543,7 +1541,7 @@ fn conversation(units: &[ChatUnit], cwd: Option<&Path>, tail: Option<&Markup>) -
                 Turn::Mine(text) => div .mine { (text) },
                 Turn::Work(work) => div .work {
                     @for unit in work {
-                        (unit_markup(unit, cwd, &rows))
+                        (unit_markup(unit, cwd))
                     }
                     @if Some(at) == last_work {
                         @if let Some(tail) = tail {
@@ -1583,7 +1581,7 @@ fn turns(units: &[ChatUnit]) -> Vec<Turn<'_>> {
 }
 
 /// One unit of work.
-fn unit_markup(unit: &ChatUnit, cwd: Option<&Path>, rows: &Cell<usize>) -> Markup {
+fn unit_markup(unit: &ChatUnit, cwd: Option<&Path>) -> Markup {
     match unit {
         ChatUnit::AssistantText { text } => html! { div .prose { (prose(text)) } },
         ChatUnit::ToolGroup { families, status } => tool_group(families, *status, cwd),
@@ -1592,13 +1590,9 @@ fn unit_markup(unit: &ChatUnit, cwd: Option<&Path>, rows: &Cell<usize>) -> Marku
         ChatUnit::MessagingGroup { cards } => messaging_group(cards),
         ChatUnit::Notice(notice) => notice_row(notice),
         ChatUnit::Hooks { key, actions, infos } => hooks_row(key, *actions, infos),
-        ChatUnit::TurnReport(info) => {
-            let nth = rows.get();
-            rows.set(nth + 1);
-            // A settled row is named for its place in the conversation: it
-            // carries no id of its own, and the rows before it do not move.
-            turn_report_row(info, false, &format!("turn-{nth}"))
-        }
+        // A settled row is named for the turn it is rather than for its place
+        // in the conversation, so a row inserted above it does not rename it.
+        ChatUnit::TurnReport { info, key } => turn_report_row(info, false, key.as_deref()),
         // A user turn is the block around its work, drawn by `conversation`.
         ChatUnit::UserTurn { text } => html! { div .mine { (text) } },
     }
@@ -2101,11 +2095,11 @@ fn first_line(text: &str) -> String {
 /// with a dash. Neither ever writes a zero for an absent value: the CLI
 /// attributing nothing arrives as a zero block, and a zero here reads as a
 /// measurement.
-fn turn_report_row(info: &TurnInfo, live: bool, key: &str) -> Markup {
+fn turn_report_row(info: &TurnInfo, live: bool, key: Option<&str>) -> Markup {
     let info = attributed_usage(info);
     let info = &info;
     html! {
-        details .turninfo data-k=(key) {
+        details .turninfo data-k=[key] {
             summary {
                 @if live {
                     span .ring {}
