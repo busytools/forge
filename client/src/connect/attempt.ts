@@ -1,35 +1,44 @@
 /**
- * Connecting, which is the one thing this slice does not do.
+ * Connecting: an address in, and either an open socket or the reason there
+ * is not one.
  *
- * The socket is the other half of the base and it is not here: `connect(url)`
- * belongs with one store per subscription, and the server's protocol is still
- * moving. `connectTo` is the seam it lands in, and its signature is the part
- * that stays - a caller hands it an address and reads back settings or a
- * reason, whatever is underneath.
+ * The two failures a person can act on are told apart here, because the
+ * screen draws them differently: an address this app cannot use, which the
+ * reader can fix, and a well-formed address nothing answered on, where the
+ * cause is on the far side.
  */
 
-import { loadFixtureHome } from '../dev/fixture';
-import type { HomeWire } from '../wire/home';
-import { DEFAULT_SETTINGS, DEFAULT_WEB_PORT, type ClientSettings } from '../wire/types';
+import { PROTOCOL_VERSION } from '../protocol';
+import { connect, type Connection } from '../socket';
+import { DEFAULT_WEB_PORT, type ClientSettings } from '../wire/types';
+
+/**
+ * How long a socket has to greet before the address is called unreachable.
+ *
+ * A server that accepts the connection and then says nothing is not one this
+ * client can draw, and a form that waits forever for it is a form that never
+ * comes back.
+ */
+const HANDSHAKE_MS = 5000;
 
 /** The address the form opens on: the loopback port forge serves on. */
 export const DEFAULT_ADDRESS = `127.0.0.1:${DEFAULT_WEB_PORT}`;
 
 export type Attempt =
   /**
-   * `wire` is the home snapshot the connection produced, and `null` in a
-   * production build: a real one arrives on the socket, which is the other
-   * half of this base. Nothing bundled stands in for it - the app's only
+   * `connection` is the live socket, which the pages read from for as long
+   * as the app is open. Nothing bundled stands in for it - the app's only
    * input is the server URL.
    */
-  | { ok: true; url: string; settings: ClientSettings; wire: HomeWire | null }
+  | { ok: true; url: string; settings: ClientSettings; connection: Connection }
   /**
    * `address` is an address this app cannot use, and the reader can fix it.
    * `unreachable` is a well-formed address nothing answered on, where the
    * cause is on the far side and the reader needs a pointer rather than a
-   * spelling correction.
+   * spelling correction. `version` is a forge that answered and speaks a
+   * protocol this client does not, which nothing but an upgrade fixes.
    */
-  | { ok: false; kind: 'address' | 'unreachable'; why: string };
+  | { ok: false; kind: 'address' | 'unreachable' | 'version'; why: string };
 
 /**
  * The socket URL an address names.
@@ -112,7 +121,7 @@ export async function attempt(
 export interface Submit {
   busy: boolean;
   failure: Extract<Attempt, { ok: false }> | null;
-  connected: { url: string; settings: ClientSettings; wire: HomeWire | null } | null;
+  connected: Extract<Attempt, { ok: true }> | null;
 }
 
 /**
@@ -134,36 +143,70 @@ export async function submitAttempt(
 ): Promise<Submit> {
   const answer = await attempt(address, connect);
   return answer.ok
-    ? {
-        busy: false,
-        failure: null,
-        connected: { url: answer.url, settings: answer.settings, wire: answer.wire },
-      }
+    ? { busy: false, failure: null, connected: answer }
     : { busy: false, failure: answer, connected: null };
 }
 
 /**
- * Connect, and answer with what the greeting carried.
+ * The greeting, which the server sends before a client has asked for
+ * anything.
  *
- * **The body is the fixture and the signature is not.** Nothing here opens a
- * socket, so this answers as a forge whose `[web]` block names nothing -
- * every mark, palette and typeface at its built-in - and the home behind this
- * screen draws the fixture the server committed. Task 2 replaces the body
- * with the real `connect(url)`; `attempt` above is what turns its rejections
- * into the screen's own vocabulary, and no caller changes.
- *
- * It resolves rather than being `async`, because this body has nothing to
- * await and `require-await` is right to say so. The signature is the seam
- * all the same: Task 2's body awaits a socket here and changes no caller.
- *
- * The snapshot it carries is the fixture in a DEVELOPMENT build and `null`
- * otherwise, which is what lets the home be looked at without a running
- * forge while shipping nothing. `loadFixtureHome` is the DEV-guarded dynamic
- * import, so a production build has no fixture to reach.
+ * Bounded, because a socket that opens and then says nothing is a server
+ * this client cannot draw, and the form would otherwise hold a disabled
+ * button forever. Expiry rejects, and `attempt` above turns that into the
+ * same `unreachable` arm a refused connection gets.
  */
-export async function connectTo(input: string): Promise<Attempt> {
+function greeting(
+  connection: Connection,
+  handshakeMs: number,
+): Promise<{ settings: ClientSettings; version: number }> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      stop();
+      reject(new Error(`nothing greeted us within ${handshakeMs / 1000}s`));
+    }, handshakeMs);
+    const stop = connection.onMessage((message) => {
+      if (message.kind !== 'greeting') return;
+      clearTimeout(timer);
+      stop();
+      resolve({ settings: message.settings, version: message.version });
+    });
+  });
+}
+
+/**
+ * Connect, and answer with the socket and what the greeting carried.
+ *
+ * The connection is handed back open rather than read here: the pages
+ * subscribe through it, so what this returns is the channel rather than a
+ * picture taken down it.
+ */
+export async function connectTo(
+  input: string,
+  handshakeMs: number = HANDSHAKE_MS,
+): Promise<Attempt> {
   const normalized = normalizeAddress(input);
   if ('why' in normalized) return { ok: false, kind: 'address', why: normalized.why };
-  const wire = await loadFixtureHome();
-  return { ok: true, url: normalized.url, settings: DEFAULT_SETTINGS, wire };
+
+  const connection = connect(normalized.url);
+  try {
+    const { settings, version } = await greeting(connection, handshakeMs);
+    // The protocol's only mismatch detector: the greeting carries the version
+    // the server speaks, and a client that draws against another one has no
+    // way to tell a field it does not know from a field that is not there.
+    if (version !== PROTOCOL_VERSION) {
+      connection.close();
+      return {
+        ok: false,
+        kind: 'version',
+        why: `${normalized.url} speaks protocol ${version}, and this client speaks ${PROTOCOL_VERSION}`,
+      };
+    }
+    return { ok: true, url: normalized.url, settings, connection };
+  } catch (error) {
+    // Nothing is going to draw through this one, and leaving it open would
+    // have it reconnect behind a screen that already gave up on it.
+    connection.close();
+    throw error;
+  }
 }

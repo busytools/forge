@@ -12,50 +12,40 @@ narrowing at the boundary.
 
 ## Where the copies came from
 
-Taken from `busytools/forge`, branch `forge-server-socket`, at commit
-`cf1b935f16fbd8dc4703001708666fd95e1daadf`:
+Taken from `busytools/forge` main at
+`73b8751a45722bb22c8f79d2fef893b0810ef026`, where the socket landed, from
+`crates/forge-server/tests/wire_fixtures/`:
 
-```sh
-git show origin/forge-server-socket:crates/forge-server/tests/wire_fixtures/home.json
-git show origin/forge-server-socket:crates/forge-server/tests/wire_fixtures/session.json
-```
+- `home.json` is blob `c79eaedb28fbaf419e37814dcd9e950fe69331c2`
+- `session.json` is blob `9846d24ab9e628e8437ba8f251d5814fc1a4d532`
+- `usage.json` is blob `5b068cbab71cf6bf03767fecc3a4415d40fedeef`
 
-`home.json` is blob `3913de88e96eb6bf29c131dc430ac11d6a958164`, which that branch still carried unchanged
-at `3f0d755d`. It stays that way here: `crates/forge-server/tests/transport.rs`
-pins both shapes with a test, so a fixture cannot drift on the server side,
-and a hand-edited copy here would be the drift this pair exists to prevent.
+The copies are byte-identical to those blobs and `salvage.test.ts` fails if
+one drifts, which is what a formatter run did once and would again: `src/dev/fixtures/*.json`
+is in `.prettierignore` for that reason.
 
-## The branch has moved, and the copies are stale on purpose
+## What moved since the first copy
 
-**Do not re-sync them yet. This is the reconciliation Task 2 starts with.**
+The first copy was taken while the server was still building the socket, and
+three things changed before it landed. Each is now drawn:
 
-As of `a2cadb2b842cce588c8d75f55f7e6339de3542a8` the server's `home.json` is
-blob `bbc3f97c`, first reshaped at `5b3b2667` and unchanged since. **All four
-reads this slice reported missing have arrived**, and `dictate.enabled` came
-with them:
+- **A project row is nested.** `projects[]` entries are
+  `{project, work, tasks, crons, would_bind, chip}` rather than a bare
+  project, so the home's `where` cell, its `what` cell, the refusal line and
+  the row's chip are all reachable. The per-row working tree is the one that
+  mattered most: it was a per-row read the snapshot did not carry, so the
+  branch and the changed count could not be drawn at all.
+- **`unseen` is a new top-level key** - the seats whose last turn finished
+  while no client was showing them. It is the fact a late subscriber cannot
+  reconstruct from the records, which is why it is carried rather than
+  derived.
+- **`forge_version` and `forge_version_short` are new**, and the header
+  draws them rather than its own package version: the header states which
+  forge is RUNNING, and the client is a different program.
+- Also: `agents[]` gained `peer` and `peer_failure_at`, `dictate` gained
+  `enabled` and `device`, and `usage.json` is a third subject that no page
+  in this slice draws.
 
-- **Each entry of `projects` is now `{project, work, tasks, would_bind}`**
-  rather than a bare project. So `HomeWire.projects` no longer describes
-  what a live socket sends, and a real snapshot would render rows whose
-  `org`, `name` and `key` sit one level down under `project`.
-  `work` carries `{branch, changed, gate}`, which is the per-row working
-  tree `.row .where` had none of. `tasks` is what `.row .what` and its
-  status chip needed. `would_bind` is the missing half of the refusal line.
-- **`forge_version` and `forge_version_short` are new top-level keys**, which
-  is the header version nothing carried.
-- **`dictate` gains `enabled`**, beside `snapshot` and `models_dir`.
-
-`session.json` is blob `ade18792d222c48fda31e807283844bae41c75ba` and has not moved.
-
-So `homeFrom`'s types, `view.ts`'s gather and the README's table of absent
-reads all describe the pre-`5b3b2667` shape. Re-syncing is one commit and
-one pass through those three; it waits until the server's Task 10 settles,
-because it may move again.
-
-## A note for whoever wires the first icon
-
-The sprite is ported and tested as DATA: the test reads the mockups for the
-ids they use and asserts the sprite carries them. Nothing tests it as a
-DRAWN page, so removing `<Sprite />` from `Shell.svelte` is green today.
-Live but unchecked, because no page here draws an icon yet. Task 5's
-inspector is the first that will.
+`tasks` and `crons` are empty in the fixture, so their element shapes come
+from `crates/forge-server/src/transport/wire.rs` rather than from the file.
+The fixture pins what it carries; the source pins the rest.

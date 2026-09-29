@@ -1,8 +1,10 @@
 <script lang="ts">
   import Sprite from '../components/Sprite.svelte';
+  import { displayAddress, type Attempt } from '../connect/attempt';
+  import { watchHome, type HomeRead } from '../home/live';
   import { hrefFor, parseRoute, type Route } from '../routes';
+  import type { Connection, ConnectionStatus } from '../socket';
   import { applySettings } from '../theme';
-  import type { HomeWire } from '../wire/home';
   import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
   import Router from './Router.svelte';
 
@@ -16,7 +18,21 @@
   let route = $state<Route>(onDoor ? { name: 'connect' } : opened);
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
   let address = $state('');
-  let wire = $state<HomeWire | null>(null);
+  let home = $state<HomeRead>({ wire: null, refused: null });
+  // Raw, so the connection is handed around as the object it is rather than
+  // as a reactive proxy of it.
+  let connection = $state.raw<Connection | null>(null);
+  let connectionStatus = $state<ConnectionStatus>('connecting');
+  /**
+   * Whether a read has landed since the connection last opened.
+   *
+   * A reopen re-asks and the server encodes the home by reading each
+   * project's working tree, so there is a window after `onopen` where the
+   * page is drawing pre-drop rows. Clearing the notice on `open` would hide
+   * exactly that window, which is the one place a reader cannot tell the
+   * difference between stale and current.
+   */
+  let settled = $state(false);
 
   if (onDoor) history.replaceState(null, '', hrefFor({ name: 'connect' }));
 
@@ -32,15 +48,65 @@
     return () => removeEventListener('popstate', restore);
   });
 
+  /**
+   * The home's subscription, which lives as long as the shell does: the home
+   * is the page behind every other.
+   *
+   * The wire survives a drop. What does not survive it is the claim that the
+   * page is current, so the status is watched in the same effect: without it
+   * a page keeps drawing pre-drop data with nothing saying so, for as long as
+   * the backoff takes and every retry after it.
+   */
+  $effect(() => {
+    const open = connection;
+    if (open === null) return;
+    connectionStatus = open.status();
+
+    const stopHome = watchHome(open).subscribe(($home) => {
+      home = $home;
+      if ($home.wire !== null) settled = true;
+    });
+    const stopStatus = open.onStatus((next) => {
+      connectionStatus = next;
+      if (next !== 'open') settled = false;
+    });
+    return () => {
+      stopHome();
+      stopStatus();
+    };
+  });
+
+  /**
+   * The page has a read behind it and is no longer current.
+   *
+   * Both halves are needed: without the read the notice would sit above
+   * "Reading the fleet..." claiming a last read that does not exist, and
+   * without the staleness it would show while everything is fine.
+   */
+  const stale = $derived(
+    connection !== null && home.wire !== null && !(connectionStatus === 'open' && settled),
+  );
+
+  /** What it says, which depends on whether anything is still trying. */
+  const staleLine = $derived(
+    connectionStatus === 'closed'
+      ? `The connection to ${displayAddress(address)} was closed - showing the last read`
+      : `Reconnecting to ${displayAddress(address)} - showing the last read`,
+  );
+
   function go(next: Route) {
     route = next;
     history.pushState(null, '', hrefFor(next));
   }
 
-  function connect(connected: { url: string; settings: ClientSettings; wire: HomeWire | null }) {
+  function connect(connected: Extract<Attempt, { ok: true }>) {
+    // A second connect would otherwise leave the first socket open, still
+    // subscribed to the home and still re-reading it, for the rest of the
+    // session - and nothing would be drawing what it was keeping current.
+    connection?.close();
     settings = connected.settings;
     address = connected.url;
-    wire = connected.wire;
+    connection = connected.connection;
     go({ name: 'home' });
   }
 
@@ -77,4 +143,27 @@
 <!-- Once per page: a `<use>` reference resolves against the document it is in. -->
 <Sprite />
 
-<Router {route} {settings} {address} {wire} onconnect={connect} />
+{#if connectionStatus === 'mismatched'}
+  <p class="stale" role="alert">
+    That forge speaks a protocol this client does not. The two halves have to match, so one of them
+    needs updating.
+  </p>
+{:else if stale}
+  <!-- A live region rather than a landmark: the pages below each carry the
+       page's own `main`, and a second one would be a second page. -->
+  <p class="stale" role="status">{staleLine}</p>
+{/if}
+
+<Router {route} {settings} {address} {home} connected={connection !== null} onconnect={connect} />
+
+<style>
+  /* `--s2` rather than a wash of its own: the token set is closed, and a
+     notice is a raised surface. */
+  .stale {
+    background: var(--s2);
+    color: var(--text);
+    font-size: var(--fs-label);
+    padding: 6px 12px;
+    text-align: center;
+  }
+</style>

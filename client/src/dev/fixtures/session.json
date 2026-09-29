@@ -10,7 +10,18 @@
       "project": "proj",
       "label": "lead"
     },
-    "scan_cwd": "<fixture>/proj"
+    "scan_cwd": "<fixture>/proj",
+    "dictate_overrides": {
+      "styling": null,
+      "structure": null,
+      "context": null
+    }
+  },
+  "composer": {
+    "take": null,
+    "notice": null,
+    "compacting": false,
+    "sign_in": null
   },
   "header": {
     "model": null,
@@ -25,6 +36,14 @@
   },
   "mcp": null,
   "processes": null,
+  "background_tasks": [
+    {
+      "task_id": "t-fixture",
+      "task_type": "local_bash",
+      "description": "gh run watch",
+      "command": "gh run watch 123 --exit-status"
+    }
+  ],
   "monitors": [],
   "pending_ask": {
     "kind": "permission",
@@ -72,6 +91,73 @@
         },
         "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
         "parent_tool_use_id": null
+      },
+      {
+        "type": "assistant",
+        "message": {
+          "id": "m1",
+          "role": "assistant",
+          "model": "claude-opus-5",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu1",
+              "name": "Bash",
+              "input": {
+                "command": "ls",
+                "description": "List files"
+              }
+            }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null
+        },
+        "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        "parent_tool_use_id": null,
+        "uuid": "a1"
+      },
+      {
+        "type": "user",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "tu1",
+              "content": "a\nb",
+              "is_error": false
+            }
+          ]
+        },
+        "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        "parent_tool_use_id": null,
+        "uuid": "u2"
+      },
+      {
+        "type": "assistant",
+        "message": {
+          "id": "m-usage",
+          "role": "assistant",
+          "model": "claude-opus-5",
+          "content": [
+            {
+              "type": "text",
+              "text": "counted"
+            }
+          ],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 7,
+            "output_tokens": 11,
+            "cache_creation_input_tokens": 17,
+            "cache_read_input_tokens": 13
+          }
+        },
+        "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        "parent_tool_use_id": null,
+        "uuid": "a2",
+        "timestamp": "2025-01-02T03:04:05.000Z"
       }
     ],
     "compaction_count": 0
@@ -92,8 +178,18 @@
     }
   },
   "work": {
-    "branch": null,
-    "changed": null,
-    "gate": "gone"
-  }
+    "branch": "worktree-pr",
+    "changed": 3,
+    "gate": "in_repo"
+  },
+  "pr": {
+    "number": 1249,
+    "url": "https://example.test/pull/1249"
+  },
+  "closes": [
+    {
+      "number": 1215,
+      "url": "https://example.test/issues/1215"
+    }
+  ]
 }

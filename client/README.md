@@ -97,22 +97,20 @@ sprite stops being dead weight.
 `[web] theme` and `[web] font` arrive in the greeting. `ClientSettings`
 carries a name for each, not a value.
 
-## Four reads the home snapshot does not carry
+## Every cell the server's home draws
 
-`crates/forge-web/src/home.rs` draws cells the home snapshot cannot fill,
-so the client leaves them empty rather than guessing at them. Each is a
-read the server would have to add; none is a client defect.
+The four reads this file used to list as missing now cross on a project
+row, and the home draws all four: `work` fills `.row .where`, `tasks`
+fills `.row .what` with its status chip and its artifact link, `would_bind`
+decides the refusal's second arm, and `forge_version_short` carries the
+header's version. The fixture's `projects[]` entries are
+`{project, work, tasks, crons, would_bind, chip}`; `crates/forge-web/src/home.rs`
+is still the port's source for the markup.
 
-| Cell it feeds                   | What is missing                                                                                                                                                                                                                                               |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.row .where`                   | the per-row working tree. `home.rs` reads it from `WorkCache` per row, and `HomeWire` carries no work - the twentieth record has the working tree for a _session_, not for a home row.                                                                        |
-| `.row .what`, and `.st` with it | tasks. `HomeWire` carries none, so a row cannot show the task it holds, its status chip, or its artifact link. The header's task total goes with it.                                                                                                          |
-| the refusal line                | `would_bind`. `has_model` crosses, so `no model declared` is drawn; `no usable accounts` needs whether an account would bind, which does not cross. Until it is wired, a row draws the same middot whether a spawn would be allowed or the answer is unknown. |
-| the header's version            | forge's own version. `home.rs` draws `env!("CARGO_PKG_VERSION")` and nothing on the wire carries it. The claude version and the update notice both do, and are drawn.                                                                                         |
-
-A fifth is a view state rather than a read: the **unseen** mark. The
-server's `Live` owns it and does not encode it yet, so the client draws the
-state when it is handed one and computes none itself.
+**The unseen marks cross too**, as `unseen` - a list of slots. The server's
+`Live` owns that fact and a client cannot reconstruct it from the records,
+so it is carried rather than derived, and the client draws the state when
+it is handed one.
 
 ## Two the snapshot carries and nothing draws
 
@@ -122,10 +120,14 @@ draws as a healthy fleet. Dropped on purpose for now rather than by
 oversight: both are a view of their own, and the home's band is not where
 they belong.
 
+Two more ride the home row and no page in this slice draws them: `crons`,
+which is the inspector's schedules section, and `chip`, which is the
+account a row binds. Both belong to pages that do not exist yet.
+
 ## One URL is two pages until the store lands
 
 `/` is the home, and the app opens on `/connect` and rewrites the URL to
 match, so a cold load of `/` lands on the door. The not-found page's own
 link points at `/`, which routes to the home. So the same URL is two pages
-depending on how you arrived, and a reload flips it. The fix belongs with
-the socket: gate the home on a connection once a store holds one.
+depending on how you arrived, and a reload flips it. The fix is to gate the
+home on a connection, which is part of wiring the pages up.

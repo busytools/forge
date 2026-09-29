@@ -21,7 +21,20 @@
   const view = $derived(homeView(wire, address));
   // One clock for the page: every row's `when` reads against the same now,
   // so two rows a second apart cannot draw the same age differently.
-  const now = Date.now();
+  //
+  // Re-read with every snapshot AND on a tick. A snapshot alone is not
+  // enough: age is the one cell that is a function of time rather than of
+  // data, and a re-read needs an update the fleet may never send, so a page
+  // opened at nine on a quiet forge would still say "3h" at three.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!wire) return;
+    now = Date.now();
+    const tick = setInterval(() => {
+      now = Date.now();
+    }, 30_000);
+    return () => clearInterval(tick);
+  });
 </script>
 
 <!-- A landmark, so every part of the page sits inside one. The sheet's
@@ -33,23 +46,21 @@
       <span class="word">forge</span>
     </div>
     <div class="versions">
-      <!--
-        forge's own version is not here: nothing on the wire carries it, and
-        the server's home draws it from its own build. The claude version and
-        the update notice both cross in `cli_version`.
-      -->
-      {#if view.header.installed}claude {view.header.installed}{/if}
+      <!-- The forge build serving the socket, not this app's own version:
+           the header states which forge is running. -->
+      <b>v{view.header.version}</b>
+      {#if view.header.installed}{' \u{b7} '}claude {view.header.installed}{/if}
       {#if view.header.update}{' \u{b7} '}<span class="upd"
           >{'\u{2191}'} v{view.header.update} available</span
         >{/if}
     </div>
     <div class="totals">
-      <!--
-        The task count is not here either, for the same reason: the snapshot
-        carries no tasks, so a number would be invented rather than read.
-      -->
+      <!-- `.n` on the first two only: the sheet weights the fleet's own
+           counts bright and the project total quiet, which is the server's
+           markup too. -->
       <span class="n">{view.header.liveAgents}</span> agents {'\u{b7}'}
-      <span class="n">{view.header.projects}</span> projects
+      <span class="n">{view.header.tasks}</span> tasks {'\u{b7}'}
+      {view.header.projects} projects
     </div>
   </header>
 

@@ -38,6 +38,8 @@
       {/if}
     {:else if refused}
       <span class="txt">{refused}</span>
+    {:else if row.gate}
+      <span class="txt">{row.gate}</span>
     {:else}
       <span class="txt">{'\u{b7}'}</span>
     {/if}

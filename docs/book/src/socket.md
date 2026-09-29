@@ -45,6 +45,29 @@ A seat nobody has started is an answer rather than a silence. Subscribing
 to one that is not there comes back as an `error` saying so, so a client
 never draws an empty snapshot as a broken page.
 
+## How a message is tagged
+
+**Every message is tagged on `kind`**, which sits beside the message's own
+fields rather than replacing them. The bold name in the two sections below
+is that tag, so the `subscribe` below is `{"kind": "subscribe", ...}`.
+
+**The two payloads are tagged differently, and this is where a client goes
+wrong.** `command` carries one of the core's own `Command` values and
+`update` carries a `SessionUpdate`, and those two enums are tagged on the
+variant's own name rather than on `kind`:
+
+```json
+{"kind": "command", "command": {"cancel": {"key": {"org": "Acme", "project": "proj", "label": "lead"}}}, "reply_to": null}
+```
+
+A command's variant is its name around its field bag - `Command` has 33
+variants and every one is a struct variant. An update is the same shape one
+level in, `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
+and 51 of `SessionUpdate`'s 55 variants are struct variants too. The other
+four are why the payload is not one shape: three are unit variants and
+cross as the name alone, `"catalog_loaded"`, and one is a newtype, its
+name around the value inside it.
+
 ## What a client sends
 
 **`subscribe {what, answering}`** - answered with a `snapshot` of the whole
@@ -87,9 +110,11 @@ made of is the server's business. `null` means there is nothing above the
 page it came with, and that is where a walk backwards ends.
 
 **`command {command, reply_to?}`** - any of the core's own commands, as
-the core's own enum. For most of them `reply_to` is set to nothing: the
-command is fire-and-forget, because its effect arrives through the
-subscription, which is why a client subscribes before it acts.
+the core's own enum. `reply_to` is absent or `null` on most of them, and
+the two mean the same thing - a `null` is what the field is if a client
+writes it at all - because the command is fire-and-forget: its effect
+arrives through the subscription, which is why a client subscribes before
+it acts.
 
 **`reply_to` is required on exactly four of them**: a worker spawn, a
 despawn, and the review pair. Their outcome rides the reply and no update
@@ -113,13 +138,20 @@ was asked for.
 
 ## What a client receives
 
-- `snapshot` - a subject in full, in answer to a `subscribe`.
-- `update` - one `SessionUpdate`, for whichever subjects the client is
-  subscribed to. The subject decides: a home subscriber hears a session's
-  updates only when they change something a home row shows.
-- `page` - in answer to `more`, with its cursor.
-- `reply` - in answer to a command that asked for one.
-- `error` - `what` failed and `why`, in the core's own words.
+- **`snapshot {subject, data}`** - a subject in full, in answer to a
+  `subscribe`.
+- **`update {update}`** - one `SessionUpdate`, for whichever subjects the
+  client is subscribed to. The subject decides, and a home subscription has
+  **two** arms rather than one: an update a home row draws something of, and
+  an update belonging to no seat at all - the service status, the fatal
+  error, the plugin records - which is a field of the home's own snapshot and
+  which only a home subscription could have carried. Read the second arm as
+  absent and a page keeps what it read at subscribe for the life of the
+  connection.
+- **`page {conversation, rows, cursor}`** - in answer to `more`.
+- **`reply {reply_to, body}`** - in answer to a command that asked for one.
+- **`error {what, why}`** - `what` failed and `why`, in the core's own
+  words.
 
 ## What a subject carries
 

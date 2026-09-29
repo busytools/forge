@@ -1,6 +1,5 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
-  import type { HomeWire } from '../wire/home';
   import type { ClientSettings } from '../wire/types';
   import { DEFAULT_ADDRESS, submitAttempt, type Attempt } from './attempt';
 
@@ -9,11 +8,7 @@
     onconnect,
   }: {
     settings: ClientSettings;
-    onconnect: (connected: {
-      url: string;
-      settings: ClientSettings;
-      wire: HomeWire | null;
-    }) => void;
+    onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
 
   let address = $state(DEFAULT_ADDRESS);
@@ -80,6 +75,16 @@
             Nothing answered there. If forge is running, check that <code>[web] enabled</code> is
             not set to <code>false</code> in <code>forge.toml</code> - a forge whose owner turned the
             socket off refuses in silence, with nothing wrong at either end.
+          </p>
+        {:else if failure.kind === 'version'}
+          <!--
+            Not a connection problem, and nothing here can talk it round: a
+            forge ahead of this client draws against a protocol this one has
+            no way to read.
+          -->
+          <p class="h">
+            That forge speaks a protocol this client does not. The two halves have to match, so one
+            of them needs updating.
           </p>
         {/if}
       </div>

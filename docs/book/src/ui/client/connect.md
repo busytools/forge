@@ -89,6 +89,12 @@ the socket off refuses in silence, with nothing wrong at either end, and
 a generic "could not connect" sends the reader off to look at their
 network.
 
+**A forge that answers and speaks a protocol this client does not is a
+failure of its own**, with its own line. The connection was made, so the
+unreachable hint would send the reader to look at their network and their
+`forge.toml` for a problem that is neither; the only thing that fixes a
+mismatch is the two halves agreeing.
+
 ## What the first pass got wrong
 
 The first attempt drew the mark large and centred with the address in a

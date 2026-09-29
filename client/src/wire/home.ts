@@ -2,8 +2,9 @@
  * The home's snapshot, as `crates/forge-server/src/transport/wire.rs` writes
  * it, typed against the server's own fixture beside this file.
  *
- * `homeWire` is the fixture itself. Where this slice renders the home from a
- * store instead, that is the one binding that changes.
+ * The fixture's `tasks` and `crons` arrays are empty, so those two element
+ * shapes come from the Rust that emits them rather than from the fixture:
+ * the fixture pins what it carries, and the source pins the rest.
  */
 
 import type { SessionSlot } from './types';
@@ -25,10 +26,53 @@ export type PendingKind = 'question' | 'permission';
 /** `forge_gateway::LoadingState`, as the account pool reports it. */
 export type LoadingState = 'loading' | 'ready' | 'bailed';
 
+/** `forge_server::work::Gate`: what git said about a row's tree. */
+export type Gate = 'in_repo' | 'not_a_repository' | 'gone' | 'scanner_failed';
+
 /** A `SystemTime`, which serde writes as a pair rather than a number. */
 export interface WireTime {
   secs_since_epoch: number;
   nanos_since_epoch: number;
+}
+
+/** The branch a tree is on, how much moved in it, and whether git ran. */
+export interface WorkState {
+  branch: string | null;
+  changed: number | null;
+  gate: Gate;
+}
+
+/** A task's status. */
+export type TaskStatus = 'pending' | 'in_progress' | 'blocked' | 'completed';
+
+/**
+ * One task. `description` and `last_fired`-style fields carry
+ * `skip_serializing_if`, so a stored entry written before a field existed
+ * arrives without it rather than as null.
+ */
+export interface Task {
+  id: string;
+  project_name: string;
+  subject: string;
+  active_form: string | null;
+  detail: string | null;
+  status: TaskStatus;
+  owner: SessionSlot | null;
+  parent: string | null;
+  artifact: string | null;
+  estimate: string | null;
+  created_at: WireTime;
+  updated_at: WireTime;
+}
+
+/** One of a project's schedules. */
+export interface CronEntry {
+  id: string;
+  project_name: string;
+  kind: unknown;
+  prompt: string;
+  description?: string;
+  created_at: WireTime;
 }
 
 /** One agent as a view reads it: a lead and a worker are the same row. */
@@ -41,6 +85,9 @@ export interface AgentRow {
   pending_depth: number;
   last_activity: WireTime | null;
   reason: string | null;
+  /** The seat's peer-coordination counters, which its activity badge draws. */
+  peer: { outgoing: number; incoming: number; delivery_failed: number };
+  peer_failure_at: WireTime | null;
 }
 
 /** One project in `forge.toml`, as the roster reports it. */
@@ -59,6 +106,24 @@ export interface ProjectView {
    * session has gone.
    */
   sessions: { last_activity: WireTime | null }[];
+}
+
+/**
+ * One project row: the project, and the per-row reads the home draws it
+ * from. The reads sit beside the project rather than on a seat, because a
+ * home row is a project and a project is a row whether or not anything has
+ * started it.
+ */
+export interface ProjectWire {
+  project: ProjectView;
+  /** The branch and count for the project's own tree. */
+  work: WorkState;
+  tasks: Task[];
+  crons: CronEntry[];
+  /** Whether a spawn here would find an account, beside `has_model`. */
+  would_bind: boolean;
+  /** The account the row chips, and its state. */
+  chip: { account_name: string; state: string } | null;
 }
 
 export interface GatewayWire {
@@ -106,19 +171,30 @@ export interface DictateModel {
 }
 
 export interface DictateWire {
+  enabled: boolean;
   snapshot: { models: DictateModel[]; failure: DictateFailure | null };
   models_dir: string | null;
+  device: unknown;
 }
 
 export interface HomeWire {
-  projects: ProjectView[];
+  projects: ProjectWire[];
   agents: AgentRow[];
+  /**
+   * The seats whose last turn finished while no client was showing them.
+   * Nothing in the records can reconstruct this, so it is the one thing a
+   * late subscriber cannot draw for itself.
+   */
+  unseen: SessionSlot[];
   accounts: AccountsWire;
   plugins: { update_records: unknown[] };
   workers: { project: string; workers: unknown[] }[];
   connectors: unknown;
   dictate: DictateWire;
   cli_version: { installed: string | null; latest: string | null } | null;
+  /** The forge build serving the socket, which a client draws rather than its own. */
+  forge_version: string;
+  forge_version_short: string;
   service_status: unknown;
   fatal_error: unknown;
 }
@@ -137,6 +213,8 @@ const LIFECYCLES: Lifecycle[] = [
 
 const PENDING: PendingKind[] = ['question', 'permission'];
 const LOADING: LoadingState[] = ['loading', 'ready', 'bailed'];
+const GATES: Gate[] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];
+const TASK_STATUSES: TaskStatus[] = ['pending', 'in_progress', 'blocked', 'completed'];
 /** The states that cross as a bare string; the other two are objects. */
 const MODEL_STATES: Extract<DictateModelState, string>[] = [
   'pending',
@@ -182,6 +260,14 @@ export function homeFrom(data: HomeWire): HomeWire {
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
     })),
+    projects: data.projects.map((row) => ({
+      ...row,
+      work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
+      tasks: row.tasks.map((task) => ({
+        ...task,
+        status: narrow(task.status, TASK_STATUSES, 'pending'),
+      })),
+    })),
     accounts: {
       ...data.accounts,
       loading: data.accounts.loading.map((row) => ({
@@ -204,14 +290,3 @@ export function homeFrom(data: HomeWire): HomeWire {
     },
   };
 }
-
-/**
- * Where a snapshot enters the client: `homeFrom` narrows it, and the fixture
- * that a test or the dev route hands it lives under `src/dev/`, which no
- * shipped build reaches.
- *
- * The fixture's own casts are `resolveJsonModule`'s - it widens a JSON string
- * to `string`, so a member typed as a union of literals cannot be narrowed
- * from the file - and each is applied where that fixture is read, with a line
- * saying so.
- */

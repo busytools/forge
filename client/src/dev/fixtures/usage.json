@@ -1,0 +1,75 @@
+{
+  "today": {
+    "by_model": [],
+    "by_project": [],
+    "total": {
+      "label": "TOTAL",
+      "input": 0,
+      "cache_write_1h": 0,
+      "cache_write_5m": 0,
+      "cache_read": 0,
+      "output": 0,
+      "cost_usd": 0.0
+    }
+  },
+  "week": {
+    "by_model": [],
+    "by_project": [],
+    "total": {
+      "label": "TOTAL",
+      "input": 0,
+      "cache_write_1h": 0,
+      "cache_write_5m": 0,
+      "cache_read": 0,
+      "output": 0,
+      "cost_usd": 0.0
+    }
+  },
+  "month": {
+    "by_model": [],
+    "by_project": [],
+    "total": {
+      "label": "TOTAL",
+      "input": 0,
+      "cache_write_1h": 0,
+      "cache_write_5m": 0,
+      "cache_read": 0,
+      "output": 0,
+      "cost_usd": 0.0
+    }
+  },
+  "lifetime": {
+    "by_model": [
+      {
+        "label": "claude-opus-5",
+        "input": 7,
+        "cache_write_1h": 0,
+        "cache_write_5m": 17,
+        "cache_read": 13,
+        "output": 11,
+        "cost_usd": 0.0
+      }
+    ],
+    "by_project": [
+      {
+        "label": "scratch",
+        "input": 7,
+        "cache_write_1h": 0,
+        "cache_write_5m": 17,
+        "cache_read": 13,
+        "output": 11,
+        "cost_usd": 0.0
+      }
+    ],
+    "total": {
+      "label": "TOTAL",
+      "input": 7,
+      "cache_write_1h": 0,
+      "cache_write_5m": 17,
+      "cache_read": 13,
+      "output": 11,
+      "cost_usd": 0.0
+    }
+  },
+  "pricing_available": false
+}
