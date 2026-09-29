@@ -96,6 +96,12 @@ impl Fleet {
     /// `(org, projects)` entry, in the order given. `config_dir` has to
     /// outlive the fleet - the workspace's store lives under it, and each
     /// project's path is a directory of its own under it.
+    ///
+    /// **The project directories are not created.** A fixture that makes one
+    /// itself moves the key `project_key` answers, because that derivation
+    /// canonicalises a path that now resolves - and everything the fixture
+    /// registered before it appeared is registered under a key nothing looks
+    /// up again. Read `project_key` before creating one.
     pub fn in_dir(config_dir: &Path, orgs: &[(&str, &[&str])]) -> Result<Self, FixtureError> {
         let forge = config_dir.join("forge");
         std::fs::create_dir_all(&forge)?;
