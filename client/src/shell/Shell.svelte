@@ -56,7 +56,6 @@
     const launched = await boot(opened, remembered);
     booting = false;
     failure = launched.failure;
-    address = launched.address;
     if (launched.connected) take(launched.connected);
     // `null` is a route the app was addressed at. A launch opens the socket
     // its page reads but leaves the page itself alone.

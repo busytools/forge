@@ -2,6 +2,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberAddress } from '../connect/remembered';
 import Shell from './Shell.svelte';
 
@@ -13,6 +14,12 @@ import Shell from './Shell.svelte';
  * `onMount`, and the route a launch lands on is decided after the first frame.
  */
 const drawn = () => document.body.textContent ?? '';
+
+/** The address the door's field is showing, which is what a reader would edit. */
+function fieldAddress(): string {
+  const input = document.querySelector('#address');
+  return input instanceof HTMLInputElement ? input.value : '';
+}
 
 let app: Record<string, unknown> | null = null;
 
@@ -29,10 +36,10 @@ async function settle(): Promise<void> {
   flushSync();
 }
 
-/** Build the shell at `path`, with `address` already kept from last time. */
-async function openAt(path: string, address: string): Promise<void> {
+/** Build the shell at `path`, with `address` kept from last time or nothing. */
+async function openAt(path: string, address: string | null): Promise<void> {
   history.replaceState(null, '', path);
-  rememberAddress(address);
+  if (address !== null) rememberAddress(address);
   app = mount(Shell, { target: document.body, props: {} });
   await settle();
 }
@@ -50,6 +57,16 @@ afterEach(async () => {
  * reader and what it draws, not the transport.
  */
 describe('the shell at launch', () => {
+  /**
+   * A first launch has nothing to open on, and the door it lands on carries
+   * the address the app would use, so one Enter is enough.
+   */
+  it('opens the door on the default address when it remembers nothing', async () => {
+    await openAt('/', null);
+
+    expect(fieldAddress(), 'the door did not open on the default address').toBe(DEFAULT_ADDRESS);
+  });
+
   /**
    * A session URL is how a seat stays reachable, and a launch that moved the
    * reader off it would be a bookmark that lies. The socket is still opened
@@ -74,5 +91,6 @@ describe('the shell at launch', () => {
     expect(drawn(), 'the door drew no reason for a launch that had failed').toContain(
       'is not an address',
     );
+    expect(fieldAddress(), 'the door did not carry the address it tried').toBe('::::');
   });
 });

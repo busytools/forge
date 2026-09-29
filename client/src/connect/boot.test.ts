@@ -2,7 +2,7 @@ import { type AddressInfo, WebSocketServer } from 'ws';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { PROTOCOL_VERSION } from '../protocol';
-import { DEFAULT_ADDRESS, connectTo, submitAttempt } from './attempt';
+import { connectTo, submitAttempt } from './attempt';
 import { boot } from './boot';
 import { rememberedAddress, rememberAddress } from './remembered';
 
@@ -81,7 +81,7 @@ describe('what the app opens on', () => {
       name: 'home',
     });
     expect(launched.failure).toBeNull();
-    expect(launched.connected?.url).toBe(`ws://${server.address}/socket`);
+    expect(launched.connected?.address).toBe(server.address);
     launched.connected?.connection.close();
   });
 
@@ -90,7 +90,6 @@ describe('what the app opens on', () => {
     const launched = await boot({ name: 'home' }, rememberedAddress());
 
     expect(launched.route, 'a first launch did not open the door').toEqual({ name: 'connect' });
-    expect(launched.address, 'the door did not open on the default address').toBe(DEFAULT_ADDRESS);
     expect(launched.connected).toBeNull();
     expect(launched.failure).toBeNull();
   });
@@ -119,7 +118,6 @@ describe('what the app opens on', () => {
         launched.route,
         'an address that answered nothing opened something other than the door',
       ).toEqual({ name: 'connect' });
-      expect(launched.address, 'the door did not carry the address it tried').toBe(address);
       expect(launched.connected).toBeNull();
       expect(launched.failure?.kind).toBe('unreachable');
       expect(launched.failure?.why).toContain(address);

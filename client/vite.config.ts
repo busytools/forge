@@ -11,5 +11,9 @@ export default defineConfig(({ mode }) => ({
   // one component a test has to mount rather than render, because its work
   // happens in a launch and not in a render. Scoped to the test mode so the
   // bundle that ships resolves exactly as it did before.
+  //
+  // It REPLACES Vite's defaults rather than adding to them, so test mode also
+  // drops `module` and `development|production`. Harmless while nothing keys
+  // on either, and broader than it looks if something ever does.
   ...(mode === 'test' ? { resolve: { conditions: ['browser'] } } : {}),
 }));

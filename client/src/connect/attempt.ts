@@ -32,13 +32,7 @@ export type Attempt =
    * input is the server URL. `address` is that same server as the person
    * wrote it, which is what a field shows them rather than the socket URL.
    */
-  | {
-      ok: true;
-      address: string;
-      url: string;
-      settings: ClientSettings;
-      connection: Connection;
-    }
+  | { ok: true; address: string; settings: ClientSettings; connection: Connection }
   /**
    * `address` is an address this app cannot use, and the reader can fix it.
    * `unreachable` is a well-formed address nothing answered on, where the
@@ -84,13 +78,18 @@ export function normalizeAddress(input: string): { url: string } | { why: string
   return { url: parsed.toString() };
 }
 
-/** The `host:port` a person reads, for a socket URL the app holds. */
-export function displayAddress(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
+/**
+ * The `host:port` a person reads, for an address the app holds.
+ *
+ * Both halves reach here: the socket URL a connection was made at, and the
+ * address exactly as the person wrote it. The normaliser is what decides what
+ * an address IS, so this asks it rather than parsing again - a named host like
+ * `studio:8790` otherwise parses as a scheme with an empty host, and read back
+ * as an empty address rather than as the one that was typed.
+ */
+export function displayAddress(address: string): string {
+  const normalized = normalizeAddress(address);
+  return 'why' in normalized ? address : new URL(normalized.url).host;
 }
 
 /**
@@ -216,7 +215,7 @@ export async function connectTo(
         why: `${normalized.url} speaks protocol ${version}, and this client speaks ${PROTOCOL_VERSION}`,
       };
     }
-    return { ok: true, address: input.trim(), url: normalized.url, settings, connection };
+    return { ok: true, address: input.trim(), settings, connection };
   } catch (error) {
     // Nothing is going to draw through this one, and leaving it open would
     // have it reconnect behind a screen that already gave up on it.
