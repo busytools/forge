@@ -1,25 +1,24 @@
 <script lang="ts">
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
-  import { languageOf } from './code';
   import Code from './Code.svelte';
-  import { opensByDefault, type CallBody, type CallRow } from './rows';
+  import { languageFor, type CallBody, type ToolLeaf } from './leaves';
   import { searchHits } from './text';
 
   /**
    * One call: what it was, whether it came back, and what it came back with.
    *
-   * The row is keyed by the call's own id on the turn above, so growing one
+   * The row is keyed by the call's own id on the group above, so growing one
    * call does not redraw the calls around it - which is what keeps a row a
    * reader has opened open while the turn is still being written.
+   *
+   * `open` is what the row's own kind decides - a mutation's diff is drawn
+   * without being asked - and the reader's own toggling takes it from there.
    */
-  let { call }: { call: CallRow } = $props();
+  let { call, open = false }: { call: ToolLeaf; open?: boolean } = $props();
 
   /** The tools whose body is a list of hits rather than prose or a command's output. */
   const SEARCHES = new Set(['Grep', 'Glob', 'LS']);
-
-  /** Whether this row's body is drawn without being asked for. */
-  const opens = $derived(opensByDefault(call.name));
 
   /** The hits a search call came back with, or `null` when this is not one. */
   const hits = $derived(
@@ -30,11 +29,11 @@
 
   /** The language a read's body is drawn in, when the call named a file. */
   function asCode(piece: CallBody): string | null {
-    return call.name === 'Read' && piece.kind === 'text' ? languageOf(call.title) : null;
+    return piece.kind === 'text' ? languageFor(call) : null;
   }
 </script>
 
-<details class="leaf" open={opens} data-k={`call-${call.id}`}>
+<details class="leaf" {open} data-k={`call-${call.id}`}>
   <summary>
     {#if call.status === 'completed'}
       <Icon name="check" class="st" />

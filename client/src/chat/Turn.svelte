@@ -1,8 +1,12 @@
 <script lang="ts">
-  import Call from './Call.svelte';
-  import type { Turn } from './conversation';
+  import Card from './Card.svelte';
+  import type { Turn as HeldTurn } from './conversation';
+  import Group from './Group.svelte';
+  import Hooks from './Hooks.svelte';
+  import Notice from './Notice.svelte';
   import Prose from './Prose.svelte';
-  import { rowsOf, type ProseRow, type Row } from './rows';
+  import Report from './Report.svelte';
+  import { fold, type Unit } from './units';
 
   /**
    * One turn of the conversation, as the page draws it: what the reader said,
@@ -12,31 +16,28 @@
    * conversation rather than from where it sits, so a turn prepended above it
    * neither re-measures it nor closes what the reader has open.
    *
-   * **It does not group.** A run of consecutive calls is drawn as the calls it
-   * is, one row each, in the order the turn wrote them: the group, its family
-   * lanes and its roll-up are the fold's, and they arrive on top of this.
+   * **The fold is not this component's.** `fold` decides what the turn's
+   * messages are - one group per run of calls, one lane per family, a card for
+   * a question, a notice for a delivery - and this draws what it is given.
    */
-  let { turn, cwd }: { turn: Turn; cwd: string | null } = $props();
+  let { turn, cwd }: { turn: HeldTurn; cwd: string | null } = $props();
 
-  const rows = $derived(rowsOf(turn, cwd));
+  const units = $derived(fold(turn.messages, cwd));
 
-  /**
-   * A reader's own words on their own, or a run of everything else in one
-   * block. The block is what carries the padding between them, so a turn's
-   * rows sit together rather than each taking the space of a turn.
-   */
-  type Block = { mine: true; row: ProseRow } | { mine: false; rows: Row[] };
+  /** A reader's own words on their own, or a run of everything else in one block. */
+  type Block =
+    { mine: true; unit: Extract<Unit, { kind: 'user' }> } | { mine: false; units: Unit[] };
 
   const layout = $derived.by(() => {
     const out: Block[] = [];
-    for (const row of rows) {
-      if (row.kind === 'prose' && row.mine) {
-        out.push({ mine: true, row });
+    for (const unit of units) {
+      if (unit.kind === 'user') {
+        out.push({ mine: true, unit });
         continue;
       }
       const last = out[out.length - 1];
-      if (last !== undefined && !last.mine) last.rows.push(row);
-      else out.push({ mine: false, rows: [row] });
+      if (last !== undefined && !last.mine) last.units.push(unit);
+      else out.push({ mine: false, units: [unit] });
     }
     return out;
   });
@@ -45,14 +46,26 @@
 {#each layout as block, at (at)}
   {#if block.mine}
     <!-- No label: the orange rule is the attribution. -->
-    <div class="mine">{block.row.text}</div>
+    <div class="mine">{block.unit.text}</div>
   {:else}
     <div class="work">
-      {#each block.rows as row (row.key)}
-        {#if row.kind === 'call'}
-          <Call call={row} />
-        {:else}
-          <Prose text={row.text} />
+      {#each block.units as unit, index (`${at}-${index}`)}
+        {#if unit.kind === 'text'}
+          <Prose text={unit.text} />
+        {:else if unit.kind === 'group'}
+          <Group families={unit.families} status={unit.status} />
+        {:else if unit.kind === 'question'}
+          <Card kind="question" asked={unit.asked} />
+        {:else if unit.kind === 'peer'}
+          <Card kind="peer" card={unit.card} />
+        {:else if unit.kind === 'peers'}
+          <Card kind="peers" cards={unit.cards} />
+        {:else if unit.kind === 'notice'}
+          <Notice notice={unit.notice} />
+        {:else if unit.kind === 'hooks'}
+          <Hooks actions={unit.actions} infos={unit.infos} />
+        {:else if unit.kind === 'report'}
+          <Report info={unit.info} />
         {/if}
       {/each}
     </div>

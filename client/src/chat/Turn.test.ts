@@ -101,7 +101,12 @@ describe('one turn, as the page draws it', () => {
   it('leaves a call that is still out closed, with the ring for a status', () => {
     const body = draw(said([use('c1', 'Bash', { command: 'just check' })]));
 
-    expect(body).toContain('<span class="ring"></span>');
-    expect(between(body, '<details', '>'), 'it waits to be asked').not.toContain('open');
+    // The GROUP opens - the mockup draws a run open - and the call inside it
+    // waits to be asked, which is the difference from the terminal: it expands
+    // everything at once and the page opens one call at a time.
+    const leaf = body.slice(body.indexOf('<details class="leaf"'));
+    expect(leaf, 'the call is on the page').not.toBe('');
+    expect(leaf.slice(0, leaf.indexOf('>')), 'it waits to be asked').not.toContain('open');
+    expect(leaf).toContain('<span class="ring"></span>');
   });
 });

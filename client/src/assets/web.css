@@ -743,13 +743,19 @@ details.msg[open] > summary .arw { color: var(--teal); }
 /* The chip's label follows the row it sits on. */
 .turninfo .tog::after { content: "expand"; }
 .turninfo[open] .tog::after { content: "collapse"; }
-/* The body's two columns, each cell a label and its figure. */
-.tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
-  padding: 6px 0 0 18px; width: max-content;
+/* The body's two columns, each FACT a wrapper holding a label and its figure.
+   A fact with no partner used to keep a cell in column with an empty span
+   beside it, which is a grid auto-flowing rather than a body saying what it
+   holds; the wrapper is placed where it is instead. */
+.tibody { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+  column-gap: 26px; row-gap: 2px; padding: 6px 0 0 18px; width: max-content;
   font-family: var(--mono); font-size: var(--fs-data); }
-.tibody .l, .tibody .n { color: var(--muted); }
-.tibody .wide { grid-column: 1 / -1; }
-.tibody b { color: var(--dim); font-weight: 400; display: inline-block; width: 78px; }
+/* The label column is as wide as its widest label rather than the 78px a
+   terminal column was: a figure and its label are a pair, and the pair sizes
+   itself. */
+.tibody .fact { display: contents; }
+.tibody .fact b { color: var(--dim); font-weight: 400; }
+.tibody .fact > span { color: var(--muted); }
 /* Two columns of cells need 458px plus the chat's insets, so a chat narrower
    than about 486 clips them: the grid is as wide as its content and the
    conversation scrolls sideways. Below the phone step the cells take one
@@ -758,7 +764,7 @@ details.msg[open] > summary .arw { color: var(--teal); }
    sits above that 486 on purpose - a phone at a larger text size needs the
    columns to give way before the letters do. */
 @media (max-width: 560px) {
-  .tibody { grid-template-columns: 1fr; width: auto; }
+  .tibody { grid-template-columns: max-content minmax(0, 1fr); width: auto; }
 
   /* A thumb, not a cursor. The by-width checks measured the layout and never
      the reach, and the smallest controls here - the composer's send, the
