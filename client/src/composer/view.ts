@@ -11,7 +11,7 @@
  */
 
 import type { Connection } from '../socket';
-import type { Lifecycle } from '../wire/home';
+import type { DictateWire, Lifecycle } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { askFrom, composerFrom, type Ask, type ComposerState, type Notice } from './wire';
 
@@ -89,12 +89,25 @@ export interface ComposerProps {
   /**
    * Whether this install can dictate at all.
    *
-   * A home read rather than a session one - the engine is process-wide - so the
-   * page hands it over beside the record it already holds. Off when absent: an
-   * install with `[dictate]` off loads no models, and a control it cannot honour
-   * is worse than none.
+   * A home read rather than a session one - the engine is process-wide - so
+   * whoever mounts the composer states it from the home wire. **Required, and
+   * that is the point**: it was optional first, which is how the mount came to
+   * draw no mic for a whole round without anything failing. A control this
+   * install cannot honour is worse than none, but a silent default is worse
+   * than both.
    */
-  dictation?: boolean;
+  dictation: boolean;
+}
+
+/**
+ * Whether dictation is on offer, from the home wire's own two halves.
+ *
+ * `enabled` is carried rather than inferred from an empty model list, because
+ * that list is empty both for a switched-off `[dictate]` and for a snapshot
+ * taken before the models loaded - so both are read and neither is assumed.
+ */
+export function dictationOffered(dictate: DictateWire): boolean {
+  return dictate.enabled && dictate.snapshot.models.length > 0;
 }
 
 /** The composer's own state, read off the record the page handed it. */

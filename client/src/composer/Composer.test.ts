@@ -428,6 +428,28 @@ describe('the dock', () => {
     expect(harness.sent, 'a toggle is never an answer').toEqual([]);
   });
 
+  it('toggles once when the row itself holds the focus, rather than twice', () => {
+    open({ record: record({ pending_ask: questionAsk() }) });
+
+    // A browser focuses a `tabindex="-1"` row when it is clicked, so the row's
+    // own key handler and the listbox's both see the next key: without the row
+    // stopping it, one Space toggles the box on and the other straight back.
+    // Focus is moved by hand because jsdom does not focus on click, and the
+    // state under test is the one Chromium reaches.
+    const row = options()[0];
+    if (!(row instanceof HTMLElement)) throw new Error('the dock drew no options');
+    row.focus();
+    flushSync();
+    expect(document.activeElement, 'the row is holding the keyboard').toBe(row);
+
+    press(' ');
+
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'the row turned on and stayed on',
+    ).toEqual([true, false, false]);
+  });
+
   it('moves the mark back out of the own-words field, so the options are reachable again', () => {
     const harness = open({ record: record({ pending_ask: questionAsk() }) });
     const list = document.querySelector('.dock [role="listbox"]');

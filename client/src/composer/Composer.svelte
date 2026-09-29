@@ -21,15 +21,7 @@
   /** How long a landed take's border holds its green beat, which the book states. */
   const BEAT_MS = 450;
 
-  let {
-    record,
-    slot,
-    connection,
-    seat,
-    // Off unless the page says otherwise: an install with `[dictate]` off loads
-    // no models, and a control it cannot honour is worse than none.
-    dictation = false,
-  }: ComposerProps = $props();
+  let { record, slot, connection, seat, dictation }: ComposerProps = $props();
 
   /**
    * The reader's own words, held HERE rather than in the field.

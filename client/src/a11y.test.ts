@@ -119,6 +119,7 @@ describe('axe over the rendered pages', () => {
             slot: SLOT,
             seat: seatRead(),
             connection: wire().connection,
+            dictation: false,
           } satisfies ComposerProps,
         }).body
       }</main>`;

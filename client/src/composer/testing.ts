@@ -37,7 +37,14 @@ export function seatRead(over: Partial<SeatRead> = {}): SeatRead {
 
 /** The props a page hands the composer, which every test starts from. */
 export function props(over: Partial<ComposerProps> = {}): ComposerProps {
-  return { record: record(), slot: SLOT, seat: seatRead(), connection: wire().connection, ...over };
+  return {
+    record: record(),
+    slot: SLOT,
+    seat: seatRead(),
+    connection: wire().connection,
+    dictation: false,
+    ...over,
+  };
 }
 
 /**

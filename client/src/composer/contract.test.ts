@@ -5,7 +5,7 @@ import session from '../dev/fixtures/session.json';
 import { seatState } from '../session/view';
 import { sessionFrom } from '../session/wire';
 import type { Connection } from '../socket';
-import type { ComposerProps } from './view';
+import { dictationOffered, type ComposerProps } from './view';
 
 /** Nothing is dispatched here: the check is the assignment, not a render. */
 const idle = {
@@ -31,6 +31,9 @@ describe("the composer's props as the session page builds them", () => {
       slot,
       seat: seatState(homeWire, slot),
       connection: idle,
+      // Read the way the router reads it, so the seam covers the whole prop
+      // set rather than the four the record carries.
+      dictation: dictationOffered(homeWire.dictate),
     };
 
     expect(

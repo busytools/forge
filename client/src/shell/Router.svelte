@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Attempt } from '../connect/attempt';
   import Composer from '../composer/Composer.svelte';
+  import { dictationOffered } from '../composer/view';
   import Connect from '../connect/Connect.svelte';
   import Fixture from '../dev/Fixture.svelte';
   import Home from '../home/Home.svelte';
@@ -32,6 +33,12 @@
     connection: Connection | null;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
+
+  /**
+   * Whether this install can dictate, which is the home's read rather than the
+   * seat's: the engine is process-wide, and the page's own wire carries it.
+   */
+  const dictate = $derived(home.wire === null ? false : dictationOffered(home.wire.dictate));
 </script>
 
 {#if route.name === 'connect'}
@@ -69,7 +76,7 @@
          no box at all and the seat is subscribed as an observer. -->
     <Session slot={route.slot} {connection} wire={home.wire}>
       {#snippet composer(props)}
-        <Composer {...props} />
+        <Composer {...props} dictation={dictate} />
       {/snippet}
     </Session>
   {:else if connected}

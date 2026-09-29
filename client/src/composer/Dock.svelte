@@ -392,6 +392,12 @@
           onkeydown={(event) => {
             if (event.key !== 'Enter' && event.key !== ' ') return;
             event.preventDefault();
+            // A row keeps the keys it answers for itself. It is focusable - a
+            // browser focuses it on click - so without this the same key
+            // reaches the listbox's branch behind it and undoes the toggle, or
+            // submits what this just chose. Arrows and Escape still bubble,
+            // because those are the listbox's own.
+            event.stopPropagation();
             choose(at);
           }}
         >
