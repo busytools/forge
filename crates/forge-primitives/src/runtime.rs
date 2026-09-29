@@ -424,7 +424,8 @@ pub struct SessionTurnState {
 /// A view keeps a monitor section while any of its monitors is running:
 /// once every one of them is terminal the set is dropped rather than left
 /// standing empty, in the terminal and in the core alike.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MonitorStatus {
     /// Monitor is active. Persistent monitors stay `Running` until
     /// TaskStop or session end; non-persistent monitors run until
@@ -451,7 +452,7 @@ impl MonitorStatus {
 /// One Monitor this session has running or has finished: the tool
 /// call that started it, the CLI's task id once the wire names one,
 /// and where it got to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MonitorRecord {
     /// `tool_use_id` of the `Monitor` tool call - the id every
     /// monitor surface is keyed by.

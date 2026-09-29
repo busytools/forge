@@ -96,6 +96,29 @@ impl UpdateFanout {
         self.deliver(update, None)
     }
 
+    /// How many subscribers are attached.
+    ///
+    /// A test uses this to tell one subscription from another. "Did anyone
+    /// receive" cannot: a listener that is always there - the socket's own
+    /// fold - makes every emit land, however many views have come and gone.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn count(&self) -> usize {
+        self.shared.lock().subscribers.len()
+    }
+
+    /// How many subscribers could answer a prompt. Test-only: the role decides
+    /// whether the core parks a turn on a subscriber's reply, and nothing else
+    /// reports it.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn answering_count(&self) -> usize {
+        self.shared
+            .lock()
+            .subscribers
+            .iter()
+            .filter(|held| held.role == SubscriberRole::Answering)
+            .count()
+    }
+
     /// Deliver `update` to every subscriber, and report whether one that
     /// can ANSWER it took it. A path that parks a turn on an answer uses
     /// this rather than [`Self::send`]: an observer takes the update and

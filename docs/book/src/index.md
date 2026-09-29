@@ -12,14 +12,17 @@ three things sharing a repository:
 - **An SDK for the `claude` CLI.** `forge-sdk` spawns the binary and
   speaks its stream-json protocol over stdio: the codec, the transport,
   control-request dispatch, and an in-process MCP host.
-- **A second view.** `forge-web` serves HTTP from the process the TUI
-  runs in, on `127.0.0.1` by default, so reaching it from another
-  machine is a `[web] bind` line rather than a second forge. It serves
-  the home - every project under its org, what each agent is doing, and
-  what needs you, kept live over a stream the page subscribes to - and a
-  page per session at `/session/{org}/{project}/{label}`, carrying the
-  projects rail, the chat column, the inspector and the composer, and
-  kept live by a stream of its own.
+- **A socket for another view.** forge serves one WebSocket from the
+  process the TUI runs in, on `127.0.0.1` by default, so reaching it
+  from another machine is a `[web] bind` line rather than a second
+  forge. A client subscribes to a subject - the home, a session, the
+  token/cost pool - is answered with that subject in full and then with
+  the updates that change it (`usage` is the exception: it is a scan, and
+  is answered once per subscribe), and acts through the same command bus the
+  terminal uses. The [socket page](./socket.md) is the protocol; the
+  client itself does not exist yet, and `forge-web`, which served pages
+  on that port until the socket took it, is parked until it is rebuilt
+  against the socket.
 
 forge never calls the Anthropic API itself. It spawns `claude` and
 talks to it, so the CLI stays the thing that runs the agent loop.

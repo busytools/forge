@@ -12,8 +12,8 @@ forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + gateway
 forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
 forge-server     ───→ primitives + workspace
-forge-web        ───→ primitives + server
-forge-tui        ───→ primitives + workspace + server + web (no direct agent dep)
+forge-web        ───→ primitives + server (parked: nothing depends on it yet)
+forge-tui        ───→ primitives + workspace + server (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```
 
@@ -48,32 +48,31 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-workspace`** - multi-session orchestrator. Owns
   `DomainSession` + per-session `SessionTask` actors. Single TUI-facing
   facade.
-- **`forge-server`** - what a view needs and nothing about how it
-  renders: the read surface a view uses, the session records as a view
-  sees them, the peer envelope parsing in both directions, the tool
-  family table, forge's own slash commands, the policy that folds a run
-  of blocks, the transcript
+- **`forge-server`** - the server: what a client reads of the core, and
+  no view of its own. The read surface a client uses, the session records
+  as a view sees them, the peer envelope parsing in both directions, the
+  tool family table, forge's own slash commands, the policy that folds a
+  run of blocks, the transcript
   fold that turns a conversation's messages into the units a view draws,
   the fold that turns a session's dispatches into the sub-agent instances
-  a view draws, and the two reads of a pty's own text: its escape
-  sequences, and a Monitor's watched-command output tail.
-  Sits between `forge-workspace` and the views, so a second view attaches
-  beside the TUI rather than duplicating it. Nothing here may depend on a
-  view. It reaches the workspace for the one thing a session record cannot
-  answer alone - whether a tool's input parses into a lifecycle block -
-  and does that through `forge-workspace` rather than `forge-agent`, so
-  the agent layer stays behind the workspace facade the way it does for
-  the TUI. The name is this crate; forge's in-process MCP server is
-  unrelated and is named as the `forge` MCP server.
-- **`forge-web`** - the web view: HTTP served beside the TUI, in the
-  process that already owns the sessions, so a second view costs a
-  listener rather than a second cron scheduler. Server-rendered markup
-  over axum: the home, kept live by a stream the page subscribes to, and
-  a page per session at `/session/{org}/{project}/{label}`, carrying the
-  projects rail, the chat column, the inspector and the composer, and
-  kept live by a stream of its own. It never names `forge-workspace`:
-  reads of the core and of a working tree both go through
-  `forge-server`, which re-exports what a view needs.
+  a view draws, a Monitor's watched-command output tail, and the socket
+  that carries all of it to whatever is drawing.
+  Sits between `forge-workspace` and the clients, so a second client
+  attaches beside the TUI rather than duplicating it. Nothing here may
+  depend on a view. It reaches the workspace for the one thing a session
+  record cannot answer alone - whether a tool's input parses into a
+  lifecycle block - and does that through `forge-workspace` rather than
+  `forge-agent`, so the agent layer stays behind the workspace facade the
+  way it does for the TUI. The name is this crate; forge's in-process MCP
+  server is unrelated and is named as the `forge` MCP server.
+- **`forge-web`** - the web view, parked. It served a page per session
+  from the process that owns the sessions; the socket took the port those
+  pages were on, so nothing serves them until a client lands. It stays a
+  workspace member and keeps compiling, and nothing depends on it: the
+  client is built against the socket, and this crate is deleted then. Its
+  pages were server-rendered markup over axum, and it never named
+  `forge-workspace`: reads of the core and of a working tree both went
+  through `forge-server`, which re-exports what a view needs.
 - **`forge-tui`** - pure view layer. Per-session presentation on
   `UiSession`. No multi-session logic, no agent internals.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
@@ -93,8 +92,7 @@ reasoning.
 **Config vs state.** `forge.toml` (under `<config_dir>/forge/`) is the
 only file forge reads for config: read-only, hand-authored, safe to
 sync. All runtime state (durable crons, Gotify subs, Slack subs and
-sweep watermarks, dynamic workers, session ids, `/spinner` override,
-usage cache)
+sweep watermarks, dynamic workers, session ids, usage cache)
 lives in one machine-local redb DB beside the lock. None of it belongs
 in a synced config dir: the DB churns roughly once a minute, redb's
 binary file cannot be merged, and the lock's inode must stay put.
@@ -146,31 +144,35 @@ Work top-down; first match wins.
 9. **A widget, screen, key binding, mouse handler, or per-session
    presentation state?** -> `forge-tui`. Render in `ui/`, dispatch +
    state in `app/`.
-10. **A view that is not the TUI?** (an HTTP route, its markup, its own
-    per-view state) -> `forge-web`. Sits beside `forge-tui` on the same
-    core: a read of the core goes through the view surface in
-    `forge-server`, never `forge-workspace`, and it starts no
+10. **A view that is not the TUI?** (its pages, its markup, its own
+    per-view state) -> a crate of its own, built against the socket in
+    `forge-server` rather than against the core. `forge-web` is the one
+    that exists, parked until it is rebuilt that way. Either way it sits
+    beside `forge-tui` on the same core, reads through the view surface
+    in `forge-server` and never `forge-workspace`, and starts no
     subsystem of its own.
 11. **A wire-conformance scenario?** -> `forge-test-harness`.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
-`cli_version`, `conversation`, `slash_commands`, `forge_commands`,
-`subagents`, `emoji`,
+`cli_version`, `conversation`, `folded_units`, `slash_commands`,
+`forge_commands`, `subagents`,
 `file_index`, `respect_gitignore`, `header`, `mcp_servers`,
-`processes`, `monitors` and `pending_ask` - receives changes through
+`processes`, `background_tasks`, `monitors`, `pending_ask`,
+`fatal_error`, `service_status`
+and `usage` - receives changes through
 `subscribe()`, and acts through `dispatch()`, which is a verb rather than
 an accessor so a view is handed the commands it needs and not the whole
-core. All twenty-two exist in `forge-server`, and the TUI reads
+core. All twenty-six exist in `forge-server`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk
-through them; the web view reads its project roster and agent rows, the
+through them; a second view reads its project roster and agent rows, the
 account pool, the worker registry, connector subscriptions and dictation
 state through those, the claude version through the tenth, its
 composer's data through `slash_commands`, `forge_commands`, `subagents`,
-`emoji`, `file_index` and `respect_gitignore`, and the conversation,
+`file_index` and `respect_gitignore`, and the conversation,
 header, inspector and the prompt it answers through
 `conversation`, `header`, `mcp_servers`, `processes`, `monitors` and
 `pending_ask`, and dispatches its composer's send, its prompt answers and
@@ -213,6 +215,37 @@ forge-tui", so bias toward the deeper crate when unsure.
 - **Workspace methods bypassing the Command bus for user actions.**
   User-initiated actions go through `dispatch(Command)`; query-style
   refreshes are direct inherent methods. Don't conflate them.
+
+## The server stack and the client stack
+
+Two stacks, and one test decides which side a thing is on: **does
+removing it change what the data IS, or only how it is DRAWN?** Only
+drawn means it belongs to the client.
+
+- **The server stack** is `forge-server` and everything under it: what a
+  client reads of the core, the records as a view sees them, the folds,
+  the working tree as state, and the socket that carries it. It is what a
+  client cannot work out for itself, and it is the same for every client.
+- **The client stack** is whatever draws: `forge-tui` today, whatever
+  lands beside it after. Glyphs, colours, weights, spacing, an order
+  chosen for display, the label a row is spelled with, the stripping of a
+  command's escape sequences - any choice about appearance rather than a
+  fact about the session.
+
+Three things hold at the line:
+
+- **The client relies on the server completely, and `forge.toml` stays
+  the single source of truth.** So the server MAY hold a catalogue, a
+  set, an index or a setting that a client reads - that is the server
+  doing its job. What it may NOT hold is the decision about how any of it
+  appears.
+- **The server owns no git-level presentation.** It carries the working
+  tree as state - the branch, what changed - and nothing that renders one:
+  no diff, no tree, no colouring, no highlighted excerpt.
+- **A thing the TUI needs moves into `forge-tui`; it is never dropped.**
+  A thing both need keeps its home on the server with only the
+  presentation half leaving, and the terminal works out of the box at
+  every step - which is what makes the move safe to take in small pieces.
 
 ## Communication contract (MVVM)
 

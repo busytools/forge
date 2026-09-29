@@ -166,8 +166,9 @@ fn create_app_impl(
     // `[ui]` settings up-front so the picker doesn't shift if the user
     // edits forge.toml mid-session.
     let active_view = ActiveView::Launchpad;
-    let ui_settings = workspace.ui_settings();
-    let spinner_style = ui_settings.spinner;
+    // The spinner and the cadence are the terminal's own: `[ui]` was a server
+    // key for a client's presentation, and it is gone with the rest of it.
+    let spinner_style = crate::ui::spinner_style::SpinnerStyle::default();
     let initial_launchpad_state = crate::app::LaunchpadState {
         selected_index: 0,
         opened_at: std::time::Instant::now(),
@@ -234,7 +235,7 @@ fn create_app_impl(
         spinner_last_advance_at: None,
         spinner_style,
         spinner_epoch: std::time::Instant::now(),
-        repaint_cadence: ui_settings.fps,
+        repaint_cadence: crate::ui::spinner_style::RepaintCadence::default(),
         spinner_picker: None,
         model_picker: None,
         gateway_view: None,
@@ -752,32 +753,34 @@ mod tests {
         assert!(app.start_new_run, "--new threads onto App.start_new_run");
     }
 
+    /// The retired `[ui]` section is a declared ghost: a config still carrying
+    /// it LOADS, warns, and the App takes neither value. Reworked from the
+    /// version that asserted a refusal, which is what it did while the section
+    /// was deleted outright - and a refusal there would have bricked the boot
+    /// of every config still holding one.
     #[tokio::test(flavor = "current_thread")]
-    async fn create_app_seeds_ui_settings_from_config() {
+    async fn create_app_ignores_a_retired_ui_section() {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         let project_path_str = project_dir.path().to_string_lossy().replace('\\', "/");
         std::fs::write(
             forge_dir(config_dir.path()).join("forge.toml"),
             format!(
-                // `notifications_osc9` is a removed key: this fixture keeps
-                // one so the load is proven to tolerate a stale config.
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n\n[ui]\nspinner = \"ember\"\nfps = 60\nnotifications_osc9 = \"off\"\n"
+                // Both keys are deliberately not the defaults, so an App that
+                // read either would show it.
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n\n[ui]\nlaunchpad_spinner = \"ember\"\nfps = 60\n"
             ),
         )
         .expect("write forge.toml");
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .expect("workspace");
+            .expect("a retired section still loads");
         let cli = cli_with(None);
         let local = tokio::task::LocalSet::new();
         let app = local
             .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
             .await;
-        assert_eq!(app.spinner_style, forge_workspace::SpinnerStyle::Ember);
-        // Deliberately not the default, or the assertion would pass on a
-        // config value that never reached the App.
-        assert_eq!(app.repaint_cadence, forge_workspace::RepaintCadence::from_fps(60));
-        assert_ne!(app.repaint_cadence, forge_workspace::RepaintCadence::default());
+        assert_eq!(app.spinner_style, crate::ui::spinner_style::SpinnerStyle::default());
+        assert_eq!(app.repaint_cadence, crate::ui::spinner_style::RepaintCadence::default());
     }
 
     #[cfg(feature = "perf")]

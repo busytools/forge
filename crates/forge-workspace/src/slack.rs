@@ -190,7 +190,7 @@ impl Workspace {
     ) -> (Uuid, tokio::sync::oneshot::Receiver<bool>) {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let id = draft.id;
-        self.slack_drafts.lock().insert(id, (caller.clone(), sender));
+        self.slack_drafts.lock().insert(id, (caller.clone(), draft.clone(), sender));
         let answerable =
             self.update_sender().send_answering(crate::protocol::SessionUpdate::SlackPostPending {
                 key: caller.clone(),
@@ -282,10 +282,10 @@ impl Workspace {
         approved: bool,
     ) -> bool {
         let mut drafts = self.slack_drafts.lock();
-        if !drafts.get(&id).is_some_and(|(owner, _)| owner == caller) {
+        if !drafts.get(&id).is_some_and(|(owner, _, _)| owner == caller) {
             return false;
         }
-        let Some((_, sender)) = drafts.remove(&id) else { return false };
+        let Some((_, _, sender)) = drafts.remove(&id) else { return false };
         let _ = sender.send(approved);
         true
     }

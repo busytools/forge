@@ -13,9 +13,10 @@ use forge_server::surface::ViewSurface;
 use maud::{Markup, PreEscaped, html};
 
 use crate::home::{Home, render, render_region};
-use crate::stream::{Live, events, session_events};
-use crate::work::WorkCache;
+use crate::stream::{events, session_events};
 use crate::{brand, theme};
+use forge_server::live::Live;
+use forge_server::work::WorkCache;
 
 /// The stylesheet, vendored rather than read from disk: the pages are
 /// served from the process, and a view that needed a file beside it would
@@ -91,7 +92,7 @@ pub async fn start(state: WebState) -> Result<Option<SocketAddr>, WebError> {
     // One folding subscription for the process, taken after the listener
     // is up and before anything can be served. It is a mirror: it takes no
     // backlog, so the view that renders prompts keeps the boot notice.
-    tokio::spawn(crate::stream::fold(state.surface.subscribe(), Arc::clone(&state)));
+    tokio::spawn(crate::stream::fold(state.surface.subscribe_mirror(), Arc::clone(&state)));
     let wiring = Wiring { bound, state };
     tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, router(wiring)).await {

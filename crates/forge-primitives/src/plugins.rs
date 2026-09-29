@@ -10,12 +10,13 @@ use serde_json::Value;
 
 /// A plugin's `claude plugin details` projection: the always-on token
 /// cost every session pays for the plugin being installed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PluginDetails {
     pub token_cost_always_on: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PluginCapability {
     Skill,
     Mcp,
@@ -30,7 +31,7 @@ impl PluginCapability {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstalledPluginEntry {
     pub id: String,
     pub version: Option<String>,
@@ -42,7 +43,7 @@ pub struct InstalledPluginEntry {
     pub capability: PluginCapability,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MarketplaceEntry {
     pub plugin_id: String,
     pub name: String,
@@ -53,7 +54,7 @@ pub struct MarketplaceEntry {
     pub source: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MarketplaceSourceEntry {
     pub name: String,
     pub source: Option<String>,
@@ -64,7 +65,7 @@ pub struct MarketplaceSourceEntry {
     pub install_location: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PluginsInventorySnapshot {
     pub installed: Vec<InstalledPluginEntry>,
     pub marketplace: Vec<MarketplaceEntry>,
@@ -88,7 +89,7 @@ pub struct PluginsInventorySnapshot {
 /// `forge_agent::userdata::plugins::components`; one entry per
 /// registered plugin, per plugin a manifest or the cache names, and one
 /// per marketplace whose manifest failed to load.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PluginComponents {
     /// Full installed id (`name@marketplace`).
     pub plugin: String,
@@ -120,7 +121,7 @@ pub struct PluginComponents {
 }
 
 /// One marketplace's on-disk health for the Extensions page.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MarketplaceHealth {
     pub name: String,
     pub source: String,
@@ -137,7 +138,7 @@ pub struct MarketplaceHealth {
     pub drifted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PluginsCliActionSuccess {
     pub snapshot: PluginsInventorySnapshot,
     pub message: String,
@@ -145,7 +146,8 @@ pub struct PluginsCliActionSuccess {
 }
 
 /// Lifecycle of one row in a plugin update run or update check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PluginRunRowStatus {
     /// Queued for the run, not started yet.
     Queued,
@@ -165,7 +167,7 @@ pub enum PluginRunRowStatus {
 
 /// One row of a section-level update run or check report, carried to
 /// the pane through `SessionUpdate`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PluginUpdateRunRow {
     pub plugin_id: String,
     pub scope: String,
@@ -204,7 +206,7 @@ impl PluginUpdateRunRow {
 /// A section-level update run or check report: the rows and whether it
 /// has finished. Progress updates replace the whole run each time so
 /// the pane never reconciles partial state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PluginUpdateRun {
     pub trigger: PluginUpdateTrigger,
     pub finished: bool,

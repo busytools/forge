@@ -1,0 +1,475 @@
+//! The composer's live state: the take a seat is dictating, the notice a
+//! finished take left, and the prompt a seat is parked on.
+//!
+//! The wire announces each of these once and retains nothing, so what a
+//! composer draws is folded here from the stream. A view that attaches to an
+//! already-running session reads none of it from the core, which is why it
+//! lives beside the surface rather than in the view.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Instant;
+
+use forge_primitives::Message;
+use forge_primitives::SessionSlot;
+
+use crate::SessionUpdate;
+// One prompt as a composer draws it, whichever copy it came from: the wire's,
+// or the one the core kept beside the answer's oneshot for a view that
+// attached after it landed.
+use crate::surface::DictateOutcome;
+use crate::surface::PendingAsk as Ask;
+
+/// How many level readings the meter keeps: at the mockup's own six pixels a
+/// cell, a little over 700 pixels of track. A slot narrower than that is
+/// filled edge to edge and the oldest readings clip, which is the case for a
+/// session column at 1440; a wider one falls short of the left edge.
+const METER_CELLS: usize = 120;
+
+/// The top of the meter's own scale, in dBFS. A reading is measured between
+/// the take's own silence floor and this.
+const METER_CEILING_DB: f32 = 0.0;
+
+/// The shortest a meter cell is drawn: a cell is a past reading rather than
+/// a pulse, so the quietest one still has to be visible as one.
+const METER_FLOOR_PERCENT: f32 = 12.0;
+
+/// What a take is doing, as a composer draws it.
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Recording,
+    Transcribing,
+}
+
+/// A dictation take, as the stream reported it. Folded in [`Composer::apply`]
+/// because the wire announces each take once and retains nothing.
+#[derive(Clone)]
+pub struct Take {
+    /// The take's own number among the seat's takes. A resolver or a
+    /// progress report for an older one is about a take that is over.
+    generation: u64,
+    pub phase: Phase,
+    /// The take's own silence floor, which the meter measures against
+    /// rather than assuming one.
+    floor_db: f32,
+    /// Newest reading last, each a fraction of the take's own range.
+    pub levels: VecDeque<f32>,
+    /// The newest reading in dBFS, for the row's own figure.
+    pub peak_db: f32,
+    /// Settled segments, and their total once the take is closed. A live
+    /// take cannot know its own total.
+    pub progress: (usize, Option<usize>),
+    pub started: Instant,
+}
+
+impl Take {
+    fn new(floor_db: f32, generation: u64) -> Self {
+        Self {
+            generation,
+            phase: Phase::Recording,
+            floor_db,
+            levels: VecDeque::new(),
+            peak_db: floor_db,
+            progress: (0, None),
+            started: Instant::now(),
+        }
+    }
+
+    /// One reading, as a fraction of the take's own range. A non-finite
+    /// reading is silence rather than a level: the floor stands in for it,
+    /// which is what makes structural silence read as the floor rather
+    /// than as a spike.
+    fn push(&mut self, peak_db: f32) {
+        let reading = if peak_db.is_finite() { peak_db } else { self.floor_db };
+        self.peak_db = reading;
+        let span = (METER_CEILING_DB - self.floor_db).max(1.0);
+        let fraction = ((reading - self.floor_db) / span).clamp(0.0, 1.0);
+        if self.levels.len() >= METER_CELLS {
+            self.levels.pop_front();
+        }
+        self.levels.push_back(fraction);
+    }
+
+    /// How tall a meter draws `level`, as a percentage of the bar.
+    pub fn height(level: f32) -> f32 {
+        METER_FLOOR_PERCENT + level * (100.0 - METER_FLOOR_PERCENT - 4.0)
+    }
+}
+
+/// What a finished take left behind.
+#[derive(Clone)]
+pub enum Notice {
+    /// The take's words, which the box takes at the caret. `truncated`
+    /// means the take hit its cap and is partial.
+    Landed { text: String, truncated: bool },
+    /// A line about a take that produced nothing to insert.
+    Line { tone: &'static str, text: String },
+}
+
+/// A notice as it crosses, with the tone owned: the composer's own type holds
+/// a `&'static str` so it never needs an owned one, and a client reading one
+/// back does.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NoticeWire {
+    Landed { text: String, truncated: bool },
+    Line { tone: String, text: String },
+}
+
+impl From<&Notice> for NoticeWire {
+    fn from(notice: &Notice) -> Self {
+        match notice {
+            Notice::Landed { text, truncated } => {
+                Self::Landed { text: text.clone(), truncated: *truncated }
+            }
+            Notice::Line { tone, text } => {
+                Self::Line { tone: (*tone).to_owned(), text: text.clone() }
+            }
+        }
+    }
+}
+
+impl Notice {
+    /// The notice a finished take leaves, worded per outcome. A take that
+    /// landed leaves words rather than a line, and one the reader abandoned
+    /// leaves nothing at all.
+    fn of(outcome: &DictateOutcome, floor_db: f32) -> Option<Self> {
+        let line = |tone, text: String| Some(Self::Line { tone, text });
+        match outcome {
+            DictateOutcome::Landed { text, truncated } => {
+                Some(Self::Landed { text: text.clone(), truncated: *truncated })
+            }
+            DictateOutcome::Cancelled => None,
+            DictateOutcome::Empty => {
+                line("q", "that was all filler \u{b7} nothing to insert".to_owned())
+            }
+            DictateOutcome::NoAudio { peak_db, seconds } if peak_db.is_finite() => line(
+                "q",
+                format!(
+                    "nothing above {} dBFS in {seconds}s \u{b7} loudest was {peak_db:.1} \
+                     \u{b7} try again",
+                    floor_db.round()
+                ),
+            ),
+            DictateOutcome::NoAudio { .. } => line(
+                "bad",
+                "no signal from the microphone at all \u{b7} check permission or mute".to_owned(),
+            ),
+            DictateOutcome::Refused { message } => line("bad", message.clone()),
+            DictateOutcome::Failed => line(
+                "q",
+                "dictation failed \u{b7} try again; restart forge if it repeats".to_owned(),
+            ),
+        }
+    }
+
+    /// The line this notice draws, if it draws one. A landed take draws its
+    /// words in the box instead.
+    pub fn line(&self) -> Option<String> {
+        match self {
+            Self::Landed { truncated: true, .. } => {
+                Some("this is what fitted \u{b7} keep going from the end".to_owned())
+            }
+            Self::Landed { .. } => None,
+            Self::Line { text, .. } => Some(text.clone()),
+        }
+    }
+
+    pub fn tone(&self) -> &'static str {
+        match self {
+            Self::Landed { .. } => "warn",
+            Self::Line { tone, .. } => tone,
+        }
+    }
+}
+
+/// The core's pending set is what says a prompt waits; this holds only what
+/// it offers. A take is here for the same reason, and its generation is what
+/// keeps an older take's reports from drawing over a newer one.
+#[derive(Default, Clone)]
+pub struct Composer {
+    takes: HashMap<SessionSlot, Take>,
+    notices: HashMap<SessionSlot, Notice>,
+    compacting: HashSet<SessionSlot>,
+    asks: HashMap<SessionSlot, Ask>,
+    sign_ins: HashMap<SessionSlot, SignIn>,
+}
+
+/// The sign-in a seat is waiting on, as the wire names it. The method is what
+/// makes the hint say which account rather than only that one is needed.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SignIn {
+    pub method_name: String,
+    pub method_description: String,
+}
+
+impl Take {
+    /// The take's own silence floor, which its meter measures against rather
+    /// than assuming a fixed one.
+    pub fn floor_db(&self) -> f32 {
+        self.floor_db
+    }
+
+    /// How long the take has run. `Instant` is a Rust mechanism and does not
+    /// cross, so what crosses is the duration a client draws.
+    pub fn elapsed(&self) -> std::time::Duration {
+        self.started.elapsed()
+    }
+}
+
+impl Composer {
+    /// Fold one update in, answering whether a composer has to be redrawn.
+    ///
+    /// An arm that consumes what it resolves answers for the update rather
+    /// than for the state it landed on, because the boot's fold applies
+    /// every update before a session stream sees it: a take's end read off
+    /// what a second application changed would be false for whoever applied
+    /// second, and the box would keep drawing a take the fold had taken.
+    /// Every other arm is answered by its own guard, which holds the same
+    /// way on both applications.
+    pub fn apply(&mut self, update: &SessionUpdate) -> bool {
+        match update {
+            SessionUpdate::DictateStarted { key, floor_db, generation } => {
+                // A new take supersedes whatever the seat was doing, its
+                // notice included: the words it left are already in the
+                // draft the browser holds.
+                self.takes.insert(key.clone(), Take::new(*floor_db, *generation));
+                self.notices.remove(key);
+                true
+            }
+            SessionUpdate::DictateLevel { key, peak_db } => {
+                // The wire carries no generation on a level, and the
+                // stream is one order per seat, so the take it belongs to
+                // is whichever is live: the level that arrives after one
+                // ended finds none and is dropped. The other seat's page
+                // must not be redrawn for it either: a take's fifty
+                // readings a second are news to the composer holding it.
+                if let Some(take) = self.takes.get_mut(key) {
+                    take.push(*peak_db);
+                    return true;
+                }
+                false
+            }
+            SessionUpdate::DictateTranscribing { key } => {
+                if let Some(take) = self.takes.get_mut(key) {
+                    take.phase = Phase::Transcribing;
+                    return true;
+                }
+                false
+            }
+            SessionUpdate::DictateProgress { key, generation, done, total } => {
+                if let Some(take) = self.takes.get_mut(key)
+                    && take.generation == *generation
+                {
+                    take.progress = (*done, *total);
+                    return true;
+                }
+                false
+            }
+            SessionUpdate::DictateEnded { key, outcome, generation } => {
+                // The take goes only if it is the one this resolves - a
+                // refusal resolves none, and a tail from a take that is gone
+                // is not this one - but the answer is the seat's either way,
+                // because the fold that ran first already took the state.
+                if matches!(outcome, DictateOutcome::Refused { .. })
+                    || self.takes.get(key).is_some_and(|take| take.generation == *generation)
+                {
+                    let floor_db = self.takes.remove(key).map_or(-50.0, |take| take.floor_db);
+                    if let Some(notice) = Notice::of(outcome, floor_db) {
+                        self.notices.insert(key.clone(), notice);
+                    }
+                }
+                true
+            }
+            SessionUpdate::AuthRequired { key, method_name, method_description } => {
+                self.sign_ins.insert(
+                    key.clone(),
+                    SignIn {
+                        method_name: method_name.clone(),
+                        method_description: method_description.clone(),
+                    },
+                );
+                true
+            }
+            SessionUpdate::PermissionRequest { key, request, .. } => {
+                self.asks.insert(key.clone(), Ask::Permission(Box::new(request.clone())));
+                true
+            }
+            SessionUpdate::QuestionRequest { key, request, .. } => {
+                self.asks.insert(key.clone(), Ask::Question(Box::new(request.clone())));
+                true
+            }
+            // The prompt is settled, so the dock goes. This is the only
+            // thing on the stream that says so: answering leaves the core's
+            // pending set either way, and a view that answered from another
+            // seat's page would otherwise keep drawing it.
+            SessionUpdate::PendingInteractionResolved { key, tool_id } => {
+                let held = match self.asks.get(key) {
+                    Some(Ask::Permission(request)) => &request.tool_call.tool_call_id == tool_id,
+                    Some(Ask::Question(request)) => &request.tool_call.tool_call_id == tool_id,
+                    // A draft is answered by its own id rather than by a tool
+                    // call, so a resolved interaction never names one.
+                    Some(Ask::SlackDraft(_)) | None => false,
+                };
+                if held {
+                    self.asks.remove(key);
+                }
+                // True whatever this view held: the prompt is gone from the
+                // core, and a view that never had the ask still draws the
+                // dock from the core's own record of what is pending.
+                true
+            }
+            // The CLI announces a compaction on the status frame and
+            // clears it with a null, which is the only place either is
+            // said. Everything else on the conversation is the chat's.
+            SessionUpdate::ChatAppended { key, msg } => {
+                if let Message::System { subtype, data, .. } = msg
+                    && subtype == "status"
+                {
+                    // True for either status rather than for the change it
+                    // makes: the boot's own fold applies every update first,
+                    // so a second application sees no difference and a
+                    // difference is not what the answer is about - the status
+                    // frame is the composer's news and the box is redrawn.
+                    let field = data.get("status");
+                    if field.and_then(serde_json::Value::as_str) == Some("compacting") {
+                        self.compacting.insert(key.clone());
+                        return true;
+                    }
+                    if field.is_some_and(serde_json::Value::is_null) {
+                        self.compacting.remove(key);
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    pub fn take(&self, slot: &SessionSlot) -> Option<&Take> {
+        self.takes.get(slot)
+    }
+
+    pub fn notice(&self, slot: &SessionSlot) -> Option<&Notice> {
+        self.notices.get(slot)
+    }
+
+    pub fn ask(&self, slot: &SessionSlot) -> Option<&Ask> {
+        self.asks.get(slot)
+    }
+
+    pub fn compacting(&self, slot: &SessionSlot) -> bool {
+        self.compacting.contains(slot)
+    }
+
+    pub fn sign_in(&self, slot: &SessionSlot) -> Option<&SignIn> {
+        self.sign_ins.get(slot)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_primitives::permission_interaction::PermissionRequest;
+
+    /// The copy it did hold goes with it, or the view keeps drawing an ask
+    /// the core has settled.
+    #[test]
+    fn a_settled_prompt_drops_the_copy_this_view_held() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let request: PermissionRequest = serde_json::from_value(serde_json::json!({
+            "tool_call": {
+                "tool_call_id": "held-1",
+                "title": "Bash",
+                "kind": "execute",
+                "status": "pending",
+                "content": [],
+                "locations": [],
+                "raw_input": {"command": "ls"},
+            },
+            "options": [],
+        }))
+        .expect("a permission request off the wire");
+        composer.asks.insert(slot.clone(), Ask::Permission(Box::new(request)));
+
+        assert!(
+            composer.apply(&SessionUpdate::PendingInteractionResolved {
+                key: slot.clone(),
+                tool_id: "held-1".to_owned(),
+            }),
+            "the box redraws for a prompt this view held",
+        );
+        assert!(composer.ask(&slot).is_none(), "and the copy it held is gone with it");
+
+        assert!(
+            composer.apply(&SessionUpdate::PendingInteractionResolved {
+                key: slot,
+                tool_id: "a-prompt-this-view-never-folded".to_owned(),
+            }),
+            "the box redraws for a settled prompt this view never folded too",
+        );
+    }
+
+    /// A take's readings are the composer's news only for the seat holding
+    /// it. A level for a seat this fold has no take for - another session's
+    /// page, or the tail of one that ended - must draw nothing, or fifty
+    /// readings a second redraw a region that cannot have changed for the
+    /// whole length of a take. Catches an arm that answers for the update
+    /// rather than for whether it applies.
+    #[test]
+    fn a_level_for_a_seat_with_no_take_is_not_news() {
+        let mut composer = Composer::default();
+
+        assert!(
+            !composer.apply(&SessionUpdate::DictateLevel {
+                key: SessionSlot::lead("Busytools", "forge"),
+                peak_db: -20.0,
+            }),
+            "a level with no take to draw it in is not this box's news",
+        );
+    }
+
+    /// The answer is about the update, not about the state it landed on. Two
+    /// things apply each update to this fold - the boot's own and the page's
+    /// stream - so an arm that answers for what it changed is false for
+    /// whoever applies second, and a take's end arrives with the take the
+    /// first application already took. Catches that guard.
+    #[test]
+    fn a_takes_end_is_the_boxes_news_even_with_the_take_gone() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+
+        assert!(
+            composer.apply(&SessionUpdate::DictateEnded {
+                key: slot,
+                outcome: DictateOutcome::NoAudio { peak_db: -61.0, seconds: 3 },
+                generation: 7,
+            }),
+            "an end that resolves a take this fold no longer holds still redraws the box",
+        );
+    }
+
+    /// A take that could not start is a reason the box owes the reader: it
+    /// resolves no take, so its generation matches nothing this view holds
+    /// and the guard would answer "not mine" to a take that never existed,
+    /// leaving the control a click that says nothing.
+    #[test]
+    fn a_refused_take_draws_its_reason() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+
+        assert!(
+            composer.apply(&SessionUpdate::DictateEnded {
+                key: slot.clone(),
+                outcome: DictateOutcome::Refused { message: "no microphone".to_owned() },
+                generation: 0,
+            }),
+            "a take that never started still redraws the box",
+        );
+        let notice =
+            composer.notice(&slot).expect("the refusal is held").line().expect("and draws a line");
+        assert_eq!(notice, "no microphone", "with the core's own reason");
+    }
+}

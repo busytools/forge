@@ -9,6 +9,7 @@ use anyhow::Result;
 use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_agent::env::cli_version::CliVersionInfo;
+use forge_primitives::cloud::service_status::ServiceIssue;
 use forge_primitives::{AvailableAgent, AvailableCommand, PeerInflightStats, SDKSessionInfo};
 
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
@@ -139,7 +140,8 @@ pub(crate) struct KickRequest {
 /// Per-session chip the Projects pane renders next to each row.
 /// Carries the assigned account display name + the visual-state
 /// category derived by `Workspace::session_chip_for`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct SessionChipInfo {
     /// Account `display_name` from forge.toml `[[accounts]]`.
     pub account_name: String,
@@ -150,7 +152,8 @@ pub struct SessionChipInfo {
 
 /// Visual category for a session chip. The renderer maps these to
 /// foreground colors + (for `Bailed` alone) a leading `⚠ ` glyph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionChipState {
     /// Account is Ready and within budget. DIM foreground.
     Normal,
@@ -173,7 +176,8 @@ pub enum SessionChipState {
 /// What a session is waiting on a person for. The kind a needs-you row
 /// names, since "asked you a question" and "a permission prompt is
 /// waiting" are different asks with the same mark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PendingInteractionKind {
     Question,
     Permission,
@@ -186,6 +190,15 @@ pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String);
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
+/// One composed Slack message held for a decision: the session that asked,
+/// the draft itself, and the sender the blocked `slack__post` handler awaits.
+///
+/// The draft rides beside the sender for the same reason the permission and
+/// question requests do - the stream carries it once, so a view that attached
+/// after it landed has nothing else to draw the dock from.
+pub(crate) type ParkedSlackDraft =
+    (SessionSlot, forge_primitives::slack::SlackDraft, tokio::sync::oneshot::Sender<bool>);
+
 /// spawned [`forge_agent::Agent`] handles, one per active session.
 ///
 /// Construct via [`Workspace::new`]; consume via
@@ -293,6 +306,13 @@ pub struct Workspace {
     /// `SessionUpdate::PeerInflightStatsChanged` which the TUI
     /// reducer turns into sidebar peer-activity badges.
     pub(crate) peer_stats: Mutex<HashMap<SessionSlot, PeerInflightStats>>,
+    /// When each seat's `delivery_failed` counter last moved.
+    ///
+    /// The count is cumulative and carries no time, and the mark it draws is
+    /// transient: a view fades that badge out a minute after the failure. A
+    /// view that attached later reads this to age it out itself, rather than
+    /// drawing a red mark the terminal has already dropped.
+    pub(crate) peer_failure_at: Mutex<HashMap<SessionSlot, SystemTime>>,
     /// The session that submitted the reviews on a `(project, branch)` -
     /// the target for a worker's review-activity notice. Set by
     /// [`Self::submit_review`]; latest submit wins (the reviewer is one
@@ -396,6 +416,16 @@ pub struct Workspace {
     /// rather than in the view that happened to probe first; `None` until
     /// the boot probe lands.
     cli_version: Arc<Mutex<Option<CliVersionInfo>>>,
+    /// The last fatal error, held so a view that was not subscribed when it
+    /// fired can still learn of it: the update carries no state of its own
+    /// and nothing else in the core records it.
+    last_fatal_error: Mutex<Option<forge_primitives::error::AppError>>,
+    /// The statuspage's last answer, held so a view that attached after the
+    /// probe landed can read it rather than having missed the one update
+    /// that carried it. `None` until the probe answers.
+    service_status: Arc<Mutex<Option<ServiceIssue>>>,
+    /// Idempotence guard for the service-status probe.
+    service_status_probe_started: std::sync::atomic::AtomicBool,
     /// Idempotence guard for the claude version probe: a second start
     /// would leave two loops each spawning `claude --version` and reaching
     /// npm.
@@ -443,12 +473,10 @@ pub struct Workspace {
     /// a persistent failure says so once rather than on every tick.
     pub(crate) slack_author_failures: Mutex<std::collections::HashSet<(String, String)>>,
     /// Composed Slack messages held for the user's decision, keyed by
-    /// draft id and carrying the session that asked. The sender is what
-    /// the blocked `slack__post` handler awaits; removing the entry is
-    /// what answers it. The owner is stored beside it so an answer is
-    /// only ever applied by the session it was addressed to.
-    pub(crate) slack_drafts:
-        Mutex<HashMap<uuid::Uuid, (SessionSlot, tokio::sync::oneshot::Sender<bool>)>>,
+    /// draft id and carrying the session that asked. The owner is stored
+    /// beside it so an answer is only ever applied by the session it was
+    /// addressed to.
+    pub(crate) slack_drafts: Mutex<HashMap<uuid::Uuid, ParkedSlackDraft>>,
     /// Slack messages handed to a session recently, keyed by
     /// `(project, owner, conversation, ts)`. A sweep re-runs a batch
     /// whenever a 429 lands mid-sweep, a watermark write fails, or the
@@ -613,6 +641,70 @@ type CliVersionProber = Box<dyn Fn() -> CliVersionProbe + Send + Sync>;
 /// The real probe: `claude --version` and npm's `latest` dist-tag.
 fn real_cli_version_prober() -> CliVersionProber {
     Box::new(|| Box::pin(forge_agent::env::cli_version::fetch_info()))
+}
+
+/// One service-status probe call, boxed for the same reason the version
+/// probe's is.
+type ServiceStatusProbe =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<ServiceIssue>> + Send>>;
+
+/// How the service-status probe gets its answer. `Workspace::new` passes the
+/// real fetch; a test passes a script, so the boot path is drivable without
+/// reaching the statuspage.
+type ServiceStatusProber = Box<dyn Fn() -> ServiceStatusProbe + Send + Sync>;
+
+/// The real probe: the public statuspage summary.
+fn real_service_status_prober() -> ServiceStatusProber {
+    Box::new(|| Box::pin(forge_agent::cloud::service_status::fetch_service_status()))
+}
+
+/// Kick off the statuspage probe on the tokio runtime: one fetch, then the
+/// answer is held. A caller with no runtime gets a warn and holds no status
+/// rather than a task nobody would run.
+fn spawn_background_service_status_probe(
+    started: &std::sync::atomic::AtomicBool,
+    service_status: &Arc<Mutex<Option<ServiceIssue>>>,
+    update_tx: &UpdateFanout,
+    prober: ServiceStatusProber,
+) {
+    if started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    // The line the terminal's own module used to write. Without it a probe
+    // that stops running is invisible: the only other record is the warning
+    // for a missing runtime, which is a different failure.
+    tracing::info!(
+        target: "forge_workspace::workspace",
+        event_name = "service_status_probe_started",
+        "the statuspage probe is running",
+    );
+    let run = run_service_status_probe(Arc::clone(service_status), update_tx.clone(), prober);
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(run);
+    } else {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "service_status_probe_skipped",
+            "no tokio runtime at construction; the statuspage is not probed and no view reads a service status this run",
+        );
+    }
+}
+
+/// The statuspage probe, off the boot path. Its answer is held before it is
+/// announced, so a view that attaches afterwards reads it rather than having
+/// missed the one update that carried it.
+async fn run_service_status_probe(
+    service_status: Arc<Mutex<Option<ServiceIssue>>>,
+    update_tx: UpdateFanout,
+    prober: ServiceStatusProber,
+) {
+    let Some(issue) = prober().await else {
+        return;
+    };
+    let update =
+        SessionUpdate::ServiceStatus { severity: issue.severity, message: issue.message.clone() };
+    *service_status.lock() = Some(issue);
+    let _ = update_tx.send(update);
 }
 
 /// Kick off the claude version probe on the tokio runtime: one fetch at
@@ -1005,7 +1097,7 @@ impl Workspace {
         catalog_scan: bool,
         cli_version_prober: Option<CliVersionProber>,
     ) -> Result<Self, WorkspaceError> {
-        let mut config = load_from_dir(&config_dir)?;
+        let config = load_from_dir(&config_dir)?;
 
         // Create forge's own config subfolder before anything writes into
         // it (the lock, the cron + state stores all live under it). Hard-
@@ -1197,6 +1289,27 @@ impl Workspace {
                 ),
             }
         }
+        // The settings table held one row, the `/spinner` override, which went
+        // with the spinner.
+        if let Some(db) = db.as_mut() {
+            match crate::store::settings::drop_table(db) {
+                Ok(true) => {
+                    if let Err(error) = db.compact() {
+                        tracing::warn!(
+                            target: "forge_workspace::workspace",
+                            %error,
+                            "compacting the store after dropping the retired settings table failed",
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "dropping the retired settings table failed; it stays for the next boot",
+                ),
+            }
+        }
 
         // Resolved here rather than lazily so a malformed `[[slack]]`
         // entry refuses the boot, the way the rest of forge.toml does.
@@ -1280,12 +1393,6 @@ impl Workspace {
         };
         accounts.seed_from_cache(&state.account_usage);
 
-        // The store's runtime spinner override (set via `/spinner`) wins
-        // over the hand-authored forge.toml `[ui] spinner` default.
-        // Folding it into `config.ui` here means `ui_settings()` returns
-        // the effective style.
-        config.ui.spinner = crate::ui::resolve_spinner(state.spinner, config.ui.spinner);
-
         let gateway_port = config.gateway_port;
         let update_tx = UpdateFanout::default();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
@@ -1306,6 +1413,9 @@ impl Workspace {
         // The version facts are the same for every viewer, so the core
         // probes them once and both views read one answer.
         let cli_version = Arc::new(Mutex::new(None));
+        // The statuspage answer is the same for every viewer too, and it
+        // has to outlive the view that used to fetch it.
+        let service_status: Arc<Mutex<Option<ServiceIssue>>> = Arc::new(Mutex::new(None));
         let workspace = Self {
             config_dir,
             config,
@@ -1329,6 +1439,7 @@ impl Workspace {
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
+            peer_failure_at: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
@@ -1344,6 +1455,9 @@ impl Workspace {
             catalog_loaded,
             catalog_scan_started,
             cli_version,
+            last_fatal_error: Mutex::new(None),
+            service_status,
+            service_status_probe_started: std::sync::atomic::AtomicBool::new(false),
             cli_version_probe_started: std::sync::atomic::AtomicBool::new(false),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
@@ -1372,27 +1486,18 @@ impl Workspace {
         if let Some(prober) = cli_version_prober {
             workspace.start_cli_version_probe(prober);
         }
+        workspace.start_service_status_probe(real_service_status_prober());
         if workspace.db.lock().is_none() {
             // One user-visible notice for the whole best-effort-persist
-            // class (spinner override, durable crons, subscriptions): the
+            // class (durable crons, subscriptions): the
             // store is gone this run, so every one of those warns would
             // otherwise fire per-op into the log only.
             let _ = workspace.update_tx.send(SessionUpdate::ServiceStatus {
                 severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-                message: "Machine-local store unavailable this run; crons, tasks, Gotify and Slack subscriptions and the spinner override will not persist".to_owned(),
+                message: "Machine-local store unavailable this run; crons, tasks, Gotify and Slack subscriptions will not persist".to_owned(),
             });
         }
         Ok(workspace)
-    }
-
-    /// Effective `[ui]` settings. All fields have defaults so callers
-    /// can use the result without worrying about whether the section
-    /// was present in the config file. `spinner` carries the resolved
-    /// active style: the store's runtime override (set via `/spinner`)
-    /// if present, else the forge.toml `[ui] spinner` default. Cheap
-    /// clone - the struct is shallow.
-    pub fn ui_settings(&self) -> crate::ui::UiSettings {
-        self.config.ui.clone()
     }
 
     /// Effective `[web]` settings: whether the web view starts, where it
@@ -1471,24 +1576,6 @@ impl Workspace {
                 plugin = %plugin_id,
                 error = %error,
                 "failed to clear a plugin update record",
-            );
-        }
-    }
-
-    /// Persist `style` as the runtime spinner override in the machine-
-    /// local store (never touches the hand-authored forge.toml). The next
-    /// boot's `Workspace::new` layers it over the forge.toml `[ui]
-    /// spinner` default. Called by the `/spinner` picker (enter-apply) and
-    /// the direct `/spinner <name>` path; the in-session active style
-    /// lives on the TUI's `App::spinner_style`, so this write only affects
-    /// subsequent launches. A no-op with a warn when the store is closed.
-    pub fn persist_spinner(&self, style: crate::ui::SpinnerStyle) {
-        if let Some(db) = self.db.lock().as_ref() {
-            crate::account_cache::store_spinner(db, Some(style));
-        } else {
-            tracing::warn!(
-                target: "forge_workspace::workspace",
-                "store unavailable; the /spinner override will not persist across restart",
             );
         }
     }
@@ -2186,6 +2273,15 @@ impl Workspace {
     ///
     /// When the audio stack cannot be enumerated at all; the overlay
     /// renders the message in place of a list.
+    /// The device this process records from, once a `/dictate` pick moved it.
+    ///
+    /// Volatile and process-wide rather than per session: a pick overrides the
+    /// `[dictate] device` pin for every session until forge restarts, which is
+    /// why it rides the dictate read rather than a session's state.
+    pub fn dictate_device_pick(&self) -> Option<crate::dictate::DictateDeviceChoice> {
+        self.dictate_device_pick.lock().clone()
+    }
+
     pub fn dictate_device_catalog(&self) -> Result<crate::dictate::DictateDeviceCatalog, String> {
         let devices = forge_dictate::devices().map_err(|error| error.to_string())?;
         Ok(crate::dictate::DictateDeviceCatalog {
@@ -3230,6 +3326,16 @@ impl Workspace {
         self.update_tx.subscribe_without_backlog(SubscriberRole::Observing)
     }
 
+    /// Subscribe as an answerer, carrying only what is emitted from here on.
+    ///
+    /// The answering half of [`Self::subscribe_mirror`], for a client that
+    /// renders prompts and attaches beside a terminal: it can answer, and the
+    /// backlog still belongs to whoever was there first, because that is the
+    /// view drawing the boot notice.
+    pub fn subscribe_answerer(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
+        self.update_tx.subscribe_without_backlog(SubscriberRole::Answering)
+    }
+
     /// Clone the workspace's [`SessionUpdate`] sender. Internal to this
     /// crate: a view's own async work belongs on a channel of its own,
     /// so that [`Self::subscribe`] is the whole of what the core owes a
@@ -3396,6 +3502,36 @@ impl Workspace {
                 buffer.push(cmd);
                 return Ok(());
             }
+        }
+        // A prompt already answered, or one that asked something else, is a
+        // dock that is gone: the reader's click did nothing. The session task
+        // itself just logs that, and by the time it sees the answer the caller
+        // is long gone - so it is refused here, the last layer that can still
+        // tell one.
+        match &cmd {
+            Command::RespondPermission { key, tool_id, .. } => {
+                let waiting = self
+                    .domain_session_for(key)
+                    .is_some_and(|domain| domain.lock().awaits_permission(tool_id));
+                if !waiting {
+                    return Err(DispatchError::NoPromptWaiting {
+                        key: key.clone(),
+                        tool_id: tool_id.clone(),
+                    });
+                }
+            }
+            Command::RespondQuestion { key, tool_id, .. } => {
+                let waiting = self
+                    .domain_session_for(key)
+                    .is_some_and(|domain| domain.lock().awaits_question(tool_id));
+                if !waiting {
+                    return Err(DispatchError::NoPromptWaiting {
+                        key: key.clone(),
+                        tool_id: tool_id.clone(),
+                    });
+                }
+            }
+            _ => {}
         }
         if let Some(key) = cmd.key() {
             // The /dictate override edits are workspace state on the
@@ -3591,7 +3727,7 @@ impl Workspace {
                         spawned_by,
                         resume_existing.as_deref(),
                         from_boot_respawn,
-                        return_to,
+                        return_to.unwrap_or_else(crate::protocol::unanswerable),
                     );
                 }
                 Command::CloseWorker { project_key, label } => {
@@ -3611,7 +3747,13 @@ impl Workspace {
                         force,
                     );
                     let _enter = span.enter();
-                    spawn::handle_despawn_worker(self, &project_key, &label, force, respond);
+                    spawn::handle_despawn_worker(
+                        self,
+                        &project_key,
+                        &label,
+                        force,
+                        respond.unwrap_or_else(crate::protocol::unanswerable),
+                    );
                 }
                 Command::DeliverWorkerPrompt { caller, project_key, target_label, wrapped } => {
                     let span = tracing::info_span!(
@@ -3712,11 +3854,6 @@ impl Workspace {
                     let _enter = span.enter();
                     self.set_review_thread_status(&project, &branch, &thread_id, status);
                 }
-                Command::PersistSpinner { style } => {
-                    let span = tracing::info_span!("persist_spinner", style = %style.key());
-                    let _enter = span.enter();
-                    self.persist_spinner(style);
-                }
                 Command::CloseSession { session_key } => {
                     let span = tracing::info_span!(
                         "close_session",
@@ -3733,7 +3870,9 @@ impl Workspace {
                         thread_id = %thread.id,
                     );
                     let _enter = span.enter();
-                    let _ = respond.send(self.upsert_review_thread(&project, &branch, thread));
+                    if let Some(respond) = respond {
+                        let _ = respond.send(self.upsert_review_thread(&project, &branch, thread));
+                    }
                 }
                 Command::SubmitReview { project, branch, summary, thread_ids, origin, respond } => {
                     let span = tracing::info_span!(
@@ -3743,13 +3882,15 @@ impl Workspace {
                         threads = thread_ids.len(),
                     );
                     let _enter = span.enter();
-                    let _ = respond.send(self.submit_review(
-                        &project,
-                        &branch,
-                        summary,
-                        &thread_ids,
-                        origin,
-                    ));
+                    if let Some(respond) = respond {
+                        let _ = respond.send(self.submit_review(
+                            &project,
+                            &branch,
+                            summary,
+                            &thread_ids,
+                            origin,
+                        ));
+                    }
                 }
                 other => {
                     tracing::warn!(
@@ -3850,7 +3991,7 @@ impl Workspace {
                 resume_kick: None,
                 interactive: worker.interactive.unwrap_or(false),
                 from_boot_respawn: true,
-                return_to: tx,
+                return_to: Some(tx),
             };
             if let Err(err) = self.dispatch(cmd) {
                 tracing::error!(
@@ -4204,6 +4345,25 @@ impl Workspace {
         self.domain_session_for(slot).is_some_and(|domain| domain.lock().background_work)
     }
 
+    /// `slot`'s peer-coordination counters, which a view draws a seat's
+    /// activity badge from. Zeroes for a seat with no traffic.
+    ///
+    /// A fact about the seat rather than about a viewer, so the core holds one
+    /// answer. They also ride `SessionUpdate::PeerInflightStatsChanged`, which
+    /// is why a view that attached after the last ask needs this read.
+    pub fn peer_stats_for(&self, slot: &SessionSlot) -> PeerInflightStats {
+        self.peer_stats.lock().get(slot).cloned().unwrap_or_default()
+    }
+
+    /// When `slot`'s `delivery_failed` counter last moved, or `None` if it
+    /// never has.
+    ///
+    /// The mark a failure draws is transient - a minute after it, views drop
+    /// it - so the count alone cannot say whether a red badge is current.
+    pub fn peer_failure_at_for(&self, slot: &SessionSlot) -> Option<SystemTime> {
+        self.peer_failure_at.lock().get(slot).copied()
+    }
+
     /// What the session at `slot` is waiting on a person for, or `None`
     /// when it can advance on its own.
     pub fn pending_interaction(&self, slot: &SessionSlot) -> Option<PendingInteractionKind> {
@@ -4239,7 +4399,58 @@ impl Workspace {
     /// landed: the stream is a mirror with no backlog, so the update that
     /// carried the request is gone, and the request beside the answer's
     /// oneshot is what is left.
+    /// Record a fatal error, so a view that was not attached when it fired
+    /// can still read it.
+    pub(crate) fn record_fatal_error(&self, error: forge_primitives::error::AppError) {
+        *self.last_fatal_error.lock() = Some(error);
+    }
+
+    /// The last fatal error, or `None` when nothing has failed fatally.
+    ///
+    /// A fatal error is App-level: it names the startup that could not
+    /// happen rather than a seat, and it arrives once. Without this the
+    /// only way to know is to have been subscribed when it went out.
+    pub fn last_fatal_error(&self) -> Option<forge_primitives::error::AppError> {
+        self.last_fatal_error.lock().clone()
+    }
+
+    /// The statuspage's last answer, or `None`.
+    ///
+    /// `None` covers both "every relevant component is operational" and
+    /// "the statuspage could not be reached", which is the fetch's own
+    /// contract rather than something invented here - and a view that draws
+    /// nothing for it draws what the terminal always drew.
+    ///
+    /// The core probes rather than the view because the answer is the same
+    /// for every viewer and because it must outlive any one of them: a
+    /// client built after the terminal is gone would otherwise never see a
+    /// service status at all.
+    pub fn service_status(&self) -> Option<ServiceIssue> {
+        self.service_status.lock().clone()
+    }
+
+    /// Kick off the statuspage probe. Idempotent, and off the boot path.
+    fn start_service_status_probe(&self, prober: ServiceStatusProber) {
+        spawn_background_service_status_probe(
+            &self.service_status_probe_started,
+            &self.service_status,
+            &self.update_tx,
+            prober,
+        );
+    }
+
     pub fn pending_ask(&self, slot: &SessionSlot) -> Option<crate::protocol::PendingAsk> {
+        // A parked Slack draft comes first, and before the domain lookup:
+        // it is held in its own registry rather than in the session's
+        // pending set, so a seat with no domain can still be holding one.
+        let drafted = {
+            let parked = self.slack_drafts.lock();
+            parked.values().find(|(owner, _, _)| owner == slot).map(|(_, draft, _)| draft.clone())
+        };
+        if let Some(draft) = drafted {
+            return Some(crate::protocol::PendingAsk::SlackDraft(Box::new(draft)));
+        }
+
         let domain = self.domain_session_for(slot)?;
         let guard = domain.lock();
         let question = guard
@@ -7098,25 +7309,6 @@ mod tests {
         assert!(!ws.domain_handles.lock().contains_key(&key), "domain handle removed");
     }
 
-    #[test]
-    fn persist_spinner_writes_the_redb_override() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-
-        ws.persist_spinner(crate::ui::SpinnerStyle::Ember);
-
-        let guard = ws.db.lock();
-        let db = guard.as_ref().expect("db installed");
-        assert_eq!(
-            crate::store::state::spinner(db).expect("read spinner"),
-            Some(crate::ui::SpinnerStyle::Ember),
-            "persist_spinner writes the override into the store",
-        );
-    }
-
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
@@ -7298,28 +7490,6 @@ mod tests {
         // A garbage 200 parses empty and must NOT wipe the good cache.
         assert!(!ws.store_fresh_pricing("not json".to_owned()), "garbage is rejected");
         assert!(!ws.load_pricing().is_empty(), "the good cache survives the garbage response");
-    }
-
-    #[test]
-    fn boot_load_reads_the_redb_spinner_override() {
-        // Stands in for the removed connect.rs override test: a persisted
-        // redb spinner override is what account_cache::load returns, so
-        // the boot fold layers it over the forge.toml default. Kept off
-        // the real machine db (issue #392) via a tempdir store + config dir.
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-
-        let guard = ws.db.lock();
-        let db = guard.as_ref().expect("db installed");
-        crate::store::state::set_spinner(db, Some(crate::ui::SpinnerStyle::Ember)).expect("set");
-        assert_eq!(
-            crate::account_cache::load(db).spinner,
-            Some(crate::ui::SpinnerStyle::Ember),
-            "load returns the persisted redb override, which the boot fold wins with",
-        );
     }
 
     #[test]
@@ -9448,7 +9618,7 @@ provider = "anthropic"
         assert!(matches!(cmd, forge_primitives::AgentCommand::Cancel { .. }));
     }
 
-    /// The review/spinner/close store writes route through the command
+    /// The review/close store writes route through the command
     /// bus: a `SaveReviewThreads` dispatch lands in the redb store
     /// (observable via the query-side load), and an `UpsertReviewThread`
     /// dispatch carries its confirmation back on the responder - the
@@ -9494,21 +9664,13 @@ provider = "anthropic"
                 project: "forge".to_owned(),
                 branch: "feat".to_owned(),
                 thread: thread.clone(),
-                respond: respond_tx,
+                respond: Some(respond_tx),
             })
             .expect("dispatch");
         assert!(
             respond_rx.try_recv().expect("response present"),
             "an open store confirms the upsert on the responder"
         );
-
-        // The spinner override persists through its variant too.
-        workspace
-            .dispatch(Command::PersistSpinner { style: crate::ui::SpinnerStyle::Star })
-            .expect("dispatch");
-        let db = workspace.db.lock();
-        let stored = crate::store::state::spinner(db.as_ref().expect("db")).expect("read spinner");
-        assert_eq!(stored, Some(crate::ui::SpinnerStyle::Star));
     }
 
     /// `/new` and `/resume` re-spawn on the already-pooled handle, where
@@ -10368,6 +10530,37 @@ provider = "anthropic"
         );
     }
 
+    /// When the failure counter last moved, so a view can age the badge out.
+    ///
+    /// The counts do not drift, but the mark they draw does: the terminal
+    /// drops a `delivery_failed` badge sixty seconds after it saw the
+    /// increment, and a cumulative count with no time gives a view that
+    /// attached later no way to know the failure is old.
+    #[tokio::test]
+    async fn a_delivery_failure_stamps_when_it_happened() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let caller = SessionSlot::from_str_for_test("asker");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: caller.clone(),
+                target_project: "gateway-backend".to_owned(),
+                target_session: None,
+            },
+        );
+
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+
+        let stamped = workspace.peer_failure_at_for(&caller);
+        assert!(stamped.is_some(), "the instant of the increment is held, not only the count");
+        let age = stamped.expect("stamped").elapsed().expect("a stamp from before now");
+        assert!(age.as_secs() < 60, "and it is the moment it happened, not a placeholder: {age:?}");
+    }
+
     /// Workspace::dispatch(Command::DeliverPeerPrompt) routes to the
     /// command channel without panicking. The full spawn-path handling
     /// is exercised in the spawn::handle_deliver_peer_prompt test.
@@ -10918,7 +11111,11 @@ mod worker_activity_tests {
             matches!(ask, crate::protocol::PendingAsk::Permission(_)),
             "and reads back as the kind it is",
         );
-        assert_eq!(ask.tool_id(), testing::TEST_TOOL_ID, "naming the call an answer addresses");
+        assert_eq!(
+            ask.tool_id(),
+            Some(testing::TEST_TOOL_ID),
+            "naming the call an answer addresses"
+        );
 
         let asked = held("a-question", vec![question()]);
         let ask = ws.pending_ask(&asked).expect("a held question reads back");
@@ -10931,6 +11128,88 @@ mod worker_activity_tests {
         assert!(
             matches!(ws.pending_ask(&both), Some(crate::protocol::PendingAsk::Question(_))),
             "a question outranks the permission prompt beside it here too",
+        );
+    }
+
+    /// The statuspage answer is the same for every viewer, and it has to
+    /// outlive the view that used to fetch it: the terminal owned this
+    /// probe, so without moving it a client built after the terminal is
+    /// gone would never see a service status at all. The answer is held as
+    /// well as announced, so a view that attached after the one update that
+    /// carried it can still read it.
+    #[tokio::test]
+    async fn the_service_status_is_held_and_announced() {
+        use forge_primitives::cloud::service_status::{ServiceIssue, ServiceSeverity};
+
+        let (ws, mut rx) = Workspace::testing_stub();
+        let found = ServiceIssue {
+            severity: ServiceSeverity::Warning,
+            message: "Claude Code status: degraded.".to_owned(),
+        };
+        let prober: ServiceStatusProber = {
+            let found = found.clone();
+            Box::new(move || {
+                let found = found.clone();
+                Box::pin(async move { Some(found) })
+            })
+        };
+
+        assert!(ws.service_status().is_none(), "nothing has been probed yet");
+
+        run_service_status_probe(
+            std::sync::Arc::clone(&ws.service_status),
+            ws.update_tx().clone(),
+            prober,
+        )
+        .await;
+
+        assert_eq!(
+            ws.service_status(),
+            Some(found),
+            "the answer the probe found is the answer the read hands back",
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(SessionUpdate::ServiceStatus { .. })),
+            "and the one update that carried it still goes out",
+        );
+    }
+
+    /// A seat can be held on a Slack draft, which the registry parks on a
+    /// reply exactly the way a permission or a question is parked - the
+    /// same shape, the same awaited answer, a different kind.
+    ///
+    /// The record had no room for it, so a view that attached after the
+    /// draft landed could not read that one was waiting: a record named
+    /// for a category has to carry every member of it, or the name says
+    /// it is complete when it is not.
+    #[test]
+    fn a_parked_slack_draft_reads_back_as_the_third_kind() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let seat = SessionSlot::from_str_for_test("a-draft");
+        let draft = forge_primitives::slack::SlackDraft {
+            id: uuid::Uuid::new_v4(),
+            workspace: "acme".to_owned(),
+            conversation: "C1".to_owned(),
+            conversation_label: "acme".to_owned(),
+            thread_ts: None,
+            text: "hello".to_owned(),
+            tool: "slack__post".to_owned(),
+        };
+        let (_id, _decision) = ws.register_slack_draft(&seat, draft);
+
+        let ask = ws.pending_ask(&seat).expect("a parked draft reads back");
+
+        assert!(
+            matches!(ask, crate::protocol::PendingAsk::SlackDraft(_)),
+            "and reads back as the kind it is",
+        );
+        assert!(
+            ask.tool_id().is_none(),
+            "a draft is answered by its own id, so it names no tool call",
+        );
+        assert!(
+            ws.pending_ask(&SessionSlot::from_str_for_test("a-bystander")).is_none(),
+            "and a seat holding nothing is not handed another seat's draft",
         );
     }
 
@@ -13413,6 +13692,7 @@ provider = "anthropic"
         // the assertion below reads is the facade's own mapping of it,
         // which reports a fallback for a resume that found nothing.
         return_to
+            .expect("a dispatch off the workspace's own bus carries a reply channel")
             .send(Ok(WorkerSpawnReply {
                 session_id: session_id.to_owned(),
                 tag: forge_primitives::worker_tag("steward"),
@@ -13527,6 +13807,7 @@ provider = "anthropic"
         // whatever flag the caller passed. Whether it asked to resume and
         // found nothing is known only to the facade, which restates it.
         return_to
+            .expect("a dispatch off the workspace's own bus carries a reply channel")
             .send(Ok(WorkerSpawnReply {
                 session_id: "fresh-session-uuid".into(),
                 tag: forge_primitives::worker_tag("ghost"),
@@ -13576,6 +13857,7 @@ provider = "anthropic"
         };
         assert!(resume_existing.is_none(), "the flag was not set, so nothing is resumed");
         return_to
+            .expect("a dispatch off the workspace's own bus carries a reply channel")
             .send(Ok(WorkerSpawnReply {
                 session_id: "fresh-session-uuid".into(),
                 tag: forge_primitives::worker_tag("ghost"),

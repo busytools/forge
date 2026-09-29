@@ -568,7 +568,7 @@ mod tests {
         if let Some(session) = app.session_mut(&key) {
             session.prompt_queue.push_back(crate::app::prompt::PromptState::from_permission(
                 "tc-1".into(),
-                forge_primitives::permission_ui::PermissionRequest {
+                forge_primitives::permission_interaction::PermissionRequest {
                     tool_call: forge_primitives::session_update::ToolCall {
                         tool_call_id: "tc-1".into(),
                         title: "Bash".into(),

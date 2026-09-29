@@ -4133,7 +4133,7 @@ async fn no_take_reserves_no_row() {
 
 // ---------- the composer: the prompt dock ----------
 
-fn wire(value: serde_json::Value) -> forge_primitives::permission_ui::PermissionRequest {
+fn wire(value: serde_json::Value) -> forge_primitives::permission_interaction::PermissionRequest {
     serde_json::from_value(value).expect("a permission request off the wire")
 }
 
@@ -4150,7 +4150,7 @@ fn tool_call(id: &str, title: &str, input: &serde_json::Value) -> serde_json::Va
 }
 
 /// A permission prompt, as the CLI sends it.
-fn permission() -> forge_primitives::permission_ui::PermissionRequest {
+fn permission() -> forge_primitives::permission_interaction::PermissionRequest {
     wire(serde_json::json!({
         "tool_call": tool_call("tu-1", "Bash", &serde_json::json!({
             "command": "git push origin polish/rate-limit-chip"
@@ -4573,7 +4573,9 @@ async fn each_list_draws_its_own_mark() {
     std::fs::write(project.join("src/home.rs"), "").expect("write");
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;
 
-    for (draft, mark) in [("/m", "#i-cmd"), ("&cli", "#i-bot"), (":sm", "#i-smile")] {
+    // No emoji list: the set is the typeahead's own and this crate reads
+    // nothing of it, so a `:sm` draft opens nothing here.
+    for (draft, mark) in [("/m", "#i-cmd"), ("&cli", "#i-bot")] {
         let (_status, page) = composer(&config, draft).await;
         assert!(page.contains(&format!("href=\"{mark}\"")), "{draft} draws {mark}: {page}");
     }
@@ -4863,15 +4865,18 @@ async fn answering_the_dock_reaches_the_core() {
     };
     assert_eq!(key, &lead());
     assert_eq!(tool_id, "tu-1", "addressed to the prompt that asked");
-    let forge_primitives::permission_ui::PermissionOutcome::Selected { option_id, action, .. } =
-        outcome
+    let forge_primitives::permission_interaction::PermissionOutcome::Selected {
+        option_id,
+        action,
+        ..
+    } = outcome
     else {
         panic!("a chosen option is a selection: {outcome:?}");
     };
     assert_eq!(option_id, "edits");
     assert_eq!(
         action,
-        &forge_primitives::permission_ui::PermissionAction::AllowWithInput,
+        &forge_primitives::permission_interaction::PermissionAction::AllowWithInput,
         "with the action the core built for that option, not one the browser sent",
     );
 }

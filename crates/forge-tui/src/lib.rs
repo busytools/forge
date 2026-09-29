@@ -8,30 +8,14 @@ pub mod ui;
 
 use clap::{Parser, ValueEnum};
 
-/// Full version string for the welcome banner + status panel.
-///
-/// Always carries the short SHA so a screenshot is enough to
-/// identify the running build. On `main` (and detached HEAD) the
-/// stamp adds ` · <sha>`; on any other branch the stamp adds
-/// ` · <sha> (<branch>)`.
-pub const FORGE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("FORGE_BUILD_SUFFIX_FULL"));
-
-/// Short version string for tight slots (Projects pane bottom row,
-/// launchpad version line). Always carries the short SHA as
-/// `+<sha>` so the running build is identifiable from a screenshot.
-pub const FORGE_VERSION_SHORT: &str =
-    concat!(env!("CARGO_PKG_VERSION"), env!("FORGE_BUILD_SUFFIX_SHORT"));
-
-/// How this binary was built - the marker `scripts/install.sh` sets,
-/// or empty for anything else. Surfaced at startup by
-/// [`startup::report_build_provenance`].
-pub const FORGE_BUILD_PROVENANCE: &str = env!("FORGE_BUILD_PROVENANCE");
-
-/// Digest of the `Cargo.lock` this binary was built against, not of
-/// forge's single-instance lock. FNV-1a, not a SHA, so `shasum` will
-/// not reproduce it. Meaningful only compared against the digest a
-/// build of the released tag reports.
-pub const FORGE_CARGO_LOCK_DIGEST: &str = env!("FORGE_CARGO_LOCK_DIGEST");
+// The build's stamp lives in `forge-server` and is re-exported here: it says
+// which forge commit is running, which is a fact about the build rather than
+// about the view drawing it - and the client reads the same stamp off its
+// wire. Re-exported rather than repeated, because two stamps is the
+// disagreement the move exists to prevent.
+pub use forge_server::{
+    FORGE_BUILD_PROVENANCE, FORGE_CARGO_LOCK_DIGEST, FORGE_VERSION, FORGE_VERSION_SHORT,
+};
 
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum DiagnosticsPreset {

@@ -49,8 +49,9 @@ use serde_json::Value;
 use crate::home::{Home, Row, Seed, State};
 use crate::icons;
 use crate::server::WebState;
-use crate::stream::{COMPOSER_EVENT, Live, SESSION_EVENT};
-use crate::work::WorkState;
+use crate::stream::{COMPOSER_EVENT, SESSION_EVENT};
+use forge_server::live::Live;
+use forge_server::work::WorkState;
 
 /// The handle that brings the projects rail back, and the one that brings
 /// the inspector back. Both live with the title so they stay clickable

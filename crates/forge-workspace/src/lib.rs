@@ -84,7 +84,6 @@ mod spawn;
 pub mod store;
 mod target;
 mod tasks;
-pub mod ui;
 mod update_fanout;
 mod views;
 mod workspace;
@@ -104,7 +103,6 @@ pub use forge_dictate::Device;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
 pub use protocol::{Command, DictateOutcome, DispatchError, SessionUpdate, TurnErrorClass};
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
-pub use ui::{RepaintCadence, SpinnerStyle};
 pub use views::{
     AccountAuth, AccountBudget, AccountLoadingRow, AccountRow, GatewayOrgView, ProjectView,
     SessionView,
@@ -183,6 +181,7 @@ pub mod user_interaction {
 pub mod userdata {
     pub use forge_agent::userdata::*;
 }
+pub use forge_primitives::background::BackgroundTask;
 pub use forge_primitives::permission::PermissionMode;
 pub use forge_primitives::runtime::RuntimeSessionState;
 

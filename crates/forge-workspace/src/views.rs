@@ -10,7 +10,7 @@ pub use forge_primitives::usage::AccountBudget;
 /// One project from the catalog plus its sessions, sorted last-
 /// activity descending. `sessions[0]` is the lead. Empty `sessions`
 /// means the project has no on-disk history yet.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectView {
     pub key: ProjectKey,
     /// The toml `name` field from `forge.toml`. Distinct from `key`,
@@ -106,7 +106,7 @@ impl ProjectView {
 /// account plus its live rate-limit state, snapshotted so the TUI
 /// renders without locking `AccountStateMap`. Produced by
 /// [`crate::Workspace::project_accounts_snapshot`] in allow-list order.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AccountRow {
     /// forge.toml `[[accounts]]` display name.
     pub display_name: String,
@@ -128,7 +128,7 @@ pub struct AccountRow {
 
 /// One org's block in the read-only gateway view: its walk order and
 /// the live state of every account it names.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GatewayOrgView {
     /// The `[[orgs]].name` from `forge.toml`.
     pub org: String,
@@ -148,7 +148,7 @@ pub use forge_primitives::account::AccountAuth;
 
 /// One account's place in preflight: what it is called, how far it
 /// has got, and how it authenticates.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AccountLoadingRow {
     /// forge.toml `[[accounts]]` display name.
     pub display_name: String,
@@ -166,7 +166,7 @@ pub struct AccountLoadingRow {
 }
 
 /// One session under a project.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SessionView {
     /// The claude session id the catalog row names, taken from the
     /// transcript file on disk. A row here is a transcript rather than

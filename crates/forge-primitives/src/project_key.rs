@@ -8,7 +8,7 @@
 /// produced by `forge_agent::userdata::catalog::scan::project_key_for_directory`.
 /// Equivalent to the directory names you see under
 /// `<config_dir>/projects/`.
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProjectKey(pub(crate) String);
 
 impl ProjectKey {

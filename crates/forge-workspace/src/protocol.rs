@@ -31,7 +31,7 @@ use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_primitives::error::AppError;
 use forge_primitives::permission::PermissionMode;
-use forge_primitives::permission_ui::{PermissionOutcome, PermissionRequest};
+use forge_primitives::permission_interaction::{PermissionOutcome, PermissionRequest};
 use forge_primitives::plugins::{
     PluginUpdateRun, PluginUpdateTrigger, PluginsCliActionSuccess, PluginsInventorySnapshot,
 };
@@ -42,6 +42,7 @@ use forge_primitives::{
     AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
     Message, PeerInflightStats, SessionId, SessionListEntry,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -70,18 +71,28 @@ pub enum PendingInteractionSlot {
 
 /// What a seat is held on, as the core kept it: the prompt a view that
 /// attached late has no other way to read.
+///
+/// The three kinds are every member of the category, not the two the dock
+/// happened to draw first: a Slack draft parks on a reply the same way a
+/// permission and a question do, so a record carrying two of the three
+/// told a builder the category was covered when it was not.
 #[derive(Clone)]
 pub enum PendingAsk {
     Permission(Box<PermissionRequest>),
     Question(Box<QuestionRequest>),
+    SlackDraft(Box<forge_primitives::slack::SlackDraft>),
 }
 
 impl PendingAsk {
     /// The tool call this prompt is about, which is the id an answer names.
-    pub fn tool_id(&self) -> &str {
+    ///
+    /// `None` for a Slack draft: it is answered by `Command::RespondSlackPost`
+    /// with the draft's own id, and names no tool call at all.
+    pub fn tool_id(&self) -> Option<&str> {
         match self {
-            Self::Permission(request) => &request.tool_call.tool_call_id,
-            Self::Question(request) => &request.tool_call.tool_call_id,
+            Self::Permission(request) => Some(&request.tool_call.tool_call_id),
+            Self::Question(request) => Some(&request.tool_call.tool_call_id),
+            Self::SlackDraft(_) => None,
         }
     }
 }
@@ -109,7 +120,8 @@ impl std::fmt::Debug for PendingInteractionSlot {
 /// that the new worker was issued and the tag value applied. Threaded
 /// back to the calling `agents__spawn` Tool impl via the oneshot
 /// receiver so the LLM sees `{session_id, tag}` in the tool result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct WorkerSpawnReply {
     pub session_id: String,
     pub tag: String,
@@ -132,7 +144,8 @@ pub struct WorkerSpawnReply {
 }
 
 /// Which session a worker spawn landed on, as the spawn tool reports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionChoice {
     /// The label's prior session was found and resumed.
     Resumed,
@@ -145,7 +158,8 @@ pub enum SessionChoice {
 
 /// Outcome of a [`Command::DespawnWorker`], sent back to the calling
 /// `agents__despawn` Tool via the command's `respond` oneshot.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DespawnResult {
     /// The worker was torn down (subprocess killed, dropped from
     /// `live_workers`, inflight asks expired). `worktree_cleanup_warning`
@@ -174,7 +188,8 @@ pub enum DespawnResult {
 /// `Added` and `StatusChanged` carry a fresh `WorkerStatus` snapshot;
 /// `Removed` carries the last-known snapshot for symmetry but the TUI
 /// reducer treats it as a delete.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WorkerStatusAction {
     Added,
     Removed,
@@ -190,7 +205,8 @@ pub enum WorkerStatusAction {
 /// (a failed tag-write) reports [`Self::untouched`], because by then
 /// the worktree is on disk. Every other emitter reports
 /// [`Self::untouched`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WorktreeDisposition {
     /// Nothing to report on: either the worker was spawned outside a
     /// git repo, or its spawn failed before it had a worktree.
@@ -202,6 +218,16 @@ pub enum WorktreeDisposition {
     Removed,
     /// The despawn's removal failed and the worktree is still on disk.
     RemovalFailed,
+}
+
+/// A reply channel for a command that carries none.
+///
+/// A command off the socket has no channel to answer down - its reply is a
+/// socket message instead - so the handler is given this rather than being
+/// made to ask: sending into it reports the closed channel it is, which
+/// every call site already discards.
+pub fn unanswerable<T>() -> oneshot::Sender<T> {
+    oneshot::channel().0
 }
 
 impl WorktreeDisposition {
@@ -216,6 +242,13 @@ impl WorktreeDisposition {
 /// Every variant carries a `SessionSlot` identifying the target
 /// session task. `Workspace::dispatch` fans the variant into the
 /// matching task's command receiver.
+///
+/// A reply channel cannot cross a socket, so the four fields carrying one
+/// are `Option` and skipped on the wire: `#[serde(skip)]` reconstructs a
+/// field on deserialize, which needs a `Default`, and a bare
+/// `oneshot::Sender` has none while an `Option` does.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Command {
     Prompt {
         key: SessionSlot,
@@ -396,7 +429,8 @@ pub enum Command {
         /// dropped, so a refusal there would strand rows with no
         /// caller to hear it.
         from_boot_respawn: bool,
-        return_to: oneshot::Sender<Result<WorkerSpawnReply, String>>,
+        #[serde(skip)]
+        return_to: Option<oneshot::Sender<Result<WorkerSpawnReply, String>>>,
     },
     /// Close (terminate agent + remove from `live_workers`) the
     /// worker identified by `label` in `project_key`. Dispatched by
@@ -426,7 +460,8 @@ pub enum Command {
         project_key: crate::ProjectKey,
         label: String,
         force: bool,
-        respond: oneshot::Sender<DespawnResult>,
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<DespawnResult>>,
     },
     /// Deliver a wrapped peer-style prompt to a worker. Same envelope
     /// as `DeliverPeerPrompt` but addressed by worker label within
@@ -506,13 +541,6 @@ pub enum Command {
         thread_id: String,
         status: ReviewStatus,
     },
-    /// Persist the `/spinner` override so it survives restart. The
-    /// in-session active style lives on the TUI's `App::spinner_style`
-    /// already; this is the durable-store write. App-level command
-    /// (`key()` returns `None`); routed inline.
-    PersistSpinner {
-        style: crate::ui::SpinnerStyle,
-    },
     /// Release the session `session_key` (cascade-aware: a project
     /// lead's workers terminate first). Dispatched by the TUI's
     /// per-row close click; the TUI removes its own bucket around the
@@ -531,7 +559,8 @@ pub enum Command {
         project: String,
         branch: String,
         thread: ReviewThread,
-        respond: oneshot::Sender<bool>,
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<bool>>,
     },
     /// Submit (seal) the listed threads as one review round.
     /// `respond` carries the minted review, `None` when the store
@@ -542,7 +571,8 @@ pub enum Command {
         summary: Option<String>,
         thread_ids: Vec<String>,
         origin: SessionSlot,
-        respond: oneshot::Sender<Option<forge_primitives::ReviewSet>>,
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<Option<forge_primitives::ReviewSet>>>,
     },
 }
 
@@ -584,7 +614,6 @@ impl Command {
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
             | Self::SetReviewThreadStatus { .. }
-            | Self::PersistSpinner { .. }
             | Self::CloseSession { .. }
             | Self::UpsertReviewThread { .. }
             | Self::RespondSlackPost { .. }
@@ -732,9 +761,6 @@ impl std::fmt::Debug for Command {
                 .field("thread_id", thread_id)
                 .field("status", status)
                 .finish(),
-            Self::PersistSpinner { style } => {
-                f.debug_struct("PersistSpinner").field("style", style).finish()
-            }
             Self::CloseSession { session_key } => {
                 f.debug_struct("CloseSession").field("session_key", session_key).finish()
             }
@@ -757,7 +783,8 @@ impl std::fmt::Debug for Command {
 /// What one finished dictation take produced. Plain data rather than
 /// [`forge_dictate::Outcome`]: the TUI words the notices, so it gets
 /// the observations and keeps the crate's error shapes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DictateOutcome {
     /// Words to insert at the composer's caret. `truncated` means the
     /// take hit the capture cap or the decode budget and is partial.
@@ -785,7 +812,8 @@ pub enum DictateOutcome {
 /// gives a worker's tool surface AND a worker's slot. Every spawn
 /// states one; forge has no keyless form, because a role it cannot
 /// state is one it would have to guess.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SpawnRole {
     Lead,
     Worker {
@@ -809,7 +837,8 @@ pub enum SpawnRole {
 ///
 /// `Clone` is what lets the fan-out hand one emit to more than one
 /// subscriber, so every variant's payload must stay cloneable.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionUpdate {
     /// Workspace is spawning a session (in response to
     /// `Command::SpawnProject` / `Command::SpawnSession` /
@@ -1494,6 +1523,10 @@ pub enum DispatchError {
     UnknownSession(SessionSlot),
     #[error("session task for key {0:?} has closed its command channel")]
     SessionClosed(SessionSlot),
+    #[error(
+        "no prompt of that kind is waiting on {tool_id} for key {key:?}: it has been answered, or it asked something else"
+    )]
+    NoPromptWaiting { key: SessionSlot, tool_id: String },
 }
 
 #[cfg(test)]

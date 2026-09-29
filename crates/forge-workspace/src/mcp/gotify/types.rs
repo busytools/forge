@@ -16,7 +16,7 @@
 /// A matched Gotify notification resolved for delivery: the application
 /// display name (resolved from the numeric appid, or the id as a string
 /// when the app index hasn't seen it), title, message, and priority.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GotifyNotification {
     pub app: String,
     pub title: String,

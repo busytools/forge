@@ -16,11 +16,13 @@ pub mod plugins;
 pub mod reviews;
 pub mod roster;
 pub mod session;
+pub mod usage;
 pub mod workers;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::transcript::ChatUnit;
 use forge_primitives::SessionSlot;
 use forge_workspace::{Command, DispatchError, Workspace};
 
@@ -41,6 +43,11 @@ pub use workers::{WorkerRef, Workers};
 /// A view's read handle on the core.
 pub struct ViewSurface {
     workspace: Arc<Workspace>,
+    /// The pool's last scan and when it was taken, so a reader asking twice
+    /// inside the window does not walk it twice. A `Mutex` rather than a
+    /// second cache type: one report, one window.
+    usage_cache:
+        std::sync::Mutex<Option<(std::time::Instant, forge_primitives::token_usage::UsageReport)>>,
 }
 
 /// The update the core emits, re-exported: it is the workspace-to-view
@@ -57,7 +64,7 @@ pub fn is_success_result(is_error: bool, subtype: &str) -> bool {
 
 impl ViewSurface {
     pub fn new(workspace: Arc<Workspace>) -> Self {
-        Self { workspace }
+        Self { workspace, usage_cache: std::sync::Mutex::new(None) }
     }
 
     /// Dispatch one command to the core, which is how a view acts rather
@@ -73,24 +80,104 @@ impl ViewSurface {
     /// What the seat at `slot` is held on, as the core kept it, so a view
     /// that attached after a prompt landed still draws what it offers.
     /// `None` when the seat is holding nothing.
+    /// The last fatal error, or `None` when nothing has failed fatally.
+    ///
+    /// App-level rather than the seat's: it names a startup that could not
+    /// happen. It is held because the update carries no state of its own,
+    /// so a view that attached afterwards has no other way to learn of it.
+    pub fn fatal_error(&self) -> Option<forge_primitives::error::AppError> {
+        self.workspace.last_fatal_error()
+    }
+
+    /// The statuspage's last answer, or `None`.
+    ///
+    /// App-level: the answer is the same for every viewer, so the core
+    /// probes it once and every view reads this rather than fetching its
+    /// own. `None` covers both a healthy statuspage and one that could not
+    /// be reached, which is the fetch's own contract.
+    pub fn service_status(&self) -> Option<forge_primitives::cloud::service_status::ServiceIssue> {
+        self.workspace.service_status()
+    }
+
     pub fn pending_ask(&self, slot: &SessionSlot) -> Option<PendingAsk> {
         self.workspace.pending_ask(slot)
     }
 
-    /// The core's own update stream, as a mirror of it. Every caller gets
-    /// a receiver of its own, so a second view attaches beside the first
-    /// rather than stealing its events.
+    /// The conversation's units, as the server folds them.
     ///
-    /// This is the form for a view that renders no prompt: the observer
-    /// role, and no replay of what was emitted before the caller attached,
-    /// because it reads what it needs from the read verbs when it is
-    /// asked. Both halves are deliberate and neither suits the TUI, which
-    /// is the view that DOES render prompts and answer them - moving it
-    /// onto this verb would make it an observer, and every permission and
-    /// question request would resolve `Cancelled` instead of reaching a
-    /// person. It stays on `Workspace::subscribe`.
+    /// `conversation` hands over the wire messages and lets a view fold them;
+    /// this hands over the FOLD, which is what a client reading history
+    /// needs. One turn is a RUN of these units, so slicing them at a
+    /// `UserTurn` is what lets a page be cut on a turn boundary rather than
+    /// through the middle of one.
+    pub fn folded_units(&self, slot: &SessionSlot, cwd_raw: &Path) -> Vec<ChatUnit> {
+        crate::transcript::render_units(&self.conversation(slot, cwd_raw).messages)
+    }
+
+    /// The core's own update stream. Every caller gets a receiver of its
+    /// own, so a second view attaches beside the first rather than stealing
+    /// its events.
+    ///
+    /// **A caller on this verb is a frontend that renders AND answers
+    /// prompts.** A permission, question or Slack-draft request is parked on
+    /// a reply, and the paths that raise one resolve it `Cancelled` when no
+    /// subscriber can answer - so a view that draws a dock while declaring
+    /// itself an observer draws prompts that are already dead, and a turn
+    /// fails rather than waiting for the person looking at it. Whoever
+    /// subscribes here answers through `dispatch`, which is the same path
+    /// the TUI uses.
+    ///
+    /// This was the mirror's role while the TUI was the only frontend and
+    /// the only thing that answered. A second view that renders makes that
+    /// reason stop holding.
+    ///
+    /// The first caller to attach is handed what was emitted before it as
+    /// well, so a notice raised during boot is not lost; a caller attaching
+    /// after one already has inherits no backlog.
+    ///
+    /// A consumer that reads the stream and renders no prompt takes
+    /// [`Self::subscribe_mirror`] instead.
     pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+        self.workspace.subscribe()
+    }
+
+    /// The core's own update stream for a consumer that reads it WITHOUT
+    /// answering, and keeps no backlog.
+    ///
+    /// **The caller this exists for is a process-wide fold.** It folds into
+    /// state of its own and never replies, so the answering role would park
+    /// a permission, question or Slack draft waiting on an answer nobody
+    /// sends. And it attaches at boot, before the terminal does, so taking
+    /// the backlog would take the boot notice from the view that renders
+    /// prompts - the notice belongs to whichever subscription attaches
+    /// first, and a fold is not the view that draws it.
+    ///
+    /// A view with a dock to answer from takes [`Self::subscribe`].
+    pub fn subscribe_mirror(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
         self.workspace.subscribe_mirror()
+    }
+
+    /// The core's stream for a client attaching beside the terminal,
+    /// registered with the role that client declared.
+    ///
+    /// **Neither role takes the pre-attach backlog.** It goes to the first
+    /// subscriber, and the view that renders the boot notice is the terminal:
+    /// a client attaching beside it must not take that notice away, whether
+    /// or not the client can answer. A client reads what it missed from the
+    /// subject's snapshot instead.
+    ///
+    /// The role decides one thing: whether the core may park a prompt on this
+    /// connection's reply. `answering` is the client's own statement that it
+    /// can show and answer a prompt.
+    pub fn subscribe_client(
+        &self,
+        answering: bool,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+        if answering {
+            self.workspace.subscribe_answerer()
+        } else {
+            self.workspace.subscribe_mirror()
+        }
     }
 
     /// The projects, their sessions, and the per-project lists the
@@ -223,11 +310,21 @@ mod tests {
 
     /// The mirror is the call site, not the fanout. Both verbs sit on one
     /// `UpdateFanout`, whose own test pins its two halves; what this pins
-    /// is which half each one calls, because repointing the surface's verb
-    /// at `Workspace::subscribe` steals the boot notice from the view that
-    /// renders prompts and every other test in the tree stays green.
+    /// is which half each one calls.
+    ///
+    /// **A view attaching through this verb renders AND answers prompts, and
+    /// it takes the stream whole.** The two travel together on purpose: the
+    /// verb that hands over the backlog is the verb that answers, because
+    /// both belong to the frontend that draws a dock. A view pointed at the
+    /// mirror instead draws prompts that are already dead - the workspace
+    /// resolves a permission, question or Slack draft `Cancelled` when no
+    /// subscriber can answer - and nothing in a build or a test would say so.
+    ///
+    /// This is the one place in the tree that tells the two apart: every
+    /// other test answers an update that was emitted after it attached, and
+    /// green either way.
     #[tokio::test]
-    async fn a_surface_mirror_leaves_the_backlog_for_a_workspace_subscriber() {
+    async fn a_surface_subscriber_answers_and_takes_the_stream_whole() {
         let (workspace, _dir) = crate::surface::testing::workspace();
         let surface = ViewSurface::new(Arc::clone(&workspace));
 
@@ -235,18 +332,35 @@ mod tests {
         // whichever caller attaches first.
         workspace.emit_for_test(SessionUpdate::CatalogLoaded);
 
-        let mut mirror = surface.subscribe();
+        let mut subscribed = surface.subscribe();
         assert!(
-            mirror.try_recv().is_err(),
-            "a view attaching through the surface takes no backlog, since the held notice \
-             belongs to the view that renders prompts",
+            matches!(subscribed.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            "a view attaching through this verb takes the stream whole, held notice included",
         );
+    }
+
+    /// The other half of the pair, and the reason both verbs exist: a fold
+    /// attaching through the mirror takes no backlog, so the notice held
+    /// before anyone attached reaches the view that renders prompts instead
+    /// of being swallowed by whichever subscription happened to attach
+    /// first - which at boot is the fold, not the terminal.
+    ///
+    /// The fold also does not answer, so putting it on the answering verb
+    /// would park every prompt it draws waiting on a reply nobody sends.
+    #[tokio::test]
+    async fn a_surface_mirror_leaves_the_backlog_for_the_view_that_renders_prompts() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+
+        workspace.emit_for_test(SessionUpdate::CatalogLoaded);
+
+        let mut mirror = surface.subscribe_mirror();
+        assert!(mirror.try_recv().is_err(), "a fold attaching through the mirror takes no backlog");
 
         let mut answering = workspace.subscribe();
         assert!(
             matches!(answering.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
-            "the notice held before any caller attached is still there for the workspace \
-             subscriber, which is what the mirror left it for",
+            "the held notice is still there for the subscriber that renders prompts",
         );
     }
 

@@ -88,7 +88,7 @@ pub struct ToolCallInfo {
 ///
 /// At least one of the two will be populated (else the card path is
 /// skipped by the submit handler).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AnsweredQuestion {
     pub question: String,
     pub picked_labels: Vec<String>,

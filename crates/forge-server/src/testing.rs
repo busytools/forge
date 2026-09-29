@@ -11,15 +11,19 @@
 //! a caller that wants a panic is the one that asks for it.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use forge_primitives::SessionSlot;
 use forge_primitives::tasks::{Task, TaskStatus};
-use forge_primitives::{CronEntry, CronId, CronKind};
+use forge_primitives::{CronEntry, CronId, CronKind, WebConfig};
 use forge_workspace::{ProjectKey, Workspace};
 
 use crate::SessionUpdate;
+use crate::live::Live;
 use crate::surface::{PendingKind, ViewSurface};
+use crate::transport::TransportState;
+use crate::work::WorkCache;
 
 /// What a fixture hands back when it cannot build what was asked for.
 pub type FixtureError = Box<dyn std::error::Error + Send + Sync>;
@@ -39,6 +43,9 @@ pub struct ViewFacts {
     pub context: Option<forge_workspace::ContextUsage>,
     pub mcp: Option<forge_workspace::McpServers>,
     pub process_snapshot: Option<forge_workspace::env::processes::ProcessSnapshot>,
+    /// The CLI's background-task registry, as `background_tasks_changed`
+    /// would have left it.
+    pub background_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<forge_primitives::MonitorRecord>,
 }
 
@@ -55,6 +62,34 @@ pub struct Fleet {
 /// The session id a seeded transcript belongs to. One per fleet is enough:
 /// a test that needs two reads two slots against their own files.
 const SEEDED_SESSION: &str = "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45";
+
+impl TransportState {
+    /// A server over a fixture fleet, for a test that opens a socket.
+    pub fn for_test() -> Result<Self, FixtureError> {
+        let fleet = Fleet::in_dir(&scratch_dir(), &[("TestOrg", &["proj"])])?;
+        Ok(Self {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(Live::new()),
+            config: WebConfig::default(),
+        })
+    }
+}
+
+/// A directory under the system temp dir, one per call.
+///
+/// `Fleet` writes a store under the directory it is given and needs it to
+/// outlive the fixture, so the directory is left in place rather than
+/// cleaned up. This module ships with the library, so it cannot reach for a
+/// temp-file crate: a dev-dependency is not in scope here.
+fn scratch_dir() -> std::path::PathBuf {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    std::env::temp_dir().join(format!(
+        "forge-server-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
 
 impl Fleet {
     /// A fleet whose `forge.toml` declares one project per name under each
@@ -88,6 +123,36 @@ impl Fleet {
     /// react to it without driving a whole session.
     pub fn emit(&self, update: SessionUpdate) {
         self.workspace.emit_for_test(update);
+    }
+
+    /// Give a project a task, so a fixture can read one back rather than
+    /// answering with an empty list a reader cannot tell from a missing field.
+    pub fn seed_task(&self, task: forge_primitives::tasks::Task) {
+        self.workspace.seed_test_task(task);
+    }
+
+    /// [`Self::emit`], reporting whether a subscriber was there to take it.
+    ///
+    /// `false` once nothing is listening, which is how a test tells a
+    /// subscription still attached from one that went with its socket.
+    pub fn emit_and_report(&self, update: SessionUpdate) -> bool {
+        self.workspace.emit_for_test_reported(update)
+    }
+
+    /// How many subscribers are attached right now, the transport's own fold
+    /// included. A test that watches a socket's subscription arrive and leave
+    /// reads this rather than asking whether an emit landed: the fold makes
+    /// every emit land, whether or not a client is there.
+    pub fn subscriber_count(&self) -> usize {
+        self.workspace.test_subscriber_count()
+    }
+
+    /// How many subscribers could answer a prompt right now. The role decides
+    /// whether the core parks a turn on a reply rather than resolving it
+    /// `Cancelled`, and nothing on the wire reports it - so a test that watches
+    /// a client declare `answering` reads this.
+    pub fn answering_count(&self) -> usize {
+        self.workspace.test_answering_count()
     }
 
     /// Hold a claude version snapshot, so a view test renders a version
@@ -178,6 +243,18 @@ impl Fleet {
     /// what a view asked for without driving a session.
     pub fn intercept_dispatch(&self) {
         self.workspace.enable_test_dispatch_intercept();
+    }
+
+    /// Give `slot` the peer counters a row's badge draws from, rather than
+    /// driving a whole ask to earn them.
+    pub fn seed_peer_stats(&self, slot: &SessionSlot, stats: forge_primitives::PeerInflightStats) {
+        self.workspace.seed_test_peer_stats(slot, stats);
+    }
+
+    /// Stamp when `slot`'s failure counter last moved, as the delivery path
+    /// would have.
+    pub fn seed_peer_failure_at(&self, slot: &SessionSlot, at: std::time::SystemTime) {
+        self.workspace.seed_test_peer_failure_at(slot, at);
     }
 
     /// The commands caught since the last call.
@@ -336,6 +413,7 @@ impl Fleet {
         held.context_usage = facts.context;
         held.mcp_servers = facts.mcp;
         held.process_snapshot = facts.process_snapshot;
+        held.background_tasks = facts.background_tasks;
         held.monitors = facts.monitors;
     }
 

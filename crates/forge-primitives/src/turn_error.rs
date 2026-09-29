@@ -7,7 +7,8 @@
 /// classifier itself lives in forge-agent's
 /// `translate::error_handling`; this enum is the wire shape it
 /// produces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TurnErrorClass {
     PlanLimit,
     AuthRequired,

@@ -5,6 +5,7 @@
 - [Install and build](./install.md)
 - [forge.toml reference](./configuration.md)
 - [Architecture](./architecture.md)
+- [The socket](./socket.md)
 - [API reference](./api-reference.md)
 
 # UI surfaces

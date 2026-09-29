@@ -1,10 +1,8 @@
-//! Persistent forge state: the `/spinner` override + the per-account
-//! usage cache.
+//! Persistent forge state: the per-account usage cache.
 //!
-//! Both live in the machine-local redb store ([`crate::store::state`]).
-//! [`load`] / [`store`] / [`store_spinner`] are thin wrappers over that
-//! tenant; [`ForgeState`] / [`CachedAccountUsage`] are the in-memory
-//! shapes.
+//! It lives in the machine-local redb store ([`crate::store::state`]).
+//! [`load`] and [`store`] are thin wrappers over that tenant;
+//! [`ForgeState`] / [`CachedAccountUsage`] are the in-memory shapes.
 //!
 //! The usage cache solves the cold-boot problem: Anthropic's
 //! `/api/oauth/usage` endpoint rate-limits aggressively on per-IP burst
@@ -12,8 +10,7 @@
 //! through - during which the launchpad picker has no usage to show and
 //! the walk sees every account as unknown. The cache seeds the in-memory
 //! `AccountStateMap` with the last known values until the 60 s poller
-//! refreshes them. The spinner override is a user preference with no such
-//! fallback.
+//! refreshes them.
 //!
 //! Failures are non-fatal: a closed store degrades to "no cache; spawn
 //! paths see empty bars until the poller succeeds."
@@ -31,10 +28,6 @@ pub struct CachedAccountUsage {
 /// In-memory forge state read from the redb store.
 #[derive(Debug)]
 pub(crate) struct ForgeState {
-    /// Runtime spinner-style override set via `/spinner`. `None` means no
-    /// override - the active style falls back to forge.toml's `[ui]
-    /// spinner` default.
-    pub spinner: Option<crate::ui::SpinnerStyle>,
     /// Account display name to cached snapshot. The redb row shape
     /// ([`CachedAccountUsage`]) is unwrapped at the store boundary, so
     /// the in-memory map the account pool consumes is bare snapshots.
@@ -43,7 +36,7 @@ pub(crate) struct ForgeState {
 
 impl ForgeState {
     pub(crate) fn empty() -> Self {
-        Self { spinner: None, account_usage: std::collections::BTreeMap::new() }
+        Self { account_usage: std::collections::BTreeMap::new() }
     }
 }
 
@@ -51,14 +44,6 @@ impl ForgeState {
 /// its empty default with a warn rather than failing the boot.
 pub(crate) fn load(db: &crate::store::Db) -> ForgeState {
     ForgeState {
-        spinner: crate::store::state::spinner(db).unwrap_or_else(|error| {
-            tracing::warn!(
-                target: "forge_workspace::account_cache",
-                %error,
-                "reading the spinner override from the store failed",
-            );
-            None
-        }),
         account_usage: crate::store::state::account_usage(db).map_or_else(
             |error| {
                 tracing::warn!(
@@ -88,19 +73,6 @@ pub(crate) fn store(
             target: "forge_workspace::account_cache",
             %error,
             "persisting account usage to the store failed",
-        );
-    }
-}
-
-/// Persist the runtime spinner override (set via `/spinner`). `None`
-/// clears it so the active style falls back to the forge.toml `[ui]
-/// spinner` default. Non-fatal + logged on failure.
-pub(crate) fn store_spinner(db: &crate::store::Db, spinner: Option<crate::ui::SpinnerStyle>) {
-    if let Err(error) = crate::store::state::set_spinner(db, spinner) {
-        tracing::warn!(
-            target: "forge_workspace::account_cache",
-            %error,
-            "persisting the spinner override to the store failed",
         );
     }
 }
@@ -138,22 +110,11 @@ mod tests {
     fn store_and_load_round_trip_through_redb() {
         let cfg = cfg();
         let db = crate::store::Db::open(&cfg.path().join("db.redb")).expect("open db");
-        store_spinner(&db, Some(crate::ui::SpinnerStyle::Ember));
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Gateway".to_owned(), fixture_entry());
         store(&db, &entries);
 
         let loaded = load(&db);
-        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::Ember), "the spinner reloads");
         assert!(loaded.account_usage.contains_key("Gateway"), "the usage cache reloads");
-    }
-
-    #[test]
-    fn store_spinner_none_clears_the_override() {
-        let cfg = cfg();
-        let db = crate::store::Db::open(&cfg.path().join("db.redb")).expect("open db");
-        store_spinner(&db, Some(crate::ui::SpinnerStyle::Ember));
-        store_spinner(&db, None);
-        assert_eq!(load(&db).spinner, None, "None clears the persisted override");
     }
 }

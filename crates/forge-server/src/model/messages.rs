@@ -87,10 +87,16 @@ pub struct ChatMessage {
 /// The counts and clocks are optional: the row renders from turn
 /// start and fills in as data arrives, and an absent value is
 /// rendered as absent or dropped, never as zero.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct TurnInfo {
     /// When the turn began: stamped at prompt dispatch, or on the
     /// first assistant frame for a turn forge did not dispatch.
+    ///
+    /// **Absent from the wire, and it is the one field this shape drops.** An
+    /// `Instant` is a monotonic clock reading, meaningless outside the
+    /// process that took it, so no client could use it - and the figure a
+    /// view draws from it, `elapsed_secs` beside it, crosses.
+    #[serde(skip)]
     pub started_at: Option<Instant>,
     /// Whole seconds since `started_at`, refreshed once per render so
     /// the cache key and the layout it guards agree.
