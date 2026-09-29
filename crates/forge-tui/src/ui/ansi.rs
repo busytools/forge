@@ -5,16 +5,18 @@
 //! carriage-return redraws and the odd BEL or backspace. ratatui reads those
 //! as terminal control, so they go before the text reaches a span.
 
-/// Drop CSI and OSC escape sequences, keeping everything else. Bare
-/// control bytes are the caller's business: a BEL ends an OSC, so it has
-/// to survive this pass to be stripped by whatever follows.
+/// Drop the escape sequences a terminal obeys, keeping everything else.
+/// Bare control bytes are the caller's business: a BEL ends a string
+/// control, so it has to survive this pass to be stripped by whatever
+/// follows.
 pub fn strip_ansi(text: &str) -> String {
     enum State {
         Normal,
         Escape,
+        EscapeIntermediate,
         Csi,
-        Osc,
-        OscEscape,
+        StringControl,
+        StringControlEscape,
     }
 
     let mut out = String::with_capacity(text.len());
@@ -32,9 +34,17 @@ pub fn strip_ansi(text: &str) -> String {
             }
             State::Escape => match ch {
                 '[' => State::Csi,
-                ']' => State::Osc,
+                // OSC and the string controls - DCS, SOS, PM and APC - all
+                // carry a payload that runs to a terminator, and the payload
+                // is not text.
+                ']' | 'P' | 'X' | '^' | '_' => State::StringControl,
+                // An escape carrying an intermediate byte is three long, not
+                // two: `sgr0` is `\E(B\E[m`, and stopping after the `(` leaves
+                // the `B` on the page where a terminal drew nothing.
+                '\u{20}'..='\u{2f}' => State::EscapeIntermediate,
                 _ => State::Normal,
             },
+            State::EscapeIntermediate => State::Normal,
             State::Csi => {
                 if ('\u{40}'..='\u{7e}').contains(&ch) {
                     State::Normal
@@ -42,16 +52,16 @@ pub fn strip_ansi(text: &str) -> String {
                     State::Csi
                 }
             }
-            State::Osc => match ch {
+            State::StringControl => match ch {
                 '\u{07}' => State::Normal,
-                '\u{1b}' => State::OscEscape,
-                _ => State::Osc,
+                '\u{1b}' => State::StringControlEscape,
+                _ => State::StringControl,
             },
-            State::OscEscape => {
+            State::StringControlEscape => {
                 if ch == '\\' {
                     State::Normal
                 } else {
-                    State::Osc
+                    State::StringControl
                 }
             }
         };
@@ -87,6 +97,37 @@ mod tests {
     fn strip_ansi_removes_osc_sequences() {
         let input = "prefix\u{1b}]0;title\u{07}suffix";
         assert_eq!(strip_ansi(input), "prefixsuffix");
+    }
+
+    #[test]
+    fn strip_ansi_removes_an_escape_that_carries_an_intermediate_byte() {
+        // `sgr0` on this machine's terminfo is `\E(B\E[m`, so reading a
+        // non-CSI escape as two bytes leaves a bare `B` behind where a reset
+        // was emitted - which is what most tools print.
+        assert_eq!(strip_ansi("before \u{1b}(B\u{1b}[m after"), "before  after");
+        assert_eq!(strip_ansi("\u{1b})0plain"), "plain");
+        assert_eq!(strip_ansi("\u{1b}#8"), "");
+    }
+
+    #[test]
+    fn strip_ansi_removes_a_string_control_sequence() {
+        // DCS, SOS, PM and APC carry a payload that runs to a string
+        // terminator, and the payload is not text: `ESC P` alone left the
+        // whole thing on the page, sixel and the terminal's own reports
+        // included.
+        assert_eq!(strip_ansi("before \u{1b}Pq~xyz\u{1b}\\ after"), "before  after");
+        assert_eq!(strip_ansi("\u{1b}Xhello\u{1b}\\after"), "after");
+        assert_eq!(strip_ansi("\u{1b}^meta\u{1b}\\after"), "after");
+        assert_eq!(strip_ansi("\u{1b}_app\u{1b}\\after"), "after");
+        // An unterminated one answers the end of the text, and a BEL ends it
+        // for the emitters that write one.
+        assert_eq!(strip_ansi("text\u{1b}Pq~payload"), "text");
+        assert_eq!(strip_ansi("\u{1b}_a\u{07}after"), "after");
+        // An ESC inside a payload that is not followed by `\` returns to the
+        // payload rather than ending it, which is what a tmux passthrough
+        // needs: its DCS carries a whole escaped sequence and has to be eaten
+        // to the real terminator, not to the inner sequence's first ESC.
+        assert_eq!(strip_ansi("\u{1b}Ptmux;\u{1b}[31mred\u{1b}\\after"), "after");
     }
 
     #[test]

@@ -323,8 +323,10 @@ ci-watch run_id="":
         run_id=$(gh run list --branch "$branch" --workflow ci.yml --limit 1 \
             --json databaseId --jq '.[0].databaseId // empty')
     fi
+    # The lookup cannot tell a run that is not registered yet from one that
+    # will never exist, so the message says only what it knows.
     if [ -z "$run_id" ]; then
-        line="[ERROR] no CI run found for branch $branch"
+        line="[ERROR] no CI run found for branch $branch yet; GitHub may not have registered it - pass a run id if you just pushed"
         record "$line"; echo "$line" >&2
         exit 1
     fi
