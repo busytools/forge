@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ServerMessage, SessionSlot, Subject } from '../protocol';
+import type { ServerMessage, Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
+import type { SessionSlot } from '../wire/types';
 import { watchHome } from './live';
 
 const HOME: Subject = 'home';
@@ -93,7 +94,9 @@ describe('the home over a connection', () => {
     // to that read is what lets the next one be asked for.
     forge.arrive(UPDATE);
     await settle();
-    expect(forge.refreshed, 'a watched home did not answer an update with a read').toEqual(['home']);
+    expect(forge.refreshed, 'a watched home did not answer an update with a read').toEqual([
+      'home',
+    ]);
     forge.arrive({ kind: 'snapshot', subject: HOME, data: null });
 
     // The release, with a read already queued behind the last subscriber.
