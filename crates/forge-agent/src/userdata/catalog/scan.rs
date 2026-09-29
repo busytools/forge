@@ -151,11 +151,21 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
                 compaction_count = compaction_count.saturating_add(1);
                 continue;
             }
-            // What the turn's hooks did. A system row is the frame the wire
+            // What the turn's hooks did, and the task lifecycle a sub-agent's
+            // card reads its liveness from. A system row is the frame the wire
             // sends, so it is kept whole; the one field the frame's decoder
             // spells differently is the session.
             Some("system")
-                if value.get("subtype").and_then(Value::as_str) == Some("stop_hook_summary") =>
+                if matches!(
+                    value.get("subtype").and_then(Value::as_str),
+                    Some(
+                        "stop_hook_summary"
+                            | "task_started"
+                            | "task_updated"
+                            | "task_progress"
+                            | "task_notification"
+                    )
+                ) =>
             {
                 let mut frame = value.clone();
                 if let Some(record) = frame.as_object_mut() {
@@ -165,15 +175,16 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
             }
             _ => continue,
         };
-        // The same rule the fold reads a frame by: a parent id that names a
-        // dispatch, which on the wire is never empty and never null.
-        if value
+        // A frame a sub-agent produced is kept WITH the id that says so: the
+        // chat fold skips it on that id (`transcript::is_dispatched`), and the
+        // sub-agent fold is what reads the calls under it. Dropping it here as
+        // well was a second guard over the same rule, and the second one is
+        // the one that left the fold with nothing to fold.
+        let parent_tool_use_id = value
             .get("parent_tool_use_id")
             .and_then(Value::as_str)
-            .is_some_and(|parent| !parent.trim().is_empty())
-        {
-            continue;
-        }
+            .filter(|parent| !parent.trim().is_empty())
+            .map(str::to_owned);
         let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default().to_string();
         let sess = session_in_row(&value);
         let timestamp = value.get("timestamp").and_then(Value::as_str).map(str::to_owned);
@@ -182,7 +193,7 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
             uuid,
             session_id: sess,
             message: message.unwrap_or(Value::Null),
-            parent_tool_use_id: None,
+            parent_tool_use_id,
             timestamp,
             tool_use_result: value.get("toolUseResult").filter(|result| !result.is_null()).cloned(),
         });
@@ -1236,6 +1247,49 @@ mod tests {
         assert_eq!(hook_infos.len(), 2, "and one entry per hook behind it");
         assert_eq!(hook_infos[0].command, "just fmt", "each naming what it ran");
         assert_eq!(hook_infos[1].duration_ms, Some(62000), "and how long it took");
+    }
+
+    /// The frames a sub-agent's card is folded from survive the read.
+    ///
+    /// The scan dropped every row whose `parent_tool_use_id` named a dispatch,
+    /// and every `system` row that was neither a compaction boundary nor a hook
+    /// summary - which between them is the whole of what `subagents.rs` folds:
+    /// the calls an instance made, and the lifecycle that says whether it is
+    /// still working. The chat does not need the drop, because `render_units`
+    /// skips a dispatched frame itself (`transcript::is_dispatched`), so the
+    /// read-side guard was a second rule over the same one.
+    #[test]
+    fn parse_session_messages_keeps_the_frames_a_sub_agent_card_folds_from() {
+        let jsonl = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"description":"investigate"}}]},"uuid":"a1","session_id":"s1"}
+{"type":"system","subtype":"task_started","task_id":"t1","description":"investigate","tool_use_id":"tu1","uuid":"ts1","session_id":"s1"}
+{"type":"assistant","parent_tool_use_id":"tu1","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu2","name":"Bash","input":{"command":"ls"}}]},"uuid":"a2","session_id":"s1"}
+{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","output_file":"/tmp/o","summary":"done","uuid":"tn1","session_id":"s1"}
+"#;
+        let history = parse_session_messages(jsonl.as_bytes());
+
+        assert_eq!(
+            history.messages.iter().map(|message| message.uuid.clone()).collect::<Vec<_>>(),
+            vec!["a1".to_owned(), "ts1".to_owned(), "a2".to_owned(), "tn1".to_owned()],
+            "the dispatch, the instance's own call and both lifecycle rows all survive the read",
+        );
+        assert_eq!(
+            history.messages[2].parent_tool_use_id.as_deref(),
+            Some("tu1"),
+            "and a frame an instance produced keeps the id that says whose it is",
+        );
+        for at in [1, 3] {
+            let frame: forge_primitives::Message =
+                serde_json::from_value(history.messages[at].message.clone())
+                    .expect("a kept lifecycle row decodes as the frame the wire sends");
+            assert!(
+                matches!(
+                    frame,
+                    forge_primitives::Message::TaskStarted { .. }
+                        | forge_primitives::Message::TaskNotification { .. }
+                ),
+                "row {at} is a task-lifecycle frame, which is where the fold reads liveness",
+            );
+        }
     }
 
     #[test]

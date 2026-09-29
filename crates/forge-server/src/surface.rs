@@ -287,6 +287,77 @@ mod tests {
     use super::{SessionUpdate, ViewSurface};
     use crate::test_support::logged;
 
+    /// One transcript as the surface reads it: the units a page draws, and the
+    /// ids of the rows the fold was handed.
+    ///
+    /// The units are compared as the JSON a page receives rather than as
+    /// `ChatUnit`s, which carry no `PartialEq`: the serialized form is the
+    /// thing under test.
+    fn read_and_units(rows: &[&str]) -> (Vec<serde_json::Value>, Vec<String>) {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.seed_transcript("TestOrg", "proj", "lead", rows).expect("the transcript seeds");
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let surface = fleet.surface();
+        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
+
+        let ids = surface
+            .conversation(&seat, &cwd)
+            .messages
+            .iter()
+            .filter_map(|message| serde_json::to_value(message).ok())
+            .filter_map(|frame| {
+                frame.get("uuid").and_then(serde_json::Value::as_str).map(str::to_owned)
+            })
+            .collect();
+        let units = surface
+            .folded_units(&seat, &cwd)
+            .iter()
+            .map(|unit| serde_json::to_value(unit).expect("a unit renders"))
+            .collect();
+        (units, ids)
+    }
+
+    /// The frames a sub-agent produced draw no chat unit, which is what makes
+    /// keeping them at the read safe.
+    ///
+    /// The read used to drop every row an instance produced and every task
+    /// lifecycle row; it no longer does, because the sub-agent fold needs
+    /// them. The chat must not notice: `render_units` skips a dispatched frame
+    /// on its parent id and a lifecycle row draws nothing. **This is the whole
+    /// of what makes that argument safe, because an argument is not a test.**
+    #[test]
+    fn the_sub_agent_frames_a_read_now_keeps_draw_no_chat_unit() {
+        let (plain, _) = read_and_units(&[
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"go"},"session_id":"s"}"#,
+            r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"description":"investigate"}}]}}"#,
+            r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+        ]);
+        let (with_instance, read) = read_and_units(&[
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"go"},"session_id":"s"}"#,
+            r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"description":"investigate"}}]}}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"t1","description":"investigate","tool_use_id":"tu1","uuid":"ts1","session_id":"s"}"#,
+            r#"{"type":"assistant","parent_tool_use_id":"tu1","uuid":"a2","message":{"id":"m2","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu2","name":"Bash","input":{"command":"ls","description":"List files"}}]}}"#,
+            r#"{"type":"user","parent_tool_use_id":"tu1","uuid":"u2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu2","content":"a\nb"}]}}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","output_file":"/tmp/o","summary":"done","uuid":"tn1","session_id":"s"}"#,
+            r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+        ]);
+
+        // The premise, without which the comparison below passes because the
+        // rows were never read at all - which is the state the widening
+        // changes, so a green here would mean nothing.
+        assert!(
+            read.iter().any(|uuid| uuid == "a2"),
+            "precondition: the instance's own frame reaches the fold: {read:?}",
+        );
+        assert!(!plain.is_empty(), "precondition: the transcript folds to something");
+        assert_eq!(
+            with_instance, plain,
+            "the frames a sub-agent produced changed what the chat draws",
+        );
+    }
+
     /// The claude versions are facts about the world rather than about a
     /// viewer, so a view reads the core's answer instead of probing for
     /// itself: nothing probed yet reads as nothing.
