@@ -1,0 +1,237 @@
+{
+  "slot": { "org": "TestOrg", "project": "forge", "label": "lead" },
+  "older": {
+    "key": "2026-09-29T08:52:10.400Z",
+    "messages": [
+      {
+        "type": "user",
+        "uuid": "u-0",
+        "message": {
+          "role": "user",
+          "content": [{ "type": "text", "text": "Start with the grouping rules." }]
+        }
+      },
+      {
+        "type": "assistant",
+        "uuid": "a-0",
+        "message": {
+          "id": "msg_00",
+          "role": "assistant",
+          "model": "claude-opus-5",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu-old",
+              "name": "Read",
+              "input": {
+                "file_path": "/Users/vedhavyas/Projects/forge/crates/forge-server/src/grouping.rs"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "user",
+        "uuid": "r-0",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "tu-old",
+              "content": "/// Render-time grouping of consecutive tool calls.\n"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "turns": [
+    {
+      "key": "2026-09-29T09:14:02.118Z",
+      "messages": [
+        {
+          "type": "user",
+          "uuid": "u-1",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Make the call tree the default, let me open one call at a time, and cover every kind the CLI can produce."
+              }
+            ]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "a-1",
+          "message": {
+            "id": "msg_01",
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [
+              {
+                "type": "text",
+                "text": "One family per block, its calls under it, and a call opens on its own. Edits are the exception: their diff is already there."
+              },
+              {
+                "type": "tool_use",
+                "id": "tu-read",
+                "name": "Read",
+                "input": {
+                  "file_path": "/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs"
+                }
+              },
+              {
+                "type": "tool_use",
+                "id": "tu-grep",
+                "name": "Grep",
+                "input": { "pattern": "render_group_summary", "path": "crates" }
+              },
+              {
+                "type": "tool_use",
+                "id": "tu-edit",
+                "name": "Edit",
+                "input": {
+                  "file_path": "/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css",
+                  "old_string": "  text-decoration: none; flex: none;",
+                  "new_string": "  text-decoration: none; flex: 0 1 auto; min-width: 0;"
+                }
+              },
+              {
+                "type": "tool_use",
+                "id": "tu-write",
+                "name": "Write",
+                "input": {
+                  "file_path": "/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs",
+                  "content": "//! Which family a tool belongs to.\n\npub enum ToolFamily {\n    Read,\n    Search,\n    Bash,\n}\n"
+                }
+              },
+              {
+                "type": "tool_use",
+                "id": "tu-bash",
+                "name": "Bash",
+                "input": { "command": "just check", "description": "run the full workspace gate" }
+              }
+            ]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "r-1",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "tu-read",
+                "content": "/// The group a tool's calls are summarised under.\npub enum ToolFamily {\n    Read,\n    Search,\n    Bash,\n}\n"
+              },
+              {
+                "type": "tool_result",
+                "tool_use_id": "tu-grep",
+                "content": "crates/forge-server/src/grouping.rs:142:pub fn render_group_summary(unit: &RenderUnit, width: usize) -> Line<'static> {\ncrates/forge-tui/src/ui/tool_call/group.rs:88:    render_group_summary(&unit, width)\n"
+              },
+              {
+                "type": "tool_result",
+                "tool_use_id": "tu-edit",
+                "content": "The file has been updated."
+              },
+              {
+                "type": "tool_result",
+                "tool_use_id": "tu-write",
+                "content": "File created successfully."
+              },
+              {
+                "type": "tool_result",
+                "tool_use_id": "tu-bash",
+                "content": "\u001b[1m   Compiling forge-primitives v1.0.92\u001b[0m\n   Compiling forge-tui v1.0.92\n    Finished in 41.2s\n\u001b[32mSummary [92.418s] 1258 tests run: 1258 passed, 1174 skipped\u001b[0m\n"
+              }
+            ]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "a-2",
+          "message": {
+            "id": "msg_02",
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [
+              {
+                "type": "text",
+                "text": "The gate is green. The grouping policy still lives in `forge-server`, so a second view inherits it rather than restating it."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "key": "2026-09-29T09:31:44.902Z",
+      "messages": [
+        {
+          "type": "user",
+          "uuid": "u-2",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "And show the expanded turn row, since that is a view of its own."
+              }
+            ]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "a-3",
+          "message": {
+            "id": "msg_03",
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "tu-lsp",
+                "name": "LSP",
+                "input": {
+                  "operation": "hover",
+                  "filePath": "/Users/vedhavyas/Projects/forge/crates/forge-tui/src/ui/message.rs"
+                }
+              },
+              {
+                "type": "tool_use",
+                "id": "tu-web",
+                "name": "WebFetch",
+                "input": {
+                  "url": "https://docs.rs/ratatui/latest/ratatui/widgets/struct.List.html"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "r-2",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "tu-lsp",
+                "content": "fn render_body(&self, area: Rect) -> Vec<Line>\ndocs: Render the message body into rows."
+              },
+              {
+                "type": "tool_result",
+                "tool_use_id": "tu-web",
+                "content": "List - ratatui 0.29.0\nA widget that renders a scrollable list of items."
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,193 @@
+<script lang="ts">
+  import { VList, type VListHandle } from 'virtua/svelte';
+
+  import type { Connection } from '../socket';
+  import type { SessionSlot } from '../wire/types';
+  import { Chat, NOTHING, type Conversation, type Turn as HeldTurn } from './conversation';
+  import Turn from './Turn.svelte';
+
+  /**
+   * The conversation: whole turns, virtualised.
+   *
+   * **The DOM holds what is on screen and the rest stays data**, which is what
+   * lets a seat with a long history scroll without the page growing with it.
+   *
+   * **It opens at the latest turn.** The newest page is what the first ask
+   * returns and the list is scrolled to its end once that page lands: a reader
+   * arriving at a seat wants what was just said, not the beginning of a
+   * conversation that may be days old.
+   *
+   * **It never regroups.** The turns arrive decided, one row each; a component
+   * that derived a group from what it happened to hold is the defect this
+   * whole design exists to prevent.
+   */
+  let {
+    slot,
+    connection,
+    cwd,
+    waking = false,
+    reason = null,
+  }: {
+    slot: SessionSlot;
+    connection: Connection;
+    /** The session's working tree, which a call's target is named against. */
+    cwd: string | null;
+    /** The roster holds no session for this seat, which is its own state. */
+    waking?: boolean;
+    /** Why, when it does. */
+    reason?: string | null;
+  } = $props();
+
+  /** How near the top the reader has to be before the turns above are asked for. */
+  const REACH = 400;
+
+  let held = $state<Conversation>(NOTHING);
+  let list = $state<VListHandle | null>(null);
+  let working: Chat | null = null;
+  let first = true;
+  /**
+   * Pages of older turns asked for and not yet answered.
+   *
+   * **Counted rather than flagged, and armed by the ASK.** The compensation
+   * has to be on while a prepend lands and off for everything else, and both
+   * halves of that are edges: an ask the socket refused must not arm it at
+   * all, and a second ask still in flight must not be disarmed by the first
+   * page landing. One flag cannot tell those apart from the ordinary case.
+   */
+  let outstanding = $state(0);
+  /** Whether the last prepend has landed but the list has not taken it yet. */
+  let settling = $state(false);
+  /** The prepend count this component has already accounted for. */
+  let accounted = 0;
+  /** The tick a settling compensation waits on, held so a later one can replace it. */
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const shift = $derived(outstanding > 0 || settling);
+
+  $effect(() => {
+    const chat = new Chat(connection, slot);
+    working = chat;
+    const unsubscribe = chat.value.subscribe((value) => {
+      held = value;
+    });
+    const stop = chat.start();
+    return () => {
+      unsubscribe();
+      stop();
+      working = null;
+    };
+  });
+
+  // The first page is drawn at the end rather than the start. It runs once per
+  // conversation: after that the reader's own scroll position is the truth,
+  // and a second jump would take them away from where they had scrolled to.
+  $effect(() => {
+    if (!first || !held.loaded || held.turns.length === 0) return;
+    first = false;
+    list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
+  });
+
+  // A page landing settles one ask, and the last one leaves the compensation on
+  // for one more tick: `virtua` applies it as the rows change, so a page that
+  // dropped it in the same update would be disarming before the change it was
+  // armed for.
+  $effect(() => {
+    const now = held.prepends;
+    if (now === accounted) return;
+    accounted = now;
+    outstanding = Math.max(0, outstanding - 1);
+    settling = true;
+    // Held in a variable rather than returned as this effect's cleanup: the
+    // effect re-runs on EVERY update - `held` is a store read, so each one
+    // hands over a new object - and a returned cleanup is run before each
+    // re-run, which would cancel this timer on the next frame that arrived.
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      settling = false;
+      timer = null;
+    }, 0);
+  });
+
+  // The timer goes with the column, which is the one thing the effect above
+  // cannot do for itself.
+  $effect(() => () => {
+    if (timer !== null) clearTimeout(timer);
+  });
+
+  // A reader at the end FOLLOWS the newest turn: that is what the end of a
+  // conversation means, and a page that grew without the view moving would
+  // lose the very thing it was opened on. A reader anywhere else is left
+  // exactly where they are.
+  $effect(() => {
+    if (!held.loaded || !held.atEnd || held.turns.length === 0) return;
+    list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
+  });
+
+  /** Where the reader is, and whether they have reached the top. */
+  function scrolled(offset: number): void {
+    const total = list?.getScrollSize() ?? 0;
+    const viewport = list?.getViewportSize() ?? 0;
+    working?.position(offset + viewport >= total - 8);
+    if (offset < REACH) loadOlder();
+  }
+
+  /**
+   * Ask for the turns above, holding the reader's place while they arrive.
+   *
+   * The compensation is armed as the ask goes out rather than when the answer
+   * lands, because the list applies it AS the rows change: a page that waited
+   * for the answer would be arming after the change it exists for, which is a
+   * prepend that moves everything the reader is looking at.
+   *
+   * **And only when an ask actually went.** A socket that is down refuses the
+   * ask without sending anything, so arming on the call rather than on its
+   * answer leaves the compensation on with nothing coming - and the next turn
+   * appended below the reader then goes through the prepend path, which moves
+   * them AND leaves the list's measured sizes attributed to the wrong rows.
+   */
+  function loadOlder(): void {
+    if (working?.older() !== true) return;
+    outstanding += 1;
+  }
+</script>
+
+{#if waking}
+  <!-- A seat with no session behind it. It claims nothing about a spawn: this
+       page cannot start one, and a line saying one is coming would be a
+       promise no code keeps. -->
+  <div class="hold off">
+    not running
+    <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
+  </div>
+{:else if held.refused !== null}
+  <p class="hold off">This forge would not answer for this conversation: {held.refused}</p>
+{:else if !held.loaded}
+  <!-- Connected, and the first page has not come back. It is its own state:
+       the empty copy here would say the seat has no history when the truth is
+       that nothing has answered yet. -->
+  <p class="hold">Reading the conversation...</p>
+{:else if held.turns.length === 0}
+  <div class="hold">
+    Nothing said yet
+    <span class="sub">this seat has no history: what is said here starts it</span>
+  </div>
+{:else}
+  <!-- The list draws its own scroll viewport, so the sheet's `.conv` rules go
+       on that element rather than a wrapper around it: they are the column's
+       padding, its scrollbar gutter and its scrollbar, and a wrapper would put
+       them outside the thing that scrolls. -->
+  <VList
+    bind:this={list}
+    class="conv"
+    data={held.turns}
+    getKey={(turn: HeldTurn) => turn.key}
+    {shift}
+    onscroll={scrolled}
+  >
+    {#snippet children(turn)}
+      <div class="turn">
+        <Turn {turn} {cwd} />
+      </div>
+    {/snippet}
+  </VList>
+{/if}
