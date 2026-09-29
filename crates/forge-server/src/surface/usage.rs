@@ -1,10 +1,16 @@
 //! `usage()`: the token/cost report a `/usage` view draws.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use forge_primitives::token_usage::UsageReport;
 
 use super::ViewSurface;
+
+/// How long a scan answers for. A client refreshing on a timer asks again
+/// every so often, and the pool does not change fast enough to pay a walk per
+/// ask; one walk per window is the same answer a reader would have had.
+const USAGE_WINDOW: Duration = Duration::from_secs(5);
 
 impl ViewSurface {
     /// Scan the shared session-JSONL pool into the four windows a usage view
@@ -18,10 +24,28 @@ impl ViewSurface {
     /// all-zero report reads as a pool with no usage in it, which is a
     /// different answer from "the scan did not run".
     pub async fn usage(&self) -> anyhow::Result<UsageReport> {
+        if let Some(report) = self.held_usage() {
+            return Ok(report);
+        }
         let workspace = Arc::clone(&self.workspace);
-        tokio::task::spawn_blocking(move || workspace.scan_usage())
+        let report = tokio::task::spawn_blocking(move || workspace.scan_usage())
             .await
-            .map_err(|error| anyhow::anyhow!("the usage scan did not finish: {error}"))
+            .map_err(|error| anyhow::anyhow!("the usage scan did not finish: {error}"))?;
+        self.remember_usage(&report);
+        Ok(report)
+    }
+
+    /// The last scan, while it is inside [`USAGE_WINDOW`].
+    fn held_usage(&self) -> Option<UsageReport> {
+        let held = self.usage_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.as_ref()
+            .filter(|(at, _)| at.elapsed() < USAGE_WINDOW)
+            .map(|(_, report)| report.clone())
+    }
+
+    fn remember_usage(&self, report: &UsageReport) {
+        let mut held = self.usage_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *held = Some((Instant::now(), report.clone()));
     }
 }
 
@@ -68,6 +92,32 @@ mod tests {
             report.lifetime.by_model.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
             vec!["claude-opus-5"],
             "and the model it was logged under is the row it lands on",
+        );
+    }
+
+    /// A second ask inside the window is served from the first scan, which is
+    /// what keeps a client refreshing on a timer from walking the whole pool
+    /// per ask. The pool changes between the two asks, so a read that re-scanned
+    /// would report the new file.
+    #[tokio::test]
+    async fn a_second_ask_inside_the_window_is_served_from_the_cache() {
+        let (workspace, dir) = pool_with_one_record();
+        let surface = ViewSurface::new(workspace);
+
+        let first = surface.usage().await.expect("the first scan answers");
+        assert_eq!(first.lifetime.total.input, 7, "precondition: the pool's record is counted");
+
+        std::fs::write(
+            dir.path().join("projects").join("-tmp-proj").join("another.jsonl"),
+            A_RECORD.replace("\"m-usage\"", "\"m-usage-2\""),
+        )
+        .expect("a second record lands in the pool");
+
+        let second = surface.usage().await.expect("the second ask answers");
+        assert_eq!(
+            second.lifetime.total.input, 7,
+            "a ask inside the window answers what the first scan took, so the pool is walked \
+             once per window rather than once per ask",
         );
     }
 }

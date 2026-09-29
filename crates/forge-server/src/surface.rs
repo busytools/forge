@@ -43,6 +43,11 @@ pub use workers::{WorkerRef, Workers};
 /// A view's read handle on the core.
 pub struct ViewSurface {
     workspace: Arc<Workspace>,
+    /// The pool's last scan and when it was taken, so a reader asking twice
+    /// inside the window does not walk it twice. A `Mutex` rather than a
+    /// second cache type: one report, one window.
+    usage_cache:
+        std::sync::Mutex<Option<(std::time::Instant, forge_primitives::token_usage::UsageReport)>>,
 }
 
 /// The update the core emits, re-exported: it is the workspace-to-view
@@ -59,7 +64,7 @@ pub fn is_success_result(is_error: bool, subtype: &str) -> bool {
 
 impl ViewSurface {
     pub fn new(workspace: Arc<Workspace>) -> Self {
-        Self { workspace }
+        Self { workspace, usage_cache: std::sync::Mutex::new(None) }
     }
 
     /// Dispatch one command to the core, which is how a view acts rather

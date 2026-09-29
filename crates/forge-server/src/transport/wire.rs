@@ -1258,13 +1258,16 @@ mod tests {
     /// request, and the issues it closes.
     ///
     /// The keys are asserted PRESENT rather than populated, because a
-    /// populated one needs `gh`, a pushed branch and an open PR - which a
-    /// fixture cannot produce. The key's presence is the property that
-    /// matters here: a client drawing the section reads a field that is
-    /// there and null, rather than finding no field at all.
+    /// populated one needs `gh`, a pushed branch and an open PR - which this
+    /// fixture cannot produce. The key's presence is the property that matters
+    /// here: a client drawing the section reads a field that is there and
+    /// null, rather than finding no field at all.
     ///
-    /// Task 10's walk against the forge repo is where a populated one is
-    /// exercised, like the other fields a live session fills.
+    /// The POPULATED shape is pinned next door, from a seeded scan, and in
+    /// the committed fixture; the live walk that reached a real PR is in the
+    /// plan's ledger at
+    /// `docs/superpowers/ledgers/2026-09-28-forge-server-socket/` (git-excluded,
+    /// so no repo-visible artifact carries it).
     #[tokio::test]
     async fn a_session_snapshot_carries_the_pr_row() {
         let dir = tempfile::tempdir().expect("tempdir").keep();
@@ -1314,23 +1317,14 @@ mod tests {
 
         let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
 
-        assert_eq!(
-            encoded["pr"]["number"], 1249,
-            "the open PR crosses with its number: {encoded}"
-        );
-        assert_eq!(
-            encoded["closes"][0]["number"], 1215,
-            "and the issues it closes: {encoded}"
-        );
+        assert_eq!(encoded["pr"]["number"], 1249, "the open PR crosses with its number: {encoded}");
+        assert_eq!(encoded["closes"][0]["number"], 1215, "and the issues it closes: {encoded}");
         assert_eq!(
             encoded["work"]["branch"], "worktree-pr",
             "and the branch comes from the SAME scan as the PR, so the two cannot disagree: \
              {encoded}"
         );
-        assert_eq!(
-            encoded["work"]["changed"], 3,
-            "with the count that scan took: {encoded}"
-        );
+        assert_eq!(encoded["work"]["changed"], 3, "with the count that scan took: {encoded}");
     }
 
     /// A scan as the terminal's inspector reads it: one branch, one worktree

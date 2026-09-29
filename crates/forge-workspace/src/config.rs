@@ -3157,12 +3157,12 @@ provider = "anthropic"
         assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Stargate"));
     }
 
-    /// The three retired top-level sections are declared ghosts, not
-    /// unknown keys: each still loads, so a stale synced forge.toml
-    /// boots. The top level denies unknown fields now, so each ghost is
-    /// load-bearing - dropping one as dead weight refuses the boot of
-    /// every config still carrying it. That the load also warns about
-    /// them is [`every_ignored_key_warns`]'s half.
+    /// Every retired top-level section is a declared ghost, not an unknown
+    /// key: each still loads, so a stale synced forge.toml boots. The top
+    /// level denies unknown fields now, so each ghost is load-bearing -
+    /// dropping one as dead weight refuses the boot of every config still
+    /// carrying it. That the load also warns about them is
+    /// [`every_ignored_key_warns`]'s half.
     #[test]
     fn retired_top_level_sections_still_load() {
         let cases = [

@@ -121,9 +121,18 @@ async fn run_connection(
 }
 
 /// This connection's stream from the core, opened when the client first
-/// subscribes and registered with the role that subscribe declares. A later
-/// subscribe that declares answering replaces it, so a client is not held to
-/// a role it announced before it had decided.
+/// subscribes and registered with the role that subscribe declares.
+///
+/// A later subscribe that declares answering REPLACES it - a client is not
+/// held to a role it announced before it had decided - and the role only ever
+/// goes one way while a connection lives: a stream is opened with the
+/// strongest role the client has declared so far, so a later observing
+/// subscribe leaves the answering one in place.
+///
+/// **Whatever the replaced stream had queued is handed back**, because the
+/// queue is not only about the subject just asked for: it can hold news about
+/// a seat this client is already watching, and dropping the receiver drops
+/// that news silently.
 ///
 /// Every caller gets a stream of its own, so a second client attaches beside
 /// the first rather than stealing its events, and dropping the socket drops
@@ -136,11 +145,19 @@ fn open_stream(
     state: &TransportState,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
     answering: bool,
-) {
+) -> Vec<SessionUpdate> {
     if updates.as_ref().is_some_and(|(_, held)| *held >= answering) {
-        return;
+        return Vec::new();
     }
+    let queued = updates.take().map_or_else(Vec::new, |(mut receiver, _)| {
+        let mut queued = Vec::new();
+        while let Ok(update) = receiver.try_recv() {
+            queued.push(update);
+        }
+        queued
+    });
     *updates = Some((state.surface.subscribe_client(answering), answering));
+    queued
 }
 
 /// The stream's next update, or a future that never resolves while there is
@@ -178,7 +195,14 @@ async fn handle_client(
     };
     match client {
         ClientMessage::Subscribe { what, answering } => {
-            open_stream(state, updates, answering);
+            // Forwarded before the snapshot: they were emitted before it was
+            // taken, and the client reads them in the order it receives them.
+            let queued = open_stream(state, updates, answering);
+            for update in queued {
+                if watched.iter().any(|what| what.covers(&update)) {
+                    send(socket, ServerMessage::Update { update: Box::new(update) }).await?;
+                }
+            }
             match encode_subject(state, &what).await {
                 Ok(data) => {
                     // Watched only once the subject is one this server can
@@ -453,4 +477,74 @@ async fn answered<T: serde::Serialize>(
         (Ok(()), Err(_)) => serde_json::to_value("the session closed before answering")?,
     };
     send(socket, ServerMessage::Reply { reply_to: to, body }).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::work::WorkCache;
+
+    /// Escalating from observing to answering opens a new stream - and what
+    /// the old one had queued is handed back rather than dropped. The queue is
+    /// not only about the subject just asked for: it can hold news about a
+    /// seat this client is already watching, and dropping the receiver drops
+    /// that news with no error anywhere.
+    #[tokio::test]
+    async fn escalating_hands_back_what_the_replaced_stream_had_queued() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        // A client observing, with two updates queued and nobody reading them.
+        let mut updates = Some((state.surface.subscribe_client(false), false));
+        fleet.emit(SessionUpdate::CatalogLoaded);
+        fleet.emit(SessionUpdate::CatalogLoaded);
+
+        let handed_back = open_stream(&state, &mut updates, true);
+
+        assert_eq!(
+            handed_back.len(),
+            2,
+            "both updates the replaced stream was holding come back to be forwarded",
+        );
+        assert!(
+            matches!(updates, Some((_, true))),
+            "and the connection is on an answering stream now",
+        );
+    }
+
+    /// The role only goes up while a connection lives: a later observing
+    /// subscribe leaves the answering stream in place rather than downgrading
+    /// it, and hands nothing back.
+    #[tokio::test]
+    async fn a_later_observing_subscribe_does_not_downgrade_the_stream() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let mut updates = Some((state.surface.subscribe_client(true), true));
+        fleet.emit(SessionUpdate::CatalogLoaded);
+
+        let handed_back = open_stream(&state, &mut updates, false);
+
+        assert!(handed_back.is_empty(), "the stream was not replaced, so nothing is handed back");
+        assert!(
+            matches!(updates, Some((_, true))),
+            "and the client is still counted as one that can answer",
+        );
+    }
 }
