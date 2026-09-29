@@ -14,3 +14,7 @@ Cargo.lock.tmp
 # unicode gate enumerates untracked files, so an un-ignored one is scanned.
 node_modules/
 client/dist/
+# The Tauri shell's own crate is not a workspace member, so `/target` above
+# anchors at the repo root and misses this one.
+client/src-tauri/target/
+client/src-tauri/gen/schemas/

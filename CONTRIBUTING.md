@@ -29,6 +29,10 @@ CI also runs `cargo check --release` and `just check-feature-configs`.
 One command decides both stacks, so its verdict line names the first
 failing step whichever side it is on.
 
+The desktop shell under `client/src-tauri/` is outside every gate above
+and outside CI. `just client-tauri-check` builds and bundles it, and is
+the one to run before handing over a change there.
+
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later
 steps>` clause when the step that failed was not the last one. The run

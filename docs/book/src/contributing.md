@@ -17,6 +17,9 @@ clippy with warnings denied, `cargo nextest run --workspace --all-features`,
 and `cargo doc`. CI's set minus its `cargo check --release` and
 feature-configs jobs. Green before you open a pull request.
 
+The desktop shell under `client/src-tauri/` is outside this and outside
+CI: `just client-tauri-check` builds and bundles it.
+
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later
 steps>` clause when the step that failed was not the last one. The run
