@@ -237,8 +237,10 @@
    * Turn the marked row on or off, which only a multi-select question does.
    *
    * The key the chip names has to do this from wherever the dock's keys are
-   * read: the rows are not focusable, so a handler on a row would be a handler
-   * nothing reaches.
+   * read, and there are two places: the listbox, which holds the keyboard by
+   * default, and a row a click has focused. A row is focusable on click but not
+   * by Tab - `tabindex="-1"` - which is why a handler on one is reachable at
+   * all rather than dead code to be tidied away.
    */
   function toggle(): void {
     const row = rows[marked];

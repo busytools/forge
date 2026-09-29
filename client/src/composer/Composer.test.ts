@@ -412,8 +412,9 @@ describe('the dock', () => {
     const list = document.querySelector('.dock [role="listbox"]');
     if (!(list instanceof HTMLElement)) throw new Error('the dock drew no listbox');
 
-    // The listbox is what holds the keys; the rows are not focusable, so a
-    // handler on a row is one nothing reaches.
+    // The listbox is what holds the keys by default; a row an earlier click
+    // focused is the other path, and it is reachable - `tabindex="-1"` takes
+    // focus on click, just not by Tab. This leg is the listbox's.
     press(' ');
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
