@@ -22,12 +22,18 @@
   // One clock for the page: every row's `when` reads against the same now,
   // so two rows a second apart cannot draw the same age differently.
   //
-  // Re-read with every snapshot. The component is not remounted when a
-  // refresh replaces `wire`, so a clock set at mount would have a page open
-  // an hour still saying its rows were three minutes old.
+  // Re-read with every snapshot AND on a tick. A snapshot alone is not
+  // enough: age is the one cell that is a function of time rather than of
+  // data, and a re-read needs an update the fleet may never send, so a page
+  // opened at nine on a quiet forge would still say "3h" at three.
   let now = $state(Date.now());
   $effect(() => {
-    if (wire) now = Date.now();
+    if (!wire) return;
+    now = Date.now();
+    const tick = setInterval(() => {
+      now = Date.now();
+    }, 30_000);
+    return () => clearInterval(tick);
   });
 </script>
 
@@ -49,9 +55,12 @@
         >{/if}
     </div>
     <div class="totals">
+      <!-- `.n` on the first two only: the sheet weights the fleet's own
+           counts bright and the project total quiet, which is the server's
+           markup too. -->
       <span class="n">{view.header.liveAgents}</span> agents {'\u{b7}'}
       <span class="n">{view.header.tasks}</span> tasks {'\u{b7}'}
-      <span class="n">{view.header.projects}</span> projects
+      {view.header.projects} projects
     </div>
   </header>
 

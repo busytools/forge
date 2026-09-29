@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
 import { homeWire } from '../dev/fixture.data';
-import type { HomeWire } from '../wire/home';
+import type { Gate, HomeWire } from '../wire/home';
 import Home from './Home.svelte';
 
 /** `wire` is required of the component, so the fixture is the test's default. */
@@ -14,6 +14,25 @@ const withCli = (installed: string | null, latest: string | null): HomeWire => (
   ...homeWire,
   cli_version: { installed, latest },
 });
+
+/**
+ * The fixture's one project, with its work read answering the given gate.
+ *
+ * The pending column is cleared to reach it: the fixture's row waits on a
+ * permission, which is first in the cell's chain, so every cell below it -
+ * the gate line and the refusal both - is unreachable while it is set. That
+ * is a property of the fixture rather than of the page, and the fixture is
+ * the server's committed blob byte for byte, so it cannot be widened here.
+ */
+const withGate = (gate: Gate): HomeWire => {
+  const project = homeWire.projects[0];
+  if (project === undefined) throw new Error('the fixture holds no project');
+  return {
+    ...homeWire,
+    agents: homeWire.agents.map((row) => ({ ...row, pending: null })),
+    projects: [{ ...project, work: { branch: null, changed: null, gate } }],
+  };
+};
 
 describe('the home page as it draws', () => {
   /**
@@ -56,6 +75,19 @@ describe('the home page as it draws', () => {
    * An empty fleet is a state, not a blank page: the shell and the copy are
    * the difference between "nothing configured" and "the page is broken".
    */
+  /**
+   * A row whose tree could not be read says so, which is a claim the book page
+   * made while nothing rendered it: `gateLine` was written, documented and
+   * tested as a string, and a `gone` row drew byte-identically to an ordinary
+   * one. Asserting the string is what let that ship, so this asserts the page.
+   */
+  it('says on the row why there is no branch to show', () => {
+    expect(draw({ wire: withGate('gone') })).toContain('its working directory is not there');
+    expect(draw({ wire: withGate('not_a_repository') })).toContain('not a git repository');
+    // And a readable tree draws none of it, so the line means what it says.
+    expect(draw()).not.toContain('its working directory is not there');
+  });
+
   it('draws its shell and says so when the server holds no projects', () => {
     const body = draw({ wire: { ...homeWire, projects: [], agents: [] } });
     expect(body, 'an empty fleet drew no empty state').toContain('No projects yet');

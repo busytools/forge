@@ -182,6 +182,7 @@ const LEAD_ROW: Row = {
   state: { kind: 'lifecycle', lifecycle: 'Idle' },
   name: 'proj',
   place: { branch: null, files: null },
+  gate: null,
   task: null,
   pending: null,
   reason: null,
@@ -240,6 +241,33 @@ describe('the fleet the snapshot describes', () => {
     };
 
     expect(homeView(wire, '').header.tasks, "the total is not the fleet's").toBe(3);
+  });
+
+  /**
+   * The project's `work` is one read built from the LEAD's seat, so drawing it
+   * on a worker's row puts another seat's branch under the worker's name. A
+   * blank cell reads as missing; a plausible wrong branch reads as right.
+   */
+  it('draws the tree on a lead row and not on a worker row', () => {
+    const wire: HomeWire = {
+      ...homeWire,
+      projects: [
+        project('Busytools', 'forge', {
+          work: { branch: 'worktree-w1', changed: 3, gate: 'in_repo' },
+        }),
+      ],
+      agents: [
+        agent('Busytools', 'forge', 'lead', 'Running'),
+        agent('Busytools', 'forge', 'w1', 'Idle'),
+      ],
+    };
+
+    const entry = first(first(homeView(wire, '').orgs, 'org').projects, 'project');
+    expect(entry.lead.place.branch, "the lead's own tree is the read").toBe('worktree-w1');
+    expect(first(entry.workers, 'worker').place, "a worker drew the lead's tree").toEqual({
+      branch: null,
+      files: null,
+    });
   });
 
   it('says what it counts for every shape of org', () => {

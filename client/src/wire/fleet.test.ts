@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { slotOf, type SessionUpdate } from '../protocol';
+import type { SessionUpdate } from '../protocol';
 import type { SessionSlot } from './types';
 import { coversHome, fleetNews } from './fleet';
 
@@ -68,7 +68,7 @@ function snake(name: string): string {
  * samples cannot see a variant that carries a `key: SessionSlot` and is not
  * recognised as one - so the list is read out of the method that decides it.
  */
-function serverSlots(): { keyed: string[]; seatless: string[] } {
+function serverSlots(): { keyed: string[]; seatless: string[]; declared: number } {
   const source = readFileSync(
     new URL('../../../crates/forge-workspace/src/protocol.rs', import.meta.url),
     'utf8',
@@ -91,7 +91,15 @@ function serverSlots(): { keyed: string[]; seatless: string[] } {
     return [...found];
   };
 
-  return { keyed: names('Some(key)'), seatless: names('None') };
+  // `slotOf` reads a payload's `key` and nothing else, so a seat-less variant
+  // that ever grew one would be read as a seat. Counting the enum's own `key`
+  // declarations is what catches that, because feeding a variant a key by
+  // hand proves nothing - `slotOf` never looks at the variant's name.
+  const enumStart = source.indexOf('pub enum SessionUpdate {');
+  const enumBody = source.slice(enumStart, source.indexOf('\n}\n', enumStart));
+  const declared = (enumBody.match(/^\s+key: SessionSlot,$/gm) ?? []).length;
+
+  return { keyed: names('Some(key)'), seatless: names('None'), declared };
 }
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -200,25 +208,26 @@ describe('what one update asks of the fleet', () => {
   });
 
   /**
-   * `slotOf` is the other half of this file's claim about the server, read
-   * out of the method that decides it rather than sampled: a variant that
-   * carries a slot and is not recognised as one is an update routed to no
-   * store at all.
+   * `slotOf` is the other half of this file's claim about the server, and what
+   * it can go wrong on is narrow: it reads a payload's `key` and never the
+   * variant's name, so the one thing that would break it is a variant the
+   * core gives no seat and that carries a `key` anyway.
+   *
+   * The samples that show it working are in `socket.test.ts`. This is the arm
+   * that can fail: every `key: SessionSlot` the enum declares has to belong to
+   * a variant `slot()` answers for.
    */
-  it('reads a slot off every variant the core gives one, and none off the rest', () => {
-    const { keyed, seatless } = serverSlots();
+  it('finds no seat the core does not give, and every one it does', () => {
+    const { keyed, seatless, declared } = serverSlots();
     expect(keyed.length, 'the slot arm was not read out of protocol.rs at all').toBeGreaterThan(20);
     expect(
       seatless.length,
       'the seat-less arm was not read out of protocol.rs at all',
     ).toBeGreaterThan(3);
 
-    for (const name of keyed) {
-      expect(slotOf({ [snake(name)]: { key: LEAD } }), `${name} carries a slot`).toEqual(LEAD);
-    }
-    for (const name of seatless) {
-      expect(slotOf({ [snake(name)]: {} }), `${name} carries none`).toBeNull();
-    }
+    expect(declared, 'a seat-less variant carries a key, and slotOf would read it as a seat').toBe(
+      keyed.length,
+    );
   });
 
   /** Everything the fleet does not draw, which is most of the stream. */

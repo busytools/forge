@@ -64,8 +64,13 @@ export interface Row {
   slot: { org: string; project: string; label: string };
   state: RowState;
   name: string;
-  /** The branch the agent's tree is on, and how much has moved in it. */
+  /** The branch and the count, on the rows whose tree the snapshot carries. */
   place: { branch: string | null; files: string | null };
+  /**
+   * Why the tree could not be read, or `null` when it could. It describes the
+   * project's own read, so the lead's row carries it and a worker's does not.
+   */
+  gate: string | null;
   task: TaskCell | null;
   pending: 'question' | 'permission' | null;
   reason: string | null;
@@ -342,12 +347,24 @@ export function band(wire: HomeWire, address: string): BandCard[] {
 
   const ready = wire.accounts.loading.filter((row) => row.state === 'ready').length;
   const bailed = wire.accounts.loading.filter((row) => row.state === 'bailed').length;
-  const accounts: BandCard = {
-    title: 'accounts',
-    tone: bailed > 0 ? 'bad' : wire.accounts.all_loaded ? 'ready' : 'warn',
-    value: bailed === 0 ? `${ready} ready` : `${ready} ready \u{b7} ${bailed} bailed`,
-    detail: wire.accounts.all_loaded ? 'probed' : 'probing',
-  };
+  const value = bailed === 0 ? `${ready} ready` : `${ready} ready \u{b7} ${bailed} bailed`;
+  // `all_loaded` is the pool having settled AND the listener having bound, so
+  // false is not the same as work in progress: with a bind error the card
+  // would read "probing" for ever beside a gateway card already saying the
+  // address is in use. The terminal names the failure, and this takes its
+  // shape. No accounts declared is the third case, where `all_loaded` is
+  // vacuously true and a green `0 ready` would claim a pool that is not there.
+  const accounts: BandCard =
+    gateway.bind_error !== null
+      ? { title: 'accounts', tone: 'bad', value, detail: gateway.bind_error }
+      : wire.accounts.loading.length === 0
+        ? { title: 'accounts', tone: 'off', value: 'none', detail: 'no accounts declared' }
+        : {
+            title: 'accounts',
+            tone: bailed > 0 ? 'bad' : wire.accounts.all_loaded ? 'ready' : 'warn',
+            value,
+            detail: wire.accounts.all_loaded ? 'probed' : 'probing',
+          };
 
   // The address is the client's own: it connected to this forge, so it is
   // the read of where this page is served from. Drawn as `host:port` rather
@@ -444,14 +461,29 @@ function taskFor(tasks: Task[], label: string): Task | null {
   );
 }
 
-/** One agent's row, from the snapshot and nothing else. */
-function rowOf(agent: AgentRow, name: string, wire: ProjectWire, unseen: SessionSlot[]): Row {
+/**
+ * One agent's row, from the snapshot and nothing else.
+ *
+ * `place` and `gate` are passed rather than read, and only the lead's row is
+ * handed them: the project's `work` is ONE read built from the lead's seat,
+ * so drawing it on a worker's row names a different seat's branch. A blank
+ * cell reads as missing; a plausible wrong branch name reads as right, which
+ * is why the lead-only rule is worth more than the information it drops.
+ */
+function rowOf(
+  agent: AgentRow,
+  name: string,
+  wire: ProjectWire,
+  unseen: SessionSlot[],
+  work: WorkState | null,
+): Row {
   const held = taskFor(wire.tasks, agent.label);
   return {
     slot: agent.slot,
     state: stateOf(agent, unseen),
     name,
-    place: placeOf(wire.work),
+    place: work === null ? { branch: null, files: null } : placeOf(work),
+    gate: work === null ? null : gateLine(work.gate),
     task:
       held === null
         ? null
@@ -470,6 +502,7 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
       lastRan === null ? { kind: 'never-started' } : { kind: 'lifecycle', lifecycle: 'Sleeping' },
     name: wire.project.name,
     place: placeOf(wire.work),
+    gate: gateLine(wire.work.gate),
     task: null,
     pending: null,
     reason: null,
@@ -505,8 +538,12 @@ export function homeView(wire: HomeWire, address: string): HomeView {
     const [head, ...rest] = rows;
     const started = head !== undefined;
     const lead =
-      head === undefined ? dormantRow(row, lastRan) : rowOf(head, project.name, row, wire.unseen);
-    const workers = rest.map((agent) => rowOf(agent, agent.label, row, wire.unseen));
+      head === undefined
+        ? dormantRow(row, lastRan)
+        : rowOf(head, project.name, row, wire.unseen, row.work);
+    // `null` for a worker: the project's work read is the lead's tree, and a
+    // worker's own crosses only once the socket carries one per seat.
+    const workers = rest.map((agent) => rowOf(agent, agent.label, row, wire.unseen, null));
 
     const section = orgs.find((org) => org.name === project.org);
     const entry = {

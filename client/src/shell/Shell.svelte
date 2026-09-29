@@ -23,6 +23,16 @@
   // as a reactive proxy of it.
   let connection = $state.raw<Connection | null>(null);
   let connectionStatus = $state<ConnectionStatus>('connecting');
+  /**
+   * Whether a read has landed since the connection last opened.
+   *
+   * A reopen re-asks and the server encodes the home by reading each
+   * project's working tree, so there is a window after `onopen` where the
+   * page is drawing pre-drop rows. Clearing the notice on `open` would hide
+   * exactly that window, which is the one place a reader cannot tell the
+   * difference between stale and current.
+   */
+  let settled = $state(false);
 
   if (onDoor) history.replaceState(null, '', hrefFor({ name: 'connect' }));
 
@@ -54,9 +64,11 @@
 
     const stopHome = watchHome(open).subscribe(($home) => {
       home = $home;
+      if ($home.wire !== null) settled = true;
     });
     const stopStatus = open.onStatus((next) => {
       connectionStatus = next;
+      if (next !== 'open') settled = false;
     });
     return () => {
       stopHome();
@@ -64,8 +76,23 @@
     };
   });
 
-  /** The connection is open, so what the page draws is being kept current. */
-  const live = $derived(connectionStatus === 'open');
+  /**
+   * The page has a read behind it and is no longer current.
+   *
+   * Both halves are needed: without the read the notice would sit above
+   * "Reading the fleet..." claiming a last read that does not exist, and
+   * without the staleness it would show while everything is fine.
+   */
+  const stale = $derived(
+    connection !== null && home.wire !== null && !(connectionStatus === 'open' && settled),
+  );
+
+  /** What it says, which depends on whether anything is still trying. */
+  const staleLine = $derived(
+    connectionStatus === 'closed'
+      ? `The connection to ${displayAddress(address)} was closed - showing the last read`
+      : `Reconnecting to ${displayAddress(address)} - showing the last read`,
+  );
 
   function go(next: Route) {
     route = next;
@@ -121,20 +148,20 @@
     That forge speaks a protocol this client does not. The two halves have to match, so one of them
     needs updating.
   </p>
-{:else if connection !== null && !live}
+{:else if stale}
   <!-- A live region rather than a landmark: the pages below each carry the
        page's own `main`, and a second one would be a second page. -->
-  <p class="stale" role="status">
-    Reconnecting to {displayAddress(address)} - showing the last read
-  </p>
+  <p class="stale" role="status">{staleLine}</p>
 {/if}
 
 <Router {route} {settings} {address} {home} connected={connection !== null} onconnect={connect} />
 
 <style>
+  /* `--s2` rather than a wash of its own: the token set is closed, and a
+     notice is a raised surface. */
   .stale {
-    background: var(--warn-bg, transparent);
-    color: var(--muted);
+    background: var(--s2);
+    color: var(--text);
     font-size: var(--fs-label);
     padding: 6px 12px;
     text-align: center;
