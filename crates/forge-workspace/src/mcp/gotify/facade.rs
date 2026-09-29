@@ -7,7 +7,7 @@
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-use forge_connectors::gotify::GotifyRecent;
+use forge_connectors::gotify::{GotifyRecent, refresh_app_index};
 use forge_primitives::GotifySubscription;
 use uuid::Uuid;
 
@@ -44,8 +44,9 @@ pub(crate) trait GotifyFacade: Send + Sync {
     /// Subscribe the caller's durable identity to the configured server,
     /// optionally filtered by application names and/or minimum priority.
     /// An empty `applications` matches any app. Persists when the identity
-    /// is durable. Returns the new id.
-    fn subscribe(
+    /// is durable. Returns the new id. Async because a filter that names
+    /// applications refreshes the app index before returning.
+    async fn subscribe(
         &self,
         caller: &SessionSlot,
         applications: Vec<String>,
@@ -90,16 +91,14 @@ impl ProdGotifyFacade {
 
 #[async_trait::async_trait]
 impl GotifyFacade for ProdGotifyFacade {
-    fn subscribe(
+    async fn subscribe(
         &self,
         caller: &SessionSlot,
         applications: Vec<String>,
         min_priority: Option<u8>,
     ) -> Result<Uuid, GotifySubscribeError> {
         let ws = self.workspace.upgrade().ok_or(GotifySubscribeError::UnknownCallerProject)?;
-        if ws.gotify_config().is_none() {
-            return Err(GotifySubscribeError::NotConfigured);
-        }
+        let cfg = ws.gotify_config().ok_or(GotifySubscribeError::NotConfigured)?;
         let (project, team_role, durable) =
             resolve_identity(&ws, caller).ok_or(GotifySubscribeError::UnknownCallerProject)?;
         let sub = GotifySubscription {
@@ -110,8 +109,15 @@ impl GotifyFacade for ProdGotifyFacade {
             min_priority,
             created_at: SystemTime::now(),
         };
+        let names_applications = !sub.applications.is_empty();
         let id = sub.id;
         ws.add_gotify_subscription(sub, durable);
+        // An application the server created after the stream connected is
+        // absent from the cached index, so a filter naming it matches
+        // nothing until the next reconnect.
+        if names_applications {
+            refresh_app_index(&SubsystemHost::new(&ws), &cfg).await;
+        }
         ws.start_gotify_subsystem();
         Ok(id)
     }
@@ -245,7 +251,7 @@ impl MockGotifyFacade {
 #[cfg(test)]
 #[async_trait::async_trait]
 impl GotifyFacade for MockGotifyFacade {
-    fn subscribe(
+    async fn subscribe(
         &self,
         caller: &SessionSlot,
         applications: Vec<String>,
@@ -284,7 +290,149 @@ mod tests {
     use super::*;
     use crate::WorkerEntry;
     use crate::target::ProjectKey;
+    use forge_connectors::gotify::GotifyHost as _;
     use forge_primitives::WorkerLiveness;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A throwaway HTTP server answering the Gotify `/application` lookup,
+    /// counting how often it was asked. Every other path 404s, so the
+    /// pump's stream upgrade fails fast instead of hanging the test.
+    struct AppStub {
+        addr: std::net::SocketAddr,
+        application_fetches: Arc<AtomicUsize>,
+    }
+
+    impl AppStub {
+        fn start(body: &'static str) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind app stub");
+            let addr = listener.local_addr().expect("app stub addr");
+            let application_fetches = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&application_fetches);
+            std::thread::spawn(move || {
+                for socket in listener.incoming() {
+                    let Ok(mut socket) = socket else { continue };
+                    let mut raw = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match std::io::Read::read(&mut socket, &mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(read) => raw.extend_from_slice(&chunk[..read]),
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&raw);
+                    let (status, body) = if head.starts_with("GET /application ") {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        ("200 OK", body)
+                    } else {
+                        ("404 Not Found", "{}")
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = std::io::Write::write_all(&mut socket, response.as_bytes());
+                }
+            });
+            Self { addr, application_fetches }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}", self.addr)
+        }
+
+        fn application_fetches(&self) -> usize {
+            self.application_fetches.load(Ordering::SeqCst)
+        }
+    }
+
+    /// A workspace carrying a real `[gotify]` config pointed at `stub`,
+    /// plus the caller's project, so `ProdGotifyFacade::subscribe` runs
+    /// its whole path against the real connector.
+    fn subscribe_fixture(
+        apps_body: &'static str,
+    ) -> (tempfile::TempDir, Arc<Workspace>, Arc<dyn GotifyFacade>, SessionSlot, AppStub) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stub = AppStub::start(apps_body);
+        let forge = crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+
+[[orgs.projects]]
+name = "myproj"
+path = "/tmp/gotify-subscribe-refresh"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[gotify]
+url = "{}"
+client_token = "Ctest"
+"#,
+                stub.url(),
+            ),
+        )
+        .expect("write forge.toml");
+        let config = crate::config::load_from_dir(dir.path()).expect("load the fixture config");
+        let (ws, _rx) =
+            Workspace::testing_stub_with_config(dir.path().to_owned(), config).expect("stub");
+        let facade = ProdGotifyFacade::from_arc(&ws);
+        (dir, ws, facade, SessionSlot::lead("TestOrg", "myproj"), stub)
+    }
+
+    /// The reported flow: an application created after the stream
+    /// connected is absent from the cached index, so a subscription
+    /// naming it silently matches nothing until the next reconnect.
+    /// Subscribe must land the index that resolves it.
+    #[tokio::test]
+    async fn subscribe_refreshes_the_app_index_so_a_new_application_matches() {
+        let (_dir, ws, facade, caller, stub) = subscribe_fixture(
+            r#"[{"id":7,"name":"phone-agent","token":"A.x","description":"","image":""}]"#,
+        );
+        // The cached index is what a connect-time fetch left behind: it
+        // predates the application the caller is about to name.
+        let host = SubsystemHost::new(&ws);
+        host.store_app_index(HashMap::new());
+
+        facade
+            .subscribe(&caller, vec!["phone-agent".to_owned()], None)
+            .await
+            .expect("subscribe to the configured server");
+
+        assert_eq!(stub.application_fetches(), 1, "the subscribe refreshed the index");
+        let resolved = host.app_name(7);
+        let subs = ws.gotify_subscriptions_for_project("myproj");
+        let matched =
+            forge_connectors::gotify::matching_subscriptions(&subs, resolved.as_deref(), 5);
+        assert_eq!(
+            matched.len(),
+            1,
+            "a message from the newly created application matches its subscription: resolved={resolved:?}",
+        );
+    }
+
+    /// A filter that names no application matches anything, so it needs no
+    /// names to resolve and must not pay for a lookup.
+    #[tokio::test]
+    async fn subscribe_without_application_names_does_not_fetch_the_index() {
+        let (_dir, _ws, facade, caller, stub) = subscribe_fixture("[]");
+
+        facade.subscribe(&caller, Vec::new(), Some(5)).await.expect("subscribe without filters");
+
+        assert_eq!(
+            stub.application_fetches(),
+            0,
+            "a match-any subscribe names no applications, so it must not fetch /application",
+        );
+    }
 
     fn worker_entry(project: &str, label: &str) -> WorkerEntry {
         WorkerEntry {

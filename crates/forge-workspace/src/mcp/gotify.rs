@@ -152,11 +152,11 @@ impl Tool for Subscribe {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match self.facade.subscribe(
-            &self.slot,
-            args.applications.unwrap_or_default(),
-            args.min_priority,
-        ) {
+        match self
+            .facade
+            .subscribe(&self.slot, args.applications.unwrap_or_default(), args.min_priority)
+            .await
+        {
             Ok(id) => ToolOutput::text(format!("subscribed to Gotify (id {id})")),
             Err(err) => tool_error(format_subscribe_error(&err)),
         }

@@ -460,7 +460,11 @@ pub async fn run_subsystem(
                         // Refresh the app index off the pump so a slow (up to
                         // the 10s lookup timeout) or failing /application can't
                         // block shutdown or message routing.
-                        tokio::spawn(refresh_app_index(host.clone(), cfg.clone()));
+                        let index_host = host.clone();
+                        let index_cfg = cfg.clone();
+                        tokio::spawn(async move {
+                            refresh_app_index(&*index_host, &index_cfg).await;
+                        });
                         host.set_connected(true);
                     }
                     GotifyEvent::Disconnected => {
@@ -481,8 +485,8 @@ pub async fn run_subsystem(
 /// Warns (never silently drops) on failure - an unresolved index would
 /// otherwise leave every application-name-filtered subscription silently
 /// matching nothing while the stream still reports connected.
-async fn refresh_app_index(host: std::sync::Arc<dyn GotifyHost>, cfg: GotifyConfig) {
-    match app_index(&*host, &cfg).await {
+pub async fn refresh_app_index(host: &dyn GotifyHost, cfg: &GotifyConfig) {
+    match app_index(host, cfg).await {
         Ok(index) => host.store_app_index(index),
         Err(error) => {
             tracing::warn!(
