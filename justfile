@@ -166,15 +166,22 @@ client-typecheck:
 client-test:
     npm --prefix client run test
 
-# Builds the Tauri shell, which nothing else reaches: it is its own
-# workspace root, so `check`'s fmt, clippy and nextest skip it, and CI's
-# Linux runner has no webview headers. Outside `check` because forge runs
-# every worker in its own worktree, where an unconditional webview compile
-# would charge each Rust-only change minutes for a crate it never touched.
+# Build and bundle the desktop shell. This is the only thing that exercises the
+# configuration that ships: a plain `cargo build` compiles the `dev` cfg, which
+# never resolves `frontendDist`, so it stays green while the release build
+# panics on a missing or moved `client/dist`. Through the CLI the
+# `beforeBuildCommand` runs too, and the identifier and the icons are checked.
+# `--locked` stops it rewriting the tracked `Cargo.lock` on a manifest edit.
+#
+# Not a step in `check`, because the webview compile is minutes and forge runs
+# every worker in its own worktree, so it would charge each Rust-only change for
+# a crate it never touched. A cost choice rather than an impossibility: CI
+# already apt-installs the headers its own crates need, so a job there is
+# possible and is #1265.
 #
 # Run before handing over a change under client/src-tauri/.
 client-tauri-check:
-    cargo build --manifest-path client/src-tauri/Cargo.toml
+    npm --prefix client run tauri -- build -- --locked
 
 # Compile the feature configurations nothing else builds.
 check-feature-configs:
