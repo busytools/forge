@@ -1,9 +1,31 @@
 <script lang="ts">
-  import Icon from '../components/Icon.svelte';
-  import Dock from './Dock.svelte';
-  import { blocked, composerState, pendingAsk, type ComposerProps } from './view';
+  import { untrack } from 'svelte';
 
-  let { record, slot, connection, seat }: ComposerProps = $props();
+  import Icon from '../components/Icon.svelte';
+  import Dictation from './Dictation.svelte';
+  import Dock from './Dock.svelte';
+  import {
+    blocked,
+    composerState,
+    joined,
+    noticeLine,
+    pendingAsk,
+    signInLine,
+    type ComposerProps,
+  } from './view';
+
+  /** How long a landed take's border holds its green beat, which the book states. */
+  const BEAT_MS = 450;
+
+  let {
+    record,
+    slot,
+    connection,
+    seat,
+    // Off unless the page says otherwise: an install with `[dictate]` off loads
+    // no models, and a control it cannot honour is worse than none.
+    dictation = false,
+  }: ComposerProps = $props();
 
   /**
    * The reader's own words, held HERE rather than in the field.
@@ -20,11 +42,50 @@
   let answered = $state<string | null>(null);
   /** Why the core refused that answer, when it did. */
   let refusal = $state<string | null>(null);
+  /**
+   * The words a landed take has already put in the draft, so they land once.
+   *
+   * Deliberately not `$state`: nothing draws from it, and the effect below is
+   * its only reader - a reactive copy would make that effect depend on what it
+   * writes, so it would tear its own green beat down on the next run.
+   */
+  let landed: string | null = null;
+  /** The line the reader's own typing has dismissed, which the next take clears. */
+  let dismissed = $state<string | null>(null);
+  /** One green beat while a take's words settle into the draft. */
+  let beat = $state(false);
 
   const composer = $derived(composerState(record));
   const ask = $derived(pendingAsk(record));
   const blocker = $derived(blocked(seat, composer, sent));
   const filled = $derived(draft.trim() !== '');
+  const notice = $derived(noticeLine(composer.notice));
+  const line = $derived(notice !== null && dismissed === notice.text ? null : notice);
+
+  /**
+   * A landed take puts its words where the reader was about to type, then the
+   * box takes one green beat.
+   *
+   * Tracked only on the notice: the draft is read through `untrack`, because an
+   * effect that re-ran on the draft it writes would tear down its own timer and
+   * leave the box green.
+   */
+  $effect(() => {
+    const held = composer.notice;
+    if (held === null) {
+      landed = null;
+      dismissed = null;
+      return;
+    }
+    if (held.kind !== 'landed' || landed === held.text) return;
+    landed = held.text;
+    draft = joined(untrack(() => draft), held.text);
+    beat = true;
+    const timer = setTimeout(() => {
+      beat = false;
+    }, BEAT_MS);
+    return () => clearTimeout(timer);
+  });
 
   // A turn that has settled is no longer working on anything, so the line that
   // names what the reader sent goes with it.
@@ -82,6 +143,23 @@
     send();
   }
 
+  /** The reader's own typing is what dismisses a notice row. */
+  function oninput(): void {
+    dismissed = notice?.text ?? null;
+  }
+
+  /**
+   * The way into a take, and the way to submit the one that is running: the key
+   * that opens a take is the key that closes it, which is the terminal's rule.
+   */
+  function mic(): void {
+    if (composer.take === null) {
+      connection.dispatch({ dictate_start: { key: slot } });
+      return;
+    }
+    connection.dispatch({ dictate_stop: { key: slot, submit: true } });
+  }
+
   /** The tool the prompt is waiting on, which is how an answer is told apart from the next one. */
   function askToolId(current: ReturnType<typeof pendingAsk>): string | null {
     if (current === null) return null;
@@ -116,7 +194,24 @@
   </div>
 {:else}
   <div class="comp">
-    <div class="box">
+    {#if seat.lifecycle === 'AuthRequired'}
+      <div class="hint login">
+        Authentication required{#if composer.signIn !== null && composer.signIn.methodName !== ''}
+          · {composer.signIn.methodName}{/if}
+        <span class="sub">{signInLine(composer)}</span>
+      </div>
+    {/if}
+    <div
+      class="box"
+      class:rec={composer.take?.phase === 'recording'}
+      class:tr={composer.take?.phase === 'transcribing'}
+      class:done={beat}
+    >
+      {#if composer.take !== null}
+        <Dictation take={composer.take} {slot} {connection} />
+      {:else if line !== null}
+        <div class="notice {line.tone}">{line.text}</div>
+      {/if}
       <div class="line">
         <textarea
           class="txt"
@@ -125,6 +220,7 @@
           spellcheck="false"
           placeholder="Type a message…"
           bind:value={draft}
+          oninput={oninput}
           onkeydown={onkey}
         ></textarea>
         {#if filled}
@@ -133,10 +229,22 @@
           </button>
         {/if}
       </div>
-      {#if filled}
+      {#if filled || dictation}
         <div class="foot">
-          <span><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
-          <span><kbd>Enter</kbd> send</span>
+          {#if filled}
+            <span><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
+            <span><kbd>Enter</kbd> send</span>
+          {/if}
+          {#if dictation}
+            <button
+              class="mic"
+              type="button"
+              aria-label={composer.take === null ? 'start a take' : 'submit the take'}
+              onclick={mic}
+            >
+              <Icon name="mic" />
+            </button>
+          {/if}
         </div>
       {/if}
     </div>

@@ -15,6 +15,7 @@ import type { Connection } from '../socket';
 import type { ServerMessage } from '../protocol';
 import type { SessionSlot } from '../wire/types';
 import type { ComposerProps, ComposerRecord, SeatRead } from './view';
+import type { Take } from './wire';
 
 export const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
@@ -34,6 +35,18 @@ export function record(over: Partial<ComposerRecord> = {}): ComposerRecord {
 /** A seat that is running and taking input, which is the one that is not blocked. */
 export function seatRead(over: Partial<SeatRead> = {}): SeatRead {
   return { lifecycle: 'Running', reason: null, waking: false, pendingDepth: 1, ...over };
+}
+
+/** A take in flight, as the core reports one. */
+export function take(over: Partial<Take> = {}): Take {
+  return {
+    phase: 'recording',
+    levels: [0.2, 0.5, 1],
+    peakDb: -18,
+    progress: { done: 0, total: null },
+    elapsedMs: 7000,
+    ...over,
+  };
 }
 
 /** A permission request as the core offers one, which is what the dock draws. */

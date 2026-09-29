@@ -1,9 +1,18 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import Composer from './Composer.svelte';
-import { fake, permissionAsk, questionAsk, record, wire, type Wire } from './testing.svelte';
+import {
+  fake,
+  permissionAsk,
+  questionAsk,
+  record,
+  seatRead,
+  take,
+  wire,
+  type Wire,
+} from './testing.svelte';
 import type { ComposerProps } from './view';
 
 /** Everything the page is drawing, as a reader reads it. */
@@ -120,6 +129,179 @@ describe("the reader's draft", () => {
     flushSync();
 
     expect(field().value, 'the draft went with the prompt').toBe('ship it once CI is green');
+  });
+});
+
+/**
+ * The box's other states: the take that lives inside it, the notice a take
+ * leaves, and the reasons the whole thing is replaced.
+ */
+describe('the box', () => {
+  it('sends what the reader typed, and clears the box for the next thing', () => {
+    const harness = open();
+    type('push it once CI is green');
+    const box = field();
+    box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    flushSync();
+
+    expect(harness.sent, 'the command is the text as typed, addressed to this seat').toEqual([
+      {
+        command: {
+          prompt: {
+            key: { org: 'Busytools', project: 'forge', label: 'lead' },
+            text: 'push it once CI is green',
+            attachments: [],
+          },
+        },
+      },
+    ]);
+    expect(field().value, 'the box is empty once the words have gone').toBe('');
+  });
+
+  it('grows by the take’s own row and collapses when the take resolves', () => {
+    const harness = open();
+    const before = document.querySelector('.box')?.innerHTML ?? '';
+
+    harness.props.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    expect(document.querySelector('.box .dict'), 'the row lives inside the box').not.toBeNull();
+    expect(document.querySelector('.box')?.innerHTML, 'the box grew a row').not.toBe(before);
+
+    harness.props.record = record();
+    flushSync();
+
+    expect(document.querySelector('.dict'), 'the row collapses with the take').toBeNull();
+  });
+
+  it('lands a take’s words at the caret and takes one green beat before easing back', () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open();
+      type('fix the');
+
+      harness.props.record = record({
+        composer: {
+          take: null,
+          notice: { kind: 'landed', text: 'flaky retry test', truncated: false },
+          compacting: false,
+          sign_in: null,
+        },
+      });
+      flushSync();
+
+      expect(field().value, 'the words land where the reader was about to type').toBe(
+        'fix the flaky retry test',
+      );
+      expect(document.querySelector('.box')?.classList.contains('done'), 'one green beat').toBe(true);
+
+      vi.advanceTimersByTime(1000);
+      flushSync();
+
+      expect(
+        document.querySelector('.box')?.classList.contains('done'),
+        'and the border eases back to the box’s own',
+      ).toBe(false);
+      expect(field().value, 'the words stay').toBe('fix the flaky retry test');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('draws the notice a take left instead of a row', () => {
+    const harness = open();
+    harness.props.record = record({
+      composer: {
+        take: null,
+        notice: {
+          kind: 'line',
+          tone: 'q',
+          text: 'nothing above -50 dBFS in 4s · loudest was -38.2 · try again',
+        },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(drawn(), 'what went wrong is the row the reader gets').toContain(
+      'nothing above -50 dBFS in 4s',
+    );
+    expect(document.querySelector('.notice.q')).not.toBeNull();
+    expect(document.querySelector('.dict'), 'a notice wins the row').toBeNull();
+  });
+
+  it('replaces the box entirely for each reason it cannot take keys, and says why', () => {
+    const cases: [Partial<ComposerProps>, string, string | null][] = [
+      [
+        { seat: seatRead({ lifecycle: 'Spawning' }) },
+        'Connecting to Claude Code…',
+        null,
+      ],
+      [
+        {
+          record: record({
+            composer: { take: null, notice: null, compacting: true, sign_in: null },
+          }),
+        },
+        'Compacting context…',
+        null,
+      ],
+      [
+        { seat: seatRead({ lifecycle: 'Failed', reason: 'the CLI exited with status 1' }) },
+        'Input disabled due to error',
+        'the CLI exited with status 1',
+      ],
+      [
+        { seat: seatRead({ waking: true, reason: 'no session has been started here' }) },
+        'not running',
+        'no session has been started here',
+      ],
+    ];
+
+    for (const [props, line, sub] of cases) {
+      open(props);
+      expect(drawn(), `the slot says why: ${line}`).toContain(line);
+      if (sub !== null) expect(drawn(), 'and what to do about it').toContain(sub);
+      expect(document.querySelector('textarea'), 'a blocked box takes no keys').toBeNull();
+      unmount(app as Record<string, unknown>);
+      app = null;
+      document.body.innerHTML = '';
+    }
+  });
+
+  it('names the slash command a turn is still working on', () => {
+    const harness = open();
+    type('/compact');
+    field().dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    flushSync();
+
+    harness.props.record = record({ header: { turn_in_flight: true } });
+    flushSync();
+
+    expect(drawn(), 'the reader is told what they are waiting for').toContain('Running /compact');
+  });
+
+  it('offers the way into a take only when this install can dictate', () => {
+    open();
+    expect(document.querySelector('.mic'), 'a control it cannot honour is worse than none').toBeNull();
+    unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+
+    const harness = open({ dictation: true });
+    const mic = document.querySelector('.mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('an install that can dictate draws no way in');
+    mic.click();
+    flushSync();
+
+    expect(harness.sent, 'the way in starts the take it offers').toEqual([
+      { command: { dictate_start: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } } },
+    ]);
   });
 });
 

@@ -13,7 +13,7 @@
 import type { Connection } from '../socket';
 import type { Lifecycle } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
-import { askFrom, composerFrom, type Ask, type ComposerState } from './wire';
+import { askFrom, composerFrom, type Ask, type ComposerState, type Notice } from './wire';
 
 /**
  * The seat behind this page, as the composer needs it.
@@ -72,6 +72,15 @@ export interface ComposerProps {
   slot: SessionSlot;
   connection: Pick<Connection, 'dispatch' | 'onMessage'>;
   seat: SeatRead;
+  /**
+   * Whether this install can dictate at all.
+   *
+   * A home read rather than a session one - the engine is process-wide - so the
+   * page hands it over beside the record it already holds. Off when absent: an
+   * install with `[dictate]` off loads no models, and a control it cannot honour
+   * is worse than none.
+   */
+  dictation?: boolean;
 }
 
 /** The composer's own state, read off the record the page handed it. */
@@ -155,4 +164,34 @@ export function blocked(
 export function signInLine(composer: ComposerState): string {
   const described = composer.signIn?.methodDescription ?? '';
   return described.trim() === '' ? SIGN_IN_FALLBACK : described;
+}
+
+/** What a take says when it hit its cap and landed only part of what was said. */
+export const TRUNCATED = 'this is what fitted · keep going from the end';
+
+/**
+ * The line a notice draws, or `null` when it draws words instead.
+ *
+ * A take that landed draws its words in the box rather than a line about them,
+ * which is the terminal's own rule: the words ARE the notice. One that landed
+ * part of a capped take says so as well, because the reader has to know the
+ * take was cut rather than that they stopped speaking.
+ */
+export function noticeLine(notice: Notice | null): { tone: string; text: string } | null {
+  if (notice === null) return null;
+  if (notice.kind === 'line') return { tone: notice.tone, text: notice.text };
+  return notice.truncated ? { tone: 'warn', text: TRUNCATED } : null;
+}
+
+/**
+ * A take's words at the end of the draft, which is where the reader was about
+ * to type.
+ *
+ * Ported from `joined` in `crates/forge-web/src/composer.rs`, whitespace rule
+ * included: words go straight onto a draft that already ends in space, so a
+ * take after a newline does not open with one.
+ */
+export function joined(draft: string, words: string): string {
+  if (draft === '' || /\s$/.test(draft)) return `${draft}${words}`;
+  return `${draft} ${words}`;
 }
