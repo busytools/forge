@@ -277,12 +277,14 @@ impl Gateway {
             let cooldown = self.cooldown_for(account, headers);
             self.rotate_off(account, org, project, session, now + cooldown);
         }
-        if rejected {
+        // The header family marks exhaustion on "the failing response"
+        // (spec, Rotation): an account not paying for overage reports
+        // `-overage-status: rejected` on every response, successes included.
+        if rejected && !status.is_success() {
             let cooldown = self.cooldown_for(account, headers);
             self.rotate_off(account, org, project, session, now + cooldown);
-        } else if status.is_success() {
-            // Rejected is not success: a rate-limit rejection must not
-            // read as the account recovering.
+        }
+        if status.is_success() {
             self.rotation.lock().reset_streak(account);
         }
     }
@@ -1128,11 +1130,13 @@ mod tests {
         assert_eq!(retry.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    /// A `rejected` header means the same thing on any status, so a 200
-    /// carrying it is a rate-limit rejection too, and either header
-    /// carries the verdict.
+    /// The spec scopes the header trigger to `rejected` "on the failing
+    /// response" (spec, Rotation), so a 200 carrying it cools nothing.
+    /// The overage arm is the one that bites: an account not paying for
+    /// overage reports `overage-status: rejected` on every response it
+    /// sends, successful ones included.
     #[tokio::test]
-    async fn a_success_carrying_rejected_rotates_on_either_header() {
+    async fn a_success_carrying_rejected_cools_nothing() {
         for header in
             ["anthropic-ratelimit-unified-status", "anthropic-ratelimit-unified-overage-status"]
         {
@@ -1146,27 +1150,27 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK, "the status streams back untouched");
             assert_eq!(
                 harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
-                None,
-                "{header}: a rejected verdict rotates whatever status carries it",
+                Some(AccountKey("OpenRouter".to_owned())),
+                "{header}: a success is not a failing response, so the binding survives",
             );
             assert!(
-                harness
+                !harness
                     .gateway
                     .rotation
                     .lock()
                     .is_cooling_down(&AccountKey("OpenRouter".to_owned()), SystemTime::now()),
-                "{header}: the rejected account cools, so the retry cannot come back to it",
+                "{header}: a success must not start a cooldown",
             );
         }
     }
 
-    /// A rejected response is not a success: it rotates without clearing
-    /// the streak on its way past. `retry-after: 0` reads as no reset
-    /// time and a zero no-reset cooldown cools the account to the
+    /// A rejected FAILING response is not a success: it rotates without
+    /// clearing the streak on its way past. `retry-after: 0` reads as no
+    /// reset time and a zero no-reset cooldown cools the account to the
     /// instant, so the rotated account is selectable again at once and
     /// the streak alone decides whether the next 429 is the fifth.
     #[tokio::test]
-    async fn a_rejected_response_does_not_clear_the_429_streak() {
+    async fn a_rejected_failing_response_does_not_clear_the_429_streak() {
         let harness = harness(Duration::ZERO).await;
         harness.gateway.set_org_pins([(
             "Busytools".to_owned(),
@@ -1193,7 +1197,7 @@ mod tests {
             assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS, "the streak is counting");
         }
         harness.script.lock().push_back((
-            StatusCode::OK.as_u16(),
+            StatusCode::PAYMENT_REQUIRED.as_u16(),
             vec![
                 ("anthropic-ratelimit-unified-status".to_owned(), "rejected".to_owned()),
                 ("retry-after".to_owned(), "0".to_owned()),
@@ -1214,9 +1218,14 @@ mod tests {
         );
     }
 
+    /// The spec: "any success resets it". The success here carries the
+    /// standing overage rejection, which is what an account not paying
+    /// for overage sends on every response, so the reset has to survive
+    /// that header to be reachable at all.
     #[tokio::test]
-    async fn a_success_resets_the_429_streak() {
+    async fn a_success_carrying_rejected_resets_the_429_streak() {
         let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "OpenRouter");
         for _ in 0..4 {
             harness
                 .script
@@ -1225,7 +1234,10 @@ mod tests {
             post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
         }
         // The healthy response lands between the streaks.
-        harness.script.lock().push_back((StatusCode::OK.as_u16(), Vec::new()));
+        harness.script.lock().push_back((
+            StatusCode::OK.as_u16(),
+            vec![("anthropic-ratelimit-unified-overage-status".to_owned(), "rejected".to_owned())],
+        ));
         let response = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
         assert_eq!(response.status(), StatusCode::OK);
         harness.script.lock().push_back((429, vec![("retry-after".to_owned(), "30".to_owned())]));
@@ -1233,7 +1245,7 @@ mod tests {
         assert_eq!(
             harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
             Some(AccountKey("OpenRouter".to_owned())),
-            "the streak counts consecutive 429s; one 429 after a success does not rotate",
+            "the streak counts consecutive 429s; one after a success does not rotate",
         );
     }
 
