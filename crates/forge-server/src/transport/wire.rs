@@ -528,13 +528,15 @@ fn turn_wire(messages: &[Message], from: usize, to: usize, key: Option<&str>) ->
     }
 }
 
-/// `messages` as the whole turns `spans` names, in conversation order.
+/// The message range of every turn `spans` names, in conversation order, each
+/// with what names it.
 ///
-/// **The one place a conversation becomes the turns a client folds.** The
-/// session record carries all of them and a page carries a window of them, and
-/// a second builder is how the two would come to disagree about what a turn
-/// is.
-pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
+/// **The one place a turn's boundaries are computed.** The session record
+/// carries every turn and a page carries a window of them, and a second
+/// computation is how the two would come to disagree about what a turn is.
+/// Ranges rather than turns, so a page renders the window it keeps instead of
+/// every turn the conversation holds.
+fn turn_ranges(messages: &[Message], spans: &[TurnSpan]) -> Vec<(usize, usize, Option<&str>)> {
     let opens = opens_of(spans);
     // **A conversation can hold no turn at all**, and a client folds turns, so
     // it rides one instead of none. A session a cron fired into that nobody
@@ -543,11 +545,7 @@ pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
     // unreachable, which is exactly what a page's `None` cursor stops it asking
     // for.
     if opens.is_empty() {
-        return if messages.is_empty() {
-            Vec::new()
-        } else {
-            vec![turn_wire(messages, 0, messages.len(), None)]
-        };
+        return if messages.is_empty() { Vec::new() } else { vec![(0, messages.len(), None)] };
     }
     // The conversation's opening rows - who started it, a cron fire, a delivery
     // - come before its first turn, so the first turn carries them. Leaving
@@ -556,8 +554,16 @@ pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
         .map(|at| {
             let from = if at == 0 { 0 } else { opens[at].0 };
             let to = opens.get(at + 1).map_or(messages.len(), |&(open, _)| open);
-            turn_wire(messages, from, to, opens[at].1)
+            (from, to, opens[at].1)
         })
+        .collect()
+}
+
+/// `messages` as the whole turns `spans` names, in conversation order.
+pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
+    turn_ranges(messages, spans)
+        .into_iter()
+        .map(|(from, to, key)| turn_wire(messages, from, to, key))
         .collect()
 }
 
@@ -587,7 +593,7 @@ pub fn page(messages: &[Message], spans: &[TurnSpan], before: Option<&str>, turn
     // already opened at, so a client walking back would ask for the same page
     // forever.
     let turns = turns.max(1) as usize;
-    let all = all_turns(messages, spans);
+    let ranges = turn_ranges(messages, spans);
     let opens = opens_of(spans);
 
     // A cursor names the message the previous page BEGAN at, so the page above
@@ -595,11 +601,16 @@ pub fn page(messages: &[Message], spans: &[TurnSpan], before: Option<&str>, turn
     let ends_at = before
         .and_then(|cursor| cursor.parse::<usize>().ok())
         .and_then(|started| opens.iter().position(|&(open, _)| open == started))
-        .unwrap_or(all.len());
+        .unwrap_or(ranges.len());
 
+    // Only the window is rendered: building every turn to keep a few of them
+    // would walk and encode the whole conversation on a path a reader hits
+    // while scrolling.
     let first = ends_at.saturating_sub(turns);
-    let page_turns: Vec<TurnWire> =
-        all.into_iter().skip(first).take(ends_at.saturating_sub(first)).collect();
+    let page_turns: Vec<TurnWire> = ranges[first..ends_at]
+        .iter()
+        .map(|&(from, to, key)| turn_wire(messages, from, to, key))
+        .collect();
 
     // `None` is the real "nothing above this page": a page already opening on
     // the conversation's first turn has nothing to walk back to, and that is
@@ -829,7 +840,7 @@ async fn session(
         .await
         .unwrap_or_else(|error| {
             tracing::warn!(
-                event_name = "conversation_read_failed",
+                event_name = "transcript_fold_failed",
                 %error,
                 slot = %slot.display(),
                 "the transcript read did not finish; the record is answered without it",
