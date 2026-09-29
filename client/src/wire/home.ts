@@ -73,6 +73,8 @@ export interface CronEntry {
   prompt: string;
   description?: string;
   created_at: WireTime;
+  /** When it is next due, which is the fact the session's schedules section states. */
+  next_fire: WireTime;
 }
 
 /** One agent as a view reads it: a lead and a worker are the same row. */
