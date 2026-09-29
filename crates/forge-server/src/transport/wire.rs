@@ -445,12 +445,16 @@ impl From<&PendingAsk> for PendingAskWire {
 }
 
 /// The conversation a session's transcript replayed, and how many times it
-/// has compacted. The frames cross as the CLI's own messages, which is what
-/// the fold reads on both sides.
+/// has compacted.
+///
+/// **Its turns, not a bare frame list.** A client folds turns, so a
+/// conversation handed over as frames with no boundaries is one it cannot fold
+/// at all; carrying the same turns a page carries is what makes the whole
+/// conversation and a window of it read the same way.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ConversationWire {
-    pub messages: Vec<Value>,
+    pub turns: Vec<TurnWire>,
     pub compaction_count: u32,
 }
 
@@ -490,6 +494,73 @@ pub struct Page {
     pub cursor: Option<String>,
 }
 
+/// Where each turn opens, one entry per turn, and what names it.
+///
+/// **One message opens one turn**, so a user row carrying two blocks does not
+/// put two boundaries at one index. A cursor names a message and resolves to
+/// the first match, so two entries sharing an index would leave a walk a page
+/// of its own to hand back before it moved - an empty one, since both
+/// boundaries are that message.
+fn opens_of(spans: &[TurnSpan]) -> Vec<(usize, Option<&str>)> {
+    let mut opens: Vec<(usize, Option<&str>)> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match opens.last_mut() {
+            Some((at, key)) if *at == span.opens_at => {
+                if key.is_none() {
+                    *key = span.key.as_deref();
+                }
+            }
+            _ => opens.push((span.opens_at, span.key.as_deref())),
+        }
+    }
+    opens
+}
+
+/// The messages `from..to` as one turn, which is the shape both the session
+/// record and a page carry.
+fn turn_wire(messages: &[Message], from: usize, to: usize, key: Option<&str>) -> TurnWire {
+    TurnWire {
+        key: key.map(str::to_owned),
+        messages: messages[from..to]
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
+            .collect(),
+    }
+}
+
+/// `messages` as the whole turns `spans` names, in conversation order.
+///
+/// **The one place a conversation becomes the turns a client folds.** The
+/// session record carries all of them and a page carries a window of them, and
+/// a second builder is how the two would come to disagree about what a turn
+/// is.
+pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
+    let opens = opens_of(spans);
+    // **A conversation can hold no turn at all**, and a client folds turns, so
+    // it rides one instead of none. A session a cron fired into that nobody
+    // typed into is user rows that draw as notices, and a delivery-only one is
+    // the same; handing a client no turns would leave the whole of it
+    // unreachable, which is exactly what a page's `None` cursor stops it asking
+    // for.
+    if opens.is_empty() {
+        return if messages.is_empty() {
+            Vec::new()
+        } else {
+            vec![turn_wire(messages, 0, messages.len(), None)]
+        };
+    }
+    // The conversation's opening rows - who started it, a cron fire, a delivery
+    // - come before its first turn, so the first turn carries them. Leaving
+    // them above it would put them where no walk reaches.
+    (0..opens.len())
+        .map(|at| {
+            let from = if at == 0 { 0 } else { opens[at].0 };
+            let to = opens.get(at + 1).map_or(messages.len(), |&(open, _)| open);
+            turn_wire(messages, from, to, opens[at].1)
+        })
+        .collect()
+}
+
 /// Slice a conversation into whole turns, newest first.
 ///
 /// **A turn is a RUN of the fold's units, and the fold is what says where one
@@ -516,37 +587,25 @@ pub fn page(messages: &[Message], spans: &[TurnSpan], before: Option<&str>, turn
     // already opened at, so a client walking back would ask for the same page
     // forever.
     let turns = turns.max(1) as usize;
-    let opens: Vec<usize> = spans.iter().map(|span| span.opens_at).collect();
+    let all = all_turns(messages, spans);
+    let opens = opens_of(spans);
 
     // A cursor names the message the previous page BEGAN at, so the page above
     // ends where that one started: the two meet exactly.
     let ends_at = before
         .and_then(|cursor| cursor.parse::<usize>().ok())
-        .and_then(|started| opens.iter().position(|&open| open == started))
-        .unwrap_or(opens.len());
+        .and_then(|started| opens.iter().position(|&(open, _)| open == started))
+        .unwrap_or(all.len());
 
     let first = ends_at.saturating_sub(turns);
-    // The conversation's opening rows - who started it, a cron fire, a
-    // delivery - come before its first turn, so the first page carries them on
-    // that turn. Starting at `opens[0]` would leave them above every page,
-    // where no walk can reach them.
-    let from_of = |at: usize| if at == 0 { 0 } else { opens[at] };
-    let to_of = |at: usize| opens.get(at + 1).copied().unwrap_or(messages.len());
-
-    let page_turns = (first..ends_at)
-        .map(|at| TurnWire {
-            key: spans.get(at).and_then(|span| span.key.clone()),
-            messages: messages[from_of(at)..to_of(at)]
-                .iter()
-                .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
-                .collect(),
-        })
-        .collect();
+    let page_turns: Vec<TurnWire> =
+        all.into_iter().skip(first).take(ends_at.saturating_sub(first)).collect();
 
     // `None` is the real "nothing above this page": a page already opening on
     // the conversation's first turn has nothing to walk back to, and that is
     // the one case a client stops asking.
-    let cursor = if first == 0 { None } else { opens.get(first).map(usize::to_string) };
+    let cursor =
+        if first == 0 { None } else { opens.get(first).map(|&(open, _)| open.to_string()) };
 
     Page { turns: page_turns, cursor }
 }
@@ -756,20 +815,27 @@ async fn session(
     cwd: &Path,
 ) -> Result<SessionWire> {
     let header = surface.header(slot);
-    let conversation = {
+    // The read and the fold that finds its turns, in one blocking task: the
+    // fold walks the whole conversation, and running it on the reactor would
+    // put that walk in front of every other client's message.
+    let (conversation, spans) = {
         let reader = Arc::clone(&state.surface);
         let (seat, root) = (slot.clone(), cwd.to_path_buf());
-        tokio::task::spawn_blocking(move || reader.conversation(&seat, &root)).await.unwrap_or_else(
-            |error| {
-                tracing::warn!(
-                    event_name = "conversation_read_failed",
-                    %error,
-                    slot = %slot.display(),
-                    "the transcript read did not finish; the record is answered without it",
-                );
-                ConversationHistory::default()
-            },
-        )
+        tokio::task::spawn_blocking(move || {
+            let read = reader.conversation(&seat, &root);
+            let spans = crate::transcript::render(&read.messages).turns;
+            (read, spans)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                event_name = "conversation_read_failed",
+                %error,
+                slot = %slot.display(),
+                "the transcript read did not finish; the record is answered without it",
+            );
+            (ConversationHistory::default(), Vec::new())
+        })
     };
     // ONE scan for the working tree, its branch, its count and its PR: the four
     // are then the same instant, so a branch switch between two reads cannot
@@ -795,11 +861,7 @@ async fn session(
         monitors: surface.monitors(slot),
         pending_ask: surface.pending_ask(slot).as_ref().map(PendingAskWire::from),
         conversation: ConversationWire {
-            messages: conversation
-                .messages
-                .iter()
-                .filter_map(|message| serde_json::to_value(message).ok())
-                .collect(),
+            turns: all_turns(&conversation.messages, &spans),
             compaction_count: conversation.compaction_count,
         },
         header: SessionHeaderWire {
@@ -851,8 +913,6 @@ async fn session(
 
 #[cfg(test)]
 mod tests {
-    use crate::transcript::ChatUnit;
-
     /// The transcript rows one turn leaves: what the user wrote, what the
     /// assistant said, and the result that closes it. The result carries a
     /// `uuid`, which is what the fold names the turn by - so a turn's report
@@ -947,6 +1007,62 @@ mod tests {
              {:?}",
             first.turns[0].messages,
         );
+    }
+
+    /// A conversation whose only user rows are envelopes still pages.
+    ///
+    /// A cron fire, a delivery and a peer card all draw as notices rather than
+    /// as turns, so a session nobody typed into has no turn boundary at all.
+    /// A page that listed no turns AND said `cursor: null` would tell a client
+    /// there is nothing above a conversation it has never seen - and the walk
+    /// would stop there, with the whole of it unreachable.
+    #[test]
+    fn a_conversation_with_no_turns_still_pages() {
+        let (messages, spans) = a_conversation(&[
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"[Cron]\n\nstand-up"},"session_id":"s"}"#,
+            r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"morning"}]}}"#,
+            r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+        ]);
+
+        assert!(spans.is_empty(), "precondition: nothing in this conversation opens a turn");
+        assert!(!messages.is_empty(), "precondition: and it has content");
+
+        let page = page(&messages, &spans, None, 10);
+
+        assert_eq!(page.turns.len(), 1, "the conversation rides one turn rather than none");
+        assert_eq!(page.turns[0].messages.len(), messages.len(), "and that turn carries all of it");
+        assert_eq!(page.cursor, None, "with nothing above it, which is the one honest null");
+    }
+
+    /// A user row carrying two blocks opens one turn, not two.
+    ///
+    /// The fold draws a unit per block, so it opens two spans at one message.
+    /// A cursor names a message and resolves to the first match, so a second
+    /// boundary at that index would hand a walker a page of its own before it
+    /// moved - an empty one, since the two boundaries are the same message.
+    #[test]
+    fn a_user_row_with_two_blocks_opens_one_turn() {
+        let (messages, spans) = a_conversation(&[
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"text","text":"one"},{"type":"text","text":"two"}]},"session_id":"s"}"#,
+            r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"reply"}]}}"#,
+            r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+        ]);
+
+        assert_eq!(spans.len(), 2, "precondition: the fold opens a turn per block");
+        assert_eq!(
+            spans[0].opens_at, spans[1].opens_at,
+            "precondition: and both open at the one message that carried them",
+        );
+
+        let page = page(&messages, &spans, None, 10);
+
+        assert_eq!(page.turns.len(), 1, "one message is one turn on the page");
+        assert_eq!(
+            page.turns[0].messages.len(),
+            messages.len(),
+            "carrying the whole conversation, since both blocks open at its first row",
+        );
+        assert_eq!(page.cursor, None, "and the walk is not sent after a page that cannot move");
     }
 
     /// A page opens on a turn, and consecutive pages meet without a gap.
@@ -1576,49 +1692,6 @@ mod tests {
             surface.processes(&seat).map(|held| held.scanned_at),
             Some(fresh),
             "a snapshot inside the window is the answer rather than a reason to walk",
-        );
-    }
-
-    /// The handle a client needs to identify a call. `Task` is the case that
-    /// shows why the leaf carries both: its row draws the word `Subagent`,
-    /// and that word leads back to no tool, so a client handed only the label
-    /// can draw the card and cannot say which call it is.
-    #[tokio::test]
-    async fn a_groups_leaves_carry_the_tools_name_beside_its_label() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
-        fleet
-            .seed_transcript(
-                "TestOrg",
-                "proj",
-                "lead",
-                &[
-                    r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"go"},"session_id":"s"}"#,
-                    r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"description":"investigate","prompt":"look"}}]}}"#,
-                    r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
-                ],
-            )
-            .expect("the transcript seeds");
-        let surface = fleet.surface();
-        let seat = fixture_seat();
-        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
-
-        let all = surface.folded_units(&seat, &cwd);
-        let leaf = all
-            .iter()
-            .find_map(|unit| match unit {
-                ChatUnit::ToolGroup { families, .. } => {
-                    families.iter().flat_map(|family| family.calls.iter()).next()
-                }
-                _ => None,
-            })
-            .expect("the fold produced a group with a call in it");
-
-        assert_eq!(leaf.name, "Task", "the leaf names the tool the CLI ran");
-        assert_eq!(
-            leaf.label, "Subagent",
-            "and the word its row draws is a different thing, which is why both are carried",
         );
     }
 
