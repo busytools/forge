@@ -996,7 +996,13 @@ impl Workspace {
     /// Agents are spawned on success. The session catalog starts empty
     /// and fills when the scan lands - see [`Workspace::start_catalog_scan`].
     pub fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
-        Self::new_impl(config_dir, None, true, Some(real_cli_version_prober()))
+        Self::new_impl(
+            config_dir,
+            None,
+            true,
+            Some(real_cli_version_prober()),
+            Some(real_service_status_prober()),
+        )
     }
 
     /// Like [`Workspace::new`] but puts forge's whole app-support base -
@@ -1005,7 +1011,8 @@ impl Workspace {
     /// `app_support_dir`, so tests never touch the user's durable store
     /// or contend for their live lock. The catalog scan does NOT
     /// auto-start; tests opt in via [`Workspace::start_catalog_scan`]
-    /// so the catalog stays empty until a fixture asks for it.
+    /// so the catalog stays empty until a fixture asks for it. Neither
+    /// boot probe starts either: a test workspace reaches no network.
     #[cfg(any(test, feature = "testing"))]
     pub fn new_for_test(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         Self::new_for_test_impl(config_dir, None)
@@ -1028,7 +1035,8 @@ impl Workspace {
         cli_version_prober: Option<CliVersionProber>,
     ) -> Result<Self, WorkspaceError> {
         let app_support = config_dir.join("app-support");
-        let workspace = Self::new_impl(config_dir, Some(app_support), false, cli_version_prober)?;
+        let workspace =
+            Self::new_impl(config_dir, Some(app_support), false, cli_version_prober, None)?;
         // Tests never start the listener; the boot gate reads open so
         // spawn paths are exercisable, and the I2 test flips it back to
         // closed explicitly when it needs the refusal.
@@ -1091,11 +1099,18 @@ impl Workspace {
     /// base dir; `None` resolves the real machine `app_support_dir` and
     /// degrades to no lock and no durable store on failure (hard rule
     /// #14: no cwd fallback).
+    ///
+    /// `cli_version_prober` and `service_status_prober` are `None` for a
+    /// workspace built by a test. Both probes fetch over the network at boot
+    /// and announce the answer on the core's own stream, so a test workspace
+    /// that ran them would both depend on a remote service's health and hand
+    /// every test a slot-less update it never emitted.
     fn new_impl(
         config_dir: PathBuf,
         app_support: Option<PathBuf>,
         catalog_scan: bool,
         cli_version_prober: Option<CliVersionProber>,
+        service_status_prober: Option<ServiceStatusProber>,
     ) -> Result<Self, WorkspaceError> {
         let config = load_from_dir(&config_dir)?;
 
@@ -1486,7 +1501,9 @@ impl Workspace {
         if let Some(prober) = cli_version_prober {
             workspace.start_cli_version_probe(prober);
         }
-        workspace.start_service_status_probe(real_service_status_prober());
+        if let Some(prober) = service_status_prober {
+            workspace.start_service_status_probe(prober);
+        }
         if workspace.db.lock().is_none() {
             // One user-visible notice for the whole best-effort-persist
             // class (durable crons, subscriptions): the
