@@ -798,7 +798,10 @@ inspected.
     check` runs the client's steps too - Prettier, ESLint on
     typescript-eslint's type-checked configs, `svelte-check`, `tsc
     --noEmit`, then vitest - so one command decides both stacks and its
-    verdict line names the first failing step. **Denied as errors**, the
+    verdict line names the first failing step. **The desktop shell under
+    `client/src-tauri/` is outside all of it**: it is its own workspace
+    root, so neither `just check` nor CI reaches it, and `just
+    client-tauri-check` builds and bundles it. **Denied as errors**, the
     analogue of the denied Rust lints: `any`, non-null assertion,
     `@ts-ignore`, `innerHTML`, `eval` and floating promises. **A waiver
     carries its reason, and which form it takes is not free:** an inline
