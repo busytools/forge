@@ -19,6 +19,37 @@ npm run typecheck
 `1420` is fixed rather than defaulted, because the Tauri shell points its
 `devUrl` at it.
 
+## The desktop shell
+
+`src-tauri/` is a Tauri 2 app that wraps the built bundle. The crate is
+its own cargo workspace root, so none of the repo's gates and neither the
+Rust nor the JavaScript job in CI reaches it.
+
+```sh
+npm run tauri dev     # dev server plus the app window
+npm run tauri build   # forge.app and a dmg, under src-tauri/target/release/bundle
+```
+
+The production build embeds `dist/`, so it needs `npm run build` to have
+run and fails if that output is missing. The dev window loads the dev
+server instead and needs no `dist/`. `just client-tauri-check` is the one
+to run before handing a change here over: it is the production build with
+`--locked`.
+
+A start that fails has no terminal to report to, so it writes to the
+plugin's log file instead, at
+`~/Library/Logs/dev.vedhavyas.forge/forge-client.log`.
+
+The icon is the `panes` mark from `src/brand.ts`, on the `--bg` ground in
+the `--accent` colour. Render the mark to a 1024 PNG and pass that to
+`npx tauri icon`: the committed `icons/icon.png` is a 512 the generator
+writes and will not reproduce the `.icns` on its own. That file stays
+because `generate_context!` reads it at compile time, and with the five
+`bundle.icon` names it is all of the set worth committing.
+
+The version is this crate's own rather than the workspace's. The client is
+a different program from the server, so `just release` does not bump it.
+
 ## What is here
 
 - `src/wire/` - the server's shapes, copied from the fixtures on
