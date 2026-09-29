@@ -13,20 +13,21 @@ function gitBlob(content: string): string {
 }
 
 /**
- * The two copies the client takes from the server, and why they are pinned.
+ * The copy the client takes from the server, and why it is pinned.
  *
- * **Prettier reformats both by default.** The sheet is byte-identical to the
- * one `forge-web` serves, and the fixtures are byte-identical to the ones the
- * server's tests pin, so a formatter run over the tree silently falsifies
- * the salvage claim. `.prettierignore` is the first defence; this is the one
+ * **Prettier reformats it by default.** The fixtures are byte-identical to the
+ * ones the server's tests pin, so a formatter run over the tree silently
+ * falsifies the claim. `.prettierignore` is the first defence; this is the one
  * that says so out loud, and it is what caught the move to `src/dev/fixtures`
  * leaving the ignore naming the path the files had left.
+ *
+ * **The stylesheet is not pinned, because it is not the server's any more.**
+ * It began as a byte-identical copy of `crates/forge-web/src/web.css`, and
+ * that assertion also forbade correcting it - which is what a page's rules
+ * need. `forge-web` goes when the client plan reaches its delete step, so the
+ * copy's provenance is this comment rather than a test.
  */
 describe('the salvage copies', () => {
-  it("ships the server's own stylesheet, byte for byte", () => {
-    expect(read('./assets/web.css')).toBe(read('../../crates/forge-web/src/web.css'));
-  });
-
   /**
    * The hashes live in `wire/README.md` rather than here, so a re-sync has
    * one home. The count guard is deliberate: a refactor of that sentence
