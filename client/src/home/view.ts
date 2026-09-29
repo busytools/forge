@@ -23,7 +23,6 @@ import type {
   Gate,
   HomeWire,
   Lifecycle,
-  ProjectView,
   ProjectWire,
   Task,
   TaskStatus,
@@ -84,6 +83,14 @@ export interface OrgSection {
   name: string;
   live: number;
   projects: { lead: Row; workers: Row[]; refused: string | null }[];
+}
+
+/** One project's rows: the lead, and its workers under it. */
+export interface ProjectRows {
+  lead: Row;
+  workers: Row[];
+  /** Whether anything has ever started here, which is what a refusal needs. */
+  started: boolean;
 }
 
 export interface Header {
@@ -387,9 +394,9 @@ export function countsOf(org: OrgSection): string {
   return `${org.live} live \u{b7} ${asleep} asleep`;
 }
 
-/** The project's name and slot, which are how a row is matched to it. */
-function keyOf(project: ProjectView): string {
-  return `${project.org}\u0000${project.name}`;
+/** The key a project and the seats that belong to it are matched by. */
+function keyOf(org: string, name: string): string {
+  return `${org}\u0000${name}`;
 }
 
 /**
@@ -410,8 +417,12 @@ function toMillis(at: WireTime | null): number | null {
 /**
  * The `where` cell's two parts, kept apart because the sheet weights them
  * apart. A count of zero is not a fact about the tree, so it draws nothing.
+ *
+ * Exported because the session page's own git section draws the same two
+ * parts as one line, and a second rule for the same cell is how two surfaces
+ * start describing one tree differently.
  */
-function placeOf(work: WorkState): Row['place'] {
+export function placeOf(work: WorkState): Row['place'] {
   const changed = work.changed;
   const files =
     changed === null || changed === 0 ? null : changed === 1 ? '1 file' : `${changed} files`;
@@ -513,36 +524,45 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
   };
 }
 
+/**
+ * One project's rows: its lead, and its workers under it.
+ *
+ * Exported because the session page's rail draws the same rows. It groups
+ * projects by the strongest state among their own rows and keeps them in
+ * `forge.toml`'s order, which is the roster's order rather than the org
+ * grouping the home sorts into - so the rail cannot read them off `homeView`.
+ */
+export function projectRows(wire: HomeWire, row: ProjectWire): ProjectRows {
+  const project = row.project;
+  const rows = wire.agents.filter(
+    (agent) => keyOf(agent.slot.org, agent.slot.project) === keyOf(project.org, project.name),
+  );
+  const lastRan = project.sessions.reduce<WireTime | null>(
+    (latest, session) =>
+      toMillis(session.last_activity) !== null &&
+      (latest === null || (toMillis(session.last_activity) ?? 0) > (toMillis(latest) ?? 0))
+        ? session.last_activity
+        : latest,
+    null,
+  );
+
+  // A project's row is its lead, and both pages name it for the project: the
+  // lead's label is its identity, not what the row is called here.
+  const [head, ...rest] = rows;
+  const lead =
+    head === undefined ? dormantRow(row, lastRan) : rowOf(head, project.name, row, wire.unseen);
+  // Every started row draws its own seat's tree, which is the read the ROW
+  // carries: the project's `work` is the lead's seat whatever row it lands on.
+  const workers = rest.map((agent) => rowOf(agent, agent.label, row, wire.unseen));
+  return { lead, workers, started: head !== undefined };
+}
+
 /** Read the snapshot into the shape the markup wants. */
 export function homeView(wire: HomeWire, address: string): HomeView {
-  const byProject = new Map<string, AgentRow[]>();
-  for (const agent of wire.agents) {
-    const key = `${agent.slot.org}\u0000${agent.slot.project}`;
-    const rows = byProject.get(key);
-    if (rows) rows.push(agent);
-    else byProject.set(key, [agent]);
-  }
-
   const orgs: OrgSection[] = [];
   for (const row of wire.projects) {
     const project = row.project;
-    const rows = byProject.get(keyOf(project)) ?? [];
-    const lastRan = project.sessions.reduce<WireTime | null>(
-      (latest, session) =>
-        toMillis(session.last_activity) !== null &&
-        (latest === null || (toMillis(session.last_activity) ?? 0) > (toMillis(latest) ?? 0))
-          ? session.last_activity
-          : latest,
-      null,
-    );
-
-    // A project's row is its lead, and the home names it for the project:
-    // the lead's label is its identity, not what the row is called here.
-    const [head, ...rest] = rows;
-    const started = head !== undefined;
-    const lead =
-      head === undefined ? dormantRow(row, lastRan) : rowOf(head, project.name, row, wire.unseen);
-    const workers = rest.map((agent) => rowOf(agent, agent.label, row, wire.unseen));
+    const { lead, workers, started } = projectRows(wire, row);
 
     const section = orgs.find((org) => org.name === project.org);
     const entry = {

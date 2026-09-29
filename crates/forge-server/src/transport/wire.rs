@@ -536,7 +536,10 @@ fn turn_wire(messages: &[Message], from: usize, to: usize, key: Option<&str>) ->
 /// computation is how the two would come to disagree about what a turn is.
 /// Ranges rather than turns, so a page renders the window it keeps instead of
 /// every turn the conversation holds.
-fn turn_ranges(messages: &[Message], spans: &[TurnSpan]) -> Vec<(usize, usize, Option<&str>)> {
+fn turn_ranges<'a>(
+    messages: &[Message],
+    spans: &'a [TurnSpan],
+) -> Vec<(usize, usize, Option<&'a str>)> {
     let opens = opens_of(spans);
     // **A conversation can hold no turn at all**, and a client folds turns, so
     // it rides one instead of none. A session a cron fired into that nobody

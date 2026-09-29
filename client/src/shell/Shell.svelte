@@ -221,6 +221,7 @@
     {address}
     {home}
     {failure}
+    {connection}
     connected={connection !== null}
     onconnect={connect}
   />
