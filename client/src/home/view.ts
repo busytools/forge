@@ -7,10 +7,10 @@
  * disagree with the terminal the first time a turn settled while nobody was
  * watching, and it would disagree silently.
  *
- * **Four reads the server's own home draws from are not in the snapshot, and
- * the cells they feed are left empty rather than guessed at.** `HomeWire`
- * has no tasks, no per-row working tree, no `would_bind`, and nothing
- * carries forge's own version. See `client/README.md`.
+ * Every cell the server's own home draws is drawn from the snapshot. The
+ * three things it used to leave empty - the per-row working tree, the task a
+ * seat holds, and whether an account would bind - cross on `ProjectWire`, as
+ * do the unseen marks and the forge version.
  */
 
 import { displayAddress } from '../connect/attempt';
@@ -18,11 +18,17 @@ import type {
   AgentRow,
   DictateFailure,
   DictateModelState,
+  Gate,
   HomeWire,
   Lifecycle,
   ProjectView,
+  ProjectWire,
+  Task,
+  TaskStatus,
   WireTime,
+  WorkState,
 } from '../wire/home';
+import type { SessionSlot } from '../wire/types';
 
 /** How loud a band card is. */
 export type Tone = 'ready' | 'warn' | 'bad' | 'off';
@@ -79,6 +85,8 @@ export interface Header {
   installed: string | null;
   /** The version to name when npm has a newer one than the installed CLI. */
   update: string | null;
+  /** The forge build serving the socket, which the client draws rather than its own. */
+  version: string;
 }
 
 export interface HomeView {
@@ -90,17 +98,25 @@ export interface HomeView {
 /**
  * The state a row draws from what the snapshot carries.
  *
- * A backgrounded task is work even after the turn that started it settled,
- * which is the one promotion the core does not make. The `unseen` arm is
- * real and drawn - the server's `Live` owns that fact and does not encode it
- * yet, so nothing here computes it and the state arrives as a value like any
- * other.
+ * Two promotions the core does not make, both about what the mark means: a
+ * backgrounded task is work even after the turn that started it settled, and
+ * a turn that finished while this view was not showing the seat is the one
+ * state that answers "what changed while I was away". Neither is computed
+ * here - `has_background_work` and `unseen` both cross on the snapshot.
  */
-export function stateOf(row: AgentRow): RowState {
+export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
   if (row.lifecycle === 'Idle' && row.has_background_work) {
     return { kind: 'lifecycle', lifecycle: 'Running' };
   }
+  if (row.lifecycle === 'Idle' && unseen.some((slot) => sameSlot(slot, row.slot))) {
+    return { kind: 'unseen' };
+  }
   return { kind: 'lifecycle', lifecycle: row.lifecycle };
+}
+
+/** Two slots are the same seat; the session id is the occupant, not the address. */
+function sameSlot(a: SessionSlot, b: SessionSlot): boolean {
+  return a.org === b.org && a.project === b.project && a.label === b.label;
 }
 
 /** The mark a state draws: one class and one dot shape per meaning. */
@@ -352,16 +368,13 @@ function keyOf(project: ProjectView): string {
 }
 
 /**
- * Why a spawn here would be refused, or `null` when it would not be.
- *
- * `has_model` is the snapshot's and decides the first arm outright. The
- * second needs whether an account would bind, which `HomeWire` does not
- * carry, so a project that has a model and no account draws no refusal
- * rather than a guessed one.
+ * Why a spawn here would be refused, or `null` when it would not be: the
+ * two the row cannot run for, told apart by what the wire carries.
  */
-export function refusal(project: ProjectView): string | null {
-  if (project.has_model) return null;
-  return 'no model declared - add `model` to this project';
+export function refusal(hasModel: boolean, wouldBind: boolean): string | null {
+  if (!hasModel) return 'no model declared - add `model` to this project';
+  if (!wouldBind) return 'no usable accounts';
+  return null;
 }
 
 /** The lowest millisecond value a row's time carries, for a max over times. */
@@ -369,16 +382,74 @@ function toMillis(at: WireTime | null): number | null {
   return at === null ? null : at.secs_since_epoch * 1000 + Math.floor(at.nanos_since_epoch / 1e6);
 }
 
+/**
+ * The `where` cell's two parts, kept apart because the sheet weights them
+ * apart. A count of zero is not a fact about the tree, so it draws nothing.
+ */
+function placeOf(work: WorkState): Row['place'] {
+  const changed = work.changed;
+  const files =
+    changed === null || changed === 0 ? null : changed === 1 ? '1 file' : `${changed} files`;
+  return { branch: work.branch, files };
+}
+
+/** What a row says when its working directory is not there to read. */
+export function gateLine(gate: Gate): string | null {
+  switch (gate) {
+    case 'in_repo':
+      return null;
+    case 'not_a_repository':
+      return 'not a git repository, so there is no branch to show';
+    case 'gone':
+      return 'its working directory is not there';
+    case 'scanner_failed':
+      return 'its working tree could not be read';
+  }
+}
+
+/** How close to done a task is, in-progress first. */
+function statusRank(status: TaskStatus): number {
+  switch (status) {
+    case 'in_progress':
+      return 0;
+    case 'blocked':
+      return 1;
+    case 'pending':
+      return 2;
+    case 'completed':
+      return 3;
+  }
+}
+
+/**
+ * The task a row shows: the one this label holds that is furthest from done.
+ *
+ * Picking by position instead would show whatever the store happened to
+ * return first, which is insertion order within a run and key order across a
+ * restart: a label reused by a new worker can hold the last occupant's
+ * finished task, and the row would show it under a state column saying
+ * running.
+ */
+function taskFor(tasks: Task[], label: string): Task | null {
+  const held = tasks.filter((task) => task.owner !== null && task.owner.label === label);
+  if (held.length === 0) return null;
+  return held.reduce((best, task) =>
+    statusRank(task.status) < statusRank(best.status) ? task : best,
+  );
+}
+
 /** One agent's row, from the snapshot and nothing else. */
-function rowOf(agent: AgentRow, name: string): Row {
+function rowOf(agent: AgentRow, name: string, wire: ProjectWire, unseen: SessionSlot[]): Row {
+  const held = taskFor(wire.tasks, agent.label);
   return {
     slot: agent.slot,
-    state: stateOf(agent),
+    state: stateOf(agent, unseen),
     name,
-    // The working tree is a per-row read the home snapshot does not carry,
-    // so the branch and the changed count are absent rather than blank.
-    place: { branch: null, files: null },
-    task: null,
+    place: placeOf(wire.work),
+    task:
+      held === null
+        ? null
+        : { subject: held.subject, chip: chipFor(held.status), artifact: held.artifact },
     pending: agent.pending,
     reason: agent.reason,
     lastActivity: agent.last_activity,
@@ -386,13 +457,13 @@ function rowOf(agent: AgentRow, name: string): Row {
 }
 
 /** The row a project nobody has started gets. */
-function dormantRow(project: ProjectView, lastRan: WireTime | null): Row {
+function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
   return {
-    slot: { org: project.org, project: project.name, label: 'lead' },
+    slot: { org: wire.project.org, project: wire.project.name, label: 'lead' },
     state:
       lastRan === null ? { kind: 'never-started' } : { kind: 'lifecycle', lifecycle: 'Sleeping' },
-    name: project.name,
-    place: { branch: null, files: null },
+    name: wire.project.name,
+    place: placeOf(wire.work),
     task: null,
     pending: null,
     reason: null,
@@ -411,7 +482,8 @@ export function homeView(wire: HomeWire, address: string): HomeView {
   }
 
   const orgs: OrgSection[] = [];
-  for (const project of wire.projects) {
+  for (const row of wire.projects) {
+    const project = row.project;
     const rows = byProject.get(keyOf(project)) ?? [];
     const lastRan = project.sessions.reduce<WireTime | null>(
       (latest, session) =>
@@ -426,11 +498,16 @@ export function homeView(wire: HomeWire, address: string): HomeView {
     // the lead's label is its identity, not what the row is called here.
     const [head, ...rest] = rows;
     const started = head !== undefined;
-    const lead = head === undefined ? dormantRow(project, lastRan) : rowOf(head, project.name);
-    const workers = rest.map((agent) => rowOf(agent, agent.label));
+    const lead =
+      head === undefined ? dormantRow(row, lastRan) : rowOf(head, project.name, row, wire.unseen);
+    const workers = rest.map((agent) => rowOf(agent, agent.label, row, wire.unseen));
 
     const section = orgs.find((org) => org.name === project.org);
-    const entry = { lead, workers, refused: started ? null : refusal(project) };
+    const entry = {
+      lead,
+      workers,
+      refused: started ? null : refusal(project.has_model, row.would_bind),
+    };
     if (section) {
       section.live += started ? 1 : 0;
       section.projects.push(entry);
@@ -452,6 +529,7 @@ export function homeView(wire: HomeWire, address: string): HomeView {
         wire.cli_version?.installed ?? null,
         wire.cli_version?.latest ?? null,
       ),
+      version: wire.forge_version_short,
     },
     band: band(wire, address),
     orgs,

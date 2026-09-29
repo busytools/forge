@@ -1,17 +1,28 @@
 {
   "projects": [
     {
-      "key": "<fixture>-proj",
-      "name": "proj",
-      "org": "TestOrg",
-      "path": "<fixture>/proj",
-      "display_path": "<fixture>/proj",
-      "accounts": [
-        "Acct"
-      ],
-      "fallback_accounts": [],
-      "has_model": false,
-      "sessions": []
+      "project": {
+        "key": "<fixture>-proj",
+        "name": "proj",
+        "org": "TestOrg",
+        "path": "<fixture>/proj",
+        "display_path": "<fixture>/proj",
+        "accounts": [
+          "Acct"
+        ],
+        "fallback_accounts": [],
+        "has_model": false,
+        "sessions": []
+      },
+      "work": {
+        "branch": null,
+        "changed": null,
+        "gate": "gone"
+      },
+      "tasks": [],
+      "crons": [],
+      "would_bind": false,
+      "chip": null
     }
   ],
   "agents": [
@@ -27,9 +38,19 @@
       "pending": "permission",
       "pending_depth": 1,
       "last_activity": null,
-      "reason": null
+      "reason": null,
+      "peer": {
+        "outgoing": 2,
+        "incoming": 1,
+        "delivery_failed": 3
+      },
+      "peer_failure_at": {
+        "secs_since_epoch": 1700000000,
+        "nanos_since_epoch": 0
+      }
     }
   ],
+  "unseen": [],
   "accounts": {
     "loading": [
       {
@@ -119,6 +140,7 @@
     }
   },
   "dictate": {
+    "enabled": true,
     "snapshot": {
       "models": [
         {
@@ -134,12 +156,15 @@
       ],
       "failure": null
     },
-    "models_dir": "<fixture>/models"
+    "models_dir": "<fixture>/models",
+    "device": null
   },
   "cli_version": {
     "installed": "1.0.0",
     "latest": "1.1.0"
   },
+  "forge_version": "<forge-version>",
+  "forge_version_short": "<forge-version-short>",
   "service_status": null,
   "fatal_error": null
 }

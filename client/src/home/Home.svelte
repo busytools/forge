@@ -33,20 +33,19 @@
       <span class="word">forge</span>
     </div>
     <div class="versions">
-      <!--
-        forge's own version is not here: nothing on the wire carries it, and
-        the server's home draws it from its own build. The claude version and
-        the update notice both cross in `cli_version`.
-      -->
-      {#if view.header.installed}claude {view.header.installed}{/if}
+      <!-- The forge build serving the socket, not this app's own version:
+           the header states which forge is running. -->
+      <b>v{view.header.version}</b>
+      {#if view.header.installed}{' \u{b7} '}claude {view.header.installed}{/if}
       {#if view.header.update}{' \u{b7} '}<span class="upd"
           >{'\u{2191}'} v{view.header.update} available</span
         >{/if}
     </div>
     <div class="totals">
       <!--
-        The task count is not here either, for the same reason: the snapshot
-        carries no tasks, so a number would be invented rather than read.
+        The task count is not here: no total crosses the wire, and summing
+        the rows a client happens to be showing would count a fleet it cannot
+        see. The per-row task is drawn where it belongs, on the row.
       -->
       <span class="n">{view.header.liveAgents}</span> agents {'\u{b7}'}
       <span class="n">{view.header.projects}</span> projects

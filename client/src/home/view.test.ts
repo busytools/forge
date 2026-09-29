@@ -3,7 +3,16 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
-import type { AgentRow, DictateModel, HomeWire, Lifecycle } from '../wire/home';
+import type {
+  AgentRow,
+  DictateModel,
+  HomeWire,
+  Lifecycle,
+  ProjectWire,
+  Task,
+  TaskStatus,
+  WireTime,
+} from '../wire/home';
 import { homeFrom } from '../wire/home';
 import {
   artifactLabel,
@@ -11,6 +20,7 @@ import {
   chipFor,
   countsOf,
   elapsedLabel,
+  gateLine,
   failureFile,
   failureKind,
   followable,
@@ -68,9 +78,9 @@ const FLEET: HomeWire = {
   ...homeWire,
   cli_version: { installed: '2.1.280', latest: '2.1.290' },
   projects: [
-    { ...project('Busytools', 'forge'), has_model: true, sessions: [] },
-    { ...project('Busytools', 'notes'), has_model: true, sessions: [] },
-    { ...project('Personal', 'dotfiles'), has_model: true, sessions: [] },
+    project('Busytools', 'forge'),
+    project('Busytools', 'notes'),
+    project('Personal', 'dotfiles'),
   ],
   agents: [
     agent('Busytools', 'forge', 'lead', 'Running'),
@@ -80,17 +90,26 @@ const FLEET: HomeWire = {
   ],
 };
 
-function project(org: string, name: string): HomeWire['projects'][number] {
+/** One project row: the project, and the per-row reads the home draws it from. */
+function project(org: string, name: string, over: Partial<ProjectWire> = {}): ProjectWire {
   return {
-    key: `${org}-${name}`,
-    name,
-    org,
-    path: `/p/${name}`,
-    display_path: `/p/${name}`,
-    accounts: ['Acct'],
-    fallback_accounts: [],
-    has_model: true,
-    sessions: [],
+    project: {
+      key: `${org}-${name}`,
+      name,
+      org,
+      path: `/p/${name}`,
+      display_path: `/p/${name}`,
+      accounts: ['Acct'],
+      fallback_accounts: [],
+      has_model: true,
+      sessions: [],
+    },
+    work: { branch: null, changed: null, gate: 'in_repo' },
+    tasks: [],
+    crons: [],
+    would_bind: true,
+    chip: null,
+    ...over,
   };
 }
 
@@ -104,6 +123,8 @@ function agent(org: string, project: string, label: string, lifecycle: Lifecycle
     pending_depth: 0,
     last_activity: null,
     reason: null,
+    peer: { outgoing: 0, incoming: 0, delivery_failed: 0 },
+    peer_failure_at: null,
   };
 }
 
@@ -218,6 +239,9 @@ describe('a row over the fleet', () => {
       projects: 1,
       installed: '1.0.0',
       update: '1.1.0',
+      // The forge build serving the socket, which the header draws rather
+      // than this app's own version.
+      version: '<forge-version-short>',
     });
   });
 
@@ -235,31 +259,23 @@ describe('a row over the fleet', () => {
   });
 
   it('draws a project nothing has ever run in as never-started rather than asleep', () => {
-    const wire: HomeWire = {
+    const withSessions = (sessions: { last_activity: WireTime | null }[]): HomeWire => ({
       ...homeWire,
       agents: [],
-      projects: [{ ...PROJECT, sessions: [] }],
-    };
-    const lead = leadOf(homeView(wire, ''));
+      projects: [{ ...PROJECT, project: { ...PROJECT.project, sessions } }],
+    });
+
+    const lead = leadOf(homeView(withSessions([]), ''));
     expect(lead.state).toEqual({ kind: 'never-started' });
     expect(whenOf(lead, Date.now())).toBe('never');
 
     // The same project with a session behind it is asleep instead: a forge
     // restart leaves every project in that case, so reading the lifecycle
     // alone would call the whole fleet new.
-    const ran: HomeWire = {
-      ...wire,
-      projects: [
-        {
-          ...PROJECT,
-          sessions: [{ last_activity: { secs_since_epoch: 0, nanos_since_epoch: 0 } }],
-        },
-      ],
-    };
-    expect(homeView(ran, '').orgs[0]?.projects[0]?.lead.state).toEqual({
-      kind: 'lifecycle',
-      lifecycle: 'Sleeping',
-    });
+    expect(
+      homeView(withSessions([{ last_activity: { secs_since_epoch: 0, nanos_since_epoch: 0 } }]), '')
+        .orgs[0]?.projects[0]?.lead.state,
+    ).toEqual({ kind: 'lifecycle', lifecycle: 'Sleeping' });
   });
 
   it('promotes a backgrounded task to running, and leaves idle alone without one', () => {
@@ -281,13 +297,95 @@ describe('a row over the fleet', () => {
     expect(homeView({ ...homeWire, projects: [], agents: [] }, '').orgs).toEqual([]);
   });
 
-  it('names the one refusal it can decide, and none it cannot', () => {
-    expect(refusal({ ...PROJECT, has_model: false })).toBe(
-      'no model declared - add `model` to this project',
+  it('names the two refusals, and neither when a spawn would run', () => {
+    expect(refusal(false, true)).toBe('no model declared - add `model` to this project');
+    expect(refusal(true, false)).toBe('no usable accounts');
+    expect(refusal(true, true)).toBeNull();
+  });
+});
+
+describe('the cells the reshape made drawable', () => {
+  /** One project of the fixture fleet, with its row's reads varied. */
+  const withRow = (over: Partial<ProjectWire>): HomeWire => ({
+    ...homeWire,
+    projects: [{ ...PROJECT, ...over }],
+  });
+
+  /**
+   * A count of zero is not a fact about the tree, so it draws nothing. A
+   * `changed` of 0 rendered as `0 files` would say a project has moved
+   * nothing, which is what the cell already means when it is empty.
+   */
+  it('draws the branch and the count, and nothing for a count of zero', () => {
+    const place = (changed: number | null) =>
+      leadOf(homeView(withRow({ work: { branch: 'main', changed, gate: 'in_repo' } }), '')).place;
+    expect(place(3)).toEqual({ branch: 'main', files: '3 files' });
+    expect(place(1)).toEqual({ branch: 'main', files: '1 file' });
+    expect(place(0)).toEqual({ branch: 'main', files: null });
+    expect(place(null)).toEqual({ branch: 'main', files: null });
+  });
+
+  /**
+   * The task a row shows is the one furthest from done, not the first the
+   * store returned: a label reused by a new worker can hold the last
+   * occupant's finished task, and the row would show it under a state column
+   * saying running.
+   */
+  it('shows the task furthest from done, not the first held', () => {
+    const task = (status: TaskStatus, subject: string): Task => ({
+      id: subject,
+      project_name: 'proj',
+      subject,
+      active_form: null,
+      detail: null,
+      status,
+      owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
+      parent: null,
+      artifact: null,
+      estimate: null,
+      created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+      updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    });
+
+    const held = leadOf(
+      homeView(withRow({ tasks: [task('completed', 'shipped'), task('in_progress', 'now')] }), ''),
     );
-    // Whether an account would bind is not in the snapshot, so a project
-    // that has a model draws no refusal rather than a guessed one.
-    expect(refusal({ ...PROJECT, has_model: true })).toBeNull();
+    expect(held.task?.subject).toBe('now');
+    expect(held.task?.chip).toBe('in progress');
+  });
+
+  /**
+   * The unseen mark is the one thing telling you a seat you are not looking
+   * at has finished something, and nothing in the records reconstructs it.
+   * A row reading the lifecycle alone would draw every settled seat as idle.
+   */
+  it('draws a seat whose turn finished unwatched as unseen', () => {
+    const slot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+    const idle = { ...PROJECT, project: { ...PROJECT.project } };
+    const marked: HomeWire = { ...homeWire, projects: [idle], agents: [AGENT], unseen: [slot] };
+
+    expect(leadOf(homeView(marked, '')).state).toEqual({ kind: 'unseen' });
+    // The same seat with nothing unseen is idle, so the mark is the list
+    // rather than the lifecycle.
+    expect(leadOf(homeView({ ...marked, unseen: [] }, '')).state).toEqual({
+      kind: 'lifecycle',
+      lifecycle: 'Idle',
+    });
+  });
+
+  /**
+   * A project whose tree is not there says so rather than showing a blank
+   * `where` cell that reads as "no branch".
+   */
+  it('says why a row has no branch to show', () => {
+    const row = leadOf(
+      homeView(withRow({ work: { branch: null, changed: null, gate: 'gone' } }), ''),
+    );
+    expect(gateLine('gone')).toBe('its working directory is not there');
+    // The gate line is what the row's `what` cell falls back to, so a row
+    // with no pending, no task and no refusal still says something.
+    expect(row.task).toBeNull();
+    expect(gateLine('in_repo'), 'a repository is the row that explains nothing').toBeNull();
   });
 });
 
@@ -388,7 +486,9 @@ describe('the dictation card', () => {
         ],
         failure: null,
       },
+      enabled: true,
       models_dir: null,
+      device: null,
     };
     expect(card(ready)?.tone).toBe('ready');
     expect(card(ready)?.detail).toBe('loaded, loaded');
@@ -398,7 +498,9 @@ describe('the dictation card', () => {
         models: [{ role: 'transcribing', file: 'a.gguf', state: 'pending' as const }],
         failure: { cancelled: { kept: 1, total: 2 } },
       },
+      enabled: true,
       models_dir: null,
+      device: null,
     };
     expect(card(stopped)?.tone).toBe('bad');
     expect(card(stopped)?.detail).toBe('stopped');
@@ -463,7 +565,15 @@ describe('the band', () => {
   it('reads dictation as off when the config turned it off', () => {
     expect(
       card(
-        { ...homeWire, dictate: { snapshot: { models: [], failure: null }, models_dir: null } },
+        {
+          ...homeWire,
+          dictate: {
+            snapshot: { models: [], failure: null },
+            enabled: false,
+            models_dir: null,
+            device: null,
+          },
+        },
         'dictation',
       ),
     ).toEqual({ title: 'dictation', tone: 'off', value: 'off', detail: 'enabled = false' });

@@ -34,13 +34,14 @@ describe('the salvage copies', () => {
    */
   it("ships the server's own fixtures, byte for byte", () => {
     const pinned = Object.fromEntries(
-      [...read('./wire/README.md').matchAll(/`(\w+\.json)` is blob `([0-9a-f]{40})`/g)].map(
+      [...read('./wire/README.md').matchAll(/`([a-z]+\.json)` is blob `([0-9a-f]{40})`/g)].map(
         (match) => [match[1] as string, match[2] as string],
       ),
     );
     expect(Object.keys(pinned).sort(), 'wire/README.md records no pinned hashes').toEqual([
       'home.json',
       'session.json',
+      'usage.json',
     ]);
 
     for (const [name, hash] of Object.entries(pinned)) {
