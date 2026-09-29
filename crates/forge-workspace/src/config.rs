@@ -3230,11 +3230,7 @@ provider = "anthropic"
                 "\n[projects.forge]\nmodel = \"x\"\n",
                 "projects_section_ignored",
             ),
-            (
-                "[ui]",
-                "\n[ui]\nlaunchpad_spinner = \"braille\"\nfps = 120\n",
-                "ui_section_ignored",
-            ),
+            ("[ui]", "\n[ui]\nlaunchpad_spinner = \"braille\"\nfps = 120\n", "ui_section_ignored"),
             (
                 "a gateway key in an env layer",
                 "\n[env]\nANTHROPIC_BASE_URL = \"https://proxy.example\"\n",

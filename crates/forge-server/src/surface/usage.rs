@@ -63,10 +63,7 @@ mod tests {
             report.lifetime.total.output, 11,
             "and its output tokens, so the read is the scanner's own"
         );
-        assert_eq!(
-            report.today.total.input, 0,
-            "a record from a past day is in no rolling window"
-        );
+        assert_eq!(report.today.total.input, 0, "a record from a past day is in no rolling window");
         assert_eq!(
             report.lifetime.by_model.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
             vec!["claude-opus-5"],

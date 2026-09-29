@@ -180,29 +180,32 @@ async fn handle_client(
         ClientMessage::Subscribe { what, answering } => {
             open_stream(state, updates, answering);
             match encode_subject(state, &what).await {
-            Ok(data) => {
-                // Watched only once the subject is one this server can
-                // answer for: a refused subscribe leaves nothing to hear.
-                //
-                // A seat subscription is also this connection SHOWING the
-                // seat, which is what keeps a turn finishing on it from
-                // arming a mark nobody needs: the reader is looking at it.
-                if let Subject::Session(slot) = &what {
-                    Live::lock(&state.live).attach(slot);
+                Ok(data) => {
+                    // Watched only once the subject is one this server can
+                    // answer for: a refused subscribe leaves nothing to hear.
+                    //
+                    // A seat subscription is also this connection SHOWING the
+                    // seat, which is what keeps a turn finishing on it from
+                    // arming a mark nobody needs: the reader is looking at it.
+                    if let Subject::Session(slot) = &what {
+                        Live::lock(&state.live).attach(slot);
+                    }
+                    watched.push(what.clone());
+                    send(socket, ServerMessage::Snapshot { subject: what, data }).await
                 }
-                watched.push(what.clone());
-                send(socket, ServerMessage::Snapshot { subject: what, data }).await
-            }
-            // A seat nobody has started is an ANSWER rather than a
-            // silence: the client learns why, and never draws an empty
-            // snapshot as a broken page.
-            Err(refusal) => {
-                send(
-                    socket,
-                    ServerMessage::Error { what: "subscribe".to_owned(), why: refusal.to_string() },
-                )
-                .await
-            }
+                // A seat nobody has started is an ANSWER rather than a
+                // silence: the client learns why, and never draws an empty
+                // snapshot as a broken page.
+                Err(refusal) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "subscribe".to_owned(),
+                            why: refusal.to_string(),
+                        },
+                    )
+                    .await
+                }
             }
         }
         ClientMessage::Command { command, reply_to } => {
