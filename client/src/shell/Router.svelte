@@ -12,6 +12,7 @@
     settings,
     address,
     home,
+    failure,
     connected,
     onconnect,
   }: {
@@ -19,6 +20,8 @@
     settings: ClientSettings;
     address: string;
     home: HomeRead;
+    /** Why the launch did not open the home, for the door to draw. */
+    failure: Extract<Attempt, { ok: false }> | null;
     /** A socket is open, whether or not its first read has come back. */
     connected: boolean;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
@@ -26,7 +29,7 @@
 </script>
 
 {#if route.name === 'connect'}
-  <Connect {settings} {onconnect} />
+  <Connect {settings} initialAddress={address} initialFailure={failure} {onconnect} />
 {:else if route.name === 'home'}
   {#if home.wire}
     <Home wire={home.wire} {address} mark={settings.mark} />
@@ -46,7 +49,7 @@
     <!-- No server has answered, and the app's only input is its URL: the
          connect screen stays rather than a page falling back to bundled
          data. -->
-    <Connect {settings} {onconnect} />
+    <Connect {settings} initialAddress={address} initialFailure={failure} {onconnect} />
   {/if}
 {:else if route.name === 'fixture' && import.meta.env.DEV}
   <!-- Behind the same guard as the loader: the connect screen stays the front

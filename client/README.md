@@ -113,10 +113,20 @@ Two more ride the home row and no page in this slice draws them: `crons`,
 which is the inspector's schedules section, and `chip`, which is the
 account a row binds. Both belong to pages that do not exist yet.
 
-## One URL is two pages until the store lands
+## Where a cold load lands
 
-`/` is the home, and the app opens on `/connect` and rewrites the URL to
-match, so a cold load of `/` lands on the door. The not-found page's own
-link points at `/`, which routes to the home. So the same URL is two pages
-depending on how you arrived, and a reload flips it. The fix is to gate the
-home on a connection, which is part of wiring the pages up.
+The app opens on the address it last connected to, which it keeps in the
+webview's own store. `src/connect/remembered.ts` is the store,
+`src/connect/boot.ts` is the launch: read the address, try it, and land on
+the home when something answers. When nothing does, or when there is nothing
+remembered, the door comes back carrying the address that was tried and the
+reason it did not answer.
+
+A launch that finds nothing to open on rewrites `/` to `/connect`, which is
+the door's own URL. A launch that tried an address and failed stays at `/`,
+so a reload retries rather than being told the address was wrong. What is
+kept is the address that last WORKED - a failed one is not forgotten, since
+that is the one a person is about to fix.
+
+`/fixture` and a session deep link do not launch: they are addressed at
+something, and opening a socket behind them would change what they draw.

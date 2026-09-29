@@ -1,19 +1,29 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Brand from '../components/Brand.svelte';
   import type { ClientSettings } from '../wire/types';
   import { DEFAULT_ADDRESS, submitAttempt, type Attempt } from './attempt';
 
   let {
     settings,
+    initialAddress = DEFAULT_ADDRESS,
+    initialFailure = null,
     onconnect,
   }: {
     settings: ClientSettings;
+    /** What the field opens on: the remembered address, or the default. */
+    initialAddress?: string;
+    /** Why the remembered address did not open the home, drawn on the door. */
+    initialFailure?: Extract<Attempt, { ok: false }> | null;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
 
-  let address = $state(DEFAULT_ADDRESS);
+  // Seeded once, then the field's own: what the shell hands down is where the
+  // door OPENS, not something it keeps following.
+  let address = $state(untrack(() => initialAddress));
   let busy = $state(false);
-  let failure = $state<Extract<Attempt, { ok: false }> | null>(null);
+  let failure = $state<Extract<Attempt, { ok: false }> | null>(untrack(() => initialFailure));
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();

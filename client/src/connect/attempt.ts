@@ -11,6 +11,7 @@
 import { PROTOCOL_VERSION } from '../protocol';
 import { connect, type Connection } from '../socket';
 import { DEFAULT_WEB_PORT, type ClientSettings } from '../wire/types';
+import { rememberAddress } from './remembered';
 
 /**
  * How long a socket has to greet before the address is called unreachable.
@@ -136,15 +137,21 @@ export interface Submit {
  * **It cannot reject**, because `attempt` cannot: every path out of a
  * connection, thrown or answered, is one of these two shapes. That is what
  * lets the caller write `busy` from the answer rather than from a `finally`.
+ *
+ * The address that just took is remembered here rather than by the component,
+ * for the same reason the transition is: what the app opens on next time is
+ * the last submit that worked, and that is a fact a test can check.
  */
 export async function submitAttempt(
   address: string,
   connect: (input: string) => Promise<Attempt> = connectTo,
 ): Promise<Submit> {
   const answer = await attempt(address, connect);
-  return answer.ok
-    ? { busy: false, failure: null, connected: answer }
-    : { busy: false, failure: answer, connected: null };
+  if (answer.ok) {
+    rememberAddress(address.trim());
+    return { busy: false, failure: null, connected: answer };
+  }
+  return { busy: false, failure: answer, connected: null };
 }
 
 /**
