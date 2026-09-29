@@ -1,0 +1,1037 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; the home's worker hierarchy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@100..900&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
+<style>
+  /* ===================================================================
+     Everything from here to the "sheet" section is web-home.html's own
+     stylesheet, byte for byte: the tokens, the row, every state mark and
+     colour, and the narrow breakpoint. The drawing is the constant here
+     and the treatments below are the variable, so a direction can only
+     differ by the one block named after it.
+     =================================================================== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --r: 10px;
+    /* one line per entity: state | name | where | what | when.
+       no action column - the whole row is the target. */
+    --cols: 13px minmax(0, 22rem) minmax(0, 20rem) minmax(0, 1fr) 74px;
+    --pad: 16px;
+  }
+
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: 15.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { padding: 30px 40px 64px; }
+
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
+  .dot.off { background: var(--dim); }
+  .dot.live { background: var(--accent); box-shadow: 0 0 7px rgba(244,118,0,.6); }
+  .dot.bad { background: var(--bad); box-shadow: 0 0 7px rgba(224,104,62,.5); }
+  .dot.warn { background: var(--warn); }
+
+  /* the mark inside a row: one shape per meaning, never colour alone.
+     scoped to .row so the band keeps its plain dots. */
+  .row .dot {
+    width: 11px; height: 11px; flex: 0 0 11px;
+    border-radius: 0; background: none; box-shadow: none; opacity: 1;
+  }
+  .row.running .dot, .row.spawning .dot {
+    border-radius: 50%;
+    animation: spin 900ms linear infinite;
+  }
+  .row.running .dot { border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent); }
+  .row.spawning .dot {
+    border: 1.6px solid rgba(93,102,117,.45);
+    border-top-color: var(--muted);
+    animation-duration: 1500ms;
+  }
+  .row.idle .dot {
+    width: 7px; height: 7px; flex: 0 0 7px;
+    border-radius: 50%; background: var(--accent);
+  }
+  .row.asleep .dot, .row.never .dot {
+    width: 9px; height: 9px; flex: 0 0 9px;
+    border: 1.4px solid var(--dim); border-radius: 50%;
+  }
+  .row.never .dot { opacity: .55; }
+  .row.failed .dot {
+    width: 10px; height: 10px; flex: 0 0 10px; background: var(--bad);
+    clip-path: polygon(16% 0, 50% 34%, 84% 0, 100% 16%, 66% 50%, 100% 84%,
+                       84% 100%, 50% 66%, 16% 100%, 0 84%, 34% 50%, 0 16%);
+  }
+  .row.needs .dot, .row.auth .dot {
+    width: 11px; height: 11px; flex: 0 0 11px;
+    clip-path: polygon(50% 3%, 97% 95%, 3% 95%);
+    animation: pulse 1500ms ease-in-out infinite;
+  }
+  .row.needs .dot { background: var(--warn); }
+  .row.auth .dot { background: var(--bad); }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .row.running .dot { animation: none; border-color: var(--accent); }
+    .row.spawning .dot { animation: none; border-color: var(--muted); }
+    .row.needs .dot, .row.auth .dot { animation: none; }
+  }
+
+  /* ---------- org: a label and a hairline. no container anywhere ---------- */
+
+  .org { margin-bottom: 30px; }
+  .org > h2 {
+    display: flex; align-items: baseline; gap: 10px;
+    font-size: 12.5px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
+    color: var(--muted); padding: 0 0 8px;
+  }
+  .org > h2 .rule { flex: 1; height: 1px; background: var(--line); }
+  .org > h2 .counts {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+    text-transform: none; color: var(--dim); font-weight: 400;
+  }
+
+  .list { list-style: none; }
+  .list .node { border-top: 1px solid rgba(34,42,60,.55); }
+  .list > .node:first-child { border-top: 0; }
+
+  /* ---------- the row: one line, same for a lead and for a worker ---------- */
+
+  .row {
+    display: grid; grid-template-columns: var(--cols);
+    align-items: center; gap: 12px;
+    padding: 11px 24px 11px 2px;
+    cursor: pointer; position: relative;
+  }
+  .row:hover { background: rgba(27,33,48,.42); }
+  .row::after {
+    content: "\203A"; position: absolute; right: 6px; top: 50%;
+    transform: translateY(-50%); font-size: 15px; line-height: 1;
+    color: var(--accent); opacity: 0; transition: opacity .12s ease;
+  }
+  .row:hover::after { opacity: .75; }
+  /* a row that cannot act must not look like one that can */
+  .row.blocked { cursor: not-allowed; }
+  .row.blocked:hover { background: none; }
+  .row.blocked::after { content: none; }
+
+  .row .name {
+    display: flex; align-items: center; gap: 8px;
+    min-width: 0; font-size: 15.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row .where, .row .when {
+    font-family: var(--mono); font-size: 13.5px; color: var(--dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row .when { text-align: right; }
+  .row .where .files { color: var(--muted); }
+
+  /* what it is doing: its task when there is one, and its artifact */
+  .row .what {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    font-size: 14px; color: var(--muted);
+  }
+  .row .what .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .row .what .st {
+    font-family: var(--mono); font-size: 10.5px; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 7px; flex: none;
+  }
+  .row .what a {
+    font-family: var(--mono); font-size: 11.5px; color: var(--accent);
+    text-decoration: none; flex: 0 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row .what a:hover { text-decoration: underline; }
+
+  .row.running .name, .row.idle .name, .row.spawning .name { font-weight: 600; }
+
+  .row.asleep .name { color: var(--muted); font-weight: 400; }
+  .row.asleep .where, .row.asleep .what { opacity: .6; }
+
+  .row.never .name { color: var(--dim); font-weight: 400; }
+  .row.never .where, .row.never .what, .row.never .when { opacity: .45; }
+
+  /* finished, and you have not looked at it: the one state that answers
+     "what changed while I was away". a diamond, so it is a third shape. */
+  .row.unseen .dot {
+    width: 11px; height: 11px; flex: 0 0 11px; background: var(--ok);
+    clip-path: polygon(50% 2%, 98% 50%, 50% 98%, 2% 50%);
+  }
+  .row.unseen .what { color: var(--ok); }
+
+  .row.failed { background: rgba(224,104,62,.055); }
+  .row.failed .name { color: var(--bad); font-weight: 600; }
+  .row.failed .where, .row.failed .what { color: var(--bad); }
+  .row.failed::after { color: var(--bad); }
+
+  /* needs you: the one state that has to be impossible to miss */
+  .row.needs { background: rgba(201,161,59,.075); }
+  .row.needs .name { color: var(--warn); font-weight: 600; }
+  .row.needs .what { color: var(--warn); }
+  .row.needs::after { color: var(--warn); }
+
+  /* sign-in needed is the same family as needs-you, one step harder */
+  .row.auth { background: rgba(224,104,62,.06); }
+  .row.auth .name { color: var(--bad); font-weight: 600; }
+  .row.auth .what { color: var(--bad); }
+  .row.auth::after { color: var(--bad); }
+
+  /* hierarchy: an indent and nothing else. every other column stays put. */
+  .children { list-style: none; }
+  .children .row .name { padding-left: 22px; }
+
+  .note {
+    font-family: var(--mono); font-size: 11.5px; color: var(--bad);
+    padding: 0 var(--pad) 9px 30px;
+  }
+  .note.dim { color: var(--dim); }
+  .children .note { padding-left: 52px; }
+
+
+  /* ---------- narrow: a phone is a client too ---------- */
+
+  @media (max-width: 760px) {
+    :root { --pad: 14px; }
+    .wrap { padding: 18px 16px 56px; }
+    .row {
+      grid-template-columns: 12px minmax(0, 1fr) 62px;
+      row-gap: 3px; padding: 9px 18px 9px 2px;
+    }
+    .row .dot   { grid-column: 1; grid-row: 1; }
+    .row .name  { grid-column: 2; grid-row: 1; }
+    .row .when  { grid-column: 3; grid-row: 1; }
+    .row .where { grid-column: 2 / 4; grid-row: 2; }
+    .row .what  { grid-column: 2 / 4; grid-row: 3; }
+    .children .row .name { padding-left: 14px; }
+  }
+
+  /* ===================================================================
+     the sheet: same house as docs/mockups/web-logo-options-2.html, so a
+     direction reads the way a direction reads everywhere else in forge.
+     =================================================================== */
+
+  .sheethead h1 { font-size: 22px; font-weight: 650; letter-spacing: -.012em; }
+  .sheethead h1 em { color: var(--accent); font-style: normal; }
+  .lede { color: var(--muted); max-width: 92ch; margin-top: 9px; font-size: 13.5px; }
+  .lede + .lede { margin-top: 8px; }
+  .lede code, .dir code { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .rules { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .rules span {
+    font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+    border: 1px solid var(--line); background: var(--s1);
+    border-radius: 999px; padding: 3px 10px;
+  }
+  .rules span b { color: var(--accent); font-weight: 600; }
+
+  .dir { border-top: 1px solid var(--line); padding: 24px 0 26px; }
+  .dir > header { margin-bottom: 14px; }
+  .dir h2 {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    font-size: 14.5px; font-weight: 650; letter-spacing: -.005em;
+  }
+  .dir h2 .n { font-family: var(--mono); font-size: 10.5px; font-weight: 400; color: var(--dim); }
+  .dir h2 .src {
+    margin-left: auto; font-family: var(--mono); font-size: 10px;
+    font-weight: 400; color: var(--dim); letter-spacing: .04em;
+  }
+  .dir .idea { color: var(--muted); font-size: 12.5px; margin-top: 6px; max-width: 96ch; }
+  .dir .measured {
+    font-family: var(--mono); font-size: 11px; color: var(--dim);
+    margin-top: 14px; max-width: 118ch; line-height: 1.75;
+  }
+  .dir .measured b { color: var(--muted); font-weight: 500; }
+  .dir .cost {
+    margin-top: 11px; padding-left: 10px; border-left: 2px solid var(--line);
+    font-size: 11.5px; color: var(--dim); max-width: 96ch;
+  }
+  .dir .cost.risk { border-left-color: var(--bad); }
+  .dir .cost.good { border-left-color: var(--ok); }
+  .stage { margin-top: 2px; }
+
+  /* ===================================================================
+     01 - the spine. The control: this is web-home-spine.html exactly, the
+     treatment already merged, drawn here so the other directions have
+     something to be better or worse than.
+     =================================================================== */
+  .d-spine { --spine-x: 8px; }
+  /* the marks of a 7px state and an 11px state share one axis only if the
+     box is centred; the rule runs on that axis. */
+  .d-spine .row .dot { justify-self: center; }
+  .d-spine .children .row .name { padding-left: 0; }
+  .d-spine .children > .node { position: relative; }
+  .d-spine .children > .node::before,
+  .d-spine .node:has(> .children) > .row::before {
+    content: ""; position: absolute; left: var(--spine-x);
+    width: 1px; background: var(--line);
+  }
+  .d-spine .children > .node::before { top: 0; bottom: 50%; }
+  .d-spine .node:has(> .children) > .row::before { top: 50%; bottom: 0; }
+  @media (max-width: 760px) {
+    .d-spine .children > .node::before { top: 0; bottom: calc(100% - 22px); }
+    .d-spine .node:has(> .children) > .row::before { top: 21px; bottom: 0; }
+  }
+
+  /* ===================================================================
+     02 - the indent. The hierarchy the drawing already ships, drawn as a
+     direction in its own right. Source: Todoist, where sub-tasks are
+     "shown through indentation" and the parent row gains no control at
+     all; Linear's nested issue list, which its changelog introduces as
+     sub-issues "as a nested hierarchy".
+     =================================================================== */
+  /* Nothing to add: the stylesheet above IS this direction. Its two values
+     are the 22px on .children .row .name and the 14px the narrow
+     breakpoint swaps in. */
+
+  /* ===================================================================
+     03 - the caret. Source: Asana, whose help says a task with subtasks
+     "will be marked with a little triangle (on the left of the task's
+     title)"; Notion, whose nested mode hangs the children off "a toggle
+     chevron on the parent's title" and whose flattened mode drops the
+     indent and keeps the toggle, so the toggle is the part doing the work;
+     ClickUp, "click the dropdown arrow to the left of the task".
+     =================================================================== */
+  .d-caret .row { padding-left: 20px; }
+  /* A chevron drawn as a rotated corner rather than a glyph: the mark for
+     the needs-you state is already a triangle, and a second triangle in
+     the same row would read as a state. */
+  .d-caret .node:has(> .children) > .row::before {
+    content: ""; position: absolute; left: 7px; top: calc(50% - 3px);
+    width: 6px; height: 6px;
+    border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
+    transform: rotate(45deg);
+  }
+  @media (max-width: 760px) {
+    /* the row is three lines here, so the caret tracks the name line
+       rather than the row's middle. */
+    .d-caret .node:has(> .children) > .row::before { top: calc(21px - 3px); }
+  }
+
+  /* ===================================================================
+     04 - the count. Source: monday.com, where the number of subitems in
+     the parent row is itself the expander, "click the number that shows
+     how many subitems are in the item"; GitHub's sub-issues, which carry
+     a completion pill reading "8 of 14 ... Issues completed".
+     =================================================================== */
+  /* The home's own status chip, which a worker row already uses for
+     "in progress", so the count is not a new object on the page. */
+  .d-count .node:has(> .children) > .row .name::after {
+    content: "3";
+    font-family: var(--mono); font-size: 10.5px; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 99px;
+    padding: 0 7px; flex: none;
+  }
+
+  /* ===================================================================
+     05 - the block. Source: GitHub's sub-issues section, measured on a
+     live public issue today: the children sit in a container under a
+     section header, and all six direct child rows measured at the same
+     left edge (x 199, padding-left 0), so nothing is indented against
+     anything; Notion's "nested in toggle", whose other mode is a flat
+     list.
+     =================================================================== */
+  .d-block .children {
+    background: var(--s1); border: 1px solid var(--line);
+    border-radius: var(--r); margin: 3px 0 12px;
+    overflow: hidden;
+  }
+  .d-block .children > .node:first-child { border-top: 0; }
+  /* the inset is what makes it a box rather than a filled band: the panel's
+     own edge is 12px left of the rows it holds. */
+  .d-block .children > .node > .row { padding-left: 12px; padding-right: 34px; }
+
+  /* ===================================================================
+     06 - the guide. Source: VS Code's tree indent guide, which is one
+     absolutely positioned .indent-guide per ancestor level, each 8px wide
+     carrying a 1px border-left, coloured tree.inactiveIndentGuidesStroke
+     (#a9a9a9) at 40% alpha, and shown on hover by default
+     (workbench.tree.renderIndentGuides: none | onHover | always). Drawn
+     from IntelliJ, whose tree hash line is a 1px stroke at #505355 in
+     dark and is OFF by default. GitHub's file tree, measured, draws no
+     guide at all.
+     =================================================================== */
+  .d-guide .children { position: relative; }
+  /* The guide occupies no column - it is an overlay in the gap, VS Code's
+     construction - so nothing else moves. It sits in the grid gap rather
+     than in the indent because our rows indent one cell of five, not a
+     whole padded slot: 2px of row padding, the 13px mark column, and half
+     the 12px gap, which is 20px when the mark column is 12px at 430. */
+  .d-guide .children::before {
+    content: ""; position: absolute; left: 21px; top: 0; bottom: 0;
+    width: 1px; background: rgba(143,152,168,.4);
+  }
+  @media (max-width: 760px) {
+    .d-guide .children::before { left: 20px; }
+  }
+
+  /* ===================================================================
+     02 - the elbow. Ved's direction, 2026-09-29: "take that spine and
+     indent it inside like tree only, just an L shape rather than just a
+     word. So it's L shape from logo, top level logo to the own row slope."
+     Then, on seeing a first pass that had removed the indent: "I am looking
+     for an L shape, like a tree shape, extend the spines lower end where the
+     logo is and move it inside through the indent so that it defines that it
+     is a worker, it belongs to, there is a parent out there."
+
+     The spine, plus one foot per child. The descent is the same rule at the
+     same place; what is added is the turn. It leaves the mark column's right
+     edge, which is where the lead's own mark ends, and crosses the indent to
+     land where the worker's own name begins - so a child hangs off an elbow
+     rather than off a line that passes it, and the foot's length is the
+     indent it crosses.
+     =================================================================== */
+  /* THE INDENT STAYS. This direction is the shipped drawing plus a foot, so
+     03's indent is inherited unchanged: a worker's name keeps its 22px at
+     1600 and its 14px at 430. The indent is not the thing being changed -
+     the foot is.
+
+     The arm is therefore not a free number. The foot crosses the indent,
+     because that span is the whole message: a foot that stops short of the
+     worker's own row says nothing, and a tree's `├── ` crosses the full
+     indent by definition - which is why GNU tree 2.3.2, eza 0.23.5 and lsd
+     1.2.0, all measured, spend 2.5 cells of line plus a cell of space per
+     level. So the arm is the grid gap plus the indent it has to cross, and
+     it lands exactly where the worker's own name begins rather than beside
+     the rule.
+
+     The corner is square because every source that can be measured says so:
+     Ant Design's `showLine` computes `border-radius: 0` on both of its
+     pseudos at a 9.6px arm, and the box-drawing glyphs themselves have zero
+     curve segments - U+251C is 7 lineTo and no curve in Menlo and in Fira
+     Code, measured from the font tables. Vuetify 4.2.2 is the one mainstream
+     tree that rounds it, at 4px, so that is the variant if the join wants to
+     be softer: one number here.
+
+     Almost nothing modern draws an elbow at all - VS Code, GitHub's file
+     tree, react-arborist, rc-tree, MUI X, Element Plus and JetBrains each
+     have a straight guide or none - so this is the terminal's form, revived
+     deliberately, and it is not to be simplified back to a straight line. */
+  .d-elbow { --spine-x: 15px; --elbow-arm: calc(12px + 22px); --elbow-r: 0px; }
+  .d-elbow .row .dot { justify-self: center; }
+  .d-elbow .children > .node { position: relative; }
+  /* the lead's half: from its own mark down to the bottom of its row, and
+     no turn, because the lead is where the shape starts. The -1px overshoot
+     is on both halves: a child's <li> carries a 1px top border and its own
+     rule starts inside it, so without the overshoot the run is cut by 1px at
+     every row separator. */
+  .d-elbow .node:has(> .children) > .row::before {
+    content: ""; position: absolute; left: var(--spine-x); top: 50%; bottom: -1px;
+    width: 1px; background: var(--line);
+  }
+
+  /* a child's half: one L, so the turn is a single corner rather than two
+     elements meeting, which is what lets it carry a radius at all. */
+  .d-elbow .children > .node::before {
+    content: ""; position: absolute; left: var(--spine-x); top: 0;
+    width: var(--elbow-arm); height: calc(50% + 0.5px);
+    border-left: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    border-bottom-left-radius: var(--elbow-r);
+  }
+  /* The descent below a child's own turn. Without it the wire stops at each
+     mark and the next child's L starts a row later, which measures as a
+     broken line between every pair of children. The last child has no next
+     sibling, so it gets no continuation and the run ends on its own corner. */
+  .d-elbow .children > .node:not(:last-child)::after {
+    content: ""; position: absolute; left: var(--spine-x); top: 50%; bottom: -1px;
+    width: 1px; background: var(--line);
+  }
+  @media (max-width: 760px) {
+    /* the mark is on the first of three lines here, so the turn tracks the
+       name line rather than the row's middle, and the mark column is 12px
+       rather than 13, which moves the descent 1px left. */
+    .d-elbow { --spine-x: 14px; --elbow-arm: calc(12px + 14px); }
+    .d-elbow .node:has(> .children) > .row::before { top: 21px; }
+    /* 21px, not the 22px the plain rule uses: this element's height carries
+       its own 1px bottom border, and it is the border's centre that has to
+       land on the mark rather than the element's bottom edge. */
+    .d-elbow .children > .node::before { height: 21px; }
+    .d-elbow .children > .node:not(:last-child)::after { top: 20.5px; }
+  }
+</style>
+</head>
+<body>
+
+<main class="wrap">
+
+  <div class="sheethead">
+    <h1>forge &middot; the home's worker hierarchy <em>directions</em></h1>
+    <p class="lede">
+      Nine rows in <code>web-home.html</code> are the same row as every other row:
+      a lead and its workers differ by nothing a person can see. The one signal
+      the drawing carries, a 22px indent on the name, went out in
+      <code>web-home-spine.html</code> and was not replaced. This sheet is the
+      question stated properly: <b>can you tell which row is the lead and which
+      are its workers, at a glance, at 1600 and at 430, without reading a word of
+      the row?</b>
+    </p>
+    <p class="lede">
+      Every direction draws the same slice, and the slice is the home's own rows
+      with the home's own stylesheet - the tokens, the five columns, the marks,
+      every state colour. Only the treatment named under each heading differs, so
+      what you are comparing is one mechanism at a time rather than seven redraws.
+      The vocabulary is taken from tools that already solve this, and each
+      heading names where its direction came from.
+    </p>
+    <div class="rules">
+      <span>same <b>row</b> in every direction</span>
+      <span>same <b>states</b> in every direction</span>
+      <span>a lead is <b>running</b>, as is one worker</span>
+      <span>no new <b>token</b></span>
+      <span>checked at <b>1600</b> and <b>430</b></span>
+      <span>nothing <b>overflows</b></span>
+    </div>
+    <p class="lede">
+      <b>01 is the control</b> and the only direction drawn without an indent: it is
+      the treatment that replaced the drawing's indent and did not replace it with
+      anything a person can see. <b>03 is the drawing</b>, the indent on its own, and
+      <b>02 is that indent plus a foot</b> - Ved's direction - drawn beside 03 on
+      purpose, so the difference between those two is the foot and nothing else.
+      <b>04 to 07 are additions to the same indent</b>, one thing each, so every
+      direction is a change you can name rather than a redraw you have to compare
+      whole.
+    </p>
+  </div>
+
+  <section class="dir d-spine">
+    <header>
+      <h2><span class="n">01</span>The spine<span class="src">control &middot; forge's own connect screen</span></h2>
+      <p class="idea">
+        A hairline in the mark column, drawn as segments that stop at each mark, so
+        the run reads as one line with beads on it and the worker rows keep every
+        column where the lead's are.
+      </p>
+    </header>
+    <div class="stage">
+      <section class="org">
+        <h2>Busytools <span class="rule"></span></h2>
+        <ul class="list">
+          <li class="node">
+            <div class="row running">
+              <span class="dot live"></span>
+              <span class="name">hub-modules</span>
+              <span class="where">main</span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+            <ul class="children">
+              <li class="node">
+                <div class="row running">
+                  <span class="dot live"></span>
+                  <span class="name">em-dash-sweep</span>
+                  <span class="where">worktree-em-dash-sweep</span>
+                  <span class="what"><span class="txt">Sweep the memory corpus for banned dashes and curly quotes</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row idle">
+                  <span class="dot live"></span>
+                  <span class="name">steward</span>
+                  <span class="where">tamilmv-header-blankq</span>
+                  <span class="what"><span class="txt">Refresh the steward charter row from the corrected file</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row needs">
+                  <span class="dot warn"></span>
+                  <span class="name">job-hunt</span>
+                  <span class="where">worktree-job-hunt</span>
+                  <span class="what"><span class="txt">rate limited; retrying at 14:05</span></span>
+                  <span class="when">4m</span>
+                </div>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </section>
+    </div>
+    <p class="measured"><b>measured, 1600</b> lead and workers share x 67 / 431 / 763 / 1462; the rule sits at x 48 and the mark centres at 48.5. The last of those four is the <code>when</code> cell's own left edge rather than a column position - it is right-aligned, so it is the one that stays put when another column narrows. <b>430</b> they share 42 / 42 / 42 / 334 and the rule is at 24 against mark centres of 24. No overflow at either width. <b>The run is dashed rather than drawn</b>: a worker's own segment measures 22.6px in a 45.3px row at 1600 and 22px in an 88.5px row at 430, so the holes between workers measure 23.63px and 67.5px, and only the lead to first-worker join meets. That is a defect in the drawing as merged rather than in the direction, filed as <b>#1281</b>, and 02 draws the same rule with every join closed.</p>
+    <p class="cost risk">
+      It reads as a rule and not as a hierarchy: at 1.4:1 against the page it is
+      faint on anything but a good display, and because it changes no column, a
+      lead's row and a worker's row are otherwise the same object.
+    </p>
+  </section>
+
+  <section class="dir d-elbow">
+    <header>
+      <h2><span class="n">02</span>The spine with a foot<span class="src">Ved's direction, 2026-09-29 &middot; Ant Design showLine &middot; GNU tree</span></h2>
+      <p class="idea">
+        Ved, looking at 01: <i>"take that spine and indent it inside like tree only,
+        just an L shape rather than just a word. So it's L shape from logo, top level
+        logo to the own row slope."</i> And, on a first pass that read "indent it
+        inside" as taking the indent away: <i>"I am looking for an L shape, like a
+        tree shape, extend the spines lower end where the logo is and move it inside
+        through the indent so that it defines that it is a worker, it belongs to,
+        there is a parent out there."</i>
+      </p>
+      <p class="idea">
+        So the indent stays exactly as the drawing ships it, and the foot crosses it.
+        The descent leaves the lead's own mark, runs down, and at each child turns
+        once and reaches the worker's own row, its length the indent it crosses. That
+        span is the message: a foot that stops short of the worker's row says nothing,
+        which is what a first pass at 9px did. A tree's <code>├── </code> crosses the
+        whole indent by definition, which is why GNU tree 2.3.2, eza and lsd all
+        spend 2.5 cells of line and a cell of space a level. The corner is square
+        because Ant Design's <code>showLine</code> computes <code>border-radius: 0</code>
+        and the box-drawing glyphs carry no curve at all.
+      </p>
+      <p class="idea">
+        <b>Worth knowing before anyone simplifies this back to a straight line:
+        almost nothing modern draws an elbow.</b> VS Code, GitHub's file tree,
+        react-arborist, rc-tree, MUI X, Element Plus and JetBrains were each checked
+        and none of them has a bend - a straight guide, or none. So this is a
+        deliberate revival of the terminal's form rather than a web convention, and
+        the arm and the square corner are the terminal's, taken from it rather than
+        chosen. It is the one direction here whose vocabulary comes from outside the
+        web.
+      </p>
+    </header>
+    <div class="stage">
+      <section class="org">
+        <h2>Busytools <span class="rule"></span></h2>
+        <ul class="list">
+          <li class="node">
+            <div class="row running">
+              <span class="dot live"></span>
+              <span class="name">hub-modules</span>
+              <span class="where">main</span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+            <ul class="children">
+              <li class="node">
+                <div class="row running">
+                  <span class="dot live"></span>
+                  <span class="name">em-dash-sweep</span>
+                  <span class="where">worktree-em-dash-sweep</span>
+                  <span class="what"><span class="txt">Sweep the memory corpus for banned dashes and curly quotes</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row idle">
+                  <span class="dot live"></span>
+                  <span class="name">steward</span>
+                  <span class="where">tamilmv-header-blankq</span>
+                  <span class="what"><span class="txt">Refresh the steward charter row from the corrected file</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row needs">
+                  <span class="dot warn"></span>
+                  <span class="name">job-hunt</span>
+                  <span class="where">worktree-job-hunt</span>
+                  <span class="what"><span class="txt">rate limited; retrying at 14:05</span></span>
+                  <span class="when">4m</span>
+                </div>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </section>
+    </div>
+    <p class="measured"><b>measured, 1600</b> the indent is inherited unchanged, so a worker's name glyph sits 22px right of its lead's, 67 against 89, and <code>where</code>, <code>what</code> and <code>when</code> stay shared at 431 / 763 / 1462, which are 03's own numbers. The foot leaves the spine at x 55 and lands at x 89, so it measures <b>34px</b>: the 12px grid gap plus the 22px indent, every pixel of it crossed and none of it spare. <b>430</b> the indent is 14px, the worker's name is at 56, and the arm is <b>26px</b>, the same 12 plus 14. The turns land on the mark centres at 0.00px at 1600 and within 0.13px at 430, on all three workers. The descent is one unbroken run from the lead's mark to the last child's mark: every join measures 0.00px, the mark boundaries overlap by half a pixel, and the last child carries no continuation so the run ends on its corner rather than through it. At 430 the row is three lines and the turn tracks the name line, which is where the mark is. No overflow at either width.</p>
+    <p class="cost good">
+      It costs no state token, and that is the argument for it: weight, colour and
+      fill are already spent on state in this slice, and the row they make loudest is
+      a worker, so a hierarchy drawn from any of them would sometimes rank a worker
+      above its lead. A foot is structure, and structure is the only channel this
+      page has left.
+    </p>
+    <p class="cost risk">
+      It inherits the rule's contrast, so at 1.4:1 the foot is as faint as the line
+      it turns from; and unlike the other directions it adds an element to every
+      child row, so a lead with many workers carries many corners.
+    </p>
+  </section>
+
+  <section class="dir d-indent">
+    <header>
+      <h2><span class="n">03</span>The indent<span class="src">Todoist &middot; Linear &middot; all four explorers measured</span></h2>
+      <p class="idea">
+        A worker's name steps right by one indent and nothing else moves. It is the
+        entire mechanism in Todoist, whose sub-tasks are shown "through
+        indentation" and whose parent row gains no control at all, and it is the
+        primary one in Linear's nested issue list and in every tree measured: 8px a
+        level in GitHub's file tree, 8 in VS Code, 13 in AppKit's outline view, 18
+        in IntelliJ's project view.
+      </p>
+    </header>
+    <div class="stage">
+      <section class="org">
+        <h2>Busytools <span class="rule"></span></h2>
+        <ul class="list">
+          <li class="node">
+            <div class="row running">
+              <span class="dot live"></span>
+              <span class="name">hub-modules</span>
+              <span class="where">main</span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+            <ul class="children">
+              <li class="node">
+                <div class="row running">
+                  <span class="dot live"></span>
+                  <span class="name">em-dash-sweep</span>
+                  <span class="where">worktree-em-dash-sweep</span>
+                  <span class="what"><span class="txt">Sweep the memory corpus for banned dashes and curly quotes</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row idle">
+                  <span class="dot live"></span>
+                  <span class="name">steward</span>
+                  <span class="where">tamilmv-header-blankq</span>
+                  <span class="what"><span class="txt">Refresh the steward charter row from the corrected file</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row needs">
+                  <span class="dot warn"></span>
+                  <span class="name">job-hunt</span>
+                  <span class="where">worktree-job-hunt</span>
+                  <span class="what"><span class="txt">rate limited; retrying at 14:05</span></span>
+                  <span class="when">4m</span>
+                </div>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </section>
+    </div>
+    <p class="measured"><b>measured, 1600</b> the whole difference is position: the worker's name sits 22px right of its lead's, 67 against 89. <b>430</b> it is 14px, 42 against 56. Nothing is drawn in either case. <code>where</code> and <code>what</code> are shared between a lead and its workers at both widths, so at 430 the signal is on one line of the row's three. No overflow.</p>
+    <p class="cost good">
+      The cheapest of the seven and the only one that spends nothing but room in one
+      cell: no glyph, no container, no gutter, and it is the mechanism four
+      unrelated tools independently arrived at.
+    </p>
+    <p class="cost risk">
+      At 430 the row wraps to three lines and only the first is the name, so a
+      worker's <code>where</code> and <code>what</code> sit directly under its
+      lead's and the signal lives on one line of three.
+    </p>
+  </section>
+
+  <section class="dir d-caret">
+    <header>
+      <h2><span class="n">04</span>The caret<span class="src">Asana &middot; Notion &middot; ClickUp</span></h2>
+      <p class="idea">
+        A disclosure control sits in the row's left gutter, drawn only on a row that
+        has children, so the caret's presence is the signal rather than the caret.
+        Asana's help calls it "a little triangle (on the left of the task's title)";
+        Notion hangs children off a toggle chevron on the parent's title, and its
+        flattened mode drops the indent and keeps the toggle, so the toggle is the
+        part carrying the meaning; ClickUp puts a dropdown arrow left of the task.
+      </p>
+    </header>
+    <div class="stage">
+      <section class="org">
+        <h2>Busytools <span class="rule"></span></h2>
+        <ul class="list">
+          <li class="node">
+            <div class="row running">
+              <span class="dot live"></span>
+              <span class="name">hub-modules</span>
+              <span class="where">main</span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+            <ul class="children">
+              <li class="node">
+                <div class="row running">
+                  <span class="dot live"></span>
+                  <span class="name">em-dash-sweep</span>
+                  <span class="where">worktree-em-dash-sweep</span>
+                  <span class="what"><span class="txt">Sweep the memory corpus for banned dashes and curly quotes</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row idle">
+                  <span class="dot live"></span>
+                  <span class="name">steward</span>
+                  <span class="where">tamilmv-header-blankq</span>
+                  <span class="what"><span class="txt">Refresh the steward charter row from the corrected file</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row needs">
+                  <span class="dot warn"></span>
+                  <span class="name">job-hunt</span>
+                  <span class="where">worktree-job-hunt</span>
+                  <span class="what"><span class="txt">rate limited; retrying at 14:05</span></span>
+                  <span class="when">4m</span>
+                </div>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </section>
+    </div>
+    <p class="measured"><b>measured, 1600</b> the lead's chevron is 6x6 at x 47 and a worker's is empty; it is drawn in <code>--muted</code>, which is 7.0:1 against the page's base ground. It costs 18px of gutter on every row, so the first three columns move right by 18 - 67 to 85, 431 to 449, 763 to 781 - and <code>what</code> gives that width up. The <code>when</code> cell is right-aligned and does not move, which is why the shift shows up as the table narrowing rather than as everything sliding. <b>430</b> the same chevron, same size, and the same three move 42 to 60. No overflow.</p>
+    <p class="cost risk">
+      It spends a gutter on every row, including the many with no children, so the
+      whole list pays for the few leads; and a caret is an affordance, so a row that
+      carries one promises that it opens.
+    </p>
+  </section>
+
+  <section class="dir d-count">
+    <header>
+      <h2><span class="n">05</span>The count<span class="src">monday.com &middot; GitHub sub-issues, measured</span></h2>
+      <p class="idea">
+        The lead's row says how many things hang off it, in the home's own status
+        chip, and the workers do not. monday.com makes that number the expander
+        itself: "click the number that shows how many subitems are in the item".
+        GitHub's sub-issues carry a completion pill reading "8 of 14 ... Issues
+        completed", measured on a live issue today.
+      </p>
+    </header>
+    <div class="stage">
+      <section class="org">
+        <h2>Busytools <span class="rule"></span></h2>
+        <ul class="list">
+          <li class="node">
+            <div class="row running">
+              <span class="dot live"></span>
+              <span class="name">hub-modules</span>
+              <span class="where">main</span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+            <ul class="children">
+              <li class="node">
+                <div class="row running">
+                  <span class="dot live"></span>
+                  <span class="name">em-dash-sweep</span>
+                  <span class="where">worktree-em-dash-sweep</span>
+                  <span class="what"><span class="txt">Sweep the memory corpus for banned dashes and curly quotes</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row idle">
+                  <span class="dot live"></span>
+                  <span class="name">steward</span>
+                  <span class="where">tamilmv-header-blankq</span>
+                  <span class="what"><span class="txt">Refresh the steward charter row from the corrected file</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row needs">
+                  <span class="dot warn"></span>
+                  <span class="name">job-hunt</span>
+                  <span class="where">worktree-job-hunt</span>
+                  <span class="what"><span class="txt">rate limited; retrying at 14:05</span></span>
+                  <span class="when">4m</span>
+                </div>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </section>
+    </div>
+    <p class="measured"><b>measured</b> no column moves at either width: a lead and its workers share 67 / 431 / 763 / 1462 at 1600 and 42 / 42 / 42 / 334 at 430, exactly as the control's rows do not. The chip is 22.3px wide, outlined in <code>--line</code> at 1.4:1 with the numeral in <code>--dim</code>, and it sits inside the name cell after the name, so a name that reaches the cell's edge ellipsises the chip away with it. No overflow.</p>
+    <p class="cost good">
+      No column moves and no new object appears: the chip is the mark a worker row
+      already draws for <code>in progress</code>.
+    </p>
+    <p class="cost risk">
+      A bare number needs learning once, and it sits inside the name cell, so a
+      project name long enough to ellipsise takes the count with it.
+    </p>
+  </section>
+
+  <section class="dir d-block">
+    <header>
+      <h2><span class="n">06</span>The block<span class="src">GitHub sub-issues, measured &middot; Notion</span></h2>
+      <p class="idea">
+        The workers sit in a panel under the lead, so the group reads as one object.
+        Measured on GitHub's sub-issues today: the children live in a container under
+        a section header, and all six direct child rows sit at the same left edge
+        with no indent between siblings at all. Notion's other setting is the flat
+        list, which turns the nesting off the same way.
+      </p>
+    </header>
+    <div class="stage">
+      <section class="org">
+        <h2>Busytools <span class="rule"></span></h2>
+        <ul class="list">
+          <li class="node">
+            <div class="row running">
+              <span class="dot live"></span>
+              <span class="name">hub-modules</span>
+              <span class="where">main</span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+            <ul class="children">
+              <li class="node">
+                <div class="row running">
+                  <span class="dot live"></span>
+                  <span class="name">em-dash-sweep</span>
+                  <span class="where">worktree-em-dash-sweep</span>
+                  <span class="what"><span class="txt">Sweep the memory corpus for banned dashes and curly quotes</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row idle">
+                  <span class="dot live"></span>
+                  <span class="name">steward</span>
+                  <span class="where">tamilmv-header-blankq</span>
+                  <span class="what"><span class="txt">Refresh the steward charter row from the corrected file</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row needs">
+                  <span class="dot warn"></span>
+                  <span class="name">job-hunt</span>
+                  <span class="where">worktree-job-hunt</span>
+                  <span class="what"><span class="txt">rate limited; retrying at 14:05</span></span>
+                  <span class="when">4m</span>
+                </div>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </section>
+    </div>
+    <p class="measured"><b>measured, 1600</b> the panel insets a worker's own row by 11px while the lead's stay put, so the lead stays leftmost: the mark column moves 42 to 53 and <code>where</code> 431 to 442, but the name moves 67 to 100, which is the panel's 11px inset plus the 22px indent the name already carries. <b>430</b> the same 11px inset, so the name moves 42 to 67, the 11px plus the 14px indent. The panel is the list's full width, 1520x139.8 at 1600 and 398x269.5 at 430, drawn from <code>--s1</code> with a <code>--line</code> border at 1.4:1. No overflow.</p>
+    <p class="cost good">
+      The strongest of the seven at a glance: a filled region is visible before any
+      hairline is, and it survives the narrow reflow because it does not depend on
+      which line the name is on.
+    </p>
+    <p class="cost risk">
+      It is the first container in a list whose own rule is "no container anywhere",
+      and the panel's border and inset come out of the row.
+    </p>
+  </section>
+
+  <section class="dir d-guide">
+    <header>
+      <h2><span class="n">07</span>The guide<span class="src">VS Code &middot; IntelliJ</span></h2>
+      <p class="idea">
+        The indent, plus the rule the editors draw beside it. VS Code's guide is one
+        absolutely positioned element per ancestor level, 8px wide carrying a 1px
+        border, coloured <code>#a9a9a9</code> at 40% alpha, and shown on hover by
+        default. IntelliJ's is a 1px stroke at <code>#505355</code> in dark, and it
+        is off until you turn it on. GitHub's file tree, measured today, draws none.
+      </p>
+    </header>
+    <div class="stage">
+      <section class="org">
+        <h2>Busytools <span class="rule"></span></h2>
+        <ul class="list">
+          <li class="node">
+            <div class="row running">
+              <span class="dot live"></span>
+              <span class="name">hub-modules</span>
+              <span class="where">main</span>
+              <span class="what"></span>
+              <span class="when">now</span>
+            </div>
+            <ul class="children">
+              <li class="node">
+                <div class="row running">
+                  <span class="dot live"></span>
+                  <span class="name">em-dash-sweep</span>
+                  <span class="where">worktree-em-dash-sweep</span>
+                  <span class="what"><span class="txt">Sweep the memory corpus for banned dashes and curly quotes</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row idle">
+                  <span class="dot live"></span>
+                  <span class="name">steward</span>
+                  <span class="where">tamilmv-header-blankq</span>
+                  <span class="what"><span class="txt">Refresh the steward charter row from the corrected file</span><span class="st">in progress</span></span>
+                  <span class="when">now</span>
+                </div>
+              </li>
+              <li class="node">
+                <div class="row needs">
+                  <span class="dot warn"></span>
+                  <span class="name">job-hunt</span>
+                  <span class="where">worktree-job-hunt</span>
+                  <span class="what"><span class="txt">rate limited; retrying at 14:05</span></span>
+                  <span class="when">4m</span>
+                </div>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </section>
+    </div>
+    <p class="measured"><b>measured</b> nothing moves: a lead and its workers share 67 / 431 / 763 / 1462 at 1600 and 42 / 42 / 42 / 334 at 430. The guide is a 1px absolutely positioned overlay at x 61 and x 36, running the child block's full height, 138.8px and 268.5px, so it occupies no column. At <code>--muted</code> 40% over the base ground it is 1.96:1, which is 1.4 times the control's rule. No overflow.</p>
+    <p class="cost risk">
+      Measured against the page it is still a hairline at around 2:1, so it is
+      quiet: what the tools actually rely on here is the indent, and the guide is a
+      hint beside it rather than the answer.
+    </p>
+  </section>
+
+  <section class="dir">
+    <header>
+      <h2><span class="n">--</span>What is not drawn, and why<span class="src">measured on the control's slice</span></h2>
+      <p class="idea">
+        None of the seven reaches for weight, colour or fill, and the measurement is
+        the reason rather than a preference: in this slice those three channels
+        already belong to the state, and the row they make loudest is a worker.
+      </p>
+    </header>
+    <p class="measured"><b>measured</b> the lead <code>hub-modules</code> and two of its workers, <code>em-dash-sweep</code> and <code>steward</code>, all compute to weight 600, colour <code>--text</code> and no background, so they are the same object in all three channels. <code>job-hunt</code>, a worker, computes to <code>--warn</code> on a warning fill, which makes the loudest row in the slice a worker rather than the lead.</p>
+    <p class="cost risk">
+      A direction built on any of those three would spend a channel the page already
+      spends on state, and it would sometimes rank a worker above its lead. That is
+      why every direction here spends something the state vocabulary does not use:
+      position, structure, or an element that is present on one row and absent on
+      the other.
+    </p>
+    <p class="cost">
+      The same is true of the mark. A row's mark is its state and nothing else, so a
+      shape reserved for leads would make a lead's state unreadable - which is why
+      the caret below is drawn as a chevron and sits outside the mark column rather
+      than becoming a second mark beside it.
+    </p>
+  </section>
+
+</main>
+
+</body>
+</html>
