@@ -1,16 +1,11 @@
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
-/** What git would name this content, which is how a copy is pinned. */
-function gitBlob(content: string): string {
-  return createHash('sha1')
-    .update(`blob ${Buffer.byteLength(content)}\0${content}`)
-    .digest('hex');
-}
+/** Where the server writes the fixtures these are copies of. */
+const SERVER_FIXTURES = '../../crates/forge-server/tests/wire_fixtures';
 
 /**
  * The copy the client takes from the server, and why it is pinned.
@@ -29,25 +24,29 @@ function gitBlob(content: string): string {
  */
 describe('the salvage copies', () => {
   /**
-   * The hashes live in `wire/README.md` rather than here, so a re-sync has
-   * one home. The count guard is deliberate: a refactor of that sentence
-   * would leave this test asserting nothing at all.
+   * **The comparison is against the file the SERVER writes, and that is the
+   * whole point of it.** It used to compare each copy against a hash written
+   * in `wire/README.md`, so a wire reshaped on the server and not re-synced
+   * here left the suite green: the copy and the hash it was checked against
+   * both still said the old shape, and nothing in the client ever read
+   * `crates/forge-server/tests/wire_fixtures/` at all. A pin that has to be
+   * updated by hand cannot catch a copy that was not.
+   *
+   * The names are read from the server's directory rather than listed here, so
+   * a fixture the server starts writing is covered the day it lands.
    */
   it("ships the server's own fixtures, byte for byte", () => {
-    const pinned = Object.fromEntries(
-      [...read('./wire/README.md').matchAll(/`([a-z]+\.json)` is blob `([0-9a-f]{40})`/g)].map(
-        (match) => [match[1] as string, match[2] as string],
-      ),
-    );
-    expect(Object.keys(pinned).sort(), 'wire/README.md records no pinned hashes').toEqual([
-      'home.json',
-      'session.json',
-      'usage.json',
-    ]);
+    const names = readdirSync(new URL(SERVER_FIXTURES, import.meta.url))
+      .filter((name) => name.endsWith('.json'))
+      .sort();
 
-    for (const [name, hash] of Object.entries(pinned)) {
-      expect(gitBlob(read(`./dev/fixtures/${name}`)), `${name} is not the copy it claims`).toBe(
-        hash,
+    // A control: a directory that could not be read would make the loop below
+    // pass for ever, which is a green that means the test is broken.
+    expect(names, 'the server writes no fixture to compare against').not.toHaveLength(0);
+
+    for (const name of names) {
+      expect(read(`./dev/fixtures/${name}`), `${name} is not the copy the server writes`).toBe(
+        read(`${SERVER_FIXTURES}/${name}`),
       );
     }
   });
@@ -60,7 +59,8 @@ describe('the salvage copies', () => {
    *
    * A value that drifts here is a token the server and the client disagree
    * about, which shows up as one surface drawing a different colour rather
-   * than as a failure - the reason the sheet's copy is pinned too.
+   * than as a failure - the same two-copies problem the fixtures have, and
+   * the same reason they are pinned.
    */
   it('resolves the same palette the server does', () => {
     // The key carries a digit (`--s1`), so the character class does too.

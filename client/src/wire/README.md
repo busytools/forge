@@ -23,9 +23,17 @@ Taken from `busytools/forge` main at
 `home.json` and `session.json` have been re-synced since that commit. What
 moved is below.
 
-The copies are byte-identical to those blobs and `salvage.test.ts` fails if
-one drifts, which is what a formatter run did once and would again: `src/dev/fixtures/*.json`
-is in `.prettierignore` for that reason.
+**The pin is `salvage.test.ts`, and it compares these files against the
+server's own** - it reads `crates/forge-server/tests/wire_fixtures/` directly,
+so a fixture the server reshapes and this side does not re-sync fails the
+suite. The blobs above are the provenance rather than the check: a hash written
+down beside a copy goes on matching when both are stale, which is what the
+earlier form of the pin did, and a wire change on the server passed it
+unnoticed.
+
+The copies are byte-identical to those blobs, which is what a formatter run
+would falsify: `src/dev/fixtures/*.json` is in `.prettierignore` for that
+reason.
 
 ## What moved since the first copy
 
