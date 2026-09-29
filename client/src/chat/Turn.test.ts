@@ -65,6 +65,27 @@ describe('one turn, as the page draws it', () => {
     expect(body).toContain('just check');
   });
 
+  it('draws the runs the fold cut, rather than regrouping what it holds', () => {
+    // A question splits a run, so this turn holds TWO groups with a card
+    // between them. A component that grouped its own rows instead of drawing
+    // the fold's would merge them into one - and every other test here passes
+    // either way, which is what makes this the one that pins it.
+    const body = draw(
+      said([
+        use('c1', 'Read', { file_path: 'a.rs' }),
+        use('q1', 'AskUserQuestion', {
+          questions: [{ question: 'Which one?', options: [{ label: 'a' }] }],
+        }),
+        use('c2', 'Read', { file_path: 'b.rs' }),
+      ]),
+    );
+
+    const groups = body.match(/<details class="kind"/g) ?? [];
+    expect(groups, 'two runs, so two groups').toHaveLength(2);
+    expect(body).toContain('<div class="card">');
+    expect(body, 'and the first run keeps its own one call').toContain('1 tool call');
+  });
+
   it('draws a search hit as a location and the line beneath it', () => {
     // Two elements. As one run with a newline character in it the pair drew as
     // a single line with the path run into the matched text, because nothing
