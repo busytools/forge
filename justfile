@@ -173,6 +173,11 @@ client-test:
 # `beforeBuildCommand` runs too, and the identifier and the icons are checked.
 # `--locked` stops it rewriting the tracked `Cargo.lock` on a manifest edit.
 #
+# `--ci` is passed explicitly because the CLI reads `CI` from the environment as
+# this same boolean flag, and a `CI` holding anything but `true` or `false` -
+# `0` is the common one, and forge's own sessions carry it - is rejected before
+# the build starts.
+#
 # Not a step in `check`, because the webview compile is minutes and forge runs
 # every worker in its own worktree, so it would charge each Rust-only change for
 # a crate it never touched. A cost choice rather than an impossibility: CI
@@ -181,7 +186,7 @@ client-test:
 #
 # Run before handing over a change under client/src-tauri/.
 client-tauri-check:
-    npm --prefix client run tauri -- build -- --locked
+    npm --prefix client run tauri -- build --ci -- --locked
 
 # Compile the feature configurations nothing else builds.
 check-feature-configs:
