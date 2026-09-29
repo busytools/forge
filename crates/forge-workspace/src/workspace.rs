@@ -2528,6 +2528,7 @@ impl Workspace {
                 Ok(listener) => {
                     *workspace.gateway_url.lock() = Some(listener.local_url());
                     workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
+                    workspace.announce_accounts_changed();
                     tracing::info!(
                         target: "forge_workspace::workspace",
                         port,
@@ -2539,6 +2540,7 @@ impl Workspace {
                 }
                 Err(error) => {
                     *workspace.gateway_bind_error.lock() = Some(error.to_string());
+                    workspace.announce_accounts_changed();
                     tracing::error!(
                         target: "forge_workspace::workspace",
                         error = %error,
@@ -2634,6 +2636,11 @@ impl Workspace {
                         forge_gateway::UsageFetchStatus::Other,
                         None,
                     );
+                    // This arm writes the pool too: `set_last_error` moves
+                    // `last_error` and the re-probe instant, both of which
+                    // cross on the account row. A pass whose only write is
+                    // this one would otherwise announce nothing.
+                    self.announce_accounts_changed();
                     tracing::debug!(
                         target: "forge_workspace::account",
                         account = %key.0,
@@ -2656,6 +2663,7 @@ impl Workspace {
                         _ => None,
                     };
                     self.accounts.set_last_error(&key, status, retry_after);
+                    self.announce_accounts_changed();
                     // Branch the log message by error class so anyone
                     // reading triage logs gets the right framing.
                     // The previous shape said "persistent failures
@@ -2760,6 +2768,7 @@ impl Workspace {
                 "Bailed -> Ready on a clean usage poll; the walk serves it for new sessions",
             );
         }
+        self.announce_accounts_changed();
     }
 
     /// Read the cached usage snapshot for an account by display
@@ -3213,6 +3222,16 @@ impl Workspace {
     /// `FatalError` from the App-level handlers.
     pub(crate) fn update_tx(&self) -> &UpdateFanout {
         &self.update_tx
+    }
+
+    /// Tell every view the account pool moved.
+    ///
+    /// Called from the writes that move it - a boot probe settling, the usage
+    /// poller landing or failing, and the listener binding - because none of
+    /// them belongs to a seat and the pool's state is a snapshot field with no
+    /// stream of its own.
+    pub(crate) fn announce_accounts_changed(&self) {
+        let _ = self.update_tx.send(SessionUpdate::AccountsChanged);
     }
 
     /// The cwd a project lead's slot runs in: its project's path.
@@ -15174,6 +15193,30 @@ provider = "anthropic"
             workspace.gateway.bindings.binding_for("Org", "forge", "s2").is_some(),
             "a probe under the cap rotates nothing",
         );
+    }
+
+    /// A write to the pool is announced.
+    ///
+    /// The home's account card is a snapshot field with no stream of its own:
+    /// the per-account loading state, the settled flag and the listener's
+    /// readiness all move without any seat's news, so a page that read them
+    /// once drew `0 ready, probing` for the life of the connection while the
+    /// pool had been ready for minutes. Nothing else in the stream says the
+    /// pool moved, so the announcement is the only way a subscriber hears it.
+    #[tokio::test]
+    async fn a_probe_that_writes_the_pool_announces_it() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut updates = workspace.subscribe();
+        // The boot backlog, so what the assertion reads is this call's news
+        // rather than something emitted before it.
+        while updates.try_recv().is_ok() {}
+
+        workspace.record_usage_success(&AccountKey("Stargate".to_owned()), usage_at(10.0));
+
+        let announced = std::iter::from_fn(|| updates.try_recv().ok())
+            .any(|update| matches!(update, SessionUpdate::AccountsChanged));
+        assert!(announced, "a probe that wrote the pool announced nothing");
     }
 
     /// An org whose primaries cannot serve the project's model and whose

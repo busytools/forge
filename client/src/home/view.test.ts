@@ -12,6 +12,7 @@ import type {
   Task,
   TaskStatus,
   WireTime,
+  WorkState,
 } from '../wire/home';
 import { homeFrom } from '../wire/home';
 import {
@@ -131,7 +132,13 @@ function task(status: TaskStatus, subject: string): Task {
   };
 }
 
-function agent(org: string, project: string, label: string, lifecycle: Lifecycle): AgentRow {
+function agent(
+  org: string,
+  project: string,
+  label: string,
+  lifecycle: Lifecycle,
+  work: WorkState | null = null,
+): AgentRow {
   return {
     slot: { org, project, label },
     label,
@@ -143,6 +150,7 @@ function agent(org: string, project: string, label: string, lifecycle: Lifecycle
     reason: null,
     peer: { outgoing: 0, incoming: 0, delivery_failed: 0 },
     peer_failure_at: null,
+    work,
   };
 }
 
@@ -244,29 +252,64 @@ describe('the fleet the snapshot describes', () => {
   });
 
   /**
-   * The project's `work` is one read built from the LEAD's seat, so drawing it
-   * on a worker's row puts another seat's branch under the worker's name. A
-   * blank cell reads as missing; a plausible wrong branch reads as right.
+   * A row's `where` is its OWN tree, a worker's included.
+   *
+   * `ProjectWire.work` is one read built from the lead's seat, so drawing it
+   * on a worker's row puts the project's branch under the worker's name - and
+   * `main` there reads as the worker's branch rather than as something
+   * missing, which is why this page blanked those rows instead. The seat's
+   * own read crosses on the row now, so every started row draws its own and
+   * the blank is left to the seats that really have no tree.
    */
-  it('draws the tree on a lead row and not on a worker row', () => {
+  it("draws each row's own tree, a worker's included", () => {
     const wire: HomeWire = {
       ...homeWire,
       projects: [
         project('Busytools', 'forge', {
-          work: { branch: 'worktree-w1', changed: 3, gate: 'in_repo' },
+          work: { branch: 'main', changed: 3, gate: 'in_repo' },
         }),
       ],
       agents: [
-        agent('Busytools', 'forge', 'lead', 'Running'),
-        agent('Busytools', 'forge', 'w1', 'Idle'),
+        agent('Busytools', 'forge', 'lead', 'Running', {
+          branch: 'main',
+          changed: 3,
+          gate: 'in_repo',
+        }),
+        agent('Busytools', 'forge', 'w1', 'Idle', {
+          branch: 'worktree-em-dash-sweep',
+          changed: 1,
+          gate: 'in_repo',
+        }),
+        // A seat forge holds no directory for, which is a despawned worker's
+        // row rather than a missing read.
+        agent('Busytools', 'forge', 'w2', 'Idle'),
       ],
     };
 
     const entry = first(first(homeView(wire, '').orgs, 'org').projects, 'project');
-    expect(entry.lead.place.branch, "the lead's own tree is the read").toBe('worktree-w1');
-    expect(first(entry.workers, 'worker').place, "a worker drew the lead's tree").toEqual({
+    expect(entry.lead.place, "the lead's own tree is the read").toEqual({
+      branch: 'main',
+      files: '3 files',
+    });
+    expect(first(entry.workers, 'worker').place, "a worker drew its project's tree").toEqual({
+      branch: 'worktree-em-dash-sweep',
+      files: '1 file',
+    });
+    expect(entry.workers[1]?.place, 'a seat with no tree borrowed one').toEqual({
       branch: null,
       files: null,
+    });
+    expect(entry.workers[1]?.gate, 'and says nothing about a tree it does not have').toBeNull();
+
+    // A project nobody has started has no seat to read, so its row keeps the
+    // project's own read: the cell is filled for a project that has never run.
+    const dormant = first(
+      first(homeView({ ...wire, agents: [] }, '').orgs, 'org').projects,
+      'project',
+    );
+    expect(dormant.lead.place, "a dormant project's row lost the project's own read").toEqual({
+      branch: 'main',
+      files: '3 files',
     });
   });
 
@@ -381,13 +424,24 @@ describe('the cells the reshape made drawable', () => {
   });
 
   /**
+   * The fixture's one agent, with ITS row's reads varied. The tree a row
+   * draws is the seat's own, so it is varied here rather than on the project
+   * above it.
+   */
+  const withAgentRow = (over: Partial<AgentRow>): HomeWire => ({
+    ...homeWire,
+    agents: [{ ...AGENT, ...over }],
+  });
+
+  /**
    * A count of zero is not a fact about the tree, so it draws nothing. A
    * `changed` of 0 rendered as `0 files` would say a project has moved
    * nothing, which is what the cell already means when it is empty.
    */
   it('draws the branch and the count, and nothing for a count of zero', () => {
     const place = (changed: number | null) =>
-      leadOf(homeView(withRow({ work: { branch: 'main', changed, gate: 'in_repo' } }), '')).place;
+      leadOf(homeView(withAgentRow({ work: { branch: 'main', changed, gate: 'in_repo' } }), ''))
+        .place;
     expect(place(3)).toEqual({ branch: 'main', files: '3 files' });
     expect(place(1)).toEqual({ branch: 'main', files: '1 file' });
     expect(place(0)).toEqual({ branch: 'main', files: null });
@@ -433,7 +487,7 @@ describe('the cells the reshape made drawable', () => {
    */
   it('says why a row has no branch to show', () => {
     const row = leadOf(
-      homeView(withRow({ work: { branch: null, changed: null, gate: 'gone' } }), ''),
+      homeView(withAgentRow({ work: { branch: null, changed: null, gate: 'gone' } }), ''),
     );
     expect(gateLine('gone')).toBe('its working directory is not there');
     // The gate line is what the row's `what` cell falls back to, so a row
@@ -660,6 +714,20 @@ describe('what a row says', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, lifecycle: 'Resting' as never }] };
     const lead = homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead;
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
+  });
+
+  it("narrows a seat's tree gate it does not know", () => {
+    const unknown: HomeWire = {
+      ...homeWire,
+      agents: [{ ...AGENT, work: { branch: 'main', changed: 1, gate: 'unreadable' as never } }],
+    };
+    // The FIELD, not a rendering of it: `gateLine` switches over the four this
+    // client knows, and a fifth would fall out of the switch rather than draw
+    // a wrong line - which is a row whose `what` cell is silently empty.
+    expect(
+      homeFrom(unknown).agents[0]?.work?.gate,
+      'a gate this client is older than reached the row',
+    ).toBe('in_repo');
   });
 
   it('narrows a pending kind it does not know', () => {

@@ -47,6 +47,11 @@
       "peer_failure_at": {
         "secs_since_epoch": 1700000000,
         "nanos_since_epoch": 0
+      },
+      "work": {
+        "branch": null,
+        "changed": null,
+        "gate": "gone"
       }
     }
   ],

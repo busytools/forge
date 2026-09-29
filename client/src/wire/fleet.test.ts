@@ -171,6 +171,7 @@ describe('what one update asks of the fleet', () => {
     const redraws = [
       'catalog_loaded',
       'cli_version_changed',
+      'accounts_changed',
       'dictate_availability',
       { connection_failed: { key: LEAD } },
       { auth_required: { key: LEAD } },
@@ -196,12 +197,18 @@ describe('what one update asks of the fleet', () => {
    * the plugin records all arrive that way. Gating a reader on `fleetNews`
    * alone throws them away, and the page keeps what it read at subscribe for
    * the life of the connection.
+   *
+   * The account pool is the one of these that reads as a live state rather
+   * than as an event: a card that keeps `0 ready, probing` while the pool has
+   * been ready for minutes looks like a slow probe rather than like a page
+   * that stopped listening.
    */
   it('counts a slot-less update as one the home is sent', () => {
     expect(coversHome({ service_status: { state: 'ok' } })).toBe(true);
     expect(coversHome({ fatal_error: { message: 'it died' } })).toBe(true);
     expect(coversHome({ plugins_inventory_updated: {} })).toBe(true);
     expect(coversHome('catalog_loaded')).toBe(true);
+    expect(coversHome('accounts_changed')).toBe(true);
     // A turn's own words on a watched seat are neither fleet news nor
     // slot-less, so a home subscriber is never sent them.
     expect(coversHome(appended({ type: 'assistant' }))).toBe(false);

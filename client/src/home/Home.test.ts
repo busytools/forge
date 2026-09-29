@@ -16,7 +16,7 @@ const withCli = (installed: string | null, latest: string | null): HomeWire => (
 });
 
 /**
- * The fixture's one project, with its work read answering the given gate.
+ * The fixture's one agent, with its own work read answering the given gate.
  *
  * The pending column is cleared to reach it: the fixture's row waits on a
  * permission, which is first in the cell's chain, so every cell below it -
@@ -25,12 +25,16 @@ const withCli = (installed: string | null, latest: string | null): HomeWire => (
  * the server's committed blob byte for byte, so it cannot be widened here.
  */
 const withGate = (gate: Gate): HomeWire => {
-  const project = homeWire.projects[0];
-  if (project === undefined) throw new Error('the fixture holds no project');
+  // The gate a row draws is the SEAT's own read, so it is set on the agent and
+  // not on the project beside it: a page reading the project's would draw the
+  // fixture's `gone` for every gate below.
   return {
     ...homeWire,
-    agents: homeWire.agents.map((row) => ({ ...row, pending: null })),
-    projects: [{ ...project, work: { branch: null, changed: null, gate } }],
+    agents: homeWire.agents.map((row) => ({
+      ...row,
+      pending: null,
+      work: { branch: null, changed: null, gate },
+    })),
   };
 };
 
@@ -85,7 +89,7 @@ describe('the home page as it draws', () => {
     expect(draw({ wire: withGate('gone') })).toContain('its working directory is not there');
     expect(draw({ wire: withGate('not_a_repository') })).toContain('not a git repository');
     // And a readable tree draws none of it, so the line means what it says.
-    expect(draw()).not.toContain('its working directory is not there');
+    expect(draw({ wire: withGate('in_repo') })).not.toContain('its working directory is not there');
   });
 
   it('draws its shell and says so when the server holds no projects', () => {

@@ -19,7 +19,7 @@
     projectOf,
     slackSection,
   } from './view';
-  import type { SessionRecord } from './wire';
+  import { framesOf, type SessionRecord } from './wire';
 
   /**
    * The inspector: one section per subject, each collapsed to a name and a
@@ -59,7 +59,7 @@
   const mcp = $derived(record === null ? null : mcpSection(record));
   const walk = $derived(record?.processes ?? null);
   const monitors = $derived(record?.monitors ?? []);
-  const dispatches = $derived(record !== null && hasDispatches(record.conversation.messages));
+  const dispatches = $derived(record !== null && hasDispatches(framesOf(record.conversation)));
 </script>
 
 <!-- Named for the same reason the rail is: the page carries two `aside`

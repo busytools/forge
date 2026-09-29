@@ -527,18 +527,23 @@ async fn a_more_is_answered_with_a_page_of_whole_turns() {
     send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
         .await;
 
-    let ServerMessage::Page { rows, cursor, .. } = next_server(&mut socket).await else {
+    let ServerMessage::Page { turns, cursor, .. } = next_server(&mut socket).await else {
         panic!("a page is the answer to a request for more")
     };
-    assert!(!rows.is_empty(), "the newest turns come back");
+    assert!(!turns.is_empty(), "the newest turns come back");
+    assert_eq!(turns.len(), 5, "and a page is the turns the client asked for");
+    // What crosses is each turn's MESSAGES: how a run of calls inside one
+    // groups is a drawing decision, so a folded unit does not cross at all.
     assert_eq!(
-        rows[0].get("kind").and_then(serde_json::Value::as_str),
-        Some("user_turn"),
-        "a page opens on a turn the user wrote rather than inside one: {rows:?}",
+        turns[0]
+            .messages
+            .first()
+            .and_then(|frame| frame.get("type"))
+            .and_then(|kind| kind.as_str()),
+        Some("user"),
+        "a page opens on a turn the user wrote rather than inside one: {turns:?}",
     );
-    let kinds: Vec<&str> =
-        rows.iter().filter_map(|row| row.get("kind").and_then(serde_json::Value::as_str)).collect();
-    assert!(cursor.is_some(), "and it carries the handle that asks for the ones above: {kinds:?}");
+    assert!(cursor.is_some(), "and it carries the handle that asks for the ones above");
 }
 
 /// A subscription hears the updates its subject receives and no others.

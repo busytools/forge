@@ -19,7 +19,7 @@ use anyhow::Result;
 use forge_primitives::review::{ReviewSet, ReviewThread};
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
-use forge_primitives::{GotifySubscription, SessionSlot};
+use forge_primitives::{GotifySubscription, Message, SessionSlot};
 use forge_workspace::env::processes::{ProcessSnapshot, SCAN_STALENESS, scan};
 use forge_workspace::{AccountLoadingRow, GatewayOrgView, McpServers, ProjectView, WorkerEntry};
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ use serde_json::Value;
 use crate::composer::{NoticeWire, Phase, SignIn};
 use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, ConversationHistory, PendingAsk, ViewSurface};
-use crate::transcript::ChatUnit;
+use crate::transcript::TurnSpan;
 use crate::transport::TransportState;
 use crate::transport::envelope::Subject;
 use crate::work::{WorkState, work_from_scan};
@@ -70,7 +70,7 @@ impl<T> From<std::result::Result<T, String>> for ReadWire<T> {
 #[serde(rename_all = "snake_case")]
 pub struct HomeWire {
     pub projects: Vec<ProjectWire>,
-    pub agents: Vec<AgentRow>,
+    pub agents: Vec<AgentWire>,
     /// The seats whose last turn finished while no client was showing them.
     ///
     /// The terminal draws a mark per row from this, and it is the fact a
@@ -114,7 +114,9 @@ pub struct ProjectWire {
     /// **Keyed by the project's LEAD slot, which exists for every declared
     /// project** whether or not a session has opened it, and read at the
     /// project's own path - so a row's cell is filled for a project nobody
-    /// has started, which is the whole point of the cell.
+    /// has started, which is the whole point of the cell. That is also why it
+    /// is not the read a SEAT draws: a worker's own tree is `AgentWire::work`,
+    /// and this one is the project's own path whichever seat is asking.
     ///
     /// This is the shared cache the transport holds, so several clients
     /// subscribing do not multiply git invocations: the cache is what makes
@@ -138,6 +140,55 @@ pub struct ProjectWire {
     /// enough to derive it from, so a client could draw the row and not the
     /// chip it carries.
     pub chip: Option<forge_workspace::SessionChipInfo>,
+}
+
+/// One seat's row: the surface's own [`AgentRow`], plus the read that is per
+/// SEAT rather than per project.
+///
+/// A home row is a seat, and its `where` cell is that seat's own working tree.
+/// `ProjectWire::work` cannot answer it - that read is the project's own path
+/// from the lead's seat - so a worker row drew the project's branch, and on a
+/// fleet with workers in worktrees that is eight rows reading `main`.
+///
+/// The fields are spelled out rather than the row being carried whole, so a
+/// field added to [`AgentRow`] has to be carried here deliberately rather than
+/// reaching a client by accident.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentWire {
+    pub slot: SessionSlot,
+    pub label: String,
+    pub lifecycle: forge_primitives::SessionLifecycleState,
+    pub has_background_work: bool,
+    pub pending: Option<forge_workspace::PendingInteractionKind>,
+    pub pending_depth: usize,
+    pub last_activity: Option<std::time::SystemTime>,
+    pub reason: Option<String>,
+    pub peer: forge_primitives::PeerInflightStats,
+    pub peer_failure_at: Option<std::time::SystemTime>,
+    /// The seat's own tree, `None` for a seat forge holds no directory for.
+    ///
+    /// Read through the same shared cache the project rows use, so a lead's
+    /// tree is one read drawn twice rather than two reads.
+    pub work: Option<WorkState>,
+}
+
+impl From<&AgentRow> for AgentWire {
+    fn from(row: &AgentRow) -> Self {
+        Self {
+            slot: row.slot.clone(),
+            label: row.label.clone(),
+            lifecycle: row.lifecycle,
+            has_background_work: row.has_background_work,
+            pending: row.pending,
+            pending_depth: row.pending_depth,
+            last_activity: row.last_activity,
+            reason: row.reason.clone(),
+            peer: row.peer.clone(),
+            peer_failure_at: row.peer_failure_at,
+            work: None,
+        }
+    }
 }
 
 /// The plugin inventory and its update records.
@@ -394,12 +445,16 @@ impl From<&PendingAsk> for PendingAskWire {
 }
 
 /// The conversation a session's transcript replayed, and how many times it
-/// has compacted. The frames cross as the CLI's own messages, which is what
-/// the fold reads on both sides.
+/// has compacted.
+///
+/// **Its turns, not a bare frame list.** A client folds turns, so a
+/// conversation handed over as frames with no boundaries is one it cannot fold
+/// at all; carrying the same turns a page carries is what makes the whole
+/// conversation and a window of it read the same way.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ConversationWire {
-    pub messages: Vec<Value>,
+    pub turns: Vec<TurnWire>,
     pub compaction_count: u32,
 }
 
@@ -411,73 +466,162 @@ pub struct ReviewsWire {
     pub reviews: ReadWire<Vec<ReviewSet>>,
 }
 
-/// One page of history: whole turns, newest first, and the handle that asks
-/// for the ones above them.
+/// One turn, as a page carries it: the key the server named it by, and the
+/// messages it ran as.
+///
+/// **The messages, not the units.** How a run of tool calls groups inside a
+/// turn is a drawing decision, so it belongs to whoever draws; what crosses is
+/// the turn's own boundary, and that stays here because the paging contract is
+/// built on it - `more` asks for turns, the cursor is a turn, and a page that
+/// split one would leave a client stitching half a turn to the other half.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TurnWire {
+    /// `None` when nothing named the turn: the key comes from a `Result`
+    /// frame, and a conversation read from a transcript carries none.
+    pub key: Option<String>,
+    /// The frames this turn ran as, which is the same shape the session
+    /// record's `conversation` carries.
+    pub messages: Vec<Value>,
+}
+
+/// One page of history: the newest turns, in conversation order, and the
+/// handle that asks for the ones above them.
 pub struct Page {
-    pub rows: Vec<ChatUnit>,
+    pub turns: Vec<TurnWire>,
     /// `None` means there is nothing above this page, which is the one case
     /// a client stops asking.
     pub cursor: Option<String>,
 }
 
-/// Slice a folded conversation into whole turns, newest first.
+/// Where each turn opens, one entry per turn, and what names it.
 ///
-/// **A turn is a RUN of the fold's units**, so slicing on a unit count would
-/// cut a turn in half - the breakage the design exists to avoid. `UserTurn`
-/// is a safe boundary because `render_units` flushes any open tool run before
-/// it pushes one, so no `UserTurn` can fall inside a `ToolGroup`.
+/// **One message opens one turn**, so a user row carrying two blocks does not
+/// put two boundaries at one index. A cursor names a message and resolves to
+/// the first match, so two entries sharing an index would leave a walk a page
+/// of its own to hand back before it moved - an empty one, since both
+/// boundaries are that message.
+fn opens_of(spans: &[TurnSpan]) -> Vec<(usize, Option<&str>)> {
+    let mut opens: Vec<(usize, Option<&str>)> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match opens.last_mut() {
+            Some((at, key)) if *at == span.opens_at => {
+                if key.is_none() {
+                    *key = span.key.as_deref();
+                }
+            }
+            _ => opens.push((span.opens_at, span.key.as_deref())),
+        }
+    }
+    opens
+}
+
+/// The messages `from..to` as one turn, which is the shape both the session
+/// record and a page carry.
+fn turn_wire(messages: &[Message], from: usize, to: usize, key: Option<&str>) -> TurnWire {
+    TurnWire {
+        key: key.map(str::to_owned),
+        messages: messages[from..to]
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
+            .collect(),
+    }
+}
+
+/// The message range of every turn `spans` names, in conversation order, each
+/// with what names it.
+///
+/// **The one place a turn's boundaries are computed.** The session record
+/// carries every turn and a page carries a window of them, and a second
+/// computation is how the two would come to disagree about what a turn is.
+/// Ranges rather than turns, so a page renders the window it keeps instead of
+/// every turn the conversation holds.
+fn turn_ranges<'a>(
+    messages: &[Message],
+    spans: &'a [TurnSpan],
+) -> Vec<(usize, usize, Option<&'a str>)> {
+    let opens = opens_of(spans);
+    // **A conversation can hold no turn at all**, and a client folds turns, so
+    // it rides one instead of none. A session a cron fired into that nobody
+    // typed into is user rows that draw as notices, and a delivery-only one is
+    // the same; handing a client no turns would leave the whole of it
+    // unreachable, which is exactly what a page's `None` cursor stops it asking
+    // for.
+    if opens.is_empty() {
+        return if messages.is_empty() { Vec::new() } else { vec![(0, messages.len(), None)] };
+    }
+    // The conversation's opening rows - who started it, a cron fire, a delivery
+    // - come before its first turn, so the first turn carries them. Leaving
+    // them above it would put them where no walk reaches.
+    (0..opens.len())
+        .map(|at| {
+            let from = if at == 0 { 0 } else { opens[at].0 };
+            let to = opens.get(at + 1).map_or(messages.len(), |&(open, _)| open);
+            (from, to, opens[at].1)
+        })
+        .collect()
+}
+
+/// `messages` as the whole turns `spans` names, in conversation order.
+pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
+    turn_ranges(messages, spans)
+        .into_iter()
+        .map(|(from, to, key)| turn_wire(messages, from, to, key))
+        .collect()
+}
+
+/// Slice a conversation into whole turns, newest first.
+///
+/// **A turn is a RUN of the fold's units, and the fold is what says where one
+/// begins** - the span `render` reports, in message terms. Slicing on a count
+/// of messages instead would cut a turn in half, which is the breakage the
+/// design exists to avoid.
 ///
 /// **The cursor errs toward OVERLAP, never toward a gap.** A client asking
-/// for more may be handed a turn it already has - it keys its rows and drops
+/// for more may be handed a turn it already has - it keys its turns and drops
 /// the repeats - but never a HOLE, which is history it has no way to ask for
 /// again.
 ///
 /// **The cursor is a POSITION, not a name, and the reason is a fact about the
-/// read rather than a preference.** A turn's name would be its
-/// `ChatUnit::TurnReport { key }`, and the fold builds a report only from a
-/// `Message::Result` frame - while a conversation read from a transcript
-/// carries none: `SessionMessageKind` is `User | Assistant | System` with no
-/// Result kind, and the replay synthesizer never emits one. So a keyed cursor
-/// is `None` on every page of every transcript-derived conversation, and a
-/// client reading `None` as "nothing above" stops after the first page. The
-/// unit index of the page's first turn is the one thing that always names it.
-pub fn page(all: &[ChatUnit], before: Option<&str>, turns: u32) -> Page {
-    // A page of no turns ends where it began: its cursor would name the row it
+/// read rather than a preference.** A turn's name is its key, and the fold
+/// builds one only from a `Message::Result` frame - while a conversation read
+/// from a transcript carries none: `SessionMessageKind` is `User | Assistant |
+/// System` with no Result kind, and the replay synthesizer never emits one. So
+/// a keyed cursor is `None` on every page of every transcript-derived
+/// conversation, and a client reading `None` as "nothing above" stops after
+/// the first page. The message the page's first turn opens at is the one thing
+/// that always names it.
+pub fn page(messages: &[Message], spans: &[TurnSpan], before: Option<&str>, turns: u32) -> Page {
+    // A page of no turns ends where it began: its cursor would name the turn it
     // already opened at, so a client walking back would ask for the same page
     // forever.
     let turns = turns.max(1) as usize;
+    let ranges = turn_ranges(messages, spans);
+    let opens = opens_of(spans);
 
-    // Where each turn opens. Slicing on a unit count instead would cut a turn
-    // in half, because one turn is several units.
-    let opens: Vec<usize> = all
-        .iter()
-        .enumerate()
-        .filter(|(_, unit)| matches!(unit, ChatUnit::UserTurn { .. }))
-        .map(|(at, _)| at)
-        .collect();
-
-    // A cursor names the unit the previous page BEGAN at, so the page above
+    // A cursor names the message the previous page BEGAN at, so the page above
     // ends where that one started: the two meet exactly.
     let ends_at = before
         .and_then(|cursor| cursor.parse::<usize>().ok())
-        .and_then(|started| opens.iter().position(|&open| open == started))
-        .unwrap_or(opens.len());
+        .and_then(|started| opens.iter().position(|&(open, _)| open == started))
+        .unwrap_or(ranges.len());
 
+    // Only the window is rendered: building every turn to keep a few of them
+    // would walk and encode the whole conversation on a path a reader hits
+    // while scrolling.
     let first = ends_at.saturating_sub(turns);
-    // The conversation's opening rows - who started it, a cron fire, a
-    // delivery - come before its first turn, so the first page starts at the
-    // conversation rather than at that turn. Starting at `opens[0]` would
-    // leave them above every page, where no walk can reach them.
-    let start = if first == 0 { 0 } else { opens.get(first).copied().unwrap_or(0) };
-    let end = opens.get(ends_at).copied().unwrap_or(all.len());
-    let rows = all[start..end].to_vec();
+    let page_turns: Vec<TurnWire> = ranges[first..ends_at]
+        .iter()
+        .map(|&(from, to, key)| turn_wire(messages, from, to, key))
+        .collect();
 
     // `None` is the real "nothing above this page": a page already opening on
     // the conversation's first turn has nothing to walk back to, and that is
     // the one case a client stops asking.
-    let cursor = if first == 0 { None } else { opens.get(first).map(usize::to_string) };
+    let cursor =
+        if first == 0 { None } else { opens.get(first).map(|&(open, _)| open.to_string()) };
 
-    Page { rows, cursor }
+    Page { turns: page_turns, cursor }
 }
 
 /// A subject's wire form. The ONE place it is produced.
@@ -591,6 +735,19 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         });
     }
 
+    // Each seat's own tree, read at the directory `cwd_for` resolves FOR IT:
+    // the project's path for a lead, the worktree for a git worker. A seat
+    // forge holds no directory for keeps `None` rather than borrowing the
+    // project's read, which is what the cell's blank has to mean.
+    let mut agent_rows = Vec::with_capacity(agents.all().len());
+    for agent in agents.all() {
+        let work = match roster.cwd_for(&agent.slot) {
+            Some(cwd) => Some(state.work.snapshot(&agent.slot, cwd.as_path()).await),
+            None => None,
+        };
+        agent_rows.push(AgentWire { work, ..AgentWire::from(agent) });
+    }
+
     HomeWire {
         workers: roster
             .projects
@@ -650,7 +807,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         fatal_error: encode(
             surface.fatal_error().and_then(|error| serde_json::to_value(error).ok()),
         ),
-        agents: agents.all().to_vec(),
+        agents: agent_rows,
         unseen: {
             let live = crate::live::Live::lock(&state.live).snapshot();
             agents
@@ -672,20 +829,27 @@ async fn session(
     cwd: &Path,
 ) -> Result<SessionWire> {
     let header = surface.header(slot);
-    let conversation = {
+    // The read and the fold that finds its turns, in one blocking task: the
+    // fold walks the whole conversation, and running it on the reactor would
+    // put that walk in front of every other client's message.
+    let (conversation, spans) = {
         let reader = Arc::clone(&state.surface);
         let (seat, root) = (slot.clone(), cwd.to_path_buf());
-        tokio::task::spawn_blocking(move || reader.conversation(&seat, &root)).await.unwrap_or_else(
-            |error| {
-                tracing::warn!(
-                    event_name = "conversation_read_failed",
-                    %error,
-                    slot = %slot.display(),
-                    "the transcript read did not finish; the record is answered without it",
-                );
-                ConversationHistory::default()
-            },
-        )
+        tokio::task::spawn_blocking(move || {
+            let read = reader.conversation(&seat, &root);
+            let spans = crate::transcript::render(&read.messages).turns;
+            (read, spans)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                event_name = "transcript_fold_failed",
+                %error,
+                slot = %slot.display(),
+                "the transcript read did not finish; the record is answered without it",
+            );
+            (ConversationHistory::default(), Vec::new())
+        })
     };
     // ONE scan for the working tree, its branch, its count and its PR: the four
     // are then the same instant, so a branch switch between two reads cannot
@@ -711,11 +875,7 @@ async fn session(
         monitors: surface.monitors(slot),
         pending_ask: surface.pending_ask(slot).as_ref().map(PendingAskWire::from),
         conversation: ConversationWire {
-            messages: conversation
-                .messages
-                .iter()
-                .filter_map(|message| serde_json::to_value(message).ok())
-                .collect(),
+            turns: all_turns(&conversation.messages, &spans),
             compaction_count: conversation.compaction_count,
         },
         header: SessionHeaderWire {
@@ -767,8 +927,6 @@ async fn session(
 
 #[cfg(test)]
 mod tests {
-    use crate::transcript::ChatUnit;
-
     /// The transcript rows one turn leaves: what the user wrote, what the
     /// assistant said, and the result that closes it. The result carries a
     /// `uuid`, which is what the fold names the turn by - so a turn's report
@@ -781,41 +939,64 @@ mod tests {
         )
     }
 
-    /// A seat whose transcript holds `turns` finished turns, and the surface
-    /// over it.
-    fn a_surface_of_turns(turns: usize) -> (Arc<ViewSurface>, SessionSlot, PathBuf) {
+    /// The messages and turn spans a page is cut on, over a transcript of `rows`,
+    /// read the way the transport reads them.
+    fn a_conversation(rows: &[&str]) -> (Vec<Message>, Vec<TurnSpan>) {
         let dir = tempfile::tempdir().expect("tempdir").keep();
         let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
             .expect("the fleet builds");
-        let rows: Vec<String> = (0..turns).map(a_turns_rows).collect();
-        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
-        fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
-
+        fleet.seed_transcript("TestOrg", "proj", "lead", rows).expect("the transcript seeds");
         let seat = fixture_seat();
         let surface = fleet.surface();
         let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
-        (surface, seat, cwd)
+
+        let messages = surface.conversation(&seat, &cwd).messages;
+        let spans = crate::transcript::render(&messages).turns;
+        (messages, spans)
+    }
+
+    /// `turns` finished turns, as the transcript rows they are.
+    fn turns_of(turns: usize) -> Vec<String> {
+        (0..turns).map(a_turns_rows).collect()
+    }
+
+    /// The words a turn opened on, read off the messages the page carried.
+    ///
+    /// A turn's identity is its messages now, so this is what a reader checks
+    /// one by: the evidence cannot be a position, because `page` hands back
+    /// values and no value is ever `ptr::eq` to the original.
+    fn opened_on(turn: &TurnWire) -> String {
+        turn.messages
+            .iter()
+            .find_map(|frame| frame["message"]["content"][0]["text"].as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// The words every turn of a conversation opened on, oldest first.
+    fn every_turn(messages: &[Message], spans: &[TurnSpan]) -> Vec<String> {
+        page(messages, spans, None, u32::MAX).turns.iter().map(opened_on).collect()
     }
 
     /// A page of no turns ended where it began - an empty page whose cursor
-    /// named the row it had already opened at - so a client walking back asked
-    /// for it forever.
+    /// named the turn it had already opened at - so a client walking back
+    /// asked for it forever.
     #[test]
     fn a_page_of_no_turns_still_walks_backwards() {
-        let (surface, seat, cwd) = a_surface_of_turns(6);
-        let all = surface.folded_units(&seat, &cwd);
+        let rows = turns_of(6);
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (messages, spans) = a_conversation(&borrowed);
 
         // Reached the way a client reaches one, from the cursor below it.
-        let lower = page(&all, None, 2);
+        let lower = page(&messages, &spans, None, 2);
         let cursor = lower.cursor.expect("there is a page above this one");
 
-        let above = page(&all, Some(&cursor), 0);
+        let above = page(&messages, &spans, Some(&cursor), 0);
 
-        assert!(!above.rows.is_empty(), "a page carries rows rather than none at all");
+        assert!(!above.turns.is_empty(), "a page carries turns rather than none at all");
         assert_ne!(
             above.cursor.as_deref(),
             Some(cursor.as_str()),
-            "and it moves rather than naming the row it already opened at",
+            "and it moves rather than naming the turn it already opened at",
         );
     }
 
@@ -824,69 +1005,120 @@ mod tests {
     /// reaches them.
     #[test]
     fn the_rows_before_the_first_turn_ride_the_first_page() {
-        let units = [
-            ChatUnit::Notice(crate::transcript::Notice {
-                severity: crate::transcript::NoticeSeverity::Info,
-                source: "cron",
-                text: "a scheduled prompt".to_owned(),
-            }),
-            ChatUnit::UserTurn { text: "hello".to_owned() },
-        ];
+        let (messages, spans) = a_conversation(&[
+            r#"{"type":"assistant","uuid":"a0","message":{"id":"m0","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"a delivery arrived"}]}}"#,
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"},"session_id":"s"}"#,
+            r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+        ]);
 
-        let first = page(&units, None, 10);
+        let first = page(&messages, &spans, None, 10);
 
-        assert!(
-            matches!(first.rows.first(), Some(ChatUnit::Notice(_))),
-            "the opening row is on the page rather than above every page: {:?}",
-            first.rows,
+        assert_eq!(first.turns.len(), 1, "precondition: this conversation is one turn");
+        assert_eq!(
+            first.turns[0].messages.first().map(|frame| frame["uuid"].clone()),
+            Some(Value::String("a0".to_owned())),
+            "the row before the first turn rides that turn rather than sitting above every page: \
+             {:?}",
+            first.turns[0].messages,
         );
     }
 
-    /// Review Focus item 1: a page opens on a turn, and consecutive pages
-    /// meet without a gap.
+    /// A conversation whose only user rows are envelopes still pages.
+    ///
+    /// A cron fire, a delivery and a peer card all draw as notices rather than
+    /// as turns, so a session nobody typed into has no turn boundary at all.
+    /// A page that listed no turns AND said `cursor: null` would tell a client
+    /// there is nothing above a conversation it has never seen - and the walk
+    /// would stop there, with the whole of it unreachable.
+    #[test]
+    fn a_conversation_with_no_turns_still_pages() {
+        let (messages, spans) = a_conversation(&[
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"[Cron]\n\nstand-up"},"session_id":"s"}"#,
+            r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"morning"}]}}"#,
+            r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+        ]);
+
+        assert!(spans.is_empty(), "precondition: nothing in this conversation opens a turn");
+        assert!(!messages.is_empty(), "precondition: and it has content");
+
+        let page = page(&messages, &spans, None, 10);
+
+        assert_eq!(page.turns.len(), 1, "the conversation rides one turn rather than none");
+        assert_eq!(page.turns[0].messages.len(), messages.len(), "and that turn carries all of it");
+        assert_eq!(page.cursor, None, "with nothing above it, which is the one honest null");
+    }
+
+    /// A user row carrying two blocks opens one turn, not two.
+    ///
+    /// The fold draws a unit per block, so it opens two spans at one message.
+    /// A cursor names a message and resolves to the first match, so a second
+    /// boundary at that index would hand a walker a page of its own before it
+    /// moved - an empty one, since the two boundaries are the same message.
+    #[test]
+    fn a_user_row_with_two_blocks_opens_one_turn() {
+        let (messages, spans) = a_conversation(&[
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"text","text":"one"},{"type":"text","text":"two"}]},"session_id":"s"}"#,
+            r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"reply"}]}}"#,
+            r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+        ]);
+
+        assert_eq!(spans.len(), 2, "precondition: the fold opens a turn per block");
+        assert_eq!(
+            spans[0].opens_at, spans[1].opens_at,
+            "precondition: and both open at the one message that carried them",
+        );
+
+        let page = page(&messages, &spans, None, 10);
+
+        assert_eq!(page.turns.len(), 1, "one message is one turn on the page");
+        assert_eq!(
+            page.turns[0].messages.len(),
+            messages.len(),
+            "carrying the whole conversation, since both blocks open at its first row",
+        );
+        assert_eq!(page.cursor, None, "and the walk is not sent after a page that cannot move");
+    }
+
+    /// A page opens on a turn, and consecutive pages meet without a gap.
     #[test]
     fn a_page_opens_on_a_turn_and_the_pages_meet_exactly() {
-        let (surface, seat, cwd) = a_surface_of_turns(50);
-        let all = surface.folded_units(&seat, &cwd);
-        let first = page(&all, None, 10);
+        let rows = turns_of(50);
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (messages, spans) = a_conversation(&borrowed);
+        let first = page(&messages, &spans, None, 10);
 
-        // A turn opens on the row the user wrote. A page beginning anywhere
-        // else hands a client the tail of one turn and no way to tell that is
-        // what it has.
-        assert!(
-            matches!(first.rows.first(), Some(ChatUnit::UserTurn { .. })),
-            "a page opens on a turn rather than inside one",
+        // A page is the turns it was asked for, each opening where a turn
+        // does. A page beginning anywhere else hands a client the tail of one
+        // turn and no way to tell that is what it has.
+        assert_eq!(first.turns.len(), 10, "a page is the turns it was asked for");
+        // The page is the NEWEST ten, and it lists them in conversation order: a
+        // client walking back gets each page in reading order and asks for the ones
+        // above it.
+        assert_eq!(
+            opened_on(first.turns.first().expect("ten turns")),
+            "turn 40",
+            "the page reaches back exactly as far as it was asked for, no further",
+        );
+        assert_eq!(
+            opened_on(first.turns.last().expect("ten turns")),
+            "turn 49",
+            "and it ends on the newest turn of the conversation",
         );
 
         // And the next page must reach back to where this one began. It may
-        // repeat rows - the client keys them and drops the repeats - but it
-        // may never skip one, because a skipped turn is history the reader
-        // has no way to ask for again.
-        //
-        // The evidence is the turn TEXTS rather than a position: comparing
-        // positions by pointer is vacuous here, because `page` hands back
-        // clones and no clone is ever `ptr::eq` to the original - both sides
-        // read as "not found" and the comparison passes whatever happened.
-        let written = |page: &Page| -> Vec<String> {
-            page.rows
-                .iter()
-                .filter_map(|unit| match unit {
-                    ChatUnit::UserTurn { text } => Some(text.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
-        let all_turns: Vec<String> = written(&Page { rows: all.clone(), cursor: None });
-        let second = page(&all, first.cursor.as_deref(), 10);
-        let first_turns = written(&first);
-        let second_turns = written(&second);
+        // repeat turns - the client keys them and drops the repeats - but it
+        // may never skip one, because a skipped turn is history the reader has
+        // no way to ask for again.
+        let all = every_turn(&messages, &spans);
+        let second = page(&messages, &spans, first.cursor.as_deref(), 10);
+        let second_turns: Vec<String> = second.turns.iter().map(opened_on).collect();
 
         assert!(!second_turns.is_empty(), "asking for more turns returns some");
-        let above = all_turns
+        let above = all
             .iter()
-            .position(|held| *held == first_turns[0])
+            .position(|held| *held == opened_on(&first.turns[0]))
             .and_then(|at| at.checked_sub(1))
-            .map(|at| all_turns[at].clone());
+            .map(|at| all[at].clone());
         assert_eq!(
             second_turns.last().cloned(),
             above,
@@ -905,26 +1137,19 @@ mod tests {
     /// page did. `pages > 1` is the half that catches it.
     #[test]
     fn walking_back_through_history_sees_every_turn_and_ends() {
-        let (surface, seat, cwd) = a_surface_of_turns(25);
-        let all = surface.folded_units(&seat, &cwd);
-        let written = |rows: &[ChatUnit]| -> Vec<String> {
-            rows.iter()
-                .filter_map(|unit| match unit {
-                    ChatUnit::UserTurn { text } => Some(text.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
-        let every = written(&all);
+        let rows = turns_of(25);
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (messages, spans) = a_conversation(&borrowed);
+        let every = every_turn(&messages, &spans);
 
         let mut seen: Vec<String> = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pages = 0;
         loop {
-            let asked = page(&all, cursor.as_deref(), 5);
+            let asked = page(&messages, &spans, cursor.as_deref(), 5);
             pages += 1;
             assert!(pages < every.len() + 2, "the walk terminates rather than cycling");
-            seen.extend(written(&asked.rows));
+            seen.extend(asked.turns.iter().map(opened_on));
             match asked.cursor {
                 Some(next) => cursor = Some(next),
                 None => break,
@@ -1484,49 +1709,6 @@ mod tests {
         );
     }
 
-    /// The handle a client needs to identify a call. `Task` is the case that
-    /// shows why the leaf carries both: its row draws the word `Subagent`,
-    /// and that word leads back to no tool, so a client handed only the label
-    /// can draw the card and cannot say which call it is.
-    #[tokio::test]
-    async fn a_groups_leaves_carry_the_tools_name_beside_its_label() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
-        fleet
-            .seed_transcript(
-                "TestOrg",
-                "proj",
-                "lead",
-                &[
-                    r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"go"},"session_id":"s"}"#,
-                    r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"description":"investigate","prompt":"look"}}]}}"#,
-                    r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
-                ],
-            )
-            .expect("the transcript seeds");
-        let surface = fleet.surface();
-        let seat = fixture_seat();
-        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
-
-        let all = surface.folded_units(&seat, &cwd);
-        let leaf = all
-            .iter()
-            .find_map(|unit| match unit {
-                ChatUnit::ToolGroup { families, .. } => {
-                    families.iter().flat_map(|family| family.calls.iter()).next()
-                }
-                _ => None,
-            })
-            .expect("the fold produced a group with a call in it");
-
-        assert_eq!(leaf.name, "Task", "the leaf names the tool the CLI ran");
-        assert_eq!(
-            leaf.label, "Subagent",
-            "and the word its row draws is a different thing, which is why both are carried",
-        );
-    }
-
     /// A client could set a session's dictation and move the process's input,
     /// and no record carried either back: three commands crossed the wire and
     /// nothing read what they had set.
@@ -1631,6 +1813,161 @@ mod tests {
 
         assert_eq!(crons.len(), 1, "the project's own cron reached the wire: {crons:?}");
         assert_eq!(crons[0]["prompt"], "a nightly sweep");
+    }
+
+    /// A worker's row draws ITS OWN working tree, not its project's.
+    ///
+    /// The home carried one `work` per project, read at the project's own path
+    /// from the lead's seat, so every worker row under it drew that branch and
+    /// that count. On a fleet with a worker in a worktree that is a plausible
+    /// wrong answer rather than an obviously missing one - `main` on a worker's
+    /// row reads as the worker's branch - which is why the client drew no
+    /// branch at all on a worker's row rather than another seat's.
+    #[tokio::test]
+    async fn a_workers_row_carries_its_own_tree_and_not_the_projects() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        // The trees go up BEFORE the fleet does. A project's registry key is
+        // derived from its path and the derivation canonicalises, so a key
+        // taken while the directory is absent is not the key taken once it is
+        // there - and a worker registered under the first is registered under
+        // one nothing looks up again.
+        let root = dir.join("proj");
+        let worktree = root.join(".claude/worktrees/w1");
+        repo_at(&root, "main", 1);
+        repo_at(&worktree, "worktree-em-dash-sweep", 2);
+
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet.add_git_worker("TestOrg", "proj", "w1").expect("the worker is added");
+
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        let rows = encoded["agents"].as_array().expect("the home carries agent rows");
+        let row_of = |label: &str| {
+            rows.iter().find(|row| row["label"] == label).expect("the seat has a row")
+        };
+
+        // The premise, so a row with no tree at all cannot pass as a row with
+        // the right one: the worker's seat resolves to its own worktree.
+        assert_eq!(
+            state
+                .surface
+                .roster()
+                .cwd_for(&SessionSlot::worker("TestOrg", "proj", "w1"))
+                .as_deref(),
+            Some(worktree.as_path()),
+            "precondition: the worker's own directory is the worktree",
+        );
+        assert_eq!(
+            row_of("lead")["work"]["branch"],
+            "main",
+            "the lead's row draws the project's own tree: {encoded}",
+        );
+        assert_eq!(row_of("lead")["work"]["changed"], 1, "with the count that tree has: {encoded}");
+        assert_eq!(
+            row_of("w1")["work"]["branch"],
+            "worktree-em-dash-sweep",
+            "and the worker's row draws its own, which the project's read cannot answer: \
+             {encoded}",
+        );
+        assert_eq!(
+            row_of("w1")["work"]["changed"],
+            2,
+            "with the worker's own count beside it: {encoded}",
+        );
+    }
+
+    /// A seat forge holds no directory for draws NO tree, rather than the
+    /// project's.
+    ///
+    /// The row is real: a despawned worker leaves its label behind and is
+    /// drawn until the label goes, and the registry has nothing to compose a
+    /// directory from. `None` is what says so, and the tempting repair - fall
+    /// back to `ProjectWire::work` so the cell is not blank - is the bug this
+    /// whole read exists to remove, one row narrower.
+    #[tokio::test]
+    async fn a_seat_with_no_directory_borrows_no_tree() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let root = dir.join("proj");
+        repo_at(&root, "main", 1);
+
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet.add_despawned_worker("proj", "gone").expect("the label is left behind");
+
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        let rows = encoded["agents"].as_array().expect("the home carries agent rows");
+        let row_of = |label: &str| {
+            rows.iter().find(|row| row["label"] == label).expect("the seat has a row")
+        };
+
+        assert_eq!(
+            state.surface.roster().cwd_for(&SessionSlot::worker("TestOrg", "proj", "gone")),
+            None,
+            "precondition: forge holds no directory for the despawned label",
+        );
+        assert_eq!(
+            row_of("gone")["work"],
+            Value::Null,
+            "so its row draws no tree rather than borrowing the project's: {encoded}",
+        );
+        assert_eq!(
+            row_of("lead")["work"]["branch"],
+            "main",
+            "while the project's own row still draws the project's tree: {encoded}",
+        );
+    }
+
+    /// A git repository at `dir` on `branch`, with `changed` uncommitted files.
+    ///
+    /// `.claude/` is ignored so a worker's worktree, nested inside the
+    /// project, does not land in the project's own count as an untracked
+    /// directory.
+    fn repo_at(dir: &Path, branch: &str, changed: usize) {
+        std::fs::create_dir_all(dir).expect("mkdir");
+        git(dir, &["init", "-q"]);
+        git(dir, &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")]);
+        git(dir, &["config", "user.email", "t@e.com"]);
+        git(dir, &["config", "user.name", "T"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join(".gitignore"), ".claude/\n").expect("write");
+        std::fs::write(dir.join("tracked.txt"), "one\n").expect("write");
+        git(dir, &["add", ".gitignore", "tracked.txt"]);
+        git(dir, &["commit", "-qm", "init"]);
+        for file in 0..changed {
+            std::fs::write(dir.join(format!("changed-{file}.txt")), "x\n").expect("write");
+        }
+    }
+
+    /// Spawn git with the ambient repo-location variables scrubbed, as the
+    /// product's own constructor does: a fixture that skipped it would answer
+    /// about a foreign repository when the suite runs under a git hook.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
     /// A seat with nothing behind it has no tree to walk, and what it holds is

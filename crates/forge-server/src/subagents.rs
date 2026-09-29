@@ -195,11 +195,12 @@ enum Liveness {
 /// and a settled line, for work that is still running.
 ///
 /// What does end one is a failure, or the hand-back the CLI writes when the
-/// agent reports. The text is the only witness on this path: the structured
-/// `tool_use_result` that also marks one is dropped before a read sees it
-/// (the transcript scan keeps only the inner message and the synthesizer
-/// hardcodes the field to `None`), and a read that re-enabled it would
-/// change what the terminal draws on a resume.
+/// agent reports. The text is the only witness the FOLD reads, and that is a
+/// choice rather than a constraint: the structured `tool_use_result` that also
+/// marks one survives the read - the transcript scan keeps the row's
+/// `toolUseResult` and `result_statuses` carries it into `Recorded::result` -
+/// so reading the structured field instead is a change to this function rather
+/// than a change to a read.
 fn finished(answer: Option<&Recorded>) -> bool {
     const HAND_BACK: &str = "[Subagent hand-back]";
     let Some(answer) = answer else {

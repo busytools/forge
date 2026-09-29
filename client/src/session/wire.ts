@@ -99,10 +99,33 @@ export interface MonitorRecord {
   ended_at: WireTime | null;
 }
 
-/** The frames the transcript replayed, and how many times it has compacted. */
-export interface Conversation {
+/**
+ * One turn of the transcript: what names it, and the frames it ran as.
+ *
+ * `key` is `null` on every turn of a transcript-derived conversation - the name
+ * comes from a `Result` frame and a transcript holds none - so it is carried
+ * for a live session and must not be keyed on.
+ */
+export interface Turn {
+  key: string | null;
   messages: unknown[];
+}
+
+/** The transcript's whole turns, and how many times it has compacted. */
+export interface Conversation {
+  turns: Turn[];
   compaction_count: number;
+}
+
+/**
+ * Every frame a conversation's turns hold, in order.
+ *
+ * The turns are the boundary and these are the frames inside it, so a rule
+ * that reads frames - the inspector's dispatch scan - wants this rather than
+ * the turns.
+ */
+export function framesOf(conversation: Conversation): unknown[] {
+  return conversation.turns.flatMap((turn) => turn.messages);
 }
 
 /**
@@ -183,6 +206,13 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 }
 
+/** One turn, with the frames it fails to carry read as none rather than as a
+ * shape the row below would have to test for. */
+function turnFrom(value: unknown): Turn {
+  const held = record(value);
+  return { key: text(held['key']), messages: list(held['messages']) };
+}
+
 function list(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
@@ -254,7 +284,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     composer: composerFrom(held['composer']),
     pending_ask: held['pending_ask'] ?? null,
     conversation: {
-      messages: list(record(held['conversation'])['messages']),
+      turns: list(record(held['conversation'])['turns']).map(turnFrom),
       compaction_count: number(record(held['conversation'])['compaction_count']) ?? 0,
     },
     work: workFrom(held['work']),

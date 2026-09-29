@@ -1510,11 +1510,11 @@ pub(super) fn render_lines_from_paragraph(
 #[cfg(test)]
 mod tests {
     use super::{
-        MeasureBudget, RenderWindow, SCROLLBAR_MIN_THUMB_HEIGHT, ScrolledRenderData,
-        build_scrolled_render_data, chat_content_area, clamp_scroll_to_content, paint_user_gutter,
-        paragraph_scroll_offset, render, render_culled_messages, render_lines_from_paragraph,
-        render_message_range, render_scrolled, render_tail_anchored, smooth_scrollbar_geometry,
-        sync_chat_layout, update_visual_heights,
+        RenderWindow, SCROLLBAR_MIN_THUMB_HEIGHT, ScrolledRenderData, build_scrolled_render_data,
+        chat_content_area, clamp_scroll_to_content, paint_user_gutter, paragraph_scroll_offset,
+        render, render_culled_messages, render_lines_from_paragraph, render_message_range,
+        render_scrolled, render_tail_anchored, smooth_scrollbar_geometry, sync_chat_layout,
+        update_visual_heights,
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
@@ -3575,7 +3575,7 @@ mod tests {
             &spinner,
             18,
             visible_rows,
-            MeasureBudget::per_frame(visible_rows),
+            per_frame_without_the_clock(visible_rows),
         );
 
         assert_eq!(app.viewport().expect("active session").message_heights_width, 0);
@@ -3976,6 +3976,19 @@ mod tests {
             remaining_lines: usize::MAX,
             deadline: None,
         }
+    }
+
+    /// [`super::MeasureBudget::per_frame`] with its wall clock taken out: the
+    /// same count and line bounds, no deadline.
+    ///
+    /// A test that asserts WHICH messages a pass reached cannot also bound it
+    /// by time. `per_frame` allows the cold construction two milliseconds, and
+    /// how many messages fit in two milliseconds is a fact about the machine -
+    /// on CI, with the whole suite running beside it, a different one every
+    /// run. The budget a page render gets is the real one and stays as it is;
+    /// what a test needs is the bound it is asserting against.
+    fn per_frame_without_the_clock(viewport_height: usize) -> super::MeasureBudget {
+        super::MeasureBudget { deadline: None, ..super::MeasureBudget::per_frame(viewport_height) }
     }
 
     /// The deadline is the only arm that bounds a measure pass by wall clock,

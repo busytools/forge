@@ -19,10 +19,9 @@ three things sharing a repository:
   token/cost pool - is answered with that subject in full and then with
   the updates that change it (`usage` is the exception: it is a scan, and
   is answered once per subscribe), and acts through the same command bus the
-  terminal uses. The [socket page](./socket.md) is the protocol; the
-  client itself does not exist yet, and `forge-web`, which served pages
-  on that port until the socket took it, is parked until it is rebuilt
-  against the socket.
+  terminal uses. The [socket page](./socket.md) is the protocol, and the
+  client is the desktop app under `client/`; `forge-web`, which served
+  pages on that port until the socket took it, is parked.
 
 forge never calls the Anthropic API itself. It spawns `claude` and
 talks to it, so the CLI stays the thing that runs the agent loop.
