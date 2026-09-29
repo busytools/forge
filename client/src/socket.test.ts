@@ -1,5 +1,5 @@
 import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { connect, type Connection } from './socket';
 import {
@@ -37,6 +37,10 @@ async function stubServer() {
     /** Say something to every client attached. */
     send(message: ServerMessage) {
       for (const socket of sockets) socket.send(JSON.stringify(message));
+    },
+    /** One frame exactly as given, for a frame that is not JSON at all. */
+    raw(text: string) {
+      for (const socket of sockets) socket.send(text);
     },
     /** Drop every client, as a server restart or a lost network would. */
     drop() {
@@ -84,6 +88,7 @@ const opened: Connection[] = [];
 const servers: Awaited<ReturnType<typeof stubServer>>[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const conn of opened.splice(0)) conn.close();
   for (const server of servers.splice(0)) await server.close();
 });
@@ -606,5 +611,64 @@ describe('the connection', () => {
     server.send({ kind: 'error', what: 'dispatch', why: 'that seat is gone' });
     await until(() => seen.length === 1, 'the error to arrive');
     expect(seen[0]).toEqual({ kind: 'error', what: 'dispatch', why: 'that seat is gone' });
+  });
+
+  /**
+   * A frame that is not JSON is reported and dropped rather than thrown, so
+   * the frames after it still arrive. This is the one boundary the client's
+   * whole surface is narrowed at, and it is also the one place a throw would
+   * take every frame behind it.
+   */
+  it('reports a frame that does not parse and keeps reading the ones after it', async () => {
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { server, conn } = await connected();
+    const seen: ServerMessage[] = [];
+    conn.onMessage((message) => seen.push(message));
+
+    server.raw('not a frame at all');
+    server.send({ kind: 'update', update: 'catalog_loaded' });
+
+    await until(() => seen.length === 1, 'the frame after the unreadable one');
+    expect(seen[0], 'the frame after an unreadable one did not arrive').toEqual({
+      kind: 'update',
+      update: 'catalog_loaded',
+    });
+    expect(
+      warned.mock.calls.flat().join(' '),
+      'a frame that does not parse was dropped without a word',
+    ).toContain('a frame this client could not read');
+  });
+
+  /**
+   * One page's listener throwing must not silence the pages after it: a throw
+   * out of the loop leaves every listener behind it with the last frame it had
+   * and nothing saying why.
+   */
+  it('gives a frame to every listener when one of them throws', async () => {
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { server, conn } = await connected();
+    const threw: ServerMessage[] = [];
+    const behind: ServerMessage[] = [];
+    conn.onMessage((message) => {
+      threw.push(message);
+      throw new Error('this page is broken');
+    });
+    conn.onMessage((message) => behind.push(message));
+
+    server.send({ kind: 'update', update: 'catalog_loaded' });
+
+    // The throwing listener is the one that runs first, so it hears the frame
+    // in either case; waiting on it is waiting for the delivery, not for the
+    // outcome.
+    await until(() => threw.length === 1, 'the frame to be delivered');
+    await settle();
+    expect(threw).toHaveLength(1);
+    expect(behind, 'a listener that threw silenced the listener behind it').toEqual([
+      { kind: 'update', update: 'catalog_loaded' },
+    ]);
+    expect(
+      warned.mock.calls.flat().join(' '),
+      'a listener that threw was silenced without a word',
+    ).toContain('a message listener threw');
   });
 });
