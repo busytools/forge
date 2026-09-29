@@ -19,6 +19,10 @@ npm run typecheck
 `1420` is fixed rather than defaulted, because the Tauri shell points its
 `devUrl` at it.
 
+`just client-dev` runs the app itself in development: the window over that
+dev server, reloading on a frontend edit, with nothing installed and no
+bundle built.
+
 ## The desktop shell
 
 `src-tauri/` is a Tauri 2 app that wraps the built bundle. The crate is
