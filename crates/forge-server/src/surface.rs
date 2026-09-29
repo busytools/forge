@@ -22,7 +22,6 @@ pub mod workers;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::transcript::ChatUnit;
 use forge_primitives::SessionSlot;
 use forge_workspace::{Command, DispatchError, Workspace};
 
@@ -101,18 +100,6 @@ impl ViewSurface {
 
     pub fn pending_ask(&self, slot: &SessionSlot) -> Option<PendingAsk> {
         self.workspace.pending_ask(slot)
-    }
-
-    /// The conversation's units, as the server folds them.
-    ///
-    /// `conversation` hands over the wire messages and lets a view fold them;
-    /// this hands over the FOLD, which is what the terminal draws. A second
-    /// view folds for itself: how a run of tool calls groups is a drawing
-    /// decision, and the one thing that stays here is where a turn begins -
-    /// `transcript::render` reports that in message terms, which is what a
-    /// page is cut on.
-    pub fn folded_units(&self, slot: &SessionSlot, cwd_raw: &Path) -> Vec<ChatUnit> {
-        crate::transcript::render_units(&self.conversation(slot, cwd_raw).messages)
     }
 
     /// The core's own update stream. Every caller gets a receiver of its

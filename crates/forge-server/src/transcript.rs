@@ -1577,6 +1577,52 @@ mod tests {
         }])
     }
 
+    /// The handle a row needs to identify a call. `Task` is the case that
+    /// shows why the leaf carries both: its row draws the word `Subagent`,
+    /// and that word leads back to no tool, so a view handed only the label
+    /// can draw the card and cannot say which call it is.
+    ///
+    /// Read through a transcript rather than through hand-built frames, so the
+    /// fold is walked the way a page walks it.
+    #[tokio::test]
+    async fn a_groups_leaves_carry_the_tools_name_beside_its_label() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &[
+                    r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"go"},"session_id":"s"}"#,
+                    r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"description":"investigate","prompt":"look"}}]}}"#,
+                    r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+                ],
+            )
+            .expect("the transcript seeds");
+        let seat = forge_primitives::SessionSlot::lead("TestOrg", "proj");
+        let surface = fleet.surface();
+        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
+
+        let units = render_units(&surface.conversation(&seat, &cwd).messages);
+        let leaf = units
+            .iter()
+            .find_map(|unit| match unit {
+                ChatUnit::ToolGroup { families, .. } => {
+                    families.iter().flat_map(|family| family.calls.iter()).next()
+                }
+                _ => None,
+            })
+            .expect("the fold produced a group with a call in it");
+
+        assert_eq!(leaf.name, "Task", "the leaf names the tool the CLI ran");
+        assert_eq!(
+            leaf.label, "Subagent",
+            "and the word its row draws is a different thing, which is why both are carried",
+        );
+    }
+
     /// A user's mid-turn prompt reached the page. On the read path it has
     /// no other shape: the scan hoists the queued row into a user envelope
     /// so a reader can rebuild the bubble, and a fold that ignores the

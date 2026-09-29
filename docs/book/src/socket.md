@@ -233,11 +233,12 @@ thing the server keeps is the turn boundary, which is what stops a page
 handing over half a turn; where a turn BEGINS is a fact about the session,
 and how its work is drawn is not.
 
-The server's own fold is still what a terminal reads, and it is the
-reference for a client's: the suppressions it carries - a monitor draws no
-chat row, and a settled turn's status is aggregated - are per-view rules
-rather than facts about the session, so a client that draws a conversation
-makes those calls for itself.
+**The server's fold is not what a terminal reads.** The terminal groups a
+message's blocks itself, in `forge-tui`'s `ui::message::grouping`, and the
+server's fold is drawn by `forge-web`, which is parked. So a view that draws
+a conversation makes those calls for itself: a monitor draws no chat row, and
+a settled turn's status is aggregated. Both are rules about a drawing rather
+than facts about a session.
 
 ## What is not here
 
