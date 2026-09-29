@@ -43,6 +43,9 @@ pub struct ViewFacts {
     pub context: Option<forge_workspace::ContextUsage>,
     pub mcp: Option<forge_workspace::McpServers>,
     pub process_snapshot: Option<forge_workspace::env::processes::ProcessSnapshot>,
+    /// The CLI's background-task registry, as `background_tasks_changed`
+    /// would have left it.
+    pub background_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<forge_primitives::MonitorRecord>,
 }
 
@@ -398,6 +401,7 @@ impl Fleet {
         held.context_usage = facts.context;
         held.mcp_servers = facts.mcp;
         held.process_snapshot = facts.process_snapshot;
+        held.background_tasks = facts.background_tasks;
         held.monitors = facts.monitors;
     }
 

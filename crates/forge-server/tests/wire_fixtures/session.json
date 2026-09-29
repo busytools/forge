@@ -36,6 +36,14 @@
   },
   "mcp": null,
   "processes": null,
+  "background_tasks": [
+    {
+      "task_id": "t-fixture",
+      "task_type": "local_bash",
+      "description": "gh run watch",
+      "command": "gh run watch 123 --exit-status"
+    }
+  ],
   "monitors": [],
   "pending_ask": {
     "kind": "permission",

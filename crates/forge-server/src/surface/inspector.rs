@@ -121,6 +121,20 @@ impl ViewSurface {
             .domain_session_for(slot)
             .map_or_else(Vec::new, |domain| domain.lock().monitors.clone())
     }
+
+    /// The CLI's background-task registry for this seat, each entry with the
+    /// command its own card carried.
+    ///
+    /// Empty when nothing is running. A view draws the processes feed's
+    /// leading rows from this: the tasks are the CLI's own registry, held on
+    /// the session so a view that attached after the snapshot arrived still
+    /// reads them, and the command is what tells it whether the OS walk has
+    /// already adopted the process behind one.
+    pub fn background_tasks(&self, slot: &SessionSlot) -> Vec<forge_workspace::BackgroundTask> {
+        self.workspace
+            .domain_session_for(slot)
+            .map_or_else(Vec::new, |domain| domain.lock().background_tasks.clone())
+    }
 }
 
 #[cfg(test)]

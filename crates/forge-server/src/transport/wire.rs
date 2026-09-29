@@ -268,6 +268,15 @@ pub struct SessionWire {
     pub header: SessionHeaderWire,
     pub mcp: Option<McpServers>,
     pub processes: Option<ProcessSnapshot>,
+    /// The CLI's background-task registry, which the processes feed leads its
+    /// rows with.
+    ///
+    /// The tasks the OS walk cannot see for itself are the ones this exists
+    /// for: a backgrounded bash is `setsid`-detached, so it sits outside
+    /// claude's tree, and a view draws it from the registry - with the
+    /// command telling it whether the walk has already adopted the process
+    /// behind one.
+    pub background_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<MonitorRecord>,
     pub pending_ask: Option<PendingAskWire>,
     pub conversation: ConversationWire,
@@ -504,9 +513,11 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
 /// built after the terminal is gone still finds a snapshot rather than a seat
 /// nothing ever walked.
 ///
-/// No extra commands: those are the session's live backgrounded `local_bash`
-/// commands, and the roster a terminal derives them from is the terminal's own
-/// per-session state rather than a fact the core holds.
+/// The session's live backgrounded `local_bash` commands ride along, from the
+/// registry the core holds: a backgrounded bash is `setsid`-detached and sits
+/// outside claude's tree, so without them the walk misses the very processes
+/// the feed leads with - and a client, having no terminal to ask, would draw a
+/// feed the terminal never draws.
 pub(crate) async fn walk_processes_if_stale(
     surface: &ViewSurface,
     slot: &SessionSlot,
@@ -521,9 +532,10 @@ pub(crate) async fn walk_processes_if_stale(
     if !stale {
         return;
     }
+    let commands = local_bash_commands(&surface.background_tasks(slot));
     // `sysinfo`'s refresh is a CPU-bound system call rather than async I/O, so
     // it runs on the blocking pool instead of on this task.
-    match tokio::task::spawn_blocking(move || scan(pid, &[])).await {
+    match tokio::task::spawn_blocking(move || scan(pid, &commands)).await {
         Ok(snapshot) => surface.store_process_snapshot(slot, Some(snapshot)),
         Err(error) => tracing::warn!(
             event_name = "process_walk_failed",
@@ -532,6 +544,20 @@ pub(crate) async fn walk_processes_if_stale(
             "the process walk did not finish; the seat keeps the snapshot it had",
         ),
     }
+}
+
+/// The commands a walk hands the OS scan: each running `local_bash` task's own
+/// command.
+///
+/// A task whose card forge has not seen carries no command and is skipped -
+/// the terminal's own rule, where a rostered bash with no recorded command
+/// draws its registry row instead of being adopted.
+fn local_bash_commands(tasks: &[forge_workspace::BackgroundTask]) -> Vec<String> {
+    tasks
+        .iter()
+        .filter(|task| task.task_type == "local_bash")
+        .filter_map(|task| task.command.clone())
+        .collect()
 }
 
 /// The home's record, from the reads a home-scoped view makes.
@@ -675,6 +701,7 @@ async fn session(
         subagents: surface.subagents(slot),
         mcp: surface.mcp_servers(slot),
         processes: surface.processes(slot),
+        background_tasks: surface.background_tasks(slot),
         monitors: surface.monitors(slot),
         pending_ask: surface.pending_ask(slot).as_ref().map(PendingAskWire::from),
         conversation: ConversationWire {
@@ -962,6 +989,21 @@ mod tests {
             )
             .expect("the transcript seeds");
         fleet.seed_test_pending_interaction(&fixture_seat(), PendingKind::Permission);
+        // A rostered background task, so the fixture carries a populated
+        // registry rather than an empty list a reader cannot tell from an
+        // unwired field.
+        fleet.seed_view_facts(
+            &fixture_seat(),
+            ViewFacts {
+                background_tasks: vec![forge_workspace::BackgroundTask {
+                    task_id: "t-fixture".to_owned(),
+                    task_type: "local_bash".to_owned(),
+                    description: "gh run watch".to_owned(),
+                    command: Some("gh run watch 123 --exit-status".to_owned()),
+                }],
+                ..ViewFacts::default()
+            },
+        );
 
         TransportState {
             surface: fleet.surface(),
@@ -1056,6 +1098,89 @@ mod tests {
             std::fs::write(&fixture, serde_json::to_string_pretty(&encoded).expect("render"))
                 .expect("write");
         }
+    }
+
+    /// The rows the processes feed leads with: the CLI's background-task
+    /// registry, which no read answered.
+    ///
+    /// Without it a client drew the OS walk and nothing else, so a
+    /// `setsid`-detached bash - the case the registry exists for - was a row
+    /// the terminal had and the client could not: not an empty field, a
+    /// missing row.
+    #[tokio::test]
+    async fn a_session_snapshot_carries_the_background_registry() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet.seed_view_facts(
+            &fixture_seat(),
+            ViewFacts {
+                background_tasks: vec![forge_workspace::BackgroundTask {
+                    task_id: "t1".to_owned(),
+                    task_type: "local_bash".to_owned(),
+                    description: "gh run watch".to_owned(),
+                    command: Some("gh run watch 123 --exit-status".to_owned()),
+                }],
+                ..ViewFacts::default()
+            },
+        );
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+
+        assert_eq!(
+            encoded["background_tasks"][0]["task_id"], "t1",
+            "the seat's registry crosses: {encoded}"
+        );
+        assert_eq!(
+            encoded["background_tasks"][0]["description"], "gh run watch",
+            "with the line the row leads with: {encoded}"
+        );
+        assert_eq!(
+            encoded["background_tasks"][0]["command"], "gh run watch 123 --exit-status",
+            "and the command the scan adopts by: {encoded}"
+        );
+    }
+
+    /// The commands a walk hands the OS scan: the running bash tasks, whose
+    /// detached processes sit outside claude's tree, and not the agent tasks
+    /// beside them, which the walk never adopts. A task whose card forge has
+    /// not seen has no command and is left to the registry's own row.
+    #[test]
+    fn only_local_bash_tasks_hand_the_scan_a_command() {
+        let tasks = vec![
+            forge_workspace::BackgroundTask {
+                task_id: "t1".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "gh run watch".to_owned(),
+                command: Some("gh run watch 123 --exit-status".to_owned()),
+            },
+            forge_workspace::BackgroundTask {
+                task_id: "t2".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: "a sub-agent".to_owned(),
+                command: None,
+            },
+            forge_workspace::BackgroundTask {
+                task_id: "t3".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "a bash whose card forge never saw".to_owned(),
+                command: None,
+            },
+        ];
+
+        assert_eq!(
+            local_bash_commands(&tasks),
+            vec!["gh run watch 123 --exit-status".to_owned()],
+            "only a bash task's own command is handed to the walk",
+        );
     }
 
     /// The PR row the inspector leads its GIT section with: the open pull

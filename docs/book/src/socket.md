@@ -142,6 +142,7 @@ conversation, and what the composer is doing.
 | `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference. |
 | `mcp` | The session's MCP servers, their status and tools, and the failure when the read did not complete. |
 | `processes` | The last walk of the session's process tree, or `null` for a seat nothing has walked. Taken on the reads that encode a subject, so it is never older than the walk's own window. |
+| `background_tasks` | The CLI's background-task registry: what it reports running, each entry with the line the row leads with and the command its own call carried. The processes feed leads its rows with these, because a backgrounded bash is detached from claude's tree and the OS walk cannot see it for itself. |
 | `monitors` | The watches the session has running. |
 | `pending_ask` | The prompt the seat is waiting on, `null` when there is none. |
 | `reviews` | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty. |

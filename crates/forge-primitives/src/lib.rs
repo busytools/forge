@@ -47,6 +47,7 @@
 //! cross-crate `pub use` chains as a substitute.
 
 pub mod account;
+pub mod background;
 pub mod cloud;
 pub mod command;
 pub mod content;

@@ -181,6 +181,7 @@ pub mod user_interaction {
 pub mod userdata {
     pub use forge_agent::userdata::*;
 }
+pub use forge_primitives::background::BackgroundTask;
 pub use forge_primitives::permission::PermissionMode;
 pub use forge_primitives::runtime::RuntimeSessionState;
 
