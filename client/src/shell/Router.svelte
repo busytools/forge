@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Attempt } from '../connect/attempt';
+  import Composer from '../composer/Composer.svelte';
   import Connect from '../connect/Connect.svelte';
   import Fixture from '../dev/Fixture.svelte';
   import Home from '../home/Home.svelte';
@@ -62,7 +63,15 @@
   <Fixture />
 {:else if route.name === 'session'}
   {#if connection !== null && home.wire !== null}
-    <Session slot={route.slot} {connection} wire={home.wire} />
+    <!-- The box is wired in HERE and nowhere else, and the page takes two things
+         from its presence: the composer it draws, and whether this client can
+         answer the prompts that composer shows. Absent it, a session page has
+         no box at all and the seat is subscribed as an observer. -->
+    <Session slot={route.slot} {connection} wire={home.wire}>
+      {#snippet composer(props)}
+        <Composer {...props} />
+      {/snippet}
+    </Session>
   {:else if connected}
     <!-- Connected, and the fleet has not been read yet. The session page's
          rail and four of its inspector sections are the home's, so handing it
