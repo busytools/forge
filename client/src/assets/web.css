@@ -1073,3 +1073,41 @@ details.msg[open] > summary .arw { color: var(--teal); }
 details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
   overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical;
   -webkit-line-clamp: 3; overflow: hidden; }
+
+/* ---------- the chat, as the page draws it ----------
+   The conversation's own block sits higher up, taken from the crate's sheet.
+   These are what the client's chat needs on top of it, and they are here
+   rather than woven into that block so a second page editing it is not
+   editing the same lines. */
+
+/* One row of the virtualised list. Its floor is what keeps a turn still being
+   written from measuring at nothing: `virtua` re-measures a row whose height
+   changed, and a row that can start at zero makes the list jump every time a
+   frame lands. */
+.turn { min-height: 24px; }
+
+/* A search hit is a location and the line it matched, on two lines. The design
+   drew them as one run with a newline character in it, which becomes two lines
+   only where something has already made the box pre-formatted - and nothing
+   here has, so the hit drew as a single line with its own path run into its
+   text. */
+.searchhit .where { display: flex; gap: 6px; min-width: 0; }
+.searchhit .src { overflow-wrap: anywhere; }
+
+/* The grounds for a diff's added and removed lines. The sheet reads these as
+   tokens the client's theme does not carry - it drops the five code-colouring
+   tokens on purpose, and a page adding them back would be a second entry in a
+   list another page is already changing. The values are `theme.rs`'s, so the
+   diff draws the ground forge drew. */
+.dif { --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5);
+  overflow-x: auto; overflow-y: hidden; }
+/* The path above a diff is one unbroken token and often longer than a phone,
+   where it ran off the card and took the sideways scroll with it. It is a
+   location rather than code, so it wraps rather than scrolling. */
+.dif .h { overflow-wrap: anywhere; }
+
+@media (max-width: 560px) {
+  /* A diff line is as long as the line it quotes and a phone is not, so at
+     this width the file wraps rather than scrolling a gutter off the screen. */
+  .dif .ln .l { white-space: pre-wrap; }
+}

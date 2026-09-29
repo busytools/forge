@@ -3,6 +3,7 @@ import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import Turn from './chat/Turn.svelte';
 import Connect from './connect/Connect.svelte';
 import { homeWire } from './dev/fixture.data';
 import Home from './home/Home.svelte';
@@ -67,5 +68,56 @@ describe('axe over the rendered pages', () => {
       props: { settings: DEFAULT_SETTINGS, onconnect: () => {} },
     }).body;
     expect(await idsOf(html)).toEqual([]);
+  });
+
+  it('draws a turn of the conversation with no violations', async () => {
+    // A turn is where the chat's interactive elements are: a disclosure per
+    // call, with the status mark beside it. The list itself is `virtua`'s and
+    // mounts only in a browser, so what is checked here is the markup the
+    // chat owns.
+    const html = render(Turn, {
+      props: {
+        turn: {
+          key: 't1',
+          live: false,
+          messages: [
+            {
+              type: 'user',
+              message: { role: 'user', content: [{ type: 'text', text: 'run the gate' }] },
+              uuid: 'u1',
+            },
+            {
+              type: 'assistant',
+              message: {
+                id: 'm1',
+                role: 'assistant',
+                model: 'claude-opus-5',
+                content: [
+                  { type: 'text', text: 'running it now' },
+                  {
+                    type: 'tool_use',
+                    id: 'c1',
+                    name: 'Bash',
+                    input: { command: 'just check' },
+                  },
+                ],
+              },
+            },
+            {
+              type: 'user',
+              message: {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'all green' }],
+              },
+              uuid: 'r1',
+            },
+          ],
+        },
+        cwd: null,
+      },
+    }).body;
+    // Inside the landmark the session page puts it in: the column is a region
+    // of that page rather than a page, and axe reports content outside one.
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
   });
 });

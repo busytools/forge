@@ -175,20 +175,24 @@ export class Chat {
   }
 
   /**
-   * Subscribe to the seat and ask for its newest page.
+   * Listen to the seat and ask for its newest page.
    *
-   * The subscription is what makes the server send this connection the seat's
-   * frames at all, and the ask is what fills the list: the snapshot the
-   * subscription answers with carries the conversation in full, and this page
-   * draws a window of it rather than all of it.
+   * **It listens rather than subscribes.** The session page already holds the
+   * seat's subscription, and a second one would be a second full encode of
+   * the session per reconnect without a second listener's worth of news: the
+   * frames this needs - the turn's messages, and the update that says it
+   * settled - arrive on the connection either way.
+   *
+   * **And a subscription is not what fills the list.** The snapshot carries
+   * the conversation in full, which is the whole transcript; the page draws a
+   * window of it and asks `more` for what is above, so the ask is where its
+   * turns come from.
    */
   start(): () => void {
     if (this.running !== null) return this.running;
-    this.connection.subscribe({ session: this.slot });
     const stop = this.connection.onMessage((message: ServerMessage) => this.receive(message));
     this.running = () => {
       stop();
-      this.connection.unsubscribe({ session: this.slot });
       this.running = null;
     };
     this.ask(null);

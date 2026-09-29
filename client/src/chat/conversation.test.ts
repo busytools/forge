@@ -168,7 +168,10 @@ describe('the conversation the chat draws', () => {
     // toward repeating rather than toward a gap - so the repeats are dropped
     // and the ones already drawn keep the name they had.
     expect(rows.map((row) => row.key)).toEqual(['t0', 't2', 't3']);
-    expect(rows.slice(1).map((row) => row.key), 'every key survived the prepend').toEqual(held);
+    expect(
+      rows.slice(1).map((row) => row.key),
+      'every key survived the prepend',
+    ).toEqual(held);
     expect(get(chat.value).cursor, 'and a null cursor is the end of the walk').toBeNull();
   });
 
@@ -201,10 +204,10 @@ describe('the conversation the chat draws', () => {
     server.send(page([turn('t0', 'older')], null));
 
     const rows = get(chat.value).turns;
-    expect(rows.map((row) => row.key), 'the older turn went above it').toEqual([
-      't0',
-      named?.key,
-    ]);
+    expect(
+      rows.map((row) => row.key),
+      'the older turn went above it',
+    ).toEqual(['t0', named?.key]);
   });
 
   it('does not lose the walk back when a turn settles', () => {
