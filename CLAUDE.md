@@ -851,6 +851,24 @@ inspected.
     `client/src/dev/fixture.test.ts` builds the app and fails if one
     reaches the bundle.
 
+23. **Upstream before building, and a minimal core on both sides.** Ved,
+    2026-09-29: *"keep server minimal, keep the client minimal, depend on
+    upstream as much as we can, and provide as much flexibility."* This is
+    project-level rather than rule 21's web-view framing: prefer a
+    maintained dependency to hand-rolled code on every surface, held to
+    rule 21's own bar - which lives there, so edit it there rather than
+    restating it here.
+
+    **Minimal means a small surface, not a small client.** The server
+    carries what a client cannot work out for itself and nothing that
+    decides how any of it appears; the catalogue carve-out belongs to the
+    two-stacks section above, not to this rule, so a label the server
+    spells is not a violation of it. The client carries the appearance and
+    reaches upstream rather than re-deriving it. Work that widens the
+    server so a client does not have to is the trade to look at hardest,
+    because every view reads the server and a change there is one the
+    clients have to be told about.
+
 ## Claude Code worktree interop
 
 Non-guessable external conventions, recorded so forge does not reinvent
