@@ -1204,6 +1204,11 @@ mod tests {
             ],
         ));
         post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            None,
+            "the 402's rejected header rotated the binding, not a streak",
+        );
         harness.script.lock().push_back((429, vec![("retry-after".to_owned(), "30".to_owned())]));
         let fifth = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
         assert_eq!(
@@ -1215,6 +1220,29 @@ mod tests {
             harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
             None,
             "the rejection left the four 429s standing, so this one is the fifth",
+        );
+    }
+
+    /// A 429 carrying the standing `-overage-status: rejected` rotates
+    /// below the streak threshold: the header arm reads the status and a
+    /// 429 is not a success. That is newer than pre-regression, where the
+    /// 429 arm was exclusive, so it is pinned rather than fixed. The
+    /// standing-state distinction (`-overage-disabled-reason: out_of_credits`)
+    /// is the architectural option if it ever needs one.
+    #[tokio::test]
+    async fn a_429_carrying_the_standing_rejection_rotates_below_the_streak() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "OpenRouter");
+        harness.script.lock().push_back((
+            429,
+            vec![("anthropic-ratelimit-unified-overage-status".to_owned(), "rejected".to_owned())],
+        ));
+        let response = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            None,
+            "one 429 is not a streak, so the header arm is what rotated it",
         );
     }
 
