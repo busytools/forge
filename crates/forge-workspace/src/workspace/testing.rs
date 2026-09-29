@@ -684,6 +684,25 @@ impl Workspace {
         );
     }
 
+    /// [`Self::seed_test_worker_row`] for a worker that was spawned in a
+    /// git repo, so its tree is the worktree under the project rather than
+    /// the project root. The flag is what [`crate::Workspace::cwd_for_session`]
+    /// composes the directory from, so a fixture that seeds the row without
+    /// it hands the test the project's own tree.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_git_worker_row(&self, project_key: &ProjectKey, label: &str) {
+        let _ = self.record_worker_row(
+            project_key,
+            label,
+            &format!("{label}-test-id"),
+            &format!("charter for {label}"),
+            None,
+            None,
+            false,
+            true,
+        );
+    }
+
     /// Write a session row for `slot` carrying `charter`, bypassing a
     /// spawn. A test that drives `/new` needs the store to already hold
     /// the worker's mission, which is what the re-delivery reads; the

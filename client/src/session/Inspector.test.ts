@@ -86,15 +86,49 @@ describe('the inspector as it draws', () => {
       ...record,
       conversation: {
         ...record.conversation,
-        messages: [
+        turns: [
           {
-            type: 'assistant',
-            message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }] },
-            parent_tool_use_id: null,
+            key: null,
+            messages: [
+              {
+                type: 'assistant',
+                message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }] },
+                parent_tool_use_id: null,
+              },
+            ],
           },
         ],
       },
     };
+    expect(sections(draw({ record: dispatched }))).toContain('subagents');
+  });
+
+  /**
+   * The section is drawn against the conversation the READER hands it, and a
+   * test that builds the narrowed record by hand cannot see the boundary at
+   * all: the socket sends `turns`, and a reader that still looks for
+   * `messages` answers an empty conversation for every seat.
+   */
+  it('sees a dispatch across the conversation the socket actually sends', () => {
+    const dispatched = sessionFrom({
+      ...session,
+      conversation: {
+        ...session.conversation,
+        turns: [
+          {
+            key: null,
+            messages: [
+              {
+                type: 'assistant',
+                message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }] },
+                parent_tool_use_id: null,
+              },
+            ],
+          },
+        ],
+      },
+    });
+
     expect(sections(draw({ record: dispatched }))).toContain('subagents');
   });
 

@@ -96,6 +96,12 @@ impl Fleet {
     /// `(org, projects)` entry, in the order given. `config_dir` has to
     /// outlive the fleet - the workspace's store lives under it, and each
     /// project's path is a directory of its own under it.
+    ///
+    /// **The project directories are not created.** A fixture that makes one
+    /// itself moves the key `project_key` answers, because that derivation
+    /// canonicalises a path that now resolves - and everything the fixture
+    /// registered before it appeared is registered under a key nothing looks
+    /// up again. Read `project_key` before creating one.
     pub fn in_dir(config_dir: &Path, orgs: &[(&str, &[&str])]) -> Result<Self, FixtureError> {
         let forge = config_dir.join("forge");
         std::fs::create_dir_all(&forge)?;
@@ -192,6 +198,52 @@ impl Fleet {
                 spawned_by: SessionSlot::lead(org, project),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        self.workspace.register_domain_session(SessionSlot::worker(org, project, label), None);
+        Ok(())
+    }
+
+    /// A worker label with no live registry entry: the row a despawned worker
+    /// leaves behind, which is drawn until the label is despawned.
+    ///
+    /// The project's directory has to exist for the label to be offered at
+    /// all - `worker_row_can_start` asks whether the tree it would start in
+    /// is there.
+    pub fn add_despawned_worker(&self, project: &str, label: &str) -> Result<(), FixtureError> {
+        let key = self.project_key(project)?;
+        self.workspace.seed_test_worker_row(&key, label);
+        Ok(())
+    }
+
+    /// [`Self::add_worker`] for a worker spawned in a git repo, whose tree
+    /// is the worktree under the project rather than the project root.
+    ///
+    /// The two reads differ, which is the whole point: a fixture that puts
+    /// every worker in the project's own tree cannot tell a per-seat read
+    /// from a per-project one.
+    pub fn add_git_worker(
+        &self,
+        org: &str,
+        project: &str,
+        label: &str,
+    ) -> Result<(), FixtureError> {
+        let key = self.project_key(project)?;
+        self.workspace.seed_test_git_worker_row(&key, label);
+        self.workspace.insert_live_worker(
+            &key,
+            forge_workspace::WorkerEntry {
+                label: label.to_owned(),
+                charter: format!("charter for {label}"),
+                slot: SessionSlot::worker(org, project, label),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead(org, project),
+                needs_tag: false,
+                is_git_repo_at_spawn: true,
                 diagnostic: None,
                 kick: None,
             },
@@ -425,6 +477,15 @@ impl Fleet {
             .ok_or_else(|| format!("{project} is not a project this fleet declared").into())
     }
 
+    /// The registry key for `project`.
+    ///
+    /// **The key is derived from the project's PATH, and the derivation
+    /// canonicalises it**, so the same project answers a different key before
+    /// and after its directory exists. `in_dir` writes the config without
+    /// creating the project directories, so a fixture that creates one itself
+    /// gets a key that moves under it: anything registered before it appeared
+    /// is registered under a key nothing looks up again, and the failure is
+    /// silent - an empty worker list rather than an error.
     fn project_key(&self, project: &str) -> Result<ProjectKey, FixtureError> {
         self.project_view(project).map(|view| view.key)
     }
