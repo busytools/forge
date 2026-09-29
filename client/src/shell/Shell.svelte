@@ -1,6 +1,10 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   import Sprite from '../components/Sprite.svelte';
-  import { displayAddress, type Attempt } from '../connect/attempt';
+  import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
+  import { boot } from '../connect/boot';
+  import { rememberedAddress } from '../connect/remembered';
   import { watchHome, type HomeRead } from '../home/live';
   import { hrefFor, parseRoute, type Route } from '../routes';
   import type { Connection, ConnectionStatus } from '../socket';
@@ -9,20 +13,28 @@
   import Router from './Router.svelte';
 
   // The connect screen is the front door: it is the first thing a person
-  // meets, and a deep link is the one reason to open anywhere else. So `/`
-  // opens the door rather than the home, and the URL is moved with it so a
-  // reload lands in the same place.
+  // meets, and a deep link is the one reason to open anywhere else. So the
+  // root is what launches - it opens the door when there is nothing to open on
+  // - and the URL is moved to `/connect` so a reload lands in the same place.
   const opened = parseRoute(location.pathname);
   const onDoor = opened.name === 'home';
+  // Read once, at launch. The address the app opens on is also the one the
+  // door's field carries, whether or not there was one to open on.
+  const remembered = rememberedAddress();
 
   let route = $state<Route>(onDoor ? { name: 'connect' } : opened);
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
-  let address = $state('');
+  let address = $state(remembered ?? DEFAULT_ADDRESS);
   let home = $state<HomeRead>({ wire: null, refused: null });
   // Raw, so the connection is handed around as the object it is rather than
   // as a reactive proxy of it.
   let connection = $state.raw<Connection | null>(null);
   let connectionStatus = $state<ConnectionStatus>('connecting');
+  let failure = $state<Extract<Attempt, { ok: false }> | null>(null);
+  // A remembered address is a claim that something answered there once, so it
+  // is tried before there is a page to draw - a door drawn over an attempt in
+  // flight offers a second Connect over a socket already opening.
+  let booting = $state(onDoor && remembered !== null);
   /**
    * Whether a read has landed since the connection last opened.
    *
@@ -34,7 +46,31 @@
    */
   let settled = $state(false);
 
-  if (onDoor) history.replaceState(null, '', hrefFor({ name: 'connect' }));
+  onMount(() => {
+    // Nothing to open on, so the door, at the URL that names it.
+    if (onDoor && remembered === null) {
+      history.replaceState(null, '', hrefFor({ name: 'connect' }));
+    }
+    void open();
+  });
+
+  /**
+   * Open on the remembered address: the home when something answers there,
+   * and the door carrying the reason when nothing does.
+   *
+   * No `go` on the way to the home, because a launch from the root is already
+   * addressed at `/` and pushing it would put a second entry of the same page
+   * behind the reader.
+   */
+  async function open() {
+    const launched = await boot(opened, remembered);
+    booting = false;
+    failure = launched.failure;
+    if (launched.connected) take(launched.connected);
+    // `null` is a route the app was addressed at. A launch opens the socket
+    // its page reads but leaves the page itself alone.
+    if (launched.route !== null) route = launched.route;
+  }
 
   $effect(() => {
     applySettings(settings, document.documentElement);
@@ -99,14 +135,24 @@
     history.pushState(null, '', hrefFor(next));
   }
 
-  function connect(connected: Extract<Attempt, { ok: true }>) {
+  /** The connection the pages read through, and what it came with. */
+  function take(connected: Extract<Attempt, { ok: true }>) {
     // A second connect would otherwise leave the first socket open, still
     // subscribed to the home and still re-reading it, for the rest of the
     // session - and nothing would be drawing what it was keeping current.
     connection?.close();
     settings = connected.settings;
-    address = connected.url;
+    // As the person wrote it rather than the socket URL: this is what a field
+    // shows them if they come back to the door.
+    address = connected.address;
     connection = connected.connection;
+    // The reason belonged to the launch that produced it. Left standing, the
+    // door a Back lands on accuses a forge that has just answered.
+    failure = null;
+  }
+
+  function connect(connected: Extract<Attempt, { ok: true }>) {
+    take(connected);
     go({ name: 'home' });
   }
 
@@ -143,20 +189,42 @@
 <!-- Once per page: a `<use>` reference resolves against the document it is in. -->
 <Sprite />
 
-{#if connectionStatus === 'mismatched'}
-  <p class="stale" role="alert">
-    That forge speaks a protocol this client does not. The two halves have to match, so one of them
-    needs updating.
-  </p>
-{:else if stale}
-  <!-- A live region rather than a landmark: the pages below each carry the
-       page's own `main`, and a second one would be a second page. -->
-  <p class="stale" role="status">{staleLine}</p>
+{#if booting}
+  <!-- A landmark, so the one thing on screen sits inside one like every page. -->
+  <main class="wrap">
+    <p class="opening">Opening {displayAddress(address)}...</p>
+  </main>
+{:else}
+  {#if connectionStatus === 'mismatched'}
+    <p class="stale" role="alert">
+      That forge speaks a protocol this client does not. The two halves have to match, so one of
+      them needs updating.
+    </p>
+  {:else if stale}
+    <!-- A live region rather than a landmark: the pages below each carry the
+         page's own `main`, and a second one would be a second page. -->
+    <p class="stale" role="status">{staleLine}</p>
+  {/if}
+
+  <Router
+    {route}
+    {settings}
+    {address}
+    {home}
+    {failure}
+    connected={connection !== null}
+    onconnect={connect}
+  />
 {/if}
 
-<Router {route} {settings} {address} {home} connected={connection !== null} onconnect={connect} />
-
 <style>
+  .opening {
+    color: var(--muted);
+    font-size: var(--fs-base);
+    margin-top: 12vh;
+    text-align: center;
+  }
+
   /* `--s2` rather than a wash of its own: the token set is closed, and a
      notice is a raised surface. */
   .stale {

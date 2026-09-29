@@ -203,6 +203,17 @@ client-tauri-check:
 client-tauri-bundle:
     npm --prefix client run tauri -- build --ci -- --locked
 
+# Run the app: the debug webview over the Vite dev server, with a frontend edit
+# reloading into the open window. Nothing is installed and no disk image is
+# produced - `client-tauri-check` is the one that builds what ships.
+#
+# No `--ci`, unlike that check: `tauri dev` has no such flag, so the `0` forge's
+# own sessions put in `CI` is never read.
+#
+# Run the app without installing it or building a bundle.
+client-dev:
+    npm --prefix client run tauri -- dev
+
 # Compile the feature configurations nothing else builds.
 check-feature-configs:
     RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-tui --bin forge --features perf

@@ -4,7 +4,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { brandPath } from '../brand';
 import { PROTOCOL_VERSION } from '../protocol';
 import { DEFAULT_MARK, DEFAULT_WEB_PORT, MARK_NAMES } from '../wire/types';
-import { attempt, connectTo, displayAddress, normalizeAddress, submitAttempt } from './attempt';
+import {
+  DEFAULT_ADDRESS,
+  attempt,
+  connectTo,
+  displayAddress,
+  normalizeAddress,
+  submitAttempt,
+} from './attempt';
 
 /** A forge that greets, which is all this file needs one to do. */
 async function stubServer(version = PROTOCOL_VERSION) {
@@ -70,6 +77,17 @@ describe('the address a person types', () => {
       `127.0.0.1:${DEFAULT_WEB_PORT}`,
     );
   });
+
+  /**
+   * What the app holds is the address the person WROTE, which is a bare host
+   * and port far more often than a socket URL - and a named host parses as a
+   * scheme with an empty host, so a reader who typed `studio:8790` got an
+   * empty address on the band and a banner naming nothing.
+   */
+  it('reads back an address with no scheme, numbered or named', () => {
+    expect(displayAddress(DEFAULT_ADDRESS)).toBe(DEFAULT_ADDRESS);
+    expect(displayAddress('studio:8790'), 'a named host read back as nothing').toBe('studio:8790');
+  });
 });
 
 describe('one attempt', () => {
@@ -103,7 +121,7 @@ describe('one attempt', () => {
     const answer = await connectTo(server.address);
     expect(answer).toMatchObject({
       ok: true,
-      url: `ws://${server.address}/socket`,
+      address: server.address,
       settings: { mark: null, theme: null, font: null },
     });
     // The connection is handed back open, not read here: the pages subscribe
@@ -176,7 +194,7 @@ describe('one submit, as the screen sees it', () => {
     expect(next.busy).toBe(false);
     expect(next.failure).toBeNull();
     expect(next.connected).toMatchObject({
-      url: `ws://${server.address}/socket`,
+      address: server.address,
       settings: { mark: null, theme: null, font: null },
     });
   });

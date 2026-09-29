@@ -27,6 +27,20 @@ or has not. The screen's job is to get them to a running forge in one
 press when the default is right, which is almost always, and to give a
 legible reason when it is not.
 
+**The common case is not reaching it at all.** The app keeps the last
+address that answered and opens on it, so this screen is what a first
+launch meets and what the launch meets when the remembered address does
+not answer - and in that second case it opens with that address already
+in the field and the failure already on it, rather than blank. A failed
+launch is not forgotten, either: the address stays remembered, because
+that is the one the reader is about to correct.
+
+**A launch moves the page only from the root**, so a deep link is the one
+place it takes the connection and leaves the route alone. That makes this
+screen reachable three ways: a first launch, a launch that did not answer,
+and navigating here. On its own `/connect` the door is already drawn when
+the attempt lands, so the reason arrives on it rather than opening it.
+
 ## The design plan
 
 **Colour.** The theme's own tokens, unchanged: `--bg`, `--s1`, `--line`,

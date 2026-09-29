@@ -158,13 +158,14 @@ function variantOf(command: Command): string {
 }
 
 /**
- * One line about something the connection could not do.
+ * One line about something the client could not do.
  *
  * Deliberately not a logging framework: this layer's failures are otherwise
  * silent - a refused subscribe, a socket that dropped, a reply nobody asked
- * for - and each is a fact a reader of the console can act on.
+ * for, a store that will not keep an address - and each is a fact a reader of
+ * the console can act on.
  */
-function report(what: string, why: unknown): void {
+export function report(what: string, why: unknown): void {
   console.warn(`forge client: ${what}`, why);
 }
 

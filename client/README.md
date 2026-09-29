@@ -19,6 +19,10 @@ npm run typecheck
 `1420` is fixed rather than defaulted, because the Tauri shell points its
 `devUrl` at it.
 
+`just client-dev` runs the app itself in development: the window over that
+dev server, reloading on a frontend edit, with nothing installed and no
+bundle built.
+
 ## The desktop shell
 
 `src-tauri/` is a Tauri 2 app that wraps the built bundle. The crate is
@@ -124,10 +128,27 @@ Two more ride the home row and no page in this slice draws them: `crons`,
 which is the inspector's schedules section, and `chip`, which is the
 account a row binds. Both belong to pages that do not exist yet.
 
-## One URL is two pages until the store lands
+## Where a cold load lands
 
-`/` is the home, and the app opens on `/connect` and rewrites the URL to
-match, so a cold load of `/` lands on the door. The not-found page's own
-link points at `/`, which routes to the home. So the same URL is two pages
-depending on how you arrived, and a reload flips it. The fix is to gate the
-home on a connection, which is part of wiring the pages up.
+The app opens on the address it last connected to, which it keeps in the
+webview's own store. `src/connect/remembered.ts` is the store,
+`src/connect/boot.ts` is the launch: read the address, try it, and land on
+the home when something answers. When nothing does, or when there is nothing
+remembered, the door comes back carrying the address that was tried and the
+reason it did not answer.
+
+A launch with nothing to open on rewrites `/` to `/connect`, which is the
+door's own URL, so a reload lands in the same place. What is kept is the
+address that last WORKED - a failed one is not forgotten, since that is the
+one a person is about to fix, and retrying it is what the next launch is for.
+
+**The connection is booted on any route; the ROUTE moves only from the
+root.** A deep link is how a seat stays reachable and `/fixture` draws
+without a server, so both keep the page they were addressed at and take the
+socket that page reads. Only `/` lands on the home or the door, because it is
+the one URL that names no page of its own.
+
+`/connect` is where a failed launch is easiest to see: the door is already on
+screen when the attempt lands, so the reason arrives on it after the fact
+rather than opening it. That is why the door follows the shell's failure
+instead of seeding it once.

@@ -1,31 +1,52 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Brand from '../components/Brand.svelte';
   import type { ClientSettings } from '../wire/types';
   import { DEFAULT_ADDRESS, submitAttempt, type Attempt } from './attempt';
 
   let {
     settings,
+    initialAddress = DEFAULT_ADDRESS,
+    launchFailure = null,
     onconnect,
   }: {
     settings: ClientSettings;
+    /** What the field opens on: the remembered address, or the default. */
+    initialAddress?: string;
+    /** Why a launch did not open the home, drawn on the door as it lands. */
+    launchFailure?: Extract<Attempt, { ok: false }> | null;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
 
-  let address = $state(DEFAULT_ADDRESS);
+  // Seeded once, then the field's own: what the shell hands down is where the
+  // door OPENS, not something it keeps following.
+  let address = $state(untrack(() => initialAddress));
   let busy = $state(false);
-  let failure = $state<Extract<Attempt, { ok: false }> | null>(null);
+  let submitted = $state<Extract<Attempt, { ok: false }> | null>(null);
+
+  /**
+   * The last submit's reason, which stands over the launch's while it does.
+   *
+   * The launch's is a PROP rather than a seed, and that is the point: a launch
+   * can finish while this screen is already mounted - at `/connect`, or on the
+   * door a reload lands on - and a value copied once at mount would never
+   * arrive. Seeded instead of followed, this screen is indistinguishable from
+   * one where nothing was ever tried.
+   */
+  const failure = $derived(submitted ?? launchFailure);
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     busy = true;
-    failure = null;
+    submitted = null;
     // No `finally`: `submitAttempt` cannot reject, so every path out of a
     // connection arrives here as one of two shapes and the button is
     // re-enabled on both. A throw would leave it disabled reading
     // "Connecting", which is the same screen as a connection still running.
     const next = await submitAttempt(address);
     busy = next.busy;
-    failure = next.failure;
+    submitted = next.failure;
     if (next.connected) onconnect(next.connected);
   }
 </script>

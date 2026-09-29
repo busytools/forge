@@ -11,6 +11,7 @@
 import { PROTOCOL_VERSION } from '../protocol';
 import { connect, type Connection } from '../socket';
 import { DEFAULT_WEB_PORT, type ClientSettings } from '../wire/types';
+import { rememberAddress } from './remembered';
 
 /**
  * How long a socket has to greet before the address is called unreachable.
@@ -28,9 +29,10 @@ export type Attempt =
   /**
    * `connection` is the live socket, which the pages read from for as long
    * as the app is open. Nothing bundled stands in for it - the app's only
-   * input is the server URL.
+   * input is the server URL. `address` is that same server as the person
+   * wrote it, which is what a field shows them rather than the socket URL.
    */
-  | { ok: true; url: string; settings: ClientSettings; connection: Connection }
+  | { ok: true; address: string; settings: ClientSettings; connection: Connection }
   /**
    * `address` is an address this app cannot use, and the reader can fix it.
    * `unreachable` is a well-formed address nothing answered on, where the
@@ -76,13 +78,18 @@ export function normalizeAddress(input: string): { url: string } | { why: string
   return { url: parsed.toString() };
 }
 
-/** The `host:port` a person reads, for a socket URL the app holds. */
-export function displayAddress(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
+/**
+ * The `host:port` a person reads, for an address the app holds.
+ *
+ * Both halves reach here: the socket URL a connection was made at, and the
+ * address exactly as the person wrote it. The normaliser is what decides what
+ * an address IS, so this asks it rather than parsing again - a named host like
+ * `studio:8790` otherwise parses as a scheme with an empty host, and read back
+ * as an empty address rather than as the one that was typed.
+ */
+export function displayAddress(address: string): string {
+  const normalized = normalizeAddress(address);
+  return 'why' in normalized ? address : new URL(normalized.url).host;
 }
 
 /**
@@ -136,15 +143,21 @@ export interface Submit {
  * **It cannot reject**, because `attempt` cannot: every path out of a
  * connection, thrown or answered, is one of these two shapes. That is what
  * lets the caller write `busy` from the answer rather than from a `finally`.
+ *
+ * The address that just took is remembered here rather than by the component,
+ * for the same reason the transition is: what the app opens on next time is
+ * the last submit that worked, and that is a fact a test can check.
  */
 export async function submitAttempt(
   address: string,
   connect: (input: string) => Promise<Attempt> = connectTo,
 ): Promise<Submit> {
   const answer = await attempt(address, connect);
-  return answer.ok
-    ? { busy: false, failure: null, connected: answer }
-    : { busy: false, failure: answer, connected: null };
+  if (answer.ok) {
+    rememberAddress(address.trim());
+    return { busy: false, failure: null, connected: answer };
+  }
+  return { busy: false, failure: answer, connected: null };
 }
 
 /**
@@ -202,7 +215,7 @@ export async function connectTo(
         why: `${normalized.url} speaks protocol ${version}, and this client speaks ${PROTOCOL_VERSION}`,
       };
     }
-    return { ok: true, url: normalized.url, settings, connection };
+    return { ok: true, address: input.trim(), settings, connection };
   } catch (error) {
     // Nothing is going to draw through this one, and leaving it open would
     // have it reconnect behind a screen that already gave up on it.
