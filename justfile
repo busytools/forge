@@ -166,6 +166,16 @@ client-typecheck:
 client-test:
     npm --prefix client run test
 
+# Builds the Tauri shell, which nothing else reaches: it is its own
+# workspace root, so `check`'s fmt, clippy and nextest skip it, and CI's
+# Linux runner has no webview headers. Outside `check` because forge runs
+# every worker in its own worktree, where an unconditional webview compile
+# would charge each Rust-only change minutes for a crate it never touched.
+#
+# Run before handing over a change under client/src-tauri/.
+client-tauri-check:
+    cargo build --manifest-path client/src-tauri/Cargo.toml
+
 # Compile the feature configurations nothing else builds.
 check-feature-configs:
     RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-tui --bin forge --features perf

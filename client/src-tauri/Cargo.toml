@@ -1,0 +1,17 @@
+[package]
+name = "forge-client"
+version = "0.1.0"
+description = "The forge desktop client"
+edition = "2024"
+rust-version = "1.90"
+
+# Its own workspace root, so the crate above is not a member of forge's: the
+# shell links the whole webview stack, which is not a compile the workspace
+# gate or CI's Linux runner should carry.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
