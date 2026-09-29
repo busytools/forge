@@ -13,9 +13,9 @@
   import Router from './Router.svelte';
 
   // The connect screen is the front door: it is the first thing a person
-  // meets, and a deep link is the one reason to open anywhere else. So `/`
-  // opens the door rather than the home, and the URL is moved with it so a
-  // reload lands in the same place.
+  // meets, and a deep link is the one reason to open anywhere else. So the
+  // root is what launches - it opens the door when there is nothing to open on
+  // - and the URL is moved to `/connect` so a reload lands in the same place.
   const opened = parseRoute(location.pathname);
   const onDoor = opened.name === 'home';
   // Read once, at launch. The address the app opens on is also the one the
@@ -37,28 +37,30 @@
   let booting = $state(onDoor && remembered !== null);
 
   onMount(() => {
-    if (remembered === null) {
-      // Nothing to open on, so the door, at the URL that names it.
-      if (onDoor) history.replaceState(null, '', hrefFor({ name: 'connect' }));
-      return;
+    // Nothing to open on, so the door, at the URL that names it.
+    if (onDoor && remembered === null) {
+      history.replaceState(null, '', hrefFor({ name: 'connect' }));
     }
-    void open(remembered);
+    void open();
   });
 
   /**
    * Open on the remembered address: the home when something answers there,
    * and the door carrying the reason when nothing does.
    *
-   * No `go` on the way to the home, because the launch is already addressed
-   * at `/` and pushing it would put a second entry of the same page behind
-   * the reader.
+   * No `go` on the way to the home, because a launch from the root is already
+   * addressed at `/` and pushing it would put a second entry of the same page
+   * behind the reader.
    */
-  async function open(remembered: string) {
-    const launched = await boot(remembered);
+  async function open() {
+    const launched = await boot(opened, remembered);
     booting = false;
     failure = launched.failure;
+    address = launched.address;
     if (launched.connected) take(launched.connected);
-    route = launched.route;
+    // `null` is a route the app was addressed at. A launch opens the socket
+    // its page reads but leaves the page itself alone.
+    if (launched.route !== null) route = launched.route;
   }
 
   $effect(() => {
@@ -114,8 +116,13 @@
     // session - and nothing would be drawing what it was keeping current.
     connection?.close();
     settings = connected.settings;
-    address = connected.url;
+    // As the person wrote it rather than the socket URL: this is what a field
+    // shows them if they come back to the door.
+    address = connected.address;
     connection = connected.connection;
+    // The reason belonged to the launch that produced it. Left standing, the
+    // door a Back lands on accuses a forge that has just answered.
+    failure = null;
   }
 
   function connect(connected: Extract<Attempt, { ok: true }>) {

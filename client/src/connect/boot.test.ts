@@ -75,7 +75,7 @@ describe('what the app opens on', () => {
     servers.push(server);
     rememberAddress(server.address);
 
-    const launched = await boot(rememberedAddress());
+    const launched = await boot({ name: 'home' }, rememberedAddress());
 
     expect(launched.route, 'a remembered address that answered did not open the home').toEqual({
       name: 'home',
@@ -87,7 +87,7 @@ describe('what the app opens on', () => {
 
   /** A first launch has nothing to open on, so it asks. */
   it('opens the door when it remembers nothing', async () => {
-    const launched = await boot(rememberedAddress());
+    const launched = await boot({ name: 'home' }, rememberedAddress());
 
     expect(launched.route, 'a first launch did not open the door').toEqual({ name: 'connect' });
     expect(launched.address, 'the door did not open on the default address').toBe(DEFAULT_ADDRESS);
@@ -111,7 +111,9 @@ describe('what the app opens on', () => {
       // A socket that opens and then says nothing, so the deadline is what
       // settles it: the failure is the same one a refused port gives, without
       // the test waiting out the real one.
-      const launched = await boot(rememberedAddress(), (input) => connectTo(input, 20));
+      const launched = await boot({ name: 'home' }, rememberedAddress(), (input) =>
+        connectTo(input, 20),
+      );
 
       expect(
         launched.route,
@@ -125,6 +127,27 @@ describe('what the app opens on', () => {
       for (const client of silent.clients) client.terminate();
       await new Promise((resolve) => silent.close(resolve));
     }
+  });
+
+  /**
+   * A deep link is how a seat stays reachable, so its page wants the socket
+   * the same way the home does - and the ROUTE is what moves the reader, so a
+   * launch may take the connection without taking the page.
+   */
+  it('opens the socket for a deep link without moving off the route it was addressed at', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    rememberAddress(server.address);
+    const slot = { org: 'Busytools', project: 'forge', label: 'lead' };
+
+    const launched = await boot({ name: 'session', slot }, rememberedAddress());
+
+    expect(launched.route, 'a launch moved the app off the route it was addressed at').toBeNull();
+    expect(
+      launched.connected,
+      'a deep link was left without the socket its page reads',
+    ).not.toBeNull();
+    launched.connected?.connection.close();
   });
 
   /**

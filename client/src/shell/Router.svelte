@@ -29,7 +29,7 @@
 </script>
 
 {#if route.name === 'connect'}
-  <Connect {settings} initialAddress={address} initialFailure={failure} {onconnect} />
+  <Connect {settings} initialAddress={address} launchFailure={failure} {onconnect} />
 {:else if route.name === 'home'}
   {#if home.wire}
     <Home wire={home.wire} {address} mark={settings.mark} />
@@ -49,7 +49,7 @@
     <!-- No server has answered, and the app's only input is its URL: the
          connect screen stays rather than a page falling back to bundled
          data. -->
-    <Connect {settings} initialAddress={address} initialFailure={failure} {onconnect} />
+    <Connect {settings} initialAddress={address} launchFailure={failure} {onconnect} />
   {/if}
 {:else if route.name === 'fixture' && import.meta.env.DEV}
   <!-- Behind the same guard as the loader: the connect screen stays the front

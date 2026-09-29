@@ -29,9 +29,16 @@ export type Attempt =
   /**
    * `connection` is the live socket, which the pages read from for as long
    * as the app is open. Nothing bundled stands in for it - the app's only
-   * input is the server URL.
+   * input is the server URL. `address` is that same server as the person
+   * wrote it, which is what a field shows them rather than the socket URL.
    */
-  | { ok: true; url: string; settings: ClientSettings; connection: Connection }
+  | {
+      ok: true;
+      address: string;
+      url: string;
+      settings: ClientSettings;
+      connection: Connection;
+    }
   /**
    * `address` is an address this app cannot use, and the reader can fix it.
    * `unreachable` is a well-formed address nothing answered on, where the
@@ -209,7 +216,7 @@ export async function connectTo(
         why: `${normalized.url} speaks protocol ${version}, and this client speaks ${PROTOCOL_VERSION}`,
       };
     }
-    return { ok: true, url: normalized.url, settings, connection };
+    return { ok: true, address: input.trim(), url: normalized.url, settings, connection };
   } catch (error) {
     // Nothing is going to draw through this one, and leaving it open would
     // have it reconnect behind a screen that already gave up on it.
