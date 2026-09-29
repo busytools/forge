@@ -6,7 +6,33 @@ import { describe, expect, it } from 'vitest';
 import Connect from './connect/Connect.svelte';
 import { homeWire } from './dev/fixture.data';
 import Home from './home/Home.svelte';
+import Session from './session/Session.svelte';
+import type { Connection } from './socket';
 import { DEFAULT_SETTINGS } from './wire/types';
+
+/**
+ * A connection the server render never reaches: the session page subscribes in
+ * an effect, and `render` from `svelte/server` runs none. Every method throws
+ * so a page that did reach it fails loudly rather than drawing on nothing.
+ */
+function untouched(): Connection {
+  const refuse = (): never => {
+    throw new Error('the server render reached the connection');
+  };
+  return {
+    subscribe: refuse,
+    unsubscribe: refuse,
+    refresh: refuse,
+    dispatch: refuse,
+    more: refuse,
+    onMessage: refuse,
+    onStatus: refuse,
+    store: refuse,
+    settings: refuse,
+    status: refuse,
+    close: refuse,
+  };
+}
 
 type AxeWindow = Window & typeof globalThis & { axe: typeof axe };
 
@@ -65,6 +91,17 @@ describe('axe over the rendered pages', () => {
   it('draws the connect screen with no violations', async () => {
     const html = render(Connect, {
       props: { settings: DEFAULT_SETTINGS, onconnect: () => {} },
+    }).body;
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  it('draws the session page with no violations', async () => {
+    const html = render(Session, {
+      props: {
+        slot: { org: 'TestOrg', project: 'proj', label: 'lead' },
+        connection: untouched(),
+        wire: homeWire,
+      },
     }).body;
     expect(await idsOf(html)).toEqual([]);
   });

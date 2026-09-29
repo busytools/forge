@@ -70,13 +70,21 @@ describe('the shell at launch', () => {
   /**
    * A session URL is how a seat stays reachable, and a launch that moved the
    * reader off it would be a bookmark that lies. The socket is still opened
-   * for it; the page is what must not move.
+   * for it; the address is what must not move.
+   *
+   * Nothing answers here, so the door is what the reader meets - which is the
+   * same screen the root route falls back to, and why the assertion is the
+   * URL rather than the page: a launch from `/` is REWRITTEN to `/connect`,
+   * and this one must not be.
    */
   it('does not move off a route the app was addressed at', async () => {
     await openAt('/session/Busytools/forge/lead', '::::');
 
-    expect(drawn(), 'a launch replaced the page the app was addressed at').toContain(
-      'The session page is next',
+    expect(location.pathname, 'a launch rewrote the address it was opened at').toBe(
+      '/session/Busytools/forge/lead',
+    );
+    expect(drawn(), 'the door is what a session route draws when nothing answers').toContain(
+      'is not an address',
     );
   });
 
