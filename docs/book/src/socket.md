@@ -265,14 +265,17 @@ never something a client ports.
   list and the label a row is spelled with are the client's. The test is
   whether removing a thing changes what the data IS or only how it is
   DRAWN.
-- **A shipped client.** No installed binary consumes this socket. The two
-  things that speak it are test instruments: `forge-protocol-client` under
-  `crates/forge-server/src/bin/`, built by a normal build and neither
-  installed nor shipped, and the integration tests that open real clients
-  against a server they start themselves.
+- **A shipped client.** The desktop client under `client/` speaks this
+  socket, and it is what this page is for. It is a client rather than an
+  instrument, and it runs from `just client-dev` rather than from an
+  installed bundle, so what is missing is a released one rather than a
+  consumer. The instruments are the two they always were:
+  `forge-protocol-client` under `crates/forge-server/src/bin/`, built by a
+  normal build and neither installed nor shipped, and the integration tests
+  that open real clients against a server they start themselves.
 
 ## Today
 
 The terminal starts the server and binds the socket, so a running forge
-serves one. The web view that used to serve pages on this port is parked
-while the client is built; nothing serves it in the meantime.
+serves one. The web view that used to serve pages on this port is parked,
+and the desktop client under `client/` is what reads the socket now.
