@@ -12,6 +12,10 @@
 //! the middle of whatever a test was reading. Wiring it like the version probe
 //! is what removed that, and the same edit that could silently undo it is the
 //! one this reads for.
+//!
+//! Both ends of the lock, because either alone is half a guard: a production
+//! constructor that stopped handing the real prober on, and a test constructor
+//! that started handing it on, produce the same outage from opposite sides.
 
 // An integration test is a crate of its own, so clippy's test exemption does
 // not reach the scanning helpers below.
@@ -35,6 +39,19 @@ fn the_production_constructor(source: &str) -> &str {
     let body = &source[at..];
     let end = body.find("\n    }\n").expect("the constructor closes on its own line");
     &body[..end]
+}
+
+/// The `new_impl` call the test constructor builds through, which is where a
+/// fixture's two probes are decided.
+fn the_test_constructors_wiring(source: &str) -> &str {
+    let at = source
+        .find("fn new_for_test_impl(")
+        .expect("the test constructor is in the module this scans");
+    let body = &source[at..];
+    let call = body.find("Self::new_impl(").expect("the test constructor builds through new_impl");
+    let call = &body[call..];
+    let end = call.find(")?;").expect("the call to new_impl closes");
+    &call[..end]
 }
 
 #[test]
@@ -65,4 +82,30 @@ fn the_production_constructor_wires_the_real_probes() {
         source.contains("Box::pin(forge_agent::cloud::service_status::fetch_service_status())"),
         "and the statuspage prober no longer reads the statuspage, so `real` is a name rather than a fact",
     );
+}
+
+/// The other end of the same lock. A production constructor that stopped
+/// wiring the real prober, and a test constructor that started wiring it, do
+/// the same damage from opposite sides, and only the first was guarded.
+#[test]
+fn the_test_constructor_wires_no_real_prober() {
+    let source = the_module();
+    let fixture = the_test_constructors_wiring(&source);
+
+    // The control: the scan reached the call's own arguments, so a clean
+    // verdict is not an empty slice agreeing with everything.
+    assert!(
+        fixture.contains("cli_version_prober"),
+        "the scan did not reach the test constructor's arguments, so its verdict means nothing: \
+         {fixture}",
+    );
+
+    for prober in ["real_cli_version_prober", "real_service_status_prober"] {
+        assert!(
+            !fixture.contains(prober),
+            "a test constructor hands on `{prober}`, so a fixture reaches the network and every \
+             test that reads the core's own stream is exposed to a remote service's health. Call \
+             as scanned: {fixture}",
+        );
+    }
 }

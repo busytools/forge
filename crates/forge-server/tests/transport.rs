@@ -178,11 +178,17 @@ async fn update_until(
     mut satisfies: impl FnMut(&SessionUpdate) -> bool,
 ) -> SessionUpdate {
     for _ in 0..64 {
-        let Some(ServerMessage::Update { update }) = next_server_within(socket, 5_000).await else {
-            panic!("waited for {want}, and never heard it");
+        // Split rather than a `let-else`, so a message that arrived and was not
+        // an update is not reported as silence.
+        let update = match next_server_within(socket, 5_000).await {
+            Some(ServerMessage::Update { update }) => *update,
+            Some(other) => {
+                panic!("waited for {want}, and a message that is not an update arrived: {other:?}")
+            }
+            None => panic!("waited for {want}, and never heard it"),
         };
         if satisfies(&update) {
-            return *update;
+            return update;
         }
     }
     panic!("waited for {want}, and heard 64 other updates without it");
@@ -613,15 +619,17 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
     // and the plugin records are fields of its snapshot, so a client that
     // heard them once at subscribe and never again would draw a stale page.
     // `CatalogLoaded` is no use here - the classification DOES cover it, so it
-    // passes over this hole.
+    // passes over this hole. The wait matches the notice written below rather
+    // than the variant, so nobody else's service status can stand in for it.
+    let its_own = "a statuspage notice";
     fleet.emit(SessionUpdate::ServiceStatus {
         severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-        message: "a statuspage notice".to_owned(),
+        message: its_own.to_owned(),
     });
     update_until(
         &mut socket,
         "a home subscriber hears the App-level updates its snapshot carries",
-        |update| matches!(update, SessionUpdate::ServiceStatus { .. }),
+        |update| matches!(update, SessionUpdate::ServiceStatus { message, .. } if message == its_own),
     )
     .await;
 
