@@ -72,6 +72,31 @@ async fn connected() -> Client {
     connect(&url).await
 }
 
+/// Subscribes to `subject` over and over until `want` holds of the snapshot,
+/// or the attempts run out.
+///
+/// POLLING rather than one read, because the fold is the transport's own task:
+/// a snapshot taken immediately after an emit can lag it by a scheduling hop.
+/// A test that reads once and asserts is claiming an ordering the code does not
+/// give, and would pass for a reason nobody would guess.
+async fn snapshot_until(
+    socket: &mut Client,
+    subject: Subject,
+    mut want: impl FnMut(&serde_json::Value) -> bool,
+) -> bool {
+    for _ in 0..200 {
+        send(socket, ClientMessage::Subscribe { what: subject.clone(), answering: true }).await;
+        let ServerMessage::Snapshot { data, .. } = next_server(socket).await else {
+            panic!("expected {subject:?}'s snapshot")
+        };
+        if want(&data) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    false
+}
+
 /// Waits for the server to notice a client went away: the subscription count
 /// falls back to what it was before that client attached.
 ///
@@ -192,24 +217,55 @@ async fn a_running_take_is_on_the_seat_a_client_attaches_to() {
         "reading it back is what proves the fold ran before the next subscribe",
     );
 
+    // Polled, for the same reason as the marks test above: the fold is the
+    // transport's own task, so a single snapshot after the emit can lag it by
+    // a scheduling hop.
     let mut fresh = connect(&url).await;
+    let held = snapshot_until(&mut fresh, Subject::Session(lead_seat()), |data| {
+        data["composer"]["take"]["phase"] == "recording"
+            && data["composer"]["take"]["floor_db"] == -50.0
+    })
+    .await;
+
+    assert!(
+        held,
+        "the take a client never saw announced is on the record, with the silence floor its own meter measures against",
+    );
+}
+
+/// The role is decided by the client's first SUBSCRIBE, not by its first
+/// message. Deciding on the first message locked a connection whose opening
+/// word was a `more` or a command into observing for its whole life, so a
+/// client that declared `answering` afterwards was never handed a prompt - and
+/// the page told it the declaration on its first subscribe was the one that
+/// counted.
+#[tokio::test]
+async fn a_client_declares_answering_on_a_subscribe_and_not_on_its_first_word() {
+    let (url, fleet) = a_server().await;
+    assert_eq!(fleet.answering_count(), 0, "precondition: nothing answers yet");
+    let mut socket = connect(&url).await;
+
+    // A first message that is not a subscribe, which used to fix the role.
     send(
-        &mut fresh,
-        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+        &mut socket,
+        ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 },
     )
     .await;
-    let ServerMessage::Snapshot { data, .. } = next_server(&mut fresh).await else {
-        panic!("expected the session snapshot")
-    };
-
+    let _ = next_server(&mut socket).await;
     assert_eq!(
-        data["composer"]["take"]["phase"], "recording",
-        "the take a client never saw announced is on the record: {}",
-        data["composer"],
+        fleet.answering_count(),
+        0,
+        "a command or a page is not a declaration either way",
     );
+
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
+    let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
+        panic!("the subscribe is answered with a snapshot")
+    };
     assert_eq!(
-        data["composer"]["take"]["floor_db"], -50.0,
-        "with the floor its own meter measures against",
+        fleet.answering_count(),
+        1,
+        "the subscribe that declares it is the one the core registers",
     );
 }
 
@@ -319,22 +375,24 @@ async fn a_turn_that_finished_unwatched_marks_its_row() {
         }))
         .expect("parse a result message"),
     });
+    // That a completion reaches the home as a row change is a property of the
+    // FILTER, and this connection watches the home. It says nothing about when
+    // the fold ran: that is the transport's own task now, so the snapshot below
+    // polls rather than reading once and claiming an ordering nothing gives.
     assert!(
         matches!(next_server(&mut socket).await, ServerMessage::Update { .. }),
         "the completion reaches the home as a row change",
     );
 
     let mut fresh = connect(&url).await;
-    send(&mut fresh, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
-    let ServerMessage::Snapshot { data, .. } = next_server(&mut fresh).await else {
-        panic!("expected the home snapshot")
-    };
+    let marked = snapshot_until(&mut fresh, Subject::Home, |data| {
+        data["unseen"].as_array().is_some_and(|slots| {
+            slots.iter().any(|slot| slot["label"] == "lead" && slot["project"] == "proj")
+        })
+    })
+    .await;
 
-    let unseen = data["unseen"].as_array().expect("the home carries the marks");
-    assert!(
-        unseen.iter().any(|slot| slot["label"] == "lead" && slot["project"] == "proj"),
-        "the seat whose turn went unwatched is marked: {unseen:?}",
-    );
+    assert!(marked, "the seat whose turn went unwatched is marked");
 }
 
 /// Four commands report through `reply_to` and have no update behind them, so
@@ -487,6 +545,21 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
     assert!(
         matches!(next_server(&mut socket).await, ServerMessage::Update { .. }),
         "a home subscriber hears a seat's row change",
+    );
+
+    // And so does an App-level one the fleet's own classification does not
+    // name, because the home is not only the fleet region: the service status
+    // and the plugin records are fields of its snapshot, so a client that
+    // heard them once at subscribe and never again would draw a stale page.
+    // `CatalogLoaded` is no use here - it is one of the four slot-less
+    // variants the classification DOES cover, so it passes over this hole.
+    fleet.emit(SessionUpdate::ServiceStatus {
+        severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+        message: "a statuspage notice".to_owned(),
+    });
+    assert!(
+        matches!(next_server(&mut socket).await, ServerMessage::Update { .. }),
+        "a home subscriber hears the App-level updates its snapshot carries",
     );
 
     // And the conversation does not. A token is the bulk of the stream and no

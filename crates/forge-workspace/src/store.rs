@@ -10,7 +10,7 @@
 //! ([`gotify`]), Slack subscriptions ([`slack`]), durable crons
 //! ([`cron`]), session identities ([`sessions`]), review
 //! threads ([`review`]), forge state
-//! ([`state`], the spinner override + account-usage cache), the
+//! ([`state`], the account-usage cache), the
 //! `/usage` view's per-file token summaries ([`token_usage`]), cached
 //! model pricing ([`pricing`]), plugin update history ([`plugins`]),
 //! and the catalog's per-file worker-tag scans ([`session_tags`]).
@@ -21,6 +21,8 @@
 //!
 //! [`model_catalog`] is retired rather than live: it exists only to drop
 //! the table the deleted catalog machinery left behind in older stores.
+//!
+//! [`settings`] is the same, for the table the `/spinner` override lived in.
 
 use std::path::Path;
 
@@ -34,6 +36,7 @@ pub mod plugins;
 pub mod pricing;
 pub mod review;
 pub mod session_tags;
+pub mod settings;
 pub mod sessions;
 pub mod slack;
 pub mod state;

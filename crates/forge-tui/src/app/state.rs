@@ -516,14 +516,14 @@ pub struct App {
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
     /// Active spinner style for every animated surface (chat, input,
-    /// projects pane, inspector, launchpad). Seeded from the config
-    /// `spinner` field at startup; mutated live by `/spinner`.
+    /// projects pane, inspector, launchpad). The default at startup, mutated
+    /// live by `/spinner`, and stored nowhere: the choice is for this run.
     pub spinner_style: crate::ui::spinner_style::SpinnerStyle,
     /// Monotonic start anchor for the time-based spinner. Frame index
     /// derives from `spinner_epoch.elapsed() / cadence_ms`.
     pub spinner_epoch: Instant,
-    /// How often the run loop repaints while something is animating.
-    /// Seeded from the config `fps` field at startup; read-only after.
+    /// How often the run loop repaints while something is animating. The
+    /// default, with no key behind it.
     pub repaint_cadence: crate::ui::spinner_style::RepaintCadence,
     /// Open `/spinner` picker overlay state; `None` when closed.
     pub spinner_picker: Option<crate::app::spinner_picker::SpinnerPickerState>,

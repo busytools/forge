@@ -753,6 +753,36 @@ mod tests {
         assert!(app.start_new_run, "--new threads onto App.start_new_run");
     }
 
+    /// The retired `[ui]` section is a declared ghost: a config still carrying
+    /// it LOADS, warns, and the App takes neither value. Reworked from the
+    /// version that asserted a refusal, which is what it did while the section
+    /// was deleted outright - and a refusal there would have bricked the boot
+    /// of every config still holding one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_ignores_a_retired_ui_section() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        let project_path_str = project_dir.path().to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            forge_dir(config_dir.path()).join("forge.toml"),
+            format!(
+                // Both keys are deliberately not the defaults, so an App that
+                // read either would show it.
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n\n[ui]\nlaunchpad_spinner = \"ember\"\nfps = 60\n"
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+            .expect("a retired section still loads");
+        let cli = cli_with(None);
+        let local = tokio::task::LocalSet::new();
+        let app = local
+            .run_until(async { create_app_for_test(&cli, Arc::new(workspace), config_dir.path()) })
+            .await;
+        assert_eq!(app.spinner_style, crate::ui::spinner_style::SpinnerStyle::default());
+        assert_eq!(app.repaint_cadence, crate::ui::spinner_style::RepaintCadence::default());
+    }
+
     #[cfg(feature = "perf")]
     #[tokio::test(flavor = "current_thread")]
     async fn create_app_for_test_puts_the_perf_log_in_the_caller_s_directory() {

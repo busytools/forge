@@ -97,11 +97,11 @@ core. All twenty-two exist in `forge-server`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk
-through them; the web view reads its project roster and agent rows, the
+through them; a second view reads its project roster and agent rows, the
 account pool, the worker registry, connector subscriptions and dictation
 state through those, the claude version through the tenth, its
 composer's data through `slash_commands`, `forge_commands`, `subagents`,
-`emoji`, `file_index` and `respect_gitignore`, and the conversation,
+`file_index` and `respect_gitignore`, and the conversation,
 header, inspector and the prompt it answers through
 `conversation`, `header`, `mcp_servers`, `processes`, `monitors` and
 `pending_ask`, and dispatches its composer's send, its prompt answers and

@@ -41,19 +41,14 @@ impl Default for RepaintCadence {
 }
 
 impl RepaintCadence {
-    /// Clamp `fps` into the accepted 30-240 range and convert it to a
-    /// frame interval, warning when the value had to move. The result
-    /// never exceeds `COARSEST_REPAINT_INTERVAL`.
+    /// Clamp `fps` into the accepted 30-240 range and convert it to a frame
+    /// interval. The result never exceeds `COARSEST_REPAINT_INTERVAL`.
+    ///
+    /// No warn on a clamp: the only production caller is
+    /// [`Self::default`], whose rate is in range, so a warning here could
+    /// only ever fire from a test.
     pub fn from_fps(fps: u32) -> Self {
         let clamped = fps.clamp(*FPS_RANGE.start(), *FPS_RANGE.end());
-        if clamped != fps {
-            tracing::warn!(
-                target: "forge_workspace::ui",
-                requested = fps,
-                applied = clamped,
-                "[ui] fps is outside the supported range; clamping",
-            );
-        }
         let interval = Duration::from_micros(1_000_000 / u64::from(clamped));
         Self { interval: interval.min(COARSEST_REPAINT_INTERVAL) }
     }

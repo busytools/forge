@@ -85,6 +85,20 @@ pub(crate) fn dispatch_permission_outcome(
             );
             return;
         }
+        // The prompt was answered elsewhere, or the dock is stale: the
+        // session's own race rather than forge's problem, and the reader has
+        // nothing to act on because the dock is already gone. Rule 20's
+        // debug, whichever seat lost.
+        if matches!(err, forge_workspace::DispatchError::NoPromptWaiting { .. }) {
+            tracing::debug!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "permission_dispatch_prompt_gone",
+                slot = %session_key.display(),
+                tool_id = %tool_id,
+                "permission outcome dropped: the prompt is no longer waiting",
+            );
+            return;
+        }
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "permission_dispatch_failed",
@@ -214,6 +228,18 @@ pub(crate) fn dispatch_question_outcome(
                 slot = %session_key.display(),
                 tool_id = %tool_id,
                 "question dispatch skipped: no session task in test stub",
+            );
+            return;
+        }
+        // The same race as the permission path: the question was answered
+        // somewhere else, or the dock is stale. Debug, not warn.
+        if matches!(err, forge_workspace::DispatchError::NoPromptWaiting { .. }) {
+            tracing::debug!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "question_dispatch_prompt_gone",
+                slot = %session_key.display(),
+                tool_id = %tool_id,
+                "question outcome dropped: the prompt is no longer waiting",
             );
             return;
         }

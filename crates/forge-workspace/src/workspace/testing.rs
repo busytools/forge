@@ -175,6 +175,14 @@ impl Workspace {
         self.update_tx.count()
     }
 
+    /// How many subscribers could answer a prompt right now. Test-only: the
+    /// role decides whether the core parks a turn on a reply, and a test that
+    /// watches a client declare it has nothing else to read.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_answering_count(&self) -> usize {
+        self.update_tx.answering_count()
+    }
+
     /// Hold a claude version snapshot, so a cross-crate test can render the
     /// version line without a real `claude --version` and npm probe.
     /// Test-only.

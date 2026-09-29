@@ -95,12 +95,12 @@ use futures::StreamExt;
 use std::time::{Duration, Instant};
 
 /// Repaint and pulse cadence under a reduced-motion preference. Fixed
-/// rather than derived from `[ui] fps`: the point of reduced motion is
-/// fewer frames, so a high frame rate must not pull it up.
+/// rather than derived from the repaint cadence: the point of reduced
+/// motion is fewer frames, so a high frame rate must not pull it up.
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 
 /// Step interval for [`App::spinner_frame`], pinned rather than
-/// following `[ui] fps`. Its one consumer is not a spinner and does not
+/// following the repaint cadence. Its one consumer is not a spinner and does not
 /// scale: the tab-title pulse alternates two glyphs every ten steps, so
 /// driven off a fast repaint rate it reads as flicker rather than
 /// motion. Also the coarsest interval the repaint gate can use, see
@@ -683,7 +683,7 @@ fn spinner_animation_step(elapsed: Duration, interval: Duration) -> u128 {
     elapsed.as_micros() / interval.as_micros().max(1)
 }
 
-/// Interval between repaints while animating - the `[ui] fps` setting.
+/// Interval between repaints while animating - the app's own cadence.
 fn repaint_interval(app: &App) -> Duration {
     if app.config.prefers_reduced_motion_effective() {
         SPINNER_FRAME_INTERVAL_REDUCED

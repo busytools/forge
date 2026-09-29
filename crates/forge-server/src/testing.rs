@@ -144,6 +144,14 @@ impl Fleet {
         self.workspace.test_subscriber_count()
     }
 
+    /// How many subscribers could answer a prompt right now. The role decides
+    /// whether the core parks a turn on a reply rather than resolving it
+    /// `Cancelled`, and nothing on the wire reports it - so a test that watches
+    /// a client declare `answering` reads this.
+    pub fn answering_count(&self) -> usize {
+        self.workspace.test_answering_count()
+    }
+
     /// Hold a claude version snapshot, so a view test renders a version
     /// line without a real `claude --version` and npm probe.
     pub fn set_cli_version(&self, installed: Option<&str>, latest: Option<&str>) {

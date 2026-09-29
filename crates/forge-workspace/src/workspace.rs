@@ -1282,6 +1282,27 @@ impl Workspace {
                 ),
             }
         }
+        // The settings table held one row, the `/spinner` override, which went
+        // with the spinner.
+        if let Some(db) = db.as_mut() {
+            match crate::store::settings::drop_table(db) {
+                Ok(true) => {
+                    if let Err(error) = db.compact() {
+                        tracing::warn!(
+                            target: "forge_workspace::workspace",
+                            %error,
+                            "compacting the store after dropping the retired settings table failed",
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "dropping the retired settings table failed; it stays for the next boot",
+                ),
+            }
+        }
 
         // Resolved here rather than lazily so a malformed `[[slack]]`
         // entry refuses the boot, the way the rest of forge.toml does.
@@ -1460,7 +1481,7 @@ impl Workspace {
         workspace.start_service_status_probe(real_service_status_prober());
         if workspace.db.lock().is_none() {
             // One user-visible notice for the whole best-effort-persist
-            // class (spinner override, durable crons, subscriptions): the
+            // class (durable crons, subscriptions): the
             // store is gone this run, so every one of those warns would
             // otherwise fire per-op into the log only.
             let _ = workspace.update_tx.send(SessionUpdate::ServiceStatus {
@@ -9570,7 +9591,7 @@ provider = "anthropic"
         assert!(matches!(cmd, forge_primitives::AgentCommand::Cancel { .. }));
     }
 
-    /// The review/spinner/close store writes route through the command
+    /// The review/close store writes route through the command
     /// bus: a `SaveReviewThreads` dispatch lands in the redb store
     /// (observable via the query-side load), and an `UpsertReviewThread`
     /// dispatch carries its confirmation back on the responder - the

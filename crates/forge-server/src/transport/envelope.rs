@@ -26,16 +26,23 @@ impl Subject {
     /// A session subscription is a seat, so the workspace is ASKED which seat
     /// a variant routes to rather than this matching the variants itself.
     ///
-    /// A home subscription is a row per seat plus the App-level facts, so it
-    /// takes the classification that already exists for the same question:
+    /// A home subscription is a row per seat plus the App-level facts, and it
+    /// takes the classification that already exists for the row half:
     /// [`fleet_news`], which is what the view folding this stream draws the
     /// fleet from. It is narrow on purpose - a row states a seat's lifecycle,
     /// its status and its pending state, and no row shows a word of its
     /// conversation - so a second table of variants here would both drift and
     /// hand a home subscriber every token of every seat in the fleet.
+    ///
+    /// **The fleet region is not the whole home.** Three families carry no
+    /// slot and are not fleet news - the service status, the fatal error and
+    /// the plugin records - and every one of them is a field of the home's own
+    /// snapshot. `fleet_news` alone would drop them, leaving a client to draw
+    /// what it read once at subscribe for the life of the connection, so the
+    /// slot-less variants come with it.
     pub fn covers(&self, update: &SessionUpdate) -> bool {
         match self {
-            Self::Home => fleet_news(update).any(),
+            Self::Home => fleet_news(update).any() || update.slot().is_none(),
             Self::Session(seat) => update.slot() == Some(seat),
         }
     }

@@ -66,11 +66,13 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
 /// hang rather than as an error.
 async fn drive(socket: &mut WebSocket, state: &TransportState) -> anyhow::Result<()> {
     let mut watched: Vec<Subject> = Vec::new();
-    // None until the client's first word, which is what decides whether this
-    // connection answers. Registering as answering before knowing would count
-    // a client that cannot show a prompt as able to answer one, and the core
-    // parks a turn on that reply rather than failing it.
-    let mut updates: Option<mpsc::UnboundedReceiver<SessionUpdate>> = None;
+    // None until the client's first SUBSCRIBE, which is what decides whether
+    // this connection answers - not its first message, so a client whose first
+    // word is a `more` or a command is not locked into observing. Registering
+    // as answering before a client says so would count one that cannot show a
+    // prompt as able to answer it, and the core parks a turn on that reply
+    // rather than failing it.
+    let mut updates: Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)> = None;
 
     let outcome = run_connection(socket, state, &mut watched, &mut updates).await;
 
@@ -93,17 +95,14 @@ async fn run_connection(
     socket: &mut WebSocket,
     state: &TransportState,
     watched: &mut Vec<Subject>,
-    updates: &mut Option<mpsc::UnboundedReceiver<SessionUpdate>>,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
 ) -> anyhow::Result<()> {
     loop {
         tokio::select! {
             msg = socket.next() => {
                 let Some(msg) = msg else { break };   // the client went away
                 let msg = msg?;
-                if updates.is_none() {
-                    *updates = Some(open_stream(state, &msg));
-                }
-                handle_client(socket, state, watched, msg).await?;
+                handle_client(socket, state, watched, updates, msg).await?;
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
@@ -121,38 +120,37 @@ async fn run_connection(
     Ok(())
 }
 
-/// This connection's stream from the core, registered with the role the
-/// client's first message declares.
+/// This connection's stream from the core, opened when the client first
+/// subscribes and registered with the role that subscribe declares. A later
+/// subscribe that declares answering replaces it, so a client is not held to
+/// a role it announced before it had decided.
 ///
 /// Every caller gets a stream of its own, so a second client attaches beside
 /// the first rather than stealing its events, and dropping the socket drops
 /// this with it - which is what keeps a subscription from outliving its
 /// connection.
-fn open_stream(state: &TransportState, msg: &Message) -> mpsc::UnboundedReceiver<SessionUpdate> {
-    state.surface.subscribe_client(declaring_answers(msg))
-}
-
-/// Whether a client message says its sender can answer prompts. Anything
-/// else, including a message this server cannot read, leaves the connection
-/// observing.
-fn declaring_answers(msg: &Message) -> bool {
-    let Message::Text(text) = msg else {
-        return false;
-    };
-    matches!(
-        serde_json::from_str::<ClientMessage>(text),
-        Ok(ClientMessage::Subscribe { answering: true, .. }),
-    )
+///
+/// Nothing is missed by waiting for a subscribe: a connection with no
+/// subscribed subject forwards no update anyway.
+fn open_stream(
+    state: &TransportState,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
+    answering: bool,
+) {
+    if updates.as_ref().is_some_and(|(_, held)| *held >= answering) {
+        return;
+    }
+    *updates = Some((state.surface.subscribe_client(answering), answering));
 }
 
 /// The stream's next update, or a future that never resolves while there is
 /// none - which is what keeps the branch out of the way until the client has
-/// spoken and the role is known.
+/// subscribed and the role is known.
 async fn next_update(
-    updates: &mut Option<mpsc::UnboundedReceiver<SessionUpdate>>,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
 ) -> Option<SessionUpdate> {
     match updates.as_mut() {
-        Some(updates) => updates.recv().await,
+        Some((updates, _)) => updates.recv().await,
         None => std::future::pending().await,
     }
 }
@@ -162,6 +160,7 @@ async fn handle_client(
     socket: &mut WebSocket,
     state: &TransportState,
     watched: &mut Vec<Subject>,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
     msg: Message,
 ) -> anyhow::Result<()> {
     let Message::Text(text) = msg else {
@@ -178,7 +177,9 @@ async fn handle_client(
         .await;
     };
     match client {
-        ClientMessage::Subscribe { what, .. } => match encode_subject(state, &what).await {
+        ClientMessage::Subscribe { what, answering } => {
+            open_stream(state, updates, answering);
+            match encode_subject(state, &what).await {
             Ok(data) => {
                 // Watched only once the subject is one this server can
                 // answer for: a refused subscribe leaves nothing to hear.
@@ -202,7 +203,8 @@ async fn handle_client(
                 )
                 .await
             }
-        },
+            }
+        }
         ClientMessage::Command { command, reply_to } => {
             let command = *command;
             // Where a command's answer goes, decided before anything acts.
@@ -287,14 +289,21 @@ async fn handle_client(
         }
         ClientMessage::Unsubscribe { what } => {
             // No answer: the client asked to stop hearing, and there is
-            // nothing to say back. The stream is already this socket's own,
-            // so dropping the subject from `watched` is the whole of it - and
-            // a seat it stops showing is let go with it, counted, because two
-            // subscriptions to one seat are one seat still being shown.
-            if let Subject::Session(slot) = &what {
-                Live::lock(&state.live).detach(slot);
+            // nothing to say back.
+            //
+            // ONE entry, because `subscribe` added one. `retain` would drop
+            // every copy, so a client that subscribed twice and unsubscribed
+            // once would leave its attachment counted with nothing watching -
+            // a seat counted as watched forever, whose completions never earn
+            // a mark again. And detaching for a subject this connection never
+            // held decrements a count another connection owns, so a seat a
+            // client IS displaying would earn a mark instead.
+            if let Some(at) = watched.iter().position(|held| held == &what) {
+                watched.remove(at);
+                if let Subject::Session(slot) = &what {
+                    Live::lock(&state.live).detach(slot);
+                }
             }
-            watched.retain(|held| held != &what);
             Ok(())
         }
     }

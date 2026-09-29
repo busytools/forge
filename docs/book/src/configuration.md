@@ -275,9 +275,10 @@ line. These tables hold tokens.
 ## Notifications
 
 There is no `[ui]` section. The spinner a terminal draws and how often
-it repaints are the terminal's own, with no key and nothing persisted;
-a `forge.toml` still carrying one **fails the load** rather than being
-ignored, so remove the section when you upgrade.
+it repaints are the terminal's own, with no key, no stored override and
+nothing persisted across a restart. A `forge.toml` still carrying the
+section loads and warns rather than failing, so the keys can be deleted
+at leisure; see the ghost list under "Unknown keys".
 
 Forge writes an OSC 777 desktop-notification escape every time it
 raises a notification, and asks nothing about the terminal first. A
@@ -305,11 +306,6 @@ progress bar - so an OSC 777 notification is not forwarded, and tmux
 substitutes `TERM_PROGRAM` and `TERM` with its own values besides.
 When the banner does arrive it shows while Ghostty is not the
 frontmost app, and is downgraded to a dock bounce when it is.
-
-`launchpad_spinner` is accepted as an alias for `spinner`.
-
-The spinner set here is the default. A `/spinner` pick made inside
-forge is persisted separately and wins over it.
 
 ## `[dictate]`
 
@@ -455,12 +451,13 @@ fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
-`[workers]`, `[projects.<name>]` and `[selection]`. Anything else in
-those places is a typo and is refused.
+`[workers]`, `[projects.<name>]`, `[selection]` and `[ui]`. Anything
+else in those places is a typo and is refused.
 
-`[ui]` is not one of those ghosts. It was a section for a view's own
-presentation, it holds nothing the server reads, and carrying one
-refuses the boot - so it goes rather than being tolerated.
+`[ui]` is a ghost like the rest because dropping it as dead weight
+would refuse the boot of every config still carrying one - on a machine
+nobody is looking at, with a synced file. It holds nothing the server
+reads, so the section is ignored and warned about rather than obeyed.
 
 ## A complete example
 
@@ -590,7 +587,7 @@ Everything mutable lives in a single embedded redb database at
 subscriptions and the sweep watermarks beside them, the session
 identity per project and label - the lead's and every worker's, which is
 what brings a worker back after a restart - review
-threads, the `/spinner` override, the
+threads, the
 per-account usage cache, cached model pricing, and the `/usage` view's
 per-file token summaries.
 

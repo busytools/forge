@@ -77,6 +77,13 @@ struct ForgeToml {
     /// reason: a stale synced forge.toml warns instead of failing.
     #[serde(default)]
     selection: Option<toml::Value>,
+    /// Ghost of the retired `[ui]` section, read for the same reason. It held
+    /// a client's presentation knobs - the spinner and the cadence - which the
+    /// server stopped reading entirely, and a synced forge.toml still carrying
+    /// it must warn at load rather than refuse a boot on a machine nobody is
+    /// looking at.
+    #[serde(default)]
+    ui: Option<toml::Value>,
     /// Optional top-level `[env]` table - the BASE every session
     /// starts from, overridden per key by `[accounts.env]` and then by
     /// the project's env. Merged into `LoadedAccount.env` at
@@ -561,6 +568,15 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             event_name = "selection_section_ignored",
             "[selection] is no longer read; the gateway walks an org's accounts \
              and fallback_accounts in the order they are declared",
+        );
+    }
+
+    if parsed.ui.is_some() {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "ui_section_ignored",
+            "[ui] is no longer read; a spinner and its cadence are the terminal's \
+             own, so the section and its keys can be deleted",
         );
     }
 
@@ -3213,6 +3229,11 @@ provider = "anthropic"
                 "[projects.<name>]",
                 "\n[projects.forge]\nmodel = \"x\"\n",
                 "projects_section_ignored",
+            ),
+            (
+                "[ui]",
+                "\n[ui]\nlaunchpad_spinner = \"braille\"\nfps = 120\n",
+                "ui_section_ignored",
             ),
             (
                 "a gateway key in an env layer",

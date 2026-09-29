@@ -1,10 +1,8 @@
-//! Persistent forge state: the `/spinner` override + the per-account
-//! usage cache.
+//! Persistent forge state: the per-account usage cache.
 //!
-//! Both live in the machine-local redb store ([`crate::store::state`]).
-//! [`load`] / [`store`] / [`store_spinner`] are thin wrappers over that
-//! tenant; [`ForgeState`] / [`CachedAccountUsage`] are the in-memory
-//! shapes.
+//! It lives in the machine-local redb store ([`crate::store::state`]).
+//! [`load`] and [`store`] are thin wrappers over that tenant;
+//! [`ForgeState`] / [`CachedAccountUsage`] are the in-memory shapes.
 //!
 //! The usage cache solves the cold-boot problem: Anthropic's
 //! `/api/oauth/usage` endpoint rate-limits aggressively on per-IP burst
@@ -12,8 +10,7 @@
 //! through - during which the launchpad picker has no usage to show and
 //! the walk sees every account as unknown. The cache seeds the in-memory
 //! `AccountStateMap` with the last known values until the 60 s poller
-//! refreshes them. The spinner override is a user preference with no such
-//! fallback.
+//! refreshes them.
 //!
 //! Failures are non-fatal: a closed store degrades to "no cache; spawn
 //! paths see empty bars until the poller succeeds."
