@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
-  import { HEADINGS, mark, type Offer } from './autocomplete';
+  import { HEADINGS, LIST_ID, mark, rowId, type Offer } from './autocomplete';
 
   let {
     offer,
@@ -14,9 +14,6 @@
   } = $props();
 
   const heading = $derived(HEADINGS[offer.kind]);
-
-  /** The id the listbox points at, which is how a reader hears which row is marked. */
-  const rowId = (at: number): string => `ac-${offer.kind}-${at}`;
 </script>
 
 <div class="ac">
@@ -29,10 +26,11 @@
   </div>
   <div
     class="rows"
+    id={LIST_ID}
     role="listbox"
     aria-label={heading.title}
-    tabindex="0"
-    aria-activedescendant={rowId(marked)}
+    tabindex="-1"
+    aria-activedescendant={rowId(offer, marked)}
   >
     {#each offer.rows as row, at (row.insert)}
       {@const parts = mark(row.text, offer.query)}
@@ -40,7 +38,7 @@
         class="it"
         class:sel={at === marked}
         role="option"
-        id={rowId(at)}
+        id={rowId(offer, at)}
         aria-selected={at === marked}
         tabindex="-1"
         onclick={() => onpick(at)}

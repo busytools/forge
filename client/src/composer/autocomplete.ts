@@ -16,7 +16,8 @@
  * text or after whitespace.
  */
 
-import { MIN_QUERY_CHARS, TABLE as EMOJI, matches as emojiMatches, shortcodeQuery } from './emoji';
+import { MIN_QUERY_CHARS, matches as emojiMatches, shortcodeQuery } from './emoji';
+import { isForgeCommand } from './forge-commands';
 import type { Advisory, AgentType, FileEntry } from './wire';
 
 /**
@@ -71,6 +72,20 @@ export const HEADINGS: Record<Offer['kind'], { icon: string; title: string }> = 
   agent: { icon: 'bot', title: 'subagents' },
   emoji: { icon: 'smile', title: 'emoji' },
 };
+
+/**
+ * The id the popup carries, which the field points its `aria-controls` at.
+ *
+ * One list at a time, so one id: a popup is the field's, and the field is what
+ * owns the keyboard while it is open - the combobox pattern, rather than a
+ * listbox the reader would have to Tab into.
+ */
+export const LIST_ID = 'composer-list';
+
+/** The id one row carries, which the field points at while a key moves the mark. */
+export function rowId(offer: Offer, at: number): string {
+  return `ac-${offer.kind}-${at}`;
+}
 
 /** The token a draft ends in, and where it starts. */
 function token(draft: string): { text: string; from: number } {
@@ -134,7 +149,7 @@ function emojiOffer(draft: string): Offer | null {
 function commands(sources: Sources): (query: string) => Row[] {
   const merged: Advisory[] = [
     ...sources.forgeCommands,
-    ...sources.advertised.filter((command) => !isForge(command.name, sources.forgeCommands)),
+    ...sources.advertised.filter((command) => !isForgeCommand(command.name)),
   ];
   // Ranked on the name WITHOUT its slash: the query is what came after the
   // trigger, and a slash at the front of the name would make every command a
@@ -148,10 +163,6 @@ function commands(sources: Sources): (query: string) => Row[] {
         glyph: null,
       }),
     );
-}
-
-function isForge(name: string, forge: Advisory[]): boolean {
-  return forge.some((command) => command.name === name);
 }
 
 /**
@@ -255,6 +266,3 @@ export function mark(text: string, query: string): { before: string; hit: string
   const end = at + query.length;
   return { before: text.slice(0, at), hit: text.slice(at, end), after: text.slice(end) };
 }
-
-/** How many shortcodes the set holds, which the emoji list's header used to state. */
-export const EMOJI_COUNT = EMOJI.length;

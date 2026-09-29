@@ -27,9 +27,15 @@ function type(text: string): void {
   flushSync();
 }
 
-/** Press a key on the surface the composer listens on, which is the field. */
+/**
+ * Press a key on whatever holds the keyboard, which the box and the dock take
+ * turns at - a real key goes to the focused element, and a dock that nothing
+ * focuses is a dock whose keys do nothing.
+ */
 function press(key: string): void {
-  field().dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  const target = document.activeElement;
+  if (!(target instanceof HTMLElement)) throw new Error('nothing holds the keyboard');
+  target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
   flushSync();
 }
 
@@ -138,12 +144,10 @@ describe("the reader's draft", () => {
     const harness = open();
     type('ship it once CI is green');
 
-    harness.page.record = record({ pending_ask: questionAsk() });
+    harness.page.record = record({ pending_ask: permissionAsk() });
     flushSync();
 
-    const rejected = document.querySelectorAll('.opt .lbl')[1];
-    if (!(rejected instanceof HTMLElement)) throw new Error('the dock drew one option only');
-    rejected.click();
+    options()[1]?.click();
     flushSync();
 
     harness.page.record = record();
@@ -330,6 +334,236 @@ describe('the box', () => {
         command: { dictate_start: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
       },
     ]);
+  });
+});
+
+/**
+ * The dock's own round trip: what an answer carries, who has the keyboard, and
+ * what happens to a take that is still running behind it.
+ */
+describe('the dock', () => {
+  /** Every command the composer sent, in order. */
+  const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
+    harness.sent.map((entry) => entry.command);
+
+  it('answers a question with the row that was clicked, and only that row', () => {
+    const harness = open({
+      record: record({ pending_ask: questionAsk('tu-q', { multi_select: false }) }),
+    });
+
+    options()[1]?.click();
+    flushSync();
+
+    expect(commands(harness), 'a single-select answer is the clicked row').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: ['q-prod'],
+            annotation: null,
+          },
+        },
+      },
+    ]);
+  });
+
+  it('toggles the rows of a multi-select question, and answers with every row that is on', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    options()[0]?.click();
+    options()[1]?.click();
+    flushSync();
+
+    expect(
+      [...document.querySelectorAll('.opt .box2')].map((box) => box.classList.contains('on')),
+      'the boxes carry what is toggled',
+    ).toEqual([true, true, false]);
+    expect(commands(harness), 'a toggle is not an answer').toEqual([]);
+
+    press('Enter');
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: ['q-staging', 'q-prod'],
+            annotation: null,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("carries the reader's own words as the answer's annotation, not as an option", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    const own = options()[2];
+    own?.click();
+    flushSync();
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) {
+      throw new Error('the own-words row drew no field to write in');
+    }
+    expect(commands(harness), 'a row that asks for words does not answer without them').toEqual([]);
+
+    notes.value = 'Also bump the queue worker concurrency';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    press('Enter');
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: [],
+            annotation: { preview: null, notes: 'Also bump the queue worker concurrency' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it("hands a permission's own-words row the text it promised", () => {
+    const harness = open({ record: record({ pending_ask: permissionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew fewer rows than it offers');
+    own.click();
+    flushSync();
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) {
+      throw new Error('the own-words row drew no field to write in');
+    }
+    notes.value = 'not this branch';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    press('Enter');
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_permission: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-1',
+          outcome: {
+            outcome: 'selected',
+            option_id: 'opt-notes',
+            action: { kind: 'deny' },
+            notes_text: 'not this branch',
+          },
+        },
+      },
+    ]);
+  });
+
+  it('takes the keyboard when a prompt takes the box, and gives it back when the prompt is gone', () => {
+    const harness = open();
+    type('keep this');
+
+    harness.page.record = record({ pending_ask: permissionAsk() });
+    flushSync();
+
+    const list = document.querySelector('.dock [role="listbox"]');
+    expect(document.activeElement, 'the dock owns the keyboard it was handed').toBe(list);
+    expect(document.querySelector('textarea'), 'and the box is not beside it').toBeNull();
+
+    harness.page.record = record();
+    flushSync();
+
+    expect(document.activeElement, 'the box takes the keyboard back').toBe(field());
+  });
+
+  it('moves the mark from the keyboard once the dock has the slot', () => {
+    const harness = open({ record: record({ pending_ask: permissionAsk() }) });
+    const list = document.querySelector('.dock [role="listbox"]');
+    if (!(list instanceof HTMLElement)) throw new Error('the dock drew no listbox');
+
+    list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    flushSync();
+
+    expect(document.querySelector('.opt.sel')?.textContent).toContain('Deny');
+    expect(
+      list.getAttribute('aria-activedescendant'),
+      'and the listbox points at the row it moved to',
+    ).toContain('opt-deny');
+    void harness;
+  });
+
+  it('keeps a running take visible while a prompt holds the slot, and abandons it on escape', () => {
+    const harness = open({
+      record: record({
+        pending_ask: permissionAsk(),
+        composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      }),
+    });
+
+    expect(drawn(), 'the take is named rather than swallowed').toContain('dictating');
+    expect(
+      document.querySelector('.dock .blip .dot'),
+      'and it says it is still listening',
+    ).not.toBeNull();
+
+    const list = document.querySelector('.dock [role="listbox"]');
+    if (!(list instanceof HTMLElement)) throw new Error('the dock drew no listbox');
+    list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+
+    expect(commands(harness), 'the first escape belongs to the take').toEqual([
+      {
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: false },
+      },
+    ]);
+  });
+
+  it('says why, and gives the words back, when the core refuses a send', () => {
+    const harness = open();
+    type('push it once CI is green');
+    press('Enter');
+    expect(field().value, 'the box is cleared for the next thing').toBe('');
+
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the session is not running' });
+    flushSync();
+
+    expect(field().value, 'the words come back with the refusal').toBe('push it once CI is green');
+    expect(drawn()).toContain('the session is not running');
+  });
+
+  it('names a held post for what is waiting rather than explaining an empty dock', () => {
+    open({
+      record: record({
+        pending_ask: {
+          kind: 'slack_draft',
+          request: {
+            workspace: 'Trust Machines',
+            conversation_label: 'granite-staging-alerts',
+            thread_ts: null,
+            text: 'Deploy finished on staging.',
+            tool: 'slack__post',
+          },
+        },
+      }),
+    });
+
+    expect(drawn()).toContain('Post to Slack');
+    expect(drawn()).toContain('Trust Machines · granite-staging-alerts');
+    expect(drawn()).toContain('slack__post');
+    expect(drawn(), 'and does not claim options this view never drew').not.toContain(
+      'arrived before this view attached',
+    );
+  });
+
+  it("draws the question's own mark for its header, not a character-cell glyph", () => {
+    open({ record: record({ pending_ask: questionAsk() }) });
+
+    expect(document.querySelector('.dock .qm use')?.getAttribute('href')).toBe('#i-question');
+    expect(drawn(), 'and the queue line carries no glyph').not.toContain('▼');
   });
 });
 

@@ -71,6 +71,10 @@ export interface PermissionRequest {
 export interface QuestionOption {
   optionId: string;
   label: string;
+  /** What choosing it means, which the row draws dim under the label. */
+  description: string | null;
+  /** What it would do, shown for the marked row while the reader decides. */
+  preview: string | null;
 }
 
 /** A question as the core offers it. */
@@ -78,10 +82,23 @@ export interface QuestionRequest {
   toolId: string;
   header: string;
   question: string;
+  /** Whether more than one option can be answered with, which the rows toggle on. */
+  multiSelect: boolean;
   options: QuestionOption[];
   /** Which question this is, and how many the call asks. */
   index: number;
   total: number;
+}
+
+/** A held Slack post: what is waiting, and what it would send. */
+export interface SlackDraft {
+  workspace: string;
+  conversationLabel: string;
+  /** `null` posts a root message; a timestamp replies into that thread. */
+  threadTs: string | null;
+  text: string;
+  /** The MCP tool that composed it, which is what is actually waiting. */
+  tool: string;
 }
 
 /** The prompt the seat is parked on. */
@@ -89,7 +106,7 @@ export type Ask =
   | { kind: 'permission'; request: PermissionRequest }
   | { kind: 'question'; request: QuestionRequest }
   /** A held Slack post, which this composer draws no dock for. */
-  | { kind: 'slack_draft' };
+  | { kind: 'slack_draft'; request: SlackDraft };
 
 const OPTION_KINDS: PermissionOption['kind'][] = ['allow', 'deny', 'edit', 'notes'];
 const PHASES: TakePhase[] = ['recording', 'transcribing'];
@@ -172,7 +189,7 @@ export function askFrom(value: unknown): Ask | null {
     case 'question':
       return questionFrom(request);
     case 'slack_draft':
-      return { kind: 'slack_draft' };
+      return slackFrom(request);
     default:
       return null;
   }
@@ -215,9 +232,15 @@ function questionFrom(value: unknown): Ask | null {
       toolId: text(call['tool_call_id']) ?? '',
       header: text(prompt['header']) ?? '',
       question: text(prompt['question']) ?? '',
+      multiSelect: prompt['multi_select'] === true,
       options: options.map((option) => {
         const row = record(option);
-        return { optionId: text(row['option_id']) ?? '', label: text(row['label']) ?? '' };
+        return {
+          optionId: text(row['option_id']) ?? '',
+          label: text(row['label']) ?? '',
+          description: line(row['description']),
+          preview: line(row['preview']),
+        };
       }),
       index: number(held['question_index']) ?? 0,
       total: number(held['total_questions']) ?? 0,
@@ -225,14 +248,35 @@ function questionFrom(value: unknown): Ask | null {
   };
 }
 
-/** What a call is about, read from the field the CLI fills for the tool it named. */
+/** A held post, which the dock names even though this composer holds no dock for it. */
+function slackFrom(value: unknown): Ask {
+  const held = record(value);
+  return {
+    kind: 'slack_draft',
+    request: {
+      workspace: text(held['workspace']) ?? '',
+      conversationLabel: text(held['conversation_label']) ?? '',
+      threadTs: text(held['thread_ts']),
+      text: text(held['text']) ?? '',
+      tool: text(held['tool']) ?? '',
+    },
+  };
+}
+
+/**
+ * What a call is about, read from the field the CLI fills for the tool it named.
+ *
+ * The raw input is the fallback rather than nothing: Grep and Glob carry a
+ * `pattern`, NotebookEdit a `notebook_path` and Task a prompt, so a list of
+ * three keys leaves several tools drawing no subject at all.
+ */
 function subjectOf(raw: unknown): string {
   const input = record(raw);
   for (const key of ['command', 'file_path', 'url']) {
     const value = text(input[key]);
     if (value !== null) return value;
   }
-  return '';
+  return JSON.stringify(input) ?? '';
 }
 
 /** One slash command the CLI advertised. */

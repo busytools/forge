@@ -94,8 +94,8 @@ export function permissionAsk(toolId = 'tu-1'): unknown {
   };
 }
 
-/** A question as the core offers one. */
-export function questionAsk(toolId = 'tu-q'): unknown {
+/** A question as the core offers one, with whatever the test overrides in its prompt. */
+export function questionAsk(toolId = 'tu-q', prompt: Record<string, unknown> = {}): unknown {
   return {
     kind: 'question',
     request: {
@@ -113,9 +113,15 @@ export function questionAsk(toolId = 'tu-q'): unknown {
         question: 'Pick the environments to deploy to.',
         multi_select: true,
         options: [
-          { option_id: 'q-staging', label: 'Staging', description: null, preview: null },
+          {
+            option_id: 'q-staging',
+            label: 'Staging',
+            description: 'The pre-production cluster',
+            preview: 'deploy --env staging',
+          },
           { option_id: 'q-prod', label: 'Production', description: null, preview: null },
         ],
+        ...prompt,
       },
       question_index: 1,
       total_questions: 3,

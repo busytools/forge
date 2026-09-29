@@ -5,7 +5,7 @@
   import Autocomplete from './Autocomplete.svelte';
   import Dictation from './Dictation.svelte';
   import Dock from './Dock.svelte';
-  import { offer, type Sources } from './autocomplete';
+  import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -46,6 +46,16 @@
   let answered = $state<string | null>(null);
   /** Why the core refused that answer, when it did. */
   let refusal = $state<string | null>(null);
+  /**
+   * The words a send is waiting on, while the core has not yet taken them.
+   *
+   * A send is fire-and-forget and the box is cleared for the next thing, so
+   * without this the words are gone before a refusal can arrive - and a prompt
+   * the core refused would take the reader's typed message with it.
+   */
+  let sending = $state<string | null>(null);
+  /** Why the core refused a send, which the box draws until the reader types. */
+  let bounced = $state<string | null>(null);
   /**
    * The words a landed take has already put in the draft, so they land once.
    *
@@ -128,6 +138,12 @@
     if (!record.header.turn_in_flight) sent = null;
   });
 
+  // A turn in flight is the send landing: the words are the core's now, so the
+  // box owes the reader nothing back.
+  $effect(() => {
+    if (record.header.turn_in_flight) sending = null;
+  });
+
   /**
    * The prompt changing is the answer landing.
    *
@@ -143,21 +159,38 @@
     refusal = null;
   });
 
-  // A command the socket refused. The composer only hears the ones it sent:
-  // an answer that is still outstanding is the only one a refusal can be about,
-  // because a page that moved on has already cleared its own.
+  /**
+   * A command the socket refused, which is a refusal about something this
+   * composer sent and is still waiting on.
+   *
+   * An answer counts while its prompt is still the core's, and a send counts
+   * until the turn it started is in flight - so a refusal that arrives while
+   * neither is outstanding belongs to another page, and drawing it here would
+   * put a stranger's failure in the reader's box.
+   */
   $effect(() => {
     return connection.onMessage((message) => {
       if (message.kind !== 'error' || message.what !== 'dispatch') return;
-      if (answered === null) return;
-      refusal = message.why;
+      if (answered !== null) {
+        refusal = message.why;
+        return;
+      }
+      if (sending === null) return;
+      // The words come back with the reason: a send the core refused took the
+      // box's text with it, and losing it is the defect this guards.
+      draft = sending;
+      sending = null;
+      bounced = message.why;
     });
   });
 
   /** Send the draft, and remember the command when the draft was one. */
   function send(): void {
-    const text = draft;
-    if (text.trim() === '') return;
+    // Trimmed at the ends like the terminal's own submit: picking a row off the
+    // list leaves a trailing space for the next word, and an answer that goes
+    // out as `/compact ` is one nothing asked for.
+    const text = draft.trim();
+    if (text === '') return;
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
       // than a reply, so there is nothing here to await.
@@ -168,8 +201,10 @@
       // command that never left the browser.
       return;
     }
-    const [first = ''] = text.trim().split(/\s+/);
+    const [first = ''] = text.split(/\s+/);
     if (first.startsWith('/')) sent = first;
+    sending = text;
+    bounced = null;
     draft = '';
   }
 
@@ -219,6 +254,7 @@
   /** The reader's own typing is what dismisses a notice row. */
   function oninput(): void {
     dismissed = notice?.text ?? null;
+    bounced = null;
   }
 
   /**
@@ -231,6 +267,11 @@
       return;
     }
     void connection.dispatch({ dictate_stop: { key: slot, submit: true } });
+  }
+
+  /** Abandon a take without submitting it, which the dock's Escape does. */
+  function abandon(): void {
+    void connection.dispatch({ dictate_stop: { key: slot, submit: false } });
   }
 
   /** Remember which prompt this reader answered, while the core still lists it. */
@@ -267,7 +308,9 @@
       {connection}
       depth={seat.pendingDepth}
       notice={refusal}
+      take={composer.take}
       onanswer={remember}
+      onabandon={abandon}
     />
   </div>
 {:else}
@@ -287,6 +330,8 @@
     >
       {#if composer.take !== null}
         <Dictation take={composer.take} {slot} {connection} />
+      {:else if bounced !== null}
+        <div class="notice bad">{bounced}</div>
       {:else if line !== null}
         <div class="notice {line.tone}">{line.text}</div>
       {/if}
@@ -294,9 +339,17 @@
         <Autocomplete offer={list} {marked} onpick={pick} />
       {/if}
       <div class="line">
+        <!-- The list belongs to the field rather than being a surface the reader
+             Tabs into: the field keeps focus and points at the marked row. The
+             combobox role is not available here - ARIA allows it on an input,
+             not on a textarea - so this is the textbox-and-controlled-listbox
+             shape, which is what a multi-line composer can validly be. -->
         <textarea
           class="txt"
           name="draft"
+          aria-autocomplete="list"
+          aria-controls={list === null ? undefined : LIST_ID}
+          aria-activedescendant={list === null ? undefined : rowId(list, marked)}
           autocomplete="off"
           spellcheck="false"
           placeholder="Type a message…"

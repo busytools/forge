@@ -1003,12 +1003,29 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .opt.sel .lbl { color: var(--text); font-weight: 600; }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
   border: 1.5px solid var(--line); display: grid; place-items: center; }
+/* A question's row that is on, which the answer carries with it. The box is
+   the only mark of it, so it is drawn rather than implied by the pointer. */
+.opt .box2.on { border-color: var(--ok); color: var(--ok); }
+.opt .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What the marked option would do, which the terminal shows for the focused
+   row while the reader decides. */
+.dock .preview { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
+  padding: 7px 11px; font-family: var(--mono); font-size: var(--fs-data);
+  color: var(--muted); white-space: pre-wrap; }
 .dock .notes { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
   padding: 7px 11px; font-family: inherit; font-size: var(--fs-base); color: var(--text);
   background: rgba(13,17,26,.6); resize: none; }
+/* A take that is still running behind the dock: the whole indicator on this
+   surface, so a prompt cannot swallow a recording that is still going. */
+.dock .blip { display: flex; align-items: center; gap: 8px; padding-left: 31px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.dock .blip .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+  background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
+.dock .blip .dot.tr { background: var(--blue); animation: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .dict .dot, .blocked .ring { animation: none; }
+  .dict .dot, .blocked .ring, .dock .blip .dot { animation: none; }
 }
 
 /* The narrow widths, which the mockup draws the composer at too. The rect

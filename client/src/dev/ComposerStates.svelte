@@ -7,19 +7,36 @@
    * by-width check reads, and a specimen whose copy drifts from the drawing
    * makes the comparison say something the drawing does not.
    *
+   * Every state the component can be in is here, including the three that no
+   * prop reaches: the in-flight slash command, which comes from text the reader
+   * sent (`Driven` types it), and the two one-shot states a take leaves behind.
+   *
    * Reached only from the development route, and only through `fixture.ts`'s
    * deferred import, so neither it nor its specimens reach the shipped bundle.
    */
   import Composer from '../composer/Composer.svelte';
+  import Driven from './Driven.svelte';
   import type { ComposerProps, ComposerRecord, SeatRead } from '../composer/view';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
 
   const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
-  /** Nothing to send: the page is drawn, not driven. */
+  /**
+   * A connection that sends nothing and records everything.
+   *
+   * The page is drawn rather than driven, so there is no core to answer - but
+   * what a dock ANSWERS with is the thing a by-width check cannot see by
+   * looking, so every command lands on `window.__composerSent` where a check
+   * can read it back.
+   */
+  const sent: unknown[] = [];
   const idle = {
-    dispatch: () => null,
+    dispatch: (command: unknown) => {
+      sent.push(command);
+      (globalThis as { __composerSent?: unknown[] }).__composerSent = sent;
+      return null;
+    },
     onMessage: () => () => {},
   } as unknown as Pick<Connection, 'dispatch' | 'onMessage'>;
 
@@ -42,6 +59,17 @@
 
   function seat(over: Partial<SeatRead> = {}): SeatRead {
     return { lifecycle: 'Running', reason: null, waking: false, pendingDepth: 1, ...over };
+  }
+
+  /** A specimen's props with the seat, record and connection every composer needs. */
+  function withDefaults(over: Partial<ComposerProps>): ComposerProps {
+    return {
+      record: over.record ?? blank(),
+      slot: SLOT,
+      seat: over.seat ?? seat(),
+      connection: idle,
+      dictation: over.dictation ?? false,
+    };
   }
 
   /** A take as the wire carries one, which is what a record holds. */
@@ -146,8 +174,11 @@
     },
   };
 
-  /** One specimen: what it is called, and the composer it draws. */
-  const specimens: { label: string; props: Partial<ComposerProps> }[] = [
+  /**
+   * One specimen: what it is called, the composer it draws, and - for a state
+   * only the reader can produce - the text to type into it.
+   */
+  const specimens: { label: string; props: Partial<ComposerProps>; driven?: string }[] = [
     { label: 'idle', props: {} },
     {
       label: 'hint · authentication',
@@ -212,8 +243,46 @@
       },
     },
     {
+      label: 'notice · what the core refused',
+      props: {
+        dictation: true,
+        record: {
+          ...blank(),
+          composer: {
+            take: null,
+            notice: {
+              kind: 'line',
+              tone: 'bad',
+              text: 'microphone is held by another application',
+            },
+            compacting: false,
+            sign_in: null,
+          },
+        },
+      },
+    },
+    {
+      label: 'landed · one green beat, then idle',
+      props: {
+        record: {
+          ...blank(),
+          composer: {
+            take: null,
+            notice: { kind: 'landed', text: 'fix the flaky retry test and', truncated: false },
+            compacting: false,
+            sign_in: null,
+          },
+        },
+      },
+    },
+    {
       label: 'blocking · connecting',
       props: { seat: seat({ lifecycle: 'Spawning' }) },
+    },
+    {
+      label: 'blocking · a slash command in flight (typed, then sent)',
+      props: { record: { ...blank(), header: { turn_in_flight: true } } },
+      driven: '/compact',
     },
     {
       label: 'blocking · compacting',
@@ -253,15 +322,13 @@
   {#each specimens as specimen (specimen.label)}
     <section>
       <h3>{specimen.label}</h3>
-      <div class="comp">
-        <Composer
-          record={specimen.props.record ?? blank()}
-          slot={SLOT}
-          seat={specimen.props.seat ?? seat()}
-          connection={idle}
-          dictation={specimen.props.dictation ?? false}
-        />
-      </div>
+      {#if specimen.driven !== undefined}
+        <Driven command={specimen.driven} props={withDefaults(specimen.props)} />
+      {:else}
+        <div class="comp">
+          <Composer {...withDefaults(specimen.props)} />
+        </div>
+      {/if}
     </section>
   {/each}
 </div>
