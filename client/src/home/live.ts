@@ -15,6 +15,7 @@
 import { writable, type Readable, type Writable } from 'svelte/store';
 
 import type { Connection, ConnectionStatus } from '../socket';
+import type { Store } from '../stores';
 import { coversHome } from '../wire/fleet';
 import { homeFrom, type HomeWire } from '../wire/home';
 
@@ -45,7 +46,7 @@ const NOTHING: HomeRead = { wire: null, refused: null };
  * draws.
  */
 export function watchHome(connection: Connection): Readable<HomeRead> {
-  const held = connection.subscribe('home');
+  let held: Store | null = null;
   // A read is a full encode on the server, so asking again while one is in
   // flight queues them behind each other and the page falls further behind
   // the busier the fleet is. One at a time.
@@ -55,6 +56,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   let stopStatus: (() => void) | null = null;
 
   function read(): void {
+    if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
       view.set({ wire: null, refused: state.why });
@@ -67,6 +69,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   }
 
   function watch(): void {
+    held = connection.subscribe('home');
     reading = false;
     stopMessages = connection.onMessage((message) => {
       if (message.kind === 'snapshot' || message.kind === 'error') {
@@ -99,6 +102,10 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     stopStatus = null;
     if (timer !== null) clearTimeout(timer);
     timer = null;
+    // The subscription goes with the last subscriber too, or a connection
+    // nothing draws from stays counted against a seat it is not showing.
+    connection.unsubscribe('home');
+    held = null;
   }
 
   const view: Writable<HomeRead> = writable(NOTHING, () => {

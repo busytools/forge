@@ -34,7 +34,11 @@ own `package.json` version would name the wrong thing.
 **The row's `where` and `what` cells are its two variable columns.** `where`
 carries the branch the tree is on and how much has changed in it, from the
 project row's `work`; a count of zero draws nothing, because an unchanged
-tree is what the cell already means when it is empty. `what` says one thing,
+tree is what the cell already means when it is empty. **That read is the
+lead's seat**, so only a lead's row draws it: a worker's `where` is empty
+rather than carrying the lead's tree under a worker's name, because a blank
+reads as missing where a plausible wrong branch reads as right. A worker's
+own tree is a change on the socket rather than on this page. `what` says one thing,
 and the order it picks by is the order a reader needs them: what the seat is
 waiting on a person for, else the task it holds with that task's status chip
 and artifact, else why a spawn here would be refused, else why the tree could
@@ -75,6 +79,19 @@ line under it.
   has one strictly newer than the installed CLI. Both sides have to resolve
   for it to appear at all, so a probe that answered one of them draws
   nothing rather than claiming an update it cannot see.
+- **Connected, waiting for the first read**: the door has gone and the fleet
+  has not arrived. The server builds a home snapshot by reading each
+  project's working tree, so the window is not instant, and it is its own
+  state rather than the connect form handed back - a form here would re-render
+  with the address reset and a live button, and a second Enter would open a
+  second socket.
+- **The home was refused**: the server turned the subscription down and its
+  own words are drawn. The address is not the thing that is wrong, so the
+  door is not what is shown.
+- **A connection that dropped**: the page keeps what it last read and says so
+  above it, and the notice stays until a fresh read lands rather than clearing
+  the moment the socket reopens - the window between those two is the one
+  place a reader cannot tell stale rows from current ones.
 
 **The unseen mark is drawn from a read of its own.** `unseen` is the list
 of seats whose last turn finished while no client was showing them, and

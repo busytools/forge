@@ -367,7 +367,14 @@ export function connect(url: string): Connection {
         report('the server sent a frame this client could not read', why);
         return;
       }
-      handle(message);
+      try {
+        handle(message);
+      } catch (why) {
+        // A frame that parses but is not the shape this client expects lands
+        // here rather than out of the handler, where it would take the frames
+        // after it and the listeners after it.
+        report('a frame this client could not handle', why);
+      }
       for (const fn of listeners) {
         // One page's listener throwing must not silence the pages after it.
         try {
@@ -386,8 +393,12 @@ export function connect(url: string): Connection {
       if (status === 'closed' || status === 'mismatched') return;
       move('connecting');
       // A command that was in flight has no answer coming: the reply died
-      // with the connection that would have carried it.
+      // with the connection that would have carried it. So did every ask -
+      // and `onopen` asks again, so leaving them queued would put stale keys
+      // in front of the live ones and hand a later refusal to a store the
+      // server had already answered.
       failPending('the socket dropped before answering');
+      awaiting.length = 0;
       scheduleRetry();
     };
 

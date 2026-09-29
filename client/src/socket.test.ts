@@ -433,6 +433,42 @@ describe('the connection', () => {
   });
 
   /**
+   * Every ask outstanding when the socket dropped died with it, and the
+   * reconnect asks again. Leaving the dead ones queued puts stale keys in
+   * front of the live ones, and a refusal pops the oldest - so it lands on a
+   * store the server had already answered while the genuinely refused one
+   * reads as loading for the life of the connection.
+   */
+  it('forgets the asks a drop killed, so a later refusal finds its own', async () => {
+    const { server, conn } = await connected();
+    const lead: Subject = { session: LEAD };
+    const w1: Subject = { session: { org: 'TestOrg', project: 'proj', label: 'w1' } };
+    const w2: Subject = { session: { org: 'TestOrg', project: 'proj', label: 'w2' } };
+
+    const first = conn.subscribe(lead);
+    const second = conn.subscribe(w1);
+    await until(() => server.received.length === 2, 'both subscribes');
+    server.send({ kind: 'snapshot', subject: lead, data: { who: 'lead' } });
+    await until(() => first.state().kind === 'ready', 'lead to be answered');
+
+    // `w1` is still outstanding when the socket goes.
+    server.drop();
+    await until(() => server.received.length >= 4, 'both re-asks');
+    server.send({ kind: 'snapshot', subject: lead, data: { who: 'lead' } });
+    server.send({ kind: 'snapshot', subject: w1, data: { who: 'w1' } });
+    await until(() => second.state().kind === 'ready', 'w1 to be answered');
+
+    const third = conn.subscribe(w2);
+    await until(() => server.received.length >= 5, 'the third subscribe');
+    server.send({ kind: 'error', what: 'subscribe', why: 'forge holds no session for that seat' });
+
+    await until(() => third.state().kind === 'refused', 'the refusal to land on w2');
+    expect(second.state(), 'the refusal went to a subscription already answered').toEqual({
+      kind: 'ready',
+    });
+  });
+
+  /**
    * One unsubscribe drops one entry: a second subscribe to one subject adds
    * a second entry rather than replacing the first, because two
    * subscriptions to one seat are one seat still being shown.
