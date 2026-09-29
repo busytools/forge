@@ -92,8 +92,8 @@
                  a character in the text, so it is a break whatever the box's
                  whitespace rule turns out to be. -->
             <div class="term">
-              {#if call.command !== null}<span class="pfx">$</span> {call.command}<br />{/if}{piece
-                .text}
+              {#if call.command !== null}<span class="pfx">$</span>
+                {call.command}<br />{/if}{piece.text}
             </div>
           {/if}
         {/each}

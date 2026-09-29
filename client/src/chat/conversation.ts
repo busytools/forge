@@ -21,7 +21,7 @@
  * and the rows already drawn keep the objects they were.
  */
 
-import { writable, type Readable } from 'svelte/store';
+import { get, writable, type Readable } from 'svelte/store';
 
 import { MORE_TURNS, slotOf } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
@@ -219,11 +219,7 @@ export class Chat {
   }
 
   private read(): Conversation {
-    let held: Conversation = NOTHING;
-    this.inner.subscribe((value) => {
-      held = value;
-    })();
-    return held;
+    return get(this.inner);
   }
 
   private ask(before: string | null): void {
