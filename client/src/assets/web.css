@@ -982,7 +982,12 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
   background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86));
   box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 15px 17px;
   display: flex; flex-direction: column; gap: 11px; }
-.dock .queue { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.dock .queue { display: flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+/* The marker the mockup draws, as the sheet's own chevron turned to face the
+   way the rest of the queue waits - the same glyph a disclosure uses open,
+   which is what `▼` was standing in for. */
+.dock .queue .more { transform: rotate(90deg); }
 .dock .head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
 .dock .head .qm { color: var(--accent); font-weight: 700; flex: none; }
 .dock .head .t { font-weight: 650; color: var(--text); }

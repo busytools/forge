@@ -186,6 +186,9 @@
       if (row.optionId === null) return;
       const option = ask.request.options.find((held) => held.optionId === row.optionId);
       if (option === undefined) return;
+      // The own-words row asks for words: submitting it with none says nothing
+      // AND denies on the reader's behalf, so it waits for them to write.
+      if (option.kind === 'notes' && words === null) return;
       onanswer(toolId);
       void connection.dispatch({
         respond_permission: {
@@ -230,6 +233,21 @@
     marked = (marked + step + rows.length) % rows.length;
   }
 
+  /**
+   * Turn the marked row on or off, which only a multi-select question does.
+   *
+   * The key the chip names has to do this from wherever the dock's keys are
+   * read: the rows are not focusable, so a handler on a row would be a handler
+   * nothing reaches.
+   */
+  function toggle(): void {
+    const row = rows[marked];
+    if (!multi || row === undefined || row.optionId === null) return;
+    toggled = toggled.includes(row.optionId)
+      ? toggled.filter((id) => id !== row.optionId)
+      : [...toggled, row.optionId];
+  }
+
   /** Whether a key landed in the field the own-words row opened. */
   const inField = (event: KeyboardEvent): boolean =>
     event.target instanceof HTMLElement && event.target.classList.contains('notes');
@@ -244,11 +262,25 @@
       return;
     }
     if (inField(event)) {
-      // The reader is writing, so the field keeps its own keys - except the one
-      // that submits what they wrote.
+      // The reader is writing. Enter submits what they wrote, and the arrows
+      // move the mark - which is the way back OUT of the field, because the
+      // mark leaving the own-words row is what hands the keyboard back to the
+      // list. Everything else stays the field's own, so a caret still moves.
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         submit();
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        move(event.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
+      if (event.key === 'Escape') {
+        // Back to the options, which is where the terminal's Escape goes from
+        // its own notes editor - and the words typed so far stay in the state.
+        event.preventDefault();
+        move(-1);
       }
       return;
     }
@@ -260,6 +292,11 @@
     if (event.key === 'ArrowUp') {
       event.preventDefault();
       move(-1);
+      return;
+    }
+    if (event.key === ' ') {
+      event.preventDefault();
+      toggle();
       return;
     }
     if (event.key === 'Enter') {
@@ -286,7 +323,10 @@
 
 <div class="dock">
   {#if depth > 1}
-    <div class="queue">{depth - 1} more pending after this</div>
+    <div class="queue">
+      <Icon name="chev" class="more" />
+      {depth - 1} more pending after this
+    </div>
   {/if}
   {#if notice !== null}
     <div class="notice bad">{notice}</div>

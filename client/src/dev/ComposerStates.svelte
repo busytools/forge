@@ -307,6 +307,16 @@
     },
     { label: 'dock · permission', props: { record: { ...blank(), pending_ask: permission } } },
     {
+      label: 'dock · with a take still running behind it',
+      props: {
+        record: {
+          ...blank(),
+          pending_ask: permission,
+          composer: { take: take(), notice: null, compacting: false, sign_in: null },
+        },
+      },
+    },
+    {
       label: "dock · with the CLI's own reason",
       props: { record: { ...blank(), pending_ask: readOutside } },
     },

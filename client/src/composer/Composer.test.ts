@@ -407,6 +407,58 @@ describe('the dock', () => {
     ]);
   });
 
+  it('toggles the marked row from the keyboard, which is the key its chip names', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+    const list = document.querySelector('.dock [role="listbox"]');
+    if (!(list instanceof HTMLElement)) throw new Error('the dock drew no listbox');
+
+    // The listbox is what holds the keys; the rows are not focusable, so a
+    // handler on a row is one nothing reaches.
+    press(' ');
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'space turns the marked row on',
+    ).toEqual([true, false, false]);
+
+    press(' ');
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'and off again',
+    ).toEqual([false, false, false]);
+    expect(harness.sent, 'a toggle is never an answer').toEqual([]);
+  });
+
+  it('moves the mark back out of the own-words field, so the options are reachable again', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+    const list = document.querySelector('.dock [role="listbox"]');
+    if (!(list instanceof HTMLElement)) throw new Error('the dock drew no listbox');
+
+    // One ArrowUp from the load state wraps onto the own-words row, which hands
+    // the keyboard to the field. From there the arrows have to keep working, or
+    // the field is a trap with no way back to the options.
+    press('ArrowUp');
+    const field = document.querySelector('.dock textarea.notes');
+    expect(document.activeElement, 'the own-words row hands over the keyboard').toBe(field);
+
+    press('ArrowUp');
+
+    expect(document.activeElement, 'and a key hands it back').toBe(list);
+    expect(document.querySelector('.dock .opt.sel')?.textContent, 'one row further up').toContain(
+      'Production',
+    );
+    expect(harness.sent, 'moving the mark answers nothing').toEqual([]);
+  });
+
+  it("does not deny on the reader's behalf from a permission's own-words row", () => {
+    const harness = open({ record: record({ pending_ask: permissionAsk() }) });
+
+    options()[2]?.click();
+    flushSync();
+    press('Enter');
+
+    expect(harness.sent, 'nothing said is nothing sent').toEqual([]);
+  });
+
   it("carries the reader's own words as the answer's annotation, not as an option", () => {
     const harness = open({ record: record({ pending_ask: questionAsk() }) });
 
