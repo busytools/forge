@@ -157,7 +157,14 @@ impl Tool for Subscribe {
             .subscribe(&self.slot, args.applications.unwrap_or_default(), args.min_priority)
             .await
         {
-            Ok(id) => ToolOutput::text(format!("subscribed to Gotify (id {id})")),
+            Ok(outcome) if outcome.names_resolve => {
+                ToolOutput::text(format!("subscribed to Gotify (id {})", outcome.id))
+            }
+            Ok(outcome) => ToolOutput::text(format!(
+                "subscribed to Gotify (id {}) but the application index could not be refreshed, \
+                 so a filter naming applications will not match until the stream reconnects",
+                outcome.id,
+            )),
             Err(err) => tool_error(format_subscribe_error(&err)),
         }
     }
@@ -366,7 +373,7 @@ impl Tool for Recent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::gotify::facade::MockGotifyFacade;
+    use crate::mcp::gotify::facade::{MockGotifyFacade, SubscribeOutcome};
     use std::time::SystemTime;
 
     fn caller_slot() -> SessionSlot {
@@ -392,7 +399,7 @@ mod tests {
     async fn subscribe_calls_facade_and_returns_id() {
         let id = Uuid::from_u128(0x42);
         let mock = Arc::new(MockGotifyFacade::new());
-        *mock.subscribe_result.lock() = Some(Ok(id));
+        *mock.subscribe_result.lock() = Some(Ok(SubscribeOutcome { id, names_resolve: true }));
         let tool = Subscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
@@ -405,6 +412,27 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].1, vec!["alerts".to_owned()]);
         assert_eq!(calls[0].2, Some(5));
+    }
+
+    /// A subscription whose application-name filter could not be resolved
+    /// has to say so: a reply of plain success reads exactly like the
+    /// silent drop #1298 was filed for.
+    #[tokio::test]
+    async fn subscribe_reports_a_filter_it_could_not_resolve() {
+        let id = Uuid::from_u128(0x43);
+        let mock = Arc::new(MockGotifyFacade::new());
+        *mock.subscribe_result.lock() = Some(Ok(SubscribeOutcome { id, names_resolve: false }));
+        let tool = Subscribe { facade: mock.clone(), slot: caller_slot() };
+
+        let out = tool.call(input(serde_json::json!({ "applications": ["phone-agent"] }))).await;
+
+        assert!(!out.is_error, "the subscription was created, so this is not an error");
+        assert!(out.blocks[0].text.contains(&id.to_string()), "the id still comes back");
+        assert!(
+            out.blocks[0].text.contains("index could not be refreshed"),
+            "the reply names the unresolved filter: {}",
+            out.blocks[0].text,
+        );
     }
 
     #[tokio::test]

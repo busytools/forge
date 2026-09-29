@@ -484,16 +484,22 @@ pub async fn run_subsystem(
 /// Fetch the Gotify `/application` list and store the name->appid map.
 /// Warns (never silently drops) on failure - an unresolved index would
 /// otherwise leave every application-name-filtered subscription silently
-/// matching nothing while the stream still reports connected.
-pub async fn refresh_app_index(host: &dyn GotifyHost, cfg: &GotifyConfig) {
+/// matching nothing while the stream still reports connected. Returns
+/// whether the index was stored, so a caller that owes the user an answer
+/// about the names can give one.
+pub async fn refresh_app_index(host: &dyn GotifyHost, cfg: &GotifyConfig) -> bool {
     match app_index(host, cfg).await {
-        Ok(index) => host.store_app_index(index),
+        Ok(index) => {
+            host.store_app_index(index);
+            true
+        }
         Err(error) => {
             tracing::warn!(
                 target: "forge_connectors::gotify",
                 %error,
                 "Gotify /application lookup failed; application-name filters will not match until the next reconnect",
             );
+            false
         }
     }
 }

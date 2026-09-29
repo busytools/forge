@@ -26,6 +26,17 @@ pub(crate) enum GotifySubscribeError {
     UnknownCallerProject,
 }
 
+/// A created subscription, plus whether its filter can resolve a message.
+/// `names_resolve` is false only when the filter names applications and the
+/// `/application` lookup behind them failed: the subscription is live, but
+/// those names will not match until the next stream reconnect. Always true
+/// for a match-any filter, which needs no names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubscribeOutcome {
+    pub id: Uuid,
+    pub names_resolve: bool,
+}
+
 /// Why a read-only Gotify tool (`gotify__apps` / `gotify__recent`) failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GotifyReadError {
@@ -44,14 +55,14 @@ pub(crate) trait GotifyFacade: Send + Sync {
     /// Subscribe the caller's durable identity to the configured server,
     /// optionally filtered by application names and/or minimum priority.
     /// An empty `applications` matches any app. Persists when the identity
-    /// is durable. Returns the new id. Async because a filter that names
-    /// applications refreshes the app index before returning.
+    /// is durable. Async because a filter that names applications refreshes
+    /// the app index before returning.
     async fn subscribe(
         &self,
         caller: &SessionSlot,
         applications: Vec<String>,
         min_priority: Option<u8>,
-    ) -> Result<Uuid, GotifySubscribeError>;
+    ) -> Result<SubscribeOutcome, GotifySubscribeError>;
 
     /// The caller's own subscriptions in its project - a lead's, or one
     /// worker's, never another owner's.
@@ -96,7 +107,7 @@ impl GotifyFacade for ProdGotifyFacade {
         caller: &SessionSlot,
         applications: Vec<String>,
         min_priority: Option<u8>,
-    ) -> Result<Uuid, GotifySubscribeError> {
+    ) -> Result<SubscribeOutcome, GotifySubscribeError> {
         let ws = self.workspace.upgrade().ok_or(GotifySubscribeError::UnknownCallerProject)?;
         let cfg = ws.gotify_config().ok_or(GotifySubscribeError::NotConfigured)?;
         let (project, team_role, durable) =
@@ -112,14 +123,19 @@ impl GotifyFacade for ProdGotifyFacade {
         let names_applications = !sub.applications.is_empty();
         let id = sub.id;
         ws.add_gotify_subscription(sub, durable);
+        // The pump starts before the lookup: it must not wait behind a
+        // network round trip, and no window may sit between the
+        // subscription and the pump that runs it.
+        ws.start_gotify_subsystem();
         // An application the server created after the stream connected is
         // absent from the cached index, so a filter naming it matches
         // nothing until the next reconnect.
-        if names_applications {
-            refresh_app_index(&SubsystemHost::new(&ws), &cfg).await;
-        }
-        ws.start_gotify_subsystem();
-        Ok(id)
+        let names_resolve = if names_applications {
+            refresh_app_index(&SubsystemHost::new(&ws), &cfg).await
+        } else {
+            true
+        };
+        Ok(SubscribeOutcome { id, names_resolve })
     }
 
     fn list(&self, caller: &SessionSlot) -> Vec<GotifySubscription> {
@@ -230,7 +246,8 @@ type RecentCall = (Vec<String>, Option<u8>, usize);
 pub(crate) struct MockGotifyFacade {
     pub subs: parking_lot::Mutex<Vec<GotifySubscription>>,
     pub subscribe_calls: parking_lot::Mutex<Vec<SubscribeCall>>,
-    pub subscribe_result: parking_lot::Mutex<Option<Result<Uuid, GotifySubscribeError>>>,
+    pub subscribe_result:
+        parking_lot::Mutex<Option<Result<SubscribeOutcome, GotifySubscribeError>>>,
     pub unsubscribe_calls: parking_lot::Mutex<Vec<(SessionSlot, Uuid)>>,
     pub unsubscribe_result: parking_lot::Mutex<Option<bool>>,
     pub apps_result: parking_lot::Mutex<Option<Result<Vec<String>, GotifyReadError>>>,
@@ -256,9 +273,12 @@ impl GotifyFacade for MockGotifyFacade {
         caller: &SessionSlot,
         applications: Vec<String>,
         min_priority: Option<u8>,
-    ) -> Result<Uuid, GotifySubscribeError> {
+    ) -> Result<SubscribeOutcome, GotifySubscribeError> {
         self.subscribe_calls.lock().push((caller.clone(), applications, min_priority));
-        self.subscribe_result.lock().clone().unwrap_or_else(|| Ok(Uuid::nil()))
+        self.subscribe_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Ok(SubscribeOutcome { id: Uuid::nil(), names_resolve: true }))
     }
 
     fn list(&self, _caller: &SessionSlot) -> Vec<GotifySubscription> {
@@ -304,7 +324,7 @@ mod tests {
     }
 
     impl AppStub {
-        fn start(body: &'static str) -> Self {
+        fn start(status: &'static str, body: &'static str) -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind app stub");
             let addr = listener.local_addr().expect("app stub addr");
             let application_fetches = Arc::new(AtomicUsize::new(0));
@@ -323,7 +343,7 @@ mod tests {
                     let head = String::from_utf8_lossy(&raw);
                     let (status, body) = if head.starts_with("GET /application ") {
                         counter.fetch_add(1, Ordering::SeqCst);
-                        ("200 OK", body)
+                        (status, body)
                     } else {
                         ("404 Not Found", "{}")
                     };
@@ -350,10 +370,11 @@ mod tests {
     /// plus the caller's project, so `ProdGotifyFacade::subscribe` runs
     /// its whole path against the real connector.
     fn subscribe_fixture(
+        apps_status: &'static str,
         apps_body: &'static str,
     ) -> (tempfile::TempDir, Arc<Workspace>, Arc<dyn GotifyFacade>, SessionSlot, AppStub) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let stub = AppStub::start(apps_body);
+        let stub = AppStub::start(apps_status, apps_body);
         let forge = crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
         std::fs::write(
             forge.join("forge.toml"),
@@ -395,6 +416,7 @@ client_token = "Ctest"
     #[tokio::test]
     async fn subscribe_refreshes_the_app_index_so_a_new_application_matches() {
         let (_dir, ws, facade, caller, stub) = subscribe_fixture(
+            "200 OK",
             r#"[{"id":7,"name":"phone-agent","token":"A.x","description":"","image":""}]"#,
         );
         // The cached index is what a connect-time fetch left behind: it
@@ -402,11 +424,12 @@ client_token = "Ctest"
         let host = SubsystemHost::new(&ws);
         host.store_app_index(HashMap::new());
 
-        facade
+        let outcome = facade
             .subscribe(&caller, vec!["phone-agent".to_owned()], None)
             .await
             .expect("subscribe to the configured server");
 
+        assert!(outcome.names_resolve, "a refreshed index leaves the name filter resolvable");
         assert_eq!(stub.application_fetches(), 1, "the subscribe refreshed the index");
         let resolved = host.app_name(7);
         let subs = ws.gotify_subscriptions_for_project("myproj");
@@ -423,14 +446,42 @@ client_token = "Ctest"
     /// names to resolve and must not pay for a lookup.
     #[tokio::test]
     async fn subscribe_without_application_names_does_not_fetch_the_index() {
-        let (_dir, _ws, facade, caller, stub) = subscribe_fixture("[]");
+        let (_dir, _ws, facade, caller, stub) = subscribe_fixture("200 OK", "[]");
 
-        facade.subscribe(&caller, Vec::new(), Some(5)).await.expect("subscribe without filters");
+        let outcome = facade
+            .subscribe(&caller, Vec::new(), Some(5))
+            .await
+            .expect("subscribe without filters");
 
+        assert!(outcome.names_resolve, "a match-any filter needs no names, so it always resolves");
         assert_eq!(
             stub.application_fetches(),
             0,
             "a match-any subscribe names no applications, so it must not fetch /application",
+        );
+    }
+
+    /// The failing refresh is the one case the reply can speak to: without
+    /// it, a subscribe that reports success and matches nothing is exactly
+    /// what #1298 was filed for.
+    #[tokio::test]
+    async fn subscribe_reports_a_failed_index_refresh_and_keeps_the_subscription() {
+        let (_dir, ws, facade, caller, _stub) =
+            subscribe_fixture("500 Internal Server Error", "{}");
+
+        let outcome = facade
+            .subscribe(&caller, vec!["phone-agent".to_owned()], None)
+            .await
+            .expect("the subscription itself still succeeds");
+
+        assert!(
+            !outcome.names_resolve,
+            "an unrefreshable index leaves the name filter unresolvable, and that is reported",
+        );
+        assert_eq!(
+            ws.gotify_subscriptions_for_project("myproj").len(),
+            1,
+            "the subscription is created whether or not the index refreshed",
         );
     }
 
