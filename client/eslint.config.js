@@ -12,8 +12,10 @@ export default tseslint.config(
   ...svelte.configs['flat/recommended'],
   {
     // The svelte parser has to FORWARD the type-aware parser options, or every
-    // type-aware rule throws on a .svelte file instead of linting it.
-    files: ['**/*.svelte'],
+    // type-aware rule throws on a .svelte file instead of linting it - and a
+    // `.svelte.ts` module is parsed by that same parser, so it needs the same
+    // forwarding rather than the TypeScript parser alone.
+    files: ['**/*.svelte', '**/*.svelte.ts'],
     languageOptions: {
       parserOptions: {
         parser: tseslint.parser,
