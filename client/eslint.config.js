@@ -4,7 +4,9 @@ import tseslint from 'typescript-eslint';
 import svelte from 'eslint-plugin-svelte';
 
 export default tseslint.config(
-  { ignores: ['dist/', 'node_modules/'] },
+  // The shell's crate target dir holds generated .js (tauri-build's API script
+  // and the codegen'd assets), which this project has no tsconfig for.
+  { ignores: ['dist/', 'node_modules/', 'src-tauri/target/', 'src-tauri/gen/'] },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   ...svelte.configs['flat/recommended'],

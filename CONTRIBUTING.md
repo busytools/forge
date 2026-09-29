@@ -29,6 +29,13 @@ CI also runs `cargo check --release` and `just check-feature-configs`.
 One command decides both stacks, so its verdict line names the first
 failing step whichever side it is on.
 
+The desktop shell under `client/src-tauri/` is its own workspace root, so
+`just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
+punctuation gate, which CI runs as a job of its own, and the client's
+Prettier step do. `just client-tauri-check` builds it in the shipping
+configuration and `just client-tauri-bundle` adds the bundles, and the
+first is the one to run before handing over a change there.
+
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later
 steps>` clause when the step that failed was not the last one. The run
