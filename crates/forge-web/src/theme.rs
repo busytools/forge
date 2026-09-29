@@ -31,7 +31,13 @@ const S3: &str = "#1b2130";
 const LINE: &str = "#222a3c";
 const TEXT: &str = "#eaeef6";
 const MUTED: &str = "#8f98a8";
-const DIM: &str = "#5d6675";
+/// The quietest of the three text tokens, and the darkest step that clears
+/// AA on every ground the sheet puts text on: 5.26:1 on the page, 4.87:1 on
+/// `--s1` and 4.53:1 on `--s2`. It was `#5d6675`, which measured 3.51:1 on
+/// the page and 3.03:1 on the raised card while carrying 12.5px labels in
+/// about fifty places, so the token failed the standard it was used under
+/// rather than the uses being wrong.
+const DIM: &str = "#788294";
 const ACCENT: &str = "#f47600";
 const OK: &str = "#82c76b";
 const WARN: &str = "#c9a13b";

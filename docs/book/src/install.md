@@ -62,6 +62,8 @@ just check
 ```
 
 That runs, in order: `cargo fmt --check`, the Unicode punctuation gate,
+the client's Prettier check, its ESLint, `svelte-check` and `tsc --noEmit`
+and then its vitest run,
 `cargo clippy --all-targets --workspace -- -D warnings` once per feature
 set (with and without `--all-features`),
 `cargo nextest run --workspace --all-features`, and
@@ -71,7 +73,9 @@ fails locally too; CI sets it once at workflow level instead.
 
 Run it before opening a pull request. It is CI's set minus two jobs: CI
 also runs `cargo check --release` and `just check-feature-configs`, both
-of which `just check` deliberately leave out.
+of which `just check` deliberately leaves out. The client's steps are in
+here too, so the client is not a second command to remember and a failure
+on either side lands on the same verdict line.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
 or `[ERROR] check: <step> failed`, and stops at the first failing step,

@@ -4,9 +4,10 @@ Forbid em-dash / en-dash / horizontal-bar / curly quotes in
 forge-authored source, docs and config. Ellipsis U+2026 is ALLOWED
 (legitimate truncation glyph in TUI render). The captured test baselines
 are excluded - they mirror upstream wire payloads byte-for-byte and may
-legitimately carry Unicode prose from the CLI's own logs. Nothing else
-is: forge-authored prose that happens to sit beside captured data is
-still scanned. Files git ignores (.gitignore / .git/info/exclude, e.g.
+legitimately carry Unicode prose from the CLI's own logs - along with the
+web view's three vendored scripts, which are somebody else's bytes.
+Nothing else is: forge-authored prose that happens to sit beside captured
+data is still scanned, `VENDOR.md` included. Files git ignores (.gitignore / .git/info/exclude, e.g.
 local audit scratch) are skipped too: the gate polices committable forge
 files, not whatever scratch happens to sit in the working tree.
 
@@ -46,7 +47,23 @@ from pathlib import Path
 # line, so a banned character added elsewhere in this file is still caught.
 BANNED = re.compile("[\u2013\u2014\u2015\u2018\u2019\u201C\u201D]")
 
-INCLUDE_SUFFIXES = (".rs", ".toml", ".md", ".html", ".sh", ".py", ".yml", ".yaml")
+INCLUDE_SUFFIXES = (
+    ".rs",
+    ".toml",
+    ".md",
+    ".html",
+    ".sh",
+    ".py",
+    ".yml",
+    ".yaml",
+    # The client's own source and sheet. Not `.json`: the fixtures and the
+    # lockfile are copies of somebody else's data, and forge-authored JSON
+    # carries no prose.
+    ".ts",
+    ".svelte",
+    ".js",
+    ".css",
+)
 
 # Files with no suffix at all, which a suffix list cannot reach.
 INCLUDE_NAMES = ("justfile", "Justfile")
@@ -57,10 +74,23 @@ EXCLUDE_DIRS_ANY_DEPTH = {
     "node_modules",
 }
 
-# Captured wire data only. `reference-captures/` is NOT excluded: its
-# `.jsonl` captures already fall outside INCLUDE_SUFFIXES, and the one
-# thing a path exclusion there would hide is the forge-authored README.
-EXCLUDE_PATH_SUBSTRINGS = ("/crates/forge-test-harness/baselines/",)
+# Somebody else's bytes, which this repo cannot fix and does not author.
+# `reference-captures/` is NOT excluded: its `.jsonl` captures already fall
+# outside INCLUDE_SUFFIXES, and the one thing a path exclusion there would
+# hide is the forge-authored README. The three named files are the web
+# view's vendored scripts; `VENDOR.md` beside them is forge-authored and
+# stays scanned.
+#
+# Repo-relative, and matched as a path prefix rather than a substring: these
+# entries began with a leading `/` and were tested with `in`, so neither half
+# could ever match what `git ls-files` returns and the baselines directory was
+# scanned while the failure message claimed to exclude it.
+EXCLUDE_PATH_PREFIXES = (
+    "crates/forge-test-harness/baselines",
+    "crates/forge-web/assets/htmx.min.js",
+    "crates/forge-web/assets/htmx-sse.min.js",
+    "crates/forge-web/assets/idiomorph-ext.min.js",
+)
 
 
 def is_scanned(path: Path) -> bool:
@@ -75,8 +105,12 @@ def should_skip_dir(path: Path) -> bool:
 
 
 def should_skip_file(path: Path) -> bool:
-    s = str(path)
-    return any(sub in s for sub in EXCLUDE_PATH_SUBSTRINGS)
+    parts = path.parts
+    for prefix in EXCLUDE_PATH_PREFIXES:
+        want = Path(prefix).parts
+        if parts[: len(want)] == want:
+            return True
+    return False
 
 
 def walk(root: Path):
@@ -167,7 +201,10 @@ def main(argv):
         file=sys.stderr,
     )
     print("  - Ellipsis U+2026 is ALLOWED (truncation glyph).", file=sys.stderr)
-    print("  - Only the captured test baselines are excluded.", file=sys.stderr)
+    print(
+        "  - Excluded: the captured test baselines, and the three vendored scripts.",
+        file=sys.stderr,
+    )
     print(
         "  When the codepoint is functionally required (render glyph), use the Rust",
         file=sys.stderr,

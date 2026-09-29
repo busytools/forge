@@ -145,6 +145,27 @@ check-release:
 # so it never exercises which configuration enables what - the install
 # build leaving `test-helpers` off, or `testing` having to forward it.
 #
+# The client's four steps, cheapest first, so a red never means two things at
+# once. They are inside the gate rather than beside it: the client's build,
+# typecheck and tests used to be a CI job alone, and a gate that does not run
+# reports what a gate that passes does.
+#
+# A Rust-only change pays them too, roughly half a minute on a gate that
+# already runs for minutes.
+client-format:
+    npm --prefix client run format:check
+
+client-lint:
+    npm --prefix client run lint
+
+# The markup tsc never reads, then the TypeScript tree.
+client-typecheck:
+    npm --prefix client run typecheck:markup
+    npm --prefix client run typecheck
+
+client-test:
+    npm --prefix client run test
+
 # Compile the feature configurations nothing else builds.
 check-feature-configs:
     RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-tui --bin forge --features perf
@@ -152,7 +173,7 @@ check-feature-configs:
 
 # Full pre-commit / pre-PR verification loop.
 #
-# A script rather than a recipe with these five as dependencies, because
+# A script rather than a recipe with these as dependencies, because
 # a failing dependency aborts just before any recipe body runs, and the
 # verdict is printed by the body.
 #
@@ -177,7 +198,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    steps=(fmt-check unicode-punct-check clippy test-all doc)
+    steps=(fmt-check unicode-punct-check client-format client-lint client-typecheck client-test clippy test-all doc)
     verdict=""
 
     on_exit() {

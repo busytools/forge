@@ -794,6 +794,57 @@ inspected.
       schedules - because nothing here is dropped to look modern. What
       changes is the presentation, not the content.
 
+22. **The client is gated like the Rust side, and it is a shell.** `just
+    check` runs the client's steps too - Prettier, ESLint on
+    typescript-eslint's type-checked configs, `svelte-check`, `tsc
+    --noEmit`, then vitest - so one command decides both stacks and its
+    verdict line names the first failing step. **Denied as errors**, the
+    analogue of the denied Rust lints: `any`, non-null assertion,
+    `@ts-ignore`, `innerHTML`, `eval` and floating promises. **A waiver
+    carries its reason, and which form it takes is not free:** an inline
+    suppression comment in TypeScript is blocked by a hook in this repo,
+    so a waiver there is a scoped entry in `client/eslint.config.js`
+    saying why - and fixing the code so it needs none comes first. The
+    `{@html}` pair in `Sprite.svelte` and `Brand.svelte` is the worked
+    example of the inline form, which templates do allow.
+    `client/tsconfig.json` keeps
+    `noUncheckedIndexedAccess`, `noImplicitReturns`, `noUnusedLocals`,
+    `noUnusedParameters` and `exactOptionalPropertyTypes`. **An unknown
+    value from the wire is narrowed once, where it enters**
+    (`client/src/wire/`), so every union downstream stays exhaustive and
+    a variant the server adds is a compile error rather than a render
+    crash; a cast at that boundary carries a line saying why. **Every
+    state a page can be in - loading, empty, failed, unknown - has a
+    rendering**; a page that draws a healthy state for an unknown one is
+    a defect, not a gap. Accessibility is a rule rather than a review:
+    semantic markup, every interactive element reachable by keyboard,
+    focus moved and returned deliberately, no colour as the only carrier
+    of a state, and axe over the rendered markup as a page test
+    (`client/src/a11y.test.ts`) - contrast is not covered there, because
+    jsdom performs no layout, so it stays a rule checked where the token
+    set is. **The design skills are picked up when the work is something
+    a person will look at** - a page, a component, a layout, a theme, a
+    mark, a drawing, a chart - **and before the code is written, never at
+    review time.** `frontend-design` originates a look that has no
+    drawing behind it; `ui-ux-pro-max` and its family carry the quality
+    checklist, the tokens, the component specs and the identity work, and
+    its UX guidelines are ordered accessibility first. **The order of
+    authority is the mockup, then this standard, then the skills' generic
+    guidance** - a salvaged or approved look is not re-litigated by a
+    database of styles - and **that order holds whether or not they are
+    installed**, because they are user-level plugins rather than
+    something this repo carries: a contributor without them applies the
+    checks above from this rule alone. The page reviewer's brief and the
+    fan-out charters carry the order, so a worker meets it before it is
+    writing. The structural comparison against the mock and measured
+    geometry at 1600 and 430 go in the PR body, and a page's final word
+    is Ved looking at it. **And the shipped app carries no fixture, no
+    mock data and no dev-only default**: its only input is the server
+    URL, and it draws nothing but the connect screen until a server
+    answers on it. The fixtures live under `client/src/dev/` and
+    `client/src/dev/fixture.test.ts` builds the app and fails if one
+    reaches the bundle.
+
 ## Claude Code worktree interop
 
 Non-guessable external conventions, recorded so forge does not reinvent

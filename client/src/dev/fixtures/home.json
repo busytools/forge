@@ -1,0 +1,145 @@
+{
+  "projects": [
+    {
+      "key": "<fixture>-proj",
+      "name": "proj",
+      "org": "TestOrg",
+      "path": "<fixture>/proj",
+      "display_path": "<fixture>/proj",
+      "accounts": [
+        "Acct"
+      ],
+      "fallback_accounts": [],
+      "has_model": false,
+      "sessions": []
+    }
+  ],
+  "agents": [
+    {
+      "slot": {
+        "org": "TestOrg",
+        "project": "proj",
+        "label": "lead"
+      },
+      "label": "lead",
+      "lifecycle": "Idle",
+      "has_background_work": false,
+      "pending": "permission",
+      "pending_depth": 1,
+      "last_activity": null,
+      "reason": null
+    }
+  ],
+  "accounts": {
+    "loading": [
+      {
+        "display_name": "Acct",
+        "state": "loading",
+        "last_error": null,
+        "retry_after": null,
+        "auth": "token"
+      }
+    ],
+    "all_loaded": false,
+    "gateway": {
+      "ready": true,
+      "port": 8787,
+      "bind_error": null
+    },
+    "usage": [
+      {
+        "display_name": "Acct",
+        "snapshot": null
+      }
+    ],
+    "orgs": [
+      {
+        "org": "TestOrg",
+        "accounts": [
+          "Acct"
+        ],
+        "fallback_accounts": [],
+        "rows": [
+          {
+            "display_name": "Acct",
+            "unusable": null,
+            "budget": {
+              "unknown": {
+                "spend_billed": false
+              }
+            },
+            "fallback": false,
+            "provider": "anthropic",
+            "loading": "loading"
+          }
+        ]
+      }
+    ]
+  },
+  "plugins": {
+    "update_records": []
+  },
+  "workers": [
+    {
+      "project": "proj",
+      "workers": [
+        {
+          "label": "w1",
+          "charter": "charter for w1",
+          "slot": {
+            "org": "TestOrg",
+            "project": "proj",
+            "label": "w1"
+          },
+          "session_id": null,
+          "spawned_at": {
+            "secs_since_epoch": 0,
+            "nanos_since_epoch": 0
+          },
+          "spawned_by": {
+            "org": "TestOrg",
+            "project": "proj",
+            "label": "lead"
+          },
+          "needs_tag": false,
+          "is_git_repo_at_spawn": false
+        }
+      ]
+    }
+  ],
+  "connectors": {
+    "gotify": {
+      "connected": false,
+      "subscriptions": []
+    },
+    "slack": {
+      "connected_workspaces": [],
+      "load_failed": false,
+      "subscriptions": []
+    }
+  },
+  "dictate": {
+    "snapshot": {
+      "models": [
+        {
+          "role": "transcribing",
+          "file": "cohere-transcribe-03-2026-Q4_K_M.gguf",
+          "state": "pending"
+        },
+        {
+          "role": "normalization",
+          "file": "s1-mini-f16.gguf",
+          "state": "pending"
+        }
+      ],
+      "failure": null
+    },
+    "models_dir": "<fixture>/models"
+  },
+  "cli_version": {
+    "installed": "1.0.0",
+    "latest": "1.1.0"
+  },
+  "service_status": null,
+  "fatal_error": null
+}

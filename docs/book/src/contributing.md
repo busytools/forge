@@ -11,9 +11,10 @@ pointers.
 just check
 ```
 
-`cargo fmt --check`, the Unicode punctuation gate, clippy with warnings
-denied, `cargo nextest run --workspace --all-features`, and
-`cargo doc`. CI's set minus its `cargo check --release` and
+`cargo fmt --check`, the Unicode punctuation gate, the client's Prettier
+check, ESLint, `svelte-check` and `tsc --noEmit` and then its vitest run,
+clippy with warnings denied, `cargo nextest run --workspace --all-features`,
+and `cargo doc`. CI's set minus its `cargo check --release` and
 feature-configs jobs. Green before you open a pull request.
 
 The last line it prints is its verdict, `[OK] check: ...` or

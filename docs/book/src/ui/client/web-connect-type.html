@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; connect, the type-first direction</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@100..900&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --r: 10px;
+    --fs-prose: 17px; --fs-base: 15.5px; --fs-data: 14px;
+    --fs-label: 12.5px; --fs-title: 18px;
+  }
+
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: var(--fs-base);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { padding: 30px 40px 64px; }
+  .door { max-width: 40rem; margin: 22vh auto 0; }
+
+  /* The address is the page. It takes the largest step the sheet's scale
+     has, and nothing else on the screen is set above the data size. */
+  .addr {
+    display: block; width: 100%;
+    background: none; border: 0; padding: 0 0 14px;
+    color: var(--text);
+    font-family: var(--mono); font-size: var(--fs-title); font-weight: 500;
+    letter-spacing: -.005em; line-height: 1.2;
+  }
+  /* The input has no box, so focus is shown on the rule beneath it, which is
+     the element the eye is already on: the same container-carries-it shape
+     the sheet uses for the composer's box. */
+  .addr:focus { outline: none; }
+  .addr:focus ~ .rule { background: var(--accent); }
+  .addr::selection { background: rgba(244,118,0,.3); }
+
+  /* One hairline, and everything that is not the address sits in one row
+     under it. The rule is also the only place the state changes colour. */
+  .rule { height: 1px; background: var(--line); transition: background .15s ease; }
+  .door.failed .rule { background: var(--bad); }
+  .door.connecting .rule { background: var(--accent); }
+  @media (prefers-reduced-motion: reduce) { .rule { transition: none; } }
+
+  .row {
+    display: flex; align-items: baseline; gap: 10px 18px; flex-wrap: wrap;
+    padding-top: 12px;
+  }
+  .row button {
+    background: none; border: 0; padding: 0; cursor: pointer;
+    color: var(--text); font-family: var(--ui); font-size: var(--fs-base); font-weight: 600;
+    border-bottom: 1px solid var(--accent); padding-bottom: 1px;
+  }
+  .row button:hover:not(:disabled) { color: var(--accent); }
+  .row button:disabled { color: var(--dim); border-color: var(--dim); cursor: default; }
+
+  /* `--dim` measures 3.51:1 on this ground, under AA's 4.5:1 for normal
+     text, so the row's middle reads in `--muted` (7.01:1). */
+  .say { color: var(--muted); font-size: var(--fs-data); }
+  .door.failed .say { color: var(--bad); }
+  .say code { font-family: var(--mono); color: var(--text); }
+
+  /* Last in the row and smallest, so the brand is present without being
+     what the screen is about. */
+  .sign { margin-left: auto; display: flex; align-items: center; gap: 7px; color: var(--muted); }
+  .sign .mark { width: 15px; height: 15px; flex: 0 0 15px; color: var(--accent); opacity: .9; }
+  .sign .mark svg { display: block; width: 100%; height: 100%; }
+  .sign .word { font-size: var(--fs-data); font-weight: 600; letter-spacing: -.01em; }
+
+  .demo-switch { display: inline-flex; align-items: center; gap: 8px; margin-top: 60px; color: var(--muted); font-size: var(--fs-data); cursor: pointer; }
+  .demo-switch .box { width: 13px; height: 13px; border-radius: 3px; border: 1px solid var(--muted); flex: 0 0 13px; }
+  #demo:checked ~ .wrap .demo-switch .box { background: var(--accent); border-color: var(--accent); }
+  .demo-panel { display: none; margin-top: 34px; border-top: 1px solid var(--line); padding-top: 22px; }
+  #demo:checked ~ .wrap .demo-panel { display: block; }
+  .cat { margin-top: 26px; }
+  .cat h4 { font-size: var(--fs-label); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .cat .why { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); margin-left: 8px; }
+  .stage { max-width: 40rem; margin-top: 16px; }
+  .stage .door { margin: 0; }
+</style>
+</head>
+<body>
+
+<input type="checkbox" id="demo" hidden checked>
+
+<div class="wrap">
+
+  <div class="door">
+    <input class="addr" id="address" name="address" type="text" value="127.0.0.1:8790"
+           autocomplete="off" autocapitalize="off" spellcheck="false"
+           aria-label="the address forge is serving on">
+    <div class="rule"></div>
+    <div class="row">
+      <button type="submit">Connect</button>
+      <span class="say">the port forge serves on by default</span>
+      <span class="sign" aria-hidden="true">
+        <span class="mark"><svg viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+        <span class="word">forge</span>
+      </span>
+    </div>
+  </div>
+
+  <label class="demo-switch" for="demo" data-mock-ignore>
+    <span class="box"></span> show every state (uncheck for the screen alone)
+  </label>
+
+  <div class="demo-panel" data-mock-ignore>
+    <h3>states reference &middot; one hairline, one row, and the rule carries the state's colour</h3>
+
+    <div class="cat">
+      <h4>idle <span class="why">the bar is the line the eye already follows, so it is also the only status light</span></h4>
+      <div class="stage">
+        <div class="door">
+          <input class="addr" type="text" value="127.0.0.1:8790" readonly aria-label="the address">
+          <div class="rule"></div>
+          <div class="row">
+            <button type="button">Connect</button>
+            <span class="say">the port forge serves on by default</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>connecting <span class="why">the rule takes the accent, so the state is a line rather than a new object</span></h4>
+      <div class="stage">
+        <div class="door connecting">
+          <input class="addr" type="text" value="127.0.0.1:8790" readonly aria-label="the address">
+          <div class="rule"></div>
+          <div class="row">
+            <button type="button" disabled>Connecting</button>
+            <span class="say">asking this address for its projects</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>failed <span class="why">the same rule in the failure colour, and the reason takes the row's middle</span></h4>
+      <div class="stage">
+        <div class="door failed">
+          <input class="addr" type="text" value="127.0.0.1:8790" readonly aria-label="the address">
+          <div class="rule"></div>
+          <div class="row">
+            <button type="button">Try again</button>
+            <span class="say">nothing answered there. If forge is running, check that <code>[web] enabled</code> is not <code>false</code> in <code>forge.toml</code>.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>failed, address not usable <span class="why">same rule, same row, a different sentence</span></h4>
+      <div class="stage">
+        <div class="door failed">
+          <input class="addr" type="text" value="::::" readonly aria-label="the address">
+          <div class="rule"></div>
+          <div class="row">
+            <button type="button">Try again</button>
+            <span class="say">:::: is not an address. It wants a host and a port, like 127.0.0.1:8790.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

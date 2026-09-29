@@ -123,3 +123,25 @@ jobs:
           shared-key: cargo-${{ runner.os }}
           key: docs
       - run: cargo doc --workspace --no-deps --all-features
+
+  # The client is not a cargo workspace member, so no other job here reaches
+  # it: without this the app's build, its typecheck and its tests run only
+  # when a person types them, and a gate that does not run reports what a
+  # gate that passes does.
+  client:
+    name: client build, typecheck and tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
