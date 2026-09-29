@@ -184,7 +184,8 @@ impl UsageSnapshot {
 /// A view over a [`UsageSnapshot`], deliberately not part of it: the
 /// snapshot is persisted and this is not, so the stored type stays a
 /// struct and serde keeps decoding every cached row.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AccountBudget {
     /// No usable snapshot: none has landed yet, or the cached one was
     /// written under a different `provider` and no longer describes

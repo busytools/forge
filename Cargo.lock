@@ -213,6 +213,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
+ "base64 0.22.1",
  "bytes",
  "futures-util",
  "http",
@@ -227,8 +228,10 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "sha1",
  "sync_wrapper",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-layer",
  "tower-service",
@@ -1125,7 +1128,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "forge-agent"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1155,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "forge-connectors"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1174,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "forge-dictate"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "cpal",
  "dirs",
@@ -1196,7 +1199,7 @@ dependencies = [
 
 [[package]]
 name = "forge-gateway"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1218,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "forge-primitives"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -1230,7 +1233,7 @@ dependencies = [
 
 [[package]]
 name = "forge-sdk"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1250,14 +1253,21 @@ dependencies = [
 
 [[package]]
 name = "forge-server"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "forge-dictate",
  "forge-primitives",
+ "forge-server",
  "forge-workspace",
+ "futures-util",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1265,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "forge-test-harness"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "async-trait",
  "forge-primitives",
@@ -1280,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tui"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -1295,7 +1305,6 @@ dependencies = [
  "forge-server",
  "forge-test-harness",
  "forge-tui",
- "forge-web",
  "forge-workspace",
  "futures",
  "image",
@@ -1325,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "forge-web"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "axum",
  "forge-primitives",
@@ -1344,7 +1353,7 @@ dependencies = [
 
 [[package]]
 name = "forge-workspace"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -1,7 +1,8 @@
 //! App-level error enum used across forge crates.
 //! `forge_workspace::SessionUpdate::FatalError` carries this type.
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AppError {
     #[error("Agent bridge connection failed")]
     ConnectionFailed,

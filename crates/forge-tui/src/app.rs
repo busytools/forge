@@ -10,6 +10,7 @@ pub(crate) mod dictate_key;
 pub(crate) mod dictate_picker;
 pub(crate) mod diff_overlay;
 pub(crate) mod emoji;
+pub(crate) mod emoji_set;
 pub(crate) mod events;
 pub(crate) mod extensions;
 pub(crate) mod file_index;
@@ -33,7 +34,6 @@ pub(crate) mod prompt;
 pub(crate) mod replay;
 pub(crate) mod review_waiting;
 pub(crate) mod selection;
-mod service_status_check;
 pub mod session;
 mod session_runtime;
 pub(crate) mod slash;
@@ -60,7 +60,6 @@ pub use input::{InputState, TypedChar};
 pub use launchpad::LaunchpadState;
 pub use prompt::{PromptMode, PromptSource, PromptState};
 pub(crate) use selection::normalize_selection;
-pub use service_status_check::start_service_status_check;
 pub use spinner_picker::SpinnerPickerState;
 pub(crate) use state::cache_metrics;
 #[cfg(any(test, feature = "testing"))]
@@ -96,12 +95,12 @@ use futures::StreamExt;
 use std::time::{Duration, Instant};
 
 /// Repaint and pulse cadence under a reduced-motion preference. Fixed
-/// rather than derived from `[ui] fps`: the point of reduced motion is
-/// fewer frames, so a high frame rate must not pull it up.
+/// rather than derived from the repaint cadence: the point of reduced
+/// motion is fewer frames, so a high frame rate must not pull it up.
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 
 /// Step interval for [`App::spinner_frame`], pinned rather than
-/// following `[ui] fps`. Its one consumer is not a spinner and does not
+/// following the repaint cadence. Its one consumer is not a spinner and does not
 /// scale: the tab-title pulse alternates two glyphs every ten steps, so
 /// driven off a fast repaint rate it reads as flicker rather than
 /// motion. Also the coarsest interval the repaint gate can use, see
@@ -684,7 +683,7 @@ fn spinner_animation_step(elapsed: Duration, interval: Duration) -> u128 {
     elapsed.as_micros() / interval.as_micros().max(1)
 }
 
-/// Interval between repaints while animating - the `[ui] fps` setting.
+/// Interval between repaints while animating - the app's own cadence.
 fn repaint_interval(app: &App) -> Duration {
     if app.config.prefers_reduced_motion_effective() {
         SPINNER_FRAME_INTERVAL_REDUCED
@@ -956,7 +955,7 @@ fn finalize_deferred_submit(app: &mut App) {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use forge_workspace::RepaintCadence;
+    use crate::ui::spinner_style::RepaintCadence;
 
     use crate::app::{MessageBlock, MessageRole};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};

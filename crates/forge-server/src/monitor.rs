@@ -12,25 +12,6 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::ansi::strip_ansi;
-
-/// Real-world Monitor commands (cargo build, npm install, progress-bar
-/// tools) emit ANSI colour codes plus carriage returns and the occasional
-/// BEL or backspace. Carrying those bytes to a renderer corrupts the
-/// terminal and prints as noise in a page, so they are dropped at read
-/// time and what is kept is plain text.
-///
-/// Two-stage: [`strip_ansi`] covers CSI and OSC sequences; the trailing
-/// filter drops control bytes that are not escape sequences (`\r` `\b`
-/// BEL `\u{0C}`) plus any `\u{1b}` that slipped past it. Tabs and
-/// printable Unicode pass through.
-fn sanitize_for_render(raw: &str) -> String {
-    strip_ansi(raw)
-        .chars()
-        .filter(|c| !matches!(c, '\r' | '\u{08}' | '\u{07}' | '\u{0C}' | '\u{1B}'))
-        .collect()
-}
-
 /// Largest slice of the file read at a time. Monitor output files grow
 /// without bound (cargo build, npm install) and this runs inline on a
 /// view's own tick, so the read seeks to within this window of the end
@@ -43,6 +24,11 @@ pub const TAIL_WINDOW_BYTES: u64 = 64 * 1024;
 /// permission denied, a read that failed) so the caller can distinguish
 /// "could not read, keep the tail already held" from "the file is
 /// genuinely empty". The empty-file case returns `Some(vec![])`.
+///
+/// The lines come back as the command wrote them, escape sequences and all.
+/// What a renderer has to drop to draw them is the renderer's business: a
+/// terminal and a page drop different bytes, so neither rule belongs on a
+/// read that only hands the text over.
 ///
 /// Only the final [`TAIL_WINDOW_BYTES`] are read: for a larger file the
 /// read seeks to `len - TAIL_WINDOW_BYTES` and drops the first (probably
@@ -85,7 +71,7 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
                 if ring.len() == max_lines {
                     ring.pop_front();
                 }
-                ring.push_back(sanitize_for_render(&text));
+                ring.push_back(text);
             }
             Err(err) => {
                 // A line that is not valid UTF-8, or a read that failed.
@@ -175,12 +161,12 @@ mod tests {
     }
 
     #[test]
-    fn read_output_file_tail_strips_ansi_and_control_chars() {
+    fn read_output_file_tail_hands_over_the_bytes_the_command_wrote() {
         // Real-world Monitor commands (cargo build, npm install, anything
-        // with progress bars) emit ANSI colour codes + carriage returns
-        // for in-place line updates + the occasional BEL/backspace. Raw
-        // bytes would corrupt a renderer; the tail reader sanitises at
-        // read time so the per-frame render path stays cheap.
+        // with progress bars) emit ANSI colour codes + carriage returns for
+        // in-place line updates + the occasional BEL/backspace. The read
+        // hands them over as written: dropping them is the renderer's rule,
+        // and a terminal and a page drop different bytes.
         let raw = "\
 \x1b[32mline 1 green\x1b[0m\n\
 line 2 with \rcarriage return\n\
@@ -189,15 +175,18 @@ line 4 with \x08\x08backspace\n";
         let path = write_tmp(raw);
         let tail = read_output_file_tail(&path, 12).expect("read ok");
 
-        for line in &tail {
-            assert!(!line.contains('\x1b'), "ANSI escape leaked through: {line:?}");
-            assert!(!line.contains('\r'), "carriage return leaked through: {line:?}");
-            assert!(!line.contains('\x08'), "backspace leaked through: {line:?}");
-            assert!(!line.contains('\x07'), "BEL leaked through: {line:?}");
-            assert!(!line.contains('\x0C'), "form-feed leaked through: {line:?}");
-        }
-        assert!(tail.iter().any(|l| l.contains("line 1 green")));
-        assert!(tail.iter().any(|l| l.contains("line 3 bold red")));
+        assert!(
+            tail.iter().any(|line| line.contains("\u{1b}[32m")),
+            "the colour the command wrote is still in the tail: {tail:?}",
+        );
+        assert!(
+            tail.iter().any(|line| line.contains('\r')),
+            "the carriage return the command wrote is still in the tail: {tail:?}",
+        );
+        assert!(
+            tail.iter().any(|line| line.contains("line 1 green")),
+            "and the words it wrote are there beside them: {tail:?}",
+        );
         let _ = std::fs::remove_file(&path);
     }
 

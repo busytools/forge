@@ -1,8 +1,13 @@
-//! UI-side permission-prompt shapes - `PermissionRequest` (what the
-//! agent surfaces when the CLI asks for tool approval) and
-//! `PermissionOutcome` (what the user picks). Distinct from the
-//! wire-side decision types in [`crate::permissions`] which talk to
-//! the SDK's `can_use_tool` callback.
+//! The shapes one permission interaction is made of - `PermissionRequest`
+//! (what the agent surfaces when the CLI asks for tool approval), the
+//! options it offers, and `PermissionOutcome` (what a person picks).
+//!
+//! Not a view's shapes, and the name says so: the request and its options
+//! are what the dispatcher reads to build the decision on submit, so the
+//! terminal's dock and a client's dock are two renderings of one set
+//! rather than two copies of it. Distinct from the wire-side decision
+//! types in [`crate::permissions`], which talk to the SDK's
+//! `can_use_tool` callback.
 
 use serde::{Deserialize, Serialize};
 

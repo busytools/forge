@@ -38,8 +38,8 @@
 <details>
 <summary>Spinner picker details</summary>
 
-- The styles are design intent, not a guarantee: a style never animates quicker than `[ui] fps` can paint - a clamp currently dormant, since the quickest style (braille, 32 ms) outruns the 30 ms repaint floor, so every style runs at its own intent. Reduced motion floors the fast styles. The cadence shown is the style's intent.
-- <kbd>Enter</kbd> and `/spinner <name>` write the choice to the machine-local store, never `forge.toml`; at the next boot the stored override layers over the `[ui] spinner` default, which falls back to `braille`. The store write affects only later launches.
+- The styles are design intent, not a guarantee: a style never animates quicker than the repaint cadence can paint - a clamp currently dormant, since the quickest style (braille, 32 ms) outruns the 30 ms repaint floor, so every style runs at its own intent. Reduced motion floors the fast styles. The cadence shown is the style's intent.
+- <kbd>Enter</kbd> and `/spinner <name>` set the style for the run you are in and nothing else: there is no config key and nothing is stored, so the next launch starts at `braille` again.
 - The overlay is modal, over chat and launchpad alike; fully transient - only the committed style persists, and it works identically from both views. Keyboard-only; mouse-click selection is a possible follow-up. Colors: border and selection marker rust orange; highlighted row rust orange bold; unselected key/cadence and hints dim.
 
 </details>

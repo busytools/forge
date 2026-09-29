@@ -2862,7 +2862,7 @@ mod tests {
     fn seed_worker_prompt_queue(app: &mut App, key: &forge_workspace::SessionSlot) {
         use crate::app::session::UiSession;
         use forge_primitives::ToolCall;
-        use forge_primitives::permission_ui::{
+        use forge_primitives::permission_interaction::{
             PermissionAction, PermissionOption, PermissionOptionKind, PermissionRequest,
         };
         let bucket = app

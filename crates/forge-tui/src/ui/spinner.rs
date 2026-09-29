@@ -3,7 +3,7 @@
 //! One time-based helper drives every animated spinner surface from
 //! the active `SpinnerStyle`'s own cadence.
 
-use forge_workspace::{RepaintCadence, SpinnerStyle};
+use super::spinner_style::{RepaintCadence, SpinnerStyle};
 
 use crate::app::App;
 

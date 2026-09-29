@@ -1,73 +1,34 @@
-//! UI configuration knobs - the `[ui]` section in `forge.toml`.
+//! The spinner a terminal draws, and how often it repaints.
 //!
-//! Carries the active spinner style and the repaint cadence.
-//! Distinct from per-session UI state (input editor, viewport, etc.)
-//! which lives on `UiSession` in forge-tui - this is workspace-level
-//! configuration that survives across sessions and processes.
+//! Both are a client's own: `[ui]` was a server key for a client's
+//! presentation and it left with the rest of the server's presentation
+//! concerns, so what is here is a default and nothing that reads a config.
 
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// All `[ui]` section knobs. Every field has a default so an
-/// absent `[ui]` section in `forge.toml` is equivalent to all
-/// defaults. Unknown keys are rejected; what is lenient here is a
-/// field's value (an unknown spinner name, an out-of-range fps),
-/// never the key.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct UiSettings {
-    /// Active spinner style for every animated surface (launchpad,
-    /// chat thinking/working, input box, projects pane, inspector).
-    /// Default is `Braille`. The legacy `launchpad_spinner` key is
-    /// accepted as an alias so an existing forge.toml keeps working.
-    /// An unknown/removed key falls back to the default rather than
-    /// failing the load (see `deserialize_lenient`).
-    #[serde(default, alias = "launchpad_spinner", deserialize_with = "deserialize_lenient")]
-    pub spinner: SpinnerStyle,
-    /// Target repaint rate while something on screen is animating.
-    /// Absent, out-of-range or non-integer values resolve to the
-    /// default rather than failing the load (see `deserialize_fps`).
-    #[serde(default, deserialize_with = "deserialize_fps")]
-    pub fps: RepaintCadence,
-    /// Ghost of the removed `notifications_osc9` key: any value is
-    /// accepted and dropped, so a synced forge.toml still carrying the
-    /// key loads instead of refusing the boot. `Some` means the key was
-    /// there, which is what the load warns about.
-    #[serde(default, rename = "notifications_osc9", deserialize_with = "ignore_value")]
-    pub(crate) retired_notifications_osc9: Option<()>,
-}
-
-/// Accept any value for a key forge no longer reads, and record that it
-/// was there.
-fn ignore_value<'de, D>(deserializer: D) -> Result<Option<()>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| Some(()))
-}
-
-/// Repaint rate when `[ui] fps` is absent.
+/// Repaint rate when nothing says otherwise.
 const DEFAULT_FPS: u32 = 120;
 
-/// Coarsest interval any `[ui] fps` can produce, matching the 30ms step
-/// of the `App::spinner_frame` pulse counter; it binds only for `fps`
-/// 30-33, holding those at the pre-120fps cadence. Nothing would drop
-/// frames without it - spinner styles coarsen to fit - but dropping it
-/// steps `fps` 30-32 on 31-33ms rather than 30ms (busytools/forge#587).
+/// Coarsest interval a cadence can produce, matching the 30ms step of the
+/// `App::spinner_frame` pulse counter; it binds only for rates 30-33,
+/// holding those at the pre-120fps cadence. Nothing would drop frames
+/// without it - spinner styles coarsen to fit - but dropping it steps a
+/// rate of 30-32 on 31-33ms rather than 30ms (busytools/forge#587).
 const COARSEST_REPAINT_INTERVAL: Duration = Duration::from_millis(30);
 
-/// Accepted `[ui] fps` values. The ceiling is the loop's own structural
-/// limit (it tops out near 212fps in practice, and the on-screen fps
-/// readout clamps its own average at 240); from 33 down,
+/// Accepted frame rates. The ceiling is the loop's own structural limit
+/// (it tops out near 212fps in practice, and the on-screen fps readout
+/// clamps its own average at 240); from 33 down,
 /// [`COARSEST_REPAINT_INTERVAL`] takes over.
 const FPS_RANGE: RangeInclusive<u32> = 30..=240;
 
-/// How often forge repaints while an animation is running, from the
-/// `[ui] fps` key. Stored as the frame interval rather than the frame
-/// rate, so a rate that isn't a whole number of milliseconds keeps its
-/// microseconds instead of rounding to a different rate.
+/// How often forge repaints while an animation is running. Stored as the
+/// frame interval rather than the frame rate, so a rate that isn't a
+/// whole number of milliseconds keeps its microseconds instead of
+/// rounding to a different rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepaintCadence {
     interval: Duration,
@@ -80,19 +41,14 @@ impl Default for RepaintCadence {
 }
 
 impl RepaintCadence {
-    /// Clamp `fps` into the accepted 30-240 range and convert it to a
-    /// frame interval, warning when the value had to move. The result
-    /// never exceeds `COARSEST_REPAINT_INTERVAL`.
+    /// Clamp `fps` into the accepted 30-240 range and convert it to a frame
+    /// interval. The result never exceeds `COARSEST_REPAINT_INTERVAL`.
+    ///
+    /// No warn on a clamp: the only production caller is
+    /// [`Self::default`], whose rate is in range, so a warning here could
+    /// only ever fire from a test.
     pub fn from_fps(fps: u32) -> Self {
         let clamped = fps.clamp(*FPS_RANGE.start(), *FPS_RANGE.end());
-        if clamped != fps {
-            tracing::warn!(
-                target: "forge_workspace::ui",
-                requested = fps,
-                applied = clamped,
-                "[ui] fps is outside the supported range; clamping",
-            );
-        }
         let interval = Duration::from_micros(1_000_000 / u64::from(clamped));
         Self { interval: interval.min(COARSEST_REPAINT_INTERVAL) }
     }
@@ -115,56 +71,6 @@ impl RepaintCadence {
     pub fn effective_cadence_ms(self, requested_ms: u64) -> u128 {
         u128::from(requested_ms).max(self.interval.as_millis())
     }
-}
-
-/// Lenient deserialize for `[ui] fps`. A non-integer value (a float, a
-/// string, a table) resolves to the default rather than failing the
-/// whole config load - a hand-edited typo must never stop forge
-/// booting. Out-of-range integers clamp instead, in
-/// [`RepaintCadence::from_fps`].
-pub fn deserialize_fps<'de, D>(deserializer: D) -> Result<RepaintCadence, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Raw {
-        Fps(u32),
-        NotAnInteger(serde::de::IgnoredAny),
-    }
-
-    match Raw::deserialize(deserializer)? {
-        Raw::Fps(fps) => Ok(RepaintCadence::from_fps(fps)),
-        Raw::NotAnInteger(_) => {
-            tracing::warn!(
-                target: "forge_workspace::ui",
-                "[ui] fps is not a whole number; using the default cadence",
-            );
-            Ok(RepaintCadence::default())
-        }
-    }
-}
-
-/// Lenient deserialize for a persisted spinner key (the `[ui] spinner`
-/// config field): an unknown/removed key (a dropped variant, a typo)
-/// resolves to the default style instead of failing the whole load - a
-/// stale value must never break boot.
-pub fn deserialize_lenient<'de, D>(deserializer: D) -> Result<SpinnerStyle, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let key = String::deserialize(deserializer)?;
-    Ok(SpinnerStyle::from_key(&key).unwrap_or_default())
-}
-
-/// Resolve the effective spinner: a persisted `/spinner` override wins
-/// over the forge.toml `[ui] spinner` default. The single precedence
-/// point, so a boot-time edit can't silently drop the user's pick.
-pub(crate) fn resolve_spinner(
-    override_: Option<SpinnerStyle>,
-    default_: SpinnerStyle,
-) -> SpinnerStyle {
-    override_.unwrap_or(default_)
 }
 
 /// A spinner glyph cycle. Each variant carries a `frames()` accessor
@@ -262,24 +168,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_spinner_override_wins_over_default() {
-        assert_eq!(
-            resolve_spinner(Some(SpinnerStyle::Ember), SpinnerStyle::Star),
-            SpinnerStyle::Ember,
-            "a persisted override beats the forge.toml default",
-        );
-    }
-
-    #[test]
-    fn resolve_spinner_falls_back_to_default_when_no_override() {
-        assert_eq!(
-            resolve_spinner(None, SpinnerStyle::Star),
-            SpinnerStyle::Star,
-            "no override falls through to the forge.toml default",
-        );
-    }
-
-    #[test]
     fn default_spinner_is_braille() {
         let style = SpinnerStyle::default();
         assert_eq!(style, SpinnerStyle::Braille);
@@ -295,46 +183,6 @@ mod tests {
                 style.key()
             );
         }
-    }
-
-    #[test]
-    fn key_round_trips_through_serde() {
-        for style in SpinnerStyle::ALL_STYLES {
-            let toml = format!("spinner = \"{}\"\n", style.key());
-            let parsed: UiSettings = toml::from_str(&toml).expect("parse round trip");
-            assert_eq!(parsed.spinner, style);
-        }
-    }
-
-    #[test]
-    fn absent_ui_section_yields_defaults() {
-        let parsed: UiSettings = toml::from_str("").expect("empty parses");
-        assert_eq!(parsed, UiSettings::default());
-        assert_eq!(parsed.spinner, SpinnerStyle::Braille);
-    }
-
-    #[test]
-    fn unknown_spinner_key_falls_back_to_default() {
-        // A removed variant or a typo must NOT fail the config load - it
-        // resolves to the default (Braille) so a stale forge.toml value
-        // never breaks boot.
-        let removed: UiSettings =
-            toml::from_str("spinner = \"pulse\"\n").expect("removed key parses");
-        assert_eq!(removed.spinner, SpinnerStyle::Braille);
-        let typo: UiSettings = toml::from_str("spinner = \"corkscrew\"\n").expect("typo parses");
-        assert_eq!(typo.spinner, SpinnerStyle::Braille);
-    }
-
-    #[test]
-    fn spinner_field_parses_new_key() {
-        let parsed: UiSettings = toml::from_str("spinner = \"ember\"\n").expect("parse");
-        assert_eq!(parsed.spinner, SpinnerStyle::Ember);
-    }
-
-    #[test]
-    fn legacy_launchpad_spinner_key_still_parses_via_alias() {
-        let parsed: UiSettings = toml::from_str("launchpad_spinner = \"ember\"\n").expect("parse");
-        assert_eq!(parsed.spinner, SpinnerStyle::Ember);
     }
 
     #[test]
@@ -379,13 +227,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn absent_fps_key_defaults_to_120() {
-        let parsed: UiSettings = toml::from_str("spinner = \"ember\"\n").expect("parse");
-        assert_eq!(parsed.fps, RepaintCadence::default());
-        assert_eq!(parsed.fps, RepaintCadence::from_fps(120));
-    }
-
     /// The default has to go through the same microsecond arithmetic as
     /// an explicit value, or 120 quietly becomes the 8ms/125fps that
     /// whole-millisecond rounding would give.
@@ -394,38 +235,6 @@ mod tests {
         let interval = RepaintCadence::default().frame_interval();
         assert_eq!(interval, Duration::from_micros(8333));
         assert_ne!(interval, Duration::from_millis(8), "8ms would be 125fps, not 120");
-    }
-
-    #[test]
-    fn fps_converts_to_a_frame_interval() {
-        let parsed: UiSettings = toml::from_str("fps = 120\n").expect("parse");
-        // 8333us, not a truncated 8ms - the gate divides in micros.
-        assert_eq!(parsed.fps.frame_interval(), Duration::from_micros(8333));
-        assert_eq!(RepaintCadence::from_fps(60).frame_interval(), Duration::from_micros(16_666));
-        assert_eq!(RepaintCadence::from_fps(240).frame_interval(), Duration::from_micros(4166));
-    }
-
-    #[test]
-    fn out_of_range_fps_clamps_instead_of_failing() {
-        let high: UiSettings = toml::from_str("fps = 100000\n").expect("high parses");
-        assert_eq!(high.fps, RepaintCadence::from_fps(240));
-        // Clamps to the 30fps floor, then the coarsest-interval cap
-        // rounds that 33.3ms back to 30ms.
-        let low: UiSettings = toml::from_str("fps = 0\n").expect("zero parses");
-        assert_eq!(low.fps.frame_interval(), Duration::from_millis(30));
-        assert_eq!(low.fps, RepaintCadence::from_fps(30));
-        let negative: UiSettings = toml::from_str("fps = -5\n").expect("negative parses");
-        assert_eq!(negative.fps, RepaintCadence::default());
-    }
-
-    #[test]
-    fn non_integer_fps_falls_back_to_the_default() {
-        for bad in ["fps = 12.5\n", "fps = \"fast\"\n", "fps = true\n", "fps = [120]\n"] {
-            let parsed: UiSettings = toml::from_str(bad).unwrap_or_else(|e| {
-                panic!("{bad:?} must not fail the load: {e}");
-            });
-            assert_eq!(parsed.fps, RepaintCadence::default(), "{bad:?}");
-        }
     }
 
     /// No style may ask for frames that cannot be painted. This used to
@@ -486,28 +295,6 @@ mod tests {
             32,
             "a 32ms step outruns the floor and keeps its own intent",
         );
-    }
-
-    /// `notifications_osc9` is gone. A forge.toml still carrying it must
-    /// load: forge always writes the escape now, and a removed key must
-    /// never refuse boot on a config that has one. It sets nothing, and
-    /// it is recorded so the load can warn about it.
-    #[test]
-    fn a_removed_notifications_osc9_key_still_loads() {
-        for value in ["auto", "on", "off"] {
-            let parsed: UiSettings = toml::from_str(&format!("notifications_osc9 = \"{value}\"\n"))
-                .unwrap_or_else(|err| panic!("a stale key must not refuse the load: {err}"));
-            assert!(
-                parsed.retired_notifications_osc9.is_some(),
-                "the removed key is recorded, which is what the load warns from",
-            );
-            assert_eq!(
-                parsed.spinner,
-                UiSettings::default().spinner,
-                "the removed key sets no spinner",
-            );
-            assert_eq!(parsed.fps, UiSettings::default().fps, "the removed key sets no cadence");
-        }
     }
 
     #[test]

@@ -197,6 +197,12 @@ pub(crate) fn stamp_permission_mode(
 /// in the log distinguishes "no view took it" from "the emit never
 /// happened" during diagnosis.
 fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
+    // Held before it goes out: a fatal error is an App-level event with no
+    // state behind it, so without this a view that was not subscribed when
+    // it fired can never learn of it at all.
+    if let SessionUpdate::FatalError(error) = &update {
+        workspace.record_fatal_error(error.clone());
+    }
     if !workspace.update_tx().send(update) {
         tracing::debug!(
             target: "forge_workspace::spawn",
@@ -2281,6 +2287,27 @@ mod tests {
     /// path, so tests write where forge reads (not the legacy fallback).
     fn forge_toml_path(config_dir: &std::path::Path) -> std::path::PathBuf {
         crate::config::ensure_forge_data_dir(config_dir).expect("forge/ dir").join("forge.toml")
+    }
+
+    /// A fatal error is an App-level event with no state behind it, so a
+    /// view that was not subscribed when it fired could never learn of it -
+    /// and a client attaching to a running forge would draw a healthy
+    /// startup that had already failed. The emit holds it; the read answers
+    /// from what was held.
+    #[test]
+    fn a_fatal_error_is_held_where_it_is_emitted() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let failed = forge_primitives::error::AppError::ConnectionFailed;
+
+        assert!(ws.last_fatal_error().is_none(), "nothing has failed fatally yet");
+
+        try_emit(&ws, "test", SessionUpdate::FatalError(failed.clone()));
+
+        assert_eq!(
+            ws.last_fatal_error(),
+            Some(failed),
+            "the error the emit carried is the error the read answers with",
+        );
     }
 
     /// The project path the shared fixture points at. The maintainer's own

@@ -12,6 +12,7 @@ use crate::surface::ViewSurface;
 /// One agent as a view reads it. A lead and a worker are the same row:
 /// which project spawned it, and what nests under what, are the view's
 /// business rather than the row's.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentRow {
     pub slot: SessionSlot,
     /// The worker's own label, or `"lead"` for a project's own agent.
@@ -27,6 +28,20 @@ pub struct AgentRow {
     /// spawn diagnostic, or the failure the slot's last connection left
     /// behind. `None` for a session that has not failed.
     pub reason: Option<String>,
+    /// The seat's peer-coordination counters, which its activity badge is
+    /// drawn from.
+    ///
+    /// Carried beside the row's other facts because they reach a view as an
+    /// update and nothing else: a view that attached after the last ask would
+    /// draw the badge from nothing.
+    pub peer: forge_primitives::PeerInflightStats,
+    /// When the failure counter last moved, so a view can age the mark out.
+    ///
+    /// The count is cumulative and the badge is not: a view drops that mark a
+    /// minute after the failure, and a view reading the count alone would draw
+    /// a red badge the terminal has already dropped. `None` when there has
+    /// never been one.
+    pub peer_failure_at: Option<std::time::SystemTime>,
 }
 
 /// What a session is waiting on a person for. The core's own kind rather
@@ -115,6 +130,8 @@ fn row_for(
         // it wins; a lead has only the slot's, which is why the fallback
         // is here rather than at the call sites.
         reason: reason.or_else(|| workspace.spawn_failure(&slot)),
+        peer: workspace.peer_stats_for(&slot),
+        peer_failure_at: workspace.peer_failure_at_for(&slot),
         lifecycle,
         label,
         slot,

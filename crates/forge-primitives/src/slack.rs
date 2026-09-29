@@ -293,7 +293,7 @@ pub struct SlackFollowedThread {
 
 /// A composed but unsent Slack message. The workspace holds it until the
 /// user approves it in the dock prompt; nothing reaches Slack otherwise.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlackDraft {
     pub id: Uuid,
     pub workspace: String,

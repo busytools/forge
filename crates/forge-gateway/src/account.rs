@@ -36,7 +36,8 @@ pub struct AccountKey(pub String);
 /// Classification of the latest usage-poll attempt outcome for an
 /// account. Surfaced to the TUI's bottom panel so empty bars can
 /// distinguish "still warming the cache" from a real failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum UsageFetchStatus {
     /// Anthropic returned HTTP 429 - too many concurrent polls
     /// against the OAuth `/api/oauth/usage` endpoint (typical when
@@ -62,7 +63,8 @@ pub enum UsageFetchStatus {
 /// account can only be probe-blocked. A snapshot whose source is not
 /// the account backend's is ignored here, so a cache surviving a
 /// `forge.toml` provider edit cannot saturate the row it landed on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Unusable {
     /// A plan window is at or over its cap and has not reset yet.
     Saturated,
@@ -80,7 +82,8 @@ pub enum Unusable {
 /// as its last resort, while `Loading` keeps the launchpad dim. A
 /// bailed account's `usage` is `None` by construction (the loader
 /// clears it on the transition).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LoadingState {
     /// First-pass probe in progress. The launchpad shows `○` (yellow)
     /// for this account.

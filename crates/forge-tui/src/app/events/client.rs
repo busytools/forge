@@ -4386,7 +4386,7 @@ mod focus_seam_tests {
     fn prompt_state(tool_id: &str) -> crate::app::prompt::PromptState {
         crate::app::prompt::PromptState::from_permission(
             tool_id.to_owned(),
-            forge_primitives::permission_ui::PermissionRequest {
+            forge_primitives::permission_interaction::PermissionRequest {
                 tool_call: forge_primitives::session_update::ToolCall {
                     tool_call_id: tool_id.to_owned(),
                     title: "Bash".to_owned(),

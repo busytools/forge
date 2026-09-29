@@ -572,14 +572,11 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-/// `/spinner` - no arg shows the current style + the valid keys;
-/// `/spinner <name>` sets the active style live across every surface
-/// and persists it to the redb store (survives restart, layered over
-/// the forge.toml `[ui] spinner` default). Works from chat
-/// and the launchpad - no active session required. The no-arg picker
-/// overlay lands in the follow-up task.
+/// `/spinner` - no arg opens the style picker; `/spinner <name>` sets the
+/// style for this run. Works from chat and the launchpad - no active
+/// session required.
 fn handle_spinner_submit(app: &mut App, args: &[&str]) -> bool {
-    use forge_workspace::SpinnerStyle;
+    use crate::ui::spinner_style::SpinnerStyle;
 
     if args.is_empty() {
         crate::app::spinner_picker::open(app);
@@ -597,10 +594,9 @@ fn handle_spinner_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
+    // For this run only: a spinner is the terminal's presentation, and the
+    // server keeps no key, no store row and no command for one.
     app.spinner_style = style;
-    if let Some(ws) = app.workspace.as_ref() {
-        let _ = ws.dispatch(forge_workspace::Command::PersistSpinner { style });
-    }
     app.needs_redraw = true;
     push_system_info(app, format!("Spinner: {}", style.key()));
     true
@@ -617,7 +613,7 @@ fn handle_unknown_submit(app: &mut App, command_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_workspace::SpinnerStyle;
+    use crate::ui::spinner_style::SpinnerStyle;
 
     #[test]
     fn spinner_name_sets_active_style() {

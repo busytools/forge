@@ -1278,7 +1278,6 @@ pub(crate) fn execute_command_via_handle(
         | Command::SaveReviewThreads { .. }
         | Command::RemoveReviewThread { .. }
         | Command::SetReviewThreadStatus { .. }
-        | Command::PersistSpinner { .. }
         | Command::CloseSession { .. }
         | Command::UpsertReviewThread { .. }
         | Command::SubmitReview { .. }) => {
@@ -1324,8 +1323,9 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.runtime_state = None;
         domain.turn_pending = false;
         // No terminal `background_tasks_changed` follows a dead session,
-        // so the last snapshot would stand forever.
-        domain.background_work = false;
+        // so the last snapshot would stand forever - and the registry with
+        // it, spinning rows over tasks a dead process never finished.
+        domain.drop_background_tasks();
     }
     // The snapshot carries the whole set, so mirroring it is an
     // assignment and an empty one clears.
@@ -1335,6 +1335,59 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     } = event
     {
         domain.background_work = !tasks.is_empty();
+        let parsed: Vec<crate::BackgroundTask> = tasks
+            .iter()
+            .filter_map(|task| {
+                let entry = task.as_object()?;
+                Some(crate::BackgroundTask {
+                    task_id: entry.get("task_id")?.as_str()?.to_owned(),
+                    task_type: entry.get("task_type")?.as_str()?.to_owned(),
+                    description: entry.get("description")?.as_str()?.to_owned(),
+                    command: None,
+                })
+            })
+            .collect();
+        if parsed.len() != tasks.len() {
+            tracing::debug!(
+                target: "forge_workspace::session_task",
+                event_name = "background_tasks_parse_dropped",
+                dropped = tasks.len() - parsed.len(),
+                entry_count = tasks.len(),
+                "background_tasks_changed dropped unparseable entries; possible wire drift",
+            );
+        }
+        domain.replace_background_tasks(parsed);
+    }
+    // The command a card carried, which is what the OS scan adopts a detached
+    // process by and what tells a view that a rostered task has a row to draw.
+    //
+    // ANY card that carries a command, not only one whose input asked to run
+    // in the background: the CLI backgrounds a bash three ways, and two of
+    // them (`backgroundedByUser`, `assistantAutoBackgrounded`) cannot show on
+    // the card. The registry and the `task_started` link are what scope it -
+    // a command no roster entry resolves to is never read.
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::Assistant { message, .. },
+        ..
+    } = event
+    {
+        for block in &message.content {
+            let forge_primitives::ContentBlock::ToolUse { id, input, .. } = block else {
+                continue;
+            };
+            if let Some(command) = input.get("command").and_then(serde_json::Value::as_str) {
+                domain.hold_background_command(id.clone(), command.to_owned());
+            }
+        }
+    }
+    // `task_started` is what links a task to the card that began it, and so
+    // to the command.
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::TaskStarted { task_id, tool_use_id: Some(tool_use_id), .. },
+        ..
+    } = event
+    {
+        domain.hold_task_tool_use(task_id.clone(), tool_use_id.clone());
     }
     if let AgentEvent::Connected { session_id, .. } = event {
         domain.session_id = Some(SessionId::new(session_id.clone()));
@@ -1344,7 +1397,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // CLI re-sends the whole background set only when it changes: a
         // registry left standing would spin a row over a task that went
         // with the identity it belonged to.
-        domain.background_work = false;
+        domain.drop_background_tasks();
         // A new occupant has advertised nothing yet: the CLI sends
         // `system/init` at the head of a turn only, so the last one's
         // catalogues would stand until this one's first message - and
@@ -5192,6 +5245,169 @@ provider = "anthropic"
             "task_type": "local_bash",
             "description": "gh run watch",
         })]
+    }
+
+    /// The registry a PROCESSES view leads its rows with, with the command
+    /// each task's own tool call carried: the bool alone told a view that
+    /// something was running and nothing about what.
+    ///
+    /// The order is the CLI's own, from the capture: the card that names the
+    /// command, then the registry that names the task, then `task_started`
+    /// that links the two.
+    #[test]
+    fn the_registry_carries_each_tasks_own_command() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_backgrounded_bash("toolu_1", "gh run watch 123 --exit-status"));
+        send(&mut task, background_tasks(one_live_task()));
+        send(&mut task, a_task_started("t1", "toolu_1"));
+
+        let held = task.domain.lock();
+        let tasks = held.background_tasks.clone();
+        assert_eq!(tasks.len(), 1, "the CLI's own entry is held: {tasks:?}");
+        assert_eq!(tasks[0].task_id, "t1", "under the id the CLI gave it");
+        assert_eq!(tasks[0].task_type, "local_bash", "with the kind a row routes on");
+        assert_eq!(tasks[0].description, "gh run watch", "and the line the row leads with");
+        assert_eq!(
+            tasks[0].command.as_deref(),
+            Some("gh run watch 123 --exit-status"),
+            "and the command its own card carried, which the scan adopts on",
+        );
+        drop(held);
+
+        send(&mut task, background_tasks(Vec::new()));
+        assert!(
+            task.domain.lock().background_tasks.is_empty(),
+            "the whole set arrives each change, so an empty snapshot clears",
+        );
+    }
+
+    /// The command is held for ANY card that carries one, not only a card
+    /// whose input asked to run in the background: the CLI backgrounds a bash
+    /// three ways and two of them cannot show on the card, so gating on the
+    /// flag left those tasks with no command - and a view that needs the
+    /// command draws no row for them at all.
+    #[test]
+    fn a_task_backgrounded_after_its_card_still_gets_its_command() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        // The card as a foreground call leaves it: no `run_in_background`.
+        send(&mut task, a_bash_card("toolu_fg", "sleep 30 && echo later", None));
+        send(&mut task, background_tasks(one_live_task()));
+        send(&mut task, a_task_started("t1", "toolu_fg"));
+
+        let held = task.domain.lock().background_tasks.clone();
+        assert_eq!(
+            held[0].command.as_deref(),
+            Some("sleep 30 && echo later"),
+            "the command the task's own card carried crosses even though the card did not ask \
+             for the background: the registry and the link are what scope it",
+        );
+    }
+
+    /// The other half of that rule: the command a card carried is read only
+    /// through a task that names it. A rostered task whose link points at a
+    /// different card keeps no command, and a card no task names resolves
+    /// nothing.
+    #[test]
+    fn a_rostered_task_reads_only_the_command_its_own_link_names() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_bash_card("toolu_other", "echo unrelated", None));
+        send(&mut task, a_bash_card("toolu_ours", "gh run watch 9", None));
+        send(&mut task, background_tasks(one_live_task()));
+        send(&mut task, a_task_started("t1", "toolu_ours"));
+
+        let held = task.domain.lock().background_tasks.clone();
+        assert_eq!(held.len(), 1, "one rostered task");
+        assert_eq!(
+            held[0].command.as_deref(),
+            Some("gh run watch 9"),
+            "the command the task's own link names, not the other card's",
+        );
+    }
+
+    /// A task whose card forge never saw keeps its row and has no command -
+    /// the terminal's own rule, where a rostered task with no recorded card
+    /// still draws from its roster entry.
+    #[test]
+    fn a_task_with_no_card_still_carries_its_registry_row() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "worker".to_owned(),
+            msg: background_tasks(one_live_task()),
+        });
+
+        let held = task.domain.lock();
+        let tasks = held.background_tasks.clone();
+        assert_eq!(tasks.len(), 1, "the roster entry is still drawn: {tasks:?}");
+        assert_eq!(tasks[0].command, None, "and its command is absent rather than invented");
+    }
+
+    fn a_backgrounded_bash(id: &str, command: &str) -> forge_primitives::Message {
+        a_bash_card(id, command, Some(true))
+    }
+
+    /// A Bash card, with the `run_in_background` flag only when the caller
+    /// says the card carried one.
+    fn a_bash_card(
+        id: &str,
+        command: &str,
+        run_in_background: Option<bool>,
+    ) -> forge_primitives::Message {
+        let mut input = serde_json::json!({ "command": command });
+        if let Some(flag) = run_in_background {
+            input["run_in_background"] = serde_json::Value::Bool(flag);
+        }
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "uuid": "a1",
+            "session_id": "worker",
+            "message": {
+                "id": "m1",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{
+                    "type": "tool_use",
+                    "id": id,
+                    "name": "Bash",
+                    "input": input,
+                }],
+            },
+        }))
+        .expect("parse an assistant message")
+    }
+
+    fn a_task_started(task_id: &str, tool_use_id: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": task_id,
+            "tool_use_id": tool_use_id,
+            "description": "gh run watch",
+            "task_type": "local_bash",
+            "uuid": "u2",
+            "session_id": "worker",
+        }))
+        .expect("parse a task_started message")
     }
 
     /// The session's own registry follows the CLI's snapshot, which

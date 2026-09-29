@@ -28,7 +28,7 @@ pub const TEST_TOOL_ID: &str = "test-tool";
 pub(crate) fn test_permission(
     tx: tokio::sync::oneshot::Sender<forge_primitives::PermissionOutcome>,
 ) -> crate::protocol::PendingInteractionSlot {
-    use forge_primitives::permission_ui::{
+    use forge_primitives::permission_interaction::{
         PermissionAction, PermissionOption, PermissionOptionKind,
     };
 
@@ -153,6 +153,34 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn emit_for_test(&self, update: SessionUpdate) {
         let _ = self.update_tx.send(update);
+    }
+
+    /// [`Self::emit_for_test`], reporting whether a subscriber was there to
+    /// take it.
+    ///
+    /// A dead subscriber is dropped from the registry on the next send, so
+    /// the answer is `false` once nothing is listening - which is how a test
+    /// tells a subscription still attached from one that went with its
+    /// socket.
+    pub fn emit_for_test_reported(&self, update: SessionUpdate) -> bool {
+        self.update_tx.send(update)
+    }
+
+    /// How many subscribers are attached right now. Test-only: a test that
+    /// watches a subscription arrive and leave reads this rather than asking
+    /// whether an emit landed, which a permanently attached listener answers
+    /// for everything.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_subscriber_count(&self) -> usize {
+        self.update_tx.count()
+    }
+
+    /// How many subscribers could answer a prompt right now. Test-only: the
+    /// role decides whether the core parks a turn on a reply, and a test that
+    /// watches a client declare it has nothing else to read.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_answering_count(&self) -> usize {
+        self.update_tx.answering_count()
     }
 
     /// Hold a claude version snapshot, so a cross-crate test can render the
@@ -303,6 +331,7 @@ impl Workspace {
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
+            peer_failure_at: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
@@ -318,6 +347,9 @@ impl Workspace {
             catalog_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             catalog_scan_started: std::sync::atomic::AtomicBool::new(false),
             cli_version: Arc::new(Mutex::new(None)),
+            last_fatal_error: Mutex::new(None),
+            service_status: Arc::new(Mutex::new(None)),
+            service_status_probe_started: std::sync::atomic::AtomicBool::new(false),
             cli_version_probe_started: std::sync::atomic::AtomicBool::new(false),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
@@ -546,6 +578,24 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_usage(&self, account: &str, snapshot: forge_primitives::usage::UsageSnapshot) {
         self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);
+    }
+
+    /// Give `slot` the peer counters a badge draws from, as the delivery
+    /// path's own bumps would have left them. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_peer_stats(
+        &self,
+        slot: &SessionSlot,
+        stats: forge_primitives::PeerInflightStats,
+    ) {
+        self.peer_stats.lock().insert(slot.clone(), stats);
+    }
+
+    /// Stamp when `slot`'s failure counter last moved, as the delivery path
+    /// would have. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_peer_failure_at(&self, slot: &SessionSlot, at: std::time::SystemTime) {
+        self.peer_failure_at.lock().insert(slot.clone(), at);
     }
 
     /// Advertise `commands` and `agents` for `slot`, registering its

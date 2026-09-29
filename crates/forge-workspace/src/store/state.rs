@@ -1,9 +1,6 @@
-//! Machine-local forge state on the redb `settings` + `account_usage`
-//! tables: the `/spinner` override (one `settings` row) and the
-//! per-account usage cache (`account_usage`, one row per account). They
-//! live in separate tables so the ~1/min usage churn never rewrites the
-//! stable spinner preference. Values are serde-json; no field schema on
-//! disk.
+//! Machine-local forge state on the redb `account_usage` table: the
+//! per-account usage cache, one row per account. Values are serde-json;
+//! no field schema on disk.
 
 use std::collections::BTreeMap;
 
@@ -12,56 +9,8 @@ use redb::{ReadableTable, TableDefinition};
 
 use super::Db;
 use crate::account_cache::CachedAccountUsage;
-use crate::ui::SpinnerStyle;
 
-const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 const ACCOUNT_USAGE: TableDefinition<&str, &[u8]> = TableDefinition::new("account_usage");
-
-/// The persisted `/spinner` override, or `None` when unset. An
-/// undecodable value (a removed enum variant) resolves to `None` so the
-/// forge.toml default wins rather than the whole read failing.
-pub fn spinner(db: &Db) -> anyhow::Result<Option<SpinnerStyle>> {
-    let txn = db.database().begin_read()?;
-    let table = match txn.open_table(SETTINGS) {
-        Ok(t) => t,
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    let Some(value) = table.get("spinner")? else {
-        return Ok(None);
-    };
-    match serde_json::from_slice::<SpinnerStyle>(value.value()) {
-        Ok(style) => Ok(Some(style)),
-        Err(err) => {
-            tracing::warn!(
-                target: "forge_workspace::store::state",
-                error = %err,
-                "ignoring an undecodable persisted spinner override",
-            );
-            Ok(None)
-        }
-    }
-}
-
-/// Persist the `/spinner` override. `None` clears the key so the active
-/// style falls back to the forge.toml `[ui] spinner` default next boot.
-pub fn set_spinner(db: &Db, spinner: Option<SpinnerStyle>) -> anyhow::Result<()> {
-    let txn = db.database().begin_write()?;
-    {
-        let mut table = txn.open_table(SETTINGS)?;
-        match spinner {
-            Some(style) => {
-                let value = serde_json::to_vec(&style).context("serialize spinner")?;
-                table.insert("spinner", value.as_slice())?;
-            }
-            None => {
-                table.remove("spinner")?;
-            }
-        }
-    }
-    txn.commit()?;
-    Ok(())
-}
 
 /// Every cached per-account usage snapshot, keyed by account display
 /// name. A record that fails to decode is skipped with a warn so one
@@ -147,24 +96,6 @@ mod tests {
 
     fn usage_map(pairs: &[(&str, f64)]) -> BTreeMap<String, CachedAccountUsage> {
         pairs.iter().map(|(name, util)| ((*name).to_owned(), usage_entry(*util))).collect()
-    }
-
-    #[test]
-    fn spinner_round_trips_and_clears() {
-        let dir = tempdir().expect("tempdir");
-        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
-
-        assert_eq!(spinner(&db).expect("read fresh"), None, "a fresh store has no override");
-
-        set_spinner(&db, Some(SpinnerStyle::Ember)).expect("set");
-        assert_eq!(
-            spinner(&db).expect("read"),
-            Some(SpinnerStyle::Ember),
-            "the override round-trips"
-        );
-
-        set_spinner(&db, None).expect("clear");
-        assert_eq!(spinner(&db).expect("read after clear"), None, "None clears the override");
     }
 
     #[test]
@@ -352,68 +283,17 @@ mod tests {
     }
 
     #[test]
-    fn undecodable_spinner_resolves_to_none() {
-        let dir = tempdir().expect("tempdir");
-        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
-
-        // A removed/renamed variant persisted by an older build.
-        let txn = db.database().begin_write().expect("begin");
-        {
-            let mut table = txn.open_table(SETTINGS).expect("open table");
-            table.insert("spinner", "\"forge_dot\"".as_bytes()).expect("insert bogus");
-        }
-        txn.commit().expect("commit");
-
-        assert_eq!(
-            spinner(&db).expect("read tolerates the bogus value"),
-            None,
-            "an undecodable spinner falls back to None, not an error",
-        );
-    }
-
-    #[test]
     fn state_survives_db_reopen() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("db.redb");
         {
             let db = Db::open(&path).expect("open db");
-            set_spinner(&db, Some(SpinnerStyle::Star)).expect("set spinner");
             replace_account_usage(&db, &usage_map(&[("Gateway", 42.0)])).expect("write usage");
         }
         let db = Db::open(&path).expect("reopen db");
-        assert_eq!(
-            spinner(&db).expect("read"),
-            Some(SpinnerStyle::Star),
-            "spinner survives restart"
-        );
         assert!(
             account_usage(&db).expect("read").contains_key("Gateway"),
             "the usage cache survives restart",
-        );
-    }
-
-    #[test]
-    fn account_usage_writes_leave_the_spinner_untouched() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("db.redb");
-        {
-            let db = Db::open(&path).expect("open db");
-            set_spinner(&db, Some(SpinnerStyle::Ember)).expect("set spinner");
-            // A full usage-cache cycle. Two tables mean this never rewrites
-            // the spinner row - the whole reason the lock could go.
-            replace_account_usage(&db, &usage_map(&[("Gateway", 42.0)])).expect("write usage");
-            replace_account_usage(&db, &usage_map(&[("Stargate", 10.0)])).expect("churn usage");
-            assert_eq!(
-                spinner(&db).expect("read"),
-                Some(SpinnerStyle::Ember),
-                "usage churn leaves the spinner row untouched",
-            );
-        }
-        let db = Db::open(&path).expect("reopen db");
-        assert_eq!(
-            spinner(&db).expect("read after reopen"),
-            Some(SpinnerStyle::Ember),
-            "the spinner survives usage churn across a restart",
         );
     }
 }

@@ -6,7 +6,7 @@
 //! key-hints footer. State + key handling live in
 //! [`crate::app::spinner_picker`].
 
-use forge_workspace::SpinnerStyle;
+use crate::ui::spinner_style::SpinnerStyle;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};

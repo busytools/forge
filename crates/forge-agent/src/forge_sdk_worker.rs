@@ -1609,11 +1609,11 @@ pub(crate) fn deliver_permission_response(
 /// the user's modified tool args; consumed only when the action is
 /// `AllowWithInput`.
 pub(crate) fn dispatch_permission_action(
-    action: forge_primitives::permission_ui::PermissionAction,
+    action: forge_primitives::permission_interaction::PermissionAction,
     notes_text: &str,
     edited_input: Option<serde_json::Value>,
 ) -> PermissionDecision {
-    use forge_primitives::permission_ui::PermissionAction;
+    use forge_primitives::permission_interaction::PermissionAction;
     match action {
         PermissionAction::Allow => PermissionDecision::allow(),
         PermissionAction::AllowWithUpdates { updates } => {
@@ -1705,7 +1705,7 @@ fn build_permission_options(
     ctx: &ToolPermissionContext,
 ) -> Vec<forge_primitives::PermissionOption> {
     use forge_primitives::PermissionOption;
-    use forge_primitives::permission_ui::{PermissionAction, PermissionOptionKind};
+    use forge_primitives::permission_interaction::{PermissionAction, PermissionOptionKind};
     use forge_primitives::permissions::PermissionUpdate;
 
     let mut opts: Vec<PermissionOption> = Vec::new();
@@ -2165,7 +2165,7 @@ mod tests {
     }
     use crate::client::AgentEvent;
     use forge_primitives::ToolPermissionContext;
-    use forge_primitives::permission_ui::PermissionAction;
+    use forge_primitives::permission_interaction::PermissionAction;
     use forge_primitives::{PermissionOutcome, QuestionOutcome};
     use parking_lot::Mutex;
     use serde_json::json;
@@ -3308,7 +3308,7 @@ mod tests {
 mod tests_permission_options {
     use super::{build_permission_options, dispatch_permission_action};
     use forge_primitives::options::PermissionMode;
-    use forge_primitives::permission_ui::{PermissionAction, PermissionOptionKind};
+    use forge_primitives::permission_interaction::{PermissionAction, PermissionOptionKind};
     use forge_primitives::permissions::{
         PermissionBehavior, PermissionRuleValue, PermissionUpdate, PermissionUpdateDestination,
         ToolPermissionContext,

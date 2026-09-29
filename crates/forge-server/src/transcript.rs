@@ -33,7 +33,12 @@ use crate::model::{LiveTurn, LiveUsage, ToolCallStatus, TurnInfo};
 use crate::peer_outbound::{PeerOutboundKind, detect_outbound_call};
 
 /// One thing a view draws, in the order the conversation produced it.
-#[derive(Debug, Clone)]
+// Serialize only, and the whole family below it: a `ChatUnit` is a shape the
+// server hands a client and never reads one back. Deriving `Deserialize` too
+// would be dead code here, and `PeerCard.kind` is a `&'static str` that cannot
+// borrow one anyway.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", content = "unit", rename_all = "snake_case")]
 pub enum ChatUnit {
     /// A turn the user wrote.
     UserTurn { text: String },
@@ -95,7 +100,7 @@ pub enum ChatUnit {
 }
 
 /// One family's calls inside a group.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FamilyLeaves {
     /// The class the row belongs to, which is what a view picks its glyph
     /// from. A label alone cannot tell a server named `read` from the read
@@ -108,7 +113,8 @@ pub struct FamilyLeaves {
 }
 
 /// How loudly a notice reads: the mockup's three rows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NoticeSeverity {
     Info,
     Warning,
@@ -116,7 +122,7 @@ pub enum NoticeSeverity {
 }
 
 /// A notice, as the envelope it arrived in.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Notice {
     pub severity: NoticeSeverity,
     /// Where it came from, for a renderer that gives each source its own
@@ -126,7 +132,7 @@ pub struct Notice {
 }
 
 /// One call inside a group: what its own row shows.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ToolLeaf {
     /// The `tool_use` id the wire gave it.
     pub id: String,
@@ -137,6 +143,12 @@ pub struct ToolLeaf {
     /// The tool's own label, for a row that names the tool rather than
     /// its family.
     pub label: &'static str,
+    /// The CLI's own name for the tool.
+    ///
+    /// Beside the label rather than instead of it: the label is the word a
+    /// row draws and holds no way back to the tool, so a client handed only
+    /// that can draw the card and cannot say which call it is.
+    pub name: String,
     /// The tool's title: the file, command or query it names.
     pub title: String,
     /// The command a call ran, when it ran one. Separate from the title
@@ -152,7 +164,7 @@ pub struct ToolLeaf {
 
 /// A peer message, as the envelope it arrived in or the call that sent
 /// it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PeerCard {
     /// The seat it went to, or came from.
     pub peer: String,
@@ -821,6 +833,7 @@ pub(crate) fn leaf(
         id: id.to_owned(),
         row: family_row(name).0,
         label: tool_label(name),
+        name: name.to_owned(),
         // What the row names, resolved the way the terminal's own tree
         // resolves it: a search call's target is its pattern, a read's is
         // its path, and a call the builders have no target for keeps the

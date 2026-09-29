@@ -12,11 +12,26 @@ pub struct SessionState {
     /// Where forge scans git for this session: a git worker's worktree
     /// path, else the caller's `cwd_raw` unchanged.
     pub scan_cwd: PathBuf,
+    /// What this session dictates with, where it has overridden the defaults.
+    ///
+    /// Carried because three commands set it and nothing read it back: a
+    /// client could change a session's dictation and had no way to see what
+    /// it had set. The app-level device pick rides the dictate read instead,
+    /// because it is one answer for the process rather than the session.
+    pub dictate_overrides: forge_workspace::DictateOverrides,
 }
 
 impl SessionState {
     pub(super) fn collect(workspace: &Workspace, slot: &SessionSlot, cwd_raw: &Path) -> Self {
-        Self { slot: slot.clone(), scan_cwd: workspace.git_scan_cwd_for_session(slot, cwd_raw) }
+        let dictate_overrides = workspace
+            .domain_session_for(slot)
+            .map(|domain| domain.lock().dictate_overrides)
+            .unwrap_or_default();
+        Self {
+            slot: slot.clone(),
+            scan_cwd: workspace.git_scan_cwd_for_session(slot, cwd_raw),
+            dictate_overrides,
+        }
     }
 }
 

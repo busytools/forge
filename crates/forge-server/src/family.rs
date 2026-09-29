@@ -7,7 +7,8 @@
 
 /// The group a tool's calls are summarised under: the merge key for a kind
 /// row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolFamily {
     Read,
     Search,

@@ -74,7 +74,8 @@ pub struct LoadedAccount {
 /// changes what preflight tells you to do about a failed one. Derived
 /// from the provider plus the account's merged env; it carries the
 /// distinction and none of the secret.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AccountAuth {
     /// The account authenticates with a flat `token` beside a flat
     /// `base_url` (the base-url providers). Repaired by editing the

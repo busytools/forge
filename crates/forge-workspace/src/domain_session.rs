@@ -15,7 +15,7 @@
 //! reads them from the core. The last two are an intermediate state: the
 //! TUI folds its own copy until it is removed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use forge_agent::AgentHandle;
@@ -29,7 +29,7 @@ use crate::protocol::PendingInteractionSlot;
 
 /// The MCP servers a session's bridge last reported, and the failure
 /// standing beside them when the read did not complete.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct McpServers {
     pub servers: Vec<McpServerStatus>,
     /// Why the read failed, when it did. A failed read carries an empty
@@ -41,7 +41,7 @@ pub struct McpServers {
 /// How full the session's context window is, from the bridge's last
 /// answer. Both halves are `Option` because the upstream probe reports
 /// them independently.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContextUsage {
     pub percent: Option<u8>,
     pub max_tokens: Option<u64>,
@@ -98,6 +98,31 @@ pub struct DomainSession {
     /// connection failure clears it because the CLI sends no terminal
     /// snapshot for a session that died.
     pub background_work: bool,
+    /// The CLI's background-task registry as it last reported it, each entry
+    /// carrying the command its own card named where both have been seen.
+    ///
+    /// The bool above says that something is running; this is what a view
+    /// draws a row from, and it is held for the same reason - the set arrives
+    /// whole on each `background_tasks_changed`, and a view that attached
+    /// afterwards would otherwise see the flag and not one row.
+    pub background_tasks: Vec<crate::BackgroundTask>,
+    /// The command a tool call's card carried, by tool-use id.
+    ///
+    /// Held rather than resolved on the spot because the card arrives BEFORE
+    /// the `task_started` that links it to a task, so the command has to be
+    /// kept until a link names it. Cleared with the registry: it belongs to
+    /// the occupant that made the calls.
+    background_commands: HashMap<String, String>,
+    /// The ids whose cards arrived since the last registry change.
+    ///
+    /// What keeps the map above bounded: a command is kept while a live task
+    /// links to it, or for one registry change after its card arrived - which
+    /// is exactly the window in which the `task_started` naming it can land.
+    /// A foreground call's command is never read by anything and dies at the
+    /// next change.
+    staged_commands: HashSet<String>,
+    /// The tool call that began a task, by task id, from `task_started`.
+    task_tool_use: HashMap<String, String>,
     /// Whether this session is waiting on `/login` before it can run.
     ///
     /// Set from the signals the CLI actually sends: an assistant message
@@ -177,6 +202,86 @@ pub struct DomainSession {
 }
 
 impl DomainSession {
+    /// Whether a permission prompt is still waiting on `tool_id`.
+    ///
+    /// The session task asks the same question as it pops the slot, and this
+    /// asks it where a refusal can still reach a caller: by the time the task
+    /// sees the answer, the click has already happened.
+    pub fn awaits_permission(&self, tool_id: &str) -> bool {
+        matches!(
+            self.pending_interactions.get(tool_id),
+            Some(PendingInteractionSlot::Permission { .. }),
+        )
+    }
+
+    /// The same for a question. A prompt answered already, or one that asked
+    /// something else, is a dock that is gone.
+    pub fn awaits_question(&self, tool_id: &str) -> bool {
+        matches!(
+            self.pending_interactions.get(tool_id),
+            Some(PendingInteractionSlot::Question { .. }),
+        )
+    }
+
+    /// Replace the registry with the CLI's last snapshot, which carries the
+    /// whole set, and fill in whatever commands are already resolvable.
+    ///
+    /// Also the one place the held commands are pruned: a task that has left
+    /// the registry takes its link with it, and a command whose card arrived
+    /// since the last change keeps one more change to be linked.
+    pub(crate) fn replace_background_tasks(&mut self, tasks: Vec<crate::BackgroundTask>) {
+        self.background_tasks = tasks;
+        self.link_background_commands();
+        let live: HashSet<&str> =
+            self.background_tasks.iter().map(|task| task.task_id.as_str()).collect();
+        self.task_tool_use.retain(|task_id, _| live.contains(task_id.as_str()));
+        let linked: HashSet<&str> = self.task_tool_use.values().map(String::as_str).collect();
+        self.background_commands
+            .retain(|id, _| linked.contains(id.as_str()) || self.staged_commands.contains(id));
+        self.staged_commands.clear();
+    }
+
+    /// Record the command a tool call's card carried.
+    pub(crate) fn hold_background_command(&mut self, tool_use_id: String, command: String) {
+        self.staged_commands.insert(tool_use_id.clone());
+        self.background_commands.insert(tool_use_id, command);
+        self.link_background_commands();
+    }
+
+    /// Record which tool call began a task, which is the link that names the
+    /// command, and fill in that task's command if the card is already held.
+    pub(crate) fn hold_task_tool_use(&mut self, task_id: String, tool_use_id: String) {
+        self.task_tool_use.insert(task_id, tool_use_id);
+        self.link_background_commands();
+    }
+
+    /// Let go of the registry and everything that resolves a command in it: a
+    /// new occupant's calls are its own, and the CLI re-sends the set only
+    /// when it changes.
+    pub(crate) fn drop_background_tasks(&mut self) {
+        self.background_work = false;
+        self.background_tasks.clear();
+        self.background_commands.clear();
+        self.staged_commands.clear();
+        self.task_tool_use.clear();
+    }
+
+    /// Fill in the command of every entry whose card and tool call are both
+    /// known. Called after either half lands, so the order the CLI sends them
+    /// in does not matter.
+    fn link_background_commands(&mut self) {
+        for task in &mut self.background_tasks {
+            if task.command.is_some() {
+                continue;
+            }
+            task.command = self
+                .task_tool_use
+                .get(&task.task_id)
+                .and_then(|tool_use| self.background_commands.get(tool_use))
+                .cloned();
+        }
+    }
+
     /// Construct a fresh `DomainSession` bound to `key` with the
     /// given `conn`. Pre-spawn / pre-Connect callers pass `None` to
     /// register a placeholder domain whose handle slot fills in once
@@ -192,6 +297,10 @@ impl DomainSession {
             runtime_state: None,
             turn_pending: false,
             background_work: false,
+            background_tasks: Vec::new(),
+            background_commands: HashMap::new(),
+            staged_commands: HashSet::new(),
+            task_tool_use: HashMap::new(),
             awaiting_login: false,
             dictate_overrides: crate::dictate::DictateOverrides::default(),
             available_commands: Vec::new(),

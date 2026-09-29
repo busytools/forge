@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "What a view needs and nothing about how it renders."
+description = "The server: what a client reads of the core, and no view of its own."
 publish = false
 
 [features]
@@ -20,22 +20,46 @@ testing = ["forge-workspace/testing", "forge-workspace/test-helpers"]
 workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+# The socket. The pin and its other two features come from the workspace,
+# so `ws` is added here rather than the shared pin being moved.
+axum = { workspace = true, features = ["ws"] }
+# The protocol client's own arguments. A BIN cannot see dev-dependencies, so
+# a binary crate's arguments are a real dependency or they are hand-parsed.
+clap = { workspace = true }
 forge-primitives = { workspace = true }
 forge-workspace = { workspace = true }
+# A socket's incoming messages are a `futures_util::Stream`.
+futures-util = { workspace = true }
+# The protocol client is a BIN, and a bin cannot see dev-dependencies - so
+# the crate's own client for the socket has to be a real dependency. It costs
+# the lock nothing: axum's `ws` already pulls tungstenite underneath it.
+tokio-tungstenite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # The subscription verb hands out the workspace's own receiver, and naming
-# that type is a tokio channel.
-tokio = { workspace = true, features = ["sync"] }
+# that type is a tokio channel. `net` is the listener the socket binds:
+# the workspace's own set does not carry it, and without it
+# `tokio::net::TcpListener` reads as a missing item rather than a missing
+# feature.
+tokio = { workspace = true, features = ["sync", "net"] }
 # The Monitor tail read reports a file it could not open, which is a
 # diagnosis a reader makes from the log rather than from the page.
 tracing = { workspace = true }
 
 [dev-dependencies]
+# This crate's own tests drive the fleet fixture `testing` gates, so a
+# scoped `cargo nextest run -p forge-server` (no --all-features) compiles
+# them the way a workspace build already does.
+forge-server = { path = ".", features = ["testing"] }
 # The surface's equivalence tests read the same workspace the TUI reads,
 # so they need `Workspace::testing_stub`, its seeding helpers, and the
 # `forge.toml` fixture `Workspace::new_for_test` builds from a tempdir.
 forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
+# A session's dictation overrides are this crate's to carry, and their axes
+# are `forge-dictate`'s types, so the test that they arrive populated names
+# them here rather than asserting a shape without a value.
+forge-dictate = { workspace = true }
 tempfile = { workspace = true }
 # The connectors fixture seeds durable subscriptions, which are keyed by id.
 uuid = { workspace = true }
