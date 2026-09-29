@@ -773,7 +773,13 @@ details.msg[open] > summary .arw { color: var(--teal); }
   /* A row's chip is not the target - the row is, and has been since the mock
      drew `.pr` as the pointer - so it gives its height back rather than
      stretching every row it sits in. It is disabled today in any case. */
-  .pr .x, .wk .x, .banner .close { min-height: 0; }
+  .pr .x, .wk .x { min-height: 0; }
+  /* The banner's is the exception, and it is the one control that must stay a
+     target: it is the way out of a covering rail, the header's handle is
+     underneath it at this width, and it is drawn ~23px wide by its padding -
+     under the 24px floor as well as the house bar. So it takes the height the
+     rule above gives it and a width to match. */
+  .banner .close { min-width: 44px; }
 }
 
 /* A delivery keeps the lines it arrived with: its body is often a second

@@ -83,7 +83,12 @@ describe('the session shell as it draws', () => {
    * in this view can close a session yet.
    */
   it('draws the row chip as a disabled button with a name', () => {
-    expect(draw()).toMatch(/<button[^>]*class="x"[^>]*disabled[^>]*aria-label="closing/);
+    const chip = /<button[^>]*class="x"[^>]*>/.exec(draw())?.[0] ?? '';
+    expect(chip, 'the row chip is not a control').not.toBe('');
+    expect(chip, 'the chip promised a click it cannot do').toContain('disabled');
+    expect(chip, 'the chip carries no name').toContain(
+      'aria-label="closing a session is not available yet"',
+    );
   });
 
   /**

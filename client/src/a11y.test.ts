@@ -113,8 +113,12 @@ describe('axe over the rendered pages', () => {
   /**
    * A page with NO record draws eight of its nine sections nowhere, so the
    * case above sees the rail, the header and an empty conversation. This is
-   * the one that puts the facts row, a section body and the chip's popover in
-   * front of axe.
+   * the one that puts a section body in front of axe - eight of them.
+   *
+   * The header's facts row and the account chip's popover are NOT in this
+   * file's set: the chip lives in the header, and the header is `Session`'s,
+   * which no server render can populate. Worth closing when a page can be
+   * mounted in a test with a record.
    */
   it('draws the inspector with every section populated, with no violations', async () => {
     const html = render(Inspector, {

@@ -189,13 +189,16 @@ describe('the session page over a socket', () => {
   });
 
   /**
-   * Two subscriptions in one workspace can draw the same words, so a row is
-   * keyed by the subscription's own id - a duplicate key throws in Svelte,
-   * which is how this reached the browser.
+   * Two subscriptions in one workspace can draw the SAME words - two mentions
+   * watchers over one workspace is an ordinary thing to configure - so a row is
+   * keyed by the subscription's own id. Keyed by the drawn words instead, the
+   * two collide and Svelte throws, which is how this reached the browser. The
+   * fixture carries such a pair, because a fixture whose three targets all read
+   * differently would pass either way.
    */
-  it('draws three subscriptions in one workspace without colliding', async () => {
+  it('draws subscriptions that read the same words without colliding', async () => {
     await open(sessionFixture, slackWire());
-    expect(document.querySelectorAll('.sb .subs > li')).toHaveLength(3);
+    expect(document.querySelectorAll('.sb .subs > li')).toHaveLength(4);
   });
 
   /**
@@ -301,6 +304,9 @@ function slackWire(): typeof homeWire {
           },
           { id: 's2', workspace: 'Trust Machines', target: 'DirectMessages' },
           { id: 's3', workspace: 'Trust Machines', target: 'Mentions' },
+          // The same words as s3: a row keyed by the target rather than by the
+          // subscription's own id throws on this pair.
+          { id: 's4', workspace: 'Trust Machines', target: 'Mentions' },
         ],
       },
     },
