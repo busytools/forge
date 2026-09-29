@@ -63,8 +63,17 @@
    * behind the reader.
    */
   async function open() {
+    // What a connection taken while this is in flight is measured against.
+    const held = connection;
     const launched = await boot(opened, remembered);
     booting = false;
+    if (connection !== held) {
+      // A submit is a person acting on what is in front of them and a launch is
+      // the app guessing, so theirs is the one to keep. The launch's socket
+      // goes with its result: nothing would ever draw from it.
+      launched.connected?.connection.close();
+      return;
+    }
     failure = launched.failure;
     if (launched.connected) take(launched.connected);
     // `null` is a route the app was addressed at. A launch opens the socket
