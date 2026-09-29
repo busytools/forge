@@ -103,10 +103,17 @@ seat still being shown, and a single unsubscribe must not take the seat
 out of the set a view is watching.
 
 **`more {conversation, before, turns}`** - a page of a session's
-transcript, as whole turns. Each turn carries the key the server named it
-by and the MESSAGES it ran as, which is the same frame shape the session
-snapshot's `conversation` carries; the grouping inside a turn is the
-client's to decide.
+transcript, as whole turns. Each turn carries `key` and `messages`, which is
+the same shape the session snapshot's `conversation` carries; the grouping
+inside a turn is the client's to decide.
+
+**`key` is `null` on every turn of a transcript-derived conversation, and a
+client must not key by it.** The name comes from a `Result` frame, and a
+transcript holds none: its reader maps `user`, `assistant` and `system` rows
+and nothing else. A client that keys its rows by `key` collapses the whole
+conversation into one. It is carried because a live session does name its
+turns, and what a client does with it is its own business - the cursor is a
+position and is the one handle that always names a turn.
 
 **The boundary between turns is the server's, and it is the only part of
 the fold that crosses.** How a run of tool calls groups within a turn is a
@@ -196,7 +203,7 @@ conversation, and what the composer is doing.
 |---|---|
 | `slot` | The seat itself. |
 | `header` | The resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, and whether a turn is in flight. |
-| `conversation` | The transcript's messages, oldest first, with the compaction count. These are the CLI's own frames, which is what the live `update` stream carries too. |
+| `conversation` | The transcript's whole turns, in order, with the compaction count. Each turn carries `key` and `messages` - the CLI's own frames, which is what the live `update` stream carries too - so this is the same shape `more` answers a page with. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
 | `pr`, `closes` | The open pull request this seat's branch is on - its number and URL - and the issues it closes, which is the `PR #N -> closes #M` line the inspector draws. `null` and an empty list when there is none, or when the branch is not pushed. |
 | `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference. |
