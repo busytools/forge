@@ -53,6 +53,11 @@ const NOTHING: FleetNews = { kind: 'nothing' };
 const REDRAWS = new Set([
   'catalog_loaded',
   'cli_version_changed',
+  // The account pool, which the band's own card draws and no row does. It is
+  // the one of these nothing else in the stream mentions, so a quiet forge
+  // emits no other update and the card would keep whatever it read at
+  // subscribe.
+  'accounts_changed',
   'dictate_availability',
   'connection_failed',
   'auth_required',

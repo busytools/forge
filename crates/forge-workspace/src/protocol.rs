@@ -1035,6 +1035,15 @@ pub enum SessionUpdate {
     /// view re-reads through the surface's `cli_version` verb, the TUI
     /// through the workspace method it still reads directly.
     CliVersionChanged,
+    /// The account pool moved: an account's loading state, its cached usage
+    /// snapshot, or the gateway listener's readiness.
+    ///
+    /// **The pool's state is the snapshot's, and this carries none of it.** A
+    /// payload would be a second copy of what `HomeWire::accounts` already
+    /// states, and the two would drift; this is the wake-up, and a view
+    /// re-reads. It carries no seat because the pool belongs to none, which is
+    /// also what routes it to a home subscriber and to nobody else.
+    AccountsChanged,
     PluginsInventoryUpdated {
         cwd_raw: String,
         snapshot: PluginsInventorySnapshot,
@@ -1285,6 +1294,7 @@ impl SessionUpdate {
             Self::ServiceStatus { .. }
             | Self::CatalogLoaded
             | Self::CliVersionChanged
+            | Self::AccountsChanged
             | Self::PluginsInventoryUpdated { .. }
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
@@ -1507,6 +1517,7 @@ impl std::fmt::Debug for SessionUpdate {
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
             Self::CliVersionChanged => f.write_str("CliVersionChanged"),
+            Self::AccountsChanged => f.write_str("AccountsChanged"),
         }
     }
 }

@@ -117,9 +117,13 @@ pub enum ServerMessage {
     Update {
         update: Box<SessionUpdate>,
     },
+    /// A page of one conversation, in answer to `more`: whole turns, each with
+    /// the key the server named it by and the messages it ran as. Grouping a
+    /// run of calls inside a turn is the client's, so the units the server
+    /// folded do not cross.
     Page {
         conversation: SessionSlot,
-        rows: Vec<serde_json::Value>,
+        turns: Vec<crate::transport::wire::TurnWire>,
         cursor: Option<String>,
     },
     /// The answer to a `Command` that carried a `reply_to`, including a
@@ -171,6 +175,29 @@ mod tests {
         };
         assert_eq!(what, Subject::Home, "the subject survives the round trip");
         assert!(answering, "and so does the capability the client declared");
+    }
+
+    /// The pool belongs to no seat, so a home subscription hears it and a
+    /// seat's does not.
+    ///
+    /// **Both home arms carry it, and the slot-less one is the load-bearing
+    /// assertion here.** `fleet_news` classifies it a redraw because the
+    /// band's own card is part of the region the web home re-sends; taking it
+    /// out of that arm would leave this test green, because the slot-less arm
+    /// below delivers it anyway. What the test can fail on is the variant
+    /// gaining a seat: a key would send the pool to one session's page and
+    /// leave every other subscriber drawing a card that never moves.
+    #[test]
+    fn the_pools_announcement_reaches_home_and_no_seat() {
+        let update = SessionUpdate::AccountsChanged;
+        let seat = SessionSlot::lead("TestOrg", "proj");
+
+        assert!(update.slot().is_none(), "the pool addresses no seat, which is what routes it");
+        assert!(Subject::Home.covers(&update), "home is the only subscription that could carry it");
+        assert!(
+            !Subject::Session(seat).covers(&update),
+            "a seat's subscription is a seat, and the pool is not one",
+        );
     }
 
     /// The client's settings come off the server's own config, so the

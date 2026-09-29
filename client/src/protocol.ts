@@ -63,12 +63,12 @@ export type Command = Record<string, Record<string, unknown>>;
 /**
  * One `SessionUpdate`, for a subscription that covers it.
  *
- * Three shapes, because the enum has three kinds of variant and 55 variants
+ * Three shapes, because the enum has three kinds of variant and 56 variants
  * in all: a unit variant is its name alone, a struct variant is its name
  * around a field bag, and the one newtype variant is its name around the
  * value inside it.
  *
- * Open for the same reason as `Command`, and one more: 55 variants cross
+ * Open for the same reason as `Command`, and one more: 56 variants cross
  * here, and the page that draws a subject is the only place that knows which
  * of them it acts on.
  */
@@ -129,8 +129,18 @@ export type ServerMessage =
   | { kind: 'greeting'; version: number; settings: ClientSettings }
   | { kind: 'snapshot'; subject: Subject; data: unknown }
   | { kind: 'update'; update: SessionUpdate }
-  /** A page of one conversation, in answer to `more`, with the cursor for the next. */
-  | { kind: 'page'; conversation: SessionSlot; rows: unknown[]; cursor: string | null }
+  /**
+   * A page of one conversation, in answer to `more`, with the cursor for the
+   * next.
+   *
+   * Each turn carries its own key and its own MESSAGES - the CLI's frames, the
+   * same shape the session snapshot's `conversation` carries. How a run of
+   * tool calls groups inside a turn is a drawing decision, so it is the
+   * client's; what the server keeps is the boundary between turns, because
+   * the paging contract is built on it and a page that split one would leave
+   * a client stitching half a turn to the other half.
+   */
+  | { kind: 'page'; conversation: SessionSlot; turns: unknown[]; cursor: string | null }
   /** The answer to a command that asked for one, a refusal included. */
   | { kind: 'reply'; reply_to: number; body: unknown }
   | { kind: 'error'; what: string; why: string };

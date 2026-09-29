@@ -107,6 +107,7 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
         ),
     }
     settle_probe_result(pool, &account_key, &probe_result);
+    workspace.announce_accounts_changed();
 }
 
 #[cfg(test)]
