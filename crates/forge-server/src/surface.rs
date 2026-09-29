@@ -106,10 +106,11 @@ impl ViewSurface {
     /// The conversation's units, as the server folds them.
     ///
     /// `conversation` hands over the wire messages and lets a view fold them;
-    /// this hands over the FOLD, which is what a client reading history
-    /// needs. One turn is a RUN of these units, so slicing them at a
-    /// `UserTurn` is what lets a page be cut on a turn boundary rather than
-    /// through the middle of one.
+    /// this hands over the FOLD, which is what the terminal draws. A second
+    /// view folds for itself: how a run of tool calls groups is a drawing
+    /// decision, and the one thing that stays here is where a turn begins -
+    /// `transcript::render` reports that in message terms, which is what a
+    /// page is cut on.
     pub fn folded_units(&self, slot: &SessionSlot, cwd_raw: &Path) -> Vec<ChatUnit> {
         crate::transcript::render_units(&self.conversation(slot, cwd_raw).messages)
     }

@@ -178,8 +178,52 @@ pub struct PeerCard {
     pub kind: &'static str,
 }
 
+/// Where one turn sits in the conversation it was folded from, and what names
+/// it.
+///
+/// **In MESSAGE terms rather than in units**, because a page crosses as whole
+/// turns: a client is handed each turn's messages and folds them itself, so
+/// the boundary a page is cut on has to name a message.
+pub struct TurnSpan {
+    /// The message the turn opens at.
+    pub opens_at: usize,
+    /// The key the fold named the turn by, `None` when nothing did - a
+    /// conversation read from a transcript carries no `Result` frame, and the
+    /// key comes from one.
+    pub key: Option<String>,
+}
+
+/// A folded conversation: the units a view draws, and where its turns sit.
+pub struct Rendered {
+    pub units: Vec<ChatUnit>,
+    pub turns: Vec<TurnSpan>,
+}
+
+/// Open a turn: the unit that opens it and the span a page is cut on are
+/// pushed together, so where the fold says a turn begins and where the page
+/// cuts one cannot come apart.
+///
+/// **One place opens a turn.** The fold has two ways in - a block that is the
+/// user's own turn, and a queued prompt hoisted into one - and a span pushed
+/// at only one of them leaves every turn of the other kind outside the page's
+/// boundary list.
+fn open_turn(turns: &mut Vec<TurnSpan>, units: &mut Vec<ChatUnit>, text: String, index: usize) {
+    turns.push(TurnSpan { opens_at: index, key: None });
+    units.push(ChatUnit::UserTurn { text });
+}
+
 /// Fold a conversation into the units a view draws.
 pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
+    render(messages).units
+}
+
+/// Fold a conversation into the units a view draws, and report where its turns
+/// sit in the message list.
+///
+/// One walk serves both: a second boundary rule over the messages is how the
+/// two would come to disagree about where a turn begins, and the page is cut
+/// on the answer.
+pub fn render(messages: &[Message]) -> Rendered {
     let results = result_statuses(messages);
     let answers = question_answers(messages);
     let mut units: Vec<ChatUnit> = Vec::new();
@@ -197,7 +241,10 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     // row here; a live session's trailing turn is left to the view's own
     // live row.
     let mut running_turn = false;
-    for message in messages {
+    // Where each turn opens, taken as the fold pushes the unit that opens it:
+    // one push per turn, in order, so the keys below line up with them.
+    let mut turns: Vec<TurnSpan> = Vec::new();
+    for (index, message) in messages.iter().enumerate() {
         // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
         if is_dispatched(message) {
             continue;
@@ -283,7 +330,15 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
                         if !assistant {
                             close_traced(&mut traced, &mut units, true, &mut keys);
                         }
-                        units.push(unit);
+                        // A delivery draws as a notice, which is a row inside
+                        // the turn already open; only the user's own turn
+                        // opens one.
+                        match unit {
+                            ChatUnit::UserTurn { text } => {
+                                open_turn(&mut turns, &mut units, text, index);
+                            }
+                            other => units.push(other),
+                        }
                     }
                 },
                 ContentBlock::QueuedCommand { prompt, .. } => {
@@ -297,7 +352,7 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
                         flush(&mut run, &mut units);
                         flush_peers(&mut peers, &mut units);
                         close_traced(&mut traced, &mut units, true, &mut keys);
-                        units.push(ChatUnit::UserTurn { text });
+                        open_turn(&mut turns, &mut units, text, index);
                     }
                 }
                 ContentBlock::ToolUse { id, name, input }
@@ -324,7 +379,24 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
     if !running_turn {
         close_traced(&mut traced, &mut units, false, &mut keys);
     }
-    units
+    // Each turn's name, off the report the fold closed it with: the first
+    // report after an opening belongs to that turn, which is the same rule the
+    // page used to slice turns out of the units.
+    let mut open: Option<usize> = None;
+    let mut next = 0_usize;
+    for unit in &units {
+        if matches!(unit, ChatUnit::UserTurn { .. }) {
+            open = Some(next);
+            next += 1;
+            continue;
+        }
+        if let ChatUnit::TurnReport { key, .. } = unit
+            && let Some(span) = open.and_then(|at| turns.get_mut(at))
+        {
+            span.key.clone_from(key);
+        }
+    }
+    Rendered { units, turns }
 }
 
 /// What a session-state frame says about a turn being in flight: `Some(true)`

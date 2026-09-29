@@ -117,9 +117,13 @@ pub enum ServerMessage {
     Update {
         update: Box<SessionUpdate>,
     },
+    /// A page of one conversation, in answer to `more`: whole turns, each with
+    /// the key the server named it by and the messages it ran as. Grouping a
+    /// run of calls inside a turn is the client's, so the units the server
+    /// folded do not cross.
     Page {
         conversation: SessionSlot,
-        rows: Vec<serde_json::Value>,
+        turns: Vec<crate::transport::wire::TurnWire>,
         cursor: Option<String>,
     },
     /// The answer to a `Command` that carried a `reply_to`, including a

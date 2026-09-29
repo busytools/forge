@@ -103,12 +103,21 @@ seat still being shown, and a single unsubscribe must not take the seat
 out of the set a view is watching.
 
 **`more {conversation, before, turns}`** - a page of a session's
-transcript, newest turn last, as whole turns.
+transcript, as whole turns. Each turn carries the key the server named it
+by and the MESSAGES it ran as, which is the same frame shape the session
+snapshot's `conversation` carries; the grouping inside a turn is the
+client's to decide.
+
+**The boundary between turns is the server's, and it is the only part of
+the fold that crosses.** How a run of tool calls groups within a turn is a
+drawing decision; where one turn ends and the next begins is what the
+paging contract is built on, so a page can never hand over half a turn.
 
 **The cursor is a position, not an index.** Echo it back as `before` and
-do not take it apart: it names the row the page opens on, and what it is
-made of is the server's business. `null` means there is nothing above the
-page it came with, and that is where a walk backwards ends.
+do not take it apart: it names the message the page's first turn opens on,
+and what it is made of is the server's business. `null` means there is
+nothing above the page it came with, and that is where a walk backwards
+ends.
 
 **`command {command, reply_to?}`** - any of the core's own commands, as
 the core's own enum. `reply_to` is absent or `null` on most of them, and
@@ -151,7 +160,7 @@ was asked for.
   for the life of the connection. The pool is the one that reads as a live
   state rather than as an event: a card left at `0 ready, probing` looks
   like a slow probe rather than like a page that stopped listening.
-- **`page {conversation, rows, cursor}`** - in answer to `more`.
+- **`page {conversation, turns, cursor}`** - in answer to `more`.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own
   words.
@@ -214,16 +223,21 @@ not a feed: no update announces that a transcript's tokens moved, so a
 subscription is answered once and then hears nothing. A client that wants
 the current numbers asks again by subscribing again.
 
-**Two representations of one conversation cross, and they are for
-different halves of it.** A settled turn is drawn from the FOLD: `more`
-returns whole turns as the server folded them, and a client that wants
-history should draw those units and keep its own expansion state. The turn
-in flight is drawn from the FRAMES: `update`s carry the CLI's own messages
-as they arrive, and a client renders those without regrouping them,
-because the fold is the server's and a client's own grouping would differ
-from the units the same turn becomes. When that turn settles, its units
-arrive by `more` and replace what the frames were drawing. The fold is
-never something a client ports.
+**Two representations of one conversation cross, and they agree.** A
+settled turn arrives by `more` as the messages it ran as; the turn in
+flight arrives as the same CLI frames, one `update` at a time. **A client
+folds both with one rule of its own** - how a run of tool calls groups, the
+labels it draws and the tail it shows - and the two meet with nothing to
+reconcile, because the frames are the same shape on either side. The one
+thing the server keeps is the turn boundary, which is what stops a page
+handing over half a turn; where a turn BEGINS is a fact about the session,
+and how its work is drawn is not.
+
+The server's own fold is still what a terminal reads, and it is the
+reference for a client's: the suppressions it carries - a monitor draws no
+chat row, and a settled turn's status is aggregated - are per-view rules
+rather than facts about the session, so a client that draws a conversation
+makes those calls for itself.
 
 ## What is not here
 

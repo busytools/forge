@@ -19,7 +19,7 @@ use anyhow::Result;
 use forge_primitives::review::{ReviewSet, ReviewThread};
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
-use forge_primitives::{GotifySubscription, SessionSlot};
+use forge_primitives::{GotifySubscription, Message, SessionSlot};
 use forge_workspace::env::processes::{ProcessSnapshot, SCAN_STALENESS, scan};
 use forge_workspace::{AccountLoadingRow, GatewayOrgView, McpServers, ProjectView, WorkerEntry};
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ use serde_json::Value;
 use crate::composer::{NoticeWire, Phase, SignIn};
 use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, ConversationHistory, PendingAsk, ViewSurface};
-use crate::transcript::ChatUnit;
+use crate::transcript::TurnSpan;
 use crate::transport::TransportState;
 use crate::transport::envelope::Subject;
 use crate::work::{WorkState, work_from_scan};
@@ -462,52 +462,63 @@ pub struct ReviewsWire {
     pub reviews: ReadWire<Vec<ReviewSet>>,
 }
 
-/// One page of history: whole turns, newest first, and the handle that asks
-/// for the ones above them.
+/// One turn, as a page carries it: the key the server named it by, and the
+/// messages it ran as.
+///
+/// **The messages, not the units.** How a run of tool calls groups inside a
+/// turn is a drawing decision, so it belongs to whoever draws; what crosses is
+/// the turn's own boundary, and that stays here because the paging contract is
+/// built on it - `more` asks for turns, the cursor is a turn, and a page that
+/// split one would leave a client stitching half a turn to the other half.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TurnWire {
+    /// `None` when nothing named the turn: the key comes from a `Result`
+    /// frame, and a conversation read from a transcript carries none.
+    pub key: Option<String>,
+    /// The frames this turn ran as, which is the same shape the session
+    /// record's `conversation` carries.
+    pub messages: Vec<Value>,
+}
+
+/// One page of history: the newest turns, in conversation order, and the
+/// handle that asks for the ones above them.
 pub struct Page {
-    pub rows: Vec<ChatUnit>,
+    pub turns: Vec<TurnWire>,
     /// `None` means there is nothing above this page, which is the one case
     /// a client stops asking.
     pub cursor: Option<String>,
 }
 
-/// Slice a folded conversation into whole turns, newest first.
+/// Slice a conversation into whole turns, newest first.
 ///
-/// **A turn is a RUN of the fold's units**, so slicing on a unit count would
-/// cut a turn in half - the breakage the design exists to avoid. `UserTurn`
-/// is a safe boundary because `render_units` flushes any open tool run before
-/// it pushes one, so no `UserTurn` can fall inside a `ToolGroup`.
+/// **A turn is a RUN of the fold's units, and the fold is what says where one
+/// begins** - the span `render` reports, in message terms. Slicing on a count
+/// of messages instead would cut a turn in half, which is the breakage the
+/// design exists to avoid.
 ///
 /// **The cursor errs toward OVERLAP, never toward a gap.** A client asking
-/// for more may be handed a turn it already has - it keys its rows and drops
+/// for more may be handed a turn it already has - it keys its turns and drops
 /// the repeats - but never a HOLE, which is history it has no way to ask for
 /// again.
 ///
 /// **The cursor is a POSITION, not a name, and the reason is a fact about the
-/// read rather than a preference.** A turn's name would be its
-/// `ChatUnit::TurnReport { key }`, and the fold builds a report only from a
-/// `Message::Result` frame - while a conversation read from a transcript
-/// carries none: `SessionMessageKind` is `User | Assistant | System` with no
-/// Result kind, and the replay synthesizer never emits one. So a keyed cursor
-/// is `None` on every page of every transcript-derived conversation, and a
-/// client reading `None` as "nothing above" stops after the first page. The
-/// unit index of the page's first turn is the one thing that always names it.
-pub fn page(all: &[ChatUnit], before: Option<&str>, turns: u32) -> Page {
-    // A page of no turns ends where it began: its cursor would name the row it
+/// read rather than a preference.** A turn's name is its key, and the fold
+/// builds one only from a `Message::Result` frame - while a conversation read
+/// from a transcript carries none: `SessionMessageKind` is `User | Assistant |
+/// System` with no Result kind, and the replay synthesizer never emits one. So
+/// a keyed cursor is `None` on every page of every transcript-derived
+/// conversation, and a client reading `None` as "nothing above" stops after
+/// the first page. The message the page's first turn opens at is the one thing
+/// that always names it.
+pub fn page(messages: &[Message], spans: &[TurnSpan], before: Option<&str>, turns: u32) -> Page {
+    // A page of no turns ends where it began: its cursor would name the turn it
     // already opened at, so a client walking back would ask for the same page
     // forever.
     let turns = turns.max(1) as usize;
+    let opens: Vec<usize> = spans.iter().map(|span| span.opens_at).collect();
 
-    // Where each turn opens. Slicing on a unit count instead would cut a turn
-    // in half, because one turn is several units.
-    let opens: Vec<usize> = all
-        .iter()
-        .enumerate()
-        .filter(|(_, unit)| matches!(unit, ChatUnit::UserTurn { .. }))
-        .map(|(at, _)| at)
-        .collect();
-
-    // A cursor names the unit the previous page BEGAN at, so the page above
+    // A cursor names the message the previous page BEGAN at, so the page above
     // ends where that one started: the two meet exactly.
     let ends_at = before
         .and_then(|cursor| cursor.parse::<usize>().ok())
@@ -516,19 +527,28 @@ pub fn page(all: &[ChatUnit], before: Option<&str>, turns: u32) -> Page {
 
     let first = ends_at.saturating_sub(turns);
     // The conversation's opening rows - who started it, a cron fire, a
-    // delivery - come before its first turn, so the first page starts at the
-    // conversation rather than at that turn. Starting at `opens[0]` would
-    // leave them above every page, where no walk can reach them.
-    let start = if first == 0 { 0 } else { opens.get(first).copied().unwrap_or(0) };
-    let end = opens.get(ends_at).copied().unwrap_or(all.len());
-    let rows = all[start..end].to_vec();
+    // delivery - come before its first turn, so the first page carries them on
+    // that turn. Starting at `opens[0]` would leave them above every page,
+    // where no walk can reach them.
+    let from_of = |at: usize| if at == 0 { 0 } else { opens[at] };
+    let to_of = |at: usize| opens.get(at + 1).copied().unwrap_or(messages.len());
+
+    let page_turns = (first..ends_at)
+        .map(|at| TurnWire {
+            key: spans.get(at).and_then(|span| span.key.clone()),
+            messages: messages[from_of(at)..to_of(at)]
+                .iter()
+                .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
+                .collect(),
+        })
+        .collect();
 
     // `None` is the real "nothing above this page": a page already opening on
     // the conversation's first turn has nothing to walk back to, and that is
     // the one case a client stops asking.
     let cursor = if first == 0 { None } else { opens.get(first).map(usize::to_string) };
 
-    Page { rows, cursor }
+    Page { turns: page_turns, cursor }
 }
 
 /// A subject's wire form. The ONE place it is produced.
@@ -845,41 +865,64 @@ mod tests {
         )
     }
 
-    /// A seat whose transcript holds `turns` finished turns, and the surface
-    /// over it.
-    fn a_surface_of_turns(turns: usize) -> (Arc<ViewSurface>, SessionSlot, PathBuf) {
+    /// The messages and turn spans a page is cut on, over a transcript of `rows`,
+    /// read the way the transport reads them.
+    fn a_conversation(rows: &[&str]) -> (Vec<Message>, Vec<TurnSpan>) {
         let dir = tempfile::tempdir().expect("tempdir").keep();
         let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
             .expect("the fleet builds");
-        let rows: Vec<String> = (0..turns).map(a_turns_rows).collect();
-        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
-        fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
-
+        fleet.seed_transcript("TestOrg", "proj", "lead", rows).expect("the transcript seeds");
         let seat = fixture_seat();
         let surface = fleet.surface();
         let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
-        (surface, seat, cwd)
+
+        let messages = surface.conversation(&seat, &cwd).messages;
+        let spans = crate::transcript::render(&messages).turns;
+        (messages, spans)
+    }
+
+    /// `turns` finished turns, as the transcript rows they are.
+    fn turns_of(turns: usize) -> Vec<String> {
+        (0..turns).map(a_turns_rows).collect()
+    }
+
+    /// The words a turn opened on, read off the messages the page carried.
+    ///
+    /// A turn's identity is its messages now, so this is what a reader checks
+    /// one by: the evidence cannot be a position, because `page` hands back
+    /// values and no value is ever `ptr::eq` to the original.
+    fn opened_on(turn: &TurnWire) -> String {
+        turn.messages
+            .iter()
+            .find_map(|frame| frame["message"]["content"][0]["text"].as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// The words every turn of a conversation opened on, oldest first.
+    fn every_turn(messages: &[Message], spans: &[TurnSpan]) -> Vec<String> {
+        page(messages, spans, None, u32::MAX).turns.iter().map(opened_on).collect()
     }
 
     /// A page of no turns ended where it began - an empty page whose cursor
-    /// named the row it had already opened at - so a client walking back asked
-    /// for it forever.
+    /// named the turn it had already opened at - so a client walking back
+    /// asked for it forever.
     #[test]
     fn a_page_of_no_turns_still_walks_backwards() {
-        let (surface, seat, cwd) = a_surface_of_turns(6);
-        let all = surface.folded_units(&seat, &cwd);
+        let rows = turns_of(6);
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (messages, spans) = a_conversation(&borrowed);
 
         // Reached the way a client reaches one, from the cursor below it.
-        let lower = page(&all, None, 2);
+        let lower = page(&messages, &spans, None, 2);
         let cursor = lower.cursor.expect("there is a page above this one");
 
-        let above = page(&all, Some(&cursor), 0);
+        let above = page(&messages, &spans, Some(&cursor), 0);
 
-        assert!(!above.rows.is_empty(), "a page carries rows rather than none at all");
+        assert!(!above.turns.is_empty(), "a page carries turns rather than none at all");
         assert_ne!(
             above.cursor.as_deref(),
             Some(cursor.as_str()),
-            "and it moves rather than naming the row it already opened at",
+            "and it moves rather than naming the turn it already opened at",
         );
     }
 
@@ -888,69 +931,64 @@ mod tests {
     /// reaches them.
     #[test]
     fn the_rows_before_the_first_turn_ride_the_first_page() {
-        let units = [
-            ChatUnit::Notice(crate::transcript::Notice {
-                severity: crate::transcript::NoticeSeverity::Info,
-                source: "cron",
-                text: "a scheduled prompt".to_owned(),
-            }),
-            ChatUnit::UserTurn { text: "hello".to_owned() },
-        ];
+        let (messages, spans) = a_conversation(&[
+            r#"{"type":"assistant","uuid":"a0","message":{"id":"m0","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"a delivery arrived"}]}}"#,
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"},"session_id":"s"}"#,
+            r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+        ]);
 
-        let first = page(&units, None, 10);
+        let first = page(&messages, &spans, None, 10);
 
-        assert!(
-            matches!(first.rows.first(), Some(ChatUnit::Notice(_))),
-            "the opening row is on the page rather than above every page: {:?}",
-            first.rows,
+        assert_eq!(first.turns.len(), 1, "precondition: this conversation is one turn");
+        assert_eq!(
+            first.turns[0].messages.first().map(|frame| frame["uuid"].clone()),
+            Some(Value::String("a0".to_owned())),
+            "the row before the first turn rides that turn rather than sitting above every page: \
+             {:?}",
+            first.turns[0].messages,
         );
     }
 
-    /// Review Focus item 1: a page opens on a turn, and consecutive pages
-    /// meet without a gap.
+    /// A page opens on a turn, and consecutive pages meet without a gap.
     #[test]
     fn a_page_opens_on_a_turn_and_the_pages_meet_exactly() {
-        let (surface, seat, cwd) = a_surface_of_turns(50);
-        let all = surface.folded_units(&seat, &cwd);
-        let first = page(&all, None, 10);
+        let rows = turns_of(50);
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (messages, spans) = a_conversation(&borrowed);
+        let first = page(&messages, &spans, None, 10);
 
-        // A turn opens on the row the user wrote. A page beginning anywhere
-        // else hands a client the tail of one turn and no way to tell that is
-        // what it has.
-        assert!(
-            matches!(first.rows.first(), Some(ChatUnit::UserTurn { .. })),
-            "a page opens on a turn rather than inside one",
+        // A page is the turns it was asked for, each opening where a turn
+        // does. A page beginning anywhere else hands a client the tail of one
+        // turn and no way to tell that is what it has.
+        assert_eq!(first.turns.len(), 10, "a page is the turns it was asked for");
+        // The page is the NEWEST ten, and it lists them in conversation order: a
+        // client walking back gets each page in reading order and asks for the ones
+        // above it.
+        assert_eq!(
+            opened_on(first.turns.first().expect("ten turns")),
+            "turn 40",
+            "the page reaches back exactly as far as it was asked for, no further",
+        );
+        assert_eq!(
+            opened_on(first.turns.last().expect("ten turns")),
+            "turn 49",
+            "and it ends on the newest turn of the conversation",
         );
 
         // And the next page must reach back to where this one began. It may
-        // repeat rows - the client keys them and drops the repeats - but it
-        // may never skip one, because a skipped turn is history the reader
-        // has no way to ask for again.
-        //
-        // The evidence is the turn TEXTS rather than a position: comparing
-        // positions by pointer is vacuous here, because `page` hands back
-        // clones and no clone is ever `ptr::eq` to the original - both sides
-        // read as "not found" and the comparison passes whatever happened.
-        let written = |page: &Page| -> Vec<String> {
-            page.rows
-                .iter()
-                .filter_map(|unit| match unit {
-                    ChatUnit::UserTurn { text } => Some(text.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
-        let all_turns: Vec<String> = written(&Page { rows: all.clone(), cursor: None });
-        let second = page(&all, first.cursor.as_deref(), 10);
-        let first_turns = written(&first);
-        let second_turns = written(&second);
+        // repeat turns - the client keys them and drops the repeats - but it
+        // may never skip one, because a skipped turn is history the reader has
+        // no way to ask for again.
+        let all = every_turn(&messages, &spans);
+        let second = page(&messages, &spans, first.cursor.as_deref(), 10);
+        let second_turns: Vec<String> = second.turns.iter().map(opened_on).collect();
 
         assert!(!second_turns.is_empty(), "asking for more turns returns some");
-        let above = all_turns
+        let above = all
             .iter()
-            .position(|held| *held == first_turns[0])
+            .position(|held| *held == opened_on(&first.turns[0]))
             .and_then(|at| at.checked_sub(1))
-            .map(|at| all_turns[at].clone());
+            .map(|at| all[at].clone());
         assert_eq!(
             second_turns.last().cloned(),
             above,
@@ -969,26 +1007,19 @@ mod tests {
     /// page did. `pages > 1` is the half that catches it.
     #[test]
     fn walking_back_through_history_sees_every_turn_and_ends() {
-        let (surface, seat, cwd) = a_surface_of_turns(25);
-        let all = surface.folded_units(&seat, &cwd);
-        let written = |rows: &[ChatUnit]| -> Vec<String> {
-            rows.iter()
-                .filter_map(|unit| match unit {
-                    ChatUnit::UserTurn { text } => Some(text.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
-        let every = written(&all);
+        let rows = turns_of(25);
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (messages, spans) = a_conversation(&borrowed);
+        let every = every_turn(&messages, &spans);
 
         let mut seen: Vec<String> = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pages = 0;
         loop {
-            let asked = page(&all, cursor.as_deref(), 5);
+            let asked = page(&messages, &spans, cursor.as_deref(), 5);
             pages += 1;
             assert!(pages < every.len() + 2, "the walk terminates rather than cycling");
-            seen.extend(written(&asked.rows));
+            seen.extend(asked.turns.iter().map(opened_on));
             match asked.cursor {
                 Some(next) => cursor = Some(next),
                 None => break,
