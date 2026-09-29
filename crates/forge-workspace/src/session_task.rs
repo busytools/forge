@@ -1358,9 +1358,14 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         }
         domain.replace_background_tasks(parsed);
     }
-    // The card of a call that asked to run in the background: its command is
-    // what the OS scan adopts a detached process by, and what tells a view
-    // that a rostered task has a row to draw.
+    // The command a card carried, which is what the OS scan adopts a detached
+    // process by and what tells a view that a rostered task has a row to draw.
+    //
+    // ANY card that carries a command, not only one whose input asked to run
+    // in the background: the CLI backgrounds a bash three ways, and two of
+    // them (`backgroundedByUser`, `assistantAutoBackgrounded`) cannot show on
+    // the card. The registry and the `task_started` link are what scope it -
+    // a command no roster entry resolves to is never read.
     if let AgentEvent::SdkMessage {
         msg: forge_primitives::Message::Assistant { message, .. },
         ..
@@ -1370,10 +1375,6 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
             let forge_primitives::ContentBlock::ToolUse { id, input, .. } = block else {
                 continue;
             };
-            let backgrounded = input.get("run_in_background").and_then(serde_json::Value::as_bool);
-            if backgrounded != Some(true) {
-                continue;
-            }
             if let Some(command) = input.get("command").and_then(serde_json::Value::as_str) {
                 domain.hold_background_command(id.clone(), command.to_owned());
             }
@@ -5286,6 +5287,61 @@ provider = "anthropic"
         );
     }
 
+    /// The command is held for ANY card that carries one, not only a card
+    /// whose input asked to run in the background: the CLI backgrounds a bash
+    /// three ways and two of them cannot show on the card, so gating on the
+    /// flag left those tasks with no command - and a view that needs the
+    /// command draws no row for them at all.
+    #[test]
+    fn a_task_backgrounded_after_its_card_still_gets_its_command() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        // The card as a foreground call leaves it: no `run_in_background`.
+        send(&mut task, a_bash_card("toolu_fg", "sleep 30 && echo later", None));
+        send(&mut task, background_tasks(one_live_task()));
+        send(&mut task, a_task_started("t1", "toolu_fg"));
+
+        let held = task.domain.lock().background_tasks.clone();
+        assert_eq!(
+            held[0].command.as_deref(),
+            Some("sleep 30 && echo later"),
+            "the command the task's own card carried crosses even though the card did not ask \
+             for the background: the registry and the link are what scope it",
+        );
+    }
+
+    /// The other half of that rule: the command a card carried is read only
+    /// through a task that names it. A rostered task whose link points at a
+    /// different card keeps no command, and a card no task names resolves
+    /// nothing.
+    #[test]
+    fn a_rostered_task_reads_only_the_command_its_own_link_names() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_bash_card("toolu_other", "echo unrelated", None));
+        send(&mut task, a_bash_card("toolu_ours", "gh run watch 9", None));
+        send(&mut task, background_tasks(one_live_task()));
+        send(&mut task, a_task_started("t1", "toolu_ours"));
+
+        let held = task.domain.lock().background_tasks.clone();
+        assert_eq!(held.len(), 1, "one rostered task");
+        assert_eq!(
+            held[0].command.as_deref(),
+            Some("gh run watch 9"),
+            "the command the task's own link names, not the other card's",
+        );
+    }
+
     /// A task whose card forge never saw keeps its row and has no command -
     /// the terminal's own rule, where a rostered task with no recorded card
     /// still draws from its roster entry.
@@ -5307,6 +5363,20 @@ provider = "anthropic"
     }
 
     fn a_backgrounded_bash(id: &str, command: &str) -> forge_primitives::Message {
+        a_bash_card(id, command, Some(true))
+    }
+
+    /// A Bash card, with the `run_in_background` flag only when the caller
+    /// says the card carried one.
+    fn a_bash_card(
+        id: &str,
+        command: &str,
+        run_in_background: Option<bool>,
+    ) -> forge_primitives::Message {
+        let mut input = serde_json::json!({ "command": command });
+        if let Some(flag) = run_in_background {
+            input["run_in_background"] = serde_json::Value::Bool(flag);
+        }
         serde_json::from_value(serde_json::json!({
             "type": "assistant",
             "uuid": "a1",
@@ -5319,7 +5389,7 @@ provider = "anthropic"
                     "type": "tool_use",
                     "id": id,
                     "name": "Bash",
-                    "input": { "command": command, "run_in_background": true },
+                    "input": input,
                 }],
             },
         }))

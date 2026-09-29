@@ -15,7 +15,7 @@
 //! reads them from the core. The last two are an intermediate state: the
 //! TUI folds its own copy until it is removed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use forge_agent::AgentHandle;
@@ -106,13 +106,21 @@ pub struct DomainSession {
     /// whole on each `background_tasks_changed`, and a view that attached
     /// afterwards would otherwise see the flag and not one row.
     pub background_tasks: Vec<crate::BackgroundTask>,
-    /// The command a backgrounded tool call carried, by tool-use id.
+    /// The command a tool call's card carried, by tool-use id.
     ///
     /// Held rather than resolved on the spot because the card arrives BEFORE
     /// the `task_started` that links it to a task, so the command has to be
     /// kept until a link names it. Cleared with the registry: it belongs to
     /// the occupant that made the calls.
     background_commands: HashMap<String, String>,
+    /// The ids whose cards arrived since the last registry change.
+    ///
+    /// What keeps the map above bounded: a command is kept while a live task
+    /// links to it, or for one registry change after its card arrived - which
+    /// is exactly the window in which the `task_started` naming it can land.
+    /// A foreground call's command is never read by anything and dies at the
+    /// next change.
+    staged_commands: HashSet<String>,
     /// The tool call that began a task, by task id, from `task_started`.
     task_tool_use: HashMap<String, String>,
     /// Whether this session is waiting on `/login` before it can run.
@@ -217,13 +225,25 @@ impl DomainSession {
 
     /// Replace the registry with the CLI's last snapshot, which carries the
     /// whole set, and fill in whatever commands are already resolvable.
+    ///
+    /// Also the one place the held commands are pruned: a task that has left
+    /// the registry takes its link with it, and a command whose card arrived
+    /// since the last change keeps one more change to be linked.
     pub(crate) fn replace_background_tasks(&mut self, tasks: Vec<crate::BackgroundTask>) {
         self.background_tasks = tasks;
         self.link_background_commands();
+        let live: HashSet<&str> =
+            self.background_tasks.iter().map(|task| task.task_id.as_str()).collect();
+        self.task_tool_use.retain(|task_id, _| live.contains(task_id.as_str()));
+        let linked: HashSet<&str> = self.task_tool_use.values().map(String::as_str).collect();
+        self.background_commands
+            .retain(|id, _| linked.contains(id.as_str()) || self.staged_commands.contains(id));
+        self.staged_commands.clear();
     }
 
-    /// Record the command a backgrounded tool call carried.
+    /// Record the command a tool call's card carried.
     pub(crate) fn hold_background_command(&mut self, tool_use_id: String, command: String) {
+        self.staged_commands.insert(tool_use_id.clone());
         self.background_commands.insert(tool_use_id, command);
         self.link_background_commands();
     }
@@ -242,6 +262,7 @@ impl DomainSession {
         self.background_work = false;
         self.background_tasks.clear();
         self.background_commands.clear();
+        self.staged_commands.clear();
         self.task_tool_use.clear();
     }
 
@@ -278,6 +299,7 @@ impl DomainSession {
             background_work: false,
             background_tasks: Vec::new(),
             background_commands: HashMap::new(),
+            staged_commands: HashSet::new(),
             task_tool_use: HashMap::new(),
             awaiting_login: false,
             dictate_overrides: crate::dictate::DictateOverrides::default(),
