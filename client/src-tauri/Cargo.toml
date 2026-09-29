@@ -6,8 +6,9 @@ edition = "2024"
 rust-version = "1.90"
 
 # Its own workspace root, so the crate above is not a member of forge's: the
-# shell links the whole webview stack, which is not a compile the workspace
-# gate or CI's Linux runner should carry.
+# shell links the whole webview stack, which is minutes of compile the
+# workspace gate should not carry for every Rust-only change.
+# `just client-tauri-check` builds and bundles it.
 [workspace]
 
 [build-dependencies]
@@ -15,3 +16,4 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-log = "2"
