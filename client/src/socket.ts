@@ -64,15 +64,24 @@ export interface Connection {
    * is gets decided here, from the variant's name, rather than left for every
    * page to remember.
    *
-   * **Throws when the socket is not open, before anything is registered.** A
-   * command sent down a closed socket is dropped, and there is no answer
-   * coming to carry that news; the throw is the only channel left. It is
-   * synchronous rather than a rejection so that no promise is ever created
-   * for a command that did not go - a rejection nobody awaits is an error
-   * nobody sees. A caller that dispatches one of the four owes the returned
-   * promise an answer: nothing else carries the outcome, and a connection
-   * that closes rejects what it was still holding rather than leaving it to
-   * hang.
+   * **A call while the socket is closed THROWS**, synchronously, before
+   * anything is registered. The command is dropped, no answer is coming to
+   * carry that news, and the throw is the only channel left. It throws
+   * rather than rejecting because a promise is then never created for a
+   * command that did not go, and a rejection nobody awaits is an error
+   * nobody sees.
+   *
+   * **So the promise and the throw are two different cases, not one.** A
+   * command that went answers with a promise; a command that did not go
+   * throws instead. Read `Promise<unknown> | null` as "went, answering
+   * through a reply or through the subscription" - never as "may reject".
+   * The rejection is the other case: a command already sent, whose
+   * connection then closes, has the promise it returned rejected, because
+   * the reply died with the connection and a caller waiting on a channel
+   * that stays empty is worse off than one told.
+   *
+   * A caller that dispatches one of the four owes the returned promise an
+   * answer: nothing else carries the outcome.
    */
   dispatch(command: Command): Promise<unknown> | null;
   /**

@@ -13,6 +13,21 @@
  * settled while nobody was watching, and it would disagree silently. This
  * answers one question only - is the fleet display now behind, and if so
  * about which seat.
+ *
+ * **A second copy of a table the server keeps singular, and that is the
+ * cost.** `envelope.rs` says a second copy "would both drift and hand a home
+ * subscriber every token of every seat in the fleet"; this one exists
+ * because the wire does not say which subscription an update was sent for,
+ * and it takes the drift rather than the tokens. The drift is the day the
+ * server puts a variant in its redraw or its occupant arm and this table
+ * does not know it: that variant draws, this calls it `nothing`, and the
+ * home stops following it with nothing to report that it has.
+ *
+ * `fleet.test.ts` reads the server's arms out of `live.rs` and fails when
+ * either set here is narrower than the set there, so that day is a red build
+ * rather than a silent one. It cannot see a variant the server MOVES between
+ * arms, or one it adds inside the `chat_appended` arm, because those are
+ * decided by a frame's own fields rather than by a variant's name.
  */
 
 import type { SessionUpdate } from '../protocol';
