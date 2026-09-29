@@ -138,6 +138,7 @@ conversation, and what the composer is doing.
 | `header` | The resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, and whether a turn is in flight. |
 | `conversation` | The transcript's messages, oldest first, with the compaction count. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
+| `pr`, `closes` | The open pull request this seat's branch is on - its number and URL - and the issues it closes, which is the `PR #N -> closes #M` line the inspector draws. `null` and an empty list when there is none, or when the branch is not pushed. |
 | `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference. |
 | `mcp` | The session's MCP servers, their status and tools, and the failure when the read did not complete. |
 | `processes` | The last walk of the session's process tree, or `null` for a seat nothing has walked. Taken on the reads that encode a subject, so it is never older than the walk's own window. |

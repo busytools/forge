@@ -173,5 +173,7 @@
     "branch": null,
     "changed": null,
     "gate": "gone"
-  }
+  },
+  "pr": null,
+  "closes": []
 }

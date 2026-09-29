@@ -281,6 +281,16 @@ pub struct SessionWire {
     /// The working tree behind the git section. The diff itself is a second,
     /// heavier read and is deliberately out of scope.
     pub work: WorkState,
+    /// The open pull request this seat's branch is on, and the issues it
+    /// closes.
+    ///
+    /// Beside `work` rather than inside it because the two come from
+    /// different reads - the branch and the count are the row's own, and this
+    /// is the heavier scan - and a client draws the inspector's GIT section
+    /// from both. Nothing carried them, so a client would draw the section
+    /// without the `PR #N -> closes #M` row the terminal leads it with.
+    pub pr: Option<forge_primitives::git::GitPrInfo>,
+    pub closes: Vec<forge_primitives::git::GitIssueRef>,
 }
 
 /// Where a session's reads find their own working tree.
@@ -647,6 +657,10 @@ async fn session(
         )
     };
     let work = state.work.snapshot(slot, cwd).await;
+    // The PR the inspector's row states, and the issues it closes: the row's
+    // own read does not carry them, so they come from the heavier scan - the
+    // same one the terminal's inspector reads, through the same cache.
+    let diff = state.work.diff(slot, cwd).await;
     let branch = work.branch.clone().unwrap_or_default();
     let reviews = surface.reviews(slot.project(), &branch);
     let state_at = surface.session(slot, cwd);
@@ -713,6 +727,8 @@ async fn session(
             }
         },
         work,
+        pr: diff.pr,
+        closes: diff.closes,
     })
 }
 
@@ -1040,6 +1056,41 @@ mod tests {
             std::fs::write(&fixture, serde_json::to_string_pretty(&encoded).expect("render"))
                 .expect("write");
         }
+    }
+
+    /// The PR row the inspector leads its GIT section with: the open pull
+    /// request, and the issues it closes.
+    ///
+    /// The keys are asserted PRESENT rather than populated, because a
+    /// populated one needs `gh`, a pushed branch and an open PR - which a
+    /// fixture cannot produce. The key's presence is the property that
+    /// matters here: a client drawing the section reads a field that is
+    /// there and null, rather than finding no field at all.
+    ///
+    /// Task 10's walk against the forge repo is where a populated one is
+    /// exercised, like the other fields a live session fills.
+    #[tokio::test]
+    async fn a_session_snapshot_carries_the_pr_row() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+
+        assert!(encoded.get("pr").is_some(), "the session carries a PR field: {encoded}");
+        assert_eq!(
+            encoded["closes"],
+            serde_json::json!([]),
+            "and the issues it closes, empty when there is no PR: {encoded}"
+        );
     }
 
     /// The token/cost report, on the subject a usage view subscribes to.
