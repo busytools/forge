@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { createRequire } from 'node:module';
 
-import { flushSync, mount, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import type { AddressInfo, RawData, WebSocketServer as Server } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -54,6 +54,7 @@ async function stubServer(session: unknown) {
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address() as AddressInfo;
 
+  const received: Subscribe[] = [];
   const sockets = new Set<import('ws').WebSocket>();
   server.on('connection', (socket) => {
     sockets.add(socket);
@@ -65,8 +66,9 @@ async function stubServer(session: unknown) {
     };
     socket.send(JSON.stringify(greeting));
     socket.on('message', (data) => {
-      const message = JSON.parse(text(data)) as { kind: string; what?: unknown };
+      const message = JSON.parse(text(data)) as Subscribe;
       if (message.kind !== 'subscribe') return;
+      received.push(message);
       const snapshot: ServerMessage = {
         kind: 'snapshot',
         subject: message.what as ServerMessage extends { subject: infer S } ? S : never,
@@ -78,11 +80,20 @@ async function stubServer(session: unknown) {
 
   return {
     url: `ws://127.0.0.1:${port}/socket`,
+    /** Every subscribe the client made, which is where the answering role is declared. */
+    received,
     async close() {
       for (const socket of sockets) socket.terminate();
       await new Promise((resolve) => server.close(resolve));
     },
   };
+}
+
+/** One subscribe as the client sent it. */
+interface Subscribe {
+  kind: string;
+  what?: unknown;
+  answering?: boolean;
 }
 
 function text(data: RawData): string {
@@ -119,11 +130,25 @@ afterEach(async () => {
 });
 
 /** Mount the page against a socket answering with `session`. */
-async function open(session: unknown, wire: typeof homeWire = homeWire): Promise<void> {
+async function open(
+  session: unknown,
+  wire: typeof homeWire = homeWire,
+  props: Record<string, unknown> = {},
+): Promise<void> {
   server = await stubServer(session);
   connection = connect(server.url);
-  app = mount(Session, { target: document.body, props: { slot: LEAD, connection, wire } });
+  app = mount(Session, {
+    target: document.body,
+    props: { slot: LEAD, connection, wire, ...props },
+  });
   await settle();
+}
+
+/** What the client asked the server for, of the seat's own subject. */
+function seatSubscribe(): Subscribe | undefined {
+  return server?.received.find(
+    (message) => message.kind === 'subscribe' && typeof message.what === 'object',
+  );
 }
 
 describe('the session page over a socket', () => {
@@ -215,6 +240,36 @@ describe('the session page over a socket', () => {
     expect(app, 'the rail ignored a narrow page').toContain('left-hidden');
     expect(app).toContain('right-hidden');
     expect(document.querySelector('.rail-tog.tog-r')?.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  /**
+   * **The answering role is declared when, and only when, the page can
+   * answer.** The dock that answers a prompt lives in the composer, so a page
+   * without one must subscribe as an observer: a client counted as able to
+   * answer a prompt it cannot display hangs the turn, which is worse than the
+   * cancel an observer gets.
+   */
+  it('subscribes as an observer while it has no dock to answer from', async () => {
+    await open(sessionFixture);
+    expect(seatSubscribe()?.answering, 'the page claimed an ability it has not got').toBe(false);
+  });
+
+  /**
+   * The role flips with the presence of a dock, and nothing else moves.
+   *
+   * The snippet here is a RAW one, which is a harness convenience rather than
+   * the shape the integration uses: the seam is written for a `{#snippet box(p)}`
+   * in markup, where `p` arrives as the props object. `createRawSnippet` gets
+   * its parameters by Svelte's internal convention instead, so this asserts the
+   * role and that the box draws, and leaves the props to the site that binds
+   * them.
+   */
+  it('declares the answering role once the composer is wired in', async () => {
+    const composer = createRawSnippet(() => ({ render: () => '<span class="box"></span>' }));
+    await open(sessionFixture, homeWire, { composer });
+
+    expect(seatSubscribe()?.answering, 'a page with a dock subscribed as an observer').toBe(true);
+    expect(drawn(), 'the composer did not draw').toContain('class="box"');
   });
 });
 
