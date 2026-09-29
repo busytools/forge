@@ -18,10 +18,10 @@ and `cargo doc`. CI's set minus its `cargo check --release` and
 feature-configs jobs. Green before you open a pull request.
 
 The desktop shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s Rust steps and CI do not reach it; the Unicode punctuation
-gate and the client's Prettier step do. `just client-tauri-check` builds
-the shipping configuration and `just client-tauri-bundle` adds the
-bundles.
+`just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
+punctuation gate, which CI runs too, and the client's Prettier step do.
+`just client-tauri-check` builds the shipping configuration and `just
+client-tauri-bundle` adds the bundles.
 
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later

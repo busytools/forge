@@ -78,11 +78,11 @@ here too, so the client is not a second command to remember and a failure
 on either side lands on the same verdict line.
 
 The desktop shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s Rust steps and CI do not reach it; the Unicode punctuation
-gate and the client's Prettier step do. `just client-tauri-check` builds
-it in the shipping configuration and `just client-tauri-bundle` adds the
-bundles, and the first is the one to run before handing over a change
-there.
+`just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
+punctuation gate, which CI runs too, and the client's Prettier step do.
+`just client-tauri-check` builds it in the shipping configuration and
+`just client-tauri-bundle` adds the bundles, and the first is the one to
+run before handing over a change there.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
 or `[ERROR] check: <step> failed`, and stops at the first failing step,
