@@ -63,10 +63,11 @@ variant's own name rather than on `kind`:
 A command's variant is its name around its field bag - `Command` has 33
 variants and every one is a struct variant. An update is the same shape one
 level in, `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 51 of `SessionUpdate`'s 55 variants are struct variants too. The other
-four are why the payload is not one shape: three are unit variants and
-cross as the name alone, `"catalog_loaded"`, and one is a newtype, its
-name around the value inside it.
+and 51 of `SessionUpdate`'s 56 variants are struct variants too. The other
+five are why the payload is not one shape: four are unit variants and cross
+as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
+`"dictate_availability"` and `"accounts_changed"` - and one is a newtype,
+its name around the value inside it.
 
 ## What a client sends
 
@@ -144,10 +145,12 @@ was asked for.
   client is subscribed to. The subject decides, and a home subscription has
   **two** arms rather than one: an update a home row draws something of, and
   an update belonging to no seat at all - the service status, the fatal
-  error, the plugin records - which is a field of the home's own snapshot and
-  which only a home subscription could have carried. Read the second arm as
-  absent and a page keeps what it read at subscribe for the life of the
-  connection.
+  error, the plugin records, the account pool - which is a field of the
+  home's own snapshot and which only a home subscription could have carried.
+  Read the second arm as absent and a page keeps what it read at subscribe
+  for the life of the connection. The pool is the one that reads as a live
+  state rather than as an event: a card left at `0 ready, probing` looks
+  like a slow probe rather than like a page that stopped listening.
 - **`page {conversation, rows, cursor}`** - in answer to `more`.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own
@@ -258,11 +261,6 @@ never something a client ports.
   and what it names is the machine it ran on rather than the session, so
   it stays with whoever captures. A client enumerates its own; forge's own
   list stays with the terminal it captures in.
-- **A live `accounts` read.** The home's account rows are the server's own
-  poller's answer, and no update announces a new one: the pool is written
-  with nothing emitted, so a subscriber's bars and loading state stand as
-  it read them until it subscribes again. It is scan-shaped like `usage`,
-  and the answer is the same - ask again rather than wait for a stream.
 - **Any rendering.** Glyphs, colours, weights, spacing, the order of a
   list and the label a row is spelled with are the client's. The test is
   whether removing a thing changes what the data IS or only how it is

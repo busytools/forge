@@ -63,12 +63,12 @@ export type Command = Record<string, Record<string, unknown>>;
 /**
  * One `SessionUpdate`, for a subscription that covers it.
  *
- * Three shapes, because the enum has three kinds of variant and 55 variants
+ * Three shapes, because the enum has three kinds of variant and 56 variants
  * in all: a unit variant is its name alone, a struct variant is its name
  * around a field bag, and the one newtype variant is its name around the
  * value inside it.
  *
- * Open for the same reason as `Command`, and one more: 55 variants cross
+ * Open for the same reason as `Command`, and one more: 56 variants cross
  * here, and the page that draws a subject is the only place that knows which
  * of them it acts on.
  */

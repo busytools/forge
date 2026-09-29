@@ -173,6 +173,29 @@ mod tests {
         assert!(answering, "and so does the capability the client declared");
     }
 
+    /// The pool belongs to no seat, so a home subscription hears it and a
+    /// seat's does not.
+    ///
+    /// **Both home arms carry it, and the slot-less one is the load-bearing
+    /// assertion here.** `fleet_news` classifies it a redraw because the
+    /// band's own card is part of the region the web home re-sends; taking it
+    /// out of that arm would leave this test green, because the slot-less arm
+    /// below delivers it anyway. What the test can fail on is the variant
+    /// gaining a seat: a key would send the pool to one session's page and
+    /// leave every other subscriber drawing a card that never moves.
+    #[test]
+    fn the_pools_announcement_reaches_home_and_no_seat() {
+        let update = SessionUpdate::AccountsChanged;
+        let seat = SessionSlot::lead("TestOrg", "proj");
+
+        assert!(update.slot().is_none(), "the pool addresses no seat, which is what routes it");
+        assert!(Subject::Home.covers(&update), "home is the only subscription that could carry it");
+        assert!(
+            !Subject::Session(seat).covers(&update),
+            "a seat's subscription is a seat, and the pool is not one",
+        );
+    }
+
     /// The client's settings come off the server's own config, so the
     /// client never reads `forge.toml` and the two cannot drift.
     #[test]

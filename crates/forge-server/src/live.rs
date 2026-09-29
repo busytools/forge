@@ -173,6 +173,10 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // tick.
         SessionUpdate::CatalogLoaded
         | SessionUpdate::CliVersionChanged
+        // The account pool, which the band's own card draws and no row does.
+        // A page that read it once drew `0 ready, probing` until the next
+        // unrelated redraw.
+        | SessionUpdate::AccountsChanged
         | SessionUpdate::DictateAvailability
         | SessionUpdate::ConnectionFailed { .. }
         | SessionUpdate::AuthRequired { .. }
@@ -494,8 +498,14 @@ mod tests {
 
     /// The updates that land after the listener binds, and that a page
     /// opened in that window has already painted an answer for: the
-    /// catalog scan, the dictation snapshot and the claude version probe.
-    /// Catches a page that keeps the empty answer until the next tick.
+    /// catalog scan, the dictation snapshot, the claude version probe and
+    /// the account pool settling. Catches a page that keeps the empty
+    /// answer until the next tick.
+    ///
+    /// The pool is the one that bites hardest, because nothing else in the
+    /// stream mentions it: a quiet forge emits no other update, so a card
+    /// that read `0 ready, probing` at subscribe reads it for the life of
+    /// the connection.
     #[test]
     fn the_late_boot_updates_redraw_the_page() {
         let mut live = Live::new();
@@ -504,6 +514,7 @@ mod tests {
             SessionUpdate::CatalogLoaded,
             SessionUpdate::DictateAvailability,
             SessionUpdate::CliVersionChanged,
+            SessionUpdate::AccountsChanged,
         ] {
             assert!(live.apply(&update).fleet, "{update:?} is exactly a render wake-up");
         }

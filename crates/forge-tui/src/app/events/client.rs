@@ -181,7 +181,13 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::ServiceStatus { severity, message } => {
             session::apply_session_update_service_status(app, severity, &message);
         }
-        SessionUpdate::CatalogLoaded | SessionUpdate::CliVersionChanged => {
+        // Each of these is a wake-up rather than a payload: the
+        // snapshot is not carried, so the frame that reads it is
+        // repainted. The account pool is one the terminal already
+        // re-reads per frame, and the wake-up costs it nothing.
+        SessionUpdate::CatalogLoaded
+        | SessionUpdate::CliVersionChanged
+        | SessionUpdate::AccountsChanged => {
             app.needs_redraw = true;
         }
         SessionUpdate::FatalError(error) => {
