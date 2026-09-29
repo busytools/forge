@@ -1,29 +1,55 @@
 <script lang="ts">
-  import type { TurnInfo } from './units';
+  import Icon from '../components/Icon.svelte';
   import { clock, duration, money, tokens } from './numbers';
+  import type { TurnInfo } from './units';
 
   /**
    * What a settled turn did, under the work it did it with: its wall clock, its
    * API time, and the tokens and cost the CLI reported.
    *
-   * **A field the record does not carry is dropped from the row and held with a
-   * dash in the body.** Neither ever writes a zero for an absent value: the CLI
-   * attributing nothing arrives as a zero block, and a zero here reads as a
-   * measurement.
+   * **A field the record does not carry is held with a dash in the body and
+   * dropped from the row.** Neither ever writes a zero for an absent value:
+   * the CLI attributing nothing arrives as a zero block, and a zero here reads
+   * as a measurement.
    */
-  let { info, live = false }: { info: TurnInfo; live?: boolean } = $props();
+  let { info }: { info: TurnInfo } = $props();
 
   /** The record with an unattributed usage block dropped, which is the rule the terminal applies. */
   const held = $derived(attributed(info));
 
+  /** The turn's own clock, read from the instant it ended in the reader's zone. */
+  const ended = $derived(clock(held.ended_at_utc));
+
+  /** What the turn spent on its own tools and hooks: the span less the API's share. */
+  const local = $derived(
+    held.duration_ms !== null && held.api_ms !== null && held.duration_ms > held.api_ms
+      ? held.duration_ms - held.api_ms
+      : null,
+  );
+
+  /**
+   * The share of this turn's input served from the cache, over every
+   * input-side counter.
+   *
+   * `null` when the record carries no cache read at all, which is a turn that
+   * never touched the cache rather than one that missed it entirely.
+   */
+  const cached = $derived.by(() => {
+    const read = held.cache_read_tokens;
+    if (read === null) return null;
+    const total = read + (held.input_tokens ?? 0) + (held.cache_written_tokens ?? 0);
+    return total === 0 ? null : Math.floor((read * 100) / total);
+  });
+
   /** What the body draws: a label and its figure, one fact per pair. */
   const facts = $derived.by(() => {
     const dash = '-';
-    const pairs: Array<{ label: string; value: string; wide?: boolean }> = [
-      { label: 'ended', value: clock(held.ended_at_utc) ?? dash },
+    const pairs: Array<{ label: string; value: string }> = [
+      { label: 'ended', value: ended ?? dash },
       { label: 'model', value: held.model ?? dash },
       { label: 'elapsed', value: duration(held.duration_ms) },
       { label: 'api', value: held.api_ms === null ? dash : duration(held.api_ms) },
+      { label: 'local', value: local === null ? dash : `${duration(local)} tools + hooks` },
       {
         label: 'thinking',
         value: held.thinking_tokens === null ? dash : `${tokens(held.thinking_tokens)} est`,
@@ -43,6 +69,7 @@
         value: held.session_cost_usd === null ? dash : `${money(held.session_cost_usd)} cumulative`,
       },
     ];
+    if (cached !== null) pairs.push({ label: 'cached', value: `${cached}% of input` });
     return pairs;
   });
 
@@ -73,19 +100,11 @@
 
 <details class="turninfo">
   <summary>
-    {#if live}
-      <span class="st"><span class="ring"></span></span>
-    {:else}
-      <!-- A settled turn's mark, from the sprite rather than from a character
-           cell: the arrow this used to be was drawn because a terminal had
-           nothing else, and it reads as punctuation beside real icons. -->
-      <svg class="ic st"><use href="#i-check"></use></svg>
-    {/if}
+    <!-- The settled mark, from the sprite rather than from a character cell:
+         the arrow this used to be was drawn because a terminal had nothing
+         else, and it reads as punctuation beside real icons. -->
+    <Icon name="check" class="st" />
     <span>{duration(held.duration_ms)}</span>
-    {#if live && held.thinking_tokens !== null}
-      <span class="sep">{'\u{b7}'}</span>
-      <span>thinking {tokens(held.thinking_tokens)}</span>
-    {/if}
     {#if held.input_tokens !== null}
       <span class="sep">{'\u{b7}'}</span>
       <span
@@ -93,9 +112,17 @@
           {tokens(held.output_tokens)}{'\u{2193}'}{/if}</span
       >
     {/if}
+    {#if cached !== null}
+      <span class="sep">{'\u{b7}'}</span>
+      <span>{cached}% cached</span>
+    {/if}
     {#if held.cache_written_tokens !== null}
       <span class="sep">{'\u{b7}'}</span>
       <span>{tokens(held.cache_written_tokens)} written</span>
+    {/if}
+    {#if held.session_cost_usd !== null}
+      <span class="sep">{'\u{b7}'}</span>
+      <span>{money(held.session_cost_usd)} cumulative</span>
     {/if}
     <span class="tog"></span>
   </summary>

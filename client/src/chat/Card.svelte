@@ -28,11 +28,17 @@
   /** The messages a group draws, which for a lone card is the one it is. */
   const held = $derived(card === null ? cards : [card]);
 
-  /** What names a peer card, which is what a view keys its open state on. */
+  /**
+   * What names a card, which is what a view keys its open state on.
+   *
+   * The FIRST message's own identity for a run, never the count: a group grows
+   * as messages arrive, so a key carrying its length renames the row every
+   * time one lands - which is the one thing a key must not do.
+   */
   const key = $derived(
     card !== null
       ? `peer-${card.peer}-${card.body}`
-      : `peers-${cards[0]?.peer ?? ''}-${cards.length}`,
+      : `peers-${cards[0]?.peer ?? ''}-${cards[0]?.body ?? ''}`,
   );
 </script>
 

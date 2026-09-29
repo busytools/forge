@@ -105,19 +105,24 @@ describe('one turn folded into the units a view draws', () => {
 
   it('draws nothing for a dispatched agent, and the same frames without one are the chat', () => {
     // A sub-agent's frames are the inspector's: drawn here they duplicate the
-    // subagents section inside every turn that used one. The wire marks them
-    // by the frame's sidechain flag, and the control rides in the same test -
-    // the same frames without it ARE the conversation, so a fold that dropped
-    // everything could not pass.
+    // subagents section inside every turn that used one.
+    //
+    // **The wire marks them with `parent_tool_use_id`, which is the branch
+    // that fires in production** - the field carries the dispatch's own
+    // tool-use id, and null for the session's own frames. The control rides in
+    // the same test: the same frames without it ARE the conversation, so a
+    // fold that dropped everything could not pass.
     const prose = said([text('the second one failed')]);
-    const child = said([text('the second one failed')], { isSidechain: true });
+    const child = said([text('the second one failed')], { parent_tool_use_id: 'toolu_dispatch' });
 
-    expect(fold([child])).toHaveLength(0);
+    expect(fold([child]), 'a dispatched frame draws nothing').toHaveLength(0);
     expect(fold([prose]), 'and the same frame is the conversation on its own').toHaveLength(1);
   });
 
   it('keeps a dispatched call out of the session group', () => {
-    const dispatched = said([use('toolu_child', 'Grep', { pattern: 'x' })], { isSidechain: true });
+    const dispatched = said([use('toolu_child', 'Grep', { pattern: 'x' })], {
+      parent_tool_use_id: 'toolu_dispatch',
+    });
     const units = fold([call('read', 0), dispatched, call('read', 1)]);
 
     expect(units).toHaveLength(1);
@@ -126,9 +131,24 @@ describe('one turn folded into the units a view draws', () => {
     expect(group?.kind === 'group' ? group.families[0]?.calls.length : 0).toBe(2);
   });
 
+  it("reads an empty parent id as the session's own frame", () => {
+    // The terminal reads the same field with the same guard: a frame carrying
+    // an empty id is not a dispatch, and the wire does send them.
+    const blank = said([text("the session's own line")], { parent_tool_use_id: '' });
+
+    expect(fold([blank])).toHaveLength(1);
+  });
+
   it('draws a peer run as one group and a lone message as the card it is', () => {
-    const one = heard([text("[Message id=t-1 from agent 'steward' (org 'B')]\n\nIT IMPORTED")]);
-    const two = heard([text("[Message id=t-2 from agent 'planner' (org 'B')]\n\npicking it up")]);
+    // The strings are the producers' own, from `peers/types.rs`'s
+    // `to_prose`: a test using a shape nothing writes is what let three
+    // envelopes draw as the reader's own turn with the suite green.
+    const one = heard([
+      text("[Message id=t-1 from agent 'steward' (org 'Busytools')]\n\nIT IMPORTED"),
+    ]);
+    const two = heard([
+      text("[Message id=t-2 from agent 'planner' (org 'Busytools')]\n\npicking it up"),
+    ]);
 
     expect(kinds(fold([one]))).toEqual(['peer']);
     expect(kinds(fold([one, two]))).toEqual(['peers']);
@@ -136,16 +156,86 @@ describe('one turn folded into the units a view draws', () => {
     expect(peers?.kind === 'peers' ? peers.cards.length : 0).toBe(2);
   });
 
+  it("draws a question and a reply that carry the producer's trailer", () => {
+    // Both end with a clause inside the bracket - a question names the tool to
+    // answer with, a reply says what it answers - so a matcher anchored on the
+    // org clause's `)]` never fires and the envelope draws as the reader's own
+    // turn: the orange panel with a raw header on screen.
+    const question = heard([
+      text(
+        "[Question id=q-1 from agent 'steward' (org 'Busytools') - reply with agents__tell in_reply_to=q-1]\n\nis the cron issue filed?",
+      ),
+    ]);
+    const reply = heard([
+      text(
+        "[Reply id=t-2 from agent 'planner' (org 'Busytools') to your earlier ask]\n\ntaking the render half",
+      ),
+    ]);
+
+    const units = fold([question, reply]);
+    expect(kinds(units), 'neither is a turn of the reader').toEqual(['peers']);
+    const [peers] = units;
+    const cards = peers?.kind === 'peers' ? peers.cards : [];
+    expect(cards[0]?.kind).toBe('question');
+    expect(cards[0]?.peer).toBe('steward');
+    expect(cards[0]?.body).toBe('is the cron issue filed?');
+    expect(cards[1]?.kind).toBe('reply');
+  });
+
   it('draws an external delivery as a notice rather than as a turn of the reader', () => {
-    const gotify = heard([text("[Gotify - app 'ci', priority 9]\n\nbuild failed")]);
-    const cron = heard([text('[Cron] the morning sweep')]);
+    // A Gotify body sits ONE newline after the bracket: a title line, then the
+    // message. A cron wrapper lands its prompt after `]\n\n`.
+    const gotify = heard([text("[Gotify - app 'ci', priority 9]\nbuild failed\nrun 412")]);
+    const cron = heard([text('[Cron]\n\nthe morning sweep')]);
 
     const units = fold([gotify, cron]);
     expect(kinds(units)).toEqual(['notice', 'notice']);
     const [first] = units;
     expect(first?.kind === 'notice' ? first.notice.severity : null).toBe('warning');
-    expect(first?.kind === 'notice' ? first.notice.source : null).toBe('gotify');
+    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('ci');
+    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('priority 9');
     expect(first?.kind === 'notice' ? first.notice.text : '').toContain('build failed');
+    const second = units[1];
+    expect(second?.kind === 'notice' ? second.notice.text : null, 'no leading blank line').toBe(
+      'the morning sweep',
+    );
+  });
+
+  it('draws a Slack bundle as a notice, bare channel and all', () => {
+    // The producer writes the conversation LABEL, not a `#`-prefixed channel -
+    // `granite-staging-alerts`, `general` - so a matcher requiring `#` puts
+    // every Slack message in the chat as the person's own words.
+    const one = heard([
+      text(
+        "[Slack - workspace 'Busytools', granite-staging-alerts] id C1 ts 1.2\nsteward: the gate is green",
+      ),
+    ]);
+    const bundle = heard([
+      text(
+        "[Slack - workspace 'Busytools', general] id C1 ts 1.2 (2 messages)\nsteward: first\nplanner: second",
+      ),
+    ]);
+
+    const units = fold([one, bundle]);
+    expect(kinds(units)).toEqual(['notice', 'notice']);
+    const [first] = units;
+    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('granite-staging-alerts');
+    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('steward');
+    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('the gate is green');
+  });
+
+  it('draws a failed delivery and a failed spawn as warnings', () => {
+    const delivery = heard([
+      text("[Ask id=q-1 to agent 'companies' (org 'Busytools') failed to deliver: channel closed]"),
+    ]);
+    const spawn = heard([text("[Worker 'planner' spawn failed id=w-1: ENOENT]")]);
+
+    const units = fold([delivery, spawn]);
+    expect(kinds(units)).toEqual(['notice', 'notice']);
+    expect(units[0]?.kind === 'notice' ? units[0].notice.severity : null).toBe('warning');
+    expect(units[0]?.kind === 'notice' ? units[0].notice.text : '').toContain('channel closed');
+    expect(units[1]?.kind === 'notice' ? units[1].notice.severity : null).toBe('warning');
+    expect(units[1]?.kind === 'notice' ? units[1].notice.text : '').toContain('ENOENT');
   });
 
   it('draws a question the assistant asked, with what was answered', () => {
@@ -211,6 +301,62 @@ describe('one turn folded into the units a view draws', () => {
     expect(group?.kind === 'group' ? group.status : null, 'and the run reports the failure').toBe(
       'failed',
     );
+  });
+
+  it("reports the clock the turn's own last row carried", () => {
+    // The result frame carries no instant, and a turn read from a transcript
+    // has no result frame at all - so the only clock a settled row can report
+    // is the one its own rows wrote. Without it the row's first fact is a
+    // permanent dash.
+    const at = (stamp: string, body: unknown): unknown => ({
+      type: 'assistant',
+      uuid: `a-${stamp}`,
+      timestamp: stamp,
+      message: { id: `m-${stamp}`, role: 'assistant', model: 'claude-opus-5', content: [body] },
+    });
+
+    const units = fold([
+      at('2026-09-29T10:00:00.000Z', text('first')),
+      at('2026-09-29T10:00:04.000Z', text('second')),
+      {
+        type: 'result',
+        uuid: 'r1',
+        duration_ms: 4000,
+        duration_api_ms: 3000,
+        usage: { input_tokens: 10, output_tokens: 2 },
+      },
+    ]);
+
+    const report = units.find((unit) => unit.kind === 'report');
+    expect(report?.kind === 'report' ? report.info.ended_at_utc : null).toBe(
+      '2026-09-29T10:00:04.000Z',
+    );
+  });
+
+  it('sums the thinking deltas a turn carried', () => {
+    // The wire sends the counter as a subtype of its own, and it restarts at
+    // every thinking block - so a turn's estimate is the sum of the deltas,
+    // and reading the absolute field understates any turn that thought twice.
+    const thought = (delta: number): unknown => ({
+      type: 'system',
+      subtype: 'thinking_tokens',
+      estimated_tokens_delta: delta,
+      uuid: `think-${delta}`,
+    });
+    const result = {
+      type: 'result',
+      uuid: 'r1',
+      duration_ms: 1000,
+      duration_api_ms: 900,
+      usage: { input_tokens: 10, output_tokens: 2 },
+    };
+
+    const units = fold([thought(161), thought(50), thought(299), result]);
+    const report = units.find((unit) => unit.kind === 'report');
+    expect(
+      report?.kind === 'report' ? report.info.thinking_tokens : null,
+      'every block the turn thought, not the last one',
+    ).toBe(510);
   });
 
   it('draws a prompt as the turn the reader wrote, and a result as no turn at all', () => {

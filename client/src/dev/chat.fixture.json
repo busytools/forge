@@ -66,6 +66,7 @@
         {
           "type": "assistant",
           "uuid": "a-1",
+          "timestamp": "2026-09-29T09:14:09.400Z",
           "message": {
             "id": "msg_01",
             "role": "assistant",
@@ -120,6 +121,7 @@
         {
           "type": "user",
           "uuid": "r-1",
+          "timestamp": "2026-09-29T09:14:31.050Z",
           "message": {
             "role": "user",
             "content": [
@@ -284,7 +286,7 @@
             "content": [
               {
                 "type": "text",
-                "text": "[Gotify - app 'ci', priority 9]\n\nbuild failed on main"
+                "text": "[Gotify - app 'ci', priority 9]\nbuild failed on main\nrun 412, exit 1"
               }
             ]
           }

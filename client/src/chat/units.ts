@@ -47,11 +47,16 @@ export interface FamilyLeaves {
 /** How loudly a notice reads. */
 export type NoticeSeverity = 'info' | 'warning' | 'error';
 
-/** A line the conversation carries that nobody typed. */
+/**
+ * A line the conversation carries that nobody typed.
+ *
+ * The envelope's own kind (`gotify`, `cron`, `slack`, `peer`, `worker`) is not
+ * a field here: nothing draws it, and the text already names where the line
+ * came from - an app, a workspace, an agent - so carrying it would be data
+ * waiting for a renderer rather than data a view reads.
+ */
 export interface Notice {
   severity: NoticeSeverity;
-  /** Where it came from: `gotify`, `cron`, `slack`, `peer` or `worker`. */
-  source: string;
   text: string;
 }
 
@@ -106,25 +111,20 @@ export type Unit =
   /** What a settled turn did, under the work it did it with. */
   | { kind: 'report'; info: TurnInfo; key: string | null };
 
-/** The tools whose chat surface is a peer block rather than a call row. */
-const PEER_TOOLS = new Set([
-  'mcp__forge__agents__ask',
-  'mcp__forge__agents__tell',
-  // Replay-only names: a transcript written before the rename carries these.
-  'mcp__forge__peers__ask_agent',
-  'mcp__forge__peers__tell_agent',
-  'mcp__forge__workers__ask',
-  'mcp__forge__workers__tell',
-]);
-
-/** The tool a lifecycle block is drawn for, which the chat does not draw at all. */
+/**
+ * The tool a lifecycle block is drawn for, which the chat does not draw at all.
+ *
+ * Matched the way the terminal matches it, which is case-insensitively: a
+ * lowercase `monitor` is the same call, and drawn as a tool row it duplicates
+ * the inspector inside the turn it sits in.
+ */
 function isMonitor(name: string): boolean {
-  return name === 'Monitor';
+  return name.toLowerCase() === 'monitor';
 }
 
 /** Whether a call is a question the assistant asked. */
 function isQuestion(name: string): boolean {
-  return name === 'AskUserQuestion';
+  return name.toLowerCase() === 'askuserquestion';
 }
 
 /** A string field of a JSON value. */
@@ -149,7 +149,6 @@ interface Frame {
   type?: unknown;
   subtype?: unknown;
   uuid?: unknown;
-  isSidechain?: unknown;
   parent_tool_use_id?: unknown;
   actions?: unknown;
   hook_infos?: unknown;
@@ -160,106 +159,222 @@ interface Frame {
   usage?: unknown;
   tool_use_result?: unknown;
   state?: unknown;
+  timestamp?: unknown;
   message?: { content?: unknown; model?: unknown; stop_reason?: unknown };
 }
 
 /** Whether a frame came from a dispatched agent rather than the session's own. */
 function isDispatched(frame: Frame): boolean {
-  // The wire's own marker for a sidechain row, and the one this corpus
-  // actually carries: `parent_tool_use_id` is null on every top-level frame
-  // measured, while `isSidechain` marks the rows a sub-agent wrote. A guard
-  // written for a shape nobody produces reads as working and suppresses
-  // nothing, which is worse than no guard at all.
-  if (frame.isSidechain === true) return true;
+  // The wire spells "no dispatch" as null and a dispatch's own tool-use id
+  // otherwise, which is the same field and the same guard the server's fold
+  // reads. The sidechain flag a transcript FILE carries is not on the wire at
+  // all: `Message` has no such field, and no captured baseline contains the
+  // string - so a guard keyed on it would read as working and suppress
+  // nothing, which is worse than no guard.
   return typeof frame.parent_tool_use_id === 'string' && frame.parent_tool_use_id.trim() !== '';
 }
 
-/** The envelope text a user frame carries, when it is one this page knows. */
+/** What follows `marker`, or `null` when the text does not carry it. */
+function after(text: string, marker: string): string | null {
+  const at = text.indexOf(marker);
+  return at === -1 ? null : text.slice(at + marker.length);
+}
+
+/** The text between two markers, and what follows the second. */
+function between(text: string, open: string, close: string): [string, string] | null {
+  const from = after(text, open);
+  if (from === null) return null;
+  const to = from.indexOf(close);
+  return to === -1 ? null : [from.slice(0, to), from.slice(to + close.length)];
+}
+
+/** `'name' (org 'X')` as its two parts, from the text just after `from agent `. */
+function sender(rest: string): { from: string; org: string } | null {
+  if (!rest.startsWith("'")) return null;
+  const name = rest.indexOf("' (org '");
+  if (name === -1) return null;
+  const org = rest.indexOf("')", name + 8);
+  if (org === -1) return null;
+  return { from: rest.slice(1, name), org: rest.slice(name + 8, org) };
+}
+
+/** A Slack id is not a name to print, and neither is the producer's placeholder. */
+function isSlackId(value: string): boolean {
+  return /^[UW][A-Z0-9]{6,}$/.test(value);
+}
+
+/**
+ * The envelope text a user frame carries, when it is one this page knows.
+ *
+ * **A port of `forge_server::envelope::detect_inbound`, and it matches the
+ * PRODUCER's strings rather than anything a renderer printed.** The producers
+ * are `peers/types.rs`'s `to_prose`, `spawn.rs`'s Slack bundle and
+ * `delivery.rs`'s cron wrapper; a matcher written from the terminal's
+ * rendered output fires on nothing, and the failure is silent - the envelope
+ * draws as the reader's own turn, which is a thing that looks like content
+ * rather than like a bug.
+ *
+ * The header is everything between `[` and the first `]`, which matters for
+ * the two kinds that carry a trailer: a question ends `- reply with ...` and
+ * a reply ends `to your earlier ask`, both inside the brackets.
+ */
 function inbound(text: string): Unit | null {
-  const peer =
-    /^\[(?:Question id=\S+|Message id=\S+|Reply id=\S+) from agent '([^']+)' \(org '[^']*'\)\]/;
-  const question = /^\[Question id=\S+ from agent '([^']+)'/;
-  const reply = /^\[Reply id=\S+ from agent '([^']+)'/;
+  if (!text.startsWith('[')) return null;
+  const close = text.indexOf(']');
+  if (close === -1) return null;
+  const header = text.slice(1, close);
+  const tail = text.slice(close + 1);
+  // The peer wrappers land their body tail `]\n\n`; the notice kinds have
+  // their own spacing and are read below.
+  const body = tail.startsWith('\n\n') ? tail.slice(2) : '';
 
-  const head = peer.exec(text);
-  if (head !== null) {
-    const body = text.slice(head[0].length).trim();
-    const kind = question.test(text) ? 'question' : reply.test(text) ? 'reply' : 'message';
-    return { kind: 'peer', card: { peer: head[1] ?? '', body, inbound: true, kind } };
+  for (const [prefix, kind] of [
+    ['Question id=', 'question'],
+    ['Message id=', 'message'],
+    ['Reply id=', 'reply'],
+  ] as const) {
+    if (!header.startsWith(prefix)) continue;
+    const rest = after(header.slice(prefix.length), ' from agent ');
+    if (rest === null) return null;
+    const who = sender(rest);
+    if (who === null) return null;
+    return { kind: 'peer', card: { peer: who.from, body, inbound: true, kind } };
   }
 
-  const gotify = /^\[Gotify - app '([^']*)', priority (\d+)\]\n?/.exec(text);
-  if (gotify !== null) {
-    return {
-      kind: 'notice',
-      notice: {
-        severity: Number(gotify[2] ?? '0') >= 5 ? 'warning' : 'info',
-        source: 'gotify',
-        text: text.slice(gotify[0].length).trimEnd(),
-      },
-    };
-  }
-
-  const slack = /^\[Slack - workspace '([^']+)', (#[^\]\s]+)\]\s*\S*\s*\n?/.exec(text);
-  if (slack !== null) {
-    return {
-      kind: 'notice',
-      notice: {
-        severity: 'info',
-        source: 'slack',
-        text: `${slack[1]} \u{b7} ${slack[2]}: ${text.slice(slack[0].length).trimEnd()}`,
-      },
-    };
-  }
-
-  const failed =
-    /^\[(?:Ask|Tell) id=\S+ to agent '[^']+' \(org '[^']*'\) failed to deliver: (.*)\]$/s.exec(
-      text,
-    );
-  if (failed !== null) {
-    return {
-      kind: 'notice',
-      notice: { severity: 'warning', source: 'peer', text: text.slice(1, -1).trimEnd() },
-    };
-  }
-
-  const spawn = /^\[Worker '([^']+)' failed to spawn: (.*)\]$/s.exec(text);
-  if (spawn !== null) {
+  if (header.startsWith('Ask id=')) {
+    const to = after(header.slice('Ask id='.length), ' to agent ');
+    if (to === null || !header.includes('failed to deliver:')) return null;
+    const who = sender(to);
+    if (who === null) return null;
+    const reason = after(to, 'failed to deliver:') ?? '';
     return {
       kind: 'notice',
       notice: {
         severity: 'warning',
-        source: 'worker',
-        text: `'${spawn[1]}' failed to spawn: ${spawn[2] ?? ''}`.trimEnd(),
+
+        text: `'${who.from}' (${who.org}) failed to deliver: ${reason.trim()}`.trimEnd(),
       },
     };
   }
 
-  const cron = /^\[Cron(?: id=\S+)?\]\n?/.exec(text);
-  if (cron !== null) {
+  if (header.startsWith("Worker '")) {
+    const opened = after(header.slice("Worker '".length), '');
+    const label = opened === null ? null : between(opened, '', "' spawn failed id=");
+    if (label === null) return null;
+    const reason = after(label[1], ': ') ?? '';
     return {
       kind: 'notice',
-      notice: { severity: 'info', source: 'cron', text: text.slice(cron[0].length).trimEnd() },
+      notice: {
+        severity: 'warning',
+
+        text: `'${label[0]}' failed to spawn: ${reason}`.trimEnd(),
+      },
     };
+  }
+
+  if (header.startsWith("Gotify - app '")) {
+    const parts = between(header.slice("Gotify - app '".length), '', "', priority ");
+    if (parts === null) return null;
+    const priority = Number(parts[1]);
+    if (!Number.isInteger(priority)) return null;
+    // A Gotify body sits one newline tail `]`: a title line, then the text.
+    const raw = tail.startsWith('\n') ? tail.slice(1) : tail;
+    const cut = raw.indexOf('\n');
+    const title = cut === -1 ? raw : raw.slice(0, cut);
+    const message = cut === -1 ? '' : raw.slice(cut + 1);
+    return {
+      kind: 'notice',
+      notice: {
+        severity: priority >= 5 ? 'warning' : 'info',
+
+        text: `app '${parts[0]}' \u{b7} priority ${priority}: ${title}\n${message}`.trimEnd(),
+      },
+    };
+  }
+
+  if (header.startsWith("Slack - workspace '")) {
+    const parts = between(header.slice("Slack - workspace '".length), '', "', ");
+    if (parts === null) return null;
+    const cut = tail.indexOf('\n');
+    if (cut === -1) return null;
+    const rest = tail.slice(cut + 1);
+    const split = rest.indexOf(': ');
+    if (split === -1) return null;
+    const author = rest.slice(0, split);
+    const said = rest.slice(split + 2);
+    // A bundle's members each name their own author, so the header names none
+    // of them - and an id or the producer's `unknown` is not a name.
+    const bundle = /\(\d+ messages\)/.test(tail.slice(0, cut));
+    const named = bundle || author === 'unknown' || isSlackId(author) ? null : author;
+    const head =
+      named === null
+        ? `${parts[0]} \u{b7} ${parts[1]}`
+        : `${parts[0]} \u{b7} ${parts[1]} \u{b7} ${named}`;
+    return {
+      kind: 'notice',
+      notice: { severity: 'info', text: `${head}: ${said}`.trimEnd() },
+    };
+  }
+
+  if (header === 'Cron') {
+    return { kind: 'notice', notice: { severity: 'info', text: body } };
   }
 
   return null;
 }
 
-/** The peer card an outbound call draws, when it is one. */
+/**
+ * The peer card an outbound call draws, when it is one.
+ *
+ * **Each name carries its own input shape, and a call with no target is not a
+ * card at all.** A reply goes to whoever asked, so it carries no target: the
+ * server's own answer is `None`, which draws the call as the tool row it is
+ * rather than as a peer block with a nameless peer.
+ */
 function outbound(name: string, input: unknown): PeerCard | null {
-  if (!PEER_TOOLS.has(name)) return null;
   const fields = obj(input);
-  const peer =
-    str(fields, 'project') ??
-    str(fields, 'target') ??
-    str(fields, 'agent') ??
-    str(fields, 'label') ??
-    '';
-  const body = str(fields, 'message') ?? str(fields, 'prompt') ?? str(fields, 'body') ?? '';
   const ask =
     name.endsWith('__ask') || name.endsWith('__ask_agent') || name.endsWith('__workers__ask');
-  return { peer, body, inbound: false, kind: ask ? 'ask' : 'tell' };
+
+  if (name === 'mcp__forge__agents__ask' || name === 'mcp__forge__agents__tell') {
+    const peer = address(fields);
+    if (peer === null) return null;
+    return {
+      peer,
+      body: str(fields, name.endsWith('__ask') ? 'prompt' : 'message') ?? '',
+      inbound: false,
+      kind: ask ? 'ask' : 'tell',
+    };
+  }
+  if (name === 'mcp__forge__peers__ask_agent' || name === 'mcp__forge__peers__tell_agent') {
+    const peer = str(fields, 'target');
+    if (peer === null) return null;
+    return {
+      peer,
+      body: str(fields, ask ? 'prompt' : 'message') ?? '',
+      inbound: false,
+      kind: ask ? 'ask' : 'tell',
+    };
+  }
+  if (name === 'mcp__forge__workers__ask' || name === 'mcp__forge__workers__tell') {
+    const peer = str(fields, 'label');
+    if (peer === null) return null;
+    return {
+      peer,
+      body: str(fields, ask ? 'question' : 'message') ?? '',
+      inbound: false,
+      kind: ask ? 'ask' : 'tell',
+    };
+  }
+  return null;
+}
+
+/** The `${project}` or `${project}/${label}` a header shows for a call's target. */
+function address(fields: Record<string, unknown>): string | null {
+  const project = str(fields, 'project');
+  if (project === null) return null;
+  const label = str(fields, 'label');
+  return label === null || label === 'lead' ? project : `${project}/${label}`;
 }
 
 /** The card a question call draws, with whatever the person answered. */
@@ -294,7 +409,12 @@ function questionCard(input: unknown, answer: unknown): Unit {
 }
 
 /** One settled turn's report, from the frame that recorded it. */
-function reportOf(frame: Frame, model: string | null, thinking: number | null): TurnInfo {
+function reportOf(
+  frame: Frame,
+  model: string | null,
+  thinking: number | null,
+  endedAt: string | null,
+): TurnInfo {
   const usage = obj(frame.usage);
   const count = (key: string): number | null => {
     const value = usage[key];
@@ -303,7 +423,7 @@ function reportOf(frame: Frame, model: string | null, thinking: number | null): 
   return {
     duration_ms: typeof frame.duration_ms === 'number' ? frame.duration_ms : null,
     api_ms: typeof frame.duration_api_ms === 'number' ? frame.duration_api_ms : null,
-    ended_at_utc: null,
+    ended_at_utc: endedAt,
     model,
     thinking_tokens: thinking,
     input_tokens: count('input_tokens'),
@@ -347,6 +467,15 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
   let peers: PeerCard[] = [];
   let model: string | null = null;
   let thinking: number | null = null;
+  /**
+   * The instant the turn's own last row carried.
+   *
+   * A settled turn's row can only read a clock from what its frames wrote:
+   * the result frame carries none, and a transcript-derived turn has no result
+   * frame at all - so a page that never read one would draw the row's first
+   * fact as a permanent dash.
+   */
+  let endedAt: string | null = null;
 
   const flushRun = (): void => {
     if (run.length === 0) return;
@@ -385,7 +514,22 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
     if (isDispatched(frame)) continue;
 
+    // Watched before anything else reads the frame: whatever a turn turns out
+    // to be, the clock on its own rows is the only one a later row can report.
+    if (typeof frame.timestamp === 'string' && frame.timestamp !== '') {
+      endedAt = frame.timestamp;
+    }
+
     if (frame.type === 'system') {
+      // The counter arrives as a subtype of its own, and the wire's running
+      // value restarts at every thinking block - so a turn's estimate is the
+      // sum of its deltas rather than the last absolute one. Read before the
+      // other system arms, because every one of them continues.
+      if (frame.subtype === 'thinking_tokens') {
+        const delta = frame.estimated_tokens_delta;
+        if (typeof delta === 'number') thinking = (thinking ?? 0) + delta;
+        continue;
+      }
       if (frame.subtype === 'stop_hook_summary') {
         const actions = typeof frame.actions === 'number' ? frame.actions : 0;
         if (actions > 0) {
@@ -410,19 +554,12 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
       model = frame.message.model;
     }
 
-    // The wire's running counter restarts at every thinking block, so a turn's
-    // estimate is the sum of its deltas rather than the last absolute value.
-    if (frame.type === 'system' || frame.type === 'assistant') {
-      const delta = frame.estimated_tokens_delta;
-      if (typeof delta === 'number') thinking = (thinking ?? 0) + delta;
-    }
-
     if (frame.type === 'result') {
       flushRun();
       flushPeers();
       units.push({
         kind: 'report',
-        info: reportOf(frame, model, thinking),
+        info: reportOf(frame, model, thinking, endedAt),
         key: typeof frame.uuid === 'string' ? frame.uuid : null,
       });
       thinking = null;
