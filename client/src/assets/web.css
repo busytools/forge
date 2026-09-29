@@ -881,10 +881,18 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .ac .keys { padding: 7px 13px; border-top: 1px solid var(--line); }
 .dock .keys { padding-left: 31px; }
 
+/* A key is drawn as the key it is, in the chip the mockups draw: `<kbd>` and
+   not a span borrowing `k`, which is the sheet's keyword token for code. */
+kbd { font-family: inherit; font-size: inherit; color: inherit;
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
+
 /* The dictation row: it lives inside the box, grows it by one line, and
    collapses when the take resolves. */
 .dict { display: flex; align-items: center; gap: 11px; padding-left: 25px;
   font-family: var(--mono); font-size: var(--fs-data); }
+/* The row's own readings never wrap: the meter is the part that gives way, and
+   a clock broken across two lines reads as two figures rather than a time. */
+.dict .t, .dict .db, .dict .lbl, .dict .esc { white-space: nowrap; }
 .dict .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
   background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
 .dict .dot.tr { background: var(--blue); animation: none; }
@@ -908,16 +916,13 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .wave.tr .wtr i.mid { background: #2f486d; }
 .wave.tr .wtr i.hot { background: #365582; }
 
-/* The field the dock and the blocked box carry so the browser keeps the
-   reader's text, which neither of them draws. Its own styles come from the
-   box it goes back into, because a preserved node is the one the browser
-   already had. */
-.dock #draft, .blocked #draft { display: none; }
-
 /* A notice shares the row with the take and wins it. */
 .notice { font-family: var(--mono); font-size: var(--fs-data); padding-left: 25px; }
 .notice.q { color: var(--dim); }
 .notice.bad { color: var(--bad); }
+/* In the dock it is not in the box's row: the dock's own inset already sets
+   where a line starts. */
+.dock .notice { padding-left: 0; }
 .notice.warn { color: var(--warn); }
 
 /* While the session cannot take input the box is replaced entirely, and the
@@ -952,7 +957,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .ac .rows::-webkit-scrollbar-track { background: transparent; }
 .ac .it { display: flex; align-items: center; gap: 10px; padding: 5px 13px;
   font-family: var(--mono); font-size: var(--fs-base); }
-.ac .it .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
 .ac .it .p { color: var(--text); overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
 .ac .it .p em { font-style: normal; color: var(--accent); }
@@ -971,9 +975,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
 
 .ac .it.sel { background: rgba(244,118,0,.09); }
 .ac .it.sel .p { color: var(--text); }
-/* The marker says a key would take this row, and no key can: it is drawn
-   demoted the way the dock's is, so one idea is not drawn two ways. */
-.ac .it.sel .cur { color: var(--dim); }
 .ac .it .g { width: 20px; flex: 0 0 20px; text-align: center; }
 
 /* ---------- the dock: the box morphed into a prompt ---------- */
@@ -982,7 +983,12 @@ details.msg[open] > summary .arw { color: var(--teal); }
   background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86));
   box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 15px 17px;
   display: flex; flex-direction: column; gap: 11px; }
-.dock .queue { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.dock .queue { display: flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+/* The marker the mockup draws, as the sheet's own chevron turned to face the
+   way the rest of the queue waits - the same glyph a disclosure uses open,
+   which is what `▼` was standing in for. */
+.dock .queue .more { transform: rotate(90deg); }
 .dock .head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
 .dock .head .qm { color: var(--accent); font-weight: 700; flex: none; }
 .dock .head .t { font-weight: 650; color: var(--text); }
@@ -993,7 +999,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .dock .opts { display: flex; flex-direction: column; gap: 1px; }
 .opt { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
   border-radius: 9px; font-size: var(--fs-base); }
-.opt .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
 .opt .ic { color: var(--dim); }
 .opt .ic.ok { color: var(--ok); }
 .opt .ic.no { color: var(--bad); }
@@ -1004,12 +1009,29 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .opt.sel .lbl { color: var(--text); font-weight: 600; }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
   border: 1.5px solid var(--line); display: grid; place-items: center; }
+/* A question's row that is on, which the answer carries with it. The box is
+   the only mark of it, so it is drawn rather than implied by the pointer. */
+.opt .box2.on { border-color: var(--ok); color: var(--ok); }
+.opt .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What the marked option would do, which the terminal shows for the focused
+   row while the reader decides. */
+.dock .preview { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
+  padding: 7px 11px; font-family: var(--mono); font-size: var(--fs-data);
+  color: var(--muted); white-space: pre-wrap; }
 .dock .notes { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
   padding: 7px 11px; font-family: inherit; font-size: var(--fs-base); color: var(--text);
   background: rgba(13,17,26,.6); resize: none; }
+/* A take that is still running behind the dock: the whole indicator on this
+   surface, so a prompt cannot swallow a recording that is still going. */
+.dock .blip { display: flex; align-items: center; gap: 8px; padding-left: 31px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.dock .blip .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+  background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
+.dock .blip .dot.tr { background: var(--blue); animation: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .dict .dot, .blocked .ring { animation: none; }
+  .dict .dot, .blocked .ring, .dock .blip .dot { animation: none; }
 }
 
 /* The narrow widths, which the mockup draws the composer at too. The rect

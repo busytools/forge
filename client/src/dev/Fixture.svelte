@@ -2,7 +2,7 @@
   import { DEFAULT_ADDRESS } from '../connect/attempt';
   import Home from '../home/Home.svelte';
   import ChatFixture from './ChatFixture.svelte';
-  import { loadFixtureHome } from './fixture';
+  import { loadComposerStates, loadFixtureHome } from './fixture';
 
   /**
    * The home drawn from the server's own fixture, reached only in a
@@ -13,6 +13,8 @@
    * nothing ships that could be drawn in a server's absence.
    */
   const loaded = loadFixtureHome();
+  /** The composer's states below it, which is what the composer's by-width check reads. */
+  const states = loadComposerStates();
 </script>
 
 {#await loaded then wire}
@@ -26,3 +28,9 @@
 <!-- The conversation column under it, so the chat can be looked at without a
      running forge. It is a harness rather than a page: nothing ships it. -->
 <ChatFixture />
+
+{#await states then States}
+  {#if States}
+    <States />
+  {/if}
+{/await}
