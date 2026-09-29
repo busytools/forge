@@ -17,10 +17,11 @@ Taken from `busytools/forge` main at
 `crates/forge-server/tests/wire_fixtures/`:
 
 - `home.json` is blob `2f9254a3a85b826ab837d960e53dddbffc8ae113`
-- `session.json` is blob `9846d24ab9e628e8437ba8f251d5814fc1a4d532`
+- `session.json` is blob `8515aaac9fe02b158b625d93a11eb46b31f9612f`
 - `usage.json` is blob `5b068cbab71cf6bf03767fecc3a4415d40fedeef`
 
-`home.json` has been re-synced since that commit. What moved is below.
+`home.json` and `session.json` have been re-synced since that commit. What
+moved is below.
 
 The copies are byte-identical to those blobs and `salvage.test.ts` fails if
 one drifts, which is what a formatter run did once and would again: `src/dev/fixtures/*.json`
@@ -53,9 +54,16 @@ these changed before it landed. Each is now drawn:
   branch rather than its project's, which is what `ProjectWire.work` states
   and is the lead's seat whatever row it lands on. `null` is a seat forge
   holds no directory for, and it draws the blank rather than borrowing one.
-  The fixture's fleet puts no session in a worktree, so what it pins is the
-  field and the `null` case; `a_workers_row_carries_its_own_tree_and_not_the_projects`
-  pins the populated one.
+  The fixture's fleet puts no session in a worktree and its project directory
+  is not there, so what it pins is the field and a tree reading `gone`;
+  `a_workers_row_carries_its_own_tree_and_not_the_projects` pins the populated
+  one, and `a_seat_with_no_directory_borrows_no_tree` pins the `null`.
+- **A session's conversation crosses as TURNS.** `conversation` was
+  `{messages, compaction_count}` and is `{turns, compaction_count}`, each turn
+  carrying the key the server named it by and the messages it ran as - the
+  same shape a `more` page answers with. A client folds turns, so frames with
+  no boundaries were a conversation it could not fold at all. The grouping
+  inside a turn stays the client's; only the boundary is the server's.
 
 `tasks` and `crons` are empty in the fixture, so their element shapes come
 from `crates/forge-server/src/transport/wire.rs` rather than from the file.
