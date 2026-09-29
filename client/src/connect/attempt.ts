@@ -1,9 +1,7 @@
 /**
- * Connecting, which is the one thing this slice does not do.
+ * Connecting, which is the one thing this file does not do.
  *
- * The socket is the other half of the base and it is not here: `connect(url)`
- * belongs with one store per subscription, and the server's protocol is still
- * moving. `connectTo` is the seam it lands in, and its signature is the part
+ * `connectTo` is the seam the socket lands in, and its signature is the part
  * that stays - a caller hands it an address and reads back settings or a
  * reason, whatever is underneath.
  */
@@ -148,13 +146,14 @@ export async function submitAttempt(
  * **The body is the fixture and the signature is not.** Nothing here opens a
  * socket, so this answers as a forge whose `[web]` block names nothing -
  * every mark, palette and typeface at its built-in - and the home behind this
- * screen draws the fixture the server committed. Task 2 replaces the body
- * with the real `connect(url)`; `attempt` above is what turns its rejections
- * into the screen's own vocabulary, and no caller changes.
+ * screen draws the fixture the server committed. The body becomes
+ * `connect(url)` once the pages are wired to it; `attempt` above is what
+ * turns its rejections into the screen's own vocabulary, and no caller
+ * changes.
  *
  * It resolves rather than being `async`, because this body has nothing to
  * await and `require-await` is right to say so. The signature is the seam
- * all the same: Task 2's body awaits a socket here and changes no caller.
+ * all the same: the real body awaits a socket here and changes no caller.
  *
  * The snapshot it carries is the fixture in a DEVELOPMENT build and `null`
  * otherwise, which is what lets the home be looked at without a running

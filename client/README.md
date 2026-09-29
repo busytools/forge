@@ -78,5 +78,5 @@ account a row binds. Both belong to pages that do not exist yet.
 `/` is the home, and the app opens on `/connect` and rewrites the URL to
 match, so a cold load of `/` lands on the door. The not-found page's own
 link points at `/`, which routes to the home. So the same URL is two pages
-depending on how you arrived, and a reload flips it. The fix belongs with
-the socket: gate the home on a connection once a store holds one.
+depending on how you arrived, and a reload flips it. The fix is to gate the
+home on a connection, which is part of wiring the pages up.
