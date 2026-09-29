@@ -36,9 +36,18 @@ server instead and needs no `dist/`. `just client-tauri-check` is the one
 to run before handing a change here over: it is the production build with
 `--locked`.
 
-A start that fails has no terminal to report to, so it writes to the
-plugin's log file instead, at
-`~/Library/Logs/dev.vedhavyas.forge/forge-client.log`.
+Two traps sit between a hand-typed command and a working one, and that
+recipe carries the working form. The CLI reads `CI` from the environment
+as its own boolean `--ci` flag, so a `CI` holding anything but `true` or
+`false` - `0` is what forge's sessions set - stops the build before it
+starts; passing `--ci` explicitly overrides it. And `npm` swallows a bare
+`--`, so a cargo flag has to arrive as `run tauri -- build -- <flags>`.
+
+A start has no terminal to report to, so it writes to
+`~/Library/Logs/dev.vedhavyas.forge/forge.log` instead. That file is
+named after the product rather than the crate. `forge client started` is
+the line a start that reached the window leaves, so what follows it, or
+its absence, is what explains a bounce.
 
 The icon is the `panes` mark from `src/brand.ts`, on the `--bg` ground in
 the `--accent` colour. Render the mark to a 1024 PNG and pass that to
