@@ -765,6 +765,15 @@ details.msg[open] > summary .arw { color: var(--teal); }
      the size a finger needs, and it is applied at the phone breakpoint rather
      than everywhere so a desktop pointer keeps the tighter rows. */
   button, input, select, textarea, details > summary { min-height: 44px; }
+
+  /* The session page's own controls, which are buttons now rather than the
+     spans and labels they were ported from. The rule above is for a control
+     whose own height IS the target; these two are not. */
+  .rail-tog { width: 44px; height: 44px; }
+  /* A row's chip is not the target - the row is, and has been since the mock
+     drew `.pr` as the pointer - so it gives its height back rather than
+     stretching every row it sits in. It is disabled today in any case. */
+  .pr .x, .wk .x, .banner .close { min-height: 0; }
 }
 
 /* A delivery keeps the lines it arrived with: its body is often a second
