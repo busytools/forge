@@ -14,7 +14,6 @@ import type { ServerMessage } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import type { ComposerProps, ComposerRecord, SeatRead } from './view';
-import type { Take } from './wire';
 
 export const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
@@ -41,14 +40,22 @@ export function props(over: Partial<ComposerProps> = {}): ComposerProps {
   return { record: record(), slot: SLOT, seat: seatRead(), connection: wire().connection, ...over };
 }
 
-/** A take in flight, as the core reports one. */
-export function take(over: Partial<Take> = {}): Take {
+/**
+ * A take in flight, as the WIRE carries one.
+ *
+ * Snake-case and a two-slot `progress`, because this goes into a record the
+ * composer narrows: a fixture in the narrowed shape reads as a take with no
+ * clock, no level and no readings, which is what the composer's own by-width
+ * page showed before this was fixed.
+ */
+export function take(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     phase: 'recording',
     levels: [0.2, 0.5, 1],
-    peakDb: -18,
-    progress: { done: 0, total: null },
-    elapsedMs: 7000,
+    peak_db: -18,
+    progress: [0, null],
+    floor_db: -50,
+    elapsed_ms: 7000,
     ...over,
   };
 }

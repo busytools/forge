@@ -3,6 +3,9 @@ import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import Composer from './composer/Composer.svelte';
+import type { ComposerProps, ComposerRecord } from './composer/view';
+import { permissionAsk, questionAsk, record, seatRead, SLOT, wire } from './composer/testing';
 import Connect from './connect/Connect.svelte';
 import { homeWire } from './dev/fixture.data';
 import Home from './home/Home.svelte';
@@ -67,5 +70,31 @@ describe('axe over the rendered pages', () => {
       props: { settings: DEFAULT_SETTINGS, onconnect: () => {} },
     }).body;
     expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The composer's states, because the dock's rows ARE the interaction: a
+   * caret was the whole of its selection state until the row carried
+   * `aria-selected`, and a caret announces nothing.
+   */
+  it('draws the composer with no violations', async () => {
+    // Inside the landmark its page gives it: the composer is a slot in the
+    // session page's own `<main>`, and rendered alone every one of its states
+    // reports the page-level `region` rule instead of anything about itself.
+    const draw = (held: ComposerRecord) =>
+      `<main>${
+        render(Composer, {
+          props: {
+            record: held,
+            slot: SLOT,
+            seat: seatRead(),
+            connection: wire().connection,
+          } satisfies ComposerProps,
+        }).body
+      }</main>`;
+
+    expect(await idsOf(draw(record())), 'the box').toEqual([]);
+    expect(await idsOf(draw(record({ pending_ask: permissionAsk() }))), 'a permission').toEqual([]);
+    expect(await idsOf(draw(record({ pending_ask: questionAsk() }))), 'a question').toEqual([]);
   });
 });

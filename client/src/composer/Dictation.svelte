@@ -58,7 +58,7 @@
     </span>
   </span>
   <span class="lbl">{label}</span>
-  <button class="esc" type="button" onclick={cancel}>
-    <kbd aria-hidden="true">Esc</kbd> cancel the take
+  <button class="esc" type="button" title="abandon the take" onclick={cancel}>
+    <kbd aria-hidden="true">Esc</kbd> cancel
   </button>
 </div>

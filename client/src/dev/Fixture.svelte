@@ -1,7 +1,7 @@
 <script lang="ts">
   import { DEFAULT_ADDRESS } from '../connect/attempt';
   import Home from '../home/Home.svelte';
-  import { loadFixtureHome } from './fixture';
+  import { loadComposerStates, loadFixtureHome } from './fixture';
 
   /**
    * The home drawn from the server's own fixture, reached only in a
@@ -12,6 +12,8 @@
    * nothing ships that could be drawn in a server's absence.
    */
   const loaded = loadFixtureHome();
+  /** The composer's states below it, which is what the composer's by-width check reads. */
+  const states = loadComposerStates();
 </script>
 
 {#await loaded then wire}
@@ -19,5 +21,11 @@
     <!-- The default address, so the band's web card reads as it does behind a
          connection rather than blank. -->
     <Home {wire} address={DEFAULT_ADDRESS} />
+  {/if}
+{/await}
+
+{#await states then States}
+  {#if States}
+    <States />
   {/if}
 {/await}

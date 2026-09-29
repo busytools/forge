@@ -22,3 +22,18 @@ export async function loadFixtureHome(): Promise<HomeWire | null> {
   // `homeFrom` narrows every union member straight afterwards.
   return homeFrom(module.default as unknown as HomeWire);
 }
+
+/**
+ * The composer drawn in every state it takes, or `null` in a production build.
+ *
+ * Deferred for the same reason the fixture is, and one more: the specimens are
+ * mock data, so the component carrying them is imported behind the guard rather
+ * than at the top of the page that draws it.
+ */
+export async function loadComposerStates(): Promise<
+  (typeof import('./ComposerStates.svelte'))['default'] | null
+> {
+  if (!import.meta.env.DEV) return null;
+  const module = await import('./ComposerStates.svelte');
+  return module.default;
+}

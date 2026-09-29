@@ -181,7 +181,7 @@ describe('the box', () => {
     expect(field().value, 'the box is empty once the words have gone').toBe('');
   });
 
-  it('grows by the take’s own row and collapses when the take resolves', () => {
+  it("grows by the take's own row and collapses when the take resolves", () => {
     const harness = open();
     const before = document.querySelector('.box')?.innerHTML ?? '';
 
@@ -199,7 +199,7 @@ describe('the box', () => {
     expect(document.querySelector('.dict'), 'the row collapses with the take').toBeNull();
   });
 
-  it('lands a take’s words at the caret and takes one green beat before easing back', () => {
+  it("lands a take's words at the caret and takes one green beat before easing back", () => {
     vi.useFakeTimers();
     try {
       const harness = open();
@@ -227,7 +227,7 @@ describe('the box', () => {
 
       expect(
         document.querySelector('.box')?.classList.contains('done'),
-        'and the border eases back to the box’s own',
+        "and the border eases back to the box's own",
       ).toBe(false);
       expect(field().value, 'the words stay').toBe('fix the flaky retry test');
     } finally {
@@ -346,7 +346,7 @@ describe('the autocomplete', () => {
     expect(drawn(), 'the header names the list').toContain('commands');
     expect(
       [...document.querySelectorAll('.ac .it')].map((row) => row.textContent?.trim()),
-      'forge’s table is what it offers, matched on the description too',
+      "forge's table is what it offers, matched on the description too",
     ).toEqual([
       '/mode Show / set session mode',
       '/model Show / set session model',
@@ -438,7 +438,7 @@ describe('two clients on one seat', () => {
     allow.click();
     flushSync();
 
-    expect(shared.sent, 'one answer went, and it is the core’s own option').toEqual([
+    expect(shared.sent, "one answer went, and it is the core's own option").toEqual([
       {
         command: {
           respond_permission: {

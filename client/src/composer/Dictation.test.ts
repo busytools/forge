@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import Dictation from './Dictation.svelte';
 import { SLOT, take } from './testing';
+import { composerFrom, type Take } from './wire';
 import type { Connection } from '../socket';
 
 const sent: Record<string, Record<string, unknown>>[] = [];
@@ -24,10 +25,21 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-function open(over = {}) {
+/**
+ * A take as the row draws it, narrowed from the wire the way the composer
+ * narrows one - so a fixture that stopped matching the wire fails here rather
+ * than drawing a row of zeros.
+ */
+function narrowed(over: Record<string, unknown> = {}): Take {
+  const held = composerFrom({ take: take(over) }).take;
+  if (held === null) throw new Error('the take fixture did not narrow');
+  return held;
+}
+
+function open(over: Record<string, unknown> = {}) {
   app = mount(Dictation, {
     target: document.body,
-    props: { take: take(over), slot: SLOT, connection },
+    props: { take: narrowed(over), slot: SLOT, connection },
   });
   flushSync();
 }
@@ -43,7 +55,7 @@ describe('the dictation row', () => {
   it('draws the take: its dot, its clock, its level, the meter and the label', () => {
     open();
 
-    expect(drawn(), 'the clock runs off the take’s own length').toContain('0:07');
+    expect(drawn(), "the clock runs off the take's own length").toContain('0:07');
     expect(drawn(), 'the live level is its own figure').toContain('-18 dB');
     expect(drawn()).toContain('listening');
     expect(document.querySelectorAll('.wave .wtr i'), 'a cell per reading').toHaveLength(3);
@@ -52,7 +64,7 @@ describe('the dictation row', () => {
   });
 
   it('freezes the same anatomy and dims it toward blue while transcribing', () => {
-    open({ phase: 'transcribing', progress: { done: 2, total: 6 } });
+    open({ phase: 'transcribing', progress: [2, 6] });
 
     expect(drawn(), 'the settle tally is what a take with segments shows').toContain(
       'transcribing 2/6',

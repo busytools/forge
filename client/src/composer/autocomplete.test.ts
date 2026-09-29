@@ -24,7 +24,7 @@ const sources: Sources = {
     { name: '/clear', description: 'Clear chat history' },
     // A name in both lists is forge's: drawing the CLI's copy beside it would
     // offer one command twice.
-    { name: '/compact', description: 'the CLI’s own words for it' },
+    { name: '/compact', description: "the CLI's own words for it" },
   ],
   files: [
     file('src/home.rs'),

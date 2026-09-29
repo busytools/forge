@@ -869,6 +869,9 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    collapses when the take resolves. */
 .dict { display: flex; align-items: center; gap: 11px; padding-left: 25px;
   font-family: var(--mono); font-size: var(--fs-data); }
+/* The row's own readings never wrap: the meter is the part that gives way, and
+   a clock broken across two lines reads as two figures rather than a time. */
+.dict .t, .dict .db, .dict .lbl, .dict .esc { white-space: nowrap; }
 .dict .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
   background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
 .dict .dot.tr { background: var(--blue); animation: none; }
