@@ -14,15 +14,29 @@ nothing to draw, and the client never falls back to bundled data.
 
 | Region | Shows | Read from |
 |---|---|---|
-| Header | the brand mark, `forge`, the claude version, an update notice, and the fleet totals | `ClientSettings.mark` from the greeting; `cli_version`; `agents` and `projects` counted |
+| Header | the brand mark, `forge`, the forge build serving the socket, the claude version, an update notice, and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `cli_version`; `agents` and `projects` counted |
 | Band | four cards: the gateway listener, the client's own address, dictation, and the account pool | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading` |
 | Org | one section per org, alphabetical, with a live and asleep count | `projects`, grouped by `org` |
-| Row | one per agent: its state mark, its name, where it is, what it is doing, and when it last wrote | `agents` |
+| Row | one per agent: its state mark, its name, where it is, what it is doing, and when it last wrote | `agents`, and the per-row reads on `projects` |
 
 A row is the same five columns for a lead and for a worker, and a worker sits
 indented under its project. The name is the link rather than the row, because
 a row can also carry an artifact anchor and an anchor inside an anchor is not
 HTML.
+
+**The header draws the forge build, not this app's own version.** The header
+states which forge is serving, and the client is a different program, so its
+own `package.json` version would name the wrong thing.
+
+**The row's `where` and `what` cells are its two variable columns.** `where`
+carries the branch the tree is on and how much has changed in it, from the
+project row's `work`; a count of zero draws nothing, because an unchanged
+tree is what the cell already means when it is empty. `what` says one thing,
+and the order it picks by is the order a reader needs them: what the seat is
+waiting on a person for, else the task it holds with that task's status chip
+and artifact, else why a spawn here would be refused, else why the tree could
+not be read (`not a git repository`, `its working directory is not there`),
+and a middot when none of those is true.
 
 ## The state a row carries
 
@@ -59,10 +73,17 @@ line under it.
   for it to appear at all, so a probe that answered one of them draws
   nothing rather than claiming an update it cannot see.
 
-Two things the row's middle columns need are not in the snapshot this page
-draws from today: the per-row working tree, and the tasks a seat holds. Both
-are recorded, with the server work that closes them, in
-`client/src/wire/README.md`.
+**The unseen mark is drawn from a read of its own.** `unseen` is the list
+of seats whose last turn finished while no client was showing them, and
+nothing in the records reconstructs it: a turn that ended before a client
+attached leaves nothing in the transcript to say it went unwatched, so a
+page reading only the messages would draw every settled seat as idle. The
+server keeps that fact and sends it; the client draws it and computes none.
+
+Two things the home subject carries and this page does not draw are the
+schedules a project holds and the account a row chips. Both belong to
+surfaces that do not exist yet - the inspector's schedules section and the
+launchpad's account walk - and neither is a gap in this page.
 
 ## The two widths
 
