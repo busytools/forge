@@ -40,10 +40,11 @@ place it takes the connection and leaves the route alone. That makes this
 screen reachable three ways: a first launch, a launch that did not answer,
 and navigating here. On its own `/connect` the door is already drawn when
 the attempt lands, so the reason arrives on it rather than opening it.
-**A submit wins over a launch still in flight**: submitting while the
-attempt is running takes the connection, and the launch yields rather than
-closing the socket that submit opened, so the page draws the forge the
-reader asked for and not the one the app was guessing at.
+**A submit wins over a launch, whichever of the two lands first.** A launch
+that lands after a submit has taken a connection yields rather than closing
+the socket that submit opened, and a launch that lands before it is replaced
+by the submit when it takes. Either way the page draws the forge the reader
+asked for and not the one the app was guessing at.
 
 ## The design plan
 

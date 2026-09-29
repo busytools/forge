@@ -1,3 +1,7 @@
+// Bare, because this file runs in the node environment: under jsdom the same
+// import lands on ws's browser shim, which throws, which is why the shell's
+// test requires it through node instead. Do not set this file's environment
+// to jsdom, and do not write the directive that would: that breaks this line.
 import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -614,10 +618,15 @@ describe('the connection', () => {
   });
 
   /**
-   * A frame that is not JSON is reported and dropped rather than thrown, so
-   * the frames after it still arrive. This is the one boundary the client's
-   * whole surface is narrowed at, and it is also the one place a throw would
-   * take every frame behind it.
+   * A frame that is not JSON is reported and dropped rather than thrown, and
+   * the frame after it still arrives. This is the one boundary the client's
+   * whole surface is narrowed at.
+   *
+   * The second half is not what the guard buys: `ws` swallows a handler's
+   * throw and emits `error` instead, so deleting the try/catch leaves the next
+   * frame arriving anyway and only the report below fails. It is here for the
+   * change that makes a decode failure fatal, by closing the connection or by
+   * rethrowing, and that is the shape it catches.
    */
   it('reports a frame that does not parse and keeps reading the ones after it', async () => {
     const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});

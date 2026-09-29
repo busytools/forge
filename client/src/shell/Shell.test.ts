@@ -16,10 +16,14 @@ import Shell from './Shell.svelte';
  * A socket and a server that a test in this realm can use, required through
  * node rather than imported.
  *
- * Test mode resolves bare imports with the browser condition, which hands back
- * `ws`'s browser shim - a `WebSocket` and nothing to connect it to - and
- * jsdom's own is built on undici, which builds its events from this realm's
+ * Test mode resolves bare imports with the browser condition, and `ws`'s
+ * browser shim is one function that throws, so destructuring it gives
+ * `undefined` rather than a server. jsdom's own WebSocket is no use either:
+ * it is built on undici, which constructs its events from this realm's
  * `Event` and then has its own event target reject them.
+ *
+ * `socket.test.ts` imports `ws` bare, and can only because that file runs in
+ * node. Do not unify the two.
  */
 const { WebSocket: Socket, WebSocketServer } = createRequire(import.meta.url)(
   'ws',
