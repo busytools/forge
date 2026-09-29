@@ -2,7 +2,13 @@ import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { connect, type Connection } from './socket';
-import { slotOf, type ClientMessage, type ServerMessage, type Subject } from './protocol';
+import {
+  PROTOCOL_VERSION,
+  slotOf,
+  type ClientMessage,
+  type ServerMessage,
+  type Subject,
+} from './protocol';
 import type { SessionSlot } from './wire/types';
 
 /** A forge that speaks the protocol and nothing else. */
@@ -152,17 +158,37 @@ describe('the connection', () => {
   });
 
   /** The greeting is what configures the client before it draws anything. */
-  it('keeps the settings and the version the greeting carried', async () => {
+  it('keeps the settings the greeting carried', async () => {
     const { server, conn } = await connected();
 
     server.send({
       kind: 'greeting',
-      version: 1,
+      version: PROTOCOL_VERSION,
       settings: { mark: 'klin', theme: null, font: null },
     });
     await until(() => conn.settings() !== null, 'the greeting to land');
     expect(conn.settings()).toEqual({ mark: 'klin', theme: null, font: null });
-    expect(conn.version()).toBe(1);
+  });
+
+  /**
+   * The protocol's only mismatch detector, and it is checked on EVERY
+   * greeting rather than the first: a page left open across a forge upgrade
+   * reconnects to a protocol it cannot read, and drawing against that shape
+   * silently is the failure the check exists to prevent. It does not retry,
+   * because a retry meets the same answer.
+   */
+  it('stops when a later greeting speaks another protocol', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe');
+
+    server.send({
+      kind: 'greeting',
+      version: PROTOCOL_VERSION + 1,
+      settings: { mark: null, theme: null, font: null },
+    });
+
+    await until(() => conn.status() === 'mismatched', 'the mismatch to be reported');
   });
 
   /**
@@ -339,6 +365,71 @@ describe('the connection', () => {
     // came back as two.
     await settle();
     expect(server.received.slice(4)).toEqual([]);
+  });
+
+  /**
+   * Two subscriptions to one subject are two re-asks, which is the count the
+   * server holds: one unsubscribe drops one of its entries, so a reconnect
+   * that re-asked once for a subject held twice would leave the server's
+   * count lower than this side's, and the next unsubscribe would take the
+   * subject away from a caller still drawing it.
+   */
+  it('re-asks once per subscription, not once per subject', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME);
+    conn.subscribe(HOME);
+    await until(() => server.received.length === 2, 'both subscribes');
+
+    server.drop();
+    await until(() => server.received.length >= 4, 'both re-asks');
+
+    await settle();
+    expect(server.received.length, 'a subject held twice was re-asked for once').toBe(4);
+  });
+
+  /**
+   * A refusal names no subject, so it belongs to the oldest ask still waiting
+   * on an answer - the order the server answers in. Taking the newest instead
+   * would refuse the subscription the server just accepted, and the refused
+   * one would read as loading for ever.
+   */
+  it('gives a refusal to the oldest subscribe still waiting', async () => {
+    const { server, conn } = await connected();
+    const lead: Subject = { session: LEAD };
+    const w1: Subject = { session: { org: 'TestOrg', project: 'proj', label: 'w1' } };
+    const first = conn.subscribe(lead);
+    const second = conn.subscribe(w1);
+    await until(() => server.received.length === 2, 'both subscribes');
+
+    server.send({ kind: 'error', what: 'subscribe', why: 'forge holds no session for that seat' });
+
+    await until(() => first.state().kind === 'refused', 'the refusal to land');
+    expect(first.state()).toEqual({ kind: 'refused', why: 'forge holds no session for that seat' });
+    expect(second.state(), 'the refusal went to the newer subscription').toEqual({
+      kind: 'loading',
+    });
+  });
+
+  /**
+   * A refresh over a store that is already ready is refused with no store in
+   * `loading` to find, so attribution is a queue of asks rather than a scan
+   * of states. Without it the store keeps a `ready` state and a full
+   * snapshot while the server has dropped the subscription, and nothing for
+   * that subject ever arrives again with nothing saying so.
+   */
+  it('refuses a store that was already answered and then re-asked', async () => {
+    const { server, conn } = await connected();
+    const seat: Subject = { session: LEAD };
+    const store = conn.subscribe(seat);
+    await until(() => server.received.length === 1, 'the subscribe');
+    server.send({ kind: 'snapshot', subject: seat, data: { who: 'lead' } });
+    await until(() => store.state().kind === 'ready', 'the snapshot');
+
+    conn.refresh(seat);
+    await until(() => server.received.length === 3, 'the refresh pair');
+    server.send({ kind: 'error', what: 'subscribe', why: 'forge holds no session for that seat' });
+
+    await until(() => store.state().kind === 'refused', 'the refusal to land');
   });
 
   /**

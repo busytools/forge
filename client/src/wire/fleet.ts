@@ -93,6 +93,25 @@ function chatNews(payload: Record<string, unknown>): FleetNews {
   return frame['state'] === 'running' ? { kind: 'running', slot } : { kind: 'redraw' };
 }
 
+/**
+ * Whether a `home` subscription hears this update - the server's own
+ * `Subject::covers` for `Home`, and the one place it lives on this side.
+ *
+ * **`fleetNews` answers a different question and is not a substitute.**
+ * That one says what the fleet region DRAWS; this one says what a home
+ * subscriber is SENT, and the server sends more than the region draws. A
+ * slot-less update belongs to no seat, so home is the only subscription that
+ * could have carried it, and the slot-less arm exists so a client is not
+ * left drawing what it read once at subscribe - which is what the service
+ * status, the fatal error and the plugin records are.
+ *
+ * Gating a reader on `fleetNews` alone throws those away, and the symptom is
+ * not an error: it is a page that read them once and never again.
+ */
+export function coversHome(update: SessionUpdate): boolean {
+  return fleetNews(update).kind !== 'nothing' || slotOf(update) === null;
+}
+
 /** Classify one update for the fleet region. */
 export function fleetNews(update: SessionUpdate): FleetNews {
   if (typeof update === 'string') {

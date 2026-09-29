@@ -21,7 +21,14 @@
   const view = $derived(homeView(wire, address));
   // One clock for the page: every row's `when` reads against the same now,
   // so two rows a second apart cannot draw the same age differently.
-  const now = Date.now();
+  //
+  // Re-read with every snapshot. The component is not remounted when a
+  // refresh replaces `wire`, so a clock set at mount would have a page open
+  // an hour still saying its rows were three minutes old.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (wire) now = Date.now();
+  });
 </script>
 
 <!-- A landmark, so every part of the page sits inside one. The sheet's

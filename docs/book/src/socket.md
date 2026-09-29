@@ -141,8 +141,13 @@ was asked for.
 - **`snapshot {subject, data}`** - a subject in full, in answer to a
   `subscribe`.
 - **`update {update}`** - one `SessionUpdate`, for whichever subjects the
-  client is subscribed to. The subject decides: a home subscriber hears a
-  session's updates only when they change something a home row shows.
+  client is subscribed to. The subject decides, and a home subscription has
+  **two** arms rather than one: an update a home row draws something of, and
+  an update belonging to no seat at all - the service status, the fatal
+  error, the plugin records - which is a field of the home's own snapshot and
+  which only a home subscription could have carried. Read the second arm as
+  absent and a page keeps what it read at subscribe for the life of the
+  connection.
 - **`page {conversation, rows, cursor}`** - in answer to `more`.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own

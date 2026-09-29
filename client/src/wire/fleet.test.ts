@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import type { SessionUpdate } from '../protocol';
+import { slotOf, type SessionUpdate } from '../protocol';
 import type { SessionSlot } from './types';
-import { fleetNews } from './fleet';
+import { coversHome, fleetNews } from './fleet';
 
 /**
  * The variant names the server's own `fleet_news` puts in one of its arms,
@@ -58,6 +58,40 @@ function serverArms(arm: 'Redraw' | 'Occupant'): string[] {
 /** A variant name as the wire spells it. */
 function snake(name: string): string {
   return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+/**
+ * The variants the core's own `SessionUpdate::slot` answers `Some(key)` or
+ * `None` for, read out of `protocol.rs`.
+ *
+ * `slotOf` is the other half of this file's claim about the server, and three
+ * samples cannot see a variant that carries a `key: SessionSlot` and is not
+ * recognised as one - so the list is read out of the method that decides it.
+ */
+function serverSlots(): { keyed: string[]; seatless: string[] } {
+  const source = readFileSync(
+    new URL('../../../crates/forge-workspace/src/protocol.rs', import.meta.url),
+    'utf8',
+  );
+  const start = source.indexOf('pub fn slot(&self)');
+  if (start < 0) {
+    throw new Error('protocol.rs no longer holds `slot`, so this mirror is unanchored');
+  }
+  const body = source.slice(start, source.indexOf('\n}\n', start));
+
+  const names = (arm: string): string[] => {
+    const found = new Set<string>();
+    const clauses = body.split('=>');
+    for (let at = 0; at < clauses.length - 1; at += 1) {
+      if (!(clauses[at + 1] ?? '').trimStart().startsWith(arm)) continue;
+      for (const match of (clauses[at] ?? '').matchAll(/Self::([A-Za-z0-9]+)/g)) {
+        if (match[1] !== undefined) found.add(match[1]);
+      }
+    }
+    return [...found];
+  };
+
+  return { keyed: names('Some(key)'), seatless: names('None') };
 }
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -144,6 +178,46 @@ describe('what one update asks of the fleet', () => {
       expect(fleetNews(update as SessionUpdate), JSON.stringify(update)).toEqual({
         kind: 'redraw',
       });
+    }
+  });
+
+  /**
+   * What a home subscriber is SENT, which is not what the region DRAWS. A
+   * slot-less update belongs to no seat, so home is the only subscription
+   * that could have carried it, and the service status, the fatal error and
+   * the plugin records all arrive that way. Gating a reader on `fleetNews`
+   * alone throws them away, and the page keeps what it read at subscribe for
+   * the life of the connection.
+   */
+  it('counts a slot-less update as one the home is sent', () => {
+    expect(coversHome({ service_status: { state: 'ok' } })).toBe(true);
+    expect(coversHome({ fatal_error: { message: 'it died' } })).toBe(true);
+    expect(coversHome({ plugins_inventory_updated: {} })).toBe(true);
+    expect(coversHome('catalog_loaded')).toBe(true);
+    // A turn's own words on a watched seat are neither fleet news nor
+    // slot-less, so a home subscriber is never sent them.
+    expect(coversHome(appended({ type: 'assistant' }))).toBe(false);
+  });
+
+  /**
+   * `slotOf` is the other half of this file's claim about the server, read
+   * out of the method that decides it rather than sampled: a variant that
+   * carries a slot and is not recognised as one is an update routed to no
+   * store at all.
+   */
+  it('reads a slot off every variant the core gives one, and none off the rest', () => {
+    const { keyed, seatless } = serverSlots();
+    expect(keyed.length, 'the slot arm was not read out of protocol.rs at all').toBeGreaterThan(20);
+    expect(
+      seatless.length,
+      'the seat-less arm was not read out of protocol.rs at all',
+    ).toBeGreaterThan(3);
+
+    for (const name of keyed) {
+      expect(slotOf({ [snake(name)]: { key: LEAD } }), `${name} carries a slot`).toEqual(LEAD);
+    }
+    for (const name of seatless) {
+      expect(slotOf({ [snake(name)]: {} }), `${name} carries none`).toBeNull();
     }
   });
 

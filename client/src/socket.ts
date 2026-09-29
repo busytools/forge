@@ -12,6 +12,7 @@
 
 import {
   MORE_TURNS,
+  PROTOCOL_VERSION,
   slotOf,
   subjectKey,
   type ClientMessage,
@@ -21,11 +22,21 @@ import {
   type Subject,
 } from './protocol';
 import { Stores, type Store } from './stores';
-import { fleetNews } from './wire/fleet';
+import { coversHome } from './wire/fleet';
 import type { ClientSettings, SessionSlot } from './wire/types';
 
 /** Where a connection is in its life. */
-export type ConnectionStatus = 'connecting' | 'open' | 'closed';
+export type ConnectionStatus =
+  | 'connecting'
+  | 'open'
+  | 'closed'
+  /**
+   * The server greeted with a protocol this client does not speak. It is not
+   * a connection failure and retrying cannot fix it: the two halves have to
+   * match, so the connection stops rather than reconnecting into the same
+   * answer and drawing against a shape it cannot read.
+   */
+  | 'mismatched';
 
 export interface Connection {
   /**
@@ -107,8 +118,6 @@ export interface Connection {
   store(what: Subject): Store | undefined;
   /** The client's mark, theme and font, from the greeting - the only place a client gets them. */
   settings(): ClientSettings | null;
-  /** The protocol the server greeted with, or `null` before it has. */
-  version(): number | null;
   status(): ConnectionStatus;
   close(): void;
 }
@@ -169,11 +178,22 @@ export function connect(url: string): Connection {
     number,
     { resolve: (body: unknown) => void; reject: (why: Error) => void }
   >();
+  /**
+   * The subscribes that have gone and not been answered, oldest first, which
+   * is the order the server answers them in.
+   *
+   * A refusal carries `what` and `why` and no subject, so this is what
+   * attributes one. It is a queue of asks rather than a scan for stores that
+   * have no snapshot, because a `refresh` over a store that is already ready
+   * is refused with nothing in that state to find - and the store then keeps
+   * drawing its pre-drop data with nothing saying so, which is the state the
+   * third state exists to prevent.
+   */
+  const awaiting: string[] = [];
 
   let socket: WebSocket | null = null;
   let status: ConnectionStatus = 'connecting';
   let settings: ClientSettings | null = null;
-  let version: number | null = null;
   let nextReplyId = 1;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryDelay = RETRY_MS;
@@ -202,21 +222,15 @@ export function connect(url: string): Connection {
   /**
    * One update into the stores it belongs to.
    *
-   * A seat's update goes to that seat's store, and to the home store only
-   * when the fleet classification calls it news - which is what the server
-   * itself filters a home subscriber by. A slot-less update belongs to no
-   * seat, so home is the only subscription that could have carried it.
-   *
-   * The classification is a mirror, kept in `wire/fleet.ts`, and mirroring
-   * it is the honest cost of exactness: without it the only rule available
-   * here is "a seat's update also goes to home", and the bulk of the stream
-   * - a turn's own words - would pile into the home store where no row
-   * reads one.
+   * A seat's update goes to that seat's store, and to the home store when the
+   * home's covering rule says a home subscriber would have been sent it -
+   * which is the server's own rule, mirrored in `wire/fleet.ts` and taken
+   * from there by every reader rather than decided here.
    */
   function route(update: SessionUpdate): void {
     const slot = slotOf(update);
     if (slot !== null) stores.get({ session: slot })?.push(update);
-    if (slot === null || fleetNews(update).kind !== 'nothing') stores.get('home')?.push(update);
+    if (coversHome(update)) stores.get('home')?.push(update);
   }
 
   /**
@@ -228,22 +242,51 @@ export function connect(url: string): Connection {
    * the oldest subscription still waiting on an answer is the refused one.
    */
   function refuse(why: string): void {
-    const [waiting] = stores.awaiting();
-    if (waiting === undefined) {
-      report('the server refused something this client did not ask for', why);
+    const [key] = awaiting.splice(0, 1);
+    if (key === undefined) {
+      report('the server refused a subscribe this client cannot account for', why);
       return;
     }
-    waiting.refuse(why);
-    report(`the subscription to ${subjectKey(waiting.subject)} was refused`, why);
+    const store = stores.byKey(key);
+    if (store === undefined) {
+      report(`the server refused ${key}, which this client no longer holds`, why);
+      return;
+    }
+    store.refuse(why);
+    report(`the subscription to ${key} was refused`, why);
+  }
+
+  /** One subscribe on the wire, remembered as outstanding until it is answered. */
+  function askFor(what: Subject, answering: boolean): void {
+    sendNow({ kind: 'subscribe', what, answering });
+    awaiting.push(subjectKey(what));
+  }
+
+  /** A subject the server has answered, which is no longer outstanding. */
+  function answered(what: Subject): void {
+    const at = awaiting.indexOf(subjectKey(what));
+    if (at >= 0) awaiting.splice(at, 1);
   }
 
   function handle(message: ServerMessage): void {
     switch (message.kind) {
       case 'greeting':
         settings = message.settings;
-        version = message.version;
+        // Checked on every greeting rather than only the first: a page left
+        // open across a forge upgrade reconnects to a protocol it cannot
+        // read, and drawing against it silently is what this arm exists to
+        // prevent.
+        if (message.version !== PROTOCOL_VERSION) {
+          report(
+            `the server speaks protocol ${message.version} and this client speaks ${PROTOCOL_VERSION}`,
+            message,
+          );
+          move('mismatched');
+          socket?.close();
+        }
         return;
       case 'snapshot':
+        answered(message.subject);
         stores.get(message.subject)?.set(message.data);
         return;
       case 'update':
@@ -305,23 +348,41 @@ export function connect(url: string): Connection {
         // than this side's, and a later unsubscribe would take the subject
         // away from a caller still drawing it.
         for (let remaining = stores.count(subject); remaining > 0; remaining -= 1) {
-          next.send(JSON.stringify({ kind: 'subscribe', what: subject, answering }));
+          askFor(subject, answering);
         }
       }
     };
 
     next.onmessage = (event) => {
       if (next !== socket) return;
-      const text = String(event.data);
-      const message = JSON.parse(text) as ServerMessage;
+      let message: ServerMessage;
+      try {
+        // The boundary: a frame is narrowed once, here, rather than by each
+        // reader. A frame this client cannot read is reported rather than
+        // thrown, because a throw out of this handler would take every frame
+        // after it as well.
+        message = JSON.parse(String(event.data)) as ServerMessage;
+      } catch (why) {
+        report('the server sent a frame this client could not read', why);
+        return;
+      }
       handle(message);
-      for (const fn of listeners) fn(message);
+      for (const fn of listeners) {
+        // One page's listener throwing must not silence the pages after it.
+        try {
+          fn(message);
+        } catch (why) {
+          report('a message listener threw', why);
+        }
+      }
     };
 
     next.onclose = () => {
       if (next !== socket) return;
       socket = null;
-      if (status === 'closed') return;
+      // A mismatched protocol is not something a retry answers, so the close
+      // that follows it must not be read as a drop.
+      if (status === 'closed' || status === 'mismatched') return;
       move('connecting');
       // A command that was in flight has no answer coming: the reply died
       // with the connection that would have carried it.
@@ -360,9 +421,7 @@ export function connect(url: string): Connection {
       existing.answering = true;
     }
 
-    if (isOpen()) {
-      sendNow({ kind: 'subscribe', what, answering: held.get(key)?.answering ?? answering });
-    }
+    if (isOpen()) askFor(what, held.get(key)?.answering ?? answering);
     return store;
   }
 
@@ -380,7 +439,7 @@ export function connect(url: string): Connection {
     // everything held, and that answer is fresher than this ask would be.
     if (!isOpen()) return;
     sendNow({ kind: 'unsubscribe', what });
-    sendNow({ kind: 'subscribe', what, answering: held.get(subjectKey(what))?.answering ?? false });
+    askFor(what, held.get(subjectKey(what))?.answering ?? false);
   }
 
   function dispatch(command: Command): Promise<unknown> | null {
@@ -401,7 +460,15 @@ export function connect(url: string): Connection {
     const answer = new Promise<unknown>((resolve, reject) => {
       pending.set(replyTo, { resolve, reject });
     });
-    sendNow({ kind: 'command', command, reply_to: replyTo });
+    try {
+      sendNow({ kind: 'command', command, reply_to: replyTo });
+    } catch (why) {
+      // `JSON.stringify` is the one thing between the registration and the
+      // send that can throw - a BigInt in a command - and an entry left
+      // behind would be rejected later as though the command had gone.
+      pending.delete(replyTo);
+      throw why;
+    }
     return answer;
   }
 
@@ -430,9 +497,6 @@ export function connect(url: string): Connection {
     },
     settings() {
       return settings;
-    },
-    version() {
-      return version;
     },
     status() {
       return status;

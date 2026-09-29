@@ -1,11 +1,10 @@
 <script lang="ts">
   import Sprite from '../components/Sprite.svelte';
   import { displayAddress, type Attempt } from '../connect/attempt';
-  import { watchHome } from '../home/live';
+  import { watchHome, type HomeRead } from '../home/live';
   import { hrefFor, parseRoute, type Route } from '../routes';
-  import type { Connection } from '../socket';
+  import type { Connection, ConnectionStatus } from '../socket';
   import { applySettings } from '../theme';
-  import type { HomeWire } from '../wire/home';
   import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
   import Router from './Router.svelte';
 
@@ -19,11 +18,11 @@
   let route = $state<Route>(onDoor ? { name: 'connect' } : opened);
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
   let address = $state('');
-  let wire = $state<HomeWire | null>(null);
+  let home = $state<HomeRead>({ wire: null, refused: null });
   // Raw, so the connection is handed around as the object it is rather than
   // as a reactive proxy of it.
   let connection = $state.raw<Connection | null>(null);
-  let live = $state(false);
+  let connectionStatus = $state<ConnectionStatus>('connecting');
 
   if (onDoor) history.replaceState(null, '', hrefFor({ name: 'connect' }));
 
@@ -51,13 +50,13 @@
   $effect(() => {
     const open = connection;
     if (open === null) return;
-    live = open.status() === 'open';
+    connectionStatus = open.status();
 
-    const stopHome = watchHome(open).subscribe(($wire) => {
-      wire = $wire;
+    const stopHome = watchHome(open).subscribe(($home) => {
+      home = $home;
     });
     const stopStatus = open.onStatus((next) => {
-      live = next === 'open';
+      connectionStatus = next;
     });
     return () => {
       stopHome();
@@ -65,12 +64,19 @@
     };
   });
 
+  /** The connection is open, so what the page draws is being kept current. */
+  const live = $derived(connectionStatus === 'open');
+
   function go(next: Route) {
     route = next;
     history.pushState(null, '', hrefFor(next));
   }
 
   function connect(connected: Extract<Attempt, { ok: true }>) {
+    // A second connect would otherwise leave the first socket open, still
+    // subscribed to the home and still re-reading it, for the rest of the
+    // session - and nothing would be drawing what it was keeping current.
+    connection?.close();
     settings = connected.settings;
     address = connected.url;
     connection = connected.connection;
@@ -110,7 +116,12 @@
 <!-- Once per page: a `<use>` reference resolves against the document it is in. -->
 <Sprite />
 
-{#if connection !== null && !live}
+{#if connectionStatus === 'mismatched'}
+  <p class="stale" role="alert">
+    That forge speaks a protocol this client does not. The two halves have to match, so one of them
+    needs updating.
+  </p>
+{:else if connection !== null && !live}
   <!-- A live region rather than a landmark: the pages below each carry the
        page's own `main`, and a second one would be a second page. -->
   <p class="stale" role="status">
@@ -118,7 +129,7 @@
   </p>
 {/if}
 
-<Router {route} {settings} {address} {wire} onconnect={connect} />
+<Router {route} {settings} {address} {home} connected={connection !== null} onconnect={connect} />
 
 <style>
   .stale {

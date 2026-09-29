@@ -40,11 +40,18 @@ export type StoreState =
   /** Refused, with the server's own reason. */
   | { kind: 'refused'; why: string };
 
-/** What a `$store` read gives a component: all three in one value. */
+/** What a `$store` read gives a component. */
 export interface StoreValue {
   snapshot: unknown;
   updates: SessionUpdate[];
   state: StoreState;
+  /**
+   * How many updates the ceiling dropped off the front of `updates`, since
+   * the snapshot it holds. A page folding them needs to know its tail is not
+   * the whole story rather than finding out by arithmetic that does not add
+   * up.
+   */
+  dropped: number;
 }
 
 export interface Store {
@@ -55,6 +62,7 @@ export interface Store {
   snapshot(): unknown;
   updates(): SessionUpdate[];
   state(): StoreState;
+  dropped(): number;
   /** Replaces the snapshot and drops the updates it supersedes. */
   set(snapshot: unknown): void;
   push(update: SessionUpdate): void;
@@ -63,21 +71,24 @@ export interface Store {
 }
 
 function createStore(subject: Subject, state: StoreState = { kind: 'loading' }): Store {
-  const inner = writable<StoreValue>({ snapshot: null, updates: [], state });
+  const inner = writable<StoreValue>({ snapshot: null, updates: [], state, dropped: 0 });
   return {
     subject,
     value: { subscribe: inner.subscribe },
     snapshot: () => get(inner).snapshot,
     updates: () => get(inner).updates,
     state: () => get(inner).state,
-    set: (snapshot) => inner.set({ snapshot, updates: [], state: { kind: 'ready' } }),
+    dropped: () => get(inner).dropped,
+    set: (snapshot) => inner.set({ snapshot, updates: [], state: { kind: 'ready' }, dropped: 0 }),
     push: (update) =>
       inner.update((held) => {
         const updates = [...held.updates, update];
+        const over = updates.length - MAX_UPDATES;
         return {
           snapshot: held.snapshot,
-          updates: updates.length > MAX_UPDATES ? updates.slice(-MAX_UPDATES) : updates,
+          updates: over > 0 ? updates.slice(over) : updates,
           state: held.state,
+          dropped: held.dropped + Math.max(0, over),
         };
       }),
     refuse: (why) =>
@@ -146,13 +157,8 @@ export class Stores {
     return this.held.get(subjectKey(subject))?.subscriptions ?? 0;
   }
 
-  /**
-   * The store a subscribe was sent for and no answer has reached yet, oldest
-   * first, which is the order the server answers in.
-   */
-  awaiting(): Store[] {
-    return [...this.held.values()]
-      .map((entry) => entry.store)
-      .filter((store) => store.state().kind === 'loading');
+  /** The store held at a `subjectKey`, for a caller that already has the key. */
+  byKey(key: string): Store | undefined {
+    return this.held.get(key)?.store;
   }
 }
