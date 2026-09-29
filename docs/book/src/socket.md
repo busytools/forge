@@ -58,14 +58,25 @@ a turn by ignoring one. A client with a dock to answer from sets it true
 in its first subscribe, and the connection registers with the core
 accordingly before it forwards anything.
 
+**The declaration sticks for the connection, and it only goes one way.**
+A later `subscribe` that leaves `answering` false does not take it back:
+the connection keeps the answering stream it already has, because the role
+is what the core counts when it decides whether a prompt can be answered,
+and a client that has drawn a dock once is not made an observer again by a
+second message. So say it on the first subscribe and expect it to stand.
+
 Neither way takes the pre-attach backlog: it goes to the first subscriber,
 and the view that draws the boot notice is the terminal. A client reads
 what it missed from the subject's snapshot.
 
 **`unsubscribe {what}`** - nothing comes back, because the client asked to
 stop hearing. Note that a second `subscribe` to one subject adds a second
-entry rather than replacing the first, so one `unsubscribe` drops both;
-subscribe once per subject, or unsubscribe as many times as you subscribed.
+entry rather than replacing the first, so **one `unsubscribe` drops one
+entry**: a client that subscribed twice and unsubscribed once still hears
+that subject, and needs a second `unsubscribe` to stop. It is counted
+rather than flagged for a reason - two subscriptions to one seat are one
+seat still being shown, and a single unsubscribe must not take the seat
+out of the set a view is watching.
 
 **`more {conversation, before, turns}`** - a page of a session's
 transcript, newest turn last, as whole turns.
@@ -141,7 +152,7 @@ conversation, and what the composer is doing.
 |---|---|
 | `slot` | The seat itself. |
 | `header` | The resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, and whether a turn is in flight. |
-| `conversation` | The transcript's messages, oldest first, with the compaction count. |
+| `conversation` | The transcript's messages, oldest first, with the compaction count. These are the CLI's own frames, which is what the live `update` stream carries too. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
 | `pr`, `closes` | The open pull request this seat's branch is on - its number and URL - and the issues it closes, which is the `PR #N -> closes #M` line the inspector draws. `null` and an empty list when there is none, or when the branch is not pushed. |
 | `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference. |
@@ -168,6 +179,19 @@ not a feed: no update announces that a transcript's tokens moved, so a
 subscription is answered once and then hears nothing. A client that wants
 the current numbers asks again by subscribing again.
 
+**Two representations of one conversation cross, and they are for
+different halves of it.** A settled turn is drawn from the FOLD: `more`
+returns whole turns as the server folded them, and a client that wants
+history should draw those units and keep its own expansion state. The turn
+in flight is drawn from the FRAMES: `update`s carry the CLI's own messages
+as they arrive, and a client renders those without regrouping them,
+because the fold is the server's and a client's own grouping would differ
+from the units the same turn becomes. When that turn settles, its units
+arrive by `more` and replace what the frames were drawing. The fold is
+never something a client ports.
+
+## What is not here
+
 - **The diff.** A session's working tree arrives as state - its branch and
   how much changed - and not as a diff. A full diff is a heavier read, and
   it is a surface of its own.
@@ -185,27 +209,37 @@ the current numbers asks again by subscribing again.
 - **The emoji set.** Which shortcodes exist is the typeahead's own
   business, so a client carries its own set rather than being handed one.
 - **forge's own command table.** The commands forge handles itself, and
-  what each one does, are a set every client ships: they are the same
-  everywhere and change with the client, not with the server. A client's
-  composer carries its own copy, and the names it is offered on top of
-  that are the CLI's, from `slash_commands`.
+  what each one does, live on the server: `forge_commands` is a read on the
+  view surface, and both views that exist take the table from there rather
+  than carrying a copy. It is not a wire subject, so a client has to know
+  the set it is offering - and the names it offers on top of that are the
+  CLI's, from `slash_commands`. A client that hardcodes its own copy should
+  expect it to fall behind the core's command enum, because the two are the
+  same list and only one of them is generated from the code.
 - **The CLI's own surfaces.** `slash_commands` carries the names the CLI
   advertises, `/config` among them. Some of those names open a dialog the
   CLI draws in a terminal; the name crosses and the surface does not, so a
   client that offers one is offering a command whose UI it cannot show.
 - **The dictation device catalog.** What crosses is the input a pick has
-  already moved this process to. The list of devices to pick from does
-  not: enumerating them is a blocking walk that trips a microphone check
-  on the machine running forge, and a client is usually a different
-  machine, whose own devices are the ones it would capture from.
+  already moved this process to. The list of devices to pick FROM does
+  not: enumerating them is a blocking walk that trips a microphone check,
+  and what it names is the machine it ran on rather than the session, so
+  it stays with whoever captures. A client enumerates its own; forge's own
+  list stays with the terminal it captures in.
+- **A live `accounts` read.** The home's account rows are the server's own
+  poller's answer, and no update announces a new one: the pool is written
+  with nothing emitted, so a subscriber's bars and loading state stand as
+  it read them until it subscribes again. It is scan-shaped like `usage`,
+  and the answer is the same - ask again rather than wait for a stream.
 - **Any rendering.** Glyphs, colours, weights, spacing, the order of a
   list and the label a row is spelled with are the client's. The test is
   whether removing a thing changes what the data IS or only how it is
   DRAWN.
-- **The client itself.** Nothing in the tree consumes this socket yet. The
-  one thing that speaks it is `forge-protocol-client` under
-  `crates/forge-server/src/bin/`, which is a test instrument: it is built
-  by a normal build and is not installed or shipped.
+- **A shipped client.** No installed binary consumes this socket. The two
+  things that speak it are test instruments: `forge-protocol-client` under
+  `crates/forge-server/src/bin/`, built by a normal build and neither
+  installed nor shipped, and the integration tests that open real clients
+  against a server they start themselves.
 
 ## Today
 

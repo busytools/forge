@@ -17,7 +17,8 @@ three things sharing a repository:
   from another machine is a `[web] bind` line rather than a second
   forge. A client subscribes to a subject - the home, a session, the
   token/cost pool - is answered with that subject in full and then with
-  the updates that change it, and acts through the same command bus the
+  the updates that change it (`usage` is the exception: it is a scan, and
+  is answered once per subscribe), and acts through the same command bus the
   terminal uses. The [socket page](./socket.md) is the protocol; the
   client itself does not exist yet, and `forge-web`, which served pages
   on that port until the socket took it, is parked until it is rebuilt

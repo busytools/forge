@@ -451,8 +451,11 @@ fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
-`[workers]`, `[projects.<name>]`, `[selection]` and `[ui]`. Anything
-else in those places is a typo and is refused.
+`[workers]`, `[projects.<name>]`, `[selection]` and `[ui]`. In the tables
+above a stray key is a typo and is refused; a ghost is the exception,
+because its whole job is to accept what a live config still carries - so
+what a retired section holds is unconstrained and only the section
+itself warns.
 
 `[ui]` is a ghost like the rest because dropping it as dead weight
 would refuse the boot of every config still carrying one - on a machine
