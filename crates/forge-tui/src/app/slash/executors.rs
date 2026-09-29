@@ -572,12 +572,9 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-/// `/spinner` - no arg shows the current style + the valid keys;
-/// `/spinner <name>` sets the active style live across every surface
-/// and persists it to the redb store (survives restart, layered over
-/// the forge.toml `[ui] spinner` default). Works from chat
-/// and the launchpad - no active session required. The no-arg picker
-/// overlay lands in the follow-up task.
+/// `/spinner` - no arg opens the style picker; `/spinner <name>` sets the
+/// style for this run. Works from chat and the launchpad - no active
+/// session required.
 fn handle_spinner_submit(app: &mut App, args: &[&str]) -> bool {
     use crate::ui::spinner_style::SpinnerStyle;
 

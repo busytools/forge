@@ -641,6 +641,46 @@ async fn two_sockets_on_one_seat_both_hear_it() {
     );
 }
 
+/// One unsubscribe on a seat that was subscribed twice: the other
+/// subscription stands. A `retain` - the natural simplification - drops every
+/// copy, so the client that asked twice and unsubscribed once stops hearing a
+/// seat it is still showing.
+#[tokio::test]
+async fn one_unsubscribe_leaves_the_seats_other_subscription() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+
+    for _ in 0..2 {
+        send(
+            &mut socket,
+            ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
+        )
+        .await;
+        let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
+            panic!("a seat that exists is answered with its snapshot")
+        };
+    }
+    send(&mut socket, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+    // A barrier, and the test is a race without it: the unsubscribe and the
+    // emit below are both in flight at once, so whichever the connection's
+    // select happens to take first decides the answer. Messages are handled in
+    // order, so the page's answer proves the unsubscribe was handled before
+    // the emit.
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 1 })
+        .await;
+    let ServerMessage::Page { .. } = next_server(&mut socket).await else {
+        panic!("the page is the barrier that proves the unsubscribe was handled")
+    };
+
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+
+    let msg = next_server(&mut socket).await;
+    assert!(
+        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        "the subscription the client still holds hears the seat it is showing: {msg:?}",
+    );
+}
+
 /// A subscription does not outlive its socket, which on a long-lived server
 /// is a subscription-shaped leak.
 #[tokio::test]

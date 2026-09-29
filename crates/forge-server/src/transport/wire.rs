@@ -238,9 +238,14 @@ pub struct SlackWire {
     pub subscriptions: Vec<SlackSubscription>,
 }
 
-/// Dictation's preflight state. The device catalog is absent for the same
-/// reason it is absent from the read: enumerating devices is a blocking walk
-/// that trips a microphone check, so it is asked for on demand.
+/// Dictation's preflight state.
+///
+/// **The device catalog is not here and nothing asks for it.** Enumerating
+/// devices is a blocking walk on the machine running forge, which trips a
+/// microphone check - and a client is usually another machine, whose own
+/// devices are the ones it would capture from. So the catalog stays with
+/// whoever does the capturing, and what crosses is the input a pick has
+/// already moved this process to, in `device` below.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DictateWire {

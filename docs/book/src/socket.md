@@ -184,6 +184,20 @@ the current numbers asks again by subscribing again.
   inventory nor the actions are here. Filed as its own piece of work.
 - **The emoji set.** Which shortcodes exist is the typeahead's own
   business, so a client carries its own set rather than being handed one.
+- **forge's own command table.** The commands forge handles itself, and
+  what each one does, are a set every client ships: they are the same
+  everywhere and change with the client, not with the server. A client's
+  composer carries its own copy, and the names it is offered on top of
+  that are the CLI's, from `slash_commands`.
+- **The CLI's own surfaces.** `slash_commands` carries the names the CLI
+  advertises, `/config` among them. Some of those names open a dialog the
+  CLI draws in a terminal; the name crosses and the surface does not, so a
+  client that offers one is offering a command whose UI it cannot show.
+- **The dictation device catalog.** What crosses is the input a pick has
+  already moved this process to. The list of devices to pick from does
+  not: enumerating them is a blocking walk that trips a microphone check
+  on the machine running forge, and a client is usually a different
+  machine, whose own devices are the ones it would capture from.
 - **Any rendering.** Glyphs, colours, weights, spacing, the order of a
   list and the label a row is spelled with are the client's. The test is
   whether removing a thing changes what the data IS or only how it is
