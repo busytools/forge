@@ -20,7 +20,7 @@ nothing to draw, and the client never falls back to bundled data.
 | Header | the brand mark, `forge`, the forge build serving the socket, the claude version, an update notice, and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `cli_version`; `agents` and `projects` counted |
 | Band | four cards: the gateway listener, the client's own address, dictation, and the account pool | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading` |
 | Org | one section per org, alphabetical, with a live and asleep count | `projects`, grouped by `org` |
-| Row | one per agent: its state mark, its name, where it is, what it is doing, and when it last wrote | `agents`, and the per-row reads on `projects` |
+| Row | one per agent: its state mark, its name, where it is, what it is doing, and when it last wrote | `agents`, with each row's task from `projects` |
 
 A row is the same five columns for a lead and for a worker, and a worker sits
 indented under its project. The name is the link rather than the row, because
@@ -33,12 +33,13 @@ own `package.json` version would name the wrong thing.
 
 **The row's `where` and `what` cells are its two variable columns.** `where`
 carries the branch the tree is on and how much has changed in it, from the
-project row's `work`; a count of zero draws nothing, because an unchanged
-tree is what the cell already means when it is empty. **That read is the
-lead's seat**, so only a lead's row draws it: a worker's `where` is empty
-rather than carrying the lead's tree under a worker's name, because a blank
-reads as missing where a plausible wrong branch reads as right. A worker's
-own tree is a change on the socket rather than on this page. `what` says one thing,
+ROW's own `work`, which is read at that seat's own directory: a worker's row
+draws its worktree's branch, and a lead's draws its project's. A count of zero
+draws nothing, because an unchanged tree is what the cell already means when
+it is empty. A seat forge holds no directory for draws the cell empty rather
+than borrowing another seat's tree - a despawned worker's label is the one
+that happens - and a project nobody has started draws the project's own read,
+which is the only row with no seat behind it. `what` says one thing,
 and the order it picks by is the order a reader needs them: what the seat is
 waiting on a person for, else the task it holds with that task's status chip
 and artifact, else why a spawn here would be refused, else why the tree could

@@ -88,6 +88,15 @@ export interface AgentRow {
   /** The seat's peer-coordination counters, which its activity badge draws. */
   peer: { outgoing: number; incoming: number; delivery_failed: number };
   peer_failure_at: WireTime | null;
+  /**
+   * The seat's OWN working tree, which is not the project's.
+   *
+   * A worker's is its worktree and the lead's is the project's path, so a
+   * row drawing `ProjectWire.work` instead names a different seat's branch.
+   * `null` is a seat forge holds no directory for - a despawned worker's
+   * label - and it draws nothing rather than borrowing the project's read.
+   */
+  work: WorkState | null;
 }
 
 /** One project in `forge.toml`, as the roster reports it. */

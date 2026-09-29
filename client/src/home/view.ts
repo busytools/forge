@@ -8,9 +8,11 @@
  * watching, and it would disagree silently.
  *
  * Every cell the server's own home draws is drawn from the snapshot. The
- * three things it used to leave empty - the per-row working tree, the task a
- * seat holds, and whether an account would bind - cross on `ProjectWire`, as
- * do the unseen marks and the forge version.
+ * three things it used to leave empty - the task a seat holds, whether an
+ * account would bind, and the schedules a project keeps - cross on
+ * `ProjectWire`, as do the unseen marks and the forge version. A row's own
+ * working tree crosses on the ROW, because a project has one read and a seat
+ * has its own.
  */
 
 import { displayAddress } from '../connect/attempt';
@@ -64,11 +66,11 @@ export interface Row {
   slot: { org: string; project: string; label: string };
   state: RowState;
   name: string;
-  /** The branch and the count, on the rows whose tree the snapshot carries. */
+  /** The branch and the count, from the seat's own tree. */
   place: { branch: string | null; files: string | null };
   /**
-   * Why the tree could not be read, or `null` when it could. It describes the
-   * project's own read, so the lead's row carries it and a worker's does not.
+   * Why the seat's tree could not be read, or `null` when it could or when
+   * forge holds no tree for the seat at all.
    */
   gate: string | null;
   task: TaskCell | null;
@@ -464,26 +466,21 @@ function taskFor(tasks: Task[], label: string): Task | null {
 /**
  * One agent's row, from the snapshot and nothing else.
  *
- * `place` and `gate` are passed rather than read, and only the lead's row is
- * handed them: the project's `work` is ONE read built from the lead's seat,
- * so drawing it on a worker's row names a different seat's branch. A blank
- * cell reads as missing; a plausible wrong branch name reads as right, which
- * is why the lead-only rule is worth more than the information it drops.
+ * `place` and `gate` come from the SEAT's own `work` and never the project's:
+ * `ProjectWire.work` is one read built from the lead's seat, so drawing it on
+ * a worker's row puts the project's branch under the worker's name - and
+ * `main` there reads as the worker's branch rather than as something missing.
+ * `null` is a seat forge holds no directory for, which draws the blank rather
+ * than borrowing a tree it is not in.
  */
-function rowOf(
-  agent: AgentRow,
-  name: string,
-  wire: ProjectWire,
-  unseen: SessionSlot[],
-  work: WorkState | null,
-): Row {
+function rowOf(agent: AgentRow, name: string, wire: ProjectWire, unseen: SessionSlot[]): Row {
   const held = taskFor(wire.tasks, agent.label);
   return {
     slot: agent.slot,
     state: stateOf(agent, unseen),
     name,
-    place: work === null ? { branch: null, files: null } : placeOf(work),
-    gate: work === null ? null : gateLine(work.gate),
+    place: agent.work === null ? { branch: null, files: null } : placeOf(agent.work),
+    gate: agent.work === null ? null : gateLine(agent.work.gate),
     task:
       held === null
         ? null
@@ -494,7 +491,13 @@ function rowOf(
   };
 }
 
-/** The row a project nobody has started gets. */
+/**
+ * The row a project nobody has started gets.
+ *
+ * The project's own read is the right one here and nowhere else: there is no
+ * seat to read a tree for, and the cell is filled for a project that has
+ * never run, which is the whole point of the project's own `work`.
+ */
 function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
   return {
     slot: { org: wire.project.org, project: wire.project.name, label: 'lead' },
@@ -538,12 +541,8 @@ export function homeView(wire: HomeWire, address: string): HomeView {
     const [head, ...rest] = rows;
     const started = head !== undefined;
     const lead =
-      head === undefined
-        ? dormantRow(row, lastRan)
-        : rowOf(head, project.name, row, wire.unseen, row.work);
-    // `null` for a worker: the project's work read is the lead's tree, and a
-    // worker's own crosses only once the socket carries one per seat.
-    const workers = rest.map((agent) => rowOf(agent, agent.label, row, wire.unseen, null));
+      head === undefined ? dormantRow(row, lastRan) : rowOf(head, project.name, row, wire.unseen);
+    const workers = rest.map((agent) => rowOf(agent, agent.label, row, wire.unseen));
 
     const section = orgs.find((org) => org.name === project.org);
     const entry = {

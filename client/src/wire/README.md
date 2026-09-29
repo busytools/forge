@@ -16,9 +16,11 @@ Taken from `busytools/forge` main at
 `73b8751a45722bb22c8f79d2fef893b0810ef026`, where the socket landed, from
 `crates/forge-server/tests/wire_fixtures/`:
 
-- `home.json` is blob `c79eaedb28fbaf419e37814dcd9e950fe69331c2`
+- `home.json` is blob `2f9254a3a85b826ab837d960e53dddbffc8ae113`
 - `session.json` is blob `9846d24ab9e628e8437ba8f251d5814fc1a4d532`
 - `usage.json` is blob `5b068cbab71cf6bf03767fecc3a4415d40fedeef`
+
+`home.json` has been re-synced since that commit. What moved is below.
 
 The copies are byte-identical to those blobs and `salvage.test.ts` fails if
 one drifts, which is what a formatter run did once and would again: `src/dev/fixtures/*.json`
@@ -27,7 +29,7 @@ is in `.prettierignore` for that reason.
 ## What moved since the first copy
 
 The first copy was taken while the server was still building the socket, and
-three things changed before it landed. Each is now drawn:
+these changed before it landed. Each is now drawn:
 
 - **A project row is nested.** `projects[]` entries are
   `{project, work, tasks, crons, would_bind, chip}` rather than a bare
@@ -45,6 +47,15 @@ three things changed before it landed. Each is now drawn:
 - Also: `agents[]` gained `peer` and `peer_failure_at`, `dictate` gained
   `enabled` and `device`, and `usage.json` is a third subject that no page
   in this slice draws.
+- **A seat's own working tree crosses on its row.** `agents[]` gained
+  `work`, the read of that seat's OWN directory - the worktree for a git
+  worker, the project's path for a lead - so a worker's row draws its own
+  branch rather than its project's, which is what `ProjectWire.work` states
+  and is the lead's seat whatever row it lands on. `null` is a seat forge
+  holds no directory for, and it draws the blank rather than borrowing one.
+  The fixture's fleet puts no session in a worktree, so what it pins is the
+  field and the `null` case; `a_workers_row_carries_its_own_tree_and_not_the_projects`
+  pins the populated one.
 
 `tasks` and `crons` are empty in the fixture, so their element shapes come
 from `crates/forge-server/src/transport/wire.rs` rather than from the file.

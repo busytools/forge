@@ -70,7 +70,7 @@ impl<T> From<std::result::Result<T, String>> for ReadWire<T> {
 #[serde(rename_all = "snake_case")]
 pub struct HomeWire {
     pub projects: Vec<ProjectWire>,
-    pub agents: Vec<AgentRow>,
+    pub agents: Vec<AgentWire>,
     /// The seats whose last turn finished while no client was showing them.
     ///
     /// The terminal draws a mark per row from this, and it is the fact a
@@ -114,7 +114,9 @@ pub struct ProjectWire {
     /// **Keyed by the project's LEAD slot, which exists for every declared
     /// project** whether or not a session has opened it, and read at the
     /// project's own path - so a row's cell is filled for a project nobody
-    /// has started, which is the whole point of the cell.
+    /// has started, which is the whole point of the cell. That is also why it
+    /// is not the read a SEAT draws: a worker's own tree is `AgentWire::work`,
+    /// and this one is the project's own path whichever seat is asking.
     ///
     /// This is the shared cache the transport holds, so several clients
     /// subscribing do not multiply git invocations: the cache is what makes
@@ -138,6 +140,55 @@ pub struct ProjectWire {
     /// enough to derive it from, so a client could draw the row and not the
     /// chip it carries.
     pub chip: Option<forge_workspace::SessionChipInfo>,
+}
+
+/// One seat's row: the surface's own [`AgentRow`], plus the read that is per
+/// SEAT rather than per project.
+///
+/// A home row is a seat, and its `where` cell is that seat's own working tree.
+/// `ProjectWire::work` cannot answer it - that read is the project's own path
+/// from the lead's seat - so a worker row drew the project's branch, and on a
+/// fleet with workers in worktrees that is eight rows reading `main`.
+///
+/// The fields are spelled out rather than the row being carried whole, so a
+/// field added to [`AgentRow`] has to be carried here deliberately rather than
+/// reaching a client by accident.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentWire {
+    pub slot: SessionSlot,
+    pub label: String,
+    pub lifecycle: forge_primitives::SessionLifecycleState,
+    pub has_background_work: bool,
+    pub pending: Option<forge_workspace::PendingInteractionKind>,
+    pub pending_depth: usize,
+    pub last_activity: Option<std::time::SystemTime>,
+    pub reason: Option<String>,
+    pub peer: forge_primitives::PeerInflightStats,
+    pub peer_failure_at: Option<std::time::SystemTime>,
+    /// The seat's own tree, `None` for a seat forge holds no directory for.
+    ///
+    /// Read through the same shared cache the project rows use, so a lead's
+    /// tree is one read drawn twice rather than two reads.
+    pub work: Option<WorkState>,
+}
+
+impl From<&AgentRow> for AgentWire {
+    fn from(row: &AgentRow) -> Self {
+        Self {
+            slot: row.slot.clone(),
+            label: row.label.clone(),
+            lifecycle: row.lifecycle,
+            has_background_work: row.has_background_work,
+            pending: row.pending,
+            pending_depth: row.pending_depth,
+            last_activity: row.last_activity,
+            reason: row.reason.clone(),
+            peer: row.peer.clone(),
+            peer_failure_at: row.peer_failure_at,
+            work: None,
+        }
+    }
 }
 
 /// The plugin inventory and its update records.
@@ -591,6 +642,19 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         });
     }
 
+    // Each seat's own tree, read at the directory `cwd_for` resolves FOR IT:
+    // the project's path for a lead, the worktree for a git worker. A seat
+    // forge holds no directory for keeps `None` rather than borrowing the
+    // project's read, which is what the cell's blank has to mean.
+    let mut agent_rows = Vec::with_capacity(agents.all().len());
+    for agent in agents.all() {
+        let work = match roster.cwd_for(&agent.slot) {
+            Some(cwd) => Some(state.work.snapshot(&agent.slot, cwd.as_path()).await),
+            None => None,
+        };
+        agent_rows.push(AgentWire { work, ..AgentWire::from(agent) });
+    }
+
     HomeWire {
         workers: roster
             .projects
@@ -650,7 +714,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         fatal_error: encode(
             surface.fatal_error().and_then(|error| serde_json::to_value(error).ok()),
         ),
-        agents: agents.all().to_vec(),
+        agents: agent_rows,
         unseen: {
             let live = crate::live::Live::lock(&state.live).snapshot();
             agents
@@ -1631,6 +1695,161 @@ mod tests {
 
         assert_eq!(crons.len(), 1, "the project's own cron reached the wire: {crons:?}");
         assert_eq!(crons[0]["prompt"], "a nightly sweep");
+    }
+
+    /// A worker's row draws ITS OWN working tree, not its project's.
+    ///
+    /// The home carried one `work` per project, read at the project's own path
+    /// from the lead's seat, so every worker row under it drew that branch and
+    /// that count. On a fleet with a worker in a worktree that is a plausible
+    /// wrong answer rather than an obviously missing one - `main` on a worker's
+    /// row reads as the worker's branch - which is why the client drew no
+    /// branch at all on a worker's row rather than another seat's.
+    #[tokio::test]
+    async fn a_workers_row_carries_its_own_tree_and_not_the_projects() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        // The trees go up BEFORE the fleet does. A project's registry key is
+        // derived from its path and the derivation canonicalises, so a key
+        // taken while the directory is absent is not the key taken once it is
+        // there - and a worker registered under the first is registered under
+        // one nothing looks up again.
+        let root = dir.join("proj");
+        let worktree = root.join(".claude/worktrees/w1");
+        repo_at(&root, "main", 1);
+        repo_at(&worktree, "worktree-em-dash-sweep", 2);
+
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet.add_git_worker("TestOrg", "proj", "w1").expect("the worker is added");
+
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        let rows = encoded["agents"].as_array().expect("the home carries agent rows");
+        let row_of = |label: &str| {
+            rows.iter().find(|row| row["label"] == label).expect("the seat has a row")
+        };
+
+        // The premise, so a row with no tree at all cannot pass as a row with
+        // the right one: the worker's seat resolves to its own worktree.
+        assert_eq!(
+            state
+                .surface
+                .roster()
+                .cwd_for(&SessionSlot::worker("TestOrg", "proj", "w1"))
+                .as_deref(),
+            Some(worktree.as_path()),
+            "precondition: the worker's own directory is the worktree",
+        );
+        assert_eq!(
+            row_of("lead")["work"]["branch"],
+            "main",
+            "the lead's row draws the project's own tree: {encoded}",
+        );
+        assert_eq!(row_of("lead")["work"]["changed"], 1, "with the count that tree has: {encoded}");
+        assert_eq!(
+            row_of("w1")["work"]["branch"],
+            "worktree-em-dash-sweep",
+            "and the worker's row draws its own, which the project's read cannot answer: \
+             {encoded}",
+        );
+        assert_eq!(
+            row_of("w1")["work"]["changed"],
+            2,
+            "with the worker's own count beside it: {encoded}",
+        );
+    }
+
+    /// A seat forge holds no directory for draws NO tree, rather than the
+    /// project's.
+    ///
+    /// The row is real: a despawned worker leaves its label behind and is
+    /// drawn until the label goes, and the registry has nothing to compose a
+    /// directory from. `None` is what says so, and the tempting repair - fall
+    /// back to `ProjectWire::work` so the cell is not blank - is the bug this
+    /// whole read exists to remove, one row narrower.
+    #[tokio::test]
+    async fn a_seat_with_no_directory_borrows_no_tree() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let root = dir.join("proj");
+        repo_at(&root, "main", 1);
+
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet.add_despawned_worker("proj", "gone").expect("the label is left behind");
+
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        let rows = encoded["agents"].as_array().expect("the home carries agent rows");
+        let row_of = |label: &str| {
+            rows.iter().find(|row| row["label"] == label).expect("the seat has a row")
+        };
+
+        assert_eq!(
+            state.surface.roster().cwd_for(&SessionSlot::worker("TestOrg", "proj", "gone")),
+            None,
+            "precondition: forge holds no directory for the despawned label",
+        );
+        assert_eq!(
+            row_of("gone")["work"],
+            Value::Null,
+            "so its row draws no tree rather than borrowing the project's: {encoded}",
+        );
+        assert_eq!(
+            row_of("lead")["work"]["branch"],
+            "main",
+            "while the project's own row still draws the project's tree: {encoded}",
+        );
+    }
+
+    /// A git repository at `dir` on `branch`, with `changed` uncommitted files.
+    ///
+    /// `.claude/` is ignored so a worker's worktree, nested inside the
+    /// project, does not land in the project's own count as an untracked
+    /// directory.
+    fn repo_at(dir: &Path, branch: &str, changed: usize) {
+        std::fs::create_dir_all(dir).expect("mkdir");
+        git(dir, &["init", "-q"]);
+        git(dir, &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")]);
+        git(dir, &["config", "user.email", "t@e.com"]);
+        git(dir, &["config", "user.name", "T"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join(".gitignore"), ".claude/\n").expect("write");
+        std::fs::write(dir.join("tracked.txt"), "one\n").expect("write");
+        git(dir, &["add", ".gitignore", "tracked.txt"]);
+        git(dir, &["commit", "-qm", "init"]);
+        for file in 0..changed {
+            std::fs::write(dir.join(format!("changed-{file}.txt")), "x\n").expect("write");
+        }
+    }
+
+    /// Spawn git with the ambient repo-location variables scrubbed, as the
+    /// product's own constructor does: a fixture that skipped it would answer
+    /// about a foreign repository when the suite runs under a git hook.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
     /// A seat with nothing behind it has no tree to walk, and what it holds is

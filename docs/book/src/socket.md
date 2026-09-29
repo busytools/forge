@@ -164,8 +164,8 @@ facts a row is drawn from.
 
 | Field | What it is |
 |---|---|
-| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate), `tasks`, `crons`, `would_bind`, and `chip` - the account the row binds and its state. |
-| `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, and the seat's peer-coordination counters - the numbers its activity badge is drawn from. |
+| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `tasks`, `crons`, `would_bind`, and `chip` - the account the row binds and its state. |
+| `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, the seat's peer-coordination counters - the numbers its activity badge is drawn from - and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project. |
 | `unseen` | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it. |
 | `accounts` | Loading state per account, whether all of them settled, the gateway listener's ready state and port, each account's cached usage snapshot, and the org views with budget and unusable reasons. |
 | `plugins` | Every remembered plugin update, latest write per installed entry. |
