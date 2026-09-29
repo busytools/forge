@@ -13,14 +13,24 @@
  * memory, it is an app with no page at all.
  */
 
+import { report } from '../socket';
+
 /** Where the webview keeps it. */
 const KEY = 'forge.address';
 
-/** The webview's own store, or `null` where there is not one. */
+/**
+ * The webview's own store, or `null` where there is not one.
+ *
+ * Reaching the store is its own step and the one most likely to be refused:
+ * with site data blocked the GETTER throws, so the store is never reached and
+ * both callers fall through their `?.`. A guard that swallowed that silently
+ * would leave exactly the state this module exists to avoid.
+ */
 function webview(): Storage | null {
   try {
     return globalThis.localStorage ?? null;
-  } catch {
+  } catch (why) {
+    report('could not reach the webview store', why);
     return null;
   }
 }
@@ -36,7 +46,7 @@ export function rememberedAddress(): string | null {
   try {
     return webview()?.getItem(KEY) ?? null;
   } catch (why) {
-    say('could not read the remembered address', why);
+    report('could not read the remembered address', why);
     return null;
   }
 }
@@ -54,16 +64,6 @@ export function rememberAddress(address: string): void {
   try {
     webview()?.setItem(KEY, address);
   } catch (why) {
-    say('could not remember the address', why);
+    report('could not remember the address', why);
   }
-}
-
-/**
- * Say so on the console, which is the client's only channel of its own.
- *
- * Deliberately not a logging framework: what it reports is a fact a reader of
- * the console can act on, and the alternative is silence.
- */
-function say(what: string, why: unknown): void {
-  console.warn(`forge client: ${what}`, why);
 }

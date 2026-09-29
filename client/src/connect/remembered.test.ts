@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { rememberedAddress, rememberAddress } from './remembered';
 
 /**
- * A webview whose store refuses every call, which is what one with storage
- * turned off does - it throws on the call rather than answering empty.
+ * A webview whose store refuses every call, by throwing on it rather than
+ * answering empty.
  */
 function refusingStore(): void {
   const refuse = () => {
@@ -14,6 +14,27 @@ function refusingStore(): void {
     configurable: true,
     value: { getItem: refuse, setItem: refuse },
   });
+}
+
+/**
+ * A webview that will not hand the store over at all.
+ *
+ * The other shape, and the one browsers actually produce: with site data
+ * blocked the GETTER throws, so the store is never reached and both callers
+ * fall through their `?.` unless the guard itself says something.
+ */
+function refusingGetter(): void {
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get() {
+      throw new Error('site data is blocked');
+    },
+  });
+}
+
+/** The console line the guard leaves, if it leaves one. */
+function watchTheConsole() {
+  return vi.spyOn(console, 'warn').mockImplementation(() => {});
 }
 
 afterEach(() => {
@@ -29,8 +50,10 @@ describe('a webview that will not keep the address', () => {
    */
   it('answers nothing rather than throwing when the store refuses to be read', () => {
     refusingStore();
+    const warn = watchTheConsole();
 
     expect(rememberedAddress(), 'a refused read took the app down with it').toBeNull();
+    expect(warn, 'a refused read was recorded nowhere').toHaveBeenCalled();
   });
 
   /**
@@ -41,11 +64,24 @@ describe('a webview that will not keep the address', () => {
    */
   it('says so when the store refuses to keep the address', () => {
     refusingStore();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = watchTheConsole();
 
     expect(() => {
       rememberAddress('127.0.0.1:8790');
     }, 'a refused write took the app down with it').not.toThrow();
     expect(warn, 'a refused write was recorded nowhere').toHaveBeenCalled();
+  });
+
+  /**
+   * Reaching the store is its own step, and the one most likely to be
+   * refused. A guard that swallows it silently leaves exactly the state this
+   * module exists to avoid: an app that forgets and never says why.
+   */
+  it('says so when the store cannot be reached at all', () => {
+    refusingGetter();
+    const warn = watchTheConsole();
+
+    expect(rememberedAddress(), 'a refused getter took the app down with it').toBeNull();
+    expect(warn, 'a store that could not be reached was recorded nowhere').toHaveBeenCalled();
   });
 });
