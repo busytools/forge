@@ -280,7 +280,15 @@ describe('the box', () => {
         'the CLI exited with status 1',
       ],
       [
-        { seat: seatRead({ waking: true, reason: 'no session has been started here' }) },
+        // The shape the session page actually hands over for a seat nothing has
+        // started: no roster row, so no lifecycle and `waking` true together.
+        {
+          seat: seatRead({
+            lifecycle: null,
+            waking: true,
+            reason: 'no session has been started here',
+          }),
+        },
         'not running',
         'no session has been started here',
       ],

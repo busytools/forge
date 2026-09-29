@@ -24,7 +24,13 @@ import { askFrom, composerFrom, type Ask, type ComposerState, type Notice } from
  * failing or on its way out - a boolean cannot tell a spawn from a failure.
  */
 export interface SeatRead {
-  lifecycle: Lifecycle;
+  /**
+   * The core's lifecycle, or `null` for a seat the roster does not name.
+   *
+   * Null and `waking` say the same thing from two sides, and this component
+   * treats them as one state rather than letting two fields disagree about it.
+   */
+  lifecycle: Lifecycle | null;
   reason: string | null;
   /** The roster names no row for this seat, so nothing is running behind it. */
   waking: boolean;
@@ -148,7 +154,14 @@ export function blocked(
       waiting: false,
     };
   }
-  if (seat.waking || seat.lifecycle === 'Sleeping' || seat.lifecycle === 'LoggedOut') {
+  // A seat with no lifecycle is one nothing has started, which is the same
+  // state `waking` names - so the two cannot draw different reasons for it.
+  if (
+    seat.waking ||
+    seat.lifecycle === null ||
+    seat.lifecycle === 'Sleeping' ||
+    seat.lifecycle === 'LoggedOut'
+  ) {
     return {
       line: 'not running',
       sub: seat.reason ?? 'this seat has no session behind it',

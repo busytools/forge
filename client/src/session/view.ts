@@ -237,6 +237,14 @@ export interface SeatState {
   lifecycle: Lifecycle | null;
   /** Why it is not running, when the roster says. */
   reason: string | null;
+  /**
+   * How many prompts this seat is holding, the one on screen included.
+   *
+   * The composer's dock states how many wait behind the prompt it draws, and
+   * the count is the core's: a view that kept its own queue would be a second
+   * decider about a queue the core arbitrates.
+   */
+  pendingDepth: number;
   mark: string;
   /** What the header calls the seat: a lead is its project, a worker its label. */
   name: string;
@@ -261,6 +269,9 @@ export function seatState(home: HomeWire, slot: SessionSlot): SeatState {
     waking: row === undefined,
     lifecycle: row?.lifecycle ?? null,
     reason: row?.reason ?? null,
+    // A seat the roster does not name is holding nothing, so the count is the
+    // one prompt the composer may be drawing rather than zero.
+    pendingDepth: row?.pending_depth ?? 1,
     mark: railMark(row === undefined ? { kind: 'never-started' } : stateOf(row, home.unseen)),
     // A lead's row is its project, the way the home names it; a worker's is
     // its own label.
