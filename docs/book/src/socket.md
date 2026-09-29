@@ -76,15 +76,20 @@ made of is the server's business. `null` means there is nothing above the
 page it came with, and that is where a walk backwards ends.
 
 **`command {command, reply_to?}`** - any of the core's own commands, as
-the core's own enum. For most of them `reply_to` is optional: omit it and
-the command is fire-and-forget, because its effect arrives through the
+the core's own enum. For most of them `reply_to` is set to nothing: the
+command is fire-and-forget, because its effect arrives through the
 subscription, which is why a client subscribes before it acts.
 
-**Four commands require it**: a worker spawn, a despawn, and the review
-pair. Their outcome rides the reply and no update carries it, so a client
-that omitted `reply_to` would not be declining a reply - it would be
-declining to learn whether the work happened. Omitting it is refused, with
-a sentence naming the field.
+**`reply_to` is required on exactly four of them**: a worker spawn, a
+despawn, and the review pair. Their outcome rides the reply and no update
+carries it, so a client that omitted `reply_to` would not be declining a
+reply - it would be declining to learn whether the work happened.
+
+**Both mismatches are refused, with a sentence naming the field**, and
+refused before the command runs: a required field left off, and a
+`reply_to` set on a command that has no reply to send. The second matters
+for the same reason the first does - a client that set it is waiting on a
+channel nothing will ever come down.
 
 **Each of the four answers with its own type**: a spawn with a
 worker-spawn reply, a despawn with a despawn result, and the review pair

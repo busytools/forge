@@ -416,6 +416,34 @@ async fn a_command_that_answers_through_a_reply_requires_reply_to() {
     assert!(why.contains("reply_to"), "and says which field in the sentence: {why}");
 }
 
+/// The other half of the same rule: a `reply_to` on a command that does not
+/// answer through one. Nothing comes down the reply for it - the outcome
+/// rides the subscription - so the field is refused rather than accepted and
+/// ignored, and refused BEFORE dispatch, because a command that both acted
+/// and answered nothing is the case a client cannot tell from success.
+#[tokio::test]
+async fn a_reply_to_on_a_command_that_has_no_reply_is_refused() {
+    let (url, fleet) = a_server().await;
+    fleet.intercept_dispatch();
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::Cancel { key: lead_seat() }),
+            reply_to: Some(7),
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+        panic!("a client that asked for an answer has to hear one");
+    };
+    assert_eq!(what, "reply_to", "the refusal names the field: {why}");
+    assert!(why.contains("reply_to"), "and says which field in the sentence: {why}");
+    assert!(fleet.dispatched().is_empty(), "a refused command must not run behind the refusal");
+}
+
 /// Answering a prompt that is not waiting - already answered on another
 /// client, or a prompt of another kind - is a click on a dock that is gone.
 /// The core used to log it and report `Ok(())`, so the socket sent nothing and

@@ -216,7 +216,9 @@ async fn handle_client(
             // them, so omitting `reply_to` on one of those is not a client
             // declining a reply - it is a client declining to learn whether
             // the work happened. Every other command is fire-and-forget: its
-            // outcome rides the subscription, so it needs no target.
+            // outcome rides the subscription, so it has no reply to set - and a
+            // client that set one anyway is watching a channel nothing will
+            // come down, which is refused rather than ignored.
             match (reply_to, answers_through_a_reply(&command)) {
                 (Some(to), true) => dispatch_answering(socket, state, command, to).await,
                 (None, true) => {
@@ -229,7 +231,20 @@ async fn handle_client(
                     )
                     .await
                 }
-                (_, false) => match state.surface.dispatch(command) {
+                // Refused BEFORE dispatch, because a command that both acted
+                // and answered nothing is the case a client cannot tell from
+                // success.
+                (Some(_), false) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "reply_to".to_owned(),
+                            why: "this command's outcome rides the subscription rather than a reply, so it is sent without `reply_to`: there is no message a reply for it would carry".to_owned(),
+                        },
+                    )
+                    .await
+                }
+                (None, false) => match state.surface.dispatch(command) {
                     Ok(()) => Ok(()),
                     Err(refusal) => {
                         send(
