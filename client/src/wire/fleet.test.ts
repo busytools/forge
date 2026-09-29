@@ -10,14 +10,26 @@ import { fleetNews } from './fleet';
  * The variant names the server's own `fleet_news` puts in one of its arms,
  * read out of `live.rs`.
  *
- * This file is a mirror of that function and the failure it risks is the
+ * This file is a mirror of that function, and the failure it risks is the
  * server putting a variant in an arm this table does not know: the variant
  * draws, this calls it `nothing`, and the home stops following it with
  * nothing to report that it has. **No fixture can catch that** - the
  * classification is Rust code and never crosses the wire - so the arms are
- * read from the source instead. What it still cannot see is a variant the
- * server MOVES between arms, or one it adds inside the `chat_appended` arm,
- * where the decision is a frame's own fields rather than a variant's name.
+ * read from the source instead.
+ *
+ * **The read assumes a shape, and changing it means re-checking this rather
+ * than trusting a green:** the function is still `fleet_news` in `live.rs`;
+ * its arms are still named `FleetNews::Redraw` and `FleetNews::Occupant`;
+ * each is still written `A | B => Answer`, so the variant names sit in the
+ * clause before the arrow and the answer begins the clause after it; and the
+ * names are still spelled `SessionUpdate::Name`. An arm rewritten as
+ * `=> { FleetNews::Redraw }`, or one reaching a variant through a wildcard,
+ * reads as nothing, which the emptiness control below catches. A reshuffle
+ * that still matches reads as a wrong answer, which nothing catches.
+ *
+ * Neither this nor the control can see a variant the server MOVES between
+ * arms, or one it adds inside the `chat_appended` arm, where the decision is
+ * a frame's own fields rather than a variant's name.
  */
 function serverArms(arm: 'Redraw' | 'Occupant'): string[] {
   const source = readFileSync(
