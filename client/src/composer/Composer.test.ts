@@ -475,6 +475,50 @@ describe('the dock', () => {
     ).toEqual([false, true, false]);
   });
 
+  it('answers from Enter on a focused row, rather than only toggling it', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    const row = options()[0];
+    if (!(row instanceof HTMLElement)) throw new Error('the dock drew no options');
+    row.focus();
+    flushSync();
+
+    press('Enter');
+
+    expect(
+      harness.sent.map((entry) => entry.command),
+      'the keys line says Enter submits, and the row is where the keyboard is',
+    ).toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: { outcome: 'answered', selected_option_ids: ['q-staging'], annotation: null },
+        },
+      },
+    ]);
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'Enter answers rather than toggling',
+    ).toEqual([false, false, false]);
+  });
+
+  it('opens the own-words field rather than rejecting when Enter lands there with nothing said', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.focus();
+    flushSync();
+
+    press('Enter');
+
+    expect(harness.sent, 'nothing said is not an answer, and not a rejection').toEqual([]);
+    expect(document.activeElement, 'so the row hands over the field to write in').toBe(
+      document.querySelector('.dock textarea.notes'),
+    );
+  });
+
   it('moves the mark back out of the own-words field, so the options are reachable again', () => {
     const harness = open({ record: record({ pending_ask: questionAsk() }) });
     const list = document.querySelector('.dock [role="listbox"]');

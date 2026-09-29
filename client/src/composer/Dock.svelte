@@ -208,6 +208,15 @@
     }
 
     if (ask.kind !== 'question') return;
+    const empty = words === null && (!multi || toggled.length === 0) && row.optionId === null;
+    if (empty) {
+      // The own-words row asks for words, and Enter on it with nothing said has
+      // no answer to send - sending one rejects the question on the reader's
+      // behalf, which is the defect the permission's own-words guard closes one
+      // branch up. It opens the field instead, the same as clicking it does.
+      if (field !== null) field.focus();
+      return;
+    }
     // A multi-select question carries every row that is on, and the marked one
     // when nothing is: submitting a set the reader never saw is worse than
     // submitting the row their key is on.
@@ -218,12 +227,11 @@
       respond_question: {
         key: slot,
         tool_id: toolId,
-        // Nothing chosen and nothing said is not an answer, it is a rejection -
-        // the terminal's own rule, kept here so the core is told which it was.
-        outcome:
-          ids.length === 0 && annotation === null
-            ? { outcome: 'cancelled' }
-            : { outcome: 'answered', selected_option_ids: ids, annotation },
+        // Every answer from here carries something - a row, a set, or words -
+        // because the empty case above is not an answer. A question has no
+        // reject in this dock: the terminal's Escape does that, and Escape
+        // here belongs to a take and then to a permission.
+        outcome: { outcome: 'answered', selected_option_ids: ids, annotation },
       },
     });
   }
@@ -401,16 +409,14 @@
             // same key also reaches the listbox's branch behind it and either
             // undoes the toggle or submits what this just chose.
             //
-            // What it does with them is what the keys line promises, which is
-            // the listbox's own rule: Space toggles, Enter submits. Arrows and
-            // Escape still bubble, because those belong to the listbox.
+            // What it does with them is NOT restated here - it reaches the same
+            // handler the listbox uses, which is the only place the key map
+            // lives. Two statements of it disagree the moment one is edited,
+            // and this one already did. Arrows and Escape still bubble, because
+            // those belong to the listbox and are not this row's to take.
             event.stopPropagation();
             marked = at;
-            if (key === ' ') {
-              toggle();
-              return;
-            }
-            submit();
+            onkey(event);
           }}
         >
           {#if row.icon !== null}
