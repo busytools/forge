@@ -35,14 +35,21 @@ function endOfSequence(text: string, at: number): number {
   const next = text.charCodeAt(at + 1);
   if (Number.isNaN(next)) return text.length;
 
-  // A STRING CONTROL carries a payload and ends at a bell or a string
-  // terminator: OSC `]` (a window title, a hyperlink, a notification), DCS
-  // `P`, SOS `X`, PM `^` and APC `_`. Five introducers, one shape, and the
-  // payload is never text.
+  // A STRING CONTROL carries a payload: OSC `]` (a window title, a hyperlink, a
+  // notification), DCS `P`, SOS `X`, PM `^` and APC `_`. Five introducers, and
+  // the payload is never text.
   //
-  // The four beyond OSC are what a device answers with - a terminal
-  // capability query, a graphics payload - and reading them as the escape and
-  // one character puts `q~xyz` on the page where a terminal drew nothing.
+  // The four beyond OSC are what a device answers with - a terminal capability
+  // query, a graphics payload - and reading them as the escape and one
+  // character puts `q~xyz` on the page where a terminal drew nothing.
+  //
+  // **One arm serves all five, and that is a deliberate simplification.**
+  // Strictly, only OSC ends at a bell; the other four end at a string
+  // terminator alone (ECMA-48, and xterm agrees). So a bell inside a DCS
+  // payload cuts it there and its tail prints as text - narrow, and the same
+  // simplification the terminal's own copy carries, which is the property
+  // worth more here than the four bytes: two strippers that disagree about
+  // what to strip are two pages that draw the same conversation differently.
   if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
     for (let scan = at + 2; scan < text.length; scan += 1) {
       const code = text.charCodeAt(scan);

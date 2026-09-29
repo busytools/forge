@@ -234,8 +234,7 @@ export class Chat {
     // Nothing above the page already drawn is the server's own `null`, and
     // asking again on it would walk the same page forever.
     if (!loaded || cursor === null || this.inFlight !== null) return false;
-    this.ask(cursor);
-    return true;
+    return this.ask(cursor);
   }
 
   /** Ask for the newest page again, which is what replaces a settled turn. */
@@ -252,12 +251,15 @@ export class Chat {
     return get(this.inner);
   }
 
-  private ask(before: string | null): void {
-    if (this.inFlight !== null) return;
+  private ask(before: string | null): boolean {
+    if (this.inFlight !== null) return false;
     this.inFlight = before === null ? 'newest' : 'older';
     // A closed socket answers nothing, so the flag must not stay set waiting
-    // on a page that was never asked for.
-    if (!this.connection.more(this.slot, before, MORE_TURNS)) this.inFlight = null;
+    // on a page that was never asked for - and the caller has to know, because
+    // what it does with the answer is hold a reader's place while it arrives.
+    if (this.connection.more(this.slot, before, MORE_TURNS)) return true;
+    this.inFlight = null;
+    return false;
   }
 
   private receive(message: ServerMessage): void {

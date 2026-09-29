@@ -46,16 +46,23 @@
   let working: Chat | null = null;
   let first = true;
   /**
-   * Whether the list should hold its scroll position from the end.
+   * Pages of older turns asked for and not yet answered.
    *
-   * **Only while older turns are arriving**, which is the case the
-   * compensation is written for. `virtua` moves the offset by the height of
-   * whatever was added, and it does that for ANY addition: with it on, a turn
-   * arriving below a reader who has scrolled up moves them by that row's
-   * height, which is the one thing this page must not do. So it goes on for
-   * the prepend and comes off again once the list has taken it.
+   * **Counted rather than flagged, and armed by the ASK.** The compensation
+   * has to be on while a prepend lands and off for everything else, and both
+   * halves of that are edges: an ask the socket refused must not arm it at
+   * all, and a second ask still in flight must not be disarmed by the first
+   * page landing. One flag cannot tell those apart from the ordinary case.
    */
-  let shift = $state(false);
+  let outstanding = $state(0);
+  /** Whether the last prepend has landed but the list has not taken it yet. */
+  let settling = $state(false);
+  /** The prepend count this component has already accounted for. */
+  let accounted = 0;
+  /** The tick a settling compensation waits on, held so a later one can replace it. */
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const shift = $derived(outstanding > 0 || settling);
 
   $effect(() => {
     const chat = new Chat(connection, slot);
@@ -80,15 +87,31 @@
     list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
   });
 
-  // The compensation goes ON when the ask goes out, which `loadOlder` does, and
-  // comes off here: the tick after a prepend lands, the list has taken the rows,
-  // and leaving it on would make the next arriving turn move the reader.
+  // A page landing settles one ask, and the last one leaves the compensation on
+  // for one more tick: `virtua` applies it as the rows change, so a page that
+  // dropped it in the same update would be disarming before the change it was
+  // armed for.
   $effect(() => {
-    if (held.prepends === 0) return;
-    const timer = setTimeout(() => {
-      shift = false;
+    const now = held.prepends;
+    if (now === accounted) return;
+    accounted = now;
+    outstanding = Math.max(0, outstanding - 1);
+    settling = true;
+    // Held in a variable rather than returned as this effect's cleanup: the
+    // effect re-runs on EVERY update - `held` is a store read, so each one
+    // hands over a new object - and a returned cleanup is run before each
+    // re-run, which would cancel this timer on the next frame that arrived.
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      settling = false;
+      timer = null;
     }, 0);
-    return () => clearTimeout(timer);
+  });
+
+  // The timer goes with the column, which is the one thing the effect above
+  // cannot do for itself.
+  $effect(() => () => {
+    if (timer !== null) clearTimeout(timer);
   });
 
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
@@ -111,13 +134,20 @@
   /**
    * Ask for the turns above, holding the reader's place while they arrive.
    *
-   * The compensation is switched on as the ask goes out rather than when the
-   * answer lands, because the list applies it AS the rows change: a page that
-   * waited for the answer would be switching it on after the change it exists
-   * for, which is a prepend that moves everything the reader is looking at.
+   * The compensation is armed as the ask goes out rather than when the answer
+   * lands, because the list applies it AS the rows change: a page that waited
+   * for the answer would be arming after the change it exists for, which is a
+   * prepend that moves everything the reader is looking at.
+   *
+   * **And only when an ask actually went.** A socket that is down refuses the
+   * ask without sending anything, so arming on the call rather than on its
+   * answer leaves the compensation on with nothing coming - and the next turn
+   * appended below the reader then goes through the prepend path, which moves
+   * them AND leaves the list's measured sizes attributed to the wrong rows.
    */
   function loadOlder(): void {
-    if (working?.older() === true) shift = true;
+    if (working?.older() !== true) return;
+    outstanding += 1;
   }
 </script>
 
