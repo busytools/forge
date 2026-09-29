@@ -269,20 +269,24 @@
   .children { list-style: none; }
   .children > .node { position: relative; }
 
-  /* Two pieces that meet on the lead's row boundary: the lead's half runs
-     from its own mark to the bottom of its row, and each worker's runs
-     from the top of its <li> to its own mark, so the run ends there. A
-     worker's half is measured on the <li>, not the row, which is what
-     carries it across the 1px row separator sitting inside the <li>. The
-     lead's half keys on :has(> .children), so no class is needed in the
-     markup - and that is the one piece a browser without :has() drops. */
+  /* Three pieces that meet on the lead's row boundary: the lead's half runs
+     from its own mark to the bottom of its row, a worker's runs from the top
+     of its <li> to its own mark, and every worker but the last continues
+     from its own mark to the bottom of its row, so the run is unbroken and
+     ends on the last mark rather than at every mark on the way. A worker's
+     two pieces are measured on the <li>, not the row, which is what carries
+     them across the 1px row separator sitting inside the <li>. The lead's
+     half keys on :has(> .children), so no class is needed in the markup -
+     and that is the one piece a browser without :has() drops. */
   .children > .node::before,
-  .node:has(> .children) > .row::before {
+  .node:has(> .children) > .row::before,
+  .children > .node:not(:last-child)::after {
     content: ""; position: absolute; left: var(--spine-x);
     width: 1px; background: var(--line);
   }
   .children > .node::before { top: 0; bottom: 50%; }
   .node:has(> .children) > .row::before { top: 50%; bottom: 0; }
+  .children > .node:not(:last-child)::after { top: 50%; bottom: -1px; }
 
   .note {
     font-family: var(--mono); font-size: 11.5px; color: var(--bad);
@@ -314,11 +318,13 @@
        mark to the same 8px a 13px one does. Where it ends changes. A
        narrow row wraps to three lines, so the mark sits on the first of
        them rather than at the row's middle, and a piece measured to 50%
-       of the row would run two lines past its own mark. Both pieces are
-       measured from the top instead: 21px for the lead's, and 22px for a
-       worker's, whose <li> carries the 1px row separator above the row. */
+       of the row would run two lines past its own mark. All three pieces
+       are measured from the top instead: 21px for the lead's, and 22px
+       for a worker's own two, whose <li> carries the 1px row separator
+       above the row. */
     .children > .node::before { top: 0; bottom: calc(100% - 22px); }
     .node:has(> .children) > .row::before { top: 21px; bottom: 0; }
+    .children > .node:not(:last-child)::after { top: 22px; }
   }
 
   /* ---------- states reference ---------- */
