@@ -66,6 +66,11 @@ async function until(check: () => boolean, what: string) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+/** Give anything already in flight a chance to arrive, for an absence to assert. */
+async function settle() {
+  await new Promise((resolve) => setTimeout(resolve, 80));
+}
+
 const HOME: Subject = 'home';
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
@@ -90,21 +95,24 @@ describe('the connection', () => {
   /**
    * A store holds the snapshot it was answered with AND the updates that
    * followed, because a view redraws from either: the snapshot is the whole
-   * subject and an update is one change to it.
+   * subject and an update is one change to it. Both updates, in order - a
+   * store that replaced would hold one and read as complete.
    */
   it('holds a snapshot per subject and appends the updates that follow', async () => {
     const { server, conn } = await connected();
-
     conn.subscribe(HOME);
     await until(() => server.received.length === 1, 'the subscribe to arrive');
+
     server.send({ kind: 'snapshot', subject: HOME, data: { projects: [] } });
-    // A unit variant crosses as its name alone, not as a `kind` field.
+    // Unit variants cross as their name alone, not as a `kind` field.
     server.send({ kind: 'update', update: 'catalog_loaded' });
+    server.send({ kind: 'update', update: 'cli_version_changed' });
 
     const store = conn.store(HOME);
-    await until(() => store?.snapshot() !== null, 'the snapshot to land');
+    await until(() => (store?.updates().length ?? 0) === 2, 'both updates');
     expect(store?.snapshot()).toEqual({ projects: [] });
-    expect(store?.updates()).toHaveLength(1);
+    expect(store?.updates()).toEqual(['catalog_loaded', 'cli_version_changed']);
+    expect(store?.state()).toEqual({ kind: 'ready' });
   });
 
   /**
@@ -126,8 +134,25 @@ describe('the connection', () => {
     expect(server.received[1]).toEqual({ kind: 'subscribe', what: 'usage', answering: false });
   });
 
+  /**
+   * The app's first move: `connect` returns before the socket is up, so a
+   * subscribe made in that window reached no server and has to be replayed
+   * when one answers. Recording it only once open would drop it entirely.
+   */
+  it('asks for a subject subscribed before the socket opened', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const conn = connect(server.url);
+    opened.push(conn);
+    expect(conn.status()).toBe('connecting');
+
+    conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+    expect(server.received[0]).toEqual({ kind: 'subscribe', what: HOME, answering: false });
+  });
+
   /** The greeting is what configures the client before it draws anything. */
-  it('keeps the settings the greeting carried', async () => {
+  it('keeps the settings and the version the greeting carried', async () => {
     const { server, conn } = await connected();
 
     server.send({
@@ -137,6 +162,7 @@ describe('the connection', () => {
     });
     await until(() => conn.settings() !== null, 'the greeting to land');
     expect(conn.settings()).toEqual({ mark: 'klin', theme: null, font: null });
+    expect(conn.version()).toBe(1);
   });
 
   /**
@@ -147,38 +173,56 @@ describe('the connection', () => {
    * Which of the two envelope shapes it takes is the client's to decide, not
    * the caller's, because the server refuses both mismatches - and it refuses
    * them before dispatching, so getting this wrong is a command that silently
-   * never runs rather than one that reports an error.
+   * never runs rather than one that reports an error. All four of the names
+   * are dispatched, because a name that fell out of the set would show up as
+   * a command sent with no reply channel at all.
    */
   it('sets reply_to from the command, and only for the four that answer', async () => {
     const { server, conn } = await connected();
 
-    const cancel = conn.dispatch({ cancel: { key: LEAD } });
-    const spawn = conn.dispatch({ spawn_worker: { project_key: 'proj', label: 'w1' } });
-    const despawn = conn.dispatch({
-      despawn_worker: { project_key: 'proj', label: 'w1', force: false },
-    });
-    await until(() => server.received.length === 3, 'all three commands');
+    const plain = [
+      conn.dispatch({ cancel: { key: LEAD } }),
+      conn.dispatch({ set_mode: { key: LEAD, mode: 'default' } }),
+    ];
+    const asks = [
+      conn.dispatch({ spawn_worker: { project_key: 'proj', label: 'w1' } }),
+      conn.dispatch({ despawn_worker: { project_key: 'proj', label: 'w1', force: false } }),
+      conn.dispatch({ upsert_review_thread: { project: 'proj', branch: 'main' } }),
+      conn.dispatch({ submit_review: { project: 'proj', branch: 'main' } }),
+    ];
+    await until(() => commands(server.received).length === 6, 'all six commands');
 
-    const [sentCancel, sentSpawn, sentDespawn] = commands(server.received);
-    expect(sentCancel).toMatchObject({ command: { cancel: { key: LEAD } }, reply_to: null });
-    expect(sentSpawn).toMatchObject({ command: { spawn_worker: { project_key: 'proj' } } });
-    expect(sentDespawn).toMatchObject({ command: { despawn_worker: { label: 'w1' } } });
-    // Only the four answer, so only they hand back something to await.
-    expect(cancel).toBeNull();
-    expect(typeof sentSpawn?.reply_to).toBe('number');
-    // Two asks are two channels: one id would hand a caller someone else's answer.
-    expect(sentDespawn?.reply_to).not.toEqual(sentSpawn?.reply_to);
+    const sent = commands(server.received);
+    expect(plain).toEqual([null, null]);
+    expect(sent.slice(0, 2).map((command) => command.reply_to)).toEqual([null, null]);
 
-    // Nothing here answers the two, and a connection that closes rejects what
-    // it was still holding - settled rather than left to reject unhandled.
+    const ids = sent.slice(2).map((command) => command.reply_to);
+    for (const id of ids) expect(typeof id).toBe('number');
+    // Four asks, four channels: a shared id hands a caller another's answer.
+    expect(new Set(ids).size).toBe(4);
+
+    // Nothing here answers them, so they are settled rather than left to
+    // reject unhandled when the connection closes.
     conn.close();
-    await Promise.allSettled([spawn, despawn]);
+    await Promise.allSettled(asks.filter((ask) => ask !== null));
+  });
+
+  /** A command the server never hears is a command that never ran, and nothing else says so. */
+  it('refuses a command and a page-ask rather than send them nowhere', async () => {
+    const { conn } = await connected();
+    conn.close();
+
+    expect(() => conn.dispatch({ cancel: { key: LEAD } })).toThrow('the socket is not open');
+    expect(() => conn.dispatch({ despawn_worker: { project_key: 'p', label: 'w' } })).toThrow(
+      'the socket is not open',
+    );
+    expect(conn.more(LEAD), 'a page-ask that went nowhere read as one that went').toBe(false);
   });
 
   it('asks for more turns of one conversation', async () => {
     const { server, conn } = await connected();
 
-    conn.more(LEAD, 'cursor-1', 20);
+    expect(conn.more(LEAD, 'cursor-1', 20)).toBe(true);
     conn.more(LEAD);
     await until(() => server.received.length === 2, 'both asks');
     expect(server.received[0]).toEqual({
@@ -211,9 +255,36 @@ describe('the connection', () => {
       throw new Error('a despawn is one of the four that answer through a reply');
     }
 
-    server.send({ kind: 'reply', reply_to: sent.reply_to, body: { refused: 'no such worker' } });
+    // A refusal is the server's own words in the body, which for this answer
+    // is a bare string rather than an object.
+    server.send({ kind: 'reply', reply_to: sent.reply_to, body: 'no such worker' });
 
-    await expect(answer).resolves.toEqual({ refused: 'no such worker' });
+    await expect(answer).resolves.toBe('no such worker');
+  });
+
+  /**
+   * A command in flight when the socket goes has no answer coming, and a
+   * promise that never settles is a button that never returns. Resolving
+   * instead of rejecting would read to the caller as a successful spawn.
+   */
+  it('rejects what a command was holding when the socket drops', async () => {
+    const { server, conn } = await connected();
+    const answer = conn.dispatch({ spawn_worker: { project_key: 'proj', label: 'w1' } });
+    await until(() => commands(server.received).length === 1, 'the command to arrive');
+
+    server.drop();
+
+    await expect(answer).rejects.toThrow('the socket dropped before answering');
+  });
+
+  it('rejects what a command was holding when the connection closes', async () => {
+    const { server, conn } = await connected();
+    const answer = conn.dispatch({ spawn_worker: { project_key: 'proj', label: 'w1' } });
+    await until(() => commands(server.received).length === 1, 'the command to arrive');
+
+    conn.close();
+
+    await expect(answer).rejects.toThrow('the connection was closed');
   });
 
   /**
@@ -241,6 +312,33 @@ describe('the connection', () => {
         JSON.stringify(conn.store(HOME)?.snapshot()) === JSON.stringify({ projects: ['a', 'b'] }),
       'the fresh snapshot',
     );
+  });
+
+  /**
+   * A reconnect re-asks as many times as the subject was subscribed, and with
+   * the declaration the connection holds.
+   *
+   * One unsubscribe drops one of the server's entries, so a subject held
+   * twice that was re-asked once leaves the two sides out of step: the next
+   * unsubscribe takes it away from a caller still drawing it. And a re-ask
+   * that dropped `answering` to the default would turn a client that draws a
+   * dock into a read-only observer after every blip.
+   */
+  it('re-asks once per subscription, carrying the declaration it made', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME, { answering: true });
+    conn.subscribe(HOME);
+    conn.unsubscribe(HOME);
+    await until(() => server.received.length === 3, 'both subscribes and the unsubscribe');
+
+    server.drop();
+    await until(() => server.received.length >= 4, 'the re-ask');
+    expect(server.received[3]).toEqual({ kind: 'subscribe', what: HOME, answering: true });
+
+    // One entry is left, so exactly one re-ask: a second would mean the count
+    // came back as two.
+    await settle();
+    expect(server.received.slice(4)).toEqual([]);
   });
 
   /**
@@ -285,22 +383,81 @@ describe('the connection', () => {
    * An update carrying a seat goes to that seat's store, which is what makes
    * a subscription a seat: routing everything to the home store would leave a
    * session page's store holding its snapshot and never a word after it.
+   *
+   * And the home gets it only when the fleet classification says so. A turn's
+   * own words are the bulk of the stream and no row shows one, so a home
+   * store fed every frame a watched seat emitted would hold the conversation
+   * the server deliberately withholds from a home subscriber.
    */
-  it('routes an update to the store for the seat it carries', async () => {
+  it('routes an update to its seat, and to the home only when the fleet cares', async () => {
     const { server, conn } = await connected();
     const lead: Subject = { session: LEAD };
-
     conn.subscribe(lead);
     conn.subscribe(HOME);
     await until(() => server.received.length === 2, 'both subscribes');
+
+    server.send({ kind: 'update', update: { turn_cancelled: { key: LEAD } } });
+    const seat = conn.store(lead);
+    await until(() => (seat?.updates().length ?? 0) === 1, 'the seat to hear it');
+    expect(conn.store(HOME)?.updates()).toEqual([{ turn_cancelled: { key: LEAD } }]);
+
     server.send({
       kind: 'update',
-      update: { turn_cancelled: { key: LEAD } },
+      update: { chat_appended: { key: LEAD, msg: { type: 'assistant' } } },
     });
+    await until(() => (seat?.updates().length ?? 0) === 2, 'the second update');
+    expect(conn.store(HOME)?.updates(), "a turn's own words reached the home store").toHaveLength(
+      1,
+    );
+  });
 
-    const store = conn.store(lead);
-    await until(() => (store?.updates().length ?? 0) === 1, 'the seat to hear it');
-    expect(store?.updates()).toEqual([{ turn_cancelled: { key: LEAD } }]);
+  /**
+   * A refused subscribe is an answer rather than a silence - the server sends
+   * one for a seat nobody has started, so a page can say why instead of
+   * drawing an empty snapshot as a broken page. `snapshot: null` cannot carry
+   * that, so the store carries the refusal itself.
+   */
+  it('gives a refused subscribe a store that says so', async () => {
+    const { server, conn } = await connected();
+    const seat: Subject = { session: LEAD };
+    const store = conn.subscribe(seat);
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+
+    server.send({ kind: 'error', what: 'subscribe', why: 'forge holds no session for that seat' });
+
+    await until(() => store.state().kind === 'refused', 'the refusal to land');
+    expect(store.state()).toEqual({
+      kind: 'refused',
+      why: 'forge holds no session for that seat',
+    });
+    expect(store.snapshot()).toBeNull();
+  });
+
+  /** Nothing replays a subscribe made after the socket went, so a live store would be a lie. */
+  it('refuses a subscribe on a closed connection', async () => {
+    const { conn } = await connected();
+    conn.close();
+
+    const store = conn.subscribe(HOME);
+    expect(store.state()).toEqual({ kind: 'refused', why: 'this connection is closed' });
+  });
+
+  /**
+   * A page keeps its contents across a drop, which is right, and has to be
+   * able to say it is reconnecting, which is the other half: without it a
+   * page draws pre-drop data as though it were live.
+   */
+  it('says where the connection is, and when it drops', async () => {
+    const { server, conn } = await connected();
+    const seen: string[] = [];
+    conn.onStatus((next) => seen.push(next));
+
+    server.drop();
+    await until(() => seen.includes('connecting'), 'the drop to be reported');
+    expect(conn.status()).toBe('connecting');
+
+    conn.close();
+    expect(conn.status()).toBe('closed');
   });
 
   /**
@@ -319,12 +476,8 @@ describe('the connection', () => {
     const seen: ServerMessage[] = [];
     conn.onMessage((message) => seen.push(message));
 
-    server.send({ kind: 'error', what: 'subscribe', why: 'forge holds no session for that seat' });
+    server.send({ kind: 'error', what: 'dispatch', why: 'that seat is gone' });
     await until(() => seen.length === 1, 'the error to arrive');
-    expect(seen[0]).toEqual({
-      kind: 'error',
-      what: 'subscribe',
-      why: 'forge holds no session for that seat',
-    });
+    expect(seen[0]).toEqual({ kind: 'error', what: 'dispatch', why: 'that seat is gone' });
   });
 });

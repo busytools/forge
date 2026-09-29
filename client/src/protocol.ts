@@ -16,6 +16,15 @@
 
 import type { ClientSettings, SessionSlot } from './wire/types';
 
+/**
+ * The protocol this client speaks, which the greeting must agree with.
+ *
+ * Fixed rather than negotiated, because the server changes far more slowly
+ * than a client's visuals do: either a client speaks this version or it does
+ * not, and a mismatch fails plainly instead of silently.
+ */
+export const PROTOCOL_VERSION = 1;
+
 /** What a client can watch, and the address a subscription is held under. */
 export type Subject = 'home' | { session: SessionSlot } | 'usage';
 
@@ -24,12 +33,17 @@ export type Subject = 'home' | { session: SessionSlot } | 'usage';
  *
  * A subject is an object for a seat and a string for the other two, so a map
  * keyed on the subject itself would never match two equal slots.
+ *
+ * The triple is joined with a NUL rather than a slash, which an org, project
+ * or label may contain: two seats whose parts were shaped so the joined
+ * strings matched would share one store, and each would draw the other's
+ * snapshot.
  */
 export function subjectKey(subject: Subject): string {
   if (subject === 'home') return 'home';
   if (subject === 'usage') return 'usage';
   const { org, project, label } = subject.session;
-  return `session:${org}/${project}/${label}`;
+  return `session:${org}\u0000${project}\u0000${label}`;
 }
 
 /**
