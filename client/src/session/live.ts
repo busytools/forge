@@ -15,7 +15,7 @@
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
-import { subjectKey } from '../protocol';
+import { slotOf, subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
@@ -46,7 +46,21 @@ const NOTHING: SessionRead = { wire: null, refused: null };
  * with the last subscriber, so a page that has moved to another seat is not
  * left subscribed to the one it left.
  */
-export function watchSession(connection: Connection, slot: SessionSlot): Readable<SessionRead> {
+export function watchSession(
+  connection: Connection,
+  slot: SessionSlot,
+  /**
+   * Whether this page can ANSWER the prompts it draws.
+   *
+   * **It is not a client's preference, and getting it wrong loses a turn
+   * either way.** A client counted as answering that cannot display a prompt
+   * hangs the turn, because the core parks it on a reply that never comes; a
+   * client drawing a dock while subscribed as an observer has every prompt it
+   * shows cancelled. So the caller states what it has: the page says yes
+   * exactly when its composer - the thing with the dock in it - is wired in.
+   */
+  answering: boolean,
+): Readable<SessionRead> {
   const subject = { session: slot };
   let held: Store | null = null;
   // A read is a full encode on the server - it walks the transcript and the
@@ -70,7 +84,7 @@ export function watchSession(connection: Connection, slot: SessionSlot): Readabl
   }
 
   function watch(): void {
-    held = connection.subscribe(subject);
+    held = connection.subscribe(subject, { answering });
     // Compared by KEY rather than by the subject itself: a seat's subject is
     // an object, and the one the server answers with is a different object
     // that happens to say the same thing. `===` never matches it, so the page
@@ -86,6 +100,16 @@ export function watchSession(connection: Connection, slot: SessionSlot): Readabl
         return;
       }
       if (message.kind !== 'update') return;
+      // **The connection is not this seat's alone.** The shell holds the home
+      // for its whole life, and the server filters per CONNECTION over the
+      // union of the subjects watched, so every other seat's frames arrive
+      // here too. This is the server's own covering rule for a session - a
+      // seat hears an update when the update's slot is that seat - and
+      // without it a busy fleet would drive a full re-encode of this page's
+      // transcript, process tree and git scan twenty times a second for data
+      // that did not change.
+      const at = slotOf(message.update);
+      if (at === null || subjectKey({ session: at }) !== key) return;
       if (reading || timer !== null) return;
       timer = setTimeout(() => {
         timer = null;

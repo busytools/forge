@@ -49,7 +49,10 @@
     // and the store the page left is let go with the last subscriber.
     const open = connection;
     const seat = slot;
-    return watchSession(open, seat).subscribe(($next) => {
+    // The page answers for a seat only when it can: the dock that answers a
+    // prompt lives in the composer, and declaring the role without one parks
+    // every prompt on a reply nothing sends.
+    return watchSession(open, seat, composer !== null).subscribe(($next) => {
       read = $next;
     });
   });
@@ -115,7 +118,6 @@
   });
 
   const conversationProps = $derived<ConversationProps>({
-    messages: record?.conversation.messages ?? [],
     cwd: record?.state.scan_cwd ?? '',
     waking: seat.waking,
     reason: seat.reason,
@@ -213,6 +215,6 @@
   <Inspector {wire} {record} {slot} {now} onclose={() => (rightChosen = false)} />
 
   {#if composer !== null && record !== null}
-    <div class="composer">{@render composer({ record, slot, connection })}</div>
+    <div class="composer">{@render composer({ record, slot, seat, connection })}</div>
   {/if}
 </div>

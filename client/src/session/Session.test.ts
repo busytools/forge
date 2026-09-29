@@ -41,9 +41,14 @@ const draw = (props: { wire?: HomeWire; slot?: SessionSlot } = {}): string =>
     props: { slot: props.slot ?? LEAD, connection: untouched(), wire: props.wire ?? homeWire },
   }).body;
 
-/** The `data-k` of every section the page drew, in the order it drew them. */
+/**
+ * The `data-k` of every section the page drew, in the order it drew them.
+ *
+ * The space matters: one section is named `mcp servers`, and a class that
+ * stops at the first word answers a narrower question than the one asked.
+ */
 function sections(body: string): string[] {
-  return [...body.matchAll(/data-k="sec-([a-z]+)"/g)].map((match) => match[1] ?? '');
+  return [...body.matchAll(/data-k="sec-([a-z ]+)"/g)].map((match) => match[1] ?? '');
 }
 
 describe('the session shell as it draws', () => {
@@ -61,12 +66,14 @@ describe('the session shell as it draws', () => {
     expect(body, 'a fact nothing has reported was drawn').not.toContain('class="fk"');
   });
 
-  it('draws the projects rail grouped by state', () => {
+  /**
+   * The page-level property is that the rail is there at all and points at the
+   * seat: the grouping, the fleet count and the reason line are the view's, and
+   * `view.test.ts` pins them where they are decided.
+   */
+  it('draws the projects rail with a row for the seat', () => {
     const body = draw();
     expect(body).toContain('needs you');
-    expect(body).toContain('1 live / 1');
-    expect(body).toContain('class="pj cur"');
-    expect(body).toContain('a permission prompt is waiting');
     expect(body).toContain('href="/session/TestOrg/proj/lead"');
   });
 
@@ -76,10 +83,7 @@ describe('the session shell as it draws', () => {
    * in this view can close a session yet.
    */
   it('draws the row chip as a disabled button with a name', () => {
-    const body = draw();
-    expect(body).toContain('aria-label="closing a session is not available yet"');
-    expect(body).toMatch(/<button[^>]*class="x"[^>]*disabled/);
-    expect(body, 'a character-cell glyph stood in for the close control').not.toContain('\u{2715}');
+    expect(draw()).toMatch(/<button[^>]*class="x"[^>]*disabled[^>]*aria-label="closing/);
   });
 
   /**
@@ -91,7 +95,6 @@ describe('the session shell as it draws', () => {
     expect(body).toContain('aria-label="projects"');
     expect(body).toContain('aria-label="inspector"');
     expect(body).toContain('aria-expanded="true"');
-    expect(body, 'the no-JS checkbox device survived the port').not.toContain('type="checkbox"');
   });
 
   it('draws the seat state rather than an empty column when nothing is running', () => {

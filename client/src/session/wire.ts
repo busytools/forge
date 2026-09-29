@@ -129,6 +129,14 @@ export interface SessionRecord {
   monitors: MonitorRecord[];
   /** The CLI's background-task registry, which no section of this shell draws. */
   background_tasks: unknown[];
+  /**
+   * The composer's three lists: the CLI's commands for `/`, the agent types
+   * for `&`, and the working tree's files for `@`. Carried rather than
+   * narrowed, because the composer's own task owns their shape.
+   */
+  slash_commands: unknown[];
+  subagents: unknown[];
+  file_index: unknown;
   /** What this seat's composer is doing. */
   composer: ComposerState;
   /** The prompt this seat is waiting on, which the composer's dock draws. */
@@ -240,6 +248,9 @@ export function sessionFrom(data: unknown): SessionRecord {
     processes: processesFrom(held['processes']),
     monitors: list(held['monitors']).map(monitorFrom),
     background_tasks: list(held['background_tasks']),
+    slash_commands: list(held['slash_commands']),
+    subagents: list(held['subagents']),
+    file_index: held['file_index'] ?? null,
     composer: composerFrom(held['composer']),
     pending_ask: held['pending_ask'] ?? null,
     conversation: {

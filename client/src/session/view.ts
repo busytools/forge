@@ -23,10 +23,11 @@ import {
   placeOf,
   projectRows,
   stateOf,
+  whenOf,
 } from '../home/view';
 import type { Row, RowState } from '../home/view';
 import type { Connection } from '../socket';
-import type { CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
+import type { CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import type {
   McpServer,
@@ -115,7 +116,9 @@ export interface ScheduleRow {
 export interface SlackWorkspace {
   name: string;
   connected: boolean;
-  subs: { k: string; v: string }[];
+  /** `id` is the wire's own, and it is what a row is keyed by: two
+   * subscriptions in one workspace can draw the same words. */
+  subs: { id: string; k: string; v: string }[];
 }
 
 /** The gotify section, as its rows draw it. */
@@ -142,12 +145,14 @@ export interface McpView {
  * What the conversation column is handed, and what the chat's own task writes
  * its component against.
  *
- * The shell owns the subscription and the row, so the column is handed the
- * frames rather than fetching them: one socket, one store, one reader.
+ * **The conversation is not here, and that is deliberate.** The chat pages for
+ * its own history with `more` and follows the live tail off `chat_appended`, so
+ * handing it the record's whole transcript would re-cross the conversation on
+ * every re-read - which is the cost a virtualised list exists to avoid, and it
+ * would take the reader's place with it. The rest is the shell's own read, and
+ * the chat has no other way to get it.
  */
 export interface ConversationProps {
-  /** The frames the seat's transcript replayed, as the wire carries them. */
-  messages: unknown[];
   /** The directory the seat's calls are named against. */
   cwd: string;
   /** Whether a seat is behind this page at all. */
@@ -164,6 +169,8 @@ export interface ConversationProps {
 export interface ComposerProps {
   record: SessionRecord;
   slot: SessionSlot;
+  /** The seat behind the page, which its blocked states read. */
+  seat: SeatState;
   connection: Connection;
 }
 
@@ -220,6 +227,14 @@ export function fleetCount(home: HomeWire): string {
 export interface SeatState {
   /** Whether anything is running behind this page at all. */
   waking: boolean;
+  /**
+   * The core's own lifecycle, or `null` for a seat the roster does not name.
+   *
+   * `waking` cannot stand in for it: a composer has to replace its box and say
+   * WHY for a seat that is spawning, one that failed and one that needs
+   * signing in, and a boolean tells none of the three from the others.
+   */
+  lifecycle: Lifecycle | null;
   /** Why it is not running, when the roster says. */
   reason: string | null;
   mark: string;
@@ -244,6 +259,7 @@ export function seatState(home: HomeWire, slot: SessionSlot): SeatState {
   );
   return {
     waking: row === undefined,
+    lifecycle: row?.lifecycle ?? null,
     reason: row?.reason ?? null,
     mark: railMark(row === undefined ? { kind: 'never-started' } : stateOf(row, home.unseen)),
     // A lead's row is its project, the way the home names it; a worker's is
@@ -382,7 +398,7 @@ export function railGroups(home: HomeWire, current: SessionSlot, now: number): R
       name: entry.project.name,
       org: entry.project.org,
       current: entry.project.org === current.org && entry.project.name === current.project,
-      age: rowWhen(lead, now),
+      age: whenOf(lead, now),
       asleep: rank === 2,
       row: lead,
       workers,
@@ -390,17 +406,6 @@ export function railGroups(home: HomeWire, current: SessionSlot, now: number): R
     });
   }
   return groups.filter((group) => group.projects.length > 0);
-}
-
-/**
- * How long ago a project last wrote. A project nothing has ever run in is
- * `never`; one with a session but no transcript yet has only just started,
- * which is `now` rather than an absence.
- */
-function rowWhen(row: Row, now: number): string {
-  if (row.state.kind === 'never-started') return 'never';
-  if (row.lastActivity === null) return 'now';
-  return elapsedLabel(row.lastActivity, now);
 }
 
 /**
@@ -442,6 +447,12 @@ export interface AccountWindow {
   label: string;
   /** Clamped to 0..100 for the bar, which is what the terminal draws too. */
   percent: number;
+  /**
+   * The figure the row states, which is the UNCLAMPED one: an account past its
+   * cap is the case a reader has to see, and a bar that stops at full plus a
+   * label that says `101%` is what the server draws for it.
+   */
+  text: string;
   reset: string;
 }
 
@@ -486,6 +497,7 @@ export function accountChip(home: HomeWire, slot: SessionSlot): AccountView | nu
     windows.push({
       label,
       percent: Math.min(100, Math.max(0, utilization)),
+      text: `${Math.round(utilization)}%`,
       reset: typeof window['reset_description'] === 'string' ? window['reset_description'] : '',
     });
   }
@@ -662,17 +674,24 @@ export function slackSection(home: HomeWire): SlackView | null {
       connected: view.connected_workspaces.find(([held]) => held === name)?.[1] === true,
       subs: view.subscriptions
         .filter((sub) => sub.workspace === name)
-        .map((sub) => ({ k: targetOf(sub.target), v: modeOf(sub.target) })),
+        .map((sub) => ({ id: sub.id, k: targetOf(sub.target), v: modeOf(sub.target) })),
     })),
   };
 }
 
-/** What a subscription watches: a conversation by its name, or the class it covers. */
+/**
+ * What a subscription watches: a conversation by its name, or the class it
+ * covers.
+ *
+ * **Two of the three arms cross as BARE STRINGS, not objects**, because
+ * `SlackSubscriptionTarget` is a serde enum whose unit variants are exactly
+ * that on the wire - only `Conversation` is an object. Reading all three as
+ * objects misses the two class arms, and the row then draws an empty key.
+ */
 function targetOf(target: unknown): string {
-  const held = isRecord(target) ? target : {};
-  if ('DirectMessages' in held) return 'direct messages';
-  if ('Mentions' in held) return 'mentions anywhere';
-  const conversation = isRecord(held['Conversation']) ? held['Conversation'] : {};
+  if (target === 'DirectMessages') return 'direct messages';
+  if (target === 'Mentions') return 'mentions anywhere';
+  const conversation = conversationOf(target);
   const name = conversation['name'];
   if (typeof name === 'string' && name !== '') return name;
   return typeof conversation['id'] === 'string' ? conversation['id'] : '';
@@ -680,11 +699,15 @@ function targetOf(target: unknown): string {
 
 /** What a subscription lets through. */
 function modeOf(target: unknown): string {
-  const held = isRecord(target) ? target : {};
-  if ('DirectMessages' in held) return 'every message';
-  if ('Mentions' in held) return 'mentions only';
-  const conversation = isRecord(held['Conversation']) ? held['Conversation'] : {};
-  return conversation['mode'] === 'MentionsOnly' ? 'mentions only' : 'every message';
+  if (target === 'DirectMessages') return 'every message';
+  if (target === 'Mentions') return 'mentions only';
+  return conversationOf(target)['mode'] === 'MentionsOnly' ? 'mentions only' : 'every message';
+}
+
+/** The `Conversation` arm's fields, or an empty bag for the two class arms. */
+function conversationOf(target: unknown): Record<string, unknown> {
+  const held = isRecord(target) ? target['Conversation'] : null;
+  return isRecord(held) ? held : {};
 }
 
 /** The connector views, which the home's snapshot carries beside the fleet. */
@@ -695,7 +718,7 @@ interface ConnectorViews {
   } | null;
   slack: {
     connected_workspaces: [string, boolean][];
-    subscriptions: { workspace: string; target: unknown }[];
+    subscriptions: { id: string; workspace: string; target: unknown }[];
   } | null;
 }
 
@@ -736,7 +759,9 @@ function connectorsOf(home: HomeWire): ConnectorViews {
             subscriptions: array(slack['subscriptions']).map((entry) => {
               const sub = isRecord(entry) ? entry : {};
               const workspace = sub['workspace'];
+              const id = sub['id'];
               return {
+                id: typeof id === 'string' ? id : '',
                 workspace: typeof workspace === 'string' ? workspace : '',
                 target: sub['target'],
               };

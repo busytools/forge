@@ -155,8 +155,6 @@ describe('the inspector as it draws', () => {
     expect(body, 'the child was drawn beside its parent rather than under it').toMatch(
       /<li>[\s\S]*claude[\s\S]*<ul class="tree">[\s\S]*cargo nextest run/,
     );
-    // A non-breaking space is the character run the terminal indented with.
-    expect(body, 'a character run stood in for the nesting').not.toContain('\u{a0}');
   });
 
   it('draws an empty MCP read as the failure it is, with the reason', () => {

@@ -73,8 +73,6 @@ export interface CronEntry {
   prompt: string;
   description?: string;
   created_at: WireTime;
-  /** Last instant it fired, absent until the first fire. */
-  last_fire?: WireTime;
   /** When it is next due, which is the fact the session's schedules section states. */
   next_fire: WireTime;
 }

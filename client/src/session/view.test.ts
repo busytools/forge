@@ -49,6 +49,40 @@ const withHome = (change: Partial<HomeWire>): HomeWire => ({ ...homeWire, ...cha
 const withProject = (change: Partial<ProjectWire>): HomeWire =>
   withHome({ projects: [{ ...project(), ...change }] });
 
+describe('the boundary', () => {
+  /**
+   * **A value outside the shipped set is narrowed where it enters, and the
+   * fallback is the least-alarming member rather than the true one.** The
+   * fixture only ever holds values inside the set, so nothing else exercises
+   * the arm - and it is the one thing that keeps a client older than its
+   * server from drawing a state it cannot name.
+   */
+  it('turns a state this client is older than into one it knows', () => {
+    const ahead = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      monitors: [
+        {
+          tool_use_id: 'm1',
+          task_id: null,
+          description: 'a monitor',
+          command: 'ls',
+          persistent: false,
+          timeout_ms: 0,
+          status: 'quantum',
+          output_file: null,
+          ended_at: null,
+        },
+      ],
+      header: { ...record.header, effort: 'extreme', permission_mode: 'sentient' },
+    });
+    expect(ahead.monitors[0]?.status, 'a status from the future claimed the work is over').toBe(
+      'running',
+    );
+    expect(ahead.header.effort).toBe('medium');
+    expect(ahead.header.permission_mode).toBe('default');
+  });
+});
+
 describe('the header facts', () => {
   it('names a model the CLI gave no long name for by its resolved id', () => {
     const facts = headerFacts({
@@ -224,6 +258,11 @@ describe('the inbox sections', () => {
    * A subscription watches a workspace, and the section says so by nesting:
    * the terminal put two `&nbsp;` in front of the target, which is a space
    * standing in for a level of hierarchy.
+   *
+   * **The two class targets are strings here because that is what the socket
+   * sends.** `SlackSubscriptionTarget` is an externally tagged enum, so
+   * `Mentions` and `DirectMessages` cross as bare strings and only
+   * `Conversation` is an object.
    */
   it('hangs each slack subscription off the workspace it watches', () => {
     const slack = slackSection(
@@ -234,8 +273,9 @@ describe('the inbox sections', () => {
             connected_workspaces: [['Trust Machines', true]],
             load_failed: false,
             subscriptions: [
-              { workspace: 'Acme', target: { Mentions: {} } },
+              { id: 's1', workspace: 'Acme', target: 'Mentions' },
               {
+                id: 's2',
                 workspace: 'Trust Machines',
                 target: { Conversation: { id: 'C1', name: '#alerts', mode: 'All' } },
               },
@@ -246,13 +286,13 @@ describe('the inbox sections', () => {
     );
     expect(slack?.summary).toBe('2 workspaces');
     expect(slack?.workspaces.find((entry) => entry.name === 'Trust Machines')?.subs).toEqual([
-      { k: '#alerts', v: 'every message' },
+      { id: 's2', k: '#alerts', v: 'every message' },
     ]);
     // A workspace the pump has not reported still draws, with its own state.
     expect(slack?.workspaces.find((entry) => entry.name === 'Acme')).toEqual({
       name: 'Acme',
       connected: false,
-      subs: [{ k: 'mentions anywhere', v: 'mentions only' }],
+      subs: [{ id: 's1', k: 'mentions anywhere', v: 'mentions only' }],
     });
   });
 });
@@ -464,5 +504,64 @@ describe('the account chip', () => {
     expect(view?.tone).toBe('wait');
     expect(view?.auth).toBe('token');
     expect(view?.windows).toEqual([]);
+  });
+
+  /**
+   * A window the account is past reports above 100, and the bar stops at full
+   * while the label does not: an account over its cap is the one case the row
+   * has to be readable in, and a label that echoed the bar would hide it.
+   */
+  it('states the figure a past-cap window reports rather than the bar width', () => {
+    const home = withProject({ chip: { account_name: 'Acct', state: 'ready' } });
+    const over = {
+      ...home,
+      accounts: {
+        ...home.accounts,
+        usage: [
+          {
+            display_name: 'Acct',
+            snapshot: { five_hour: { utilization: 101, reset_description: 'in 2h' } },
+          },
+        ],
+      },
+    };
+    expect(accountChip(over, LEAD)?.windows[0]).toEqual({
+      label: '5h',
+      percent: 100,
+      text: '101%',
+      reset: 'in 2h',
+    });
+  });
+
+  /**
+   * What the poller knows beyond the windows: per-key spend and the account's
+   * remaining credit. Both are `Option` on the wire, so a pool that reports
+   * neither draws no rows rather than zeroes.
+   */
+  it('draws the spend and the balance the poller reported, and neither when it did not', () => {
+    const home = withProject({ chip: { account_name: 'Acct', state: 'ready' } });
+    const billed = {
+      ...home,
+      accounts: {
+        ...home.accounts,
+        usage: [
+          {
+            display_name: 'Acct',
+            snapshot: {
+              spend: { daily: 1.5, weekly: 10, monthly: 42 },
+              balance: 12.25,
+            },
+          },
+        ],
+      },
+    };
+    expect(accountChip(billed, LEAD)?.spend).toEqual({
+      daily: '$1.50',
+      weekly: '$10.00',
+      monthly: '$42.00',
+    });
+    expect(accountChip(billed, LEAD)?.balance).toBe('$12.25');
+    expect(accountChip(home, LEAD)?.spend, 'an absent spend drew as zeroes').toBeNull();
+    expect(accountChip(home, LEAD)?.balance).toBeNull();
   });
 });

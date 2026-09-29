@@ -26,7 +26,7 @@
       <div class="bar">
         <span class="lb">{window.label}</span>
         <span class="tk"><span class="fl" style={`width:${window.percent}%`}></span></span>
-        <span class="pc">{Math.round(window.percent)}%</span>
+        <span class="pc">{window.text}</span>
         {#if window.reset !== ''}<span class="eta">{window.reset}</span>{/if}
       </div>
     {/each}

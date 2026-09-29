@@ -26,7 +26,7 @@
         </div>
         {#if workspace.subs.length > 0}
           <ul class="subs">
-            {#each workspace.subs as sub (sub.k)}
+            {#each workspace.subs as sub (sub.id)}
               <li class="kv"><span class="k">{sub.k}</span><span class="v">{sub.v}</span></li>
             {/each}
           </ul>

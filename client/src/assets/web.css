@@ -328,10 +328,10 @@ section.org .note {
 }
 
 /* ---------- the session page: three columns over one sheet ----------
-   Taken from the mock at docs/book/src/ui/client/web-session.html. A pane collapses
-   to nothing, and the handle that brings it back lives in the chat header
-   rather than on the pane's edge, so a collapsed column leaves no edge
-   behind and its control stays clickable. */
+   Taken from the mock at docs/book/src/ui/client/web-session.html. A rail
+   collapses to nothing, and the handle that brings it back lives in the chat
+   header rather than on the rail's own edge, so a folded column leaves no
+   edge behind and its control stays clickable. */
 
 .mono { font-family: var(--mono); }
 /* One icon rule for the whole page: a sprite reference inherits the colour
@@ -342,9 +342,11 @@ section.org .note {
 details[open] > summary .arw { transform: rotate(90deg); }
 .dim { color: var(--dim); }
 
+/* `dvh` rather than `vh`: a phone's URL bar hides and shows, and a frame sized
+   to `vh` is taller than the window it is in whenever the bar is showing. */
 .app {
   display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr) var(--rail-r);
-  gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden;
+  gap: var(--ins); padding: var(--ins); height: 100dvh; overflow: hidden;
   font-size: var(--fs-prose);
 }
 /* Placed rather than auto-flowed: a collapsed column leaves its grid slot
