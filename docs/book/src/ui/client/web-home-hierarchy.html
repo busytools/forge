@@ -284,15 +284,18 @@
   .d-spine .children .row .name { padding-left: 0; }
   .d-spine .children > .node { position: relative; }
   .d-spine .children > .node::before,
-  .d-spine .node:has(> .children) > .row::before {
+  .d-spine .node:has(> .children) > .row::before,
+  .d-spine .children > .node:not(:last-child)::after {
     content: ""; position: absolute; left: var(--spine-x);
     width: 1px; background: var(--line);
   }
   .d-spine .children > .node::before { top: 0; bottom: 50%; }
   .d-spine .node:has(> .children) > .row::before { top: 50%; bottom: 0; }
+  .d-spine .children > .node:not(:last-child)::after { top: 50%; bottom: -1px; }
   @media (max-width: 760px) {
     .d-spine .children > .node::before { top: 0; bottom: calc(100% - 22px); }
     .d-spine .node:has(> .children) > .row::before { top: 21px; bottom: 0; }
+    .d-spine .children > .node:not(:last-child)::after { top: 22px; }
   }
 
   /* ===================================================================
