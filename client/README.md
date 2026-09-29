@@ -30,14 +30,22 @@ npm run tauri dev     # dev server plus the app window
 npm run tauri build   # forge.app and a dmg, under src-tauri/target/release/bundle
 ```
 
-The production build embeds `dist/`, so it needs `npm run build` to have
-run and fails if that output is missing. The dev window loads the dev
-server instead and needs no `dist/`. `just client-tauri-check` is the one
-to run before handing a change here over: it is the production build with
-`--locked`.
+Which build needs `dist/` is worth knowing. A bare `cargo build` does not,
+because it never resolves `frontendDist` at all. The CLI build does, and
+runs `npm run build` first to produce it. The dev window loads the dev
+server instead and needs none.
 
-Two traps sit between a hand-typed command and a working one, and that
-recipe carries the working form. The CLI reads `CI` from the environment
+Two recipes, and the difference is the bundle. `just client-tauri-check`
+is the routine gate before handing a change here over: it compiles the
+shipping configuration, which resolves `dist/` and validates the
+identifier, without producing a bundle, so it is quiet.
+`just client-tauri-bundle` adds `forge.app` and the dmg, and is the only
+one that covers the icons and the window config. It is also the only one
+that opens a Finder window, because the dmg step mounts the image and lays
+the mounted volume out with AppleScript.
+
+Two traps sit between a hand-typed command and a working one, and both
+recipes carry the working form. The CLI reads `CI` from the environment
 as its own boolean `--ci` flag, so a `CI` holding anything but `true` or
 `false` - `0` is what forge's sessions set - stops the build before it
 starts; passing `--ci` explicitly overrides it. And `npm` swallows a bare
@@ -45,16 +53,19 @@ starts; passing `--ci` explicitly overrides it. And `npm` swallows a bare
 
 A start has no terminal to report to, so it writes to
 `~/Library/Logs/dev.vedhavyas.forge/forge.log` instead. That file is
-named after the product rather than the crate. `forge client started` is
-the line a start that reached the window leaves, so what follows it, or
-its absence, is what explains a bounce.
+named after the product rather than the crate, and it is appended to
+rather than rewritten, so read the last line: `forge client started`
+means it reached the window, and `failed to start` means it did not and
+carries the reason. A start that fails before the logger exists writes
+that line itself, because nothing else would.
 
 The icon is the `panes` mark from `src/brand.ts`, on the `--bg` ground in
 the `--accent` colour. Render the mark to a 1024 PNG and pass that to
-`npx tauri icon`: the committed `icons/icon.png` is a 512 the generator
-writes and will not reproduce the `.icns` on its own. That file stays
-because `generate_context!` reads it at compile time, and with the five
-`bundle.icon` names it is all of the set worth committing.
+`npx tauri icon` - the `icons/icon.png` the generator writes is a 512 and
+will not reproduce the `.icns` on its own, so it is not committed. The
+five files `bundle.icon` names are, and the first `.png` in that list is
+the one the codegen embeds, so deleting `icons/32x32.png` is a hard
+compile failure rather than a smaller bundle.
 
 The version is this crate's own rather than the workspace's. The client is
 a different program from the server, so `just release` does not bump it.
