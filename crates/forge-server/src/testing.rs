@@ -251,6 +251,12 @@ impl Fleet {
         self.workspace.seed_test_peer_stats(slot, stats);
     }
 
+    /// Stamp when `slot`'s failure counter last moved, as the delivery path
+    /// would have.
+    pub fn seed_peer_failure_at(&self, slot: &SessionSlot, at: std::time::SystemTime) {
+        self.workspace.seed_test_peer_failure_at(slot, at);
+    }
+
     /// The commands caught since the last call.
     pub fn dispatched(&self) -> Vec<forge_workspace::Command> {
         self.workspace.drain_test_dispatch_buffer()

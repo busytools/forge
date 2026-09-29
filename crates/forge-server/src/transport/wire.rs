@@ -31,7 +31,7 @@ use crate::surface::{AgentRow, ConversationHistory, PendingAsk, ViewSurface};
 use crate::transcript::ChatUnit;
 use crate::transport::TransportState;
 use crate::transport::envelope::Subject;
-use crate::work::WorkState;
+use crate::work::{WorkState, work_from_scan};
 
 /// The seat the fixture surface is populated for.
 ///
@@ -687,11 +687,12 @@ async fn session(
             },
         )
     };
-    let work = state.work.snapshot(slot, cwd).await;
-    // The PR the inspector's row states, and the issues it closes: the row's
-    // own read does not carry them, so they come from the heavier scan - the
-    // same one the terminal's inspector reads, through the same cache.
+    // ONE scan for the working tree, its branch, its count and its PR: the four
+    // are then the same instant, so a branch switch between two reads cannot
+    // render a PR for a branch this record does not name. It is the scan the
+    // terminal's inspector draws the same section from.
     let diff = state.work.diff(slot, cwd).await;
+    let work = work_from_scan(&diff, cwd);
     let branch = work.branch.clone().unwrap_or_default();
     let reviews = surface.reviews(slot.project(), &branch);
     let state_at = surface.session(slot, cwd);
@@ -948,10 +949,18 @@ mod tests {
     use crate::surface::PendingKind;
     use crate::testing::ViewFacts;
     use crate::work::WorkCache;
+    use forge_primitives::git_diff::GitDiffSnapshot;
 
     /// Where the fixture fleet is built. Fixed rather than per-run, so the
     /// fixture does not pin one machine's temp directory.
     const FIXTURE_ROOT: &str = "/tmp/forge-wire-fixture";
+
+    /// The instant a seeded failure counter moved. Fixed rather than taken
+    /// from the clock: a fixture pins shape, and a wall-clock stamp would pin
+    /// the moment the fixture was generated.
+    fn fixture_failure_at() -> std::time::SystemTime {
+        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)
+    }
 
     /// The surface the fixtures are produced from, and both halves of the
     /// reason are deliberate.
@@ -973,6 +982,7 @@ mod tests {
             &fixture_seat(),
             forge_primitives::PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 3 },
         );
+        fleet.seed_peer_failure_at(&fixture_seat(), fixture_failure_at());
         fleet.add_worker("TestOrg", "proj", "w1").expect("the worker is added");
         fleet.install_agent("TestOrg", "proj", "lead");
         fleet
@@ -1014,9 +1024,18 @@ mod tests {
             },
         );
 
+        // A scan the fixture pins the working tree and the PR row from: the
+        // fleet's own directory is not a git repository, so without it both
+        // fields would be pinned as null and a read that answered nothing at
+        // all would round-trip.
+        let surface = fleet.surface();
+        let work = Arc::new(WorkCache::new());
+        let cwd = surface.roster().cwd_for(&fixture_seat()).expect("the fixture seat's directory");
+        work.seed_test_diff(&fixture_seat(), &cwd, &scanned());
+
         TransportState {
-            surface: fleet.surface(),
-            work: Arc::new(WorkCache::new()),
+            surface,
+            work,
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         }
@@ -1123,8 +1142,9 @@ mod tests {
         fleet.start("TestOrg", "proj").expect("the project starts");
         fleet.seed_peer_stats(
             &fixture_seat(),
-            forge_primitives::PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 0 },
+            forge_primitives::PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 1 },
         );
+        fleet.seed_peer_failure_at(&fixture_seat(), fixture_failure_at());
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
@@ -1143,6 +1163,11 @@ mod tests {
         assert_eq!(
             row["peer"]["outgoing"], 2,
             "the counters the badge draws cross on the row: {row}"
+        );
+        assert_eq!(
+            row["peer_failure_at"]["secs_since_epoch"], 1_700_000_000,
+            "and with them the instant the failure counter moved, which is what lets a view age \
+             the mark out rather than drawing one the terminal dropped: {row}"
         );
     }
 
@@ -1262,6 +1287,76 @@ mod tests {
             serde_json::json!([]),
             "and the issues it closes, empty when there is no PR: {encoded}"
         );
+    }
+
+    /// A POPULATED PR row, from a seeded scan rather than from `gh`.
+    ///
+    /// The key's presence is not enough on its own: a regression that answers
+    /// no PR - a wrong directory handed to the read, say - keeps the key and
+    /// passes that. This drives the values a client draws.
+    #[tokio::test]
+    async fn the_pr_row_carries_the_scans_pr_and_its_closing_issues() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let seat = fixture_seat();
+        let surface = fleet.surface();
+        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
+        let work = Arc::new(WorkCache::new());
+        work.seed_test_diff(&seat, &cwd, &scanned());
+        let state = TransportState {
+            surface,
+            work,
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
+
+        assert_eq!(
+            encoded["pr"]["number"], 1249,
+            "the open PR crosses with its number: {encoded}"
+        );
+        assert_eq!(
+            encoded["closes"][0]["number"], 1215,
+            "and the issues it closes: {encoded}"
+        );
+        assert_eq!(
+            encoded["work"]["branch"], "worktree-pr",
+            "and the branch comes from the SAME scan as the PR, so the two cannot disagree: \
+             {encoded}"
+        );
+        assert_eq!(
+            encoded["work"]["changed"], 3,
+            "with the count that scan took: {encoded}"
+        );
+    }
+
+    /// A scan as the terminal's inspector reads it: one branch, one worktree
+    /// layer, one PR and one closing issue.
+    fn scanned() -> GitDiffSnapshot {
+        use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
+        use forge_primitives::git_diff::{GitDiffStats, LayerState, RepoGate};
+        GitDiffSnapshot {
+            branch: GitBranch::Named("worktree-pr".to_owned()),
+            pushed_sha: Some("abc123".to_owned()),
+            pr_fetched_at: None,
+            default_branch: Some("main".to_owned()),
+            repo_gate: RepoGate::InRepo,
+            worktree: LayerState::Populated(GitDiffStats {
+                files: Vec::new(),
+                total_files: 3,
+                total_added: 9,
+                total_removed: 2,
+            }),
+            branch_ahead: LayerState::Clean,
+            pr: Some(GitPrInfo { number: 1249, url: "https://example.test/pull/1249".to_owned() }),
+            closes: vec![GitIssueRef {
+                number: 1215,
+                url: "https://example.test/issues/1215".to_owned(),
+            }],
+        }
     }
 
     /// The token/cost report, on the subject a usage view subscribes to.

@@ -268,6 +268,12 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
             apply_delta(entry, delta);
             entry.clone()
         };
+        // The mark a failure draws is transient, so its instant is held with
+        // the count: a view reading the counts alone cannot tell a failure
+        // that just happened from one the terminal dropped a minute ago.
+        if matches!(delta, PeerStatsDelta::DeliveryFailedPlus1) {
+            ws.peer_failure_at.lock().insert(key.clone(), std::time::SystemTime::now());
+        }
         let _ = ws.update_sender().send(SessionUpdate::PeerInflightStatsChanged {
             key: key.clone(),
             stats: stats_snapshot,

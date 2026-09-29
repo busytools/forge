@@ -178,10 +178,18 @@
     }
   },
   "work": {
-    "branch": null,
-    "changed": null,
-    "gate": "gone"
+    "branch": "worktree-pr",
+    "changed": 3,
+    "gate": "in_repo"
   },
-  "pr": null,
-  "closes": []
+  "pr": {
+    "number": 1249,
+    "url": "https://example.test/pull/1249"
+  },
+  "closes": [
+    {
+      "number": 1215,
+      "url": "https://example.test/issues/1215"
+    }
+  ]
 }

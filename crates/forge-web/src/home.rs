@@ -1229,6 +1229,7 @@ mod tests {
             last_activity: None,
             reason: None,
             peer: forge_primitives::PeerInflightStats::default(),
+            peer_failure_at: None,
         }
     }
 

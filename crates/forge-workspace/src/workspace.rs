@@ -306,6 +306,13 @@ pub struct Workspace {
     /// `SessionUpdate::PeerInflightStatsChanged` which the TUI
     /// reducer turns into sidebar peer-activity badges.
     pub(crate) peer_stats: Mutex<HashMap<SessionSlot, PeerInflightStats>>,
+    /// When each seat's `delivery_failed` counter last moved.
+    ///
+    /// The count is cumulative and carries no time, and the mark it draws is
+    /// transient: a view fades that badge out a minute after the failure. A
+    /// view that attached later reads this to age it out itself, rather than
+    /// drawing a red mark the terminal has already dropped.
+    pub(crate) peer_failure_at: Mutex<HashMap<SessionSlot, SystemTime>>,
     /// The session that submitted the reviews on a `(project, branch)` -
     /// the target for a worker's review-activity notice. Set by
     /// [`Self::submit_review`]; latest submit wins (the reviewer is one
@@ -1432,6 +1439,7 @@ impl Workspace {
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
+            peer_failure_at: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
@@ -4345,6 +4353,15 @@ impl Workspace {
     /// is why a view that attached after the last ask needs this read.
     pub fn peer_stats_for(&self, slot: &SessionSlot) -> PeerInflightStats {
         self.peer_stats.lock().get(slot).cloned().unwrap_or_default()
+    }
+
+    /// When `slot`'s `delivery_failed` counter last moved, or `None` if it
+    /// never has.
+    ///
+    /// The mark a failure draws is transient - a minute after it, views drop
+    /// it - so the count alone cannot say whether a red badge is current.
+    pub fn peer_failure_at_for(&self, slot: &SessionSlot) -> Option<SystemTime> {
+        self.peer_failure_at.lock().get(slot).copied()
     }
 
     /// What the session at `slot` is waiting on a person for, or `None`
@@ -10511,6 +10528,37 @@ provider = "anthropic"
             Some(target),
             "target_session stamped for a later expiry to clear",
         );
+    }
+
+    /// When the failure counter last moved, so a view can age the badge out.
+    ///
+    /// The counts do not drift, but the mark they draw does: the terminal
+    /// drops a `delivery_failed` badge sixty seconds after it saw the
+    /// increment, and a cumulative count with no time gives a view that
+    /// attached later no way to know the failure is old.
+    #[tokio::test]
+    async fn a_delivery_failure_stamps_when_it_happened() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let caller = SessionSlot::from_str_for_test("asker");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: caller.clone(),
+                target_project: "gateway-backend".to_owned(),
+                target_session: None,
+            },
+        );
+
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+
+        let stamped = workspace.peer_failure_at_for(&caller);
+        assert!(stamped.is_some(), "the instant of the increment is held, not only the count");
+        let age = stamped.expect("stamped").elapsed().expect("a stamp from before now");
+        assert!(age.as_secs() < 60, "and it is the moment it happened, not a placeholder: {age:?}");
     }
 
     /// Workspace::dispatch(Command::DeliverPeerPrompt) routes to the

@@ -331,6 +331,7 @@ impl Workspace {
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
+            peer_failure_at: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
@@ -588,6 +589,13 @@ impl Workspace {
         stats: forge_primitives::PeerInflightStats,
     ) {
         self.peer_stats.lock().insert(slot.clone(), stats);
+    }
+
+    /// Stamp when `slot`'s failure counter last moved, as the delivery path
+    /// would have. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_peer_failure_at(&self, slot: &SessionSlot, at: std::time::SystemTime) {
+        self.peer_failure_at.lock().insert(slot.clone(), at);
     }
 
     /// Advertise `commands` and `agents` for `slot`, registering its

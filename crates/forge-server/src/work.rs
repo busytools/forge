@@ -254,6 +254,48 @@ impl WorkCache {
     fn entries(&self) -> MutexGuard<'_, HashMap<SessionSlot, Entry>> {
         self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
+    /// Store a scan for `slot` as if the cache had taken it, so a fixture can
+    /// pin a populated PR and worktree without `gh` and a pushed branch.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_diff(&self, slot: &SessionSlot, cwd: &Path, diff: &GitDiffSnapshot) {
+        let mut entries = self.entries();
+        let entry = entries.entry(slot.clone()).or_insert_with(|| Entry::new(cwd));
+        cwd.clone_into(&mut entry.cwd);
+        entry.diff = Some(diff.clone());
+        entry.diff_read_at = Instant::now();
+    }
+}
+
+/// The same working tree, as the row's own read states it, derived from a scan
+/// the view already took.
+///
+/// One scan rather than two reads: the branch, the gate and the count then
+/// belong to the same instant as the PR the row's section draws beside them,
+/// so a branch switch between two reads cannot render a PR for a branch the
+/// wire does not name. The count is the scan's worktree layer, which is the
+/// number the terminal's own GIT section shows, and `None` when that layer
+/// failed rather than a zero a reader would take for a clean tree.
+pub fn work_from_scan(diff: &GitDiffSnapshot, cwd: &Path) -> WorkState {
+    let gate = match diff.repo_gate {
+        // Git calls a missing directory "not a repository", so the path itself
+        // decides between the two, exactly as the row's own read does.
+        RepoGate::NotARepo if !cwd.exists() => Gate::Gone,
+        other => Gate::from(other),
+    };
+    if gate != Gate::InRepo {
+        return WorkState { branch: None, changed: None, gate };
+    }
+    let branch = match &diff.branch {
+        forge_primitives::git::GitBranch::Named(name) => Some(name.clone()),
+        _ => None,
+    };
+    let changed = match &diff.worktree {
+        forge_primitives::git_diff::LayerState::Populated(stats) => Some(stats.total_files),
+        forge_primitives::git_diff::LayerState::Clean => Some(0),
+        forge_primitives::git_diff::LayerState::ScanFailed => None,
+    };
+    WorkState { branch, changed, gate }
 }
 
 /// One read of `cwd`. The count decides whether the directory is a

@@ -35,6 +35,13 @@ pub struct AgentRow {
     /// update and nothing else: a view that attached after the last ask would
     /// draw the badge from nothing.
     pub peer: forge_primitives::PeerInflightStats,
+    /// When the failure counter last moved, so a view can age the mark out.
+    ///
+    /// The count is cumulative and the badge is not: a view drops that mark a
+    /// minute after the failure, and a view reading the count alone would draw
+    /// a red badge the terminal has already dropped. `None` when there has
+    /// never been one.
+    pub peer_failure_at: Option<std::time::SystemTime>,
 }
 
 /// What a session is waiting on a person for. The core's own kind rather
@@ -124,6 +131,7 @@ fn row_for(
         // is here rather than at the call sites.
         reason: reason.or_else(|| workspace.spawn_failure(&slot)),
         peer: workspace.peer_stats_for(&slot),
+        peer_failure_at: workspace.peer_failure_at_for(&slot),
         lifecycle,
         label,
         slot,
