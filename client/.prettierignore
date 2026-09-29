@@ -1,4 +1,4 @@
-# Byte-identical to crates/forge-web/src/web.css by design; reformatting breaks the salvage claim.
+# Hand-authored, not Prettier's output; reformatting it rewrites the whole sheet.
 src/assets/web.css
 # Pinned by hash in src/wire/README.md against the server's fixtures.
 src/dev/fixtures/*.json
