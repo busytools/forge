@@ -6,7 +6,8 @@ from one snapshot of the `home` subject, and redrawn from the update stream
 after it. The drawing it is held against is
 [web-home.html](./web-home.html), beside this page.
 
-The app opens on the [connect screen](./connect.md) rather than here,
+The app opens here whenever it has an address that answers - the one it last
+connected to - and on the [connect screen](./connect.md) when it has none,
 because its only input is the server URL. Until a server answers there is
 nothing to draw, and the client never falls back to bundled data.
 

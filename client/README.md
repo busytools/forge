@@ -126,11 +126,18 @@ the home when something answers. When nothing does, or when there is nothing
 remembered, the door comes back carrying the address that was tried and the
 reason it did not answer.
 
-A launch that finds nothing to open on rewrites `/` to `/connect`, which is
-the door's own URL. A launch that tried an address and failed stays at `/`,
-so a reload retries rather than being told the address was wrong. What is
-kept is the address that last WORKED - a failed one is not forgotten, since
-that is the one a person is about to fix.
+A launch with nothing to open on rewrites `/` to `/connect`, which is the
+door's own URL, so a reload lands in the same place. What is kept is the
+address that last WORKED - a failed one is not forgotten, since that is the
+one a person is about to fix, and retrying it is what the next launch is for.
 
-`/fixture` and a session deep link do not launch: they are addressed at
-something, and opening a socket behind them would change what they draw.
+**The connection is booted on any route; the ROUTE moves only from the
+root.** A deep link is how a seat stays reachable and `/fixture` draws
+without a server, so both keep the page they were addressed at and take the
+socket that page reads. Only `/` lands on the home or the door, because it is
+the one URL that names no page of its own.
+
+`/connect` is where a failed launch is easiest to see: the door is already on
+screen when the attempt lands, so the reason arrives on it after the fact
+rather than opening it. That is why the door follows the shell's failure
+instead of seeding it once.
