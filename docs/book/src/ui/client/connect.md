@@ -35,6 +35,12 @@ in the field and the failure already on it, rather than blank. A failed
 launch is not forgotten, either: the address stays remembered, because
 that is the one the reader is about to correct.
 
+**A launch moves the page only from the root**, so a deep link is the one
+place it takes the connection and leaves the route alone. That makes this
+screen reachable three ways: a first launch, a launch that did not answer,
+and navigating here. On its own `/connect` the door is already drawn when
+the attempt lands, so the reason arrives on it rather than opening it.
+
 ## The design plan
 
 **Colour.** The theme's own tokens, unchanged: `--bg`, `--s1`, `--line`,
