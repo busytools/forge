@@ -81,6 +81,12 @@ export interface OrgSection {
 
 export interface Header {
   liveAgents: number;
+  /**
+   * Every project's tasks added up, which is the fleet's total: the snapshot
+   * carries every project and each one's whole list, so the sum is what the
+   * server's own home summed - not a count of what happens to be on screen.
+   */
+  tasks: number;
   projects: number;
   installed: string | null;
   /** The version to name when npm has a newer one than the installed CLI. */
@@ -523,6 +529,7 @@ export function homeView(wire: HomeWire, address: string): HomeView {
   return {
     header: {
       liveAgents: wire.agents.length,
+      tasks: wire.projects.reduce((total, row) => total + row.tasks.length, 0),
       projects: wire.projects.length,
       installed: wire.cli_version?.installed ?? null,
       update: availableVersion(

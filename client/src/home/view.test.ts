@@ -113,6 +113,24 @@ function project(org: string, name: string, over: Partial<ProjectWire> = {}): Pr
   };
 }
 
+/** One task, held by a project's lead. */
+function task(status: TaskStatus, subject: string): Task {
+  return {
+    id: subject,
+    project_name: 'proj',
+    subject,
+    active_form: null,
+    detail: null,
+    status,
+    owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
+    parent: null,
+    artifact: null,
+    estimate: null,
+    created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+  };
+}
+
 function agent(org: string, project: string, label: string, lifecycle: Lifecycle): AgentRow {
   return {
     slot: { org, project, label },
@@ -202,6 +220,28 @@ describe('the fleet the snapshot describes', () => {
     expect(header.projects, 'the header read the agent count as projects').toBe(3);
   });
 
+  /**
+   * The total is the fleet's: summed over every project the snapshot carries,
+   * which is what the server's own home summed. Reading it off the rows on
+   * screen instead would count a subset, and the header draws one number for
+   * the whole fleet.
+   */
+  it('totals the tasks across every project, not the ones a row happens to show', () => {
+    const wire: HomeWire = {
+      ...homeWire,
+      projects: [
+        project('Busytools', 'forge', {
+          tasks: [task('in_progress', 'a'), task('completed', 'b')],
+        }),
+        project('Busytools', 'notes', { tasks: [task('pending', 'c')] }),
+        project('Personal', 'dotfiles'),
+      ],
+      agents: [],
+    };
+
+    expect(homeView(wire, '').header.tasks, "the total is not the fleet's").toBe(3);
+  });
+
   it('says what it counts for every shape of org', () => {
     const busytools = (wire: HomeWire) => orgNamed(homeView(wire, ''), 'Busytools');
     // Every agent of one project gone, which leaves that project dormant and
@@ -236,6 +276,7 @@ describe('a row over the fleet', () => {
     expect(lead?.pending).toBe('permission');
     expect(view.header).toEqual({
       liveAgents: 1,
+      tasks: 0,
       projects: 1,
       installed: '1.0.0',
       update: '1.1.0',
@@ -332,21 +373,6 @@ describe('the cells the reshape made drawable', () => {
    * saying running.
    */
   it('shows the task furthest from done, not the first held', () => {
-    const task = (status: TaskStatus, subject: string): Task => ({
-      id: subject,
-      project_name: 'proj',
-      subject,
-      active_form: null,
-      detail: null,
-      status,
-      owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
-      parent: null,
-      artifact: null,
-      estimate: null,
-      created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-      updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-    });
-
     const held = leadOf(
       homeView(withRow({ tasks: [task('completed', 'shipped'), task('in_progress', 'now')] }), ''),
     );

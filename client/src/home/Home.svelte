@@ -42,12 +42,8 @@
         >{/if}
     </div>
     <div class="totals">
-      <!--
-        The task count is not here: no total crosses the wire, and summing
-        the rows a client happens to be showing would count a fleet it cannot
-        see. The per-row task is drawn where it belongs, on the row.
-      -->
       <span class="n">{view.header.liveAgents}</span> agents {'\u{b7}'}
+      <span class="n">{view.header.tasks}</span> tasks {'\u{b7}'}
       <span class="n">{view.header.projects}</span> projects
     </div>
   </header>

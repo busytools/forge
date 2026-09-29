@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Attempt } from '../connect/attempt';
   import Connect from '../connect/Connect.svelte';
   import Fixture from '../dev/Fixture.svelte';
   import Home from '../home/Home.svelte';
@@ -17,11 +18,7 @@
     settings: ClientSettings;
     address: string;
     wire: HomeWire | null;
-    onconnect: (connected: {
-      url: string;
-      settings: ClientSettings;
-      wire: HomeWire | null;
-    }) => void;
+    onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
 </script>
 

@@ -1,9 +1,39 @@
-import { describe, expect, it } from 'vitest';
+import { type AddressInfo, WebSocketServer } from 'ws';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
+import { PROTOCOL_VERSION } from '../protocol';
 import { DEFAULT_MARK, DEFAULT_WEB_PORT, MARK_NAMES } from '../wire/types';
-import { homeWire } from '../dev/fixture.data';
-import { attempt, displayAddress, normalizeAddress, submitAttempt } from './attempt';
+import { attempt, connectTo, displayAddress, normalizeAddress, submitAttempt } from './attempt';
+
+/** A forge that greets, which is all this file needs one to do. */
+async function stubServer(version = PROTOCOL_VERSION) {
+  const server = new WebSocketServer({ port: 0 });
+  await new Promise((resolve) => server.once('listening', resolve));
+  const { port } = server.address() as AddressInfo;
+  server.on('connection', (socket) => {
+    socket.send(
+      JSON.stringify({
+        kind: 'greeting',
+        version,
+        settings: { mark: null, theme: null, font: null },
+      }),
+    );
+  });
+  return {
+    address: `127.0.0.1:${port}`,
+    async close() {
+      for (const client of server.clients) client.terminate();
+      await new Promise((resolve) => server.close(resolve));
+    },
+  };
+}
+
+const servers: Awaited<ReturnType<typeof stubServer>>[] = [];
+
+afterEach(async () => {
+  for (const server of servers.splice(0)) await server.close();
+});
 
 describe('the address a person types', () => {
   it('takes a bare host and port, and adds the path the server serves', () => {
@@ -66,16 +96,50 @@ describe('one attempt', () => {
     expect(answer.ok === false && answer.kind).toBe('address');
   });
 
-  it('passes a connection through untouched', async () => {
-    const answer = await attempt('box:8790');
-    expect(answer).toEqual({
+  it('answers a forge that greets with the socket it answered on', async () => {
+    const server = await stubServer();
+    servers.push(server);
+
+    const answer = await connectTo(server.address);
+    expect(answer).toMatchObject({
       ok: true,
-      url: 'ws://box:8790/socket',
+      url: `ws://${server.address}/socket`,
       settings: { mark: null, theme: null, font: null },
-      // The fixture answers in a test environment, which is a DEVELOPMENT
-      // build; a production one carries no snapshot until the socket lands.
-      wire: homeWire,
     });
+    // The connection is handed back open, not read here: the pages subscribe
+    // through it.
+    expect(answer.ok && answer.connection.status()).toBe('open');
+  });
+
+  /**
+   * The greeting carries the protocol, the server fixes it, and it is the
+   * only mismatch detector there is - so a client that read it and drew
+   * anyway would draw against a shape it cannot know it understands.
+   */
+  it('refuses a forge speaking a protocol this client does not', async () => {
+    const server = await stubServer(PROTOCOL_VERSION + 1);
+    servers.push(server);
+
+    const answer = await connectTo(server.address);
+    expect(answer.ok).toBe(false);
+    expect(answer.ok === false && answer.kind).toBe('version');
+    expect(answer.ok === false && answer.why).toContain(`protocol ${PROTOCOL_VERSION + 1}`);
+  });
+
+  /** A socket that opens and then says nothing is not one this client can draw. */
+  it('gives up on a forge that accepts the socket and never greets', async () => {
+    const server = new WebSocketServer({ port: 0 });
+    await new Promise((resolve) => server.once('listening', resolve));
+    const { port } = server.address() as AddressInfo;
+    server.on('connection', () => undefined);
+
+    try {
+      const answer = await attempt(`127.0.0.1:${port}`, (input) => connectTo(input, 20));
+      expect(answer.ok).toBe(false);
+      expect(answer.ok === false && answer.kind).toBe('unreachable');
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });
 
@@ -105,13 +169,15 @@ describe('one submit, as the screen sees it', () => {
   });
 
   it('clears busy and carries where to go when the connection took', async () => {
-    const next = await submitAttempt('box:8790');
+    const server = await stubServer();
+    servers.push(server);
+
+    const next = await submitAttempt(server.address, (input) => connectTo(input, 200));
     expect(next.busy).toBe(false);
     expect(next.failure).toBeNull();
-    expect(next.connected).toEqual({
-      url: 'ws://box:8790/socket',
+    expect(next.connected).toMatchObject({
+      url: `ws://${server.address}/socket`,
       settings: { mark: null, theme: null, font: null },
-      wire: homeWire,
     });
   });
 
@@ -121,9 +187,22 @@ describe('one submit, as the screen sees it', () => {
    */
   it('never rejects, however the connection failed', async () => {
     const boom = () => Promise.reject(new Error('boom'));
-    await expect(submitAttempt('box:8790', boom)).resolves.toHaveProperty('busy', false);
-    await expect(submitAttempt('::::', boom)).resolves.toHaveProperty('busy', false);
-    await expect(submitAttempt('box:8790')).resolves.toHaveProperty('busy', false);
+    // A socket that never greets, rather than one that greets a version this
+    // client cannot read: the deadline is what makes the promise settle at
+    // all, and the point of the test is that every arm settles.
+    const silent = new WebSocketServer({ port: 0 });
+    await new Promise((resolve) => silent.once('listening', resolve));
+    const { port } = silent.address() as AddressInfo;
+
+    try {
+      await expect(submitAttempt('box:8790', boom)).resolves.toHaveProperty('busy', false);
+      await expect(submitAttempt('::::', boom)).resolves.toHaveProperty('busy', false);
+      await expect(
+        submitAttempt(`127.0.0.1:${port}`, (input) => connectTo(input, 20)),
+      ).resolves.toHaveProperty('busy', false);
+    } finally {
+      await new Promise((resolve) => silent.close(resolve));
+    }
   });
 });
 
