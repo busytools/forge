@@ -90,6 +90,15 @@ export interface AgentRow {
   /** The seat's peer-coordination counters, which its activity badge draws. */
   peer: { outgoing: number; incoming: number; delivery_failed: number };
   peer_failure_at: WireTime | null;
+  /**
+   * The seat's OWN working tree, which is not the project's.
+   *
+   * A worker's is its worktree and the lead's is the project's path, so a
+   * row drawing `ProjectWire.work` instead names a different seat's branch.
+   * `null` is a seat forge holds no directory for - a despawned worker's
+   * label - and it draws nothing rather than borrowing the project's read.
+   */
+  work: WorkState | null;
 }
 
 /** One project in `forge.toml`, as the roster reports it. */
@@ -261,6 +270,14 @@ export function homeFrom(data: HomeWire): HomeWire {
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
+      // The gate inside the seat's tree, which is the one member of it that is
+      // a union of literals: `WorkState` is a struct, so there is nothing else
+      // in it to narrow and a shape test over the object would discriminate
+      // nothing. The gate is what a row's `what` cell falls back on.
+      work:
+        agent.work === null
+          ? null
+          : { ...agent.work, gate: narrow(agent.work.gate, GATES, 'in_repo') },
     })),
     projects: data.projects.map((row) => ({
       ...row,

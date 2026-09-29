@@ -197,11 +197,16 @@ function populated(): SessionRecord {
     ],
     conversation: {
       ...base.conversation,
-      messages: [
+      turns: [
         {
-          type: 'assistant',
-          message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }] },
-          parent_tool_use_id: null,
+          key: null,
+          messages: [
+            {
+              type: 'assistant',
+              message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }] },
+              parent_tool_use_id: null,
+            },
+          ],
         },
       ],
     },

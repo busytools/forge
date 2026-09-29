@@ -63,10 +63,11 @@ variant's own name rather than on `kind`:
 A command's variant is its name around its field bag - `Command` has 33
 variants and every one is a struct variant. An update is the same shape one
 level in, `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 51 of `SessionUpdate`'s 55 variants are struct variants too. The other
-four are why the payload is not one shape: three are unit variants and
-cross as the name alone, `"catalog_loaded"`, and one is a newtype, its
-name around the value inside it.
+and 51 of `SessionUpdate`'s 56 variants are struct variants too. The other
+five are why the payload is not one shape: four are unit variants and cross
+as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
+`"dictate_availability"` and `"accounts_changed"` - and one is a newtype,
+its name around the value inside it.
 
 ## What a client sends
 
@@ -102,12 +103,28 @@ seat still being shown, and a single unsubscribe must not take the seat
 out of the set a view is watching.
 
 **`more {conversation, before, turns}`** - a page of a session's
-transcript, newest turn last, as whole turns.
+transcript, as whole turns. Each turn carries `key` and `messages`, which is
+the same shape the session snapshot's `conversation` carries; the grouping
+inside a turn is the client's to decide.
+
+**`key` is `null` on every turn of a transcript-derived conversation, and a
+client must not key by it.** The name comes from a `Result` frame, and a
+transcript holds none: its reader maps `user`, `assistant` and `system` rows
+and nothing else. A client that keys its rows by `key` collapses the whole
+conversation into one. It is carried because a live session does name its
+turns, and what a client does with it is its own business - the cursor is a
+position and is the one handle that always names a turn.
+
+**The boundary between turns is the server's, and it is the only part of
+the fold that crosses.** How a run of tool calls groups within a turn is a
+drawing decision; where one turn ends and the next begins is what the
+paging contract is built on, so a page can never hand over half a turn.
 
 **The cursor is a position, not an index.** Echo it back as `before` and
-do not take it apart: it names the row the page opens on, and what it is
-made of is the server's business. `null` means there is nothing above the
-page it came with, and that is where a walk backwards ends.
+do not take it apart: it names the message the page's first turn opens on,
+and what it is made of is the server's business. `null` means there is
+nothing above the page it came with, and that is where a walk backwards
+ends.
 
 **`command {command, reply_to?}`** - any of the core's own commands, as
 the core's own enum. `reply_to` is absent or `null` on most of them, and
@@ -144,11 +161,13 @@ was asked for.
   client is subscribed to. The subject decides, and a home subscription has
   **two** arms rather than one: an update a home row draws something of, and
   an update belonging to no seat at all - the service status, the fatal
-  error, the plugin records - which is a field of the home's own snapshot and
-  which only a home subscription could have carried. Read the second arm as
-  absent and a page keeps what it read at subscribe for the life of the
-  connection.
-- **`page {conversation, rows, cursor}`** - in answer to `more`.
+  error, the plugin records, the account pool - which is a field of the
+  home's own snapshot and which only a home subscription could have carried.
+  Read the second arm as absent and a page keeps what it read at subscribe
+  for the life of the connection. The pool is the one that reads as a live
+  state rather than as an event: a card left at `0 ready, probing` looks
+  like a slow probe rather than like a page that stopped listening.
+- **`page {conversation, turns, cursor}`** - in answer to `more`.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own
   words.
@@ -164,8 +183,8 @@ facts a row is drawn from.
 
 | Field | What it is |
 |---|---|
-| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate), `tasks`, `crons`, `would_bind`, and `chip` - the account the row binds and its state. |
-| `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, and the seat's peer-coordination counters - the numbers its activity badge is drawn from. |
+| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `tasks`, `crons`, `would_bind`, and `chip` - the account the row binds and its state. |
+| `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, the seat's peer-coordination counters - the numbers its activity badge is drawn from - and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project. |
 | `unseen` | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it. |
 | `accounts` | Loading state per account, whether all of them settled, the gateway listener's ready state and port, each account's cached usage snapshot, and the org views with budget and unusable reasons. |
 | `plugins` | Every remembered plugin update, latest write per installed entry. |
@@ -184,7 +203,7 @@ conversation, and what the composer is doing.
 |---|---|
 | `slot` | The seat itself. |
 | `header` | The resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, and whether a turn is in flight. |
-| `conversation` | The transcript's messages, oldest first, with the compaction count. These are the CLI's own frames, which is what the live `update` stream carries too. |
+| `conversation` | The transcript's whole turns, in order, with the compaction count. Each turn carries `key` and `messages` - the CLI's own frames, which is what the live `update` stream carries too - so this is the same shape `more` answers a page with. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
 | `pr`, `closes` | The open pull request this seat's branch is on - its number and URL - and the issues it closes, which is the `PR #N -> closes #M` line the inspector draws. `null` and an empty list when there is none, or when the branch is not pushed. |
 | `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference. |
@@ -211,16 +230,22 @@ not a feed: no update announces that a transcript's tokens moved, so a
 subscription is answered once and then hears nothing. A client that wants
 the current numbers asks again by subscribing again.
 
-**Two representations of one conversation cross, and they are for
-different halves of it.** A settled turn is drawn from the FOLD: `more`
-returns whole turns as the server folded them, and a client that wants
-history should draw those units and keep its own expansion state. The turn
-in flight is drawn from the FRAMES: `update`s carry the CLI's own messages
-as they arrive, and a client renders those without regrouping them,
-because the fold is the server's and a client's own grouping would differ
-from the units the same turn becomes. When that turn settles, its units
-arrive by `more` and replace what the frames were drawing. The fold is
-never something a client ports.
+**Two representations of one conversation cross, and they agree.** A
+settled turn arrives by `more` as the messages it ran as; the turn in
+flight arrives as the same CLI frames, one `update` at a time. **A client
+folds both with one rule of its own** - how a run of tool calls groups, the
+labels it draws and the tail it shows - and the two meet with nothing to
+reconcile, because the frames are the same shape on either side. The one
+thing the server keeps is the turn boundary, which is what stops a page
+handing over half a turn; where a turn BEGINS is a fact about the session,
+and how its work is drawn is not.
+
+**The server's fold is not what a terminal reads.** The terminal groups a
+message's blocks itself, in `forge-tui`'s `ui::message::grouping`, and the
+server's fold is drawn by `forge-web`, which is parked. So a view that draws
+a conversation makes those calls for itself: a monitor draws no chat row, and
+a settled turn's status is aggregated. Both are rules about a drawing rather
+than facts about a session.
 
 ## What is not here
 
@@ -258,23 +283,21 @@ never something a client ports.
   and what it names is the machine it ran on rather than the session, so
   it stays with whoever captures. A client enumerates its own; forge's own
   list stays with the terminal it captures in.
-- **A live `accounts` read.** The home's account rows are the server's own
-  poller's answer, and no update announces a new one: the pool is written
-  with nothing emitted, so a subscriber's bars and loading state stand as
-  it read them until it subscribes again. It is scan-shaped like `usage`,
-  and the answer is the same - ask again rather than wait for a stream.
 - **Any rendering.** Glyphs, colours, weights, spacing, the order of a
   list and the label a row is spelled with are the client's. The test is
   whether removing a thing changes what the data IS or only how it is
   DRAWN.
-- **A shipped client.** No installed binary consumes this socket. The two
-  things that speak it are test instruments: `forge-protocol-client` under
-  `crates/forge-server/src/bin/`, built by a normal build and neither
-  installed nor shipped, and the integration tests that open real clients
-  against a server they start themselves.
+- **A shipped client.** The desktop client under `client/` speaks this
+  socket, and it is what this page is for. It is a client rather than an
+  instrument, and it runs from `just client-dev` rather than from an
+  installed bundle, so what is missing is a released one rather than a
+  consumer. The instruments are the two they always were:
+  `forge-protocol-client` under `crates/forge-server/src/bin/`, built by a
+  normal build and neither installed nor shipped, and the integration tests
+  that open real clients against a server they start themselves.
 
 ## Today
 
 The terminal starts the server and binds the socket, so a running forge
-serves one. The web view that used to serve pages on this port is parked
-while the client is built; nothing serves it in the meantime.
+serves one. The web view that used to serve pages on this port is parked,
+and the desktop client under `client/` is what reads the socket now.
