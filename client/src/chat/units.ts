@@ -198,9 +198,20 @@ function sender(rest: string): { from: string; org: string } | null {
   return { from: rest.slice(1, name), org: rest.slice(name + 8, org) };
 }
 
-/** A Slack id is not a name to print, and neither is the producer's placeholder. */
+/**
+ * A Slack id is not a name to print.
+ *
+ * The server's own heuristic, ported as it stands: an uppercase initial and
+ * nothing but uppercase or digits after it, with no length floor and no
+ * letter restriction. It is a heuristic and the server says so - an all-caps
+ * channel name matches it and loses its `#` - but a client that tightened it
+ * for looks would drop the author clause on a `B…` bot id where the terminal
+ * drops it, which is one more rule that is not the rule it ports.
+ */
 function isSlackId(value: string): boolean {
-  return /^[UW][A-Z0-9]{6,}$/.test(value);
+  const [first, ...rest] = value;
+  if (first === undefined || !/^[A-Z]$/.test(first)) return false;
+  return rest.every((letter) => /^[A-Z0-9]$/.test(letter));
 }
 
 /**

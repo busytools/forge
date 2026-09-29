@@ -201,6 +201,30 @@ describe('one turn folded into the units a view draws', () => {
     );
   });
 
+  it('reads a Slack id the way the server reads one', () => {
+    // The server's heuristic is an uppercase initial and nothing but uppercase
+    // or digits after it - no length floor and no letter restriction - so a
+    // client that tightened it would print an author where the terminal drops
+    // the clause, or drop one where it prints.
+    const line = (author: string): unknown =>
+      heard([
+        text(`[Slack - workspace 'Busytools', general] id C1 ts 1.2\n${author}: the gate is green`),
+      ]);
+
+    const named = fold([line('steward')])[0];
+    expect(named?.kind === 'notice' ? named.notice.text : '', 'a name is printed').toContain(
+      'steward',
+    );
+
+    for (const id of ['U9', 'B09ABC123', 'C0C0T5E6RM1', 'DEPLOYS']) {
+      const held = fold([line(id)])[0];
+      expect(
+        held?.kind === 'notice' ? held.notice.text : '',
+        `${id} is an id, not a name`,
+      ).not.toContain(id);
+    }
+  });
+
   it('draws a Slack bundle as a notice, bare channel and all', () => {
     // The producer writes the conversation LABEL, not a `#`-prefixed channel -
     // `granite-staging-alerts`, `general` - so a matcher requiring `#` puts

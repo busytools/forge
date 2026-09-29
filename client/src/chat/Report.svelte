@@ -20,9 +20,17 @@
   /** The turn's own clock, read from the instant it ended in the reader's zone. */
   const ended = $derived(clock(held.ended_at_utc));
 
-  /** What the turn spent on its own tools and hooks: the span less the API's share. */
+  /**
+   * What the turn spent on its own tools and hooks: the span less the API's
+   * share.
+   *
+   * `0s` is a measurement - a turn whose whole span was API time - and only a
+   * record missing either end draws the dash. A check that demanded the span
+   * be the LARGER of the two would drop that zero, which the terminal's own
+   * `checked_sub` keeps.
+   */
   const local = $derived(
-    held.duration_ms !== null && held.api_ms !== null && held.duration_ms > held.api_ms
+    held.duration_ms !== null && held.api_ms !== null && held.duration_ms >= held.api_ms
       ? held.duration_ms - held.api_ms
       : null,
   );
