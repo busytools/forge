@@ -1,0 +1,5 @@
+# Clippy uses the nearest clippy.toml and does not merge, so this file replaces
+# the workspace one for this crate rather than adding to it. The MSRV differs
+# because `tauri` declares 1.90; leaving it at the workspace's 1.88 makes
+# `clippy::incompatible_msrv` reject standard-library APIs the crate may use.
+msrv = "1.90.0"
