@@ -166,11 +166,18 @@ client-typecheck:
 client-test:
     npm --prefix client run test
 
-# Build and bundle the desktop shell. This is the only thing that exercises the
-# configuration that ships: a plain `cargo build` compiles the `dev` cfg, which
-# never resolves `frontendDist`, so it stays green while the release build
-# panics on a missing or moved `client/dist`. Through the CLI the
-# `beforeBuildCommand` runs too, and the identifier and the icons are checked.
+# Compile the desktop shell in the configuration that ships. This is the routine
+# gate for anything under client/src-tauri/, and it is quiet.
+#
+# `--no-bundle` is what makes it quiet, and the CLI build is what makes it mean
+# anything: the CLI is what turns off the `dev` cfg, and a `dev` build never
+# resolves `frontendDist` at all. The profile is not the switch - `cargo build`
+# and `cargo build --release` both exit 0 with `client/dist` deleted and neither
+# binary carries an asset path, while this one does, so the embedded assets are
+# the thing to check. It also runs `beforeBuildCommand` and validates the
+# identifier. What it does NOT cover is the bundle itself: see
+# `client-tauri-bundle`, and do not fold it back in here.
+#
 # `--locked` stops it rewriting the tracked `Cargo.lock` on a manifest edit.
 #
 # `--ci` is passed explicitly because the CLI reads `CI` from the environment as
@@ -178,14 +185,22 @@ client-test:
 # `0` is the common one, and forge's own sessions carry it - is rejected before
 # the build starts.
 #
-# Not a step in `check`, because the webview compile is minutes and forge runs
-# every worker in its own worktree, so it would charge each Rust-only change for
-# a crate it never touched. A cost choice rather than an impossibility: CI
-# already apt-installs the headers its own crates need, so a job there is
-# possible and is #1265.
-#
-# Run before handing over a change under client/src-tauri/.
+# Not a step in `check`: the webview compile is minutes and forge runs every
+# worker in its own worktree, so it would charge each Rust-only change for a
+# crate it never touched. A cost choice rather than an impossibility.
 client-tauri-check:
+    npm --prefix client run tauri -- build --no-bundle --ci -- --locked
+
+# Build the shell's bundles: `forge.app` and the dmg, under
+# client/src-tauri/target/release/bundle. It is the only thing that covers the
+# bundle itself, which `client-tauri-check` does not, so run it deliberately -
+# before a release, or when `bundle.icon` or the window config changes.
+#
+# The dmg step mounts the image and runs AppleScript to lay the mounted volume
+# out, so it opens a Finder window and takes focus for a few seconds.
+#
+# **A window on every run is why this is not the routine gate.**
+client-tauri-bundle:
     npm --prefix client run tauri -- build --ci -- --locked
 
 # Compile the feature configurations nothing else builds.
