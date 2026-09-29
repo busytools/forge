@@ -284,14 +284,15 @@
       }
       return;
     }
-    if (event.key === 'ArrowDown') {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
-      move(1);
-      return;
-    }
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      move(-1);
+      move(event.key === 'ArrowDown' ? 1 : -1);
+      // A row can be holding the keyboard when the mark moves - a click leaves
+      // focus on it - and the mark is what Space and Enter act on, so the
+      // keyboard goes where the mark is. `focus follows the mark` is the rule
+      // the effect above enforces for the own-words row; this is the other half
+      // of it, for a mark that moved off a row that still had focus.
+      listbox?.focus();
       return;
     }
     if (event.key === ' ') {
@@ -390,15 +391,24 @@
           tabindex="-1"
           onclick={() => choose(at)}
           onkeydown={(event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
+            const key = event.key;
+            if (key !== 'Enter' && key !== ' ') return;
             event.preventDefault();
-            // A row keeps the keys it answers for itself. It is focusable - a
-            // browser focuses it on click - so without this the same key
-            // reaches the listbox's branch behind it and undoes the toggle, or
-            // submits what this just chose. Arrows and Escape still bubble,
-            // because those are the listbox's own.
+            // A row keeps the keys it answers for itself: it is focusable (a
+            // browser focuses it on click), and without stopping the event the
+            // same key also reaches the listbox's branch behind it and either
+            // undoes the toggle or submits what this just chose.
+            //
+            // What it does with them is what the keys line promises, which is
+            // the listbox's own rule: Space toggles, Enter submits. Arrows and
+            // Escape still bubble, because those belong to the listbox.
             event.stopPropagation();
-            choose(at);
+            marked = at;
+            if (key === ' ') {
+              toggle();
+              return;
+            }
+            submit();
           }}
         >
           {#if row.icon !== null}

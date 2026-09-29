@@ -450,6 +450,30 @@ describe('the dock', () => {
     ).toEqual([true, false, false]);
   });
 
+  it('keeps the keyboard with the mark, so a key after an arrow acts on the marked row', () => {
+    open({ record: record({ pending_ask: questionAsk() }) });
+
+    const row = options()[0];
+    if (!(row instanceof HTMLElement)) throw new Error('the dock drew no options');
+    row.focus();
+    flushSync();
+
+    press('ArrowDown');
+    expect(document.querySelector('.dock .opt.sel')?.textContent, 'the mark moved').toContain(
+      'Production',
+    );
+    expect(document.activeElement, 'and the keyboard moved with it').toBe(
+      document.querySelector('.dock [role="listbox"]'),
+    );
+
+    press(' ');
+
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'so the toggle lands on the row the reader can see is marked',
+    ).toEqual([false, true, false]);
+  });
+
   it('moves the mark back out of the own-words field, so the options are reachable again', () => {
     const harness = open({ record: record({ pending_ask: questionAsk() }) });
     const list = document.querySelector('.dock [role="listbox"]');

@@ -100,14 +100,23 @@ export interface ComposerProps {
 }
 
 /**
- * Whether dictation is on offer, from the home wire's own two halves.
+ * Whether dictation is on offer: on, and every declared model LOADED.
  *
  * `enabled` is carried rather than inferred from an empty model list, because
  * that list is empty both for a switched-off `[dictate]` and for a snapshot
  * taken before the models loaded - so both are read and neither is assumed.
+ *
+ * **A model is loaded when it is `ready`, which is the same reading the home's
+ * own card takes** (`home/view.ts` counts `state === 'ready'` and calls the
+ * install ready only when every model is). Anything less draws a mic whose
+ * click dispatches a `dictate_start` the core cannot honour, because the engine
+ * is parked only when the whole set loaded. The mic still arrives - the page
+ * re-reads the home when `DictateAvailability` lands - so the wait is a delay
+ * rather than an absence.
  */
 export function dictationOffered(dictate: DictateWire): boolean {
-  return dictate.enabled && dictate.snapshot.models.length > 0;
+  const models = dictate.snapshot.models;
+  return dictate.enabled && models.length > 0 && models.every((model) => model.state === 'ready');
 }
 
 /** The composer's own state, read off the record the page handed it. */
