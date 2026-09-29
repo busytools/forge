@@ -221,13 +221,21 @@ export class Chat {
     return this.running;
   }
 
-  /** Ask for the turns above the oldest held one. */
-  older(): void {
+  /**
+   * Ask for the turns above the oldest held one, answering whether it asked.
+   *
+   * The answer is what the list turns its compensation on with, and it has to
+   * be on BEFORE the page lands: the compensation is applied as the rows
+   * change, so a caller that switched it on when the answer arrived would be
+   * switching it on after the change it exists for.
+   */
+  older(): boolean {
     const { cursor, loaded } = this.read();
     // Nothing above the page already drawn is the server's own `null`, and
     // asking again on it would walk the same page forever.
-    if (!loaded || cursor === null) return;
+    if (!loaded || cursor === null || this.inFlight !== null) return false;
     this.ask(cursor);
+    return true;
   }
 
   /** Ask for the newest page again, which is what replaces a settled turn. */

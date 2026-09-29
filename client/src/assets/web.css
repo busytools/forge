@@ -328,10 +328,10 @@ section.org .note {
 }
 
 /* ---------- the session page: three columns over one sheet ----------
-   Taken from the mock at docs/book/src/ui/client/web-session.html. A pane collapses
-   to nothing, and the handle that brings it back lives in the chat header
-   rather than on the pane's edge, so a collapsed column leaves no edge
-   behind and its control stays clickable. */
+   Taken from the mock at docs/book/src/ui/client/web-session.html. A rail
+   collapses to nothing, and the handle that brings it back lives in the chat
+   header rather than on the rail's own edge, so a folded column leaves no
+   edge behind and its control stays clickable. */
 
 .mono { font-family: var(--mono); }
 /* One icon rule for the whole page: a sprite reference inherits the colour
@@ -342,37 +342,38 @@ section.org .note {
 details[open] > summary .arw { transform: rotate(90deg); }
 .dim { color: var(--dim); }
 
+/* `dvh` rather than `vh`: a phone's URL bar hides and shows, and a frame sized
+   to `vh` is taller than the window it is in whenever the bar is showing. */
 .app {
   display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr) var(--rail-r);
-  gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden;
+  gap: var(--ins); padding: var(--ins); height: 100dvh; overflow: hidden;
   font-size: var(--fs-prose);
 }
-/* Placed rather than auto-flowed: a collapsed pane leaves its column empty,
-   and auto-flowing the rest along moves the conversation into the rail's
-   column and blanks the page. A descendant, not a child: the page puts a
-   contents wrapper between the app and these three, and a child hop over it
-   matches nothing. */
+/* Placed rather than auto-flowed: a collapsed column leaves its grid slot
+   empty, and auto-flowing the rest along moves the conversation into the
+   rail's column and blanks the page. */
 .app .rail.left { grid-column: 1; }
 .app main.chat { grid-column: 2; }
 .app .rail.right { grid-column: 3; }
-/* checked is COLLAPSED. The boxes are siblings of the app, not of anything
-   inside it, so the rules reach it in one hop - and the selector names the
-   app rather than the region, because a region the stream replaces is one
-   the rules would stop matching the moment it did. */
-#l:checked ~ .app { --rail-l: 0px; }
-#r:checked ~ .app { --rail-r: 0px; }
-#l:checked ~ .app .rail.left,
-#r:checked ~ .app .rail.right { display: none; }
-.pane-tog { display: flex; align-items: center; justify-content: center;
+/* A folded column says so on the app rather than in a hidden box beside it.
+   The server held this in checkboxes because a page with no script had
+   nowhere else to put it; the class is the same fact stated once, and it
+   means what it says at every width - the media queries below turn a shown
+   rail into a sheet rather than inverting the word. */
+.app.left-hidden { --rail-l: 0px; }
+.app.right-hidden { --rail-r: 0px; }
+.app.left-hidden .rail.left,
+.app.right-hidden .rail.right { display: none; }
+.rail-tog { display: flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
-  color: var(--muted); border: 1px solid transparent; }
-.pane-tog:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
-.pane-tog svg { width: 16px; height: 16px; display: block; }
+  color: var(--muted); background: none; border: 1px solid transparent; padding: 0; }
+.rail-tog:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
+.rail-tog svg { width: 16px; height: 16px; display: block; }
 /* Both handles sit with the title on a phone; on a wide screen the
    inspector's goes to the far right, past the facts. */
 .sess .tog-r { order: 99; }
-#l:checked ~ .app .pane-tog.tog-l,
-#r:checked ~ .app .pane-tog.tog-r {
+.app.left-hidden .rail-tog.tog-l,
+.app.right-hidden .rail-tog.tog-r {
   color: var(--accent); background: rgba(244,118,0,.1); border-color: rgba(244,118,0,.3); }
 
 .rail { display: flex; flex-direction: column; overflow: hidden; border-radius: 16px;
@@ -390,9 +391,11 @@ details[open] > summary .arw { transform: rotate(90deg); }
   text-transform: uppercase; color: var(--accent); }
 .banner .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .banner .n.ml { margin-left: auto; }
-/* A pane that covered the page carries its own way out: the header handle
-   that opened it is underneath. */
-.banner .close { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px; }
+/* A rail that covered the page carries its own way out: the header handle
+   that opened it is underneath. The chip is a button with a sprite in it
+   rather than a glyph sized to a monospace line box. */
+.banner .close { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px;
+  background: none; border: 0; display: flex; align-items: center; }
 .banner .close:hover { color: var(--text); }
 
 /* The chat column. min-height:0 or the column refuses to shrink below its
@@ -422,8 +425,8 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
-  font-family: var(--mono); font-size: var(--fs-data); line-height: 1.5;
-  border-radius: 5px; padding: 0 5px; cursor: pointer; }
+  background: none; border: 0; display: flex; align-items: center;
+  border-radius: 5px; padding: 2px 5px; cursor: pointer; }
 .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
 .pj.cur .pr .nm { color: var(--accent); }
 .wk { display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 34px; cursor: pointer; }
@@ -441,10 +444,8 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .rail .nm a:hover { text-decoration: underline; }
 /* A chip that cannot be clicked yet says so rather than turning red under
    the pointer, which would promise the click. */
-.pj:hover .pr .x[aria-disabled="true"], .wk:hover .x[aria-disabled="true"] {
-  color: var(--muted); background: none;
-}
-.x[aria-disabled="true"] { opacity: .4; cursor: default; }
+.pj:hover .pr .x:disabled, .wk:hover .x:disabled { color: var(--muted); background: none; }
+.x:disabled { opacity: .4; cursor: default; }
 
 /* a line whose work is in flight, the ring in front of it */
 .hold { display: flex; align-items: center; gap: 9px; color: var(--accent);
@@ -467,9 +468,12 @@ details.sec > summary { list-style: none; display: flex; align-items: center; ga
 details.sec > summary::-webkit-details-marker { display: none; }
 details.sec > summary:hover { background: rgba(27,33,48,.4); }
 details.sec > summary .gl { color: var(--dim); }
+/* The summary is the section's own line - a branch and a count, a number of
+   workspaces. It takes the room the title leaves and wraps inside it rather
+   than being cut, which is what the terminal's one-line row did. */
 details.sec > summary .c2 { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
   font-style: italic; letter-spacing: 0; text-transform: none; font-weight: 400;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  min-width: 0; overflow-wrap: anywhere; }
 details.sec > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
 details.sec[open] > summary { border-bottom: 1px solid var(--line); }
 details.sec[open] > summary .arw { color: var(--accent); }
@@ -516,11 +520,11 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 .pop .hd .st.bad { color: var(--bad); }
 .kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
   font-family: var(--mono); font-size: var(--fs-data); }
-/* A key can be a task subject or a cron prompt, so it shortens rather
-   than pushing its value out of the rail. */
-.kv .k { color: var(--dim); min-width: 0; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; }
-.kv .v { color: var(--muted); text-align: right; }
+/* A key can be a task subject, a cron prompt or a process command, so it
+   takes its own width and wraps inside it rather than being cut: the key is
+   the thing the row is about, and an ellipsis strands it. */
+.kv .k { color: var(--dim); min-width: 0; overflow-wrap: anywhere; }
+.kv .v { color: var(--muted); text-align: right; min-width: 0; overflow-wrap: anywhere; }
 .kv .v.a { color: var(--accent); }
 .pop hr { border: 0; height: 1px; background: var(--line); margin: 9px 0 7px; }
 .bar { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
@@ -539,8 +543,10 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
 
 @media (max-width: 1280px) {
   .app { grid-template-columns: var(--rail-l) minmax(0,1fr); }
+  /* The inspector stops being a column, so a shown one is a sheet over the
+     chat: the handle the header draws is never a control that does nothing. */
   .rail.right { display: none; }
-  #r:checked ~ .app .rail.right {
+  .app.right-shown .rail.right {
     display: flex; position: fixed; inset: 0; z-index: 40; border-radius: 0;
   }
 }
@@ -557,12 +563,11 @@ details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--a
   /* Wrapped, the dots between the facts are noise rather than separators. */
   .sess .facts .sep { display: none; }
   .sess .tog-r { order: 0; }
+  /* One column, so a shown rail covers it rather than sitting beside it. */
   .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
   .rail.left, .rail.right { display: none; }
-  #l:checked ~ .app .rail.left { display: flex; }
-  #r:checked ~ .app .rail.right { display: flex; }
-  #l:checked ~ .app,
-  #r:checked ~ .app { --rail-l: 0px; --rail-r: 0px; }
+  .app.left-shown .rail.left,
+  .app.right-shown .rail.right { display: flex; }
 }
 
 /* ---------- narrow: a phone is a client too ---------- */
@@ -761,6 +766,21 @@ details.msg[open] > summary .arw { color: var(--teal); }
      the size a finger needs, and it is applied at the phone breakpoint rather
      than everywhere so a desktop pointer keeps the tighter rows. */
   button, input, select, textarea, details > summary { min-height: 44px; }
+
+  /* The session page's own controls, which are buttons now rather than the
+     spans and labels they were ported from. The rule above is for a control
+     whose own height IS the target; these two are not. */
+  .rail-tog { width: 44px; height: 44px; }
+  /* A row's chip is not the target - the row is, and has been since the mock
+     drew `.pr` as the pointer - so it gives its height back rather than
+     stretching every row it sits in. It is disabled today in any case. */
+  .pr .x, .wk .x { min-height: 0; }
+  /* The banner's is the exception, and it is the one control that must stay a
+     target: it is the way out of a covering rail, the header's handle is
+     underneath it at this width, and it is drawn ~23px wide by its padding -
+     under the 24px floor as well as the house bar. So it takes the height the
+     rule above gives it and a width to match. */
+  .banner .close { min-width: 44px; }
 }
 
 /* A delivery keeps the lines it arrived with: its body is often a second
@@ -1026,14 +1046,32 @@ details.msg[open] > summary .arw { color: var(--teal); }
    to its own list. */
 .sb .note { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 4px 0 0; }
 
-/* A section body's row is one line, the way the terminal draws the same
-   row, and neither half can push the row past the rail. Both shorten with
-   an ellipsis when the row is too narrow for both, and the value shortens
-   first because a name or a command is what the row is about: a reason
-   long enough to want the whole rail leaves the name its third. */
-.sb .kv .k { flex: 1 1 auto; min-width: 35%; }
-.sb .kv .v { flex: 0 4 auto; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A section body's row: the key on the left, its value on the right.
+   The server cut both to one line because a terminal row IS one line, with a
+   proportional floor under the key so neither half pushed the other off the
+   rail. Neither half is one line here: a value is a process command, an MCP
+   failure reason or a server scope, and cutting it strands the row's whole
+   point. So both wrap where they stand, and the split is left to the words
+   rather than to a percentage. */
+/* The key takes the row and wraps inside it; the value gives way first,
+   because a name or a command is what the row is about and a memory figure
+   is not. */
+.sb .kv .k { flex: 1 1 auto; }
+.sb .kv .v { flex: 0 1 auto; }
+
+/* The processes section: a process's children are a list inside its own item,
+   so the indent is the browser's and a deeper tree is a deeper list rather
+   than twice as many characters in front of a command. */
+.sb .tree, .sb .tree ul { list-style: none; }
+.sb .tree ul { padding-left: 14px; }
+
+/* The slack section: a workspace, and the subscriptions under it as a list
+   inside the workspace's own item rather than two spaces in front of a
+   target. */
+.sb .ws, .sb .subs { list-style: none; }
+.sb .ws > li + li { padding-top: 8px; }
+.sb .subs { padding-left: 14px; }
+.sb .subs > li { padding-top: 4px; }
 
 /* A card: one monitor, or one sub-agent, with its own head and body. */
 .sb .sa { border: 1px solid var(--line); border-radius: 10px; background: var(--s1); padding: 0 0 1px; }
@@ -1048,19 +1086,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .sb .sa .tt .tg { color: var(--muted); }
 .sb .sa .settled { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   padding: 0 12px 9px; }
-
-/* ---------- how a row gives way where the value is the point ----------
-
-   A schedule row inverts the shared row rule above it: the next-fire is what
-   the row is for and the label is only its context, so the label shortens and
-   the value keeps its own width. Scoped here on purpose - a server row and a
-   process row keep the shared rule, where the name is the thing scanned for.
-   The floor under the label is 30% rather than the shared 35%, and the value
-   is capped at what that floor leaves it, so one too wide for the column
-   ellipsises rather than running past the rail. The 12px is this row's own
-   gap, so a change to one is a change to the other. */
-.sec[data-k="sec-schedules"] .sb .kv .k { flex: 1 1 auto; min-width: 30%; }
-.sec[data-k="sec-schedules"] .sb .kv .v { flex: 0 0 auto; max-width: calc(70% - 12px); }
 
 /* A command with no description is named by its own command in the row title,
    so that title wraps instead of ellipsising a line off it, and stops at

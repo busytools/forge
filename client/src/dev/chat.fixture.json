@@ -1,5 +1,51 @@
 {
   "slot": { "org": "TestOrg", "project": "forge", "label": "lead" },
+  "older": {
+    "key": "2026-09-29T08:52:10.400Z",
+    "messages": [
+      {
+        "type": "user",
+        "uuid": "u-0",
+        "message": {
+          "role": "user",
+          "content": [{ "type": "text", "text": "Start with the grouping rules." }]
+        }
+      },
+      {
+        "type": "assistant",
+        "uuid": "a-0",
+        "message": {
+          "id": "msg_00",
+          "role": "assistant",
+          "model": "claude-opus-5",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu-old",
+              "name": "Read",
+              "input": {
+                "file_path": "/Users/vedhavyas/Projects/forge/crates/forge-server/src/grouping.rs"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "user",
+        "uuid": "r-0",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "tu-old",
+              "content": "/// Render-time grouping of consecutive tool calls.\n"
+            }
+          ]
+        }
+      }
+    ]
+  },
   "turns": [
     {
       "key": "2026-09-29T09:14:02.118Z",

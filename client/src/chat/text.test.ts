@@ -24,6 +24,22 @@ describe('the text a command produced, as a page draws it', () => {
     );
   });
 
+  it('#1293: strips a string control and its payload', () => {
+    // Five introducers carry a payload rather than a formatting instruction:
+    // OSC, DCS, SOS, PM and APC. The four beyond OSC are what a device
+    // answers with, and each runs to a string terminator.
+    expect(stripEscapes('before \u{1b}Pq~xyz\u{1b}\\ after')).toBe('before  after');
+    expect(stripEscapes('\u{1b}Xhello\u{1b}\\after')).toBe('after');
+    expect(stripEscapes('\u{1b}^meta\u{1b}\\after')).toBe('after');
+    expect(stripEscapes('\u{1b}_app\u{1b}\\after')).toBe('after');
+    // An unterminated payload takes the rest of the text with it, which is
+    // what a terminal does and the case a pattern requiring a terminator
+    // leaves on the page.
+    expect(stripEscapes('text\u{1b}Pq~payload')).toBe('text');
+    // The bell terminates too, and that arm is shared with OSC.
+    expect(stripEscapes('\u{1b}_a\u{7}after')).toBe('after');
+  });
+
   it('strips an escape that carries an intermediate byte', () => {
     // `sgr0` on this machine's terminfo is `\E(B\E[m`, so the two-byte reading
     // of a non-CSI escape leaves a bare `B` on the page where a terminal drew

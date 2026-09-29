@@ -5,6 +5,8 @@
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
   import type { Route } from '../routes';
+  import Session from '../session/Session.svelte';
+  import type { Connection } from '../socket';
   import type { ClientSettings } from '../wire/types';
 
   let {
@@ -14,6 +16,7 @@
     home,
     failure,
     connected,
+    connection,
     onconnect,
   }: {
     route: Route;
@@ -24,6 +27,8 @@
     failure: Extract<Attempt, { ok: false }> | null;
     /** A socket is open, whether or not its first read has come back. */
     connected: boolean;
+    /** The connection the pages read through, which a session page subscribes on. */
+    connection: Connection | null;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
 </script>
@@ -56,8 +61,18 @@
        door in every build, and the route renders nothing without it. -->
   <Fixture />
 {:else if route.name === 'session'}
-  <!-- Task 5 draws the session page here, from `src/session/`. -->
-  <main class="wrap"><p class="pending">The session page is next.</p></main>
+  {#if connection !== null && home.wire !== null}
+    <Session slot={route.slot} {connection} wire={home.wire} />
+  {:else if connected}
+    <!-- Connected, and the fleet has not been read yet. The session page's
+         rail and four of its inspector sections are the home's, so handing it
+         one that has not arrived would draw them empty rather than pending. -->
+    <main class="wrap"><p class="pending">Reading the fleet...</p></main>
+  {:else}
+    <!-- No server has answered, so there is no seat to draw and the app's
+         only input is its URL. -->
+    <Connect {settings} initialAddress={address} launchFailure={failure} {onconnect} />
+  {/if}
 {:else}
   <main class="wrap">
     <p class="pending">

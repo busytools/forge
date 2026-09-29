@@ -35,9 +35,15 @@ function endOfSequence(text: string, at: number): number {
   const next = text.charCodeAt(at + 1);
   if (Number.isNaN(next)) return text.length;
 
-  // OSC carries a payload - a window title, a hyperlink, a notification - and
-  // ends at a bell or a string terminator. The payload is not text.
-  if (next === 0x5d) {
+  // A STRING CONTROL carries a payload and ends at a bell or a string
+  // terminator: OSC `]` (a window title, a hyperlink, a notification), DCS
+  // `P`, SOS `X`, PM `^` and APC `_`. Five introducers, one shape, and the
+  // payload is never text.
+  //
+  // The four beyond OSC are what a device answers with - a terminal
+  // capability query, a graphics payload - and reading them as the escape and
+  // one character puts `q~xyz` on the page where a terminal drew nothing.
+  if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
     for (let scan = at + 2; scan < text.length; scan += 1) {
       const code = text.charCodeAt(scan);
       if (code === BELL) return scan + 1;

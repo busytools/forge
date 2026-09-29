@@ -80,12 +80,11 @@
     list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
   });
 
-  // A prepend turns the compensation on, and the tick after it lands turns it
-  // off again: the list has taken the rows by then, and leaving it on would
-  // make the next appended turn move the reader.
+  // The compensation goes ON when the ask goes out, which `loadOlder` does, and
+  // comes off here: the tick after a prepend lands, the list has taken the rows,
+  // and leaving it on would make the next arriving turn move the reader.
   $effect(() => {
     if (held.prepends === 0) return;
-    shift = true;
     const timer = setTimeout(() => {
       shift = false;
     }, 0);
@@ -101,18 +100,24 @@
     list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
   });
 
-  /**
-   * Where the reader is, and whether they have reached the top.
-   *
-   * `shift` on the list is what keeps their place when older turns are
-   * prepended: without it the list measures from the start, so every prepend
-   * pushes what they are reading down by the height of what arrived above it.
-   */
+  /** Where the reader is, and whether they have reached the top. */
   function scrolled(offset: number): void {
     const total = list?.getScrollSize() ?? 0;
     const viewport = list?.getViewportSize() ?? 0;
     working?.position(offset + viewport >= total - 8);
-    if (offset < REACH) working?.older();
+    if (offset < REACH) loadOlder();
+  }
+
+  /**
+   * Ask for the turns above, holding the reader's place while they arrive.
+   *
+   * The compensation is switched on as the ask goes out rather than when the
+   * answer lands, because the list applies it AS the rows change: a page that
+   * waited for the answer would be switching it on after the change it exists
+   * for, which is a prepend that moves everything the reader is looking at.
+   */
+  function loadOlder(): void {
+    if (working?.older() === true) shift = true;
   }
 </script>
 
