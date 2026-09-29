@@ -477,6 +477,10 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
             walk_processes_if_stale(surface, slot, roster.claude_pid(slot)).await;
             Ok(serde_json::to_value(session(state, surface, slot, &cwd).await?)?)
         }
+        // The pool's own report, scanned here rather than carried in another
+        // snapshot: it belongs to no seat, and a home snapshot that scanned
+        // the pool would pay for the walk on every subscribe.
+        Subject::Usage => Ok(serde_json::to_value(surface.usage().await?)?),
     }
 }
 
@@ -931,6 +935,12 @@ mod tests {
                     // name.
                     r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls","description":"List files"}}]}}"#,
                     r#"{"type":"user","uuid":"u2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"a\nb"}]}}"#,
+                    // A counted turn, so the usage fixture carries real
+                    // tokens rather than a pool that reads as empty. The
+                    // stamp is fixed in the past: a "now" stamp would put
+                    // the record in the rolling windows, and which of them
+                    // hold it flips at midnight.
+                    r#"{"type":"assistant","uuid":"a2","timestamp":"2025-01-02T03:04:05.000Z","message":{"id":"m-usage","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"counted"}],"usage":{"input_tokens":7,"output_tokens":11,"cache_read_input_tokens":13,"cache_creation_input_tokens":17}}}"#,
                     r#"{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
                 ],
             )
@@ -1007,6 +1017,7 @@ mod tests {
         vec![
             (Subject::Home, dir.join("home.json")),
             (Subject::Session(fixture_seat()), dir.join("session.json")),
+            (Subject::Usage, dir.join("usage.json")),
         ]
     }
 
@@ -1029,6 +1040,53 @@ mod tests {
             std::fs::write(&fixture, serde_json::to_string_pretty(&encoded).expect("render"))
                 .expect("write");
         }
+    }
+
+    /// The token/cost report, on the subject a usage view subscribes to.
+    /// Nothing carried it: the pool is scanned off-thread by the terminal,
+    /// and a client had no way to ask for the same numbers.
+    ///
+    /// Its own fleet rather than the shared fixture root, because the scan
+    /// reads that root's transcript pool: two tests building the same root at
+    /// once is a fight over one directory.
+    #[tokio::test]
+    async fn a_usage_subscription_is_answered_with_the_pools_report() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        // A stamp in the past on purpose: a record stamped "now" flips which
+        // rolling windows hold it at midnight, so the assertion below would be
+        // a coin toss once a day.
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &[r#"{"type":"assistant","timestamp":"2025-01-02T03:04:05.000Z","message":{"id":"m-usage","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"counted"}],"usage":{"input_tokens":7,"output_tokens":11}}}"#],
+            )
+            .expect("the transcript seeds");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Usage).await.expect("encode");
+
+        assert_eq!(
+            encoded["lifetime"]["total"]["input"], 7,
+            "the pool's own count crosses, so the read is the scanner's: {encoded}"
+        );
+        assert_eq!(
+            encoded["today"]["total"]["input"], 0,
+            "and a record from a past day is in no rolling window: {encoded}"
+        );
+        assert!(
+            encoded.get("pricing_available").is_some(),
+            "and the flag that blanks costs rather than reading a misleading zero: {encoded}"
+        );
     }
 
     #[tokio::test]

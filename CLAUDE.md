@@ -160,10 +160,11 @@ through named verbs by subject - `roster`, `session`, `agents`,
 `cli_version`, `conversation`, `folded_units`, `slash_commands`,
 `forge_commands`, `subagents`,
 `file_index`, `respect_gitignore`, `header`, `mcp_servers`,
-`processes`, `monitors` and `pending_ask` - receives changes through
+`processes`, `monitors`, `pending_ask`, `fatal_error`, `service_status`
+and `usage` - receives changes through
 `subscribe()`, and acts through `dispatch()`, which is a verb rather than
 an accessor so a view is handed the commands it needs and not the whole
-core. All twenty-two exist in `forge-server`, and the TUI reads
+core. All twenty-five exist in `forge-server`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk

@@ -38,8 +38,8 @@ truth. A `null` is not a failure: it means the built-in.
 
 ## Subjects
 
-Everything a client reads is addressed by a subject, and there are two:
-`home`, and `session <org>/<project>/<label>`.
+Everything a client reads is addressed by a subject, and there are three:
+`home`, `session <org>/<project>/<label>`, and `usage`.
 
 A seat nobody has started is an answer rather than a silence. Subscribing
 to one that is not there comes back as an `error` saying so, so a client
@@ -148,7 +148,18 @@ conversation, and what the composer is doing.
 | `state` | The seat's scan cwd and what it dictates with, where it has overridden the defaults. |
 | `composer` | What the composer is doing: a take in flight with its meter and phase, the line a finished take left, whether the session is compacting, and a sign-in it is waiting on. The ask it is answering rides `pending_ask` rather than being copied here. |
 
-## What is not here
+**`usage`** is the token/cost pool behind a `/usage` view, scanned on the
+ask.
+
+| Field | What it is |
+|---|---|
+| `today`, `week`, `month`, `lifetime` | One window each, holding the same two groupings: `by_model` and `by_project` rows of tokens and notional cost, plus the `total` row. Each list is sorted by cost, descending. |
+| `pricing_available` | Whether a price table was loaded when the report was built. `false` means every cost is a placeholder zero, which is why it crosses rather than being left to a client to infer. |
+
+**Nothing updates this subject.** It is a scan of the session-JSONL pool,
+not a feed: no update announces that a transcript's tokens moved, so a
+subscription is answered once and then hears nothing. A client that wants
+the current numbers asks again by subscribing again.
 
 - **The diff.** A session's working tree arrives as state - its branch and
   how much changed - and not as a diff. A full diff is a heavier read, and

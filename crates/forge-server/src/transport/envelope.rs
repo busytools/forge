@@ -18,6 +18,15 @@ use crate::{Command, SessionUpdate};
 pub enum Subject {
     Home,
     Session(SessionSlot),
+    /// The token/cost pool, scanned on the ask.
+    ///
+    /// It belongs to no seat - the report is the whole session-JSONL pool,
+    /// bucketed by project and model - and no update carries it: the pool
+    /// changes as transcripts are written, and nothing in the stream says a
+    /// transcript's tokens moved. So a subscription is answered with one scan
+    /// and hears nothing after it, and a client asks again by subscribing
+    /// again.
+    Usage,
 }
 
 impl Subject {
@@ -44,6 +53,10 @@ impl Subject {
         match self {
             Self::Home => fleet_news(update).any() || update.slot().is_none(),
             Self::Session(seat) => update.slot() == Some(seat),
+            // Nothing carries the pool: its snapshot is a scan, and a
+            // transcript's tokens moving is not an update any variant
+            // announces.
+            Self::Usage => false,
         }
     }
 }
