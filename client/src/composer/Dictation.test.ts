@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import Dictation from './Dictation.svelte';
-import { SLOT, take } from './testing.svelte';
+import { SLOT, take } from './testing';
 import type { Connection } from '../socket';
 
 const sent: Record<string, Record<string, unknown>>[] = [];
@@ -18,7 +18,7 @@ const connection = {
 let app: Record<string, unknown> | null = null;
 
 afterEach(() => {
-  if (app !== null) unmount(app);
+  if (app !== null) void unmount(app);
   app = null;
   sent.length = 0;
   document.body.innerHTML = '';
@@ -59,9 +59,10 @@ describe('the dictation row', () => {
     );
     expect(document.querySelector('.wave')?.classList.contains('tr')).toBe(true);
     expect(document.querySelector('.dict .dot')?.classList.contains('tr')).toBe(true);
-    expect(document.querySelectorAll('.wave .wtr i'), 'the meter keeps its last readings').toHaveLength(
-      3,
-    );
+    expect(
+      document.querySelectorAll('.wave .wtr i'),
+      'the meter keeps its last readings',
+    ).toHaveLength(3);
   });
 
   it('abandons the take it was drawn for', () => {

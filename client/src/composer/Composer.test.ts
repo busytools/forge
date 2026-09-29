@@ -2,18 +2,10 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import Composer from './Composer.svelte';
-import {
-  fake,
-  permissionAsk,
-  questionAsk,
-  record,
-  seatRead,
-  take,
-  wire,
-  type Wire,
-} from './testing.svelte';
-import type { ComposerProps } from './view';
+import Harness from './Harness.svelte';
+import type { ServerMessage } from '../protocol';
+import { permissionAsk, questionAsk, record, seatRead, take, wire, type Wire } from './testing';
+import type { ComposerProps, ComposerRecord, SeatRead } from './view';
 
 /** Everything the page is drawing, as a reader reads it. */
 const drawn = () => document.body.textContent ?? '';
@@ -45,28 +37,57 @@ let app: Record<string, unknown> | null = null;
 let second: Record<string, unknown> | null = null;
 
 afterEach(() => {
-  if (app !== null) unmount(app);
-  if (second !== null) unmount(second);
+  if (app !== null) void unmount(app);
+  if (second !== null) void unmount(second);
   app = null;
   second = null;
   document.body.innerHTML = '';
 });
 
+/** The harness's own state, which a test sets the way a page would re-render it. */
+interface Page {
+  record: ComposerRecord;
+  seat: SeatRead;
+}
+
+function pageOf(instance: Record<string, unknown>): Page {
+  const held = instance['page'];
+  if (held === null || typeof held !== 'object') throw new Error('the harness exposed no props');
+  return held as Page;
+}
+
 function open(over: Partial<ComposerProps> = {}, on?: Wire) {
-  const harness = fake(over, on);
-  app = mount(Composer, { target: document.body, props: harness.props });
+  const shared = on ?? wire();
+  app = mount(Harness, {
+    target: document.body,
+    props: { wire: shared, initial: over, dictation: over.dictation ?? false },
+  });
   flushSync();
-  return harness;
+  return {
+    page: pageOf(app),
+    sent: shared.sent,
+    say: (message: ServerMessage) => shared.say(message),
+  };
 }
 
 /** The phone and the desktop: two composers, one seat, one connection. */
 function openBoth(over: Partial<ComposerProps> = {}) {
   const shared = wire();
   const one = open(over, shared);
-  const props = fake(over, shared);
-  second = mount(Composer, { target: document.body, props: props.props });
+  second = mount(Harness, {
+    target: document.body,
+    props: { wire: shared, initial: over, dictation: over.dictation ?? false },
+  });
   flushSync();
-  return { shared, one, other: props };
+  return {
+    shared,
+    one,
+    other: {
+      page: pageOf(second),
+      sent: shared.sent,
+      say: (message: ServerMessage) => shared.say(message),
+    },
+  };
 }
 
 /** Every option row the page is drawing, in order. */
@@ -90,7 +111,7 @@ describe("the reader's draft", () => {
     const harness = open();
     type('fix the flaky retry test');
 
-    harness.props.record = record({ pending_ask: permissionAsk() });
+    harness.page.record = record({ pending_ask: permissionAsk() });
     flushSync();
 
     expect(
@@ -100,24 +121,24 @@ describe("the reader's draft", () => {
     expect(drawn(), 'the prompt itself is what the slot draws').toContain('Allow once');
 
     const answered = document.querySelector('.opt .lbl');
-    if (!(answered instanceof HTMLElement)) throw new Error('the dock drew no option to answer with');
+    if (!(answered instanceof HTMLElement))
+      throw new Error('the dock drew no option to answer with');
     answered.click();
     flushSync();
 
-    harness.props.record = record();
+    harness.page.record = record();
     flushSync();
 
-    expect(
-      field().value,
-      'the reader typed this and the dock took it',
-    ).toBe('fix the flaky retry test');
+    expect(field().value, 'the reader typed this and the dock took it').toBe(
+      'fix the flaky retry test',
+    );
   });
 
   it('is held across a prompt the reader rejected', () => {
     const harness = open();
     type('ship it once CI is green');
 
-    harness.props.record = record({ pending_ask: questionAsk() });
+    harness.page.record = record({ pending_ask: questionAsk() });
     flushSync();
 
     const rejected = document.querySelectorAll('.opt .lbl')[1];
@@ -125,7 +146,7 @@ describe("the reader's draft", () => {
     rejected.click();
     flushSync();
 
-    harness.props.record = record();
+    harness.page.record = record();
     flushSync();
 
     expect(field().value, 'the draft went with the prompt').toBe('ship it once CI is green');
@@ -141,7 +162,9 @@ describe('the box', () => {
     const harness = open();
     type('push it once CI is green');
     const box = field();
-    box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    box.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
     flushSync();
 
     expect(harness.sent, 'the command is the text as typed, addressed to this seat').toEqual([
@@ -162,7 +185,7 @@ describe('the box', () => {
     const harness = open();
     const before = document.querySelector('.box')?.innerHTML ?? '';
 
-    harness.props.record = record({
+    harness.page.record = record({
       composer: { take: take(), notice: null, compacting: false, sign_in: null },
     });
     flushSync();
@@ -170,7 +193,7 @@ describe('the box', () => {
     expect(document.querySelector('.box .dict'), 'the row lives inside the box').not.toBeNull();
     expect(document.querySelector('.box')?.innerHTML, 'the box grew a row').not.toBe(before);
 
-    harness.props.record = record();
+    harness.page.record = record();
     flushSync();
 
     expect(document.querySelector('.dict'), 'the row collapses with the take').toBeNull();
@@ -182,7 +205,7 @@ describe('the box', () => {
       const harness = open();
       type('fix the');
 
-      harness.props.record = record({
+      harness.page.record = record({
         composer: {
           take: null,
           notice: { kind: 'landed', text: 'flaky retry test', truncated: false },
@@ -195,7 +218,9 @@ describe('the box', () => {
       expect(field().value, 'the words land where the reader was about to type').toBe(
         'fix the flaky retry test',
       );
-      expect(document.querySelector('.box')?.classList.contains('done'), 'one green beat').toBe(true);
+      expect(document.querySelector('.box')?.classList.contains('done'), 'one green beat').toBe(
+        true,
+      );
 
       vi.advanceTimersByTime(1000);
       flushSync();
@@ -212,7 +237,7 @@ describe('the box', () => {
 
   it('draws the notice a take left instead of a row', () => {
     const harness = open();
-    harness.props.record = record({
+    harness.page.record = record({
       composer: {
         take: null,
         notice: {
@@ -235,11 +260,7 @@ describe('the box', () => {
 
   it('replaces the box entirely for each reason it cannot take keys, and says why', () => {
     const cases: [Partial<ComposerProps>, string, string | null][] = [
-      [
-        { seat: seatRead({ lifecycle: 'Spawning' }) },
-        'Connecting to Claude Code…',
-        null,
-      ],
+      [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Connecting to Claude Code…', null],
       [
         {
           record: record({
@@ -266,7 +287,7 @@ describe('the box', () => {
       expect(drawn(), `the slot says why: ${line}`).toContain(line);
       if (sub !== null) expect(drawn(), 'and what to do about it').toContain(sub);
       expect(document.querySelector('textarea'), 'a blocked box takes no keys').toBeNull();
-      unmount(app as Record<string, unknown>);
+      void unmount(app as Record<string, unknown>);
       app = null;
       document.body.innerHTML = '';
     }
@@ -281,7 +302,7 @@ describe('the box', () => {
     press('Enter');
     flushSync();
 
-    harness.props.record = record({ header: { turn_in_flight: true } });
+    harness.page.record = record({ header: { turn_in_flight: true } });
     flushSync();
 
     expect(drawn(), 'the reader is told what they are waiting for').toContain('Running /compact');
@@ -289,19 +310,25 @@ describe('the box', () => {
 
   it('offers the way into a take only when this install can dictate', () => {
     open();
-    expect(document.querySelector('.mic'), 'a control it cannot honour is worse than none').toBeNull();
-    unmount(app as Record<string, unknown>);
+    expect(
+      document.querySelector('.mic'),
+      'a control it cannot honour is worse than none',
+    ).toBeNull();
+    void unmount(app as Record<string, unknown>);
     app = null;
     document.body.innerHTML = '';
 
     const harness = open({ dictation: true });
     const mic = document.querySelector('.mic');
-    if (!(mic instanceof HTMLElement)) throw new Error('an install that can dictate draws no way in');
+    if (!(mic instanceof HTMLElement))
+      throw new Error('an install that can dictate draws no way in');
     mic.click();
     flushSync();
 
     expect(harness.sent, 'the way in starts the take it offers').toEqual([
-      { command: { dictate_start: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } } },
+      {
+        command: { dictate_start: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
+      },
     ]);
   });
 });
@@ -334,9 +361,10 @@ describe('the autocomplete', () => {
     open({ record: record({ subagents: [{ name: 'cli-version', description: 'settled 3m' }] }) });
     type('&cli');
 
-    expect(document.querySelector('.ac .it .p em')?.textContent, 'the match is the marked span').toBe(
-      'cli',
-    );
+    expect(
+      document.querySelector('.ac .it .p em')?.textContent,
+      'the match is the marked span',
+    ).toBe('cli');
   });
 
   it('writes the picked row into the draft, replacing the token it opened on', () => {
@@ -346,7 +374,10 @@ describe('the autocomplete', () => {
       }),
     });
     type('run /mo');
-    expect(document.querySelector('.ac'), 'a command is the whole draft while it is typed').toBeNull();
+    expect(
+      document.querySelector('.ac'),
+      'a command is the whole draft while it is typed',
+    ).toBeNull();
 
     type('/mo');
     const rows = [...document.querySelectorAll('.ac .it')];
@@ -396,8 +427,8 @@ describe('two clients on one seat', () => {
   it('draws the same prompt on both, and the answer the core offered is what one sends', () => {
     const { shared, one, other } = openBoth();
     const asked = record({ pending_ask: permissionAsk() });
-    one.props.record = asked;
-    other.props.record = asked;
+    one.page.record = asked;
+    other.page.record = asked;
     flushSync();
 
     expect(options(), 'both clients draw the prompt').toHaveLength(6);
@@ -427,8 +458,8 @@ describe('two clients on one seat', () => {
   it('dismisses the dock on the other client when the core says the prompt is gone', () => {
     const { shared, one, other } = openBoth();
     const asked = record({ pending_ask: permissionAsk() });
-    one.props.record = asked;
-    other.props.record = asked;
+    one.page.record = asked;
+    other.page.record = asked;
     flushSync();
 
     options()[1]?.click();
@@ -438,8 +469,8 @@ describe('two clients on one seat', () => {
     // The core resolves once, and both pages re-read one prompt, so what the
     // other client draws is the read rather than anything this one told it.
     const gone = record();
-    one.props.record = gone;
-    other.props.record = gone;
+    one.page.record = gone;
+    other.page.record = gone;
     flushSync();
 
     expect(document.querySelectorAll('.opt'), 'the dock outlived the prompt').toHaveLength(0);
@@ -448,7 +479,7 @@ describe('two clients on one seat', () => {
 
   it('says why when the core refuses the answer', () => {
     const { shared, one } = openBoth();
-    one.props.record = record({ pending_ask: permissionAsk() });
+    one.page.record = record({ pending_ask: permissionAsk() });
     flushSync();
 
     options()[0]?.click();

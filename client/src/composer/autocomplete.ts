@@ -227,7 +227,13 @@ function rank<T>(held: T[], query: string, fields: (row: T) => string[]): T[] {
     const names = fields(row).map((field) => field.toLowerCase());
     const name = names[0] ?? '';
     const rank =
-      name === folded ? 0 : name.startsWith(folded) ? 1 : names.some((f) => f.includes(folded)) ? 2 : -1;
+      name === folded
+        ? 0
+        : name.startsWith(folded)
+          ? 1
+          : names.some((f) => f.includes(folded))
+            ? 2
+            : -1;
     if (rank >= 0) scored.push({ rank, name, row });
   }
   scored.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));

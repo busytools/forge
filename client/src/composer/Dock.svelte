@@ -107,7 +107,10 @@
     const toolId = ask.kind === 'permission' || ask.kind === 'question' ? ask.request.toolId : '';
     onanswer(toolId === '' ? null : toolId);
     if (ask.kind === 'permission') {
-      connection.dispatch({
+      // The outcome rides the subscription rather than a reply, so there is
+      // nothing here to await: the dock closes when the core's record says the
+      // prompt is gone.
+      void connection.dispatch({
         respond_permission: {
           key: slot,
           tool_id: toolId,
@@ -121,7 +124,7 @@
       return;
     }
     if (ask.kind === 'question') {
-      connection.dispatch({
+      void connection.dispatch({
         respond_question: {
           key: slot,
           tool_id: toolId,

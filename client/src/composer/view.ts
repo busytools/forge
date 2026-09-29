@@ -47,7 +47,15 @@ export interface SeatRead {
  * rows and reads as a search that found nothing.
  */
 export interface ComposerRecord {
-  composer: ComposerState;
+  /**
+   * What this seat's composer is doing, as the wire sends it.
+   *
+   * Left as it came rather than narrowed by the page: the take, the notice and
+   * the sign-in are the composer's own states, so the component that draws them
+   * is the one that narrows them, and no reader upstream has to re-narrow what
+   * only this one acts on.
+   */
+  composer: unknown;
   /** The prompt this seat is parked on, or `null` when nothing waits. */
   pending_ask: unknown;
   header: { turn_in_flight: boolean };
@@ -85,8 +93,7 @@ export interface ComposerProps {
 
 /** The composer's own state, read off the record the page handed it. */
 export function composerState(record: ComposerRecord): ComposerState {
-  const held = record.composer;
-  return held === null || held === undefined ? composerFrom(null) : held;
+  return composerFrom(record.composer);
 }
 
 /** The prompt the seat is parked on, which is the core's answer and never the client's. */

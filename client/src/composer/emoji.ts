@@ -254,7 +254,14 @@ export function matches(query: string): Emoji[] {
   if (query.length < MIN_QUERY_CHARS) return [];
   const scored: { rank: number; emoji: Emoji }[] = [];
   for (const emoji of TABLE) {
-    const rank = emoji.name === query ? 0 : emoji.name.startsWith(query) ? 1 : emoji.name.includes(query) ? 2 : -1;
+    const rank =
+      emoji.name === query
+        ? 0
+        : emoji.name.startsWith(query)
+          ? 1
+          : emoji.name.includes(query)
+            ? 2
+            : -1;
     if (rank >= 0) scored.push({ rank, emoji });
   }
   scored.sort((a, b) => a.rank - b.rank || a.emoji.name.localeCompare(b.emoji.name));

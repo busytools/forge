@@ -111,7 +111,10 @@
     }
     if (held.kind !== 'landed' || landed === held.text) return;
     landed = held.text;
-    draft = joined(untrack(() => draft), held.text);
+    draft = joined(
+      untrack(() => draft),
+      held.text,
+    );
     beat = true;
     const timer = setTimeout(() => {
       beat = false;
@@ -156,8 +159,10 @@
     const text = draft;
     if (text.trim() === '') return;
     try {
-      connection.dispatch({ prompt: { key: slot, text, attachments: [] } });
-    } catch (why) {
+      // A prompt is fire-and-forget: its outcome rides the subscription rather
+      // than a reply, so there is nothing here to await.
+      void connection.dispatch({ prompt: { key: slot, text, attachments: [] } });
+    } catch {
       // A closed socket throws rather than answering, and it is the one
       // channel left: the words stay in the box rather than going with a
       // command that never left the browser.
@@ -222,10 +227,15 @@
    */
   function mic(): void {
     if (composer.take === null) {
-      connection.dispatch({ dictate_start: { key: slot } });
+      void connection.dispatch({ dictate_start: { key: slot } });
       return;
     }
-    connection.dispatch({ dictate_stop: { key: slot, submit: true } });
+    void connection.dispatch({ dictate_stop: { key: slot, submit: true } });
+  }
+
+  /** Remember which prompt this reader answered, while the core still lists it. */
+  function remember(toolId: string | null): void {
+    answered = toolId;
   }
 
   /** The tool the prompt is waiting on, which is how an answer is told apart from the next one. */
@@ -257,7 +267,7 @@
       {connection}
       depth={seat.pendingDepth}
       notice={refusal}
-      onanswer={(toolId) => (answered = toolId)}
+      onanswer={remember}
     />
   </div>
 {:else}
@@ -281,7 +291,7 @@
         <div class="notice {line.tone}">{line.text}</div>
       {/if}
       {#if list !== null}
-        <Autocomplete {list} offer={list} {marked} onpick={pick} />
+        <Autocomplete offer={list} {marked} onpick={pick} />
       {/if}
       <div class="line">
         <textarea
@@ -292,9 +302,8 @@
           placeholder="Type a message…"
           bind:this={field}
           bind:value={draft}
-          oninput={oninput}
-          onkeydown={onkey}
-        ></textarea>
+          {oninput}
+          onkeydown={onkey}></textarea>
         {#if filled}
           <button class="send" type="button" title="send" aria-label="send" onclick={send}>
             <Icon name="send" />

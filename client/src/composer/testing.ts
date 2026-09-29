@@ -1,18 +1,17 @@
 /**
- * The composer's test harness: the props a session page would hand it, held so
- * a test can change them the way a page re-renders.
+ * The composer's test fixtures: the props a session page would build, and a
+ * connection that records what it was sent.
  *
- * **`$state`, and the reason is the behaviour under test.** The composer reads
- * its props reactively and holds the reader's draft in its own state, so a test
- * that mounts it again for a second record would be testing a fresh component
- * with a fresh draft - which is precisely the defect the draft tests exist to
- * catch. Mutating this object is what a page re-render is.
+ * A plain module rather than a rune-bearing one, because the reactive half of
+ * the harness is `Harness.svelte`: runes compile in `.svelte` and `.svelte.ts`
+ * files, and a `.svelte.ts` module is TypeScript with runes in it, which the
+ * TypeScript parser reads as a syntax error.
  *
  * Nothing the app ships imports this file.
  */
 
-import type { Connection } from '../socket';
 import type { ServerMessage } from '../protocol';
+import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import type { ComposerProps, ComposerRecord, SeatRead } from './view';
 import type { Take } from './wire';
@@ -35,6 +34,11 @@ export function record(over: Partial<ComposerRecord> = {}): ComposerRecord {
 /** A seat that is running and taking input, which is the one that is not blocked. */
 export function seatRead(over: Partial<SeatRead> = {}): SeatRead {
   return { lifecycle: 'Running', reason: null, waking: false, pendingDepth: 1, ...over };
+}
+
+/** The props a page hands the composer, which every test starts from. */
+export function props(over: Partial<ComposerProps> = {}): ComposerProps {
+  return { record: record(), slot: SLOT, seat: seatRead(), connection: wire().connection, ...over };
 }
 
 /** A take in flight, as the core reports one. */
@@ -70,14 +74,14 @@ export function permissionAsk(toolId = 'tu-1'): unknown {
         decision_reason: null,
       },
       options: [
-        {
-          option_id: 'opt-once',
-          name: 'Allow once',
-          kind: 'allow',
-          action: { kind: 'allow' },
-        },
+        { option_id: 'opt-once', name: 'Allow once', kind: 'allow', action: { kind: 'allow' } },
         { option_id: 'opt-deny', name: 'Deny', kind: 'deny', action: { kind: 'deny' } },
-        { option_id: 'opt-notes', name: 'Tell Claude something else', kind: 'notes', action: { kind: 'deny' } },
+        {
+          option_id: 'opt-notes',
+          name: 'Tell Claude something else',
+          kind: 'notes',
+          action: { kind: 'deny' },
+        },
       ],
     },
   };
@@ -117,18 +121,11 @@ export interface Sent {
   command: Record<string, Record<string, unknown>>;
 }
 
-/** Everything a fake connection recorded, and the two ways a test drives it. */
-export interface Fake {
-  props: ComposerProps;
-  sent: Sent[];
-  /** Say something to the composer, as the server would. */
-  say(message: ServerMessage): void;
-}
-
 /** One connection two composers can be mounted on, which is two clients on one seat. */
 export interface Wire {
   sent: Sent[];
   connection: Pick<Connection, 'dispatch' | 'onMessage'>;
+  /** Say something to every composer attached, as the server would. */
   say(message: ServerMessage): void;
 }
 
@@ -153,25 +150,9 @@ export function wire(): Wire {
         listeners.add(fn);
         return () => listeners.delete(fn);
       },
-    } as unknown as Pick<Connection, 'dispatch' | 'onMessage'>,
+    },
     say(message) {
       for (const fn of listeners) fn(message);
     },
   };
-}
-
-/**
- * The props one composer is mounted with, over `on` when a test is driving two
- * of them against one seat.
- */
-export function fake(over: Partial<ComposerProps> = {}, on: Wire = wire()): Fake {
-  const props = $state<ComposerProps>({
-    record: record(),
-    slot: SLOT,
-    seat: seatRead(),
-    connection: on.connection,
-    ...over,
-  });
-
-  return { props, sent: on.sent, say: on.say };
 }

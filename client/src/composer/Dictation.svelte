@@ -42,7 +42,7 @@
 
   /** Abandon the take. Release-to-submit is the box's own control, not this one. */
   function cancel(): void {
-    connection.dispatch({ dictate_stop: { key: slot, submit: false } });
+    void connection.dispatch({ dictate_stop: { key: slot, submit: false } });
   }
 </script>
 
@@ -52,7 +52,7 @@
   <span class="db" class:tr={transcribing}>{level}</span>
   <span class="wave" class:tr={transcribing}>
     <span class="wtr">
-      {#each cells as cell}
+      {#each cells as cell, at (at)}
         <i class={cell.tone} style={`height:${cell.height}%`}></i>
       {/each}
     </span>

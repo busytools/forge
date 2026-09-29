@@ -860,6 +860,11 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .ac .keys { padding: 7px 13px; border-top: 1px solid var(--line); }
 .dock .keys { padding-left: 31px; }
 
+/* A key is drawn as the key it is, in the chip the mockups draw: `<kbd>` and
+   not a span borrowing `k`, which is the sheet's keyword token for code. */
+kbd { font-family: inherit; font-size: inherit; color: inherit;
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
+
 /* The dictation row: it lives inside the box, grows it by one line, and
    collapses when the take resolves. */
 .dict { display: flex; align-items: center; gap: 11px; padding-left: 25px;
@@ -887,16 +892,13 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .wave.tr .wtr i.mid { background: #2f486d; }
 .wave.tr .wtr i.hot { background: #365582; }
 
-/* The field the dock and the blocked box carry so the browser keeps the
-   reader's text, which neither of them draws. Its own styles come from the
-   box it goes back into, because a preserved node is the one the browser
-   already had. */
-.dock #draft, .blocked #draft { display: none; }
-
 /* A notice shares the row with the take and wins it. */
 .notice { font-family: var(--mono); font-size: var(--fs-data); padding-left: 25px; }
 .notice.q { color: var(--dim); }
 .notice.bad { color: var(--bad); }
+/* In the dock it is not in the box's row: the dock's own inset already sets
+   where a line starts. */
+.dock .notice { padding-left: 0; }
 .notice.warn { color: var(--warn); }
 
 /* While the session cannot take input the box is replaced entirely, and the
@@ -931,7 +933,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .ac .rows::-webkit-scrollbar-track { background: transparent; }
 .ac .it { display: flex; align-items: center; gap: 10px; padding: 5px 13px;
   font-family: var(--mono); font-size: var(--fs-base); }
-.ac .it .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
 .ac .it .p { color: var(--text); overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
 .ac .it .p em { font-style: normal; color: var(--accent); }
@@ -950,9 +951,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
 
 .ac .it.sel { background: rgba(244,118,0,.09); }
 .ac .it.sel .p { color: var(--text); }
-/* The marker says a key would take this row, and no key can: it is drawn
-   demoted the way the dock's is, so one idea is not drawn two ways. */
-.ac .it.sel .cur { color: var(--dim); }
 .ac .it .g { width: 20px; flex: 0 0 20px; text-align: center; }
 
 /* ---------- the dock: the box morphed into a prompt ---------- */
@@ -972,7 +970,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .dock .opts { display: flex; flex-direction: column; gap: 1px; }
 .opt { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
   border-radius: 9px; font-size: var(--fs-base); }
-.opt .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
 .opt .ic { color: var(--dim); }
 .opt .ic.ok { color: var(--ok); }
 .opt .ic.no { color: var(--bad); }
