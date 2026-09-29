@@ -184,7 +184,11 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // drops the inspector's pending row, so it redraws a row even though
         // it is the composer that asked for it.
         | SessionUpdate::PendingInteractionResolved { .. }
-        | SessionUpdate::WorkerStatusChanged { .. } => FleetNews::Redraw,
+        | SessionUpdate::WorkerStatusChanged { .. }
+        // The peer counters a row's activity badge draws from. They carry a
+        // seat, so without this arm a home subscriber heard nothing of them
+        // while the terminal drew the badge.
+        | SessionUpdate::PeerInflightStatsChanged { .. } => FleetNews::Redraw,
         // Everything else is the conversation, which no row shows.
         _ => FleetNews::Nothing,
     }
@@ -467,6 +471,25 @@ mod tests {
             assert!(!redraw.fleet, "{update:?} is not a row changing");
             assert!(redraw.composer, "{update:?} is the composer's to draw");
         }
+    }
+
+    /// The peer-activity counters behind a row's badge. They carry a slot, so
+    /// a home subscriber heard nothing of them while the terminal drew the
+    /// badge - the counter is a row's, and this classification is what decides
+    /// whether the row's page hears it.
+    #[test]
+    fn a_peer_activity_change_redraws_its_row() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+
+        assert!(
+            live.apply(&SessionUpdate::PeerInflightStatsChanged {
+                key: slot,
+                stats: forge_primitives::PeerInflightStats { outgoing: 1, ..Default::default() },
+            })
+            .fleet,
+            "the badge the terminal draws from this is drawn on a row",
+        );
     }
 
     /// The updates that land after the listener binds, and that a page

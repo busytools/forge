@@ -1228,6 +1228,7 @@ mod tests {
             pending_depth: 0,
             last_activity: None,
             reason: None,
+            peer: forge_primitives::PeerInflightStats::default(),
         }
     }
 

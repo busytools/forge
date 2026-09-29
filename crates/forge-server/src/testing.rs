@@ -245,6 +245,12 @@ impl Fleet {
         self.workspace.enable_test_dispatch_intercept();
     }
 
+    /// Give `slot` the peer counters a row's badge draws from, rather than
+    /// driving a whole ask to earn them.
+    pub fn seed_peer_stats(&self, slot: &SessionSlot, stats: forge_primitives::PeerInflightStats) {
+        self.workspace.seed_test_peer_stats(slot, stats);
+    }
+
     /// The commands caught since the last call.
     pub fn dispatched(&self) -> Vec<forge_workspace::Command> {
         self.workspace.drain_test_dispatch_buffer()

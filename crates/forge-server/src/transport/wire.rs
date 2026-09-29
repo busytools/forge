@@ -964,6 +964,10 @@ mod tests {
         fleet.start("TestOrg", "proj").expect("the project starts");
         fleet.set_cli_version(Some("1.0.0"), Some("1.1.0"));
         fleet.set_user_preferences(serde_json::json!({}));
+        fleet.seed_peer_stats(
+            &fixture_seat(),
+            forge_primitives::PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 3 },
+        );
         fleet.add_worker("TestOrg", "proj", "w1").expect("the worker is added");
         fleet.install_agent("TestOrg", "proj", "lead");
         fleet
@@ -1098,6 +1102,43 @@ mod tests {
             std::fs::write(&fixture, serde_json::to_string_pretty(&encoded).expect("render"))
                 .expect("write");
         }
+    }
+
+    /// A row's peer-activity badge: the counters the terminal draws per seat.
+    ///
+    /// They reach a subscriber as an update, so the home's snapshot is what a
+    /// client that attached after the last ask reads them from - and a
+    /// subscriber that hears the update and not the snapshot draws the badge
+    /// from nothing.
+    #[tokio::test]
+    async fn a_home_agents_row_carries_its_peer_counters() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet.seed_peer_stats(
+            &fixture_seat(),
+            forge_primitives::PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 0 },
+        );
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        let row = encoded["agents"]
+            .as_array()
+            .expect("agents is a list")
+            .iter()
+            .find(|row| row["slot"]["label"] == "lead")
+            .expect("the started project's lead is a row");
+
+        assert_eq!(
+            row["peer"]["outgoing"], 2,
+            "the counters the badge draws cross on the row: {row}"
+        );
     }
 
     /// The rows the processes feed leads with: the CLI's background-task

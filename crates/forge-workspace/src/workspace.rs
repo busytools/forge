@@ -4337,6 +4337,16 @@ impl Workspace {
         self.domain_session_for(slot).is_some_and(|domain| domain.lock().background_work)
     }
 
+    /// `slot`'s peer-coordination counters, which a view draws a seat's
+    /// activity badge from. Zeroes for a seat with no traffic.
+    ///
+    /// A fact about the seat rather than about a viewer, so the core holds one
+    /// answer. They also ride `SessionUpdate::PeerInflightStatsChanged`, which
+    /// is why a view that attached after the last ask needs this read.
+    pub fn peer_stats_for(&self, slot: &SessionSlot) -> PeerInflightStats {
+        self.peer_stats.lock().get(slot).cloned().unwrap_or_default()
+    }
+
     /// What the session at `slot` is waiting on a person for, or `None`
     /// when it can advance on its own.
     pub fn pending_interaction(&self, slot: &SessionSlot) -> Option<PendingInteractionKind> {

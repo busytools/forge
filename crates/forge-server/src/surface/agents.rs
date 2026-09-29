@@ -28,6 +28,13 @@ pub struct AgentRow {
     /// spawn diagnostic, or the failure the slot's last connection left
     /// behind. `None` for a session that has not failed.
     pub reason: Option<String>,
+    /// The seat's peer-coordination counters, which its activity badge is
+    /// drawn from.
+    ///
+    /// Carried beside the row's other facts because they reach a view as an
+    /// update and nothing else: a view that attached after the last ask would
+    /// draw the badge from nothing.
+    pub peer: forge_primitives::PeerInflightStats,
 }
 
 /// What a session is waiting on a person for. The core's own kind rather
@@ -116,6 +123,7 @@ fn row_for(
         // it wins; a lead has only the slot's, which is why the fallback
         // is here rather than at the call sites.
         reason: reason.or_else(|| workspace.spawn_failure(&slot)),
+        peer: workspace.peer_stats_for(&slot),
         lifecycle,
         label,
         slot,

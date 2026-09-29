@@ -579,6 +579,17 @@ impl Workspace {
         self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);
     }
 
+    /// Give `slot` the peer counters a badge draws from, as the delivery
+    /// path's own bumps would have left them. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_peer_stats(
+        &self,
+        slot: &SessionSlot,
+        stats: forge_primitives::PeerInflightStats,
+    ) {
+        self.peer_stats.lock().insert(slot.clone(), stats);
+    }
+
     /// Advertise `commands` and `agents` for `slot`, registering its
     /// domain if it has none, so a cross-crate test can read what the
     /// CLI's init frame would have left behind without driving the wire.

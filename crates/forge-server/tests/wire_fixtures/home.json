@@ -38,7 +38,12 @@
       "pending": "permission",
       "pending_depth": 1,
       "last_activity": null,
-      "reason": null
+      "reason": null,
+      "peer": {
+        "outgoing": 2,
+        "incoming": 1,
+        "delivery_failed": 3
+      }
     }
   ],
   "unseen": [],
