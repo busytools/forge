@@ -300,6 +300,13 @@ type-checked configs, `svelte-check`, `tsc --noEmit` and then vitest,
 so one command decides both stacks and its verdict line names the first
 failing step whichever side it is on.
 
+The desktop shell under `client/src-tauri/` is its own workspace root, so
+`just check`'s fmt, clippy and nextest never reach it, and neither do CI's
+cargo jobs; the Unicode punctuation gate, which CI runs too, and the
+client's Prettier step do. `just client-tauri-check` builds it in the
+shipping configuration and `just client-tauri-bundle` adds the bundles,
+and the first is the one to run before handing over a change there.
+
 The rules a gate cannot see are the same shape as the ones above. The
 denied constructs are `any`, non-null assertion, `@ts-ignore`,
 `innerHTML`, `eval` and floating promises, and a waiver carries its
