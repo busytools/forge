@@ -2636,6 +2636,11 @@ impl Workspace {
                         forge_gateway::UsageFetchStatus::Other,
                         None,
                     );
+                    // This arm writes the pool too: `set_last_error` moves
+                    // `last_error` and the re-probe instant, both of which
+                    // cross on the account row. A pass whose only write is
+                    // this one would otherwise announce nothing.
+                    self.announce_accounts_changed();
                     tracing::debug!(
                         target: "forge_workspace::account",
                         account = %key.0,
