@@ -799,9 +799,11 @@ inspected.
     typescript-eslint's type-checked configs, `svelte-check`, `tsc
     --noEmit`, then vitest - so one command decides both stacks and its
     verdict line names the first failing step. **The desktop shell under
-    `client/src-tauri/` is outside all of it**: it is its own workspace
-    root, so neither `just check` nor CI reaches it, and `just
-    client-tauri-check` builds and bundles it. **Denied as errors**, the
+    `client/src-tauri/` is its own workspace root**, so `just check`'s
+    Rust steps and CI do not reach it and the Unicode punctuation gate
+    and the client's Prettier step are what do. `just client-tauri-check`
+    builds it in the shipping configuration and `just client-tauri-bundle`
+    adds the bundles. **Denied as errors**, the
     analogue of the denied Rust lints: `any`, non-null assertion,
     `@ts-ignore`, `innerHTML`, `eval` and floating promises. **A waiver
     carries its reason, and which form it takes is not free:** an inline
