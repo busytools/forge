@@ -716,6 +716,20 @@ describe('what a row says', () => {
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
   });
 
+  it("narrows a seat's tree gate it does not know", () => {
+    const unknown: HomeWire = {
+      ...homeWire,
+      agents: [{ ...AGENT, work: { branch: 'main', changed: 1, gate: 'unreadable' as never } }],
+    };
+    // The FIELD, not a rendering of it: `gateLine` switches over the four this
+    // client knows, and a fifth would fall out of the switch rather than draw
+    // a wrong line - which is a row whose `what` cell is silently empty.
+    expect(
+      homeFrom(unknown).agents[0]?.work?.gate,
+      'a gate this client is older than reached the row',
+    ).toBe('in_repo');
+  });
+
   it('narrows a pending kind it does not know', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, pending: 'elicit' as never }] };
     expect(homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead.pending).toBe('permission');

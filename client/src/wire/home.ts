@@ -268,6 +268,14 @@ export function homeFrom(data: HomeWire): HomeWire {
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
+      // The gate inside the seat's tree, which is the one member of it that is
+      // a union of literals: `WorkState` is a struct, so there is nothing else
+      // in it to narrow and a shape test over the object would discriminate
+      // nothing. The gate is what a row's `what` cell falls back on.
+      work:
+        agent.work === null
+          ? null
+          : { ...agent.work, gate: narrow(agent.work.gate, GATES, 'in_repo') },
     })),
     projects: data.projects.map((row) => ({
       ...row,
