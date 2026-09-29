@@ -1,6 +1,7 @@
 <script lang="ts">
   import { DEFAULT_ADDRESS } from '../connect/attempt';
   import Home from '../home/Home.svelte';
+  import ChatFixture from './ChatFixture.svelte';
   import { loadFixtureHome } from './fixture';
 
   /**
@@ -21,3 +22,7 @@
     <Home {wire} address={DEFAULT_ADDRESS} />
   {/if}
 {/await}
+
+<!-- The conversation column under it, so the chat can be looked at without a
+     running forge. It is a harness rather than a page: nothing ships it. -->
+<ChatFixture />
