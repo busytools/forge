@@ -123,6 +123,11 @@ mod tests {
         // for the emitters that write one.
         assert_eq!(strip_ansi("text\u{1b}Pq~payload"), "text");
         assert_eq!(strip_ansi("\u{1b}_a\u{07}after"), "after");
+        // An ESC inside a payload that is not followed by `\` returns to the
+        // payload rather than ending it, which is what a tmux passthrough
+        // needs: its DCS carries a whole escaped sequence and has to be eaten
+        // to the real terminator, not to the inner sequence's first ESC.
+        assert_eq!(strip_ansi("\u{1b}Ptmux;\u{1b}[31mred\u{1b}\\after"), "after");
     }
 
     #[test]
