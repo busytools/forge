@@ -646,16 +646,17 @@ details.leaf[open] > summary .arw { color: var(--accent); }
   border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
   white-space: pre-wrap; overflow-x: auto; }
 .term .pfx { color: var(--dim); }
-/* A source file a call read or wrote, and the four token classes it carries. */
+/* A source file a call read or wrote. Its token classes are the
+   highlighter's own (`hljs-*`), coloured by the theme that ships beside the
+   module: the `.k` / `.s` / `.f` rules that stood here read three tokens the
+   client's theme does not carry, and they went with the Rust renderer that
+   emitted them. */
 .code { border: 1px solid var(--line); border-radius: 9px;
   background: var(--s2); overflow: hidden; }
 .code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   padding: 5px 12px; border-bottom: 1px solid var(--line); }
 .code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 8px 12px;
   white-space: pre; overflow-x: auto; line-height: 1.55; }
-.k { color: var(--syn-key); }
-.s { color: var(--syn-str); }
-.f { color: var(--syn-fn); }
 /* A search result, one row per hit: where it is, then what matched. */
 .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
   margin: 4px 0; border-left: 1px solid var(--line); }

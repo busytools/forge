@@ -30,10 +30,10 @@ const said = (text: string): unknown => ({
 });
 
 /** A page of whole turns, as the server answers `more`. */
-const page = (rows: PageTurn[], cursor: string | null): ServerMessage => ({
+const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
   kind: 'page',
   conversation: LEAD,
-  rows,
+  turns,
   cursor,
 });
 
@@ -236,6 +236,41 @@ describe('the conversation the chat draws', () => {
 
     expect(get(chat.value).cursor, 'and it is still where it was').toBe('1');
     expect(get(chat.value).turns.map((row) => row.key)).toEqual(['t1', 't2', 't3']);
+  });
+
+  it('draws a repeated turn once even when the fold gave it no name', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn(null, 'the fold named this one nothing')], null));
+    const held = get(chat.value).turns;
+
+    // What a settled turn does is ask for the newest page again, and the
+    // server errs toward repeating a row rather than toward a gap - so the
+    // page it answers with holds the turn already drawn. A repeat is dropped
+    // by the name the conversation gave the turn, which for an unnamed one is
+    // its own content: matching only the fold's own name makes every unnamed
+    // turn a stranger on the way back in, and the column draws it twice.
+    chat.refresh();
+    server.send(page([turn(null, 'the fold named this one nothing')], null));
+
+    expect(get(chat.value).turns).toHaveLength(1);
+    expect(get(chat.value).turns[0], 'and it is the object the reader is looking at').toBe(held[0]);
+  });
+
+  it('takes a page it asked for as its own, and leaves another message alone', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The socket hands a listener every message the server sends, so a page
+    // that took any error as its own would draw a refused subscription, or a
+    // refused command, as a conversation this forge will not answer for.
+    server.send({ kind: 'error', what: 'dispatch', why: 'the socket is not open' });
+
+    expect(get(chat.value).refused).toBeNull();
+    expect(get(chat.value).loaded).toBe(true);
   });
 
   it('holds the reader when the socket drops, and takes the new page when it returns', () => {

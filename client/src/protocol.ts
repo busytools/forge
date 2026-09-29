@@ -130,7 +130,7 @@ export type ServerMessage =
   | { kind: 'snapshot'; subject: Subject; data: unknown }
   | { kind: 'update'; update: SessionUpdate }
   /** A page of one conversation, in answer to `more`, with the cursor for the next. */
-  | { kind: 'page'; conversation: SessionSlot; rows: unknown[]; cursor: string | null }
+  | { kind: 'page'; conversation: SessionSlot; turns: unknown[]; cursor: string | null }
   /** The answer to a command that asked for one, a refusal included. */
   | { kind: 'reply'; reply_to: number; body: unknown }
   | { kind: 'error'; what: string; why: string };

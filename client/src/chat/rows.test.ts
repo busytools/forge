@@ -160,6 +160,70 @@ describe('one turn, as the rows it draws', () => {
     });
   });
 
+  it('draws a Write as the file it wrote, on the added side', () => {
+    // A Write carries the whole file rather than a change to it. Read the
+    // other way round, a file the session just wrote draws as a file it
+    // deleted: every line on the red ground with a removed mark, in a card
+    // that opens without being clicked.
+    const rows = rowsOf(
+      turn(
+        said([
+          use('c1', 'Write', {
+            file_path: 'crates/forge-web/src/home.css',
+            content: 'line one\nline two',
+          }),
+        ]),
+      ),
+      null,
+    );
+
+    expect(rows[0]).toMatchObject({
+      kind: 'call',
+      body: [{ kind: 'diff', old: '', new: 'line one\nline two' }],
+    });
+  });
+
+  it('draws each edit of a MultiEdit as its own hunk', () => {
+    const rows = rowsOf(
+      turn(
+        said([
+          use('c1', 'MultiEdit', {
+            file_path: 'a.rs',
+            edits: [
+              { old_string: 'one', new_string: 'two' },
+              { old_string: 'three', new_string: 'four' },
+            ],
+          }),
+        ]),
+      ),
+      null,
+    );
+
+    expect(rows[0]).toMatchObject({
+      kind: 'call',
+      body: [
+        { kind: 'diff', old: 'one', new: 'two' },
+        { kind: 'diff', old: 'three', new: 'four' },
+      ],
+    });
+  });
+
+  it('draws no diff at all for a mutation whose input says nothing', () => {
+    // An unread shape must not open an empty card: a mutation's body shows
+    // without being clicked, so a blank one is what the reader sees.
+    const rows = rowsOf(
+      turn(
+        said([
+          use('c1', 'Write', { file_path: 'a.rs', content: '   \n  ' }),
+          use('c2', 'MultiEdit', { file_path: 'a.rs' }),
+        ]),
+      ),
+      null,
+    );
+
+    expect(rows.map((row) => (row.kind === 'call' ? row.body : null))).toEqual([[], []]);
+  });
+
   it('names each row the same way every time the turn is read', () => {
     // The rows are keyed so that growing one turn redraws only what changed.
     // A key that moved between two reads of the same turn is a row that is

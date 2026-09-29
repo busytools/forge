@@ -26,8 +26,10 @@ const DELETE = 127;
  * Where the sequence starting at `at` ends, so the caller can skip it.
  *
  * `at` is the escape itself. Every branch answers past the sequence's last
- * character, and every unterminated one answers the end of the text - which is
- * what a terminal does with it too.
+ * character. An unterminated OSC answers the end of the text, and an
+ * unterminated CSI answers the first byte that cannot be part of one - which
+ * is friendlier than a terminal, and leaves the text after a truncated
+ * sequence rather than eating it.
  */
 function endOfSequence(text: string, at: number): number {
   const next = text.charCodeAt(at + 1);
@@ -58,6 +60,15 @@ function endOfSequence(text: string, at: number): number {
       scan += 1;
     }
     return text.length;
+  }
+
+  // An escape with an INTERMEDIATE byte is three long, and this is the family
+  // a reset is written with: `sgr0` on this machine's terminfo is `\E(B\E[m`,
+  // so reading `ESC ( B` as two bytes leaves a bare `B` on the page where a
+  // terminal drew nothing.
+  if (next >= 0x20 && next <= 0x2f) {
+    const last = text.charCodeAt(at + 2);
+    return Number.isNaN(last) ? text.length : at + 3;
   }
 
   // Every other escape is the escape and one character.

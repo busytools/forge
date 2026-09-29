@@ -1,4 +1,5 @@
 {
+  "slot": { "org": "TestOrg", "project": "forge", "label": "lead" },
   "turns": [
     {
       "key": "2026-09-29T09:14:02.118Z",
@@ -54,6 +55,15 @@
               },
               {
                 "type": "tool_use",
+                "id": "tu-write",
+                "name": "Write",
+                "input": {
+                  "file_path": "/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs",
+                  "content": "//! Which family a tool belongs to.\n\npub enum ToolFamily {\n    Read,\n    Search,\n    Bash,\n}\n"
+                }
+              },
+              {
+                "type": "tool_use",
                 "id": "tu-bash",
                 "name": "Bash",
                 "input": { "command": "just check", "description": "run the full workspace gate" }
@@ -81,6 +91,11 @@
                 "type": "tool_result",
                 "tool_use_id": "tu-edit",
                 "content": "The file has been updated."
+              },
+              {
+                "type": "tool_result",
+                "tool_use_id": "tu-write",
+                "content": "File created successfully."
               },
               {
                 "type": "tool_result",

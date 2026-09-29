@@ -24,6 +24,15 @@ describe('the text a command produced, as a page draws it', () => {
     );
   });
 
+  it('strips an escape that carries an intermediate byte', () => {
+    // `sgr0` on this machine's terminfo is `\E(B\E[m`, so the two-byte reading
+    // of a non-CSI escape leaves a bare `B` on the page where a terminal drew
+    // nothing - which is what a tool emitting a reset produces.
+    expect(stripEscapes('before \u{1b}(B\u{1b}[m after')).toBe('before  after');
+    expect(stripEscapes('\u{1b})0plain')).toBe('plain');
+    expect(stripEscapes('\u{1b}#8')).toBe('');
+  });
+
   it('keeps the text a terminal would have kept', () => {
     // Line breaks and tabs survive; a carriage return does not, because it is
     // a redraw instruction rather than a character, and the page is not a

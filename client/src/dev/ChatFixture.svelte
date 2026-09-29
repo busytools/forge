@@ -16,7 +16,12 @@
    * the DEV guard, so nothing ships that a page could draw in a server's
    * absence, and `fixture.test.ts` builds the app and fails if one does.
    */
-  const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
+
+  /** The canned page, and the seat it is answered for. */
+  interface Canned {
+    slot: SessionSlot;
+    turns: unknown[];
+  }
 
   /**
    * A connection that answers the one page and never speaks again.
@@ -25,7 +30,7 @@
    * real one answers in and the order that makes the column draw its loading
    * state at all.
    */
-  function answerWith(rows: unknown[]): Connection {
+  function answerWith(canned: Canned): Connection {
     let listening: ((message: ServerMessage) => void) | null = null;
     return {
       subscribe: () => ({ state: () => ({ kind: 'ready' as const }) }),
@@ -33,7 +38,12 @@
       refresh: () => undefined,
       dispatch: () => null,
       more: () => {
-        const page: ServerMessage = { kind: 'page', conversation: SLOT, rows, cursor: null };
+        const page: ServerMessage = {
+          kind: 'page',
+          conversation: canned.slot,
+          turns: canned.turns,
+          cursor: null,
+        };
         queueMicrotask(() => listening?.(page));
         return true;
       },
@@ -52,21 +62,22 @@
   }
 
   /** The canned page, or nothing outside a development build. */
-  async function load(): Promise<unknown[] | null> {
+  async function load(): Promise<Canned | null> {
     if (!import.meta.env.DEV) return null;
     const module = await import('./chat.fixture.json');
-    return (module.default as { turns?: unknown[] }).turns ?? null;
+    const canned = module.default as Canned;
+    return canned.turns === undefined ? null : canned;
   }
 
   const loaded = load();
 </script>
 
-{#await loaded then turns}
-  {#if turns}
-    {@const connection = answerWith(turns)}
+{#await loaded then canned}
+  {#if canned}
+    {@const connection = answerWith(canned)}
     <!-- The column's own height, which in the session page is the grid's. -->
     <div class="devchat">
-      <Chat slot={SLOT} {connection} cwd="/Users/vedhavyas/Projects/forge" />
+      <Chat slot={canned.slot} {connection} cwd="/Users/vedhavyas/Projects/forge" />
     </div>
   {/if}
 {/await}

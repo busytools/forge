@@ -61,6 +61,17 @@ export interface Conversation {
   refused: string | null;
   /** Whether the reader is at the newest end, which is what decides whether it follows. */
   atEnd: boolean;
+  /**
+   * How many pages of OLDER turns have landed.
+   *
+   * A count rather than a flag because the list has to know when one change
+   * differs from the last, and a flag that goes back to `false` reads the same
+   * twice. It is what tells the list to compensate for a prepend and not for
+   * anything else: the compensation is written for rows arriving ABOVE the
+   * reader, and applying it to a turn appended below them moves them by that
+   * row's height, which is the one thing this page must not do.
+   */
+  prepends: number;
 }
 
 /** A conversation nothing has answered yet. */
@@ -70,6 +81,7 @@ export const NOTHING: Conversation = {
   cursor: null,
   refused: null,
   atEnd: true,
+  prepends: 0,
 };
 
 /**
@@ -190,9 +202,19 @@ export class Chat {
    */
   start(): () => void {
     if (this.running !== null) return this.running;
-    const stop = this.connection.onMessage((message: ServerMessage) => this.receive(message));
+    const stopMessages = this.connection.onMessage((message: ServerMessage) =>
+      this.receive(message),
+    );
+    // A page is a question asked over one connection, and a dropped socket
+    // takes the answer with it - nothing replays a `more`. So the reconnect is
+    // where the conversation is asked for again, and the reader keeps what
+    // they have until the fresh answer lands.
+    const stopStatus = this.connection.onStatus((status) => {
+      if (status === 'open') this.ask(null);
+    });
     this.running = () => {
-      stop();
+      stopMessages();
+      stopStatus();
       this.running = null;
     };
     this.ask(null);
@@ -234,12 +256,15 @@ export class Chat {
     switch (message.kind) {
       case 'page':
         if (sameSlot(message.conversation, this.slot)) {
-          this.takePage(message.rows, message.cursor, this.inFlight ?? 'newest');
+          this.takePage(message.turns, message.cursor, this.inFlight ?? 'newest');
         }
         return;
       case 'error':
-        // A refusal names what failed rather than which subject, and a
-        // conversation is the only thing this chat asks for.
+        // A refusal names what failed rather than which subject, and the
+        // socket hands a listener EVERY message it receives - so a page that
+        // took any error as its own would draw a refused subscription, or a
+        // refused command, as a conversation this forge will not answer for.
+        if (message.what !== 'more') return;
         this.inner.update((held) => ({ ...held, refused: message.why, loaded: true }));
         return;
       case 'update':
@@ -266,9 +291,13 @@ export class Chat {
       const taken = new Set(known.keys());
       const named: Turn[] = [];
       for (const row of pageTurns(rows)) {
-        // The fold named it and this conversation already holds it: the very
-        // object, so a repeat costs nothing.
-        const repeated = row.key === null ? undefined : known.get(row.key);
+        // What the turn is held under: the fold's own name where it gave one,
+        // and the name this conversation gave it where it did not. Reading
+        // only the fold's name makes every unnamed turn a stranger on the way
+        // back in, so the page draws it twice - once where it already was and
+        // once where the page put it.
+        const name = row.key ?? digest(row.messages);
+        const repeated = known.get(name);
         if (repeated !== undefined) {
           named.push(repeated);
           continue;
@@ -294,6 +323,7 @@ export class Chat {
         // between a second time. Only a page asked for BY cursor moves the
         // walk, and the first page establishes it.
         cursor: direction === 'older' || !held.loaded ? cursor : held.cursor,
+        prepends: held.prepends + (direction === 'older' ? 1 : 0),
         turns: direction === 'older' ? [...named, ...rest] : [...rest, ...named],
       };
     });

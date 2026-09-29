@@ -125,17 +125,53 @@ function bodyOf(content: unknown): CallBody[] {
   return out;
 }
 
-/** The diff a mutation carries in its own input, which is where the wire puts it. */
+/**
+ * The diff a mutation carries in its own input, which is where the wire puts
+ * it.
+ *
+ * **The four mutations do not share one input shape, and each writes its
+ * sides differently.** `Write` carries the whole FILE rather than a change to
+ * it, so its content is the ADDED side and nothing was removed: read the
+ * other way round it draws a file the session just wrote as a file it
+ * deleted, in a card that opens without being clicked. `MultiEdit` carries a
+ * list of edits, one hunk each. `NotebookEdit` carries a cell's new source
+ * and no old side at all.
+ *
+ * A mutation whose input this page cannot read draws no diff rather than an
+ * empty card, which is what an unread shape would otherwise leave open on
+ * screen.
+ */
 function diffOf(name: string, input: unknown): CallBody[] {
   if (!MUTATIONS.has(name)) return [];
   const path = text(input, 'file_path') ?? text(input, 'notebook_path');
   if (path === null) return [];
-  const old = text(input, 'old_string') ?? text(input, 'content') ?? '';
-  const added = text(input, 'new_string') ?? '';
-  // A Write carries the whole file rather than a change to it, so its added
-  // side is the file and its removed side is nothing. Drawing the old side as
-  // an empty line would say it had removed a blank one.
-  return [{ kind: 'diff', path, old, new: added }];
+
+  if (name === 'Write') return only({ path, old: '', new: text(input, 'content') ?? '' });
+  if (name === 'NotebookEdit') {
+    return only({ path, old: '', new: text(input, 'new_source') ?? '' });
+  }
+  if (name === 'MultiEdit') {
+    const edits = (input as { edits?: unknown } | null)?.edits;
+    if (!Array.isArray(edits)) return [];
+    return edits.flatMap((edit) =>
+      only({
+        path,
+        old: text(edit, 'old_string') ?? '',
+        new: text(edit, 'new_string') ?? '',
+      }),
+    );
+  }
+  return only({
+    path,
+    old: text(input, 'old_string') ?? '',
+    new: text(input, 'new_string') ?? '',
+  });
+}
+
+/** One hunk, or none when it says nothing: an empty old side and an empty new one is no change. */
+function only(hunk: { path: string; old: string; new: string }): CallBody[] {
+  if (hunk.old.trim() === '' && hunk.new.trim() === '') return [];
+  return [{ kind: 'diff', ...hunk }];
 }
 
 /**

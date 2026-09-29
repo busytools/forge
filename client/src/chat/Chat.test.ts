@@ -47,8 +47,8 @@ function stub() {
       flushSync();
     },
     /** The page the server would answer `more` with. */
-    answer(rows: unknown[], cursor: string | null = null): void {
-      this.send({ kind: 'page', conversation: LEAD, rows, cursor });
+    answer(turns: unknown[], cursor: string | null = null): void {
+      this.send({ kind: 'page', conversation: LEAD, turns, cursor });
     },
   };
 }

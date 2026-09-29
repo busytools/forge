@@ -45,6 +45,17 @@
   let list = $state<VListHandle | null>(null);
   let working: Chat | null = null;
   let first = true;
+  /**
+   * Whether the list should hold its scroll position from the end.
+   *
+   * **Only while older turns are arriving**, which is the case the
+   * compensation is written for. `virtua` moves the offset by the height of
+   * whatever was added, and it does that for ANY addition: with it on, a turn
+   * arriving below a reader who has scrolled up moves them by that row's
+   * height, which is the one thing this page must not do. So it goes on for
+   * the prepend and comes off again once the list has taken it.
+   */
+  let shift = $state(false);
 
   $effect(() => {
     const chat = new Chat(connection, slot);
@@ -66,6 +77,27 @@
   $effect(() => {
     if (!first || !held.loaded || held.turns.length === 0) return;
     first = false;
+    list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
+  });
+
+  // A prepend turns the compensation on, and the tick after it lands turns it
+  // off again: the list has taken the rows by then, and leaving it on would
+  // make the next appended turn move the reader.
+  $effect(() => {
+    if (held.prepends === 0) return;
+    shift = true;
+    const timer = setTimeout(() => {
+      shift = false;
+    }, 0);
+    return () => clearTimeout(timer);
+  });
+
+  // A reader at the end FOLLOWS the newest turn: that is what the end of a
+  // conversation means, and a page that grew without the view moving would
+  // lose the very thing it was opened on. A reader anywhere else is left
+  // exactly where they are.
+  $effect(() => {
+    if (!held.loaded || !held.atEnd || held.turns.length === 0) return;
     list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
   });
 
@@ -114,7 +146,7 @@
     class="conv"
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
-    shift
+    {shift}
     onscroll={scrolled}
   >
     {#snippet children(turn)}
