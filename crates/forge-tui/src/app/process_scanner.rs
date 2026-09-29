@@ -25,7 +25,7 @@ use crate::app::session::UiSession;
 
 /// How often the ticker pokes the drain pump. Cheap timestamp check
 /// at 1 s; the actual `sysinfo` refresh runs at most every
-/// [`SNAPSHOT_STALENESS`].
+/// [`SCAN_STALENESS`].
 const TICKER_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Max events to apply per drain pump tick - same budget as

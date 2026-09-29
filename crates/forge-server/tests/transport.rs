@@ -249,7 +249,7 @@ async fn a_client_declares_answering_on_a_subscribe_and_not_on_its_first_word() 
     send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
         .await;
     let _ = next_server(&mut socket).await;
-    assert_eq!(fleet.answering_count(), 0, "a command or a page is not a declaration either way",);
+    assert_eq!(fleet.answering_count(), 0, "a command or a page is not a declaration either way");
 
     send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
