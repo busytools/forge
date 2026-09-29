@@ -275,9 +275,10 @@ describe('the box', () => {
   it('names the slash command a turn is still working on', () => {
     const harness = open();
     type('/compact');
-    field().dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
-    );
+    // Enter takes the row the list is offering - the command itself - and the
+    // next one sends it, which is the order a reader's hands move in.
+    press('Enter');
+    press('Enter');
     flushSync();
 
     harness.props.record = record({ header: { turn_in_flight: true } });
@@ -302,6 +303,84 @@ describe('the box', () => {
     expect(harness.sent, 'the way in starts the take it offers').toEqual([
       { command: { dictate_start: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } } },
     ]);
+  });
+});
+
+/**
+ * The list that opens over the box: four triggers, one popover shape.
+ */
+describe('the autocomplete', () => {
+  it('opens over the box on the trigger the draft ends in, with the count it matched', () => {
+    open({
+      record: record({ slash_commands: [{ name: '/clear', description: 'Clear chat history' }] }),
+    });
+    type('/mod');
+
+    expect(drawn(), 'the header names the list').toContain('commands');
+    expect(
+      [...document.querySelectorAll('.ac .it')].map((row) => row.textContent?.trim()),
+      'forge’s table is what it offers, matched on the description too',
+    ).toEqual([
+      '/mode Show / set session mode',
+      '/model Show / set session model',
+      '/usage Token/cost usage by project or model',
+    ]);
+    expect(document.querySelector('.ac .h .n')?.textContent, 'the header counts the matches').toBe(
+      '3',
+    );
+  });
+
+  it('marks the span the list matched on, and marks nothing when the query is empty', () => {
+    open({ record: record({ subagents: [{ name: 'cli-version', description: 'settled 3m' }] }) });
+    type('&cli');
+
+    expect(document.querySelector('.ac .it .p em')?.textContent, 'the match is the marked span').toBe(
+      'cli',
+    );
+  });
+
+  it('writes the picked row into the draft, replacing the token it opened on', () => {
+    open({
+      record: record({
+        slash_commands: [{ name: '/clear', description: 'Clear chat history' }],
+      }),
+    });
+    type('run /mo');
+    expect(document.querySelector('.ac'), 'a command is the whole draft while it is typed').toBeNull();
+
+    type('/mo');
+    const rows = [...document.querySelectorAll('.ac .it')];
+    const model = rows.find((row) => row.textContent.includes('/model'));
+    if (!(model instanceof HTMLElement)) throw new Error('the list offered no /model');
+    model.click();
+    flushSync();
+
+    expect(field().value, 'the token is replaced and the caret is left to type on').toBe('/model ');
+    expect(document.querySelector('.ac'), 'and the list closes behind the pick').toBeNull();
+  });
+
+  it('closes the list on escape, and leaves the typed token alone', () => {
+    open({
+      record: record({
+        file_index: {
+          entries: {
+            'src/home.rs': {
+              rel_path: 'src/home.rs',
+              rel_path_lower: 'src/home.rs',
+              basename_lower: 'home.rs',
+              depth: 1,
+            },
+          },
+        },
+      }),
+    });
+    type('@hom');
+    expect(document.querySelector('.ac'), 'the @ trigger opens the file list').not.toBeNull();
+
+    press('Escape');
+
+    expect(document.querySelector('.ac'), 'the list goes').toBeNull();
+    expect(field().value, 'and what the reader typed stays').toBe('@hom');
   });
 });
 

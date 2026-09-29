@@ -2,8 +2,11 @@
   import { untrack } from 'svelte';
 
   import Icon from '../components/Icon.svelte';
+  import Autocomplete from './Autocomplete.svelte';
   import Dictation from './Dictation.svelte';
   import Dock from './Dock.svelte';
+  import { offer, type Sources } from './autocomplete';
+  import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
     composerState,
@@ -13,6 +16,7 @@
     signInLine,
     type ComposerProps,
   } from './view';
+  import { advisoriesFrom, agentTypesFrom, filesFrom } from './wire';
 
   /** How long a landed take's border holds its green beat, which the book states. */
   const BEAT_MS = 450;
@@ -54,6 +58,12 @@
   let dismissed = $state<string | null>(null);
   /** One green beat while a take's words settle into the draft. */
   let beat = $state(false);
+  /** The draft the reader closed the list at, which typing clears. */
+  let closed = $state<string | null>(null);
+  /** Which row a key would take, which is the first until one moves it. */
+  let marked = $state(0);
+  /** The field, so focus can go back to it when the box returns. */
+  let field = $state<HTMLTextAreaElement | null>(null);
 
   const composer = $derived(composerState(record));
   const ask = $derived(pendingAsk(record));
@@ -61,6 +71,28 @@
   const filled = $derived(draft.trim() !== '');
   const notice = $derived(noticeLine(composer.notice));
   const line = $derived(notice !== null && dismissed === notice.text ? null : notice);
+
+  const sources = $derived<Sources>({
+    forgeCommands: FORGE_COMMANDS,
+    advertised: advisoriesFrom(record.slash_commands),
+    files: filesFrom(record.file_index),
+    agents: agentTypesFrom(record.subagents),
+  });
+  const held = $derived(offer(draft, sources));
+  const list = $derived(closed === draft ? null : held);
+
+  // A new query is a new list, so a key starts at its first row again.
+  $effect(() => {
+    void draft;
+    marked = 0;
+  });
+
+  // The reader's eye is in that slot: a prompt takes the box and the keyboard
+  // with it, and the field takes it back when the box returns.
+  $effect(() => {
+    if (ask !== null) return;
+    if (field !== null) field.focus();
+  });
 
   /**
    * A landed take puts its words where the reader was about to type, then the
@@ -136,11 +168,47 @@
     draft = '';
   }
 
-  /** Enter sends, Shift+Enter is a newline - the keys the box's own foot names. */
+  /**
+   * The keys the field answers to, which are two surfaces in one slot: while a
+   * list is open its keys win, and otherwise Enter sends.
+   */
   function onkey(event: KeyboardEvent): void {
+    if (list !== null && list.rows.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        marked = (marked + 1) % list.rows.length;
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        marked = (marked - 1 + list.rows.length) % list.rows.length;
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closed = draft;
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        pick(marked);
+        return;
+      }
+    }
     if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
     send();
+  }
+
+  /** Write the marked row into the draft, replacing the token it opened on. */
+  function pick(at: number): void {
+    const row = list?.rows[at];
+    if (list === null || row === undefined) return;
+    draft = `${draft.slice(0, list.from)}${row.insert} `;
+    closed = null;
+    // The click landed on the row, so the field takes the keyboard back with
+    // the words - the reader is typing again rather than having chosen a button.
+    field?.focus();
   }
 
   /** The reader's own typing is what dismisses a notice row. */
@@ -212,6 +280,9 @@
       {:else if line !== null}
         <div class="notice {line.tone}">{line.text}</div>
       {/if}
+      {#if list !== null}
+        <Autocomplete {list} offer={list} {marked} onpick={pick} />
+      {/if}
       <div class="line">
         <textarea
           class="txt"
@@ -219,6 +290,7 @@
           autocomplete="off"
           spellcheck="false"
           placeholder="Type a message…"
+          bind:this={field}
           bind:value={draft}
           oninput={oninput}
           onkeydown={onkey}
