@@ -165,14 +165,23 @@ export function watchSession(
     stopMessages = connection.onMessage((message) => {
       if (message.kind === 'error') {
         // **An error names the operation it is about, never a subject**, so it
-        // is not a fact about this seat's record and it does not answer the ask
-        // in flight. The one operation that can mean the ask is never coming
-        // back is a refused subscribe; anything else - a refused command, a
-        // page that could not be read, a frame the server did not know - leaves
-        // it standing, and with it whatever whole record is still wanted.
+        // does not answer the ask in flight. The one operation that can mean
+        // the ask is never coming back is a refused subscribe; anything else -
+        // a refused command, a page that could not be read, a frame the server
+        // did not know - leaves it standing, and with it whatever whole record
+        // is still wanted.
+        //
+        // Treating a refusal as this seat's rests on one seat per connection:
+        // the socket hangs a refusal on the oldest ask the connection has
+        // outstanding, and only a session subject can be refused at all. A
+        // second seat on one connection would need the subject on the error to
+        // tell the two apart.
         if (message.what === 'subscribe') {
           asking = null;
-          read(false);
+          // A refusal is the seat's own answer and a page draws why from it;
+          // an error about anything else leaves the record as it is rather
+          // than republishing it unchanged.
+          if (held?.state().kind === 'refused') read(false);
         }
         return;
       }

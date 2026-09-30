@@ -446,9 +446,17 @@ function inFlightOf(held: boolean, frame: Record<string, unknown>): boolean {
  * A frame naming the model the session is already on changes nothing, which is
  * the server's own rule (`reconcile_model_from_init`): a session that did not
  * switch keeps the name its connect resolved rather than being renamed to the
- * CLI's spelling of the same model. The server names a model the catalogue
- * does not carry by humanizing its id; here the id stands, because a header
- * that draws the CLI's own spelling is better than one that draws nothing.
+ * CLI's spelling of the same model. That rule is mirrored exactly, so the two
+ * cannot disagree about WHEN a model is taken.
+ *
+ * **They can disagree about the name, in two cases, and this is the divergence
+ * to know about.** The server humanizes the id when the catalogue carries no
+ * entry for it, AND when the entry it carries has no version digit in its
+ * display name - recent CLI builds ship a short "Opus" - so a `/model` switch
+ * picked from the catalogue draws "Opus 5" on the terminal and "Opus" here.
+ * Under a name this client cannot derive, the id stands: a header drawing the
+ * CLI's own spelling beats one drawing nothing, and porting the server's
+ * `humanize_model_id` is the alternative this declines.
  */
 function modelFrom(held: SessionHeader, value: unknown): ModelFacts | null {
   const id = text(value)?.trim();

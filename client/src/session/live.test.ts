@@ -571,7 +571,18 @@ describe('the record a page holds over an update stream', () => {
     // The three are one property - a seat that wakes, connects or takes a new
     // occupant cannot be answered by the record the last one left - and the
     // branch that reads them is what a page's whole history hangs on.
-    for (const name of REPLACES) {
+    //
+    // **The names are written out rather than read off `REPLACES`.** A loop
+    // over the list under test cannot see the list change: a name dropped from
+    // it takes its own coverage with it, and every test stays green while a
+    // `/new` or a `/resume` stops being re-read.
+    const replacing = ['spawning', 'connected', 'session_replaced'];
+    expect(
+      [...REPLACES].sort(),
+      'the list the page reads is not the list this test covers',
+    ).toEqual([...replacing].sort());
+
+    for (const name of replacing) {
       const connection = drivable();
       const page = watch(connection);
       page.land(snapshotOf(LEAD));
