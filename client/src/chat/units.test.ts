@@ -529,9 +529,10 @@ describe('one turn folded into the units a view draws', () => {
 
   it('draws the fatal error the CLI sends, and finalizes the call it left open', () => {
     // No baseline at 2.1.280 carries a `{"type":"error"}` frame, so the shape
-    // here is `Message::Error { error: String }` as the decoder dispatches it
-    // and the string is the representative one the mockup draws, not a
-    // capture. Nothing about it is in question except the words inside.
+    // here is the one the decoder's own dispatch and `forge-sdk`'s decode test
+    // both carry - `{"type":"error","error":<string>}` - and the string is the
+    // representative one the mockup draws, not a capture. Only the words
+    // inside it are unverified.
     const running = said([
       { type: 'tool_use', id: 'toolu_01GhIjKl', name: 'Bash', input: { command: 'git pull' } },
     ]);
@@ -547,14 +548,49 @@ describe('one turn folded into the units a view draws', () => {
     expect(notice?.kind === 'notice' ? notice.notice.text : '').toBe(
       'socket connection closed unexpectedly while reading stream-json',
     );
+
+    // Two frames that carry no words to draw, and each for its own reason: a
+    // frame whose string is blank draws an empty notice, and one whose `error`
+    // is not a string at all draws a row reading `null`. Both are still the
+    // end of the turn, so the call draws failed either way.
+    for (const [said, why] of [
+      [{ type: 'error', error: '   ' }, 'a blank string'],
+      [{ type: 'error', error: null }, 'a value that is not a string'],
+    ] as const) {
+      const units = fold([running, said]);
+      expect(kinds(units), `no notice for ${why}`).toEqual(['group']);
+      const held = units[0]?.kind === 'group' ? units[0].families[0]?.calls[0] : undefined;
+      expect(held?.status, `and the turn still ended: ${why}`).toBe('failed');
+    }
+
+    // A dispatched agent's failure is not this turn's: its frames are the
+    // SUBAGENTS surface's, and the drawing loop skips them, so a pre-pass that
+    // read one would finalize a call the page never drew a row for.
+    const child = { ...fatal, parent_tool_use_id: 'toolu_dispatch' };
+    const units = fold([running, child]);
+    const held = units[0]?.kind === 'group' ? units[0].families[0]?.calls[0] : undefined;
+    expect(held?.status, 'a sub-agent failing says nothing about this turn').toBe('pending');
+    expect(kinds(units), 'and draws no failure line here').toEqual(['group']);
   });
 
   it('says a failed turn failed, and finalizes the call it left open', () => {
-    // The interrupt as the capture has it (interrupt.jsonl): a call in flight,
-    // the reader's own line into the transcript, and the result frame that
-    // ends the turn with an error. The frame's own fields are unaltered.
+    // The result frame is the interrupt capture's own (interrupt.jsonl): its
+    // fields verbatim, and its prompt carries no tool call - the call here is
+    // what an interrupt catches, which is the shape the capture shows rather
+    // than one it carries.
+    //
+    // **And a answered call rides beside the open one**, because that is the
+    // ordinary interrupt: a turn that finished three calls and was killed in
+    // the fourth. A fold that failed every call in a failed turn would paint
+    // all four red, and only this second call can tell it from the right one.
+    const answered = said([
+      { type: 'tool_use', id: 'toolu_01AbCdEf', name: 'Read', input: { file_path: 'a.rs' } },
+    ]);
+    const itsResult = heard([
+      { type: 'tool_result', tool_use_id: 'toolu_01AbCdEf', content: 'ok', is_error: false },
+    ]);
     const running = said([
-      { type: 'tool_use', id: 'toolu_01AbCdEf', name: 'Bash', input: { command: 'just check' } },
+      { type: 'tool_use', id: 'toolu_01GhIjKl', name: 'Bash', input: { command: 'just check' } },
     ]);
     const interrupted = heard([text('[Request interrupted by user]')]);
     const ended = {
@@ -563,15 +599,18 @@ describe('one turn folded into the units a view draws', () => {
       subtype: 'error_during_execution',
       errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'],
       terminal_reason: 'aborted_streaming',
-      duration_ms: 800,
+      duration_ms: 801,
       duration_api_ms: 0,
       usage: { input_tokens: 4200, output_tokens: 1100 },
     };
 
-    const units = fold([running, interrupted, ended]);
+    const units = fold([answered, itsResult, running, interrupted, ended]);
     const [group, , report, notice] = units;
-    const call = group?.kind === 'group' ? group.families[0]?.calls[0] : undefined;
-    expect(call?.status, 'a call the turn never answered is not still running').toBe('failed');
+    const calls = group?.kind === 'group' ? group.families.flatMap((one) => one.calls) : [];
+    expect(
+      calls.map((leaf) => leaf.status),
+      'only the call left open failed',
+    ).toEqual(['completed', 'failed']);
     expect(group?.kind === 'group' ? group.status : null, 'and the run says so').toBe('failed');
     expect(report?.kind, 'the report row still reports what the turn spent').toBe('report');
     expect(notice?.kind === 'notice' ? notice.notice.severity : null).toBe('error');
@@ -623,6 +662,14 @@ describe('one turn folded into the units a view draws', () => {
       },
     ]);
 
+    // The KINDS, rather than finding the report among them: this frame carries
+    // no error, so a fold that drew the failure line for a turn that finished
+    // would add a notice here and a search for the report would never see it.
+    expect(kinds(units), 'no failure line for a turn that did not fail').toEqual([
+      'text',
+      'text',
+      'report',
+    ]);
     const report = units.find((unit) => unit.kind === 'report');
     expect(report?.kind === 'report' ? report.info.ended_at_utc : null).toBe(
       '2026-09-29T10:00:04.000Z',

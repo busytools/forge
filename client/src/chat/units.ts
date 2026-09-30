@@ -586,6 +586,12 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
    */
   let abandoned = false;
   for (const frame of frames) {
+    // A dispatched agent's frames are not the conversation, and its verdict is
+    // not the session's: a sub-agent's failed result says nothing about the
+    // turn the parent is still running. The drawing loop skips these frames
+    // the same way, so a pre-pass that read one would finalize calls the loop
+    // never drew a row for.
+    if (isDispatched(frame)) continue;
     // A fatal error is the CLI's last-gasp signal before teardown: no result
     // frame follows it, so it is the turn's own verdict just as a failed
     // result is.
