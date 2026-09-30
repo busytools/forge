@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
@@ -142,5 +144,52 @@ describe('the session shell as it draws', () => {
     const body = draw();
     expect(body).toContain('<span class="n ml">proj</span>');
     expect(body).toContain('aria-label="close the inspector"');
+  });
+});
+
+const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
+
+/** The last rule body the sheet writes for this exact selector. */
+function body(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const found = [...sheet.matchAll(new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm'))];
+  return found.at(-1)?.[1] ?? '';
+}
+
+/**
+ * The rows a `grid-template-rows` value declares: `minmax(0, 1fr) auto` is two.
+ * A `repeat()` counts as the single value it is written as, which reads one
+ * row short - enough to miss a defect, never enough to fail a sound sheet.
+ */
+function rows(track: string): number {
+  return track
+    .replace(/\([^)]*\)/g, 'x')
+    .trim()
+    .split(/\s+/).length;
+}
+
+/** Whether a `grid-row` value reaches the last of `rowCount` rows, counting `-1` as the last. */
+function reaches(declared: string | undefined, rowCount: number): boolean {
+  if (declared === undefined) return false;
+  const [head, tail] = declared.trim().split(/\s*\/\s*/);
+  const start = Number(head);
+  const end = tail === undefined ? start : Number(tail) < 0 ? rowCount : Number(tail);
+  return start === 1 && end >= rowCount;
+}
+
+describe('the app grid', () => {
+  /**
+   * The rails are placed by COLUMN, and auto-flow drops a column-only item in
+   * the first row. The composer's row then ends under the chat alone and leaves
+   * a band of bare page beneath both rails.
+   */
+  it('runs both rails to the last row the app declares', () => {
+    const rowCount = rows(/grid-template-rows:\s*([^;]+)/.exec(body('.app'))?.[1] ?? '1fr');
+    for (const side of ['left', 'right']) {
+      expect(
+        reaches(/grid-row:\s*([^;]+)/.exec(body(`.app .rail.${side}`))?.[1], rowCount),
+        `the ${side} rail stops short of the app's last row`,
+      ).toBe(true);
+    }
   });
 });

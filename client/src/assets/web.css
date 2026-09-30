@@ -351,10 +351,12 @@ details[open] > summary .arw { transform: rotate(90deg); }
 }
 /* Placed rather than auto-flowed: a collapsed column leaves its grid slot
    empty, and auto-flowing the rest along moves the conversation into the
-   rail's column and blanks the page. */
-.app .rail.left { grid-column: 1; }
+   rail's column and blanks the page. A rail takes the rows as well as the
+   column, or the composer's row ends under the chat alone and leaves a band
+   of bare page beneath both rails. */
+.app .rail.left { grid-column: 1; grid-row: 1 / -1; }
 .app main.chat { grid-column: 2; }
-.app .rail.right { grid-column: 3; }
+.app .rail.right { grid-column: 3; grid-row: 1 / -1; }
 /* A folded column says so on the app rather than in a hidden box beside it.
    The server held this in checkboxes because a page with no script had
    nowhere else to put it; the class is the same fact stated once, and it
