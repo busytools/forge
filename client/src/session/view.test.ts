@@ -9,7 +9,6 @@ import {
   fleetCount,
   gitSection,
   gotifySection,
-  hasDispatches,
   headerFacts,
   mcpState,
   memoryLabel,
@@ -466,28 +465,6 @@ describe('the monitors section', () => {
         1_700_000_000_000,
       ),
     ).toBe('completed 2m');
-  });
-});
-
-describe('the subagent gap', () => {
-  const dispatch = (name: string, parent: string | null) => ({
-    type: 'assistant',
-    message: { content: [{ type: 'tool_use', id: 'tu1', name, input: {} }] },
-    parent_tool_use_id: parent,
-  });
-
-  /**
-   * The folded instances are not on the socket, so the section draws its own
-   * gap - and it must draw it only when there is a dispatch to be missing.
-   */
-  it('sees a dispatch and only a dispatch', () => {
-    expect(hasDispatches([dispatch('Task', null)])).toBe(true);
-    expect(hasDispatches([dispatch('Agent', null)])).toBe(true);
-    expect(hasDispatches([dispatch('Bash', null)])).toBe(false);
-    expect(
-      hasDispatches([dispatch('Task', 'tu-parent')]),
-      'a dispatch a sub-agent made is that instance call, not a card of its own',
-    ).toBe(false);
   });
 });
 

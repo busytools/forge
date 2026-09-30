@@ -11,15 +11,8 @@
   import SlackSection from './sections/SlackSection.svelte';
   import SubagentsSection from './sections/SubagentsSection.svelte';
   import TasksSection from './sections/TasksSection.svelte';
-  import {
-    gitSection,
-    gotifySection,
-    hasDispatches,
-    mcpSection,
-    projectOf,
-    slackSection,
-  } from './view';
-  import { framesOf, type SessionRecord } from './wire';
+  import { gitSection, gotifySection, mcpSection, projectOf, slackSection } from './view';
+  import type { SessionRecord } from './wire';
 
   /**
    * The inspector: one section per subject, each collapsed to a name and a
@@ -59,7 +52,9 @@
   const mcp = $derived(record === null ? null : mcpSection(record));
   const walk = $derived(record?.processes ?? null);
   const monitors = $derived(record?.monitors ?? []);
-  const dispatches = $derived(record !== null && hasDispatches(framesOf(record.conversation)));
+  // The server's answer, not one worked out from the frames this page holds:
+  // a seat may have dispatched in a turn the page never received.
+  const dispatches = $derived(record !== null && record.has_dispatches);
 </script>
 
 <!-- Named for the same reason the rail is: the page carries two `aside`

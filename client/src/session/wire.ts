@@ -118,17 +118,6 @@ export interface Conversation {
 }
 
 /**
- * Every frame a conversation's turns hold, in order.
- *
- * The turns are the boundary and these are the frames inside it, so a rule
- * that reads frames - the inspector's dispatch scan - wants this rather than
- * the turns.
- */
-export function framesOf(conversation: Conversation): unknown[] {
-  return conversation.turns.flatMap((turn) => turn.messages);
-}
-
-/**
  * What the seat's composer is doing.
  *
  * `compacting` is narrowed because the conversation column draws a line for
@@ -165,6 +154,15 @@ export interface SessionRecord {
   /** The prompt this seat is waiting on, which the composer's dock draws. */
   pending_ask: unknown;
   conversation: Conversation;
+  /**
+   * Whether this seat's conversation holds a sub-agent dispatch at all.
+   *
+   * **The server's, folded where the conversation is folded.** The turns above
+   * are a window of the conversation, not the whole of it, so a page that
+   * worked this out from what it held would draw no sub-agents for a seat that
+   * dispatched in a turn it never received.
+   */
+  has_dispatches: boolean;
   /** The working tree's branch and count, and whether git could read it. */
   work: WorkState;
   /** The open pull request this seat's branch is on. */
@@ -286,6 +284,8 @@ export function sessionFrom(data: unknown): SessionRecord {
     conversation: {
       turns: list(record(held['conversation'])['turns']).map(turnFrom),
       compaction_count: number(record(held['conversation'])['compaction_count']) ?? 0,
+    },
+    has_dispatches: held['has_dispatches'] === true,
     },
     work: workFrom(held['work']),
     pr: prFrom(held['pr']),
