@@ -527,6 +527,28 @@ describe('one turn folded into the units a view draws', () => {
     ]);
   });
 
+  it('draws the fatal error the CLI sends, and finalizes the call it left open', () => {
+    // No baseline at 2.1.280 carries a `{"type":"error"}` frame, so the shape
+    // here is `Message::Error { error: String }` as the decoder dispatches it
+    // and the string is the representative one the mockup draws, not a
+    // capture. Nothing about it is in question except the words inside.
+    const running = said([
+      { type: 'tool_use', id: 'toolu_01GhIjKl', name: 'Bash', input: { command: 'git pull' } },
+    ]);
+    const fatal = {
+      type: 'error',
+      error: 'socket connection closed unexpectedly while reading stream-json',
+    };
+
+    const [group, notice] = fold([running, fatal]);
+    const call = group?.kind === 'group' ? group.families[0]?.calls[0] : undefined;
+    expect(call?.status, 'the turn is over, so the call it held is not still out').toBe('failed');
+    expect(notice?.kind === 'notice' ? notice.notice.severity : null).toBe('error');
+    expect(notice?.kind === 'notice' ? notice.notice.text : '').toBe(
+      'socket connection closed unexpectedly while reading stream-json',
+    );
+  });
+
   it('says a failed turn failed, and finalizes the call it left open', () => {
     // The interrupt as the capture has it (interrupt.jsonl): a call in flight,
     // the reader's own line into the transcript, and the result frame that

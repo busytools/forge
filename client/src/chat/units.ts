@@ -173,6 +173,8 @@ interface Frame {
   is_error?: unknown;
   errors?: unknown;
   terminal_reason?: unknown;
+  /** The string `Message::Error` carries, which is the CLI's own words for it. */
+  error?: unknown;
   usage?: unknown;
   tool_use_result?: unknown;
   state?: unknown;
@@ -584,6 +586,10 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
    */
   let abandoned = false;
   for (const frame of frames) {
+    // A fatal error is the CLI's last-gasp signal before teardown: no result
+    // frame follows it, so it is the turn's own verdict just as a failed
+    // result is.
+    if (frame.type === 'error') abandoned = true;
     if (frame.type === 'result' && frame.is_error === true) abandoned = true;
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {
@@ -709,6 +715,17 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
       const failure = turnFailure(frame);
       if (failure !== null) units.push({ kind: 'notice', notice: failure });
       thinking = null;
+      continue;
+    }
+
+    if (frame.type === 'error') {
+      // The string is all the turn leaves: no result frame follows, so there
+      // is no report row to hang it on. The terminal surfaces the same string
+      // on the same frame, for the same reason.
+      const said = str(frame, 'error');
+      if (said !== null && said.trim() !== '') {
+        push({ kind: 'notice', notice: { severity: 'error', text: said } });
+      }
       continue;
     }
 
