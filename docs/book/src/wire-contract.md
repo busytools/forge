@@ -178,7 +178,8 @@ read out of serde rather than derived from the Rust ones - but that reads
 serde's DESERIALIZE side, and a client reads what serde WRITES. A split
 renaming, which names a variant one way out and another way in, is
 therefore invisible to the names here; the test asserts by source that no
-such renaming exists in the three files carrying these enums.
+such renaming exists in the two files carrying these enums, and in the one
+carrying the chat payload.
 
 That last check depends on serde's own unknown-variant message, which it
 formats rather than contracts: the parse finds nothing if the wording

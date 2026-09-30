@@ -39,8 +39,9 @@
 //! from Rust names - so the record would state a tag the server does not
 //! send, green, and a client reading what serde WRITES draws blank. Only the
 //! two sampled frames catch it, for their own payloads. `assert_no_split_renames`
-//! asserts the shape is absent from the three sources carrying these enums,
-//! which is complete for it.
+//! asserts the shape is absent from both sources carrying these enums - and
+//! from `messages.rs`, which carries none of them and is scanned for the chat
+//! payload's sake - which is complete for it.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -404,7 +405,7 @@ fn sample_message() -> Message {
 struct Contract {
     records: Vec<(&'static str, String)>,
     frames: Vec<(&'static str, usize)>,
-    update_payload_sampled: Vec<&'static str>,
+    update_payload_sampled: Vec<String>,
     chat_keys: usize,
     chat_paths: usize,
     chat_nulls: usize,
@@ -597,7 +598,26 @@ fn contract() -> Contract {
     }
     let chat_body = serde_json::to_string_pretty(&chat_body).expect("the chat record renders");
 
-    let frames = serde_json::to_string_pretty(&frames_record()).expect("the frame record renders");
+    let frames_record = frames_record();
+
+    // **Read off the record rather than written beside it.** A literal here
+    // is a denominator asserted rather than measured: adding a third sampled
+    // payload moved the record and left the printed line still saying one,
+    // which is the same defect as a counter that reads a shape it did not
+    // build.
+    let update_payload_sampled: Vec<String> = frames_record
+        .get("payload_sampled")
+        .and_then(Value::as_object)
+        .map(|sampled| {
+            sampled
+                .keys()
+                .filter(|name| SESSION_UPDATE_VARIANTS.contains(&name.as_str()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let frames = serde_json::to_string_pretty(&frames_record).expect("the frame record renders");
 
     Contract {
         records: vec![
@@ -611,7 +631,7 @@ fn contract() -> Contract {
             ("command", COMMAND_VARIANTS.len()),
             ("client_message", CLIENT_MESSAGE_VARIANTS.len()),
         ],
-        update_payload_sampled: vec!["ChatAppended"],
+        update_payload_sampled,
         chat_keys: chat.keys(),
         chat_paths: chat.paths(),
         chat_nulls: chat.nulls.len(),
