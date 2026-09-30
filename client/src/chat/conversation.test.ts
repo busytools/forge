@@ -602,7 +602,7 @@ describe('the conversation the chat draws', () => {
       'the turn is held once, not as a stale copy beside a live one',
     ).toBe(1);
     expect(rows.length, 'and no extra row survives it').toBe(2);
-    expect(held, 'the row kept the name the page gave it').toBeDefined();
+    expect(held, 'the row kept the name the page gave it').toBe('turn-u-mine');
   });
 
   it('keeps every row keyed when older turns arrive', () => {
