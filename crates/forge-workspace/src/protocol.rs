@@ -1684,14 +1684,11 @@ mod session_update_variants {
                         let Some((_, after)) = trimmed.rsplit_once('[') else {
                             continue;
                         };
-                        match after.split_once(']') {
-                            Some((entries, _)) => {
-                                names.extend(quoted_names(entries).map(str::to_owned));
-                            }
-                            None => {
-                                open = true;
-                                names.extend(quoted_names(after).map(str::to_owned));
-                            }
+                        if let Some((entries, _)) = after.split_once(']') {
+                            names.extend(quoted_names(entries).map(str::to_owned));
+                        } else {
+                            open = true;
+                            names.extend(quoted_names(after).map(str::to_owned));
                         }
                     } else if trimmed.starts_with(']') {
                         open = false;
@@ -1721,12 +1718,11 @@ mod session_update_variants {
                 let Some((_, after)) = trimmed.rsplit_once('[') else {
                     continue;
                 };
-                match after.split_once(']') {
-                    Some((inside, _)) => entries.extend(quoted_names(inside).map(str::to_owned)),
-                    None => {
-                        open = true;
-                        entries.extend(quoted_names(after).map(str::to_owned));
-                    }
+                if let Some((inside, _)) = after.split_once(']') {
+                    entries.extend(quoted_names(inside).map(str::to_owned));
+                } else {
+                    open = true;
+                    entries.extend(quoted_names(after).map(str::to_owned));
                 }
             } else if trimmed.starts_with(']') {
                 break;
