@@ -103,3 +103,52 @@ request:
 `.claude/skills/claude-cli-upgrade/` in the repository holds the CLI
 version-bump ritual: the capture command, the baseline layout, and how
 to add a scenario.
+
+## The socket's own contract
+
+The CLI wire is not the only one forge records. A client reads a second
+wire, the socket `forge-server` serves, and it has the same failure mode
+one layer up: the server renames a field, every test passes, and the page
+draws blank because nothing compares the two ends.
+
+Those shapes are recorded under:
+
+```
+crates/forge-test-harness/baselines/socket/<PROTOCOL_VERSION>/{frames,chat}.json
+```
+
+`frames.json` carries every variant of the four enums that cross the
+socket - `ServerMessage`, `SessionUpdate`, `Subject` and `Command` - with
+the wire name each encodes as. The census behind it is a `match` with no
+wildcard arm, so a variant the server starts or stops sending is a compile
+error before it is ever a failing test.
+
+`chat.json` carries the key set of the `Message` payload the chat fold
+reads, walked off the committed SDK baselines rather than derived from a
+schema. That is the payload `chat_appended` carries, and it is where a
+renamed field stops matching a name a page reads.
+
+**Keys and paths only, never a value.** A key that is not an identifier is
+read as a map key and collapsed to its value's shape, because a model name
+or a question's own text would otherwise move the record whenever the
+content moved.
+
+Both records are rebuilt from the current code on every `just check` and
+compared with the committed copy. Regenerate one deliberately:
+
+```bash
+just conformance-record-socket
+```
+
+Read the diff against the client before committing it. A field that moved
+is a page that draws blank, so the question the diff answers is which
+client read follows it.
+
+**The limits print themselves, every run.** The wire name of a variant is
+derived from its Rust name, so a container's `rename_all` is caught only
+for the variants a sample is built for; an update payload is pinned only
+for the variants sampled. Beside that, the three subject fixtures report
+what they actually pin: how many keys they carry, how many are `null` (the
+key exists, nothing behind it is pinned), and how many collections they
+carry empty, where an element shape is pinned nowhere at all and a field
+renamed inside one is invisible to every pin in the tree.
