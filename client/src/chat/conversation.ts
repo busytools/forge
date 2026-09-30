@@ -255,7 +255,15 @@ export class Chat {
     // where the conversation is asked for again, and the reader keeps what
     // they have until the fresh answer lands.
     const stopStatus = this.connection.onStatus((status) => {
-      if (status === 'open') this.ask(null);
+      // A dropped socket takes any page in flight with it, and the reconnect
+      // answers with an ask of its own - so an ask this conversation was told
+      // to forget is answered by nothing, and its count must not outlive it.
+      if (status !== 'open') {
+        this.inFlight = null;
+        this.abandoned = 0;
+      } else {
+        this.ask(null);
+      }
     });
     this.running = () => {
       stopMessages();
@@ -320,6 +328,11 @@ export class Chat {
         // took any error as its own would draw a refused subscription, or a
         // refused command, as a conversation this forge will not answer for.
         if (message.what !== 'more') return;
+        // A refused ask is answered by no page at all, so the ask it belongs to
+        // is over - and a count of asks this conversation was told to forget is
+        // spent on pages that are never coming.
+        this.inFlight = null;
+        this.abandoned = 0;
         this.inner.update((held) => ({ ...held, refused: message.why, loaded: true }));
         return;
       case 'update':
@@ -353,8 +366,8 @@ export class Chat {
       const known = new Map(held.turns.map((turn) => [turn.key, turn]));
       const taken = new Set(known.keys());
       const named: Turn[] = [];
-      /** Each row's OWN messages, as the page carried them. */
-      const carried: unknown[][] = [];
+      /** Each row's messages after the reconciliation, which hold the page's own. */
+      const copies: unknown[][] = [];
       for (const row of pageTurns(rows)) {
         // What the turn is held under: the fold's own name where it gave one,
         // and the name this conversation gave it where it did not. Reading
@@ -386,8 +399,9 @@ export class Chat {
               : missed.length === 0
                 ? row.messages
                 : [...row.messages, ...missed];
-          named.push(messages === repeated.messages ? repeated : { ...repeated, messages });
-          carried.push(row.messages);
+          const settled = messages === repeated.messages ? repeated : { ...repeated, messages };
+          named.push(settled);
+          copies.push(settled.messages);
           continue;
         }
         const key = nameIn(row, taken);
@@ -395,14 +409,14 @@ export class Chat {
         const fresh: Turn = { key, messages: messagesOf(row), live: false };
         known.set(key, fresh);
         named.push(fresh);
-        carried.push(fresh.messages);
+        copies.push(fresh.messages);
       }
       // A row the page settled: a turn the server has an END for, which is a
       // `result` frame where the wire carries one and any row but the last
       // otherwise - the last row is the transcript's own tail, and that is the
       // one turn a page can have been read while it was still being written.
       const settledRow = (index: number): boolean =>
-        carried[index]?.some(
+        copies[index]?.some(
           (message) => (message as { type?: unknown } | null)?.type === 'result',
         ) === true || index !== named.length - 1;
       // A live turn and a page row are the same exchange when they share a
@@ -416,11 +430,12 @@ export class Chat {
       };
       const replaced = new Set<Turn>();
       const drawn = named.map((row, index) => {
-        // The exchange is the page's OWN copy of the row, not the row this
-        // client holds: a repeated row is handed back as the held object with
-        // its older messages, so asking that one reads as not carrying what the
+        // The exchange is the row's messages AFTER the reconciliation above,
+        // which hold the page's own copy of it: a repeated row is handed back
+        // as the held object, whose messages can be the older of the two, so a
+        // row taken before that reconciliation reads as not carrying what the
         // page plainly carries.
-        const copy = carried[index] ?? [];
+        const copy = copies[index] ?? [];
         const live = held.turns.find((turn) => turn.live && shares(copy, turn));
         if (live === undefined) return row;
         // The page is the account of the turn it copies, so the live turn is

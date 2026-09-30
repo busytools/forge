@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { MORE_TURNS } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
-import type { Connection } from '../socket';
+import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { Chat, type PageTurn } from './conversation';
 
@@ -119,6 +119,13 @@ const forged = (text: string): unknown => ({
   message: { role: 'user', content: [{ type: 'text', text }] },
 });
 
+/** The same words as the CLI persisted them, carrying the id the CLI minted. */
+const minted = (text: string): unknown => ({
+  type: 'user',
+  uuid: `c-${text}`,
+  message: { role: 'user', content: [{ type: 'text', text }] },
+});
+
 /**
  * A `user` frame carrying the reader's own words.
  *
@@ -141,6 +148,7 @@ const typed = (text: string): unknown => ({
 function fakeConnection() {
   const asks: ClientMessage[] = [];
   const listeners = new Set<(message: ServerMessage) => void>();
+  const statuses = new Set<(status: ConnectionStatus) => void>();
   const updates: SessionUpdate[] = [];
 
   const connection = {
@@ -156,7 +164,10 @@ function fakeConnection() {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    onStatus: () => () => undefined,
+    onStatus: (fn: (status: ConnectionStatus) => void) => {
+      statuses.add(fn);
+      return () => statuses.delete(fn);
+    },
     store: () => undefined,
     settings: () => null,
     status: () => 'open' as const,
@@ -175,6 +186,14 @@ function fakeConnection() {
     update(update: SessionUpdate): void {
       updates.push(update);
       this.send({ kind: 'update', update });
+    },
+    /** The connection's own life, which the column watches for a reconnect. */
+    reach(status: ConnectionStatus): void {
+      for (const fn of statuses) fn(status);
+    },
+    /** A refusal, which is the answer a page is not. */
+    refuse(what: string, why: string): void {
+      this.send({ kind: 'error', what, why });
     },
   };
 }
@@ -364,8 +383,12 @@ describe('the conversation the chat draws', () => {
     server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
     const built = get(chat.value).turns.at(-1)?.key ?? '';
 
+    // The page's copy is what the CLI persisted, which carries the id the CLI
+    // minted for it - NOT the forged frame's absence of one. The two agree on
+    // the assistant frame and on nothing else, which is what makes an id-keyed
+    // match fail here rather than passing on `null === null`.
     server.send(
-      page([{ key: null, messages: [forged('typed elsewhere'), said('answer-1'), ended()] }], '1'),
+      page([{ key: null, messages: [minted('typed elsewhere'), said('answer-1'), ended()] }], '1'),
     );
 
     const after = get(chat.value).turns;
@@ -412,6 +435,46 @@ describe('the conversation the chat draws', () => {
       after.turns.map((row) => JSON.stringify(row.messages)),
       'the abandoned answer is not the new occupant conversation',
     ).toEqual([]);
+  });
+
+  it('loads the new occupant when the abandoned ask is refused instead', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'the previous occupant')], '1'));
+
+    chat.older();
+    server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
+    // A refused ask is answered by no page at all: the count of abandoned asks
+    // is spent on a page that is never coming, and the next page - the new
+    // occupant's own - would be swallowed as if it were that answer.
+    server.refuse('more', 'the conversation is gone');
+    server.send(page([turn('n1', 'the new occupant')], null));
+
+    expect(
+      get(chat.value).turns.map((row) => JSON.stringify(row.messages)),
+      'the new occupant page is drawn',
+    ).toEqual([JSON.stringify(turn('n1', 'the new occupant').messages)]);
+  });
+
+  it('loads the new occupant after a socket drop took the abandoned ask', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'the previous occupant')], '1'));
+
+    // An ask in flight, then the socket goes: the page it was waiting for dies
+    // with it, which is what the reconnect's own ask exists to answer.
+    chat.older();
+    server.reach('closed');
+    server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
+    server.reach('open');
+    server.send(page([turn('n1', 'the new occupant')], null));
+
+    expect(
+      get(chat.value).turns.map((row) => JSON.stringify(row.messages)),
+      'the reconnect answer is drawn, not swallowed as the dead ask reply',
+    ).toEqual([JSON.stringify(turn('n1', 'the new occupant').messages)]);
   });
 
   it('does not let a page read mid-turn split the turn it copies', () => {
