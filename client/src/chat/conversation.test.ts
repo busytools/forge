@@ -9,11 +9,17 @@ import { Chat, type PageTurn } from './conversation';
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
-/** One turn as a page carries it. */
+/**
+ * One turn as a page carries it.
+ *
+ * Each message carries a `uuid`, which is what the wire sends and what this
+ * client names a turn the fold could not name by.
+ */
 const turn = (key: string | null, ...texts: string[]): PageTurn => ({
   key,
   messages: texts.map((text) => ({
     type: 'user',
+    uuid: `u-${text}`,
     message: { role: 'user', content: [{ type: 'text', text }] },
   })),
 });
@@ -52,6 +58,49 @@ const progressed = (): unknown => ({
   subtype: 'task_progress',
   task_id: 'task-1',
   uuid: 'progress-1',
+});
+
+/** A `user` frame carrying only a tool result, which the fold draws nothing for. */
+const result = (id: string): unknown => ({
+  type: 'user',
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
+});
+
+/** An `assistant` frame carrying only thinking, which the fold draws nothing for. */
+const thought = (): unknown => ({
+  type: 'assistant',
+  message: {
+    role: 'assistant',
+    model: 'claude-opus-5',
+    content: [{ type: 'thinking', thinking: '...' }],
+  },
+});
+
+/** An `assistant` frame whose only call is a monitor, which the fold skips. */
+const monitoring = (): unknown => ({
+  type: 'assistant',
+  message: {
+    role: 'assistant',
+    model: 'claude-opus-5',
+    content: [{ type: 'tool_use', id: 'mon-1', name: 'Monitor', input: {} }],
+  },
+});
+
+/** A dispatched agent's frame, whose words belong to the SUBAGENTS surface. */
+const dispatched = (): unknown => ({
+  type: 'assistant',
+  parent_tool_use_id: 'call-9',
+  message: {
+    role: 'assistant',
+    model: 'claude-opus-5',
+    content: [{ type: 'text', text: 'from a sub-agent' }],
+  },
+});
+
+/** A `user` frame carrying the reader's own words. */
+const typed = (text: string): unknown => ({
+  type: 'user',
+  message: { role: 'user', content: [{ type: 'text', text }] },
 });
 
 /**
@@ -198,6 +247,79 @@ describe('the conversation the chat draws', () => {
       progressed(),
       counted(100),
     ]);
+  });
+
+  it('opens no row for a frame of any type the fold draws nothing out of', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first'), turn('t2', 'second')], null));
+
+    // A tool result arrives as a `user` frame and a thinking block as an
+    // `assistant` one. Neither draws anything, and on a running seat both
+    // arrive between one turn and the next, so a row apiece is a blank row per
+    // tool call and per thinking block.
+    //
+    // The last two draw nothing for a reason that is NOT their type - the
+    // fold's own monitor guard and its dispatch guard - so a rule keyed on
+    // types would open a row for each of them.
+    server.update({ chat_appended: { key: LEAD, msg: result('call-1') } });
+    server.update({ chat_appended: { key: LEAD, msg: thought() } });
+    server.update({ chat_appended: { key: LEAD, msg: monitoring() } });
+    server.update({ chat_appended: { key: LEAD, msg: dispatched() } });
+
+    const after = get(chat.value).turns;
+    expect(after.length, 'none of the frames opened a row of its own').toBe(2);
+    expect(
+      after[after.length - 1]?.messages,
+      'and all of them are held in the turn they arrived in',
+    ).toEqual([
+      ...turn('t2', 'second').messages,
+      result('call-1'),
+      thought(),
+      monitoring(),
+      dispatched(),
+    ]);
+  });
+
+  it('opens a row for the reader own words while a turn is live', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // A frame that draws something opens the turn in flight when none is live.
+    server.update({ chat_appended: { key: LEAD, msg: said('working') } });
+    // Then the reader says something. It starts a turn of its own even though
+    // one is being written, because the words belong after the answer rather
+    // than inside it.
+    server.update({ chat_appended: { key: LEAD, msg: typed('now do this') } });
+
+    const after = get(chat.value).turns;
+    expect(after.length, 'the turn in flight and the reader own turn').toBe(3);
+    expect(after[1]?.messages, 'the answer holds no part of what was typed').toEqual([
+      said('working'),
+    ]);
+    expect(after[2]?.messages, 'and the words opened a row of their own').toEqual([
+      typed('now do this'),
+    ]);
+  });
+
+  it('does not draw a keyless turn twice when a frame joined it and a page repeats it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // A turn the fold could not name: its key comes from the client.
+    server.send(page([turn(null, 'unnamed')], null));
+    // A frame joins it, so the turn holds more than the page said it did.
+    server.update({ chat_appended: { key: LEAD, msg: result('call-1') } });
+    // The next page carries that turn as it now stands.
+    server.send(
+      page([{ key: null, messages: [...turn(null, 'unnamed').messages, result('call-1')] }], null),
+    );
+
+    const after = get(chat.value).turns;
+    expect(after.length, 'the repeated turn is the one already held, not a second row').toBe(1);
   });
 
   it('keeps every row keyed when older turns arrive', () => {
