@@ -12,6 +12,7 @@
 //! compared with the terminal, and a field missing here cannot be added
 //! later without a server change.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -19,7 +20,7 @@ use anyhow::Result;
 use forge_primitives::review::{ReviewSet, ReviewThread};
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
-use forge_primitives::{GotifySubscription, Message, SessionSlot};
+use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, UserEnvelope};
 use forge_workspace::env::processes::{ProcessSnapshot, SCAN_STALENESS, scan};
 use forge_workspace::{AccountLoadingRow, GatewayOrgView, McpServers, ProjectView, WorkerEntry};
 use serde::{Deserialize, Serialize};
@@ -28,7 +29,7 @@ use serde_json::Value;
 use crate::composer::{NoticeWire, Phase, SignIn};
 use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, ConversationHistory, PendingAsk, ViewSurface};
-use crate::transcript::TurnSpan;
+use crate::transcript::{TaskEnding, TurnSpan};
 use crate::transport::TransportState;
 use crate::transport::envelope::Subject;
 use crate::work::{WorkState, work_from_scan};
@@ -518,13 +519,81 @@ fn opens_of(spans: &[TurnSpan]) -> Vec<(usize, Option<&str>)> {
 
 /// The messages `from..to` as one turn, which is the shape both the session
 /// record and a page carry.
-fn turn_wire(messages: &[Message], from: usize, to: usize, key: Option<&str>) -> TurnWire {
-    TurnWire {
-        key: key.map(str::to_owned),
-        messages: messages[from..to]
-            .iter()
-            .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
-            .collect(),
+///
+/// **A task ending a call in this turn is owed rides along.** A client folds
+/// one turn at a time, so an ending the CLI persisted in another turn is one
+/// it cannot reach - and the notice opens a turn of its own, which puts it in
+/// another turn whenever anything that does open one sits between. The row
+/// the CLI wrote stays where it is and draws nothing; what is added is a frame
+/// of its own, which is content of the wire's own type rather than a second
+/// copy of a drawing.
+fn turn_wire(
+    messages: &[Message],
+    from: usize,
+    to: usize,
+    key: Option<&str>,
+    endings: &HashMap<String, TaskEnding>,
+) -> TurnWire {
+    let mut frames: Vec<Value> = messages[from..to]
+        .iter()
+        .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
+        .collect();
+    for ending in owed_endings(messages, from, to, endings) {
+        frames.push(serde_json::to_value(forged_ending(ending)).unwrap_or(Value::Null));
+    }
+    TurnWire { key: key.map(str::to_owned), messages: frames }
+}
+
+/// The endings that name a call this turn holds and that the turn does not
+/// already carry.
+fn owed_endings<'a>(
+    messages: &[Message],
+    from: usize,
+    to: usize,
+    endings: &'a HashMap<String, TaskEnding>,
+) -> Vec<&'a TaskEnding> {
+    endings
+        .values()
+        .filter(|ending| !(from..to).contains(&ending.at))
+        .filter(|ending| turn_holds_call(&messages[from..to], &ending.call))
+        .collect()
+}
+
+/// Whether these frames make the call `id`.
+fn turn_holds_call(messages: &[Message], id: &str) -> bool {
+    messages.iter().any(|message| {
+        let Message::Assistant { message: envelope, .. } = message else {
+            return false;
+        };
+        envelope.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolUse { id: call, .. }
+                    | ContentBlock::ServerToolUse { id: call, .. }
+                    if call == id
+            )
+        })
+    })
+}
+
+/// The notice as a frame of its own, for the turn that holds the call it ends.
+///
+/// Forged rather than read off the wire, like the turn a delivery draws as:
+/// the CLI wrote this ending into a row of its own, and this is that ending
+/// delivered where a per-turn fold can see it. It carries no `uuid`, because
+/// the CLI mints the transcript's id for its own row and nothing here may
+/// invent one that disagrees with it.
+fn forged_ending(ending: &TaskEnding) -> Message {
+    Message::User {
+        message: UserEnvelope {
+            role: "user".to_owned(),
+            content: vec![crate::transcript::notice_block(&ending.text)],
+        },
+        session_id: String::new(),
+        parent_tool_use_id: None,
+        uuid: None,
+        tool_use_result: None,
+        timestamp: None,
     }
 }
 
@@ -564,9 +633,10 @@ fn turn_ranges<'a>(
 
 /// `messages` as the whole turns `spans` names, in conversation order.
 pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
+    let endings = crate::transcript::task_endings(messages);
     turn_ranges(messages, spans)
         .into_iter()
-        .map(|(from, to, key)| turn_wire(messages, from, to, key))
+        .map(|(from, to, key)| turn_wire(messages, from, to, key, &endings))
         .collect()
 }
 
@@ -610,9 +680,10 @@ pub fn page(messages: &[Message], spans: &[TurnSpan], before: Option<&str>, turn
     // would walk and encode the whole conversation on a path a reader hits
     // while scrolling.
     let first = ends_at.saturating_sub(turns);
+    let endings = crate::transcript::task_endings(messages);
     let page_turns: Vec<TurnWire> = ranges[first..ends_at]
         .iter()
-        .map(|&(from, to, key)| turn_wire(messages, from, to, key))
+        .map(|&(from, to, key)| turn_wire(messages, from, to, key, &endings))
         .collect();
 
     // `None` is the real "nothing above this page": a page already opening on
@@ -977,6 +1048,135 @@ mod tests {
         page(messages, spans, None, u32::MAX).turns.iter().map(opened_on).collect()
     }
 
+    /// A turn's frames as the messages they are, so a test can fold one turn
+    /// the way a client folds it: alone.
+    fn turn_messages(turn: &TurnWire) -> Vec<Message> {
+        turn.messages
+            .iter()
+            .map(|frame| serde_json::from_value(frame.clone()).expect("a message"))
+            .collect()
+    }
+
+    /// How many task endings the frames name `call` in.
+    fn endings_in(turn: &TurnWire, call: &str) -> usize {
+        turn.messages
+            .iter()
+            .filter(|frame| {
+                frame["message"]["content"].as_array().is_some_and(|blocks| {
+                    blocks.iter().any(|block| {
+                        block["type"] == "queued_command"
+                            && block["commandMode"] == "task-notification"
+                            && block["prompt"].as_str().is_some_and(|text| text.contains(call))
+                    })
+                })
+            })
+            .count()
+    }
+
+    /// The calls the fold drew in one turn.
+    fn calls(units: &[ChatUnit]) -> Vec<&crate::transcript::ToolLeaf> {
+        units
+            .iter()
+            .filter_map(|unit| match unit {
+                ChatUnit::ToolGroup { families, .. } => {
+                    Some(families.iter().flat_map(|family| family.calls.iter()))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// What the frames of one turn say about a call's row, in words.
+    fn drawn_text(units: &[ChatUnit], call: &str) -> Vec<String> {
+        calls(units)
+            .into_iter()
+            .filter(|leaf| leaf.id == call)
+            .flat_map(|leaf| leaf.content.iter())
+            .filter_map(|piece| match piece {
+                forge_primitives::ToolCallContent::Content {
+                    content: forge_primitives::ChunkContent::Text { text },
+                } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A page's client folds one turn at a time, so an ending that sits in
+    /// another turn is an ending it cannot reach - and one notice in ten on
+    /// this machine sits exactly there.
+    ///
+    /// Both carriers are carried into the call's turn, and the ending is drawn
+    /// exactly once: the copy is what the call's own turn holds, and the row
+    /// the CLI persisted draws nothing wherever it is.
+    #[test]
+    fn the_ending_is_carried_into_the_call_turn() {
+        for (rows, call, said) in [
+            (
+                crate::fixtures::SAME_TURN_USER_ROW,
+                "call_da4c7ee117d14d48ba99e036",
+                "Background command \"Watch the account-lifecycle CI run\" failed with exit code 1",
+            ),
+            (
+                crate::fixtures::CROSS_TURN_ATTACHMENT,
+                "call_17c05f64497746b0ac450728",
+                "Background command \"Restart the harness with a long terminate window\" failed with exit code 100",
+            ),
+        ] {
+            let (messages, spans) = a_conversation(rows);
+            let turns = all_turns(&messages, &spans);
+            // Folded the way a client folds a page: one turn at a time.
+            let folded: Vec<Vec<ChatUnit>> = turns
+                .iter()
+                .map(|turn| crate::transcript::render_units(&turn_messages(turn)))
+                .collect();
+
+            let holding = folded
+                .iter()
+                .position(|units| calls(units).iter().any(|leaf| leaf.id == call))
+                .unwrap_or_else(|| panic!("one turn holds {call}"));
+            let held = calls(&folded[holding]);
+            let held = held.iter().find(|leaf| leaf.id == call).expect("the call");
+
+            assert_eq!(
+                held.status,
+                crate::model::ToolCallStatus::Failed,
+                "the call's own turn carries the ending, so a per-turn fold reads it",
+            );
+            assert!(
+                drawn_text(&folded[holding], call).iter().any(|text| text == said),
+                "and what the harness said rides it",
+            );
+            // **The ending is drawn once.** A cross-turn notice is carried
+            // as well as kept, so the conversation holds the ending twice -
+            // the row the CLI wrote it in and the copy - and only one of them
+            // can end the call: the copy is inside the turn that draws it,
+            // and the row is in a turn whose fold finds no such call to end.
+            let drawn_in: Vec<usize> = folded
+                .iter()
+                .enumerate()
+                .filter(|(_, units)| {
+                    calls(units).iter().any(|leaf| {
+                        leaf.id == call && leaf.status == crate::model::ToolCallStatus::Failed
+                    })
+                })
+                .map(|(at, _)| at)
+                .collect();
+            assert_eq!(drawn_in, vec![holding], "and it is drawn in that turn alone");
+            assert!(
+                turns.iter().any(|turn| endings_in(turn, call) > 0),
+                "and it reaches the wire as the block a view reads, not as the row's own text",
+            );
+            assert!(
+                folded.iter().flatten().all(|unit| !matches!(
+                    unit,
+                    ChatUnit::UserTurn { text } if text.contains("<task-notification>")
+                )),
+                "and no turn draws the raw notice as the reader's own words",
+            );
+        }
+    }
+
     /// A page of no turns ended where it began - an empty page whose cursor
     /// named the turn it had already opened at - so a client walking back
     /// asked for it forever.
@@ -1174,6 +1374,7 @@ mod tests {
     use super::*;
     use crate::surface::PendingKind;
     use crate::testing::ViewFacts;
+    use crate::transcript::ChatUnit;
     use crate::work::WorkCache;
     use forge_primitives::git_diff::GitDiffSnapshot;
 

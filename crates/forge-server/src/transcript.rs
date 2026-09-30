@@ -824,6 +824,45 @@ pub(crate) struct TaskEnding {
     pub(crate) status: Option<ToolCallStatus>,
     /// The harness's own sentence about the outcome.
     pub(crate) summary: String,
+    /// The notice as the CLI wrote it, which a carried copy repeats verbatim.
+    pub(crate) text: String,
+    /// Where the notice sits in the conversation it was read from, which is
+    /// what says whether a turn already holds it.
+    pub(crate) at: usize,
+}
+
+/// The notice as the block a view reads an ending from: the shape the scan
+/// hoists an `attachment` row into, so both carriers reach a client as one
+/// thing rather than as two the client has to know about.
+pub(crate) fn notice_block(text: &str) -> ContentBlock {
+    ContentBlock::QueuedCommand {
+        prompt: serde_json::Value::String(text.to_owned()),
+        command_mode: Some("task-notification".to_owned()),
+        source_uuid: None,
+    }
+}
+
+/// Every task notice the conversation holds as that one block, whichever
+/// carrier the CLI persisted it in.
+///
+/// The row itself is kept - it is the notice, and dropping it would be the
+/// silence rule 25 forbids - and only its shape changes, into the one a view
+/// already reads an ending from. What a view draws for it is nothing: the
+/// ending is drawn on the call's own row.
+pub(crate) fn notices_as_blocks(mut messages: Vec<Message>) -> Vec<Message> {
+    for message in &mut messages {
+        let Message::User { message: envelope, .. } = message else {
+            continue;
+        };
+        for block in &mut envelope.content {
+            if let ContentBlock::Text { text } = block
+                && is_task_notice(text)
+            {
+                *block = notice_block(text);
+            }
+        }
+    }
+    messages
 }
 
 /// The ending a persisted notice carries, or `None` when the text is not one
@@ -836,6 +875,8 @@ fn task_ending(text: &str) -> Option<TaskEnding> {
         call: tag(text, "tool-use-id")?.to_owned(),
         status: tag(text, "status").and_then(task_status),
         summary: tag(text, "summary").unwrap_or_default().to_owned(),
+        text: text.to_owned(),
+        at: 0,
     })
 }
 
@@ -1108,7 +1149,7 @@ fn turn_report(
 /// carries two, so the rule is pinned by a test rather than by a case.
 pub(crate) fn task_endings(messages: &[Message]) -> HashMap<String, TaskEnding> {
     let mut out: HashMap<String, TaskEnding> = HashMap::new();
-    for message in messages {
+    for (at, message) in messages.iter().enumerate() {
         let Message::User { message: envelope, .. } = message else {
             continue;
         };
@@ -1118,7 +1159,8 @@ pub(crate) fn task_endings(messages: &[Message]) -> HashMap<String, TaskEnding> 
                 ContentBlock::QueuedCommand { prompt, .. } => queued_command_text(prompt),
                 _ => continue,
             };
-            if let Some(ending) = task_ending(&text) {
+            if let Some(mut ending) = task_ending(&text) {
+                ending.at = at;
                 out.insert(ending.call.clone(), ending);
             }
         }
@@ -1215,7 +1257,9 @@ mod tests {
     use crate::grouping::KindRow;
     use crate::model::ToolCallStatus;
 
-    use super::{ChatUnit, NoticeSeverity, ToolLeaf, render, render_units, task_ending};
+    use super::{
+        ChatUnit, NoticeSeverity, ToolLeaf, render, render_units, task_ending, task_endings,
+    };
 
     /// An assistant message carrying `content`.
     fn assistant(content: Vec<ContentBlock>) -> Message {
@@ -1918,8 +1962,8 @@ mod tests {
             ),
             (
                 crate::fixtures::CROSS_TURN_ATTACHMENT,
-                "call_53bce8e2567245c7a6681a85",
-                "Background command \"Start the harness, unpiped, in the background\" failed with exit code 100",
+                "call_17c05f64497746b0ac450728",
+                "Background command \"Restart the harness with a long terminate window\" failed with exit code 100",
             ),
         ] {
             let units = folded_transcript(rows);
@@ -1938,6 +1982,35 @@ mod tests {
                 .collect();
             assert!(body.contains(&said), "and what the harness said rides its row: {body:?}");
         }
+    }
+
+    /// Two endings naming one call: the later word is the one that stands.
+    ///
+    /// The rule is the one the results pre-pass already keeps, where a second
+    /// result for a call replaces the first, and it reads a repeated ending as
+    /// the newer word rather than the older. **No call in this machine's
+    /// transcripts carries two**, so this pins the rule rather than a case -
+    /// which is why the notices here are written rather than read off disk,
+    /// unlike every other test in this file.
+    #[test]
+    fn a_second_ending_naming_one_call_wins() {
+        let ending = |status: &str, summary: &str| {
+            user(vec![ContentBlock::Text {
+                text: format!(
+                    "<task-notification>\n<tool-use-id>toolu_1</tool-use-id>\n\
+                     <status>{status}</status>\n<summary>{summary}</summary>\n</task-notification>"
+                ),
+            }])
+        };
+
+        let endings = task_endings(&[
+            ending("failed", "the first word"),
+            ending("completed", "the second word"),
+        ]);
+
+        let held = endings.get("toolu_1").expect("the call is keyed by its own id");
+        assert_eq!(held.summary, "the second word", "the later notice is the word that stands");
+        assert_eq!(held.status, Some(ToolCallStatus::Completed), "status and all");
     }
 
     /// A sub-agent's frames are not the chat's. The terminal suppresses

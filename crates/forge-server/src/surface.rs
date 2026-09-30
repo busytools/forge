@@ -258,11 +258,15 @@ impl ViewSurface {
             cwd_raw.to_path_buf()
         };
         let cwd = self.workspace.git_scan_cwd_for_session(slot, &cwd_raw);
-        forge_workspace::session_history(
+        let read = forge_workspace::session_history(
             self.workspace.config_dir(),
             &session_id,
             &cwd.to_string_lossy(),
-        )
+        );
+        ConversationHistory {
+            messages: crate::transcript::notices_as_blocks(read.messages),
+            compaction_count: read.compaction_count,
+        }
     }
 }
 
