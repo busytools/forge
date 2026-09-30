@@ -22,7 +22,11 @@
    * messages are - one group per run of calls, one lane per family, a card for
    * a question, a notice for a delivery - and this draws what it is given.
    */
-  let { turn, cwd }: { turn: HeldTurn; cwd: string | null } = $props();
+  let {
+    turn,
+    cwd,
+    compacting = false,
+  }: { turn: HeldTurn; cwd: string | null; compacting?: boolean } = $props();
 
   const units = $derived(fold(turn.messages, cwd));
 
@@ -43,6 +47,16 @@
     }
     return out;
   });
+
+  /**
+   * Whether the compaction line needs a block of its own.
+   *
+   * It is the last thing in the turn either way, and the turn's own last block
+   * draws it where that block is the work: a block of its own is for a turn
+   * that ends on the reader's own words, where the line would otherwise sit
+   * inside their attribution.
+   */
+  const loose = $derived(compacting && layout.at(-1)?.mine !== false);
 </script>
 
 {#each layout as block, at (at)}
@@ -76,6 +90,14 @@
           <Report info={unit.info} />
         {/if}
       {/each}
+      {#if compacting && at === layout.length - 1}
+        <div class="compacting"><span class="ring"></span>Compacting context...</div>
+      {/if}
     </div>
   {/if}
 {/each}
+{#if loose}
+  <div class="work">
+    <div class="compacting"><span class="ring"></span>Compacting context...</div>
+  </div>
+{/if}

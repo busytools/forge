@@ -28,6 +28,7 @@
     cwd,
     waking = false,
     reason = null,
+    compacting = false,
   }: {
     slot: SessionSlot;
     connection: Connection;
@@ -37,6 +38,8 @@
     waking?: boolean;
     /** Why, when it does. */
     reason?: string | null;
+    /** A compaction in flight, which the newest turn draws a line for. */
+    compacting?: boolean;
   } = $props();
 
   /** How near the top the reader has to be before the turns above are asked for. */
@@ -57,6 +60,8 @@
    * string, and a string is written only when it changes.
    */
   const seat = $derived(subjectKey({ session: slot }));
+  /** The newest turn's key: the row a compaction in flight belongs under. */
+  const newest = $derived(held.turns[held.turns.length - 1]?.key ?? null);
   let opened: { seat: string; connection: Connection; stop: () => void } | null = null;
   /**
    * Pages of older turns asked for and not yet answered.
@@ -223,9 +228,9 @@
     {shift}
     onscroll={scrolled}
   >
-    {#snippet children(turn)}
+    {#snippet children(turn: HeldTurn)}
       <div class="turn">
-        <Turn {turn} {cwd} />
+        <Turn {turn} {cwd} compacting={compacting && turn.key === newest} />
       </div>
     {/snippet}
   </VList>

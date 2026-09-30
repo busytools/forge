@@ -9,6 +9,12 @@ const draw = (...messages: unknown[]): string =>
   render(Turn, { props: { turn: { key: 't1', messages, live: false } as HeldTurn, cwd: null } })
     .body;
 
+/** The same turn, while a compaction is in flight. */
+const compacting = (...messages: unknown[]): string =>
+  render(Turn, {
+    props: { turn: { key: 't1', messages, live: false } as HeldTurn, cwd: null, compacting: true },
+  }).body;
+
 const prompt = (text: string): unknown => ({
   type: 'user',
   message: { role: 'user', content: [{ type: 'text', text }] },
@@ -151,6 +157,49 @@ describe('one turn, as the page draws it', () => {
     // A payload with no length has no size, and the span that would hold one
     // draws a bare dash in its place.
     expect(mine, 'and no size beside it').not.toContain('<span class="n">');
+  });
+
+  it('draws the compaction line only while one is in flight', () => {
+    // The line is the whole of what a reader watching a 43-second compaction
+    // has to go on: the conversation is otherwise silent for the length of it.
+    expect(
+      compacting(said([{ type: 'text', text: 'Folding the earlier context down first.' }])),
+    ).toContain('Compacting context');
+    expect(draw(said([{ type: 'text', text: 'And this one is done.' }]))).not.toContain(
+      'Compacting context',
+    );
+  });
+
+  it('puts the compaction line under the work, and out of the reader block', () => {
+    const body = compacting(
+      prompt('compact it and carry on'),
+      said([{ type: 'text', text: 'Folding the earlier context down first.' }]),
+    );
+
+    // The last block is the work, so the line closes it rather than opening a
+    // second one - and it comes after what the turn did.
+    expect(body.match(/<div class="work">/g) ?? []).toHaveLength(1);
+    const work = body.slice(body.indexOf('<div class="work">'));
+    expect(work.indexOf('Folding the earlier context down first.')).toBeGreaterThanOrEqual(0);
+    expect(work.indexOf('Compacting context')).toBeGreaterThan(
+      work.indexOf('Folding the earlier context down first.'),
+    );
+
+    // A turn with more than one run of work keeps it in the last: the line is
+    // the end of the turn, not the end of every block on it.
+    const twice = compacting(
+      prompt('first'),
+      said([{ type: 'text', text: 'one' }]),
+      prompt('second'),
+      said([{ type: 'text', text: 'two' }]),
+    );
+    expect(twice.match(/Compacting context/g) ?? []).toHaveLength(1);
+
+    // And a turn ending on the reader's own words keeps it out of their
+    // attribution, which is what the orange rule on that block is for.
+    const spoken = compacting(prompt('compact it and carry on'));
+    expect(between(spoken, '<div class="mine"', '</div>')).not.toContain('Compacting context');
+    expect(spoken).toContain('Compacting context');
   });
 
   it('draws a mutation with its diff already open', () => {
