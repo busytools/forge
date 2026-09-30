@@ -28,6 +28,7 @@
     cwd,
     waking = false,
     reason = null,
+    compacting = false,
   }: {
     slot: SessionSlot;
     connection: Connection;
@@ -37,6 +38,8 @@
     waking?: boolean;
     /** Why, when it does. */
     reason?: string | null;
+    /** A compaction in flight, which the newest turn draws a line for. */
+    compacting?: boolean;
   } = $props();
 
   /** How near the top the reader has to be before the turns above are asked for. */
@@ -57,6 +60,8 @@
    * string, and a string is written only when it changes.
    */
   const seat = $derived(subjectKey({ session: slot }));
+  /** The newest turn's key: the row a compaction in flight belongs under. */
+  const newest = $derived(held.turns[held.turns.length - 1]?.key ?? null);
   let opened: { seat: string; connection: Connection; stop: () => void } | null = null;
   /**
    * Pages of older turns asked for and not yet answered.
@@ -142,12 +147,24 @@
     if (timer !== null) clearTimeout(timer);
   });
 
+  /**
+   * What the follow watches: the newest row, and the line that grows it.
+   *
+   * **The compaction line is part of the last row and arrives as a PROP**, not
+   * as a frame, so a flip alone grows that row by its height with no scroll
+   * behind it - and nothing else re-runs the follow until some later frame
+   * happens to land, which on a session with no hooks is never. The line then
+   * draws with its baseline below the fold for the whole compaction. Keyed
+   * here so the follow re-sticks when the line appears.
+   */
+  const follows = $derived(held.turns.length === 0 ? null : `${held.turns.length}:${compacting}`);
+
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
   // conversation means, and a page that grew without the view moving would
   // lose the very thing it was opened on. A reader anywhere else is left
   // exactly where they are.
   $effect(() => {
-    if (!held.loaded || !held.atEnd || held.turns.length === 0) return;
+    if (follows === null || !held.loaded || !held.atEnd) return;
     list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
   });
 
@@ -202,6 +219,9 @@
          the empty copy here would say the seat has no history when the truth
          is that nothing has answered yet. -->
     <p class="hold">Reading the conversation...</p>
+    {#if compacting}
+      <div class="compacting"><span class="ring"></span>Compacting context...</div>
+    {/if}
   </div>
 {:else if held.turns.length === 0}
   <div class="conv">
@@ -209,6 +229,9 @@
       Nothing said yet
       <span class="sub">this seat has no history: what is said here starts it</span>
     </div>
+    {#if compacting}
+      <div class="compacting"><span class="ring"></span>Compacting context...</div>
+    {/if}
   </div>
 {:else}
   <!-- The list draws its own scroll viewport, so the sheet's `.conv` rules go
@@ -223,9 +246,9 @@
     {shift}
     onscroll={scrolled}
   >
-    {#snippet children(turn)}
+    {#snippet children(turn: HeldTurn)}
       <div class="turn">
-        <Turn {turn} {cwd} />
+        <Turn {turn} {cwd} compacting={compacting && turn.key === newest} />
       </div>
     {/snippet}
   </VList>
