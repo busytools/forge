@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import Harness from './Harness.svelte';
 import type { ServerMessage } from '../protocol';
 import { permissionAsk, questionAsk, record, seatRead, take, wire, type Wire } from './testing';
-import type { ComposerProps, ComposerRecord, SeatRead } from './view';
+import { TRUNCATED, type ComposerProps, type ComposerRecord, type SeatRead } from './view';
 
 /** Everything the page is drawing, as a reader reads it. */
 const drawn = () => document.body.textContent ?? '';
@@ -95,6 +95,14 @@ function openBoth(over: Partial<ComposerProps> = {}) {
       say: (message: ServerMessage) => shared.say(message),
     },
   };
+}
+
+/** Both clients' boxes, in mount order, which is one field per composer. */
+function bothFields(): HTMLTextAreaElement[] {
+  return [...document.querySelectorAll('textarea')].map((found) => {
+    if (!(found instanceof HTMLTextAreaElement)) throw new Error('a box drew no field');
+    return found;
+  });
 }
 
 /** Every option row the page is drawing, in order. */
@@ -210,6 +218,14 @@ describe('the box', () => {
       const harness = open();
       type('fix the');
 
+      // The take has to be one this composer watched: the words a notice
+      // carries are the take's, and only a take this client saw end is its
+      // own to put in the box.
+      harness.page.record = record({
+        composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      });
+      flushSync();
+
       harness.page.record = record({
         composer: {
           take: null,
@@ -238,6 +254,114 @@ describe('the box', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * The server holds a landed notice until the next take starts, so a client
+   * that attaches - or reloads - finds words whose take it never saw. They are
+   * the reader's own, already sent, and the box they come back in is not a
+   * draft: it is the message they wrote, handed to them to send twice.
+   */
+  it('opens empty over a landed notice the server was already holding', () => {
+    open({
+      record: record({
+        composer: {
+          take: null,
+          notice: {
+            kind: 'landed',
+            text: 'But where are we on the rate limiting side on our end?',
+            truncated: false,
+          },
+          compacting: false,
+          sign_in: null,
+        },
+      }),
+    });
+
+    expect(field().value, 'the box owes the reader nothing back').toBe('');
+    expect(drawn(), 'and the notice draws no row of its own').not.toContain('rate limiting');
+  });
+
+  /**
+   * A capped take is the one whose words are most likely still unsent, and its
+   * row says to carry on from the end. Drawn on a client that never saw the
+   * take, that is a note about words that are not there.
+   */
+  it("does not draw a truncated take's row on a client that never saw it", () => {
+    open({
+      record: record({
+        composer: {
+          take: null,
+          notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
+          compacting: false,
+          sign_in: null,
+        },
+      }),
+    });
+
+    expect(field().value, 'the words did not land here').toBe('');
+    expect(document.querySelector('.notice.warn'), 'and nothing says they were cut').toBeNull();
+  });
+
+  it("lands a truncated take's words and still says the take was cut", () => {
+    const harness = open();
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the words land').toBe('this is what fitted');
+    expect(
+      document.querySelector('.notice.warn')?.textContent,
+      'and the row says the take was cut rather than that they stopped speaking',
+    ).toBe(TRUNCATED);
+  });
+
+  /**
+   * The dock takes the box while a prompt waits, and it says what happens to a
+   * take that lands behind it. That is the path the notice exists for, and the
+   * words still have to be there when the box comes back.
+   */
+  it('holds a take that lands while a prompt has the box, and lands its words when the box returns', () => {
+    const harness = open();
+    type('ship it once CI is green');
+
+    const watching = record({
+      pending_ask: permissionAsk(),
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    harness.page.record = watching;
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the prompt has the box').not.toBeNull();
+
+    harness.page.record = record({
+      pending_ask: permissionAsk(),
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'push it once CI is green', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    harness.page.record = record();
+    flushSync();
+
+    expect(field().value, 'the take landed in the draft the box was holding').toBe(
+      'ship it once CI is green push it once CI is green',
+    );
   });
 
   it('draws the notice a take left instead of a row', () => {
@@ -905,6 +1029,38 @@ describe('the autocomplete', () => {
  * carrying the option the core offered rather than one the client invented.
  */
 describe('two clients on one seat', () => {
+  /**
+   * A seat's notice is the server's, not the client's, so the client that
+   * never saw the take has no draft those words belong to. Landing them there
+   * is the reader's own message arriving back in a box they did not type it in.
+   */
+  it('leaves the box empty on the client that never saw the take', () => {
+    const { one, other } = openBoth();
+
+    one.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    const landed = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'push it once CI is green', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    one.page.record = landed;
+    other.page.record = landed;
+    flushSync();
+
+    const [watched, missed] = bothFields();
+    expect(watched?.value, 'the client that watched the take lands it').toBe(
+      'push it once CI is green',
+    );
+    expect(missed?.value, 'the one that attached after it does not').toBe('');
+  });
+
   it('draws the same prompt on both, and the answer the core offered is what one sends', () => {
     const { shared, one, other } = openBoth();
     const asked = record({ pending_ask: permissionAsk() });

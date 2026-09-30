@@ -56,6 +56,16 @@
    * writes, so it would tear its own green beat down on the next run.
    */
   let landed: string | null = null;
+  /**
+   * Whether this composer has seen the seat hold a take, ever.
+   *
+   * A landed notice is per-seat server state that outlives its take, so a
+   * client that attaches - or reloads - finds one whose words it never saw
+   * land. Only a take this composer saw may put words in the box, and the
+   * trade is that dictation landing unwatched, and never sent, is not handed
+   * back.
+   */
+  let sawTake = false;
   /** The line the reader's own typing has dismissed, which the next take clears. */
   let dismissed = $state<string | null>(null);
   /** One green beat while a take's words settle into the draft. */
@@ -71,7 +81,7 @@
   const ask = $derived(pendingAsk(record));
   const blocker = $derived(blocked(seat, composer, sent));
   const filled = $derived(draft.trim() !== '');
-  const notice = $derived(noticeLine(composer.notice));
+  const notice = $derived(noticeLine(composer.notice, sawTake));
   const line = $derived(notice !== null && dismissed === notice.text ? null : notice);
 
   const sources = $derived<Sources>({
@@ -96,6 +106,11 @@
     if (field !== null) field.focus();
   });
 
+  // Holding the seat's take is having seen it, and the flag never clears.
+  $effect(() => {
+    if (composer.take !== null) sawTake = true;
+  });
+
   /**
    * A landed take puts its words where the reader was about to type, then the
    * box takes one green beat.
@@ -111,7 +126,7 @@
       dismissed = null;
       return;
     }
-    if (held.kind !== 'landed' || landed === held.text) return;
+    if (held.kind !== 'landed' || !sawTake || landed === held.text) return;
     landed = held.text;
     draft = joined(
       untrack(() => draft),
