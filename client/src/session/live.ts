@@ -171,7 +171,7 @@ export function watchSession(
       const at = slotOf(message.update);
       if (at === null || subjectKey({ session: at }) !== key) return;
 
-      // The two variants that REPLACE the record rather than patching it: a
+      // The three variants that REPLACE the record rather than patching it: a
       // seat waking up, connecting, or taking a new occupant. What they carry
       // is not a record - the folded transcript, the process walk, the working
       // tree - so only a read answers them.
