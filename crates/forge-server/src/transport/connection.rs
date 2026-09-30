@@ -9,18 +9,12 @@ use axum::response::Response;
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
+use super::PROTOCOL_VERSION;
 use super::TransportState;
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{encode_subject, page, walk_processes_if_stale};
 use crate::live::Live;
 use crate::{Command, SessionUpdate};
-
-/// The protocol this server speaks.
-///
-/// Fixed rather than negotiated: the server and the core change far more
-/// slowly than a client's visuals do, so a client either speaks this or it
-/// does not, and a mismatch fails plainly instead of silently.
-const PROTOCOL_VERSION: u32 = 1;
 
 /// Take the upgrade and give the connection its own task.
 pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportState>>) -> Response {

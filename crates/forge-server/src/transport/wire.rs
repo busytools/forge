@@ -1166,6 +1166,7 @@ mod tests {
         );
     }
 
+    use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
@@ -1248,7 +1249,6 @@ mod tests {
                 ..ViewFacts::default()
             },
         );
-
         // A scan the fixture pins the working tree and the PR row from: the
         // fleet's own directory is not a git repository, so without it both
         // fields would be pinned as null and a read that answered nothing at
@@ -1625,10 +1625,56 @@ mod tests {
         );
     }
 
+    /// What one fixture pins, and what it only appears to.
+    ///
+    /// The byte-compare above makes a renamed field fail, and it is silent
+    /// about how much it is covering. A key the fixture carries as `null`
+    /// pins the key's existence and nothing behind it; an ARRAY it carries
+    /// empty pins nothing about the element shape at all, so a field renamed
+    /// inside one is invisible to every pin in the tree. `projects[]/tasks[]`
+    /// and `projects[]/crons[]` are on that list: named on every run and not
+    /// yet seeded, which is #1367.
+    ///
+    /// Counted rather than listed, and printed on every run: the number is
+    /// what says whether the fixture is the instrument it is taken for.
+    #[derive(Default)]
+    struct Coverage {
+        keys: usize,
+        nulls: BTreeSet<String>,
+        empty_arrays: BTreeSet<String>,
+    }
+
+    fn coverage(value: &Value, path: &str, out: &mut Coverage) {
+        match value {
+            Value::Object(fields) => {
+                for (key, held) in fields {
+                    out.keys += 1;
+                    let here = format!("{path}/{key}");
+                    if held.is_null() {
+                        out.nulls.insert(here.clone());
+                    }
+                    coverage(held, &here, out);
+                }
+            }
+            Value::Array(items) => {
+                if items.is_empty() {
+                    out.empty_arrays.insert(format!("{path}[]"));
+                }
+                for item in items {
+                    coverage(item, &format!("{path}[]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[tokio::test]
     async fn every_subject_round_trips_through_its_fixture() {
         let state = fixture_state();
         let forms = volatile(Path::new(FIXTURE_ROOT));
+        let mut keys = 0usize;
+        let mut nulls = 0usize;
+        let mut empty: BTreeSet<String> = BTreeSet::new();
 
         for (subject, fixture) in fixtures() {
             let mut encoded = encode_subject(&state, &subject).await.expect("encode");
@@ -1637,7 +1683,23 @@ mod tests {
                 serde_json::from_str(&std::fs::read_to_string(&fixture).expect("read"))
                     .expect("parse");
             assert_eq!(encoded, expected, "{} changed shape", fixture.display());
+
+            let mut pin = Coverage::default();
+            coverage(&encoded, "", &mut pin);
+            keys += pin.keys;
+            nulls += pin.nulls.len();
+            empty.extend(pin.empty_arrays);
         }
+
+        // The floor: an empty fixture compares equal to a snapshot of nothing
+        // and would otherwise report as clean as a populated one.
+        assert!(keys > 0, "no fixture carries a key, so there is nothing to pin");
+        eprintln!(
+            "wire fixtures: {keys} key slots carried, {nulls} null (the key is named, nothing \
+             behind it is pinned), {} empty collections (no element shape pinned anywhere): {}",
+            empty.len(),
+            empty.iter().cloned().collect::<Vec<_>>().join(", "),
+        );
     }
 
     /// The walk nothing but the terminal used to take.

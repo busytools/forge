@@ -103,3 +103,84 @@ request:
 `.claude/skills/claude-cli-upgrade/` in the repository holds the CLI
 version-bump ritual: the capture command, the baseline layout, and how
 to add a scenario.
+
+## The socket's own contract
+
+The CLI wire is not the only one forge records. A client reads a second
+wire, the socket `forge-server` serves, and it has the same failure mode
+one layer up: the server renames a field, every test passes, and the page
+draws blank because nothing compares the two ends.
+
+Those shapes are recorded under:
+
+```
+crates/forge-test-harness/baselines/socket/<PROTOCOL_VERSION>/{frames,chat}.json
+```
+
+They live under `baselines/` beside the CLI captures and are not captures
+themselves: nothing here is recorded live. Both are derived from the
+current code, which is why regenerating one is a deliberate act.
+
+`frames.json` carries every variant of the five enums whose tags the socket
+itself chooses - `ServerMessage`, `SessionUpdate`, `Subject`, `Command` and
+`ClientMessage` - with the wire name each encodes as. The census behind it
+is one list per enum expanded into both a `match` with no wildcard arm and
+the names the record is built from, so a variant the server starts or stops
+sending is a compile error before it is ever a failing test, and there is
+no second list to drift. The client writes a `ClientMessage` tag by hand,
+so a rename there is a message the server refuses rather than a page that
+draws blank.
+
+A `Message` also crosses, inside `chat_appended`, and its variant tags are
+not pinned here: they are the CLI's words rather than forge's, and what
+`chat.json` records of a message is the keys of the fields its variants
+carry.
+
+`chat.json` carries the key set of the `Message` payload the chat fold
+reads, walked off the committed SDK baselines rather than derived from a
+schema. That is the payload `chat_appended` carries, and it is where a
+renamed field stops matching a name a page reads. `frames.json` also
+carries the path-and-key shape of two sampled frames - the `chat_appended`
+update and a `page` with one turn in it, so the paging fields a client
+reads are pinned rather than declared.
+
+**Keys and paths only, never a value.** A key that is not an identifier is
+read as a map key and collapsed to its value's shape, because a model name
+or a question's own text would otherwise move the record whenever the
+content moved.
+
+Both records are rebuilt from the current code on every `just check` and
+compared with the committed copy. Regenerate one deliberately:
+
+```bash
+just conformance-record-socket
+```
+
+Read the diff against the client before committing it. A field that moved
+is a page that draws blank, so the question the diff answers is which
+client read follows it. **Nothing reads the client for you**: the records
+say what the server emits, and whether a page reads those names is a person
+comparing the two against `client/src/`. The check is on the record, not on
+the agreement, and a change that renames a field without touching the page
+is caught here while a page that reads the wrong name is not.
+
+**Some limits print themselves on every run.** The three subject fixtures
+report what they actually pin: how many keys they carry, how many are
+`null` (the key exists, nothing behind it is pinned), and how many
+collections they carry empty, where an element shape is pinned nowhere at
+all and a field renamed inside one is invisible to every pin in the tree.
+
+**Others are declared rather than printed.** A payload is pinned only for
+the two frames sampled; the fields inside a variant nobody samples are not
+pinned at all. A container's `rename_all` and any variant-level
+`#[serde(rename)]` are covered for every variant, because the names are
+read out of serde rather than derived from the Rust ones - but that reads
+serde's DESERIALIZE side, and a client reads what serde WRITES. A split
+renaming, which names a variant one way out and another way in, is
+therefore invisible to the names here; the test asserts by source that no
+such renaming exists in the three files carrying these enums.
+
+That last check depends on serde's own unknown-variant message, which it
+formats rather than contracts: the parse finds nothing if the wording
+changes, and the emptiness assertion fails loudly rather than the
+comparison passing against an empty set.

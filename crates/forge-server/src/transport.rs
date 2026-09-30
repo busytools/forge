@@ -19,6 +19,18 @@ mod connection;
 pub mod envelope;
 pub mod wire;
 
+/// The protocol this server speaks.
+///
+/// Fixed rather than negotiated: the server and the core change far more
+/// slowly than a client's visuals do, so a client either speaks this or it
+/// does not, and a mismatch fails plainly instead of silently.
+///
+/// Named here rather than in `connection.rs` so the socket's recorded
+/// contract is filed under it: a bump looks for a record directory that is
+/// not there and fails, which is the honest answer for a client that would
+/// refuse the connection anyway.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the live state a
 /// late subscriber cannot reconstruct for itself, and the configuration the

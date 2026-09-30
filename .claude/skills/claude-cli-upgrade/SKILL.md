@@ -248,6 +248,28 @@ no committed generator; the recipe is:
 Do not delete the directory instead of regenerating it: doing so silently
 drops image and document coverage, and the replay tests stay green.
 
+### The socket's chat record follows the baselines
+
+`crates/forge-test-harness/baselines/socket/<PROTOCOL_VERSION>/chat.json`
+is not a capture. It is walked off the SDK baselines just regenerated - the
+key set of every `Message` they carry - so a recapture that moves a field
+reddens `socket_replay` with no server change behind it. That is the record
+working: the CLI moved and the socket re-sends what the CLI sent.
+
+Regenerate it in the same pass, and read the diff rather than only
+committing it, because a key that moved here is a client fold that stopped
+matching:
+
+```
+just conformance-record-socket
+```
+
+**Both records move on a bump, `frames.json` included.** It is not only a
+census of the enums: one section carries the path-and-key shape of a
+sampled `chat_appended`, taken from the first decodable `Message` in the
+baselines, so a recapture that changes which scenario sorts first rewrites
+that section with no code change. Expect both to diff and read both.
+
 ### Reference captures are deliberately out of scope
 
 `reference-captures/` holds raw `claude --print` probes of individual tool
