@@ -76,3 +76,26 @@ these changed before it landed. Each is now drawn:
 `tasks` and `crons` are empty in the fixture, so their element shapes come
 from `crates/forge-server/src/transport/wire.rs` rather than from the file.
 The fixture pins what it carries; the source pins the rest.
+
+## The one file that is not a copy
+
+**`session-load.json` is the exception to everything above.** It is not one of
+the server's fixtures and `salvage.test.ts` does not see it: it is a
+conversation taken off a real session, kept for the one test that measures what
+an arriving frame costs the inspector. Two things about it are deliberate:
+
+- **Its volume is REAL and its payloads are not.** The message count, the
+  blocks inside each frame, the dispatch frames and the process tree are
+  exactly what the session carried; the tool results and thinking text are cut
+  to stubs, because the cost being measured is a function of counts. A fixture
+  trimmed any other way would measure a conversation nobody had.
+- **`session_id` carries `TestOrg` rather than a session's uuid.** No client
+  reads it off a frame, and `dev/fixture.test.ts` fails the build if the
+  marker reaches the bundle - so the file has to carry the marker to be
+  covered by that check at all.
+- **The inspector is the only thing it may serve.** The stubbing is safe
+  because the inspector reads no payload: it counts frames and reads a
+  dispatch's tool name. Anything that draws the words - the conversation
+  column - or that pays for the bytes on the way in, the socket's own
+  `JSON.parse` included, would measure a conversation far smaller than the one
+  this file claims to be. Take a fresh capture for those.

@@ -43,7 +43,9 @@
     composer?: Snippet<[ComposerProps]> | null;
   } = $props();
 
-  let read = $state<SessionRead>({ wire: null, refused: null });
+  // Raw: a read answers with a whole new record, so nothing here is mutated in
+  // place, and `$state` would re-proxy the tree it is handed on every frame.
+  let read = $state.raw<SessionRead>({ wire: null, refused: null });
   $effect(() => {
     // Read here rather than through `$derived`, so a seat change re-subscribes
     // and the store the page left is let go with the last subscriber.

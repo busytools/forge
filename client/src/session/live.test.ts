@@ -179,6 +179,7 @@ describe('the session page over a socket', () => {
    */
   it('draws a slack target the wire sends as a bare string', async () => {
     await open(sessionFixture, slackWire());
+    openSection('slack');
 
     const body = drawn();
     expect(sections()).toContain('slack');
@@ -198,6 +199,7 @@ describe('the session page over a socket', () => {
    */
   it('draws subscriptions that read the same words without colliding', async () => {
     await open(sessionFixture, slackWire());
+    openSection('slack');
     expect(document.querySelectorAll('.sb .subs > li')).toHaveLength(4);
   });
 
@@ -318,4 +320,21 @@ function sections(): string[] {
   return [...document.querySelectorAll('[data-k^="sec-"]')].map(
     (el) => el.getAttribute('data-k')?.slice('sec-'.length) ?? '',
   );
+}
+
+/**
+ * Open a section, which is what a reader does before its body means anything.
+ *
+ * **A section draws its body when it is open and not before.** The summary is
+ * all a closed section owes, so a test that reads a body has to open the thing
+ * first - and this is the same pair the browser sends, the property and the
+ * event `bind:open` listens for. jsdom does not implement `<summary>`
+ * activation, so a `click` would toggle nothing here while looking like it had.
+ */
+function openSection(name: string): void {
+  const found = document.querySelector(`details.sec[data-k="sec-${name}"]`);
+  if (!(found instanceof HTMLDetailsElement)) throw new Error(`no ${name} section was drawn`);
+  found.open = true;
+  found.dispatchEvent(new Event('toggle'));
+  flushSync();
 }
