@@ -214,6 +214,99 @@ client-tauri-bundle:
 client-dev:
     npm --prefix client run tauri -- dev
 
+# Build the client and serve it where a reviewer's browser can land.
+#
+# The front end had no equivalent of the Rust side's one command: its strongest
+# check is "serve the page and drive it", and that is the step that varies per
+# reviewer - two of one day's four front-end reviews could not reach a page at
+# all. This is that step, written down once, and it prints the URL because a
+# recipe that serves without saying where has moved the guessing, not removed
+# it: guessing an address is how a healthy page read as unreachable.
+#
+# The address is the machine's WireGuard interface, resolved rather than
+# hardcoded, and several utun addresses fail rather than pick one - picking
+# wrong is the same silence as not printing the URL.
+#
+# `vite preview` serves the built bundle, so the dev server's stale module
+# graph cannot arise, which is the other way a page reads as empty. The
+# compositing check it prints covers the first: a virtualised list draws
+# nothing until it has been measured, and a display producing no frames never
+# measures it.
+client-preview:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    addrs=$(/sbin/ifconfig | awk '/^[a-z]/ { iface = $1 } iface ~ /^utun/ && $1 == "inet" { print $2 }')
+    case "$addrs" in
+        '')
+            echo '[ERROR] no utun interface carries an address - is WireGuard up?' >&2
+            exit 1
+            ;;
+        *$'\n'*)
+            echo "[ERROR] more than one utun address, so none is chosen: $addrs" >&2
+            exit 1
+            ;;
+    esac
+
+    port=4173
+    # Refused rather than raced. This matches a listener on ANY interface, so
+    # a loopback-only server refuses a port that would not have blocked the
+    # bind to the WireGuard address; the message names the address it found,
+    # which is more use than loosening the check.
+    if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        holder=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN | awk 'NR == 2 { print $1" (pid "$2") on "$9 }')
+        echo "[ERROR] port $port is already held by $holder - stop that server, or free the port" >&2
+        exit 1
+    fi
+
+    npm --prefix client run build
+
+    log=$(mktemp "${TMPDIR:-/tmp}/client-preview.XXXXXX")
+    npm --prefix client run preview -- --host "$addrs" --port "$port" --strictPort >"$log" 2>&1 &
+    preview=$!
+    trap 'kill "$preview" 2>/dev/null || true; rm -f "$log"' EXIT INT TERM
+
+    # The URL is printed only once vite itself reports the bind, and its own
+    # line is the one artefact nothing else can counterfeit. Neither cheaper
+    # signal survives: the PID here is npm's, which outlives a vite that
+    # failed to bind, and a port that answers says only that SOMETHING is
+    # listening - which is how a server started in the build window got
+    # announced by this recipe. Vite's banner is coloured even to a pipe, so
+    # the escapes come off before the match.
+    ready=''
+    for _ in $(seq 60); do
+        plain=$(sed $'s/\033\\[[0-9;]*m//g' "$log")
+        case "$plain" in
+            *"http://$addrs:$port/"*) ready=yes; break ;;
+        esac
+        kill -0 "$preview" 2>/dev/null || break
+        sleep 0.25
+    done
+    cat "$log"
+    if [ -z "$ready" ]; then
+        echo "[ERROR] vite never reported a bind on http://$addrs:$port/ - see above" >&2
+        wait "$preview" || true
+        exit 1
+    fi
+
+    echo
+    echo "[OK] the built client is served at http://$addrs:$port/"
+    echo '     A production bundle, not the dev server, so there is no module graph'
+    echo '     to go stale: a page that looks empty is not a stale reload. Open a'
+    echo '     fresh tab and re-check before reading anything as broken.'
+    echo
+    echo '     Then ask whether the page is compositing. A display producing no'
+    echo '     frames draws nothing, and a virtualised list stays empty until a'
+    echo '     frame measures it. The line below is one expression: pass it to'
+    echo '     browser_evaluate as it stands, or in the console wrap it as'
+    echo '     `await (...)()` - on its own it evaluates to the function. It'
+    echo '     answers with frames: 5 when the page is drawing; hidden, or 0'
+    echo '     frames, means it is not.'
+    echo
+    echo "() => new Promise(d => { let n = 0, t0 = performance.now(), stop = setTimeout(() => d({ hidden: document.hidden, frames: n, note: 'fewer than 5 frames in 1s' }), 1000); const tick = () => { if (++n === 5) { clearTimeout(stop); d({ hidden: document.hidden, frames: n, ms: Math.round(performance.now() - t0) }); } else requestAnimationFrame(tick); }; requestAnimationFrame(tick); })"
+
+    wait "$preview"
+
 # Compile the feature configurations nothing else builds.
 check-feature-configs:
     RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-tui --bin forge --features perf
