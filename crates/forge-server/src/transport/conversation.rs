@@ -316,6 +316,22 @@ mod tests {
         }
     }
 
+    /// An assistant frame calling `tool`, optionally one a sub-agent made.
+    fn an_assistant_frame(tool: &str, parent: Option<&str>) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "m1",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{"type": "tool_use", "id": "tu1", "name": tool, "input": {}}],
+            },
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+            "parent_tool_use_id": parent,
+        }))
+        .expect("an assistant frame")
+    }
+
     fn a_frame(text: &str) -> Message {
         serde_json::from_value(serde_json::json!({
             "type": "user",
@@ -424,6 +440,57 @@ mod tests {
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let conversation = conversation.lock().expect("the lock");
         assert_eq!(conversation.messages().len(), 1, "carrying the history the connect brought");
+    }
+
+    /// **The dispatch rule lives here now, and this is its test.** It was the
+    /// client's, scanned over every frame of every turn to decide whether to
+    /// draw the inspector's subagents section; a bounded page can no longer
+    /// answer it that way, so the conversation computes it where it is folded
+    /// and the record carries it.
+    ///
+    /// The rule is the client's own, kept identical: an assistant frame whose
+    /// `parent_tool_use_id` is absent or blank - `names_a_dispatch`'s
+    /// non-empty-string guard, which is what the client checked - carrying a
+    /// `Task` or `Agent` call. A sub-agent's own calls are the sub-agent's and
+    /// do not count for the session that dispatched it.
+    #[test]
+    fn a_dispatch_is_an_assistant_frame_calling_task_or_agent() {
+        let dispatch = |message| Conversation::new(vec![message], 0).has_dispatches();
+
+        assert!(dispatch(an_assistant_frame("Task", None)), "a Task call is a dispatch");
+        assert!(dispatch(an_assistant_frame("Agent", None)), "and so is an Agent call");
+        assert!(!dispatch(an_assistant_frame("Bash", None)), "a Bash call is not one");
+        assert!(
+            !dispatch(an_assistant_frame("Task", Some("tu-parent"))),
+            "and a sub-agent's own Task call is the sub-agent's, not this session's",
+        );
+        assert!(!dispatch(a_frame("hello")), "a user frame dispatches nothing");
+    }
+
+    /// The rule answers for a frame the session emits after the seed too, not
+    /// only for the history a connect carried - otherwise a dispatch made
+    /// while a client is watching would go unnoticed until the seat was
+    /// re-seeded.
+    #[test]
+    fn a_dispatch_appended_after_a_seed_is_seen() {
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::empty());
+        held.apply(&a_replay(vec![a_frame("nothing dispatched here")]));
+
+        let read = || {
+            let conversation = held.get(&a_seat()).expect("the seat is held");
+            let conversation = conversation.lock().expect("the lock");
+            conversation.has_dispatches()
+        };
+        assert!(!read(), "precondition: the seeded conversation holds no dispatch");
+
+        held.apply(&SessionUpdate::ChatAppended {
+            key: a_seat(),
+            msg: an_assistant_frame("Task", None),
+            origin: None,
+        });
+
+        assert!(read(), "a dispatch appended after the seed is seen");
     }
 
     /// A frame on a seat nothing has seeded is dropped rather than inventing

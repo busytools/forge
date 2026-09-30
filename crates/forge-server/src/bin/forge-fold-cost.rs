@@ -474,6 +474,16 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
         live: Mutex::new(Live::new()),
         config: forge_primitives::WebConfig::default(),
     });
+    // The seat's conversation, put where a `Connected` would have left it.
+    //
+    // **The transport does not read a transcript**, so a server that was left
+    // to itself here would answer every arm from an empty conversation and
+    // report the cheapest result of all. The fixture reads through the
+    // surface - which a fixture may and a server may not - and holds what it
+    // read, which is the state a client attaching to a running seat meets.
+    fleet
+        .hold_conversation(&state, &args.org, &args.project, "lead")
+        .map_err(anyhow::Error::msg)?;
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], args.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("pid {} listening on ws://{addr}/socket for {seat:?}", std::process::id());

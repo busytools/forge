@@ -228,6 +228,15 @@ impl ViewSurface {
     /// an empty conversation, and records which of the two it was, so a view
     /// drawing nothing can say which of them it met rather than only that it
     /// has nothing to draw.
+    ///
+    /// **This is the surface's read for a view that does not hold its own,
+    /// and the socket stopped being that view.** The transport reads a
+    /// transcript once per seat to seed a conversation it keeps, because a
+    /// client's request is too hot to walk a file on; the terminal keeps its
+    /// own copy in session state. Neither is a reason the verb is wrong - a
+    /// third view reads through it, which is what the surface exists for -
+    /// and its callers today are the surface's own tests, which is what a
+    /// surface test is for rather than a sign it is unused.
     pub fn conversation(&self, slot: &SessionSlot, cwd_raw: &Path) -> ConversationHistory {
         let Some(session_id) = self.workspace.running_session_id_for(slot) else {
             tracing::debug!(
