@@ -1107,8 +1107,8 @@ mod tests {
     }
 
     /// A page's client folds one turn at a time, so an ending that sits in
-    /// another turn is an ending it cannot reach - and one notice in ten on
-    /// this machine sits exactly there.
+    /// another turn is an ending it cannot reach - and about three notices in
+    /// ten on this machine sit exactly there.
     ///
     /// Both carriers are carried into the call's turn, and the ending is drawn
     /// exactly once: the copy is what the call's own turn holds, and the row

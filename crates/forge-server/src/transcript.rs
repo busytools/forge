@@ -1156,10 +1156,11 @@ fn turn_report(
 /// **The last ending naming a call wins**, which is the rule the results
 /// pre-pass already keeps and the only one that reads a repeated ending as the
 /// newer word rather than the older. It is load-bearing rather than
-/// hypothetical: ten of this machine's calls carry two notices, and in each of
-/// them the first says the task completed and the second - written after a
-/// restart found no completion record - says it stopped. A first-wins fold
-/// draws those calls completed.
+/// hypothetical: ten of this machine's calls carry two notices. Nine of those
+/// pairs are the restart case, completed first and stopped second - written
+/// once a restart found no completion record - and one runs the other way, so
+/// the rule is what decides between them rather than the order the CLI
+/// happens to write.
 pub(crate) fn task_endings(messages: &[Message]) -> HashMap<String, TaskEnding> {
     let mut out: HashMap<String, TaskEnding> = HashMap::new();
     for (at, message) in messages.iter().enumerate() {
