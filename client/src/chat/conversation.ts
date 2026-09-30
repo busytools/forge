@@ -160,6 +160,12 @@ function messagesOf(turn: PageTurn): unknown[] {
   return Array.isArray(turn.messages) ? turn.messages : [];
 }
 
+/** A frame's own id, or `null` when it carries none. */
+function uuidOf(message: unknown): string | null {
+  const id = (message as { uuid?: unknown } | null)?.uuid;
+  return typeof id === 'string' && id !== '' ? id : null;
+}
+
 /**
  * Whether a frame opens a turn of its own rather than joining the live one:
  * what a person said.
@@ -330,6 +336,8 @@ export class Chat {
       const known = new Map(held.turns.map((turn) => [turn.key, turn]));
       const taken = new Set(known.keys());
       const named: Turn[] = [];
+      /** Each row's OWN messages, as the page carried them. */
+      const carried: unknown[][] = [];
       for (const row of pageTurns(rows)) {
         // What the turn is held under: the fold's own name where it gave one,
         // and the name this conversation gave it where it did not. Reading
@@ -339,7 +347,30 @@ export class Chat {
         const name = row.key ?? nameOf(row.messages);
         const repeated = known.get(name);
         if (repeated !== undefined) {
-          named.push(repeated);
+          // A repeated row is handed back as the object already held, and the
+          // page's copy of it can be the NEWER of the two - a read taken after
+          // frames the held row was built before. So the two are reconciled by
+          // what each is missing, and the held object is kept only where the
+          // page says nothing new: a row the reader is looking at is not drawn
+          // again by an answer that says nothing.
+          const heldIds = new Set(repeated.messages.map(uuidOf));
+          const pageIds = new Set(row.messages.map(uuidOf));
+          const missed = repeated.messages.filter((message) => {
+            const id = uuidOf(message);
+            return id === null || !pageIds.has(id);
+          });
+          const adds = row.messages.filter((message) => {
+            const id = uuidOf(message);
+            return id === null || !heldIds.has(id);
+          });
+          const messages =
+            adds.length === 0
+              ? repeated.messages
+              : missed.length === 0
+                ? row.messages
+                : [...row.messages, ...missed];
+          named.push(messages === repeated.messages ? repeated : { ...repeated, messages });
+          carried.push(row.messages);
           continue;
         }
         const key = nameIn(row, taken);
@@ -347,13 +378,58 @@ export class Chat {
         const fresh: Turn = { key, messages: messagesOf(row), live: false };
         known.set(key, fresh);
         named.push(fresh);
+        carried.push(fresh.messages);
       }
-      const inPage = new Set(named.map((turn) => turn.key));
-      // A page is the fold's own account of the turns it covers, so a turn the
-      // frames built inside that range has been replaced by it and is dropped
-      // rather than drawn twice - once as the frames had it, once as the fold
-      // settled it.
+      // A row the page settled: a turn the server has an END for, which is a
+      // `result` frame where the wire carries one and any row but the last
+      // otherwise - the last row is the transcript's own tail, and that is the
+      // one turn a page can have been read while it was still being written.
+      const settledRow = (index: number): boolean =>
+        carried[index]?.some(
+          (message) => (message as { type?: unknown } | null)?.type === 'result',
+        ) === true || index !== named.length - 1;
+      // A live turn and a page row are the same exchange when they share a
+      // frame: frames belong to one turn, so a shared id is that turn.
+      const shares = (messages: unknown[], turn: Turn): boolean => {
+        const ids = new Set(messages.map(uuidOf).filter((id) => id !== null));
+        return turn.messages.some((message) => {
+          const id = uuidOf(message);
+          return id !== null && ids.has(id);
+        });
+      };
+      const replaced = new Set<Turn>();
+      const drawn = named.map((row, index) => {
+        // The exchange is the page's OWN copy of the row, not the row this
+        // client holds: a repeated row is handed back as the held object with
+        // its older messages, so asking that one reads as not carrying what the
+        // page plainly carries.
+        const copy = carried[index] ?? [];
+        const live = held.turns.find((turn) => turn.live && shares(copy, turn));
+        if (live === undefined) return row;
+        // The page is the account of the turn it copies, so the live turn is
+        // replaced either way - and where the copy is settled it is the whole
+        // account, so the row stands as it is.
+        replaced.add(live);
+        if (settledRow(index)) return row;
+        // A copy read while the turn was still being written is not: the row
+        // stands in its place, marked live, and carries both the words no frame
+        // did (the CLI never echoes a prompt) and the frames the page was read
+        // too early to have - so the frames still to come join it rather than
+        // opening a second row.
+        const ids = new Set(copy.map(uuidOf));
+        const grown = live.messages.filter((message) => {
+          const id = uuidOf(message);
+          return id === null || !ids.has(id);
+        });
+        return { key: row.key, messages: [...copy, ...grown], live: true };
+      });
+      const inPage = new Set(drawn.map((turn) => turn.key));
       const rest = held.turns.filter((turn) => !turn.live && !inPage.has(turn.key));
+      // A live turn no row of this page shares a frame with is one the page
+      // cannot be an account of - a page of OLDER turns, or one serialized
+      // before those frames landed - and it is kept: dropping it there leaves
+      // the reader's own words nowhere, with nothing asking for them again.
+      const loose = held.turns.filter((turn) => turn.live && !replaced.has(turn));
       return {
         ...held,
         loaded: true,
@@ -364,7 +440,8 @@ export class Chat {
         // walk, and the first page establishes it.
         cursor: direction === 'older' || !held.loaded ? cursor : held.cursor,
         prepends: held.prepends + (direction === 'older' ? 1 : 0),
-        turns: direction === 'older' ? [...named, ...rest] : [...rest, ...named],
+        turns:
+          direction === 'older' ? [...drawn, ...rest, ...loose] : [...rest, ...drawn, ...loose],
       };
     });
   }

@@ -27,12 +27,21 @@ const turn = (key: string | null, ...texts: string[]): PageTurn => ({
 /** One assistant message carrying prose. */
 const said = (text: string): unknown => ({
   type: 'assistant',
+  uuid: `a-${text}`,
   message: {
     id: `m-${text}`,
     role: 'assistant',
     model: 'claude-opus-5',
     content: [{ type: 'text', text }],
   },
+});
+
+/** The frame a turn ends on, which is what tells a page's copy of it settled. */
+const ended = (): unknown => ({
+  type: 'result',
+  uuid: 'r-1',
+  subtype: 'success',
+  is_error: false,
 });
 
 /** A page of whole turns, as the server answers `more`. */
@@ -97,9 +106,28 @@ const dispatched = (): unknown => ({
   },
 });
 
-/** A `user` frame carrying the reader's own words. */
+/**
+ * A delivery frame as forge forges it: the reader's words and NO id.
+ *
+ * Nobody on the server can supply one - the outbound prompt carries none, the
+ * CLI mints the transcript's own afterwards, and the CLI never echoes what it
+ * was given - so a turn opened by one is matched to its page copy by the
+ * frames the two share.
+ */
+const forged = (text: string): unknown => ({
+  type: 'user',
+  message: { role: 'user', content: [{ type: 'text', text }] },
+});
+
+/**
+ * A `user` frame carrying the reader's own words.
+ *
+ * Its id is derived from the text the way the `turn` helper's is, so a frame
+ * and the page row carrying the same words are the same frame.
+ */
 const typed = (text: string): unknown => ({
   type: 'user',
+  uuid: `u-${text}`,
   message: { role: 'user', content: [{ type: 'text', text }] },
 });
 
@@ -320,6 +348,160 @@ describe('the conversation the chat draws', () => {
 
     const after = get(chat.value).turns;
     expect(after.length, 'the repeated turn is the one already held, not a second row').toBe(1);
+  });
+
+  it('replaces a turn whose opening frame carries no id', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // A delivery forge forges and sends as a frame: no id at all, because
+    // nothing forge holds can mint the one the CLI will give it. The turn it
+    // opens is matched to the page's copy by the frames they SHARE, not by the
+    // opening one - which is what the two copies agree on either way.
+    server.update({ chat_appended: { key: LEAD, msg: forged('typed elsewhere') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    const built = get(chat.value).turns.at(-1)?.key ?? '';
+
+    server.send(
+      page([{ key: null, messages: [forged('typed elsewhere'), said('answer-1'), ended()] }], '1'),
+    );
+
+    const after = get(chat.value).turns;
+    expect(after.map((row) => row.key).includes(built), 'the frame-built row is gone').toBe(false);
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('typed elsewhere')).length,
+      'and the turn is held once, as the page has it',
+    ).toBe(1);
+  });
+
+  it('does not let a page read mid-turn split the turn it copies', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The wire's real order: the CLI never echoes a prompt, so a turn in
+    // flight is opened by the ASSISTANT's first frame and the reader's words
+    // reach the client only in a page - which is read while the turn is still
+    // being written, so it holds the words and the frame they landed before,
+    // and nothing after.
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    server.send(
+      page([turn('t1', 'first'), { key: null, messages: [typed('mine'), said('answer-1')] }], '1'),
+    );
+
+    // The rest of the turn arrives after that page.
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-2') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-3') } });
+
+    const rows = get(chat.value).turns.map((row) => JSON.stringify(row.messages));
+    const mine = rows.filter((messages) => messages.includes('mine'));
+    expect(mine.length, 'the reader words and the whole answer are one row').toBe(1);
+    expect(mine[0], 'and that row carries the frames that followed the page').toContain('answer-3');
+    expect(
+      rows.filter((messages) => messages.includes('answer-2')).length,
+      'with no second row holding the tail',
+    ).toBe(1);
+  });
+
+  it('keeps the turn being written when a page of older turns lands', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], '1'));
+
+    // The wire's real order: the CLI never echoes a prompt, so the turn in
+    // flight is opened by the assistant's first frame.
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    // The reader scrolls up, which asks for the turns above what is held. That
+    // page is the fold's account of OLDER turns, so it cannot carry this one -
+    // and dropping it there leaves the answer nowhere, with nothing asking the
+    // server for it again.
+    chat.older();
+    server.send(page([turn('t0', 'older')], null));
+
+    const held = get(chat.value).turns.map((row) => JSON.stringify(row.messages));
+    expect(
+      held.some((messages) => messages.includes('answer-1')),
+      'an older page does not drop the turn being written',
+    ).toBe(true);
+    expect(get(chat.value).turns[0]?.key, 'and the older page still landed above').toBe('t0');
+  });
+
+  it('keeps a live turn a newest page was serialized without', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    // A newest page that repeats what it held before that frame landed.
+    server.send(page([turn('t1', 'first')], '1'));
+
+    const held = get(chat.value).turns.map((row) => JSON.stringify(row.messages));
+    expect(
+      held.some((messages) => messages.includes('answer-1')),
+      'a page that does not share a frame with the turn does not drop it',
+    ).toBe(true);
+  });
+
+  it('replaces a live turn with the page that settled it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    const built = get(chat.value).turns.at(-1)?.key ?? '';
+
+    // The fold's own account of that turn, and settled: it carries the result
+    // frame, so it is not a page read while the turn was still being written.
+    server.send(
+      page(
+        [turn('t1', 'first'), { key: null, messages: [typed('mine'), said('answer-1'), ended()] }],
+        '1',
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    expect(after.map((row) => row.key).includes(built), 'the frame-built row is gone').toBe(false);
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('answer-1')).length,
+      'and the turn is held once, as the page has it',
+    ).toBe(1);
+  });
+
+  it('replaces a live turn from the page own copy of a row it already holds', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    // A page read before the answer: the row this client holds carries the
+    // reader's words and nothing else, which is what a read taken early gives.
+    server.send(page([{ key: null, messages: [typed('mine')] }], '1'));
+    const held = get(chat.value).turns.at(-1)?.key ?? '';
+    // The answer then arrives as frames, opening a live turn over that row.
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-2') } });
+
+    // The next page repeats that row, and its own copy carries the frames. A
+    // repeated row is handed back as the object already held, whose messages
+    // are older - asking THAT object is asking the wrong copy.
+    server.send(
+      page(
+        [{ key: null, messages: [typed('mine'), said('answer-1'), said('answer-2'), ended()] }],
+        '1',
+      ),
+    );
+
+    const rows = get(chat.value).turns.map((row) => JSON.stringify(row.messages));
+    expect(
+      rows.filter((messages) => messages.includes('answer-2')).length,
+      'the turn is held once, not as a stale copy beside a live one',
+    ).toBe(1);
+    expect(rows.length, 'and no extra row survives it').toBe(2);
+    expect(held, 'the row kept the name the page gave it').toBeDefined();
   });
 
   it('keeps every row keyed when older turns arrive', () => {
