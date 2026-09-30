@@ -36,12 +36,33 @@ vi.mock('./view', async (importOriginal) => {
   };
 });
 
+/**
+ * Every record the reader produces, frozen to its leaves.
+ *
+ * **This is the assertion the raw read rests on.** A record held in `$state.raw`
+ * cannot be mutated in place: a write would be invisible to the page, where a
+ * proxied record would have redrawn. No path may write to one, and this turns
+ * that from a sentence in a commit message into something the suite runs - ESM
+ * is strict mode, so the first write to a frozen record throws.
+ */
+function frozen<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const inner of Object.values(value)) frozen(inner);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 vi.mock('./wire', async (importOriginal) => {
   const real = await importOriginal<typeof import('./wire')>();
   const { counting } = await import('./testing/counts');
   return {
     ...real,
-    sessionFrom: counting('sessionFrom', real.sessionFrom),
+    // **Every record this file runs against is frozen to its leaves**, so the
+    // whole suite carries the assertion the raw read rests on: a record held in
+    // `$state.raw` cannot be mutated in place, and ESM's strict mode turns the
+    // first write into a thrown TypeError rather than a silent no-op.
+    sessionFrom: counting('sessionFrom', (data: unknown) => frozen(real.sessionFrom(data))),
     // The flatten is the whole conversation as one array, and it is handed to
     // a scan that stops at the first dispatch.
     framesOf: counting('framesOf', real.framesOf),
@@ -59,6 +80,17 @@ const SUBJECT: Subject = { session: LEAD };
 function seats(turns: unknown[]): unknown {
   return { ...session, conversation: { turns, compaction_count: 0 }, ...load };
 }
+
+/**
+ * Every frame the load capture carries, counted off the fixture itself.
+ *
+ * **The denominator, and it has to come from the file rather than from the
+ * run.** The capture's whole value is its volume, and a call count cannot see
+ * it: a `seats()` mutated to hand the page an empty conversation still calls
+ * every builder once. Asserting this against the fixture's own rows is what
+ * makes "the page did the work" a fact rather than an assumption.
+ */
+const MESSAGES = load.turns.reduce((total, turn) => total + turn.messages.length, 0);
 
 /**
  * A connection that answers one seat the way the server does: a refresh
@@ -210,6 +242,9 @@ describe('what one arriving frame costs the inspector', () => {
 
     arrive(server.update);
     const event = counts.tally();
+    // Read before the two controls clear the counter: a `widthOf` taken after
+    // them would be summing an empty array and asserting the zero it found.
+    const scanned = counts.widthOf('hasDispatches');
     const called = (name: string): number => event.find((row) => row.name === name)?.calls ?? 0;
 
     counts.clear();
@@ -233,6 +268,11 @@ describe('what one arriving frame costs the inspector', () => {
     // second reader would pay for the same walk again.
     expect(called('hasDispatches'), measured).toBe(1);
     expect(called('framesOf'), measured).toBe(1);
+    // And over the whole conversation, which the call count above cannot say:
+    // every number in this file is about a record of a real size, and a fixture
+    // that stopped carrying one would leave all of them green.
+    expect(scanned, `the conversation reached the scan: ${measured}`).toBe(MESSAGES);
+    expect(MESSAGES, 'the capture carries no conversation').toBeGreaterThan(0);
   });
 
   /**

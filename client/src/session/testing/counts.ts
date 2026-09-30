@@ -13,62 +13,51 @@
  * not go quiet rather than as a plausible measurement.
  */
 
-/** One builder call: which builder, and the size of what it was handed. */
+/** One builder call: which builder, and the size of the array it was handed. */
 export interface Call {
   name: string;
   /** The length of the first argument when it is an array, else `null`. */
   width: number | null;
 }
 
-export const calls: Call[] = [];
+const called: Call[] = [];
 
 export function clear(): void {
-  calls.length = 0;
-}
-
-/** Every recorded call to one builder. */
-export function of(name: string): Call[] {
-  return calls.filter((call) => call.name === name);
+  called.length = 0;
 }
 
 export function countOf(name: string): number {
-  return of(name).length;
+  return called.filter((call) => call.name === name).length;
+}
+
+/**
+ * The total width of what one builder was handed.
+ *
+ * **A call count cannot tell an empty conversation from a full one**, which is
+ * the whole point of the record this suite measures against: a fixture mutated
+ * to hand the page no messages at all still calls every builder exactly once.
+ * So the volume has to be asserted separately from the calls, and this is it.
+ */
+export function widthOf(name: string): number {
+  return called.reduce((total, call) => total + (call.name === name ? (call.width ?? 0) : 0), 0);
 }
 
 /** The names called, with their call counts, in first-call order. */
 export function tally(): { name: string; calls: number }[] {
   const order: string[] = [];
   const seen = new Map<string, number>();
-  for (const call of calls) {
+  for (const call of called) {
     if (!seen.has(call.name)) order.push(call.name);
     seen.set(call.name, (seen.get(call.name) ?? 0) + 1);
   }
   return order.map((name) => ({ name, calls: seen.get(name) ?? 0 }));
 }
 
-/**
- * The total width of what one builder was handed.
- *
- * The denominator an assertion needs: a builder that ran once over nothing and
- * one that ran once over the whole conversation are the same call count, and
- * only the width tells them apart.
- */
-export function widthOf(name: string): number {
-  return of(name).reduce((total, call) => total + (call.width ?? 0), 0);
-}
-
-/**
- * Wrap one builder so every call is recorded.
- *
- * `width` is the argument whose length is the denominator, named per builder:
- * the dispatch scan is handed the whole conversation and its cost is that
- * length, while the section builders are handed a record and their cost is not
- * a length at all.
- */
+/** Wrap one builder so every call is recorded. */
 export function counting<F extends (...args: never[]) => unknown>(name: string, fn: F): F {
   const wrapped = (...args: never[]): unknown => {
     const first: unknown = args[0];
-    calls.push({ name, width: Array.isArray(first) ? first.length : null });
+    called.push({ name, width: Array.isArray(first) ? first.length : null });
     return fn(...args);
   };
   return wrapped as F;

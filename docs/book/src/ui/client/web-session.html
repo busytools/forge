@@ -1259,6 +1259,9 @@ docs: Render the message body into rows.</div>
     </div>
     <div class="scroll">
 
+      <!-- A shut section draws its summary and nothing behind it, so its
+           body here is marked for the preview gate: a new section left shut
+           without the mark reports its body as a class the page lacks. -->
       <details class="sec" open>
         <summary><svg class="ic gl"><use href="#i-git"/></svg> git
           <span class="c2">web-home-layout &#183; 8 files</span>
@@ -1290,7 +1293,7 @@ docs: Render the message body into rows.</div>
         <summary><svg class="ic gl"><use href="#i-tasks"/></svg> tasks
           <span class="c2">2 of 7</span>
           <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb">
+        <div class="sb" data-mock-ignore>
           <div class="tk now"><span class="b"></span><span>
             <div class="s">Land the Claude version on the core</div>
             <div class="meta"><b>cli-version</b> &#183; in review &#183; PR #1204</div></span></div>
@@ -1313,7 +1316,7 @@ docs: Render the message body into rows.</div>
         <summary><svg class="ic gl"><use href="#i-subagents"/></svg> subagents
           <span class="c2">1 running</span>
           <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb">
+        <div class="sb" data-mock-ignore>
           <div class="note">The only surface subagents have - the chat suppresses them.</div>
           <div class="sa">
             <div class="sh"><svg class="ic st"><use href="#i-check"/></svg><svg class="ic gl"><use href="#i-subagents"/></svg>
@@ -1336,7 +1339,7 @@ docs: Render the message body into rows.</div>
         <summary><svg class="ic gl"><use href="#i-schedules"/></svg> schedules
           <span class="c2">4</span>
           <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb">
+        <div class="sb" data-mock-ignore>
           <div class="kv"><span class="k">weekly bench</span>
             <span class="v">Sat 10:30 &#183; recurring</span></div>
           <div class="kv"><span class="k">deps sweep</span>
@@ -1352,7 +1355,7 @@ docs: Render the message body into rows.</div>
         <summary><svg class="ic gl"><use href="#i-gotify"/></svg> gotify
           <span class="c2">connected</span>
           <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb">
+        <div class="sb" data-mock-ignore>
           <div class="kv"><span class="k">apps</span><span class="v">homelab, alerts</span></div>
           <div class="kv"><span class="k">priority</span><span class="v">&gt;=4</span></div>
         </div>
@@ -1362,7 +1365,7 @@ docs: Render the message body into rows.</div>
         <summary><svg class="ic gl"><use href="#i-slack"/></svg> slack
           <span class="c2">2 workspaces</span>
           <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb">
+        <div class="sb" data-mock-ignore>
           <div class="kv"><span class="k">Trust Machines</span><span class="v">connected</span></div>
           <div class="kv"><span class="k">&nbsp;&nbsp;#granite-staging-alerts</span>
             <span class="v">every message</span></div>
@@ -1376,7 +1379,7 @@ docs: Render the message body into rows.</div>
         <summary><svg class="ic gl"><use href="#i-mcp"/></svg> mcp servers
           <span class="c2">2</span>
           <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb">
+        <div class="sb" data-mock-ignore>
           <div class="kv"><span class="k">forge &#183; session</span><span class="v">24 tools</span></div>
           <div class="kv"><span class="k">context7 &#183; sdk</span><span class="v">2 tools</span></div>
         </div>
@@ -1386,7 +1389,7 @@ docs: Render the message body into rows.</div>
         <summary><svg class="ic gl"><use href="#i-processes"/></svg> processes
           <span class="c2">3</span>
           <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb">
+        <div class="sb" data-mock-ignore>
           <div class="kv"><span class="k">cargo nextest run</span><span class="v">412 MB &#183; 8842</span></div>
           <div class="kv"><span class="k">&nbsp;&nbsp;cargo</span><span class="v">settled</span></div>
           <div class="kv"><span class="k">&nbsp;&nbsp;rustc</span><span class="v">running</span></div>
@@ -1398,7 +1401,7 @@ docs: Render the message body into rows.</div>
         <summary><svg class="ic gl"><use href="#i-monitors"/></svg> monitors
           <span class="c2">1 running</span>
           <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb">
+        <div class="sb" data-mock-ignore>
           <div class="sa">
             <div class="sh"><span class="st"><span class="ring" style="width:8px;height:8px"></span></span>
               <svg class="ic gl"><use href="#i-monitors"/></svg>
