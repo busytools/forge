@@ -412,9 +412,9 @@ fn frames_record() -> Value {
     let update = ServerMessage::Update { update: Box::new(update_sample) };
     let mut shape = Shape::default();
     shape.record(&serde_json::to_value(&update).expect("the sample encodes"), "");
-    let mut sampled: BTreeMap<String, Value> = BTreeMap::new();
+    let mut sample_shape: BTreeMap<String, Value> = BTreeMap::new();
     for (path, keys) in &shape.paths {
-        sampled.insert(path.clone(), json!(keys.iter().collect::<Vec<_>>()));
+        sample_shape.insert(path.clone(), json!(keys.iter().collect::<Vec<_>>()));
     }
 
     let mut ranked: BTreeMap<String, String> = BTreeMap::new();
@@ -439,7 +439,7 @@ fn frames_record() -> Value {
         "session_update": ranked,
         "subject": subject_names,
         "command": commands,
-        "update_payload_sampled": { "ChatAppended": sampled },
+        "update_payload_sampled": { "ChatAppended": sample_shape },
     })
 }
 
@@ -562,15 +562,26 @@ fn the_committed_socket_contract_is_still_what_the_server_emits() {
 }
 
 /// Which lines moved, so a failure names the field rather than the file.
+///
+/// The key totals come first and they are the load-bearing number: a rename
+/// that ALSO stops a frame decoding does not read as one key swapped for
+/// another, it reads as a whole payload leaving the corpus and a generic
+/// bucket arriving in its place. Without the totals that shape is invisible.
 fn describe_drift(name: &str, committed: &str, fresh: &str) -> String {
-    let committed: BTreeSet<&str> = committed.lines().collect();
-    let fresh: BTreeSet<&str> = fresh.lines().collect();
-    let gone: Vec<&&str> = committed.difference(&fresh).take(12).collect();
-    let added: Vec<&&str> = fresh.difference(&committed).take(12).collect();
+    let count = |body: &str| -> usize {
+        serde_json::from_str::<BTreeMap<String, Vec<String>>>(body)
+            .map_or(0, |paths| paths.values().map(Vec::len).sum())
+    };
+    let committed_lines: BTreeSet<&str> = committed.lines().collect();
+    let fresh_lines: BTreeSet<&str> = fresh.lines().collect();
+    let gone: Vec<&&str> = committed_lines.difference(&fresh_lines).take(12).collect();
+    let added: Vec<&&str> = fresh_lines.difference(&committed_lines).take(12).collect();
     format!(
-        "{name}: {} line(s) gone, {} added\n  gone:  {gone:#?}\n  added: {added:#?}",
-        committed.difference(&fresh).count(),
-        fresh.difference(&committed).count(),
+        "{name}: {} key(s) pinned -> {}\n  {} line(s) gone:  {gone:#?}\n  {} line(s) added: {added:#?}",
+        count(committed),
+        count(fresh),
+        committed_lines.difference(&fresh_lines).count(),
+        fresh_lines.difference(&committed_lines).count(),
     )
 }
 
