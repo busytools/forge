@@ -51,12 +51,28 @@
   /**
    * Whether the compaction line needs a block of its own.
    *
-   * It is the last thing in the turn either way, and the turn's own last block
-   * draws it where that block is the work: a block of its own is for a turn
-   * that ends on the reader's own words, where the line would otherwise sit
-   * inside their attribution.
+   * A block of its own is for a turn that ends on the reader's own words,
+   * where the line would otherwise sit inside their attribution.
    */
   const loose = $derived(compacting && layout.at(-1)?.mine !== false);
+
+  /**
+   * Where the line goes in a block of work: before the trailing rows.
+   *
+   * The hooks chip and the report row are the turn's own footer, and the line
+   * sits ABOVE them - the order the terminal settled (`append_assistant_blocks`
+   * ends with the line, then the chip, then the row), which the book's page and
+   * the approved mockup both draw.
+   */
+  function cut(units: readonly Unit[]): number {
+    let at = units.length;
+    while (at > 0) {
+      const kind = units[at - 1]?.kind;
+      if (kind !== 'hooks' && kind !== 'report') break;
+      at -= 1;
+    }
+    return at;
+  }
 </script>
 
 {#each layout as block, at (at)}
@@ -72,6 +88,9 @@
   {:else}
     <div class="work">
       {#each block.units as unit, index (`${at}-${index}`)}
+        {#if compacting && at === layout.length - 1 && index === cut(block.units)}
+          {@render compactingLine()}
+        {/if}
         {#if unit.kind === 'text'}
           <Prose text={unit.text} />
         {:else if unit.kind === 'group'}
@@ -90,14 +109,16 @@
           <Report info={unit.info} />
         {/if}
       {/each}
-      {#if compacting && at === layout.length - 1}
-        <div class="compacting"><span class="ring"></span>Compacting context...</div>
+      {#if compacting && at === layout.length - 1 && cut(block.units) === block.units.length}
+        {@render compactingLine()}
       {/if}
     </div>
   {/if}
 {/each}
 {#if loose}
-  <div class="work">
-    <div class="compacting"><span class="ring"></span>Compacting context...</div>
-  </div>
+  <div class="work">{@render compactingLine()}</div>
 {/if}
+
+{#snippet compactingLine()}
+  <div class="compacting"><span class="ring"></span>Compacting context...</div>
+{/snippet}

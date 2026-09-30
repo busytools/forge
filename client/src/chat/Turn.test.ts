@@ -202,6 +202,28 @@ describe('one turn, as the page draws it', () => {
     expect(spoken).toContain('Compacting context');
   });
 
+  it('draws the compaction line above the turn footer, not below it', () => {
+    // The footer is the hooks chip and the report row, and the line sits above
+    // them - the order the terminal settled, and the one the book's page and
+    // the approved mockup both draw.
+    const body = compacting(
+      said([{ type: 'text', text: 'Folding the earlier context down first.' }]),
+      {
+        type: 'system',
+        subtype: 'stop_hook_summary',
+        hookCount: 1,
+        hookInfos: [],
+        uuid: 'hooks-1',
+      },
+      { type: 'result', uuid: 'r1', duration_ms: 1000, duration_api_ms: 500, usage: {} },
+    );
+
+    const at = (marker: string): number => body.indexOf(marker);
+    expect(at('Compacting context'), 'the line is drawn').toBeGreaterThanOrEqual(0);
+    expect(at('Compacting context'), 'and above the hooks chip').toBeLessThan(at('hook summary'));
+    expect(at('Compacting context'), 'and above the report row').toBeLessThan(at('turninfo'));
+  });
+
   it('draws a mutation with its diff already open', () => {
     const body = draw(
       said([
