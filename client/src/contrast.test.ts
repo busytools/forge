@@ -91,11 +91,11 @@ function unreadable(pairs: readonly Pair[], palette: Readonly<Record<string, str
  * (`--s2`), and a progress track (`--s3`). Every pair but `--violet`'s comes
  * from a rule, in `assets/web.css` or in a component's own style block.
  *
- * Two rows name a ground darker than the one the page actually has, which is
+ * Three rows name a ground darker than the one the page actually has, which is
  * the exception the limits above describe: `--blue` is `.opt .ic.ed` inside
  * the dock's own gradient, where it measures 6.80-7.08 rather than the 7.38
  * the page gives, and `--hot` is `.dict .db` inside the composer's, at
- * 10.21-10.64 rather than 11.25. Both clear their floor there, but the
+ * 10.21-10.64 rather than 11.25. All three clear their floor there, but the
  * table's number is not the page's. `--ctl` is a third: `.opt .box2` draws it
  * on the dock's gradient, where it measures 3.23-3.36 rather than the 3.50
  * the page gives. `--ctl` on `--sel` is the thinnest of those three, at 3.10.
@@ -146,9 +146,14 @@ const DRAWN: readonly Pair[] = [
  * separator is not information WCAG requires to be perceived - the single
  * rule that inks it, `.sess .facts .sep`, is a middot at 1.42:1.
  *
- * A border that identifies a control is a different job and no longer this
- * token's: it is `--ctl`, carried above at the 3:1 of 1.4.11. Named rather
- * than left out, so a token arriving without a pair still fails.
+ * A border that identifies a control is a different job, and the sheet's own
+ * controls have left this token: the dock's checkbox and notes field, the two
+ * `.tog` chips and the account pill all draw `--ctl`, carried above at the
+ * 3:1 of 1.4.11. The connect screen's address field and its button still draw
+ * `--line`, and their fills are 1.08:1 and 1.16:1 against the page, so there
+ * the border is the only mark; that screen is #1320 and owes its own drawing
+ * rather than a mirror here. Named rather than left out, so a token arriving
+ * without a pair still fails.
  */
 const NOT_INK = ['--line'];
 
