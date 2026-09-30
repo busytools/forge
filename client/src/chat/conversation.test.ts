@@ -376,6 +376,44 @@ describe('the conversation the chat draws', () => {
     ).toBe(1);
   });
 
+  it('drops the drawn conversation when the seat changes occupant', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'the previous occupant')], '1'));
+
+    // A `/new`, a `/resume`, a login or a logout: the slot keeps its address
+    // and its contents are not the conversation drawn here.
+    server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
+
+    const after = get(chat.value);
+    expect(after.turns, 'the previous occupant turns are gone').toEqual([]);
+    expect(after.loaded, 'and the column is not claiming to hold a page').toBe(false);
+    expect(server.more().length, 'and it asks for the new occupant page').toBe(2);
+  });
+
+  it('drops a page an abandoned ask answered after the seat changed occupant', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'the previous occupant')], '1'));
+
+    // The reader reaches the top, which asks for older turns: that ask is in
+    // flight when the occupant changes.
+    chat.older();
+    server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
+    // The page the abandoned ask was waiting for lands after the swap. It
+    // carries neither an id nor an occupant, so the only way to know it is not
+    // the new occupant's is that an ask was abandoned.
+    server.send(page([turn('t0', 'older, previous occupant')], null));
+
+    const after = get(chat.value);
+    expect(
+      after.turns.map((row) => JSON.stringify(row.messages)),
+      'the abandoned answer is not the new occupant conversation',
+    ).toEqual([]);
+  });
+
   it('does not let a page read mid-turn split the turn it copies', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

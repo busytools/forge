@@ -209,6 +209,15 @@ export class Chat {
    * the end of it.
    */
   private inFlight: 'newest' | 'older' | null = null;
+  /**
+   * Answers still coming for asks this conversation stopped wanting.
+   *
+   * A seat that changes occupant clears what is held and asks again, and the
+   * ask made before the swap is answered anyway - a page carries neither an id
+   * nor an occupant, so this is the whole of what can tell them apart. A
+   * `session_id` on the page is the real fix and is a wire change.
+   */
+  private abandoned = 0;
   /** What `start` has to undo, and `null` while the chat is stopped. */
   private running: (() => void) | null = null;
 
@@ -331,6 +340,14 @@ export class Chat {
    * from being drawn again.
    */
   private takePage(rows: unknown, cursor: string | null, direction: 'newest' | 'older'): void {
+    if (this.abandoned > 0) {
+      // The answer to an ask the conversation stopped wanting: a seat that
+      // changed occupant under it cleared what was held and asked again, and a
+      // page carries neither an id nor an occupant - so a count of abandoned
+      // asks is the only thing that can tell this answer from the new one.
+      this.abandoned -= 1;
+      return;
+    }
     this.inFlight = null;
     this.inner.update((held) => {
       const known = new Map(held.turns.map((turn) => [turn.key, turn]));
@@ -446,6 +463,21 @@ export class Chat {
     });
   }
 
+  /**
+   * Start over for the occupant that just arrived.
+   *
+   * The turns go rather than being replaced in place, because a page that
+   * answered before the swap is the OLD occupant's and nothing in a page says
+   * which occupant it came from - so what is held has to be nothing, and the
+   * ask has to go out after the swap rather than before it.
+   */
+  private replaced(): void {
+    if (this.inFlight !== null) this.abandoned += 1;
+    this.inFlight = null;
+    this.inner.set(NOTHING);
+    this.ask(null);
+  }
+
   /** One frame, folded into the turn it belongs to. */
   private takeUpdate(update: SessionUpdate): void {
     if (!sameSlot(slotOf(update), this.slot)) return;
@@ -454,6 +486,12 @@ export class Chat {
       const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
       if (message === undefined) return;
       this.append(message);
+      return;
+    }
+    // The seat changed occupant under this column - a `/new`, a `/resume`, a
+    // login or a logout - so what is drawn is another session's conversation.
+    if (variant === 'session_replaced') {
+      this.replaced();
       return;
     }
     // A turn that has settled is the server's fold's to draw, and the frames
