@@ -527,6 +527,56 @@ describe('one turn folded into the units a view draws', () => {
     ]);
   });
 
+  it('says a failed turn failed, and finalizes the call it left open', () => {
+    // The interrupt as the capture has it (interrupt.jsonl): a call in flight,
+    // the reader's own line into the transcript, and the result frame that
+    // ends the turn with an error. The frame's own fields are unaltered.
+    const running = said([
+      { type: 'tool_use', id: 'toolu_01AbCdEf', name: 'Bash', input: { command: 'just check' } },
+    ]);
+    const interrupted = heard([text('[Request interrupted by user]')]);
+    const ended = {
+      type: 'result',
+      is_error: true,
+      subtype: 'error_during_execution',
+      errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'],
+      terminal_reason: 'aborted_streaming',
+      duration_ms: 800,
+      duration_api_ms: 0,
+      usage: { input_tokens: 4200, output_tokens: 1100 },
+    };
+
+    const units = fold([running, interrupted, ended]);
+    const [group, , report, notice] = units;
+    const call = group?.kind === 'group' ? group.families[0]?.calls[0] : undefined;
+    expect(call?.status, 'a call the turn never answered is not still running').toBe('failed');
+    expect(group?.kind === 'group' ? group.status : null, 'and the run says so').toBe('failed');
+    expect(report?.kind, 'the report row still reports what the turn spent').toBe('report');
+    expect(notice?.kind === 'notice' ? notice.notice.severity : null).toBe('error');
+    expect(notice?.kind === 'notice' ? notice.notice.text : '').toBe(
+      'Turn failed: error_during_execution \u{b7} aborted_streaming\n' +
+        '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null',
+    );
+  });
+
+  it('draws a turn that hit its cap without repeating the reason it gives', () => {
+    // exit_plan_mode.jsonl's own ending: the subtype already says `max_turns`.
+    const capped = {
+      type: 'result',
+      is_error: true,
+      subtype: 'error_max_turns',
+      errors: ['Reached maximum number of turns (3)'],
+      terminal_reason: 'max_turns',
+      duration_ms: 1_084_000,
+    };
+
+    const [, report, notice] = fold([said([text('Nine calls in, the cap lands.')]), capped]);
+    expect(report?.kind).toBe('report');
+    expect(notice?.kind === 'notice' ? notice.notice.text : '').toBe(
+      'Turn failed: error_max_turns\nReached maximum number of turns (3)',
+    );
+  });
+
   it("reports the clock the turn's own last row carried", () => {
     // The result frame carries no instant, and a turn read from a transcript
     // has no result frame at all - so the only clock a settled row can report

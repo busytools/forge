@@ -170,6 +170,9 @@ interface Frame {
   duration_ms?: unknown;
   duration_api_ms?: unknown;
   total_cost_usd?: unknown;
+  is_error?: unknown;
+  errors?: unknown;
+  terminal_reason?: unknown;
   usage?: unknown;
   tool_use_result?: unknown;
   state?: unknown;
@@ -529,6 +532,37 @@ function reportOf(
 }
 
 /**
+ * A word a frame carries beside the sentence that already means it.
+ *
+ * The frames below write their own ending into some of their sentences and
+ * not others - the CLI's end reason is inside some subtypes and not others -
+ * so the word is drawn exactly when the sentence does not already say it.
+ */
+function beside(sentence: string, word: string | null): string {
+  if (word === null || word === '' || sentence.includes(word)) return sentence;
+  return sentence === '' ? word : `${sentence} \u{b7} ${word}`;
+}
+
+/**
+ * What a turn that failed says, from the frame that recorded the failure.
+ *
+ * The subtype and the reason the CLI ended the stream with are what the reader
+ * is owed - `error_during_execution`, `aborted_streaming` - and the errors
+ * array, when the frame carries one, is the CLI's own diagnostic of it. Both
+ * go in one line, because a failure is one thing.
+ */
+function turnFailure(frame: Frame): Notice | null {
+  if (frame.is_error !== true) return null;
+  const subtype = str(frame, 'subtype');
+  const head = beside(subtype === 'success' ? '' : (subtype ?? ''), str(frame, 'terminal_reason'));
+  const errors = (Array.isArray(frame.errors) ? frame.errors : []).filter(
+    (one): one is string => typeof one === 'string' && one.trim() !== '',
+  );
+  const said = [head === '' ? 'Turn failed.' : `Turn failed: ${head}`, ...errors];
+  return { severity: 'error', text: said.join('\n').trimEnd() };
+}
+
+/**
  * Fold a turn's messages into the units a view draws.
  *
  * A `turn` is one page's worth of conversation as the server cut it, so this
@@ -541,7 +575,16 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
   const results = new Map<string, ReturnType<typeof blocksOf>[number]>();
   /** What each question was answered with, by the call that asked it. */
   const answers = new Map<string, unknown>();
+  /**
+   * Whether the turn failed, which is what the frame recording it says.
+   *
+   * A turn that fails answers no call that was still out when it did, so a
+   * call left with nothing to settle it is one the CLI abandoned rather than
+   * one still running.
+   */
+  let abandoned = false;
   for (const frame of frames) {
+    if (frame.type === 'result' && frame.is_error === true) abandoned = true;
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
@@ -660,6 +703,11 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         info: reportOf(frame, model, thinking, endedAt),
         key: typeof frame.uuid === 'string' ? frame.uuid : null,
       });
+      // The failure is a row of its own rather than a mark on the report: the
+      // terminal states it the same way, as a line under the turn it belongs
+      // to, and the report row is left saying only what the turn spent.
+      const failure = turnFailure(frame);
+      if (failure !== null) units.push({ kind: 'notice', notice: failure });
       thinking = null;
       continue;
     }
@@ -744,7 +792,7 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         run.push({
           row: rowOf(name),
           label: labelOf(name),
-          leaf: leafOf(id, name, block.input, results.get(id), cwd),
+          leaf: leafOf(id, name, block.input, results.get(id), cwd, abandoned),
         });
         continue;
       }
