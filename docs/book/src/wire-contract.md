@@ -140,7 +140,7 @@ carry.
 reads, walked off the committed SDK baselines rather than derived from a
 schema. That is the payload `chat_appended` carries, and it is where a
 renamed field stops matching a name a page reads. `frames.json` also
-carries the path-and-key shape of two sampled frames - the `chat_appended`
+carries the path-and-key shape of the sampled frames - the `chat_appended`
 update and a `page` with one turn in it, so the paging fields a client
 reads are pinned rather than declared.
 
@@ -171,7 +171,7 @@ collections they carry empty, where an element shape is pinned nowhere at
 all and a field renamed inside one is invisible to every pin in the tree.
 
 **Others are declared rather than printed.** A payload is pinned only for
-the two frames sampled; the fields inside a variant nobody samples are not
+the frames sampled; the fields inside a variant nobody samples are not
 pinned at all. A container's `rename_all` and any variant-level
 `#[serde(rename)]` are covered for every variant, because the names are
 read out of serde rather than derived from the Rust ones - but that reads
