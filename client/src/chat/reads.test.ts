@@ -93,4 +93,54 @@ describe('the chat column under a page that re-reads', () => {
       'Reading the conversation',
     );
   });
+
+  it('draws what a Read came back with as the page own code panel', () => {
+    const server = stub();
+    app = mount(Churned, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection, reads: writable(0) },
+    });
+    flushSync();
+    server.answer([
+      {
+        key: 't1',
+        messages: [
+          {
+            type: 'assistant',
+            uuid: 'a1',
+            message: {
+              role: 'assistant',
+              model: 'claude-opus-5',
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'c1',
+                  name: 'Read',
+                  input: { file_path: 'crates/forge-server/src/family.rs' },
+                },
+              ],
+            },
+          },
+          {
+            type: 'user',
+            uuid: 'r1',
+            message: {
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'pub fn main() {}' }],
+            },
+          },
+        ],
+      },
+    ]);
+
+    // The panel the fence in a message also draws, so a slip in the builder
+    // leaves both surfaces wrong rather than one.
+    expect(document.body.innerHTML, 'the read body is the code panel').toContain(
+      '<div class="code">',
+    );
+    expect(
+      document.body.innerHTML,
+      'and the header names the language the call path names',
+    ).toContain('<div class="lang">rust</div>');
+  });
 });
