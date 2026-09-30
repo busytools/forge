@@ -90,6 +90,12 @@ describe('a code block in a message', () => {
     expect(html).not.toContain('class="lang"');
   });
 
+  it('draws a fence that has not closed yet as the panel it will be', () => {
+    // A message arrives a piece at a time, and a block that drew as prose until
+    // its closing fence arrived would flicker on every chunk.
+    expect(renderProse('```rust\nfn main() {')).toContain('<div class="lang">rust</div>');
+  });
+
   it('colours the fence through the same lookup a read body uses', () => {
     expect(renderProse('```rust\npub fn main() {}\n```')).toContain('hljs-');
     expect(renderProse('```toml\n[accounts]\n```')).toContain('hljs-');
