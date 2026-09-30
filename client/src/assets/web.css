@@ -1027,7 +1027,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .dock .preview { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
   padding: 7px 11px; font-family: var(--mono); font-size: var(--fs-data);
   color: var(--muted); white-space: pre-wrap; }
-.dock .notes { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
+.dock .notes { margin-left: 31px; border: 1px solid var(--ctl); border-radius: 9px;
   padding: 7px 11px; font-family: inherit; font-size: var(--fs-base); color: var(--text);
   background: rgba(13,17,26,.6); resize: none; }
 /* A take that is still running behind the dock: the whole indicator on this
