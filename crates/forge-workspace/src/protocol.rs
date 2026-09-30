@@ -1542,98 +1542,105 @@ pub enum DispatchError {
 
 #[cfg(test)]
 mod session_update_variants {
-    use super::*;
-
-    /// The variants the client's reducer classifies, and the control that keeps
-    /// the two lists from drifting.
+    /// The client's reducer classifies a `SessionUpdate` by the name it crosses
+    /// under, and a name it has no line for is a lookup that misses: the session
+    /// page stops following its seat and keeps drawing the last record it read,
+    /// with nothing to say it has fallen behind.
     ///
-    /// `client/src/session/apply.ts` looks a `SessionUpdate` up by the name it
-    /// crosses under, and a name with no line there is a lookup that misses:
-    /// the session page stops following its seat and draws the last record it
-    /// read, with nothing to say it has fallen behind.
+    /// **The names are derived from this file, not typed out beside it.** A
+    /// hand-typed list is a third copy of the enum, and a copy no rename moves:
+    /// the first version of this test read `turn_cancelled` from a literal while
+    /// serde had already moved to `turn_cancelled_probe`, and the gate stayed
+    /// green. The derivation is the one serde applies to this enum -
+    /// `rename_all = "snake_case"`, with an explicit `#[serde(rename)]` winning
+    /// over it - so a variant renamed here, or renamed on the wire, moves a name
+    /// this test then looks for and does not find.
     ///
-    /// **The match below has no wildcard on purpose.** A variant added to the
-    /// enum stops this module compiling, the way it already stops `slot` and
-    /// the `Debug` impl - and this is the one site whose name and comment say
-    /// what to do about it: add the variant to `client/src/session/apply.ts`
-    /// (a handler when the record has a field for it, an `IGNORED` entry when
-    /// it does not), then its arm here. Rust cannot count its own variants, so
-    /// nothing derives that list and this comment is where the guidance lives.
+    /// **What it does not cover: a name the client declares that the enum does
+    /// not.** Such an entry is inert - a lookup that never matches - and the
+    /// client's own test catches only a name claimed by two lists. Named here
+    /// rather than left to be assumed.
     #[test]
     fn every_session_update_variant_is_classified_for_the_client() {
-        fn wire_name(update: &SessionUpdate) -> &'static str {
-            match update {
-                SessionUpdate::Spawning { .. } => "spawning",
-                SessionUpdate::Connected { .. } => "connected",
-                SessionUpdate::SessionReplaced { .. } => "session_replaced",
-                SessionUpdate::ConnectionFailed { .. } => "connection_failed",
-                SessionUpdate::AuthRequired { .. } => "auth_required",
-                SessionUpdate::SlashCommandError { .. } => "slash_command_error",
-                SessionUpdate::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
-                SessionUpdate::RuntimeReloadFailed { .. } => "runtime_reload_failed",
-                SessionUpdate::SetModeFailed { .. } => "set_mode_failed",
-                SessionUpdate::SetModelFailed { .. } => "set_model_failed",
-                SessionUpdate::PermissionRequest { .. } => "permission_request",
-                SessionUpdate::QuestionRequest { .. } => "question_request",
-                SessionUpdate::PendingInteractionResolved { .. } => "pending_interaction_resolved",
-                SessionUpdate::McpOperationError { .. } => "mcp_operation_error",
-                SessionUpdate::TurnComplete { .. } => "turn_complete",
-                SessionUpdate::TurnCancelled { .. } => "turn_cancelled",
-                SessionUpdate::TurnError { .. } => "turn_error",
-                SessionUpdate::ChatAppended { .. } => "chat_appended",
-                SessionUpdate::HookObservation { .. } => "hook_observation",
-                SessionUpdate::StatusSnapshot { .. } => "status_snapshot",
-                SessionUpdate::ForgeAccountIdentity { .. } => "forge_account_identity",
-                SessionUpdate::DictateOverrides { .. } => "dictate_overrides",
-                SessionUpdate::DictateDevicePin { .. } => "dictate_device_pin",
-                SessionUpdate::OauthCredentialsSnapshot { .. } => "oauth_credentials_snapshot",
-                SessionUpdate::ContextUsageSnapshot { .. } => "context_usage_snapshot",
-                SessionUpdate::McpSnapshot { .. } => "mcp_snapshot",
-                SessionUpdate::SessionsListed { .. } => "sessions_listed",
-                SessionUpdate::ServiceStatus { .. } => "service_status",
-                SessionUpdate::CatalogLoaded => "catalog_loaded",
-                SessionUpdate::CliVersionChanged => "cli_version_changed",
-                SessionUpdate::AccountsChanged => "accounts_changed",
-                SessionUpdate::PluginsInventoryUpdated { .. } => "plugins_inventory_updated",
-                SessionUpdate::PluginsInventoryRefreshFailed { .. } => {
-                    "plugins_inventory_refresh_failed"
+        let declared = wire_names(include_str!("protocol.rs"));
+
+        // The denominator, off the enum itself. A parse that stops matching the
+        // enum's shape finds NOTHING, and finding nothing is what a clean run
+        // looks like - so this is what tells the two apart.
+        assert!(
+            declared.len() >= 50,
+            "the parse found {} names where the enum carries 56: the enum's own shape moved, \
+             so this is the parse and not the client",
+            declared.len(),
+        );
+
+        let client = include_str!("../../../client/src/session/apply.ts");
+        let missing: Vec<&String> = declared.iter().filter(|name| !names(client, name)).collect();
+        assert!(
+            missing.is_empty(),
+            "client/src/session/apply.ts has no line for {missing:?}, and a variant the client \
+             does not classify stops the session page following its seat: add each to HANDLERS \
+             when the record has a field for it, and to REPLACES or IGNORED when it does not",
+        );
+    }
+
+    /// Whether the client's table name this variant: as a list entry, or as a
+    /// key of the handler table.
+    fn names(client: &str, name: &str) -> bool {
+        client.contains(&format!("'{name}'")) || client.contains(&format!("{name}:"))
+    }
+
+    /// Every wire name the enum declares, in the order it declares them.
+    ///
+    /// The derivation serde applies to it: `rename_all = "snake_case"` on the
+    /// enum, and an explicit `#[serde(rename = "...")]` on the variant above it.
+    fn wire_names(source: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut inside = false;
+        let mut renamed: Option<String> = None;
+        for line in source.lines() {
+            if !inside {
+                inside = line.starts_with("pub enum SessionUpdate {");
+                continue;
+            }
+            if line == "}" {
+                break;
+            }
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("#[serde(rename = \"") {
+                renamed = rest.split('"').next().map(str::to_owned);
+                continue;
+            }
+            if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
+                continue;
+            }
+            let variant: String = trimmed
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !variant.starts_with(|c: char| c.is_ascii_uppercase()) {
+                continue;
+            }
+            names.push(renamed.take().unwrap_or_else(|| snake_case(&variant)));
+        }
+        names
+    }
+
+    /// serde's own rule for this enum's `rename_all`, for a variant with no
+    /// explicit rename over it.
+    fn snake_case(name: &str) -> String {
+        let mut out = String::new();
+        for (at, c) in name.chars().enumerate() {
+            if c.is_ascii_uppercase() {
+                if at != 0 {
+                    out.push('_');
                 }
-                SessionUpdate::PluginsCliActionSucceeded { .. } => "plugins_cli_action_succeeded",
-                SessionUpdate::PluginsCliActionFailed { .. } => "plugins_cli_action_failed",
-                SessionUpdate::PluginsUpdateRunProgress { .. } => "plugins_update_run_progress",
-                SessionUpdate::PluginsUpdateRunFinished { .. } => "plugins_update_run_finished",
-                SessionUpdate::PluginsRollbackSucceeded { .. } => "plugins_rollback_succeeded",
-                SessionUpdate::PluginsRollbackFailed { .. } => "plugins_rollback_failed",
-                SessionUpdate::PeerInflightStatsChanged { .. } => "peer_inflight_stats_changed",
-                SessionUpdate::WorkerStatusChanged { .. } => "worker_status_changed",
-                SessionUpdate::PeerEnvelopeAppended { .. } => "peer_envelope_appended",
-                SessionUpdate::GotifyNotificationAppended { .. } => "gotify_notification_appended",
-                SessionUpdate::CronPromptAppended { .. } => "cron_prompt_appended",
-                SessionUpdate::SlackMessageAppended { .. } => "slack_message_appended",
-                SessionUpdate::SlackPostPending { .. } => "slack_post_pending",
-                SessionUpdate::SlackDraftExpired { .. } => "slack_draft_expired",
-                SessionUpdate::PromptQueuedWhileBusy { .. } => "prompt_queued_while_busy",
-                SessionUpdate::ReviewActivityNotice { .. } => "review_activity_notice",
-                SessionUpdate::DictateAvailability => "dictate_availability",
-                SessionUpdate::DictateStarted { .. } => "dictate_started",
-                SessionUpdate::DictateLevel { .. } => "dictate_level",
-                SessionUpdate::DictateTranscribing { .. } => "dictate_transcribing",
-                SessionUpdate::DictateProgress { .. } => "dictate_progress",
-                SessionUpdate::DictateEnded { .. } => "dictate_ended",
-                SessionUpdate::FatalError(_) => "fatal_error",
+                out.push(c.to_ascii_lowercase());
+            } else {
+                out.push(c);
             }
         }
-        assert_eq!(wire_name(&SessionUpdate::CatalogLoaded), "catalog_loaded");
-
-        // The match above points a reader at the client's file, and a pointer
-        // that has rotted is worse than none: this fails if the table moves or
-        // is renamed out from under the comment.
-        let client = include_str!("../../../client/src/session/apply.ts");
-        assert!(
-            client.contains("export const IGNORED"),
-            "client/src/session/apply.ts is not where this test says the client's \
-             classification table lives: point the comment above at wherever it moved to",
-        );
+        out
     }
 }
 

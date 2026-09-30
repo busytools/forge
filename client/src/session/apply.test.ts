@@ -648,6 +648,17 @@ const EVERY_VARIANT = [
 ] as const;
 
 describe('the variant list', () => {
+  it('carries the whole census, so the two assertions below can be trusted', () => {
+    // **A floor, because `[].filter(f).toEqual([])` holds for every `f`.** A
+    // list truncated by an edit would retire both assertions below it and read
+    // green. The Rust test beside the enum fails on a name missing from here,
+    // and this is what fails when there is nothing left to check.
+    expect(
+      EVERY_VARIANT.length,
+      'the census is shorter than the enum it stands for, so it proves nothing',
+    ).toBeGreaterThan(50);
+  });
+
   it('classifies every variant the core can send', () => {
     const unclassified = EVERY_VARIANT.filter(
       (name) => !(name in HANDLERS) && !REPLACES.includes(name) && !IGNORED.includes(name),
