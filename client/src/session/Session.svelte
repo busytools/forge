@@ -43,7 +43,12 @@
     composer?: Snippet<[ComposerProps]> | null;
   } = $props();
 
-  let read = $state<SessionRead>({ wire: null, refused: null });
+  // **Raw, because the value is only ever replaced.** A read answers with a
+  // whole new record, so there is nothing here to mutate in place - and a
+  // `$state` object assignment proxies the tree it is handed, which the
+  // sections then read through on every frame. The cost of that is real at
+  // this size: see `load.test.ts`, which measures it.
+  let read = $state.raw<SessionRead>({ wire: null, refused: null });
   $effect(() => {
     // Read here rather than through `$derived`, so a seat change re-subscribes
     // and the store the page left is let go with the last subscriber.
