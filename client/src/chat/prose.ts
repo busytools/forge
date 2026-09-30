@@ -16,11 +16,39 @@
 
 import MarkdownIt from 'markdown-it';
 
+import { codePanel, fenceLanguage } from './code';
+
 const READER = new MarkdownIt({
   html: false,
   linkify: false,
   typographer: false,
 });
+
+/**
+ * A fenced block, as the page's own code panel: the fence's info string on the
+ * header, the text under it coloured through the same lookup the tool-call
+ * bodies use.
+ *
+ * The module's own `<pre><code>` is not that panel - the sheet's inline-code
+ * rule boxes it and the fence's language only reaches the page as a class
+ * nothing reads.
+ */
+READER.renderer.rules.fence = (tokens, index) => {
+  const token = tokens[index];
+  if (token === undefined) return '';
+  const info = token.info.trim();
+  return codePanel(info === '' ? null : info, fenceLanguage(info), token.content);
+};
+
+/**
+ * An indented block, which is a code block with no fence and so no info string
+ * to label it. Without this it keeps the module's own `<pre><code>` and is
+ * drawn as the thing this rule exists to delete.
+ */
+READER.renderer.rules.code_block = (tokens, index) => {
+  const token = tokens[index];
+  return token === undefined ? '' : codePanel(null, null, token.content);
+};
 
 /** `text` as HTML, with everything that is not markdown left as text. */
 export function renderProse(text: string): string {

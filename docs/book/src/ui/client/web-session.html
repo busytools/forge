@@ -221,7 +221,35 @@
   .work .prose ul, .work .prose ol { padding-left: 22px; margin: 8px 0; }
   .work .prose li + li { margin-top: 4px; }
   .work .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
-    background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+    background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+  /* The rest of the markdown a message carries. A heading is the terminal's own
+     mark: every level is one bold line with a blank line before it. The other
+     three marks are this sheet's, named as differences rather than claimed as
+     parity: the terminal prefixes a quote and colours it green where this insets
+     it behind the rule the sheet insets with, it prints a break as a literal
+     `---` where this draws a hairline, and it prints a link's destination where
+     this draws an anchor. A fence's panel is `.code` rather than a mark of its
+     own, and takes its block spacing below. */
+  .work .prose h1, .work .prose h2, .work .prose h3,
+  .work .prose h4, .work .prose h5, .work .prose h6 {
+    font-size: var(--fs-prose); font-weight: 700; margin: 12px 0 6px; }
+  /* The panel is new markup inside prose, so it carries the block spacing every
+     other unit here has rather than sitting on the paragraph's own line box. */
+  .work .prose .code { margin: 10px 0; }
+  /* A colour rather than the browser's own link blue, which is off the palette
+     and measures about 2.2:1 on the page. The underline is the browser's, and
+     stays: a link is not carried by its colour alone. */
+  .work .prose a { color: var(--blue); }
+  /* A rule down the left, which is how this sheet marks an inset everywhere else:
+     the reader's own turn, a command's output, a search hit, a call. */
+  .work .prose blockquote { border-left: 2px solid var(--line); color: var(--muted);
+    padding: 2px 0 2px 12px; margin: 10px 0; }
+  /* No rule between body rows: the terminal draws the one line under the header. */
+  .work .prose table { border-collapse: collapse; margin: 10px 0; }
+  .work .prose th, .work .prose td { text-align: left; padding: 4px 12px 4px 0; }
+  .work .prose th { color: var(--muted); font-weight: 700;
+    border-bottom: 1px solid var(--line); }
+  .work .prose hr { border: 0; height: 1px; background: var(--line); margin: 12px 0; }
 
   /* ---------- the family tree is the DEFAULT view ---------- */
   .kind { margin: 3px 0; }
@@ -800,6 +828,35 @@
       <div class="work">
         <div class="prose">
           <p>One family per block, its calls under it, and a call opens on its own. Edits are the exception: their diff is already there.</p>
+        </div>
+
+        <!-- The units a message's markdown can carry, drawn: a heading, a
+             labelled panel, a quote, a break and a table. One message, so the
+             vocabulary is on the page rather than only in the sheet. -->
+        <div class="prose">
+          <h2 id="the-note">The note</h2>
+          <p>Send this before the merge, so the bot carries the header on every request.</p>
+          <div class="code">
+            <div class="lang">yaml</div>
+            <pre>Rate limiting is going into the api in PR #150. The liquidation bot has to send one header on every api request.
+
+Set `service_key` per environment in the bot's own config.</pre>
+          </div>
+          <blockquote>
+            <p>The api ignores the header until the limits are live, so it can ship first.</p>
+          </blockquote>
+          <p>Nothing needs rotating for this. The api <a href="./web-session.html#the-note">reference</a> lists the other environments.</p>
+          <hr>
+          <p>One value per environment:</p>
+          <table>
+            <thead>
+              <tr><th>environment</th><th>key</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>staging</td><td>service_key</td></tr>
+              <tr><td>production</td><td>service_key</td></tr>
+            </tbody>
+          </table>
         </div>
 
         <details class="kind" open>

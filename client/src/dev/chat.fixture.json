@@ -357,6 +357,40 @@
           }
         }
       ]
+    },
+    {
+      "key": "2026-09-29T10:02:11.004Z",
+      "messages": [
+        {
+          "type": "user",
+          "uuid": "u-4",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "And the note for Talha, so I can send it."
+              }
+            ]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "a-4",
+          "timestamp": "2026-09-29T10:02:18.900Z",
+          "message": {
+            "id": "msg_04",
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [
+              {
+                "type": "text",
+                "text": "## The note\n\nSend this before the merge, so the bot carries the header on every request.\n\n```yaml\nRate limiting is going into the api in PR #150. The liquidation bot has to send one header on every api request.\n\nSet `service_key` per environment in the bot's own config.\n```\n\n> The api ignores the header until the limits are live, so it can ship first.\n\nNothing needs rotating for this. The api [reference](https://example.com/config) lists the other environments.\n\n---\n\nOne value per environment:\n\n| environment | key |\n| --- | --- |\n| staging | service_key |\n| production | service_key |"
+              }
+            ]
+          }
+        }
+      ]
     }
   ]
 }

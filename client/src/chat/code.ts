@@ -56,6 +56,40 @@ const LANGUAGES = {
 for (const [name, language] of Object.entries(LANGUAGES)) hljs.registerLanguage(name, language);
 
 /**
+ * The languages this page has, by the name an extension or a fence names.
+ *
+ * One table for both readers: a path's extension and a fence's info string name
+ * the same set, and a second table is how the two drift.
+ */
+const NAMED: Record<string, keyof typeof LANGUAGES> = {
+  rs: 'rust',
+  rust: 'rust',
+  ts: 'typescript',
+  tsx: 'typescript',
+  typescript: 'typescript',
+  js: 'javascript',
+  jsx: 'javascript',
+  mjs: 'javascript',
+  javascript: 'javascript',
+  py: 'python',
+  python: 'python',
+  go: 'go',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  // `ini` is what toml is highlighted as; there is no toml grammar here.
+  toml: 'ini',
+  ini: 'ini',
+  json: 'json',
+  yaml: 'yaml',
+  yml: 'yaml',
+  css: 'css',
+  html: 'xml',
+  xml: 'xml',
+  sql: 'sql',
+};
+
+/**
  * The language a path names, or `null` for one this page does not colour.
  *
  * A file with no extension and a file whose extension names no language both
@@ -66,30 +100,55 @@ for (const [name, language] of Object.entries(LANGUAGES)) hljs.registerLanguage(
 export function languageOf(path: string): string | null {
   const cut = path.lastIndexOf('.');
   if (cut === -1) return null;
-  const extension = path.slice(cut + 1).toLowerCase();
-  const named: Record<string, keyof typeof LANGUAGES> = {
-    rs: 'rust',
-    ts: 'typescript',
-    tsx: 'typescript',
-    js: 'javascript',
-    jsx: 'javascript',
-    mjs: 'javascript',
-    py: 'python',
-    go: 'go',
-    sh: 'bash',
-    bash: 'bash',
-    zsh: 'bash',
-    // `ini` is what toml is highlighted as; there is no toml grammar here.
-    toml: 'ini',
-    json: 'json',
-    yaml: 'yaml',
-    yml: 'yaml',
-    css: 'css',
-    html: 'xml',
-    sql: 'sql',
-  };
-  const language = named[extension];
-  return language === undefined ? null : language;
+  return namedFor(path.slice(cut + 1));
+}
+
+/**
+ * The language a fence's info string names, or `null` for one this page does
+ * not colour.
+ *
+ * The info string is not only a language: CommonMark puts the language first
+ * and leaves the rest to whatever the fence is for, so only the first word is
+ * read here. The label a reader sees stays the whole of it.
+ */
+export function fenceLanguage(info: string): string | null {
+  const [first] = info.trim().split(/\s+/);
+  return first === undefined ? null : namedFor(first);
+}
+
+/**
+ * The language this page has for `name`, or `null` for one it does not.
+ *
+ * The lookup is on the table's OWN keys: a name arrives from a fence's info
+ * string, which is the model's own text, and `constructor` and `__proto__`
+ * resolve on an object literal to the object's own members rather than to
+ * nothing.
+ */
+function namedFor(name: string): string | null {
+  const key = name.toLowerCase();
+  return Object.hasOwn(NAMED, key) ? (NAMED[key] ?? null) : null;
+}
+
+/** `text` with the characters that would end its element escaped. */
+function escaped(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * A block of code as the page draws one: a header naming it, and the text under
+ * it coloured.
+ *
+ * One builder for both ways in - a source file a call read, and a fenced block
+ * in a message - so the panel is one piece rather than two drawings of it. The
+ * label is what the header prints, and `null` draws no header at all, which is
+ * what a fence carrying no info string gets. The language is what the text is
+ * coloured as, which is not the label: a fence's info string can name something
+ * this page has no grammar for, and the panel still says what the fence called
+ * itself.
+ */
+export function codePanel(label: string | null, language: string | null, text: string): string {
+  const header = label === null ? '' : `<div class="lang">${escaped(label)}</div>`;
+  return `<div class="code">${header}<pre>${renderCode(language, text)}</pre></div>`;
 }
 
 /**
