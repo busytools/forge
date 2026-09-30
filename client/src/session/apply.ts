@@ -449,14 +449,17 @@ function inFlightOf(held: boolean, frame: Record<string, unknown>): boolean {
  * CLI's spelling of the same model. That rule is mirrored exactly, so the two
  * cannot disagree about WHEN a model is taken.
  *
- * **They can disagree about the name, in two cases, and this is the divergence
- * to know about.** The server humanizes the id when the catalogue carries no
- * entry for it, AND when the entry it carries has no version digit in its
- * display name - recent CLI builds ship a short "Opus" - so a `/model` switch
- * picked from the catalogue draws "Opus 5" on the terminal and "Opus" here.
- * Under a name this client cannot derive, the id stands: a header drawing the
- * CLI's own spelling beats one drawing nothing, and porting the server's
- * `humanize_model_id` is the alternative this declines.
+ * **They can disagree about the NAME, and what this page draws is the id.** Every
+ * catalogue row a record can hold is built with its display name set to its id -
+ * `AvailableModel::new(model.clone(), model.clone())` is the only construction -
+ * so a lookup that hits finds the id again and one that misses leaves the id
+ * standing. The server has two ways to arrive at something else: it humanizes an
+ * id no row carries, and its lookup accepts a row whose key is merely
+ * COMPATIBLE, naming the model where no exact match names it. So the terminal
+ * can draw "Opus 5" where this page draws "claude-opus-5".
+ * Closing that means porting `humanize_model_id` and the compatibility rule into
+ * the client, which this declines on the grounds that the CLI's own spelling of
+ * the model beats no name at all.
  */
 function modelFrom(held: SessionHeader, value: unknown): ModelFacts | null {
   const id = text(value)?.trim();

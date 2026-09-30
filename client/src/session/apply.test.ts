@@ -282,11 +282,11 @@ describe('applyUpdate', () => {
       // a reducer reading the record's name finds nothing on the wire.
       const next = applyUpdate(held, { context_usage_snapshot: { key: SLOT, percent: 7 } });
 
-      expect(
-        next.header.context.percent,
-        'a payload naming a field nothing sends moved the usage',
-      ).toBe(42);
-      expect(next.header.context.max_tokens, 'and the half it did send stood').toBe(200_000);
+      // The record itself, not just its values: a payload carrying neither half
+      // is not a read of the usage, so there is nothing to publish - and a page
+      // redrawing for a frame that said nothing is what the rest of this file
+      // returns early to avoid.
+      expect(next, 'a payload naming a field nothing sends republished the record').toBe(held);
     });
 
     it('reads an absent percentage as absent rather than as the last one', () => {
