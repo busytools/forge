@@ -254,4 +254,34 @@ describe('one turn, as the page draws it', () => {
     expect(leaf.slice(0, leaf.indexOf('>')), 'it waits to be asked').not.toContain('open');
     expect(leaf).toContain('<span class="ring"></span>');
   });
+
+  it('marks a message by the seat the page is drawing, not by the row alone', () => {
+    // The mark says whether the counterparty is in THIS project, so the row
+    // cannot decide it: the seat has to reach the fold. A turn drawn with no
+    // seat in hand takes the ordinary case - in this project - rather than
+    // guessing at a stranger.
+    const envelope = (who: string): unknown => ({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: `[Message id=t-1 from agent '${who}' (org 'Busytools')]\n\nhi` },
+        ],
+      },
+      uuid: 'u1',
+    });
+    const seat = { org: 'Busytools', project: 'forge', label: 'chat-kinds' };
+
+    const seated = render(Turn, {
+      props: {
+        turn: { key: 't1', messages: [envelope('gateway-backend')], live: false } as HeldTurn,
+        cwd: null,
+        slot: seat,
+      },
+    }).body;
+    const unseated = draw(envelope('gateway-backend'));
+
+    expect(seated, 'another project draws away').toContain('i-away');
+    expect(unseated, 'and with no seat to compare against, the ordinary case').toContain('i-bot');
+  });
 });

@@ -171,11 +171,29 @@ describe('axe over the rendered pages', () => {
               },
               uuid: 'r1',
             },
+            // Peer traffic is a disclosure per message now, so the check runs
+            // over the message rows too: a lane, a mark and a leaf that opens.
+            {
+              type: 'user',
+              message: {
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: "[Message id=t-a11y from agent 'forge/steward' (org 'Busytools')]\n\npicking it up",
+                  },
+                ],
+              },
+              uuid: 'p1',
+            },
           ],
         },
         cwd: null,
       },
     }).body;
+    // The peer mark is the one glyph no other row on this turn draws, so it is
+    // what says the message row was really there for the check.
+    expect(html, 'the peer message drew, so axe saw it').toContain('i-bot');
     // Inside the landmark the session page puts it in: the column is a region
     // of that page rather than a page, and axe reports content outside one.
     expect(await idsOf(`<main>${html}</main>`)).toEqual([]);

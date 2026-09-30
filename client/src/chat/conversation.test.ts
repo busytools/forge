@@ -6,6 +6,7 @@ import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { Chat, type PageTurn } from './conversation';
+import { fold } from './units';
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
@@ -652,6 +653,40 @@ describe('the conversation the chat draws', () => {
       result('toolu_01Bg'),
       started,
     ]);
+  });
+
+  it('draws a peer message the socket sends as a forged frame', () => {
+    // #1376: the server forges the frame a delivery needs and sends it beside
+    // the typed update, so the client draws a peer message with the
+    // `chat_appended` it already handles rather than with an arm of its own.
+    // **What this pins is the seam between the two**: the frame carries the
+    // envelope PROSE, and the fold is what reads it back as traffic rather than
+    // as the reader's own words.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const envelope = {
+      type: 'user',
+      uuid: 'u-envelope',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: "[Message id=t-9c1 from agent 'forge/steward' (org 'Busytools')]\n\npicking it up",
+          },
+        ],
+      },
+    };
+    server.update({ chat_appended: { key: LEAD, msg: envelope } });
+
+    const held = get(chat.value).turns.at(-1)?.messages ?? [];
+    expect(
+      fold(held, null, LEAD).map((unit) => unit.kind),
+      'the forged frame draws as traffic, not as the reader own turn',
+    ).toEqual(['messages']);
   });
 
   it('keeps every row keyed when older turns arrive', () => {

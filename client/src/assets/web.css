@@ -722,31 +722,16 @@ details.leaf.running > summary { color: var(--text); }
 .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
 .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
 
-/* peer traffic */
-.peer { display: flex; align-items: center; gap: 9px; padding: 7px 12px; border-radius: 9px;
-  border: 1px solid rgba(78,201,201,.28); background: rgba(78,201,201,.06);
-  font-family: var(--mono); font-size: var(--fs-base); margin: 6px 0; }
-.peer .dir { color: var(--teal); flex: none; }
-.peer .from { color: var(--text); font-weight: 700; flex: none; }
-.peer .txt { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-details.msg { border: 1px solid rgba(78,201,201,.22); border-radius: 10px; margin: 7px 0;
-  background: rgba(78,201,201,.03); }
-details.msg > summary { list-style: none; display: flex; align-items: center; gap: 9px;
-  padding: 8px 12px; cursor: pointer; font-family: var(--mono); font-size: var(--fs-group); }
-details.msg > summary::-webkit-details-marker { display: none; }
-details.msg > summary:hover { background: rgba(78,201,201,.06); }
-details.msg > summary .st { color: var(--ok); }
-details.msg > summary .c { font-weight: 700; }
-details.msg > summary .arw { margin-left: auto; color: var(--dim); }
-details.msg[open] > summary .arw { color: var(--teal); }
-.msgbody { padding: 0 12px 10px; }
-.mmsg { display: flex; align-items: center; gap: 9px; padding: 3px 0;
-  font-family: var(--mono); font-size: var(--fs-base); min-width: 0; }
-.mmsg .dir { color: var(--teal); flex: none; }
-.mmsg .kb { color: var(--muted); font-weight: 700; flex: none; }
-.mmsg .who { color: var(--text); flex: none; }
-.mmsg .txt { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
+details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
+details.leaf > summary .k { color: var(--text); font-weight: 700; }
+details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex: none; }
+.pbody { font-family: var(--ui); font-size: var(--fs-base); color: var(--muted);
+  border-left: 1px solid var(--line); padding: 2px 0 2px 13px; margin: 5px 0; }
+.pbody p + p { margin-top: 9px; }
+.pbody code { font-family: var(--mono); font-size: .88em; color: var(--text);
+  background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
 
 /* an answered question survives the dock clearing */
 .card { margin: 8px 0; padding: 2px 0; }

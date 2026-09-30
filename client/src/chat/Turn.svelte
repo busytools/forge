@@ -5,11 +5,12 @@
   import type { Turn as HeldTurn } from './conversation';
   import Group from './Group.svelte';
   import Hooks from './Hooks.svelte';
+  import Messages from './Messages.svelte';
   import Notice from './Notice.svelte';
   import { bytes } from './numbers';
   import Prose from './Prose.svelte';
   import Report from './Report.svelte';
-  import { fold, type Unit } from './units';
+  import { fold, type Self, type Unit } from './units';
 
   /**
    * One turn of the conversation, as the page draws it: what the reader said,
@@ -26,10 +27,11 @@
   let {
     turn,
     cwd,
+    slot = null,
     compacting = false,
-  }: { turn: HeldTurn; cwd: string | null; compacting?: boolean } = $props();
+  }: { turn: HeldTurn; cwd: string | null; slot?: Self | null; compacting?: boolean } = $props();
 
-  const units = $derived(fold(turn.messages, cwd));
+  const units = $derived(fold(turn.messages, cwd, slot));
 
   /** A reader's own words on their own, or a run of everything else in one block. */
   type Block =
@@ -98,11 +100,9 @@
         {:else if unit.kind === 'group'}
           <Group families={unit.families} status={unit.status} />
         {:else if unit.kind === 'question'}
-          <Card kind="question" asked={unit.asked} />
-        {:else if unit.kind === 'peer'}
-          <Card kind="peer" card={unit.card} />
-        {:else if unit.kind === 'peers'}
-          <Card kind="peers" cards={unit.cards} />
+          <Card asked={unit.asked} />
+        {:else if unit.kind === 'messages'}
+          <Messages lanes={unit.lanes} status={unit.status} />
         {:else if unit.kind === 'notice'}
           <Notice notice={unit.notice} />
         {:else if unit.kind === 'hooks'}
