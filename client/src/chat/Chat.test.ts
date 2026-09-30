@@ -148,6 +148,22 @@ describe('the chat column as it draws', () => {
     expect(lines, 'one line for the conversation, not one per turn').toHaveLength(1);
   });
 
+  it('draws the compaction line on a column that has no turn to hang it on', () => {
+    // Every state the column can be in has a rendering, and this is the one
+    // state where the line has no turn to belong to: a compaction running
+    // before the first page lands, or on a seat that has said nothing yet.
+    const loading = stub();
+    draw({ compacting: true }, loading);
+    expect(drawn(), 'the line draws while the first page is still coming').toContain(
+      'Compacting context',
+    );
+
+    const empty = stub();
+    draw({ compacting: true }, empty);
+    empty.answer([]);
+    expect(drawn(), 'and on a seat with no history').toContain('Compacting context');
+  });
+
   it('draws the seat that has no session behind it as its own state', () => {
     const server = stub();
     draw({ waking: true, reason: 'no model declared' }, server);

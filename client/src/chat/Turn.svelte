@@ -32,7 +32,8 @@
 
   /** A reader's own words on their own, or a run of everything else in one block. */
   type Block =
-    { mine: true; unit: Extract<Unit, { kind: 'user' }> } | { mine: false; units: Unit[] };
+    | { mine: true; unit: Extract<Unit, { kind: 'user' }> }
+    | { mine: false; units: Unit[]; footer: number; trailing: boolean };
 
   const layout = $derived.by(() => {
     const out: Block[] = [];
@@ -43,28 +44,20 @@
       }
       const last = out[out.length - 1];
       if (last !== undefined && !last.mine) last.units.push(unit);
-      else out.push({ mine: false, units: [unit] });
+      else out.push({ mine: false, units: [unit], footer: 0, trailing: false });
     }
-    return out;
+    // Where the turn's footer begins: the hooks chip and the report row, which
+    // the compaction line sits ABOVE - the order the terminal settled, and the
+    // one the book's page and the approved mockup both draw.
+    return out.map((block) => {
+      if (block.mine) return block;
+      const footer = footerOf(block.units);
+      return { ...block, footer, trailing: footer === block.units.length };
+    });
   });
 
-  /**
-   * Whether the compaction line needs a block of its own.
-   *
-   * A block of its own is for a turn that ends on the reader's own words,
-   * where the line would otherwise sit inside their attribution.
-   */
-  const loose = $derived(compacting && layout.at(-1)?.mine !== false);
-
-  /**
-   * Where the line goes in a block of work: before the trailing rows.
-   *
-   * The hooks chip and the report row are the turn's own footer, and the line
-   * sits ABOVE them - the order the terminal settled (`append_assistant_blocks`
-   * ends with the line, then the chip, then the row), which the book's page and
-   * the approved mockup both draw.
-   */
-  function cut(units: readonly Unit[]): number {
+  /** The index the trailing hooks and report units start at. */
+  function footerOf(units: readonly Unit[]): number {
     let at = units.length;
     while (at > 0) {
       const kind = units[at - 1]?.kind;
@@ -73,6 +66,14 @@
     }
     return at;
   }
+
+  /**
+   * Whether the compaction line needs a block of its own.
+   *
+   * A block of its own is for a turn that ends on the reader's own words,
+   * where the line would otherwise sit inside their attribution.
+   */
+  const loose = $derived(compacting && layout.at(-1)?.mine !== false);
 </script>
 
 {#each layout as block, at (at)}
@@ -88,7 +89,7 @@
   {:else}
     <div class="work">
       {#each block.units as unit, index (`${at}-${index}`)}
-        {#if compacting && at === layout.length - 1 && index === cut(block.units)}
+        {#if compacting && at === layout.length - 1 && index === block.footer}
           {@render compactingLine()}
         {/if}
         {#if unit.kind === 'text'}
@@ -109,7 +110,7 @@
           <Report info={unit.info} />
         {/if}
       {/each}
-      {#if compacting && at === layout.length - 1 && cut(block.units) === block.units.length}
+      {#if compacting && at === layout.length - 1 && block.trailing}
         {@render compactingLine()}
       {/if}
     </div>
