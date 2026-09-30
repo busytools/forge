@@ -98,8 +98,7 @@ function unreadable(pairs: readonly Pair[], palette: Readonly<Record<string, str
  * 10.21-10.64 rather than 11.25. Both clear their floor there, but the
  * table's number is not the page's. `--ctl` is a third: `.opt .box2` draws it
  * on the dock's gradient, where it measures 3.23-3.36 rather than the 3.50
- * the page gives. `--ctl` on `--sel` is the thinnest margin of the three, at
- * 3.10, which is the pair to watch if either value moves.
+ * the page gives. `--ctl` on `--sel` is the thinnest of those three, at 3.10.
  *
  * `TEXT` is the floor on all but one row. Nothing here takes the 3:1
  * large-text floor: the sheet's largest is `.brand .word` at 22px and weight
@@ -154,6 +153,13 @@ const DRAWN: readonly Pair[] = [
 const NOT_INK = ['--line'];
 
 /**
+ * The one ground the sheet draws no text on: `--s3` is a progress track, and
+ * the only pair naming it is the bar fill. Named rather than left out, so a
+ * ground whose text pair goes missing is a failure and not a quiet exception.
+ */
+const NO_TEXT_GROUND = ['--s3'];
+
+/**
  * Two grounds one step apart, which is the shape a wrong entry in the table
  * takes. The control below measures it and must report it.
  */
@@ -201,6 +207,23 @@ describe('the palette', () => {
       Object.keys(rootTokens(null)).filter((token) => !paired.has(token)),
       'a palette token with no pair saying where it is drawn',
     ).toEqual([...NOT_INK]);
+  });
+
+  /**
+   * The guard above says a token is paired somewhere, which is not the same
+   * as the pair that matters still being there: dropping the `--dim` row
+   * leaves `--sel` paired by the control border, and this file goes green
+   * while the ground the selected row draws its text on is no longer checked.
+   */
+  it('carries text on every ground the table names', () => {
+    const grounds = new Set(DRAWN.map(([, ground]) => ground));
+    const withText = new Set(
+      DRAWN.filter(([, , floor]) => floor === TEXT).map(([, ground]) => ground),
+    );
+    expect(
+      [...grounds].filter((ground) => !withText.has(ground)).sort(),
+      'a ground that has lost its text pair',
+    ).toEqual([...NO_TEXT_GROUND]);
   });
 
   it('draws every pair it names at or above its floor', () => {
