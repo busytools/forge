@@ -229,8 +229,8 @@ describe('what one arriving frame costs the inspector', () => {
       0,
     );
     expect(called('gitSection'), measured).toBe(1);
-    // Once, not once per section: the flatten is the whole conversation, and
-    // every section reading it would pay for the same walk over and over.
+    // Once, not once per section: the flatten is the whole conversation, so a
+    // second reader would pay for the same walk again.
     expect(called('hasDispatches'), measured).toBe(1);
     expect(called('framesOf'), measured).toBe(1);
   });
@@ -267,8 +267,8 @@ describe('what one arriving frame costs the inspector', () => {
       shut.reduce((total, section) => total + section.body, 0),
       `${measured} - a shut section built elements behind its summary`,
     ).toBe(0);
-    // The summaries are still summaries: the line the count is drawn from is
-    // there even with every section shut.
+    // Where the line is: a summary still states its count with every section
+    // shut, so the arithmetic its summary needs is what may still run.
     expect(called('monitorsSection'), measured).toBeGreaterThan(0);
 
     // The other half of the claim: the deferral is not a section that never
@@ -286,10 +286,12 @@ describe('what one arriving frame costs the inspector', () => {
    * live page: an event that moved the seat has to move what is drawn.
    */
   it('draws the record a frame it answered with actually carries', () => {
-    const server = open();
+    // A seat that has dispatched nothing, so the section is absent to start
+    // with and the frame has something to move.
+    const server = open([]);
     counts.clear();
 
-    const before = drawn().find((section) => section.key === 'sec-monitors');
+    const before = drawn().map((section) => section.key);
     server.next(
       seats([
         {
@@ -307,9 +309,14 @@ describe('what one arriving frame costs the inspector', () => {
     arrive(server.update);
 
     const after = drawn().map((section) => section.key);
-    expect(
-      after,
-      `the seat's own frame did not reach the inspector: ${JSON.stringify({ before, after })}`,
-    ).toContain('sec-subagents');
+    const measured = JSON.stringify({ before, after });
+    // Both halves, because a section that were always drawn would pass the
+    // second one alone.
+    expect(before, `the section was there before the frame: ${measured}`).not.toContain(
+      'sec-subagents',
+    );
+    expect(after, `the seat's own frame did not reach the inspector: ${measured}`).toContain(
+      'sec-subagents',
+    );
   });
 });
