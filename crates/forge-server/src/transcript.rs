@@ -341,7 +341,16 @@ pub fn render(messages: &[Message]) -> Rendered {
                         }
                     }
                 },
-                ContentBlock::QueuedCommand { prompt, .. } => {
+                ContentBlock::QueuedCommand { prompt, command_mode, .. } => {
+                    // The harness's own background-completion notice rides the
+                    // same block as a prompt, and the scan hoists it into a
+                    // user envelope without reading the mode - so a turn opened
+                    // for it is a row nothing fills, which the page draws as a
+                    // blank line. The terminal never draws one: it filters the
+                    // row rather than the turn.
+                    if is_completion_notice(command_mode.as_deref(), prompt) {
+                        continue;
+                    }
                     let text = queued_command_text(prompt);
                     // A queued prompt can be the words a person typed into a
                     // question's free-text field, in which case it belongs on
@@ -751,6 +760,17 @@ fn absorb_typed(units: &mut [ChatUnit], text: &str) -> bool {
     }
 }
 
+/// Whether a queued block is the harness's background-completion notice
+/// rather than anything a person said.
+///
+/// The mode is the field that says which of the three kinds arrived; the
+/// terminal reads the text's own prefix instead. Both are read here, because a
+/// fold keyed on one of them drifts from the other the first time either moves.
+fn is_completion_notice(command_mode: Option<&str>, prompt: &serde_json::Value) -> bool {
+    command_mode == Some("task-notification")
+        || queued_command_text(prompt).trim_start().starts_with("<task-notification>")
+}
+
 /// The text a `queued_command` block carries: a plain string for a typed
 /// prompt, or a content-block array for a multi-modal one, where only the
 /// text blocks are the words the user typed and every other block renders
@@ -1061,7 +1081,7 @@ mod tests {
     use crate::grouping::KindRow;
     use crate::model::ToolCallStatus;
 
-    use super::{ChatUnit, NoticeSeverity, render_units};
+    use super::{ChatUnit, NoticeSeverity, render, render_units};
 
     /// An assistant message carrying `content`.
     fn assistant(content: Vec<ContentBlock>) -> Message {
@@ -1636,6 +1656,29 @@ mod tests {
             panic!("a user turn");
         };
         assert_eq!(text, "and keep the multiSelect case too", "carrying what the user typed");
+    }
+
+    /// The harness's background-completion notice is not a turn.
+    ///
+    /// It reaches the fold as the same `queued_command` block a prompt does -
+    /// the scan hoists the attachment row without reading its mode - and a
+    /// turn opened for it is a row nothing fills. The page draws that as a
+    /// blank line between two turns, which is the defect #1324 names; the
+    /// assertion is about the CUT, because a fold that dropped the text alone
+    /// would still leave the empty turn standing.
+    #[test]
+    fn a_notification_row_opens_no_turn() {
+        let notice = user(vec![ContentBlock::QueuedCommand {
+            prompt: serde_json::Value::String(
+                "<task-notification>Task bj5g0t2kq completed</task-notification>".to_owned(),
+            ),
+            command_mode: Some("task-notification".to_owned()),
+            source_uuid: None,
+        }]);
+
+        let rendered = render(&[notice]);
+        assert!(rendered.turns.is_empty(), "a completion notice opens no turn");
+        assert!(rendered.units.is_empty(), "and draws no unit of its own");
     }
 
     /// A sub-agent's frames are not the chat's. The terminal suppresses
