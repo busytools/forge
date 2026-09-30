@@ -142,10 +142,21 @@ function messagesOf(turn: PageTurn): unknown[] {
   return Array.isArray(turn.messages) ? turn.messages : [];
 }
 
-/** Whether a frame opens a turn of its own: what a person said, or a delivery. */
+/**
+ * Whether a frame opens a turn of its own rather than joining the live one:
+ * what a person said.
+ *
+ * Read only while a turn is live; a frame arriving with none open is the
+ * caller's own case.
+ */
 function opensATurn(message: unknown): boolean {
   const type = (message as { type?: unknown } | null)?.type;
-  return type === 'user' || type === 'system';
+  return type === 'user';
+}
+
+/** Whether a frame is a `system` frame, which is a report about a turn rather than part of one. */
+function isSystem(message: unknown): boolean {
+  return (message as { type?: unknown } | null)?.type === 'system';
 }
 
 /** The update's variant name, for the ones the chat acts on. */
@@ -364,14 +375,31 @@ export class Chat {
    * always starts one, because that is the boundary the server pages on and a
    * prompt appended to the turn above it would draw the reader's own words
    * inside the answer to their last one.
+   *
+   * **A `system` frame joins the turn it arrived in, settled or not, and is
+   * held nowhere when there is none.** A turn opens where a person's own words
+   * do and nowhere else - the server's own rule - so a system frame belongs
+   * inside the turn it arrived in, and before the first of those it belongs to
+   * no turn at all. A row opened on one holds a row's space whatever the fold
+   * draws into it, and the CLI emits one about every fifty thinking tokens: on
+   * a running seat that was thousands of rows a minute.
+   *
+   * Holding none of them loses nothing informative: a page carries a turn's
+   * messages from its first, so the opening rows ride the first page. That
+   * page is `start`'s ask or a reconnect - the update that would ask for one
+   * when a turn settles is defined and never sent - so the window is a round
+   * trip rather than a turn.
    */
   private append(message: unknown): void {
     this.inner.update((held) => {
       const last = held.turns[held.turns.length - 1];
-      if (last !== undefined && last.live && !opensATurn(message)) {
+      const joins =
+        last !== undefined && (isSystem(message) || (last.live && !opensATurn(message)));
+      if (joins) {
         const grown: Turn = { ...last, messages: [...last.messages, message] };
         return { ...held, turns: [...held.turns.slice(0, -1), grown] };
       }
+      if (isSystem(message)) return held;
       const taken = new Set(held.turns.map((turn) => turn.key));
       const key = nameIn({ key: liveName(message, held.turns.length), messages: [message] }, taken);
       // Every turn above it is the object it was: only the row that grew is
