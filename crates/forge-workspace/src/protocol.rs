@@ -1541,6 +1541,103 @@ pub enum DispatchError {
 }
 
 #[cfg(test)]
+mod session_update_variants {
+    use super::*;
+
+    /// The variants the client's reducer classifies, and the control that keeps
+    /// the two lists from drifting.
+    ///
+    /// `client/src/session/apply.ts` looks a `SessionUpdate` up by the name it
+    /// crosses under, and a name with no line there is a lookup that misses:
+    /// the session page stops following its seat and draws the last record it
+    /// read, with nothing to say it has fallen behind.
+    ///
+    /// **The match below has no wildcard on purpose.** A variant added to the
+    /// enum stops this module compiling, the way it already stops `slot` and
+    /// the `Debug` impl - and this is the one site whose name and comment say
+    /// what to do about it: add the variant to `client/src/session/apply.ts`
+    /// (a handler when the record has a field for it, an `IGNORED` entry when
+    /// it does not), then its arm here. Rust cannot count its own variants, so
+    /// nothing derives that list and this comment is where the guidance lives.
+    #[test]
+    fn every_session_update_variant_is_classified_for_the_client() {
+        fn wire_name(update: &SessionUpdate) -> &'static str {
+            match update {
+                SessionUpdate::Spawning { .. } => "spawning",
+                SessionUpdate::Connected { .. } => "connected",
+                SessionUpdate::SessionReplaced { .. } => "session_replaced",
+                SessionUpdate::ConnectionFailed { .. } => "connection_failed",
+                SessionUpdate::AuthRequired { .. } => "auth_required",
+                SessionUpdate::SlashCommandError { .. } => "slash_command_error",
+                SessionUpdate::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
+                SessionUpdate::RuntimeReloadFailed { .. } => "runtime_reload_failed",
+                SessionUpdate::SetModeFailed { .. } => "set_mode_failed",
+                SessionUpdate::SetModelFailed { .. } => "set_model_failed",
+                SessionUpdate::PermissionRequest { .. } => "permission_request",
+                SessionUpdate::QuestionRequest { .. } => "question_request",
+                SessionUpdate::PendingInteractionResolved { .. } => "pending_interaction_resolved",
+                SessionUpdate::McpOperationError { .. } => "mcp_operation_error",
+                SessionUpdate::TurnComplete { .. } => "turn_complete",
+                SessionUpdate::TurnCancelled { .. } => "turn_cancelled",
+                SessionUpdate::TurnError { .. } => "turn_error",
+                SessionUpdate::ChatAppended { .. } => "chat_appended",
+                SessionUpdate::HookObservation { .. } => "hook_observation",
+                SessionUpdate::StatusSnapshot { .. } => "status_snapshot",
+                SessionUpdate::ForgeAccountIdentity { .. } => "forge_account_identity",
+                SessionUpdate::DictateOverrides { .. } => "dictate_overrides",
+                SessionUpdate::DictateDevicePin { .. } => "dictate_device_pin",
+                SessionUpdate::OauthCredentialsSnapshot { .. } => "oauth_credentials_snapshot",
+                SessionUpdate::ContextUsageSnapshot { .. } => "context_usage_snapshot",
+                SessionUpdate::McpSnapshot { .. } => "mcp_snapshot",
+                SessionUpdate::SessionsListed { .. } => "sessions_listed",
+                SessionUpdate::ServiceStatus { .. } => "service_status",
+                SessionUpdate::CatalogLoaded => "catalog_loaded",
+                SessionUpdate::CliVersionChanged => "cli_version_changed",
+                SessionUpdate::AccountsChanged => "accounts_changed",
+                SessionUpdate::PluginsInventoryUpdated { .. } => "plugins_inventory_updated",
+                SessionUpdate::PluginsInventoryRefreshFailed { .. } => {
+                    "plugins_inventory_refresh_failed"
+                }
+                SessionUpdate::PluginsCliActionSucceeded { .. } => "plugins_cli_action_succeeded",
+                SessionUpdate::PluginsCliActionFailed { .. } => "plugins_cli_action_failed",
+                SessionUpdate::PluginsUpdateRunProgress { .. } => "plugins_update_run_progress",
+                SessionUpdate::PluginsUpdateRunFinished { .. } => "plugins_update_run_finished",
+                SessionUpdate::PluginsRollbackSucceeded { .. } => "plugins_rollback_succeeded",
+                SessionUpdate::PluginsRollbackFailed { .. } => "plugins_rollback_failed",
+                SessionUpdate::PeerInflightStatsChanged { .. } => "peer_inflight_stats_changed",
+                SessionUpdate::WorkerStatusChanged { .. } => "worker_status_changed",
+                SessionUpdate::PeerEnvelopeAppended { .. } => "peer_envelope_appended",
+                SessionUpdate::GotifyNotificationAppended { .. } => "gotify_notification_appended",
+                SessionUpdate::CronPromptAppended { .. } => "cron_prompt_appended",
+                SessionUpdate::SlackMessageAppended { .. } => "slack_message_appended",
+                SessionUpdate::SlackPostPending { .. } => "slack_post_pending",
+                SessionUpdate::SlackDraftExpired { .. } => "slack_draft_expired",
+                SessionUpdate::PromptQueuedWhileBusy { .. } => "prompt_queued_while_busy",
+                SessionUpdate::ReviewActivityNotice { .. } => "review_activity_notice",
+                SessionUpdate::DictateAvailability => "dictate_availability",
+                SessionUpdate::DictateStarted { .. } => "dictate_started",
+                SessionUpdate::DictateLevel { .. } => "dictate_level",
+                SessionUpdate::DictateTranscribing { .. } => "dictate_transcribing",
+                SessionUpdate::DictateProgress { .. } => "dictate_progress",
+                SessionUpdate::DictateEnded { .. } => "dictate_ended",
+                SessionUpdate::FatalError(_) => "fatal_error",
+            }
+        }
+        assert_eq!(wire_name(&SessionUpdate::CatalogLoaded), "catalog_loaded");
+
+        // The match above points a reader at the client's file, and a pointer
+        // that has rotted is worse than none: this fails if the table moves or
+        // is renamed out from under the comment.
+        let client = include_str!("../../../client/src/session/apply.ts");
+        assert!(
+            client.contains("export const IGNORED"),
+            "client/src/session/apply.ts is not where this test says the client's \
+             classification table lives: point the comment above at wherever it moved to",
+        );
+    }
+}
+
+#[cfg(test)]
 mod workers_command_tests {
     use super::*;
 
