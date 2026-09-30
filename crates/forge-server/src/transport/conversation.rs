@@ -249,8 +249,19 @@ impl Conversations {
             SessionUpdate::Connected { history, compaction_count, .. }
             | SessionUpdate::SessionReplaced { history, compaction_count, .. }
             | SessionUpdate::HistoryReplayed { history, compaction_count, .. } => {
-                let fresh = Conversation::new(history.clone(), *compaction_count);
-                self.insert(slot, fresh);
+                // Held means reseed and NOT insert: `insert` keeps what is
+                // there, so a connect on a seat already carrying a
+                // conversation would leave that conversation in place and the
+                // new history discarded.
+                match self.get(slot) {
+                    Some(held) => held
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .seed(history.clone(), *compaction_count),
+                    None => {
+                        self.insert(slot, Conversation::new(history.clone(), *compaction_count));
+                    }
+                }
             }
             SessionUpdate::ChatAppended { msg, .. } => {
                 let Some(held) = self.get(slot) else {
