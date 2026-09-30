@@ -163,7 +163,7 @@ export const HANDLERS: Record<string, Apply> = {
  * page reads, the process walk, the working tree - so a page answers them with
  * a read.
  */
-export const REPLACES: readonly string[] = ['connected', 'session_replaced'];
+export const REPLACES: readonly string[] = ['spawning', 'connected', 'session_replaced'];
 
 /**
  * The variants that touch nothing on this record.
@@ -243,7 +243,7 @@ export function applyUpdate(held: SessionRecord, update: SessionUpdate): Session
 }
 
 /** The variant's name and its fields, as the core's own externally tagged enums cross. */
-function variantOf(update: SessionUpdate): [string | null, Record<string, unknown>] {
+export function variantOf(update: SessionUpdate): [string | null, Record<string, unknown>] {
   if (typeof update === 'string') return [update, {}];
   const [name] = Object.keys(update);
   if (name === undefined) return [null, {}];

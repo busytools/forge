@@ -26,12 +26,17 @@ const { WebSocketServer, WebSocket: ClientSocket } = createRequire(import.meta.u
  */
 (globalThis as { WebSocket?: unknown }).WebSocket = ClientSocket;
 
+import { get, writable } from 'svelte/store';
+
 import { homeWire } from '../dev/fixture.data';
 import sessionFixture from '../dev/fixtures/session.json';
-import type { ServerMessage } from '../protocol';
+import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
+import { subjectKey } from '../protocol';
 import Router from '../shell/Router.svelte';
-import { connect, type Connection } from '../socket';
+import { connect, type Connection, type ConnectionStatus } from '../socket';
+import type { Store, StoreValue } from '../stores';
 import type { SessionSlot } from '../wire/types';
+import { watchSession, type SessionRead } from './live';
 import Session from './Session.svelte';
 
 /**
@@ -338,3 +343,217 @@ function openSection(name: string): void {
   found.dispatchEvent(new Event('toggle'));
   flushSync();
 }
+
+/**
+ * One seat's stream, without a socket.
+ *
+ * **The page's own work is the question here**, and a real socket cannot be
+ * asked it: what matters is whether the page asked for a read, and what it did
+ * with what it heard. So this answers both - every ask is counted, and a test
+ * lands a message by hand.
+ */
+interface Watching {
+  /** Deliver one message, as the connection would. */
+  land(message: ServerMessage): void;
+  /** Move the connection through one state, as a drop and its reconnect do. */
+  wentTo(next: ConnectionStatus): void;
+  /** How many times the page asked the server for the session again. */
+  reads(): number;
+  /** What the page currently holds. */
+  read(): SessionRead;
+  stop(): void;
+}
+
+function watch(connection: Driveable, slot: SessionSlot = LEAD): Watching {
+  const view = watchSession(connection, slot, true);
+  const stop = view.subscribe(() => {});
+  return {
+    land: (message) => connection.land(message),
+    wentTo: (next) => connection.wentTo(next),
+    reads: () => connection.reads(),
+    read: () => get(view),
+    stop,
+  };
+}
+
+/**
+ * A connection a test drives by hand, answering the shape the page uses of one.
+ *
+ * The other members are present because the page takes a whole `Connection`:
+ * a page that dispatches a command or asks for a page of turns is not what any
+ * of these cases exercises, so they are the quietest thing that satisfies the
+ * type and a test that reaches one fails loudly rather than silently.
+ */
+interface Driveable extends Omit<Connection, 'status'> {
+  land(message: ServerMessage): void;
+  wentTo(next: ConnectionStatus): void;
+  reads(): number;
+  status(): ConnectionStatus;
+}
+
+function drivable(): Driveable {
+  const listeners = new Set<(message: ServerMessage) => void>();
+  const watchers = new Set<(status: ConnectionStatus) => void>();
+  const snapshot = new Map<string, unknown>();
+  let reads = 0;
+
+  const store = (subject: Subject): Store => {
+    const key = subjectKey(subject);
+    return {
+      subject,
+      value: writable<StoreValue>({
+        snapshot: null,
+        updates: [],
+        state: { kind: 'ready' },
+        dropped: 0,
+      }),
+      snapshot: () => snapshot.get(key) ?? null,
+      updates: () => [],
+      state: () => ({ kind: 'ready' }),
+      dropped: () => 0,
+      set: (next: unknown) => {
+        snapshot.set(key, next);
+      },
+      push: () => {},
+      refuse: () => {},
+    };
+  };
+
+  return {
+    subscribe: (what) => {
+      snapshot.set(subjectKey(what), null);
+      return store(what);
+    },
+    unsubscribe: () => {},
+    refresh: () => {
+      reads += 1;
+    },
+    dispatch: () => {
+      throw new Error('this page dispatched a command the case did not expect');
+    },
+    more: () => false,
+    onMessage: (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    onStatus: (fn) => {
+      watchers.add(fn);
+      return () => watchers.delete(fn);
+    },
+    store: () => undefined,
+    settings: () => null,
+    status: () => 'open',
+    close: () => {},
+    land: (message) => {
+      if (message.kind === 'snapshot') {
+        snapshot.set(subjectKey(message.subject), message.data);
+      }
+      for (const fn of listeners) fn(message);
+    },
+    wentTo: (next) => {
+      for (const fn of watchers) fn(next);
+    },
+    reads: () => reads,
+  };
+}
+
+/** The seat's own answer, with whatever a case wants carried on it. */
+function snapshotOf(slot: SessionSlot, extra: Record<string, unknown> = {}): ServerMessage {
+  return {
+    kind: 'snapshot',
+    subject: { session: slot },
+    data: { slot, state: { scan_cwd: '/tmp' }, ...extra },
+  };
+}
+
+/** One update, as the server sends it. */
+function updateOf(update: SessionUpdate): ServerMessage {
+  return { kind: 'update', update };
+}
+
+/** A prompt as the CLI writes one: the frame shape the dev fixture carries. */
+function spoke(text: string, uuid = 'u1'): Record<string, unknown> {
+  return {
+    type: 'user',
+    uuid,
+    message: { role: 'user', content: [{ type: 'text', text }] },
+    session_id: 's',
+  };
+}
+
+describe('the record a page holds over an update stream', () => {
+  it('applies an update for this seat instead of asking for the session again', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    const before = page.read().wire;
+    const asked = page.reads();
+
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+
+    expect(page.read().wire, 'the update never reached the record').not.toBe(before);
+    expect(page.read().wire?.conversation.turns, 'the frame is not in the record').toHaveLength(1);
+    expect(page.reads(), 'the page asked for a read on an update').toBe(asked);
+    page.stop();
+  });
+
+  it('leaves the record alone for another seat sent over the same connection', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    const held = page.read().wire;
+
+    page.land(
+      updateOf({
+        chat_appended: {
+          key: { org: 'Busytools', project: 'forge', label: 'other' },
+          msg: spoke('hi'),
+        },
+      }),
+    );
+
+    expect(page.read().wire, "another seat's frames reached this page").toBe(held);
+    page.stop();
+  });
+
+  it('holds an update that arrives before the first read', () => {
+    const connection = drivable();
+    const page = watch(connection);
+
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+
+    expect(page.read().wire, 'an update invented a record out of nothing').toBeNull();
+    expect(page.read().refused).toBeNull();
+    page.stop();
+  });
+
+  it('replaces the record wholesale when the connection comes back', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    expect(page.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
+
+    page.wentTo('closed');
+    page.wentTo('open');
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+
+    expect(
+      page.read().wire?.conversation.turns,
+      'the reconnect did not replace what the drop left behind',
+    ).toHaveLength(0);
+    page.stop();
+  });
+
+  it('stops listening and lets the subscription go with the last reader', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    page.stop();
+
+    const held = page.read().wire;
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+
+    expect(page.read().wire, 'a stopped page is still following the seat').toBe(held);
+  });
+});
