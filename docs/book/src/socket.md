@@ -203,7 +203,7 @@ conversation, and what the composer is doing.
 |---|---|
 | `slot` | The seat itself. |
 | `header` | The resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, and whether a turn is in flight. |
-| `conversation` | The transcript's whole turns, in order, with the compaction count. Each turn carries `key` and `messages` - the CLI's own frames, which is what the live `update` stream carries too - so this is the same shape `more` answers a page with. |
+| `conversation` | The transcript's whole turns, in order, with the compaction count. Each turn carries `key` and `messages` - the CLI's own frames - so this is the same shape `more` answers a page with. The live `update` stream carries those frames too, and one kind this cannot: a turn the server forged for words the CLI does not echo back. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
 | `pr`, `closes` | The open pull request this seat's branch is on - its number and URL - and the issues it closes, which is the `PR #N -> closes #M` line the inspector draws. `null` and an empty list when there is none, or when the branch is not pushed. |
 | `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference. |
@@ -239,6 +239,17 @@ reconcile, because the frames are the same shape on either side. The one
 thing the server keeps is the turn boundary, which is what stops a page
 handing over half a turn; where a turn BEGINS is a fact about the session,
 and how its work is drawn is not.
+
+**Not every frame on the stream is the CLI's, and the difference is the
+id.** A prompt handed to `claude` on stdin is not echoed back, so forge
+forges the user turn itself and sends it as a `chat_appended` like any
+other frame - a cron fire, a Gotify notification, a Slack message, a peer
+comm, and a reader's own send, which without it no viewer but the sender
+would ever see. **A forged turn carries no `uuid`**, because the CLI mints
+the transcript's id for that turn after the fact and never sends it, so
+there is no honest one for forge to put there. What the frame and the
+page's copy of the same turn agree on is the prose; a client that matches a
+live turn to its settled copy by id alone will not match these.
 
 **The server's fold is not what a terminal reads.** The terminal groups a
 message's blocks itself, in `forge-tui`'s `ui::message::grouping`, and the
