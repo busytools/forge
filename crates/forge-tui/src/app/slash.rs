@@ -804,6 +804,7 @@ mod tests {
                     &mut app,
                     forge_workspace::SessionUpdate::ChatAppended {
                         key,
+                        origin: None,
                         msg: forge_primitives::Message::System {
                             subtype: "status".into(),
                             data: serde_json::json!({"permissionMode": "plan"}),

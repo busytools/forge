@@ -667,7 +667,9 @@ impl SessionTask {
                     // each review's submit origin.
                     self.drain_review_activity_for(&caller);
                 }
-                self.emit(SessionUpdate::ChatAppended { key: self.key.clone(), msg });
+                // `None`: a frame off the wire is the CLI's own, and carries
+                // no prompt origin.
+                self.emit(SessionUpdate::ChatAppended { key: self.key.clone(), msg, origin: None });
             }
             AgentEvent::HookObservation {
                 tool_use_id,

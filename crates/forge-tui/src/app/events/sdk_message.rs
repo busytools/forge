@@ -552,33 +552,60 @@ fn push_peer_envelope_user_turn_if_present(
         // tail for `append_or_push_envelope` to merge into.
         app.strip_trailing_empty_assistant_placeholder();
         append_or_push_envelope(app, envelope_kind, text);
-        app.push_active_turn_assistant_placeholder();
-        // The clock starts here rather than at the first frame, so the
-        // turn-info row never sits as a bare loader while it waits for
-        // usage; a prompt delivered mid-turn rides the live bar instead
-        // of starting a second one. This runs inside with_pivoted for a
-        // background bucket, where app.status is the focused session's
-        // snapshot, so the in-flight test reads the pivoted bucket's own
-        // live turn.
-        if app.active_session().is_some_and(|bucket| bucket.live_turn.started_at.is_some())
-            && !app.pending_cancel()
-            && !app.is_compacting()
-        {
-            app.continue_live_turn(std::time::Instant::now());
-        } else {
-            app.start_live_turn(std::time::Instant::now());
-        }
-        app.status = crate::app::AppStatus::Thinking;
-        if let Some(key) = app.active_session_key.clone() {
-            super::set_bucket_lifecycle_state(
-                app,
-                &key,
-                crate::app::session::SessionLifecycleState::Running,
-            );
-        }
-        app.enforce_history_retention_tracked();
+        open_a_turn_answering_what_was_pushed(app);
         return;
     }
+}
+
+/// Push the user turn a prompt frame carries from a view other than this one.
+///
+/// The CLI does not echo a prompt back, so another view's send reaches this
+/// process only as the frame the server forged for it. The reader's own
+/// submission already drew its bubble and is skipped before it gets here, so
+/// everything reaching this is somebody else's words - and the assistant
+/// answers them, so they open a turn the way a delivery's do.
+///
+/// Envelope-shaped prose is left to the dispatcher below, which paints it
+/// stamped: drawing it here as well would show one turn twice.
+pub(super) fn push_other_views_prompt(app: &mut App, text: &str) {
+    use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
+
+    if text.is_empty() || forge_server::envelope::detect_inbound(text).is_some() {
+        return;
+    }
+    app.strip_trailing_empty_assistant_placeholder();
+    let blocks = vec![MessageBlock::Text(TextBlock::from_complete(text))];
+    app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks));
+    open_a_turn_answering_what_was_pushed(app);
+}
+
+/// Open the turn for a user turn this process did not draw at submit.
+///
+/// The clock starts here rather than at the first frame, so the turn-info row
+/// never sits as a bare loader while it waits for usage; a prompt delivered
+/// mid-turn rides the live bar instead of starting a second one. This runs
+/// inside `with_pivoted` for a background bucket, where `app.status` is the
+/// focused session's snapshot, so the in-flight test reads the pivoted
+/// bucket's own live turn.
+fn open_a_turn_answering_what_was_pushed(app: &mut App) {
+    app.push_active_turn_assistant_placeholder();
+    if app.active_session().is_some_and(|bucket| bucket.live_turn.started_at.is_some())
+        && !app.pending_cancel()
+        && !app.is_compacting()
+    {
+        app.continue_live_turn(std::time::Instant::now());
+    } else {
+        app.start_live_turn(std::time::Instant::now());
+    }
+    app.status = crate::app::AppStatus::Thinking;
+    if let Some(key) = app.active_session_key.clone() {
+        super::set_bucket_lifecycle_state(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::Running,
+        );
+    }
+    app.enforce_history_retention_tracked();
 }
 
 /// Walk the typed `Message::User` content blocks and apply
@@ -5367,6 +5394,46 @@ mod monitor_chat_block_tests {
         assert_eq!(
             with_tool_call(&app, |tc| tc.monitor_status),
             Some(crate::app::MonitorStatus::Stopped),
+        );
+    }
+}
+
+#[cfg(test)]
+mod forged_user_frame_tests {
+    //! The server forges a user turn for words the CLI will not echo back, and
+    //! sends it to every view including this one. A delivery's forged turn is
+    //! the row the terminal used to draw alone, and it must still draw; the
+    //! reader's own words are the case that must NOT, because the terminal
+    //! drew those at submit and a second copy is the same line twice.
+    use super::handle_user;
+    use crate::app::App;
+    use forge_primitives::Message;
+
+    fn rows(app: &App) -> usize {
+        app.messages().expect("a session to draw in").len()
+    }
+
+    #[test]
+    fn a_delivery_is_drawn_and_the_readers_own_words_are_not() {
+        let mut app = App::test_default();
+        let before = rows(&app);
+
+        handle_user(
+            &mut app,
+            Message::display_only_user("[Cron]\n\nrun the morning summary".to_owned()),
+        );
+        let drawn = rows(&app);
+        assert!(
+            drawn > before,
+            "a delivery's forged turn draws a row of its own: {before} before, {drawn} after",
+        );
+
+        handle_user(&mut app, Message::display_only_user("what the reader typed".to_owned()));
+        assert_eq!(
+            rows(&app),
+            drawn,
+            "the terminal drew the reader's words at submit, so a frame carrying them \
+             must not draw a second row",
         );
     }
 }

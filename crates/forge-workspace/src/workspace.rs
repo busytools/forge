@@ -10,7 +10,9 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_agent::env::cli_version::CliVersionInfo;
 use forge_primitives::cloud::service_status::ServiceIssue;
-use forge_primitives::{AvailableAgent, AvailableCommand, PeerInflightStats, SDKSessionInfo};
+use forge_primitives::{
+    AvailableAgent, AvailableCommand, Message, PeerInflightStats, SDKSessionInfo,
+};
 
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
@@ -23,7 +25,7 @@ use forge_gateway::ProviderHost as _;
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, SessionUpdate};
+use crate::protocol::{Command, DispatchError, PromptOrigin, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
@@ -2481,8 +2483,9 @@ impl Workspace {
 
     /// Spawn the worker-kick drainer task (#259). Takes the receiver
     /// out of `kick_dispatcher_rx_slot` and starts a tokio task that
-    /// loops on `recv()`, calls [`Self::dispatch`] for each request,
-    /// then sleeps `KICK_DISPATCH_INTERVAL` before the next pull.
+    /// loops on `recv()`, calls
+    /// [`Self::dispatch_workspace_prompt`] for each request, then sleeps
+    /// `KICK_DISPATCH_INTERVAL` before the next pull.
     ///
     /// Call once at construction, AFTER `Workspace::new` returns and
     /// the result is Arc-wrapped (mirrors `start_account_loading_tasks`
@@ -3482,6 +3485,13 @@ impl Workspace {
     /// gotify or slack delivery, kick, notices), signalling
     /// `PromptQueuedWhileBusy` first when the target's turn is in
     /// flight so the TUI bridges the spinner across the gap.
+    ///
+    /// **A delivery drawn in a view needs an update here, paired with an arm
+    /// in `forge-server`'s `delivery_turn`.** This path emits no frame of its
+    /// own - the forge for one is `delivery_turn`, downstream, and it ends in
+    /// `_ => return None`. So a prompt sent from here whose typed update has
+    /// no arm there draws nothing in any view, silently: a kick takes this
+    /// path and has no update, and is invisible for that reason.
     pub fn dispatch_workspace_prompt(
         self: &Arc<Self>,
         key: &SessionSlot,
@@ -3495,8 +3505,10 @@ impl Workspace {
         // residual signals at all depends on a session_state_changed
         // mirror being present, so it is CLI-version-dependent.
         let busy = self.domain_session_for(key).is_some_and(|d| d.lock().turn_in_flight());
+        // `route` rather than `dispatch`: the delivery's frame is the envelope
+        // one its own update forges, not a bare user turn.
         let result =
-            self.dispatch(Command::Prompt { key: key.clone(), text, attachments: Vec::new() });
+            self.route(Command::Prompt { key: key.clone(), text, attachments: Vec::new() });
         if busy && result.is_ok() {
             let _ = self
                 .update_sender()
@@ -3525,7 +3537,63 @@ impl Workspace {
     /// is registered for the requested key (e.g., the session was
     /// just closed), or [`DispatchError::SessionClosed`] when the
     /// task's command receiver has been dropped.
-    pub fn dispatch(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
+    pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
+        self.dispatch_with_origin(cmd, PromptOrigin::Ui)
+    }
+
+    /// Dispatch one command a view sent over the socket.
+    ///
+    /// Apart from the origin it stamps on a prompt's frame, this is
+    /// [`Self::dispatch`] exactly. The two entries exist so the origin comes
+    /// from the code path rather than from the command: a client cannot claim
+    /// to be the terminal's own UI, which would have the terminal skip words
+    /// it never saw.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::dispatch`].
+    pub fn dispatch_from_view(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
+        self.dispatch_with_origin(cmd, PromptOrigin::View)
+    }
+
+    /// Route a command, emitting the user turn a prompt draws.
+    ///
+    /// A prompt is the reader's own words, and nothing else carries them: the
+    /// CLI queues a prompt handed to it and never echoes it back, so a view
+    /// drawing only frames shows the assistant answering something nobody saw.
+    ///
+    /// NOT from `dispatch_workspace_prompt`, which is the delivery path: a
+    /// delivery already draws as an envelope turn of its own, so a bare user
+    /// turn beside it would draw the same words twice.
+    fn dispatch_with_origin(
+        self: &Arc<Self>,
+        cmd: Command,
+        origin: PromptOrigin,
+    ) -> Result<(), DispatchError> {
+        // The prose is taken before the move and emitted only once the command
+        // reached a session. A refused prompt never reached a model, so no view
+        // draws it as a turn - and the frame for one would open a live turn in
+        // every view but the sender, with nothing left to close it: the refusal
+        // is written to the asking socket alone.
+        let prompt = match &cmd {
+            Command::Prompt { key, text, .. } => Some((key.clone(), text.clone())),
+            _ => None,
+        };
+        let outcome = self.route(cmd);
+        if outcome.is_ok()
+            && let Some((key, text)) = prompt
+        {
+            let _ = self.update_sender().send(SessionUpdate::ChatAppended {
+                key,
+                msg: Message::display_only_user(text),
+                origin: Some(origin),
+            });
+        }
+        outcome
+    }
+
+    /// Route a command that carries no frame of its own.
+    fn route(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
         // Test intercept (when armed): capture EVERY Command - both
         // app-level and per-session - before any routing. Tests use
         // this to assert what would have been dispatched without
@@ -15598,7 +15666,7 @@ mod kick_dispatcher_tests {
     //!
     //! Tests observe via `command_intercept` (`enable_test_dispatch_intercept`
     //! plus `drain_test_dispatch_buffer`); the drainer calls
-    //! `Workspace::dispatch(Command::Prompt {..})` for each
+    //! `Workspace::dispatch_workspace_prompt` for each
     //! `KickRequest`, which the intercept buffer captures verbatim.
     //!
     //! Time is paused (`start_paused = true`) so the drainer's
@@ -16153,6 +16221,105 @@ provider = "anthropic"
         assert!(
             workspace.list_projects()[0].sessions.is_empty(),
             "no runtime: no scan ran, the catalog stays empty"
+        );
+    }
+}
+
+#[cfg(test)]
+mod prompt_frame_origin_tests {
+    //! A prompt's frame says where its words came from, and the answer is the
+    //! entry the caller took rather than a value off the wire. One view draws
+    //! on that answer - the terminal's own words are drawn at submit, another
+    //! view's are not - so a wrong origin is a reader shown their own line
+    //! twice, or a send nobody draws at all.
+    use super::*;
+
+    fn a_prompt(key: &SessionSlot) -> Command {
+        Command::Prompt { key: key.clone(), text: "hello".to_owned(), attachments: Vec::new() }
+    }
+
+    /// A fleet with one seat, and this seat's stream off the core's fan-out.
+    ///
+    /// The prompt is ACCEPTED through the dispatch intercept, which is this
+    /// crate's own way of saying "the core took it" without standing up a real
+    /// subprocess - the stub alone leaves the seat with no command sender, so
+    /// every dispatch is refused for a reason the fixture invented.
+    fn a_fleet() -> (Arc<Workspace>, mpsc::UnboundedReceiver<SessionUpdate>, SessionSlot) {
+        let (ws, rx) = Workspace::testing_stub();
+        ws.seed_test_project("proj", "/tmp/prompt-frame-origin");
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        ws.enable_test_dispatch_intercept();
+        (ws, rx, seat)
+    }
+
+    /// The terminal's own entry, which is what `App::dispatch_command` takes.
+    #[test]
+    fn the_uis_own_entry_marks_the_frame_as_the_uis() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch(a_prompt(&seat));
+
+        assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(SessionUpdate::ChatAppended { origin: Some(PromptOrigin::Ui), key, .. })
+                    if key == seat
+            ),
+            "the words the terminal drew at submit are marked as its own, or it draws them twice",
+        );
+    }
+
+    /// The socket's entry, which is what `ViewSurface::dispatch` takes.
+    #[test]
+    fn a_views_entry_marks_the_frame_as_a_views() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(a_prompt(&seat));
+
+        assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(SessionUpdate::ChatAppended { origin: Some(PromptOrigin::View), key, .. })
+                    if key == seat
+            ),
+            "no view has drawn a send made over the socket, so every view has to",
+        );
+    }
+
+    /// The delivery path, which already draws as an envelope turn of its own.
+    #[test]
+    fn a_delivery_emits_no_frame() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        let _ = ws.dispatch_workspace_prompt(&seat, "run the morning summary".to_owned());
+
+        assert!(
+            rx.try_recv().is_err(),
+            "a bare user turn beside a delivery's envelope turn draws the same words twice",
+        );
+    }
+
+    /// A prompt the core refuses draws nothing anywhere.
+    ///
+    /// It never reached a model, so there is no turn to draw - and a frame for
+    /// one would open a live turn in every view but the sender, while the
+    /// refusal is written to the asking socket alone. Those views cannot learn
+    /// why, so the turn bar spins for the life of the connection.
+    #[test]
+    fn a_refused_prompt_emits_no_frame() {
+        // No intercept: the dispatch takes the real path and is refused, which
+        // is the case this pins.
+        let (ws, mut rx) = Workspace::testing_stub();
+        let nowhere = SessionSlot::lead("TestOrg", "no-such-project");
+
+        let refused = ws.dispatch(a_prompt(&nowhere));
+
+        assert!(refused.is_err(), "precondition: the core holds no session here: {refused:?}");
+        assert!(
+            rx.try_recv().is_err(),
+            "a refused prompt opened a turn in every view but the sender",
         );
     }
 }

@@ -122,7 +122,8 @@
       ],
       "/update/chat_appended": [
         "key",
-        "msg"
+        "msg",
+        "origin"
       ],
       "/update/chat_appended/key": [
         "label",

@@ -203,7 +203,7 @@ conversation, and what the composer is doing.
 |---|---|
 | `slot` | The seat itself. |
 | `header` | The resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, and whether a turn is in flight. |
-| `conversation` | The transcript's whole turns, in order, with the compaction count. Each turn carries `key` and `messages` - the CLI's own frames, which is what the live `update` stream carries too - so this is the same shape `more` answers a page with. |
+| `conversation` | The transcript's whole turns, in order, with the compaction count. Each turn carries `key` and `messages` - the CLI's own frames - so this is the same shape `more` answers a page with. The live `update` stream carries those frames too, and one kind this cannot: a frame the server forged for words the CLI does not echo back. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
 | `pr`, `closes` | The open pull request this seat's branch is on - its number and URL - and the issues it closes, which is the `PR #N -> closes #M` line the inspector draws. `null` and an empty list when there is none, or when the branch is not pushed. |
 | `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference. |
@@ -235,10 +235,33 @@ settled turn arrives by `more` as the messages it ran as; the turn in
 flight arrives as the same CLI frames, one `update` at a time. **A client
 folds both with one rule of its own** - how a run of tool calls groups, the
 labels it draws and the tail it shows - and the two meet with nothing to
-reconcile, because the frames are the same shape on either side. The one
-thing the server keeps is the turn boundary, which is what stops a page
-handing over half a turn; where a turn BEGINS is a fact about the session,
-and how its work is drawn is not.
+reconcile about their shape, because the frames are the same shape on
+either side. The one thing the server keeps is the turn boundary, which is
+what stops a page handing over half a turn; where a turn BEGINS is a fact
+about the session, and how its work is drawn is not. **What can differ is
+the id, and only for the forged frame below.**
+
+**Not every frame on the stream is the CLI's, and the difference is the
+id.** A prompt handed to `claude` on stdin is not echoed back, so forge
+forges the user turn itself and sends it as a `chat_appended` like any
+other frame - a cron fire, a Gotify notification, a Slack message, a peer
+comm, and a reader's own send, which without it no viewer but the sender
+would ever see.
+
+**A prompt frame carries an `origin`**, `ui` or `view`. It says who
+submitted the words, is stamped where the dispatch happened rather than
+sent by the client, and it is `null` on every frame the CLI sent and on
+every delivery turn - so a client that ignores it draws as it did before
+the field existed. `ui` means the forge process's own input handler
+submitted them and has already drawn them, which is what lets the terminal
+skip its own words while drawing everyone else's; nothing else reads it,
+because no other view's composer is optimistic.
+
+**A forged turn carries no `uuid`**, because the CLI mints
+the transcript's id for that turn after the fact and never sends it, so
+there is no honest one for forge to put there. What the frame and the
+page's copy of the same turn agree on is the prose; a client that matches a
+live turn to its settled copy by id alone will not match these.
 
 **The server's fold is not what a terminal reads.** The terminal groups a
 message's blocks itself, in `forge-tui`'s `ui::message::grouping`, and the

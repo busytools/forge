@@ -101,7 +101,9 @@ pub use domain_session::{ContextUsage, DomainSession, McpServers};
 pub use error::WorkspaceError;
 pub use forge_dictate::Device;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
-pub use protocol::{Command, DictateOutcome, DispatchError, SessionUpdate, TurnErrorClass};
+pub use protocol::{
+    Command, DictateOutcome, DispatchError, PromptOrigin, SessionUpdate, TurnErrorClass,
+};
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use views::{
     AccountAuth, AccountBudget, AccountLoadingRow, AccountRow, GatewayOrgView, ProjectView,

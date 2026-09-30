@@ -113,7 +113,7 @@ pub fn send_msg(app: &mut forge_tui::app::App, msg: forge_primitives::Message) {
         app.set_session_id(Some(model::SessionId::new("test-session")));
     }
     let key = active_session_key(app);
-    send_client_event(app, SessionUpdate::ChatAppended { key, msg });
+    send_client_event(app, SessionUpdate::ChatAppended { key, msg, origin: None });
 }
 
 /// Convenience: build a wire `tool_use` content block.

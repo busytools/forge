@@ -216,7 +216,7 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
                 }
                 apply_session_update(
                     &mut app,
-                    SessionUpdate::ChatAppended { key: replay_key.clone(), msg },
+                    SessionUpdate::ChatAppended { key: replay_key.clone(), msg, origin: None },
                 );
             }
             // Control + ControlResponse + ControlCancel are part of the

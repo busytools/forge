@@ -354,6 +354,7 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
             "session_id": "s",
         }))
         .expect("parse a result message"),
+        origin: None,
     });
 
     // The fold is the transport's own task, so the mark lands a scheduling
@@ -410,6 +411,7 @@ async fn a_turn_that_finished_unwatched_marks_its_row() {
             "session_id": "s",
         }))
         .expect("parse a result message"),
+        origin: None,
     });
     // That a completion reaches the home as a row change is a property of the
     // FILTER, and this connection watches the home. It says nothing about when
@@ -652,6 +654,7 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
             "session_id": "s",
         }))
         .expect("parse an assistant message"),
+        origin: None,
     });
     send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let (_, _, passed) = snapshot_answering(&mut socket).await;
@@ -756,4 +759,248 @@ async fn a_dropped_socket_leaves_no_subscription_behind() {
         "a subscription must not outlive its socket: {attached} attached, {} still",
         fleet.subscriber_count(),
     );
+}
+
+/// A delivery reaches a socket client as the turn it draws, and then as the
+/// typed update it came from.
+///
+/// The CLI does not echo a prompt it was handed on stdin, so the wire carries
+/// nothing a view could draw and a page drawing only frames shows the
+/// assistant answering something nobody saw. The terminal forges that turn in
+/// its own process; this is the server's way out doing the same, so a client
+/// no longer has to.
+///
+/// The role is `answering: false` on purpose: a client with no dock to reply
+/// from is still shown the turn, and the forge must not be what makes an
+/// observer look like an answerer.
+#[tokio::test]
+async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
+    )
+    .await;
+    snapshot_answering(&mut socket).await;
+
+    fleet.emit(SessionUpdate::CronPromptAppended {
+        key: lead_seat(),
+        text: "run the morning summary".to_owned(),
+    });
+
+    let ServerMessage::Update { update } = next_server(&mut socket).await else {
+        panic!("a delivery a view draws as a turn has to reach the client drawing it")
+    };
+    let SessionUpdate::ChatAppended { key, msg, .. } = *update else {
+        panic!("the frame is what a view draws, and it goes ahead of the typed update")
+    };
+    assert_eq!(key, lead_seat(), "the frame is addressed to the seat the delivery went to");
+    let forge_primitives::Message::User { message, .. } = msg else {
+        panic!("a delivery draws as the user turn the model's prompt was")
+    };
+    let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+        panic!("the turn carries the prose the model received")
+    };
+    assert!(
+        text.starts_with("[Cron]"),
+        "the prose is what the fold's envelope detection reads back, so it is the \
+         forged turn rather than some other user frame: {text}",
+    );
+
+    let ServerMessage::Update { update } = next_server(&mut socket).await else {
+        panic!("the typed update still goes out beside the frame")
+    };
+    assert!(
+        matches!(*update, SessionUpdate::CronPromptAppended { .. }),
+        "a view keeps the typed update too: the frame is what it draws, the update is what \
+         it knows",
+    );
+}
+
+/// The same stream carries the whole fleet, so a delivery to another seat
+/// draws nothing here.
+///
+/// The forged frame carries the delivery's own slot, so the routing that keeps
+/// another seat's news out of this connection has to keep its frame out too -
+/// a frame reaching the wrong seat is a client showing one seat's cron fire
+/// inside another seat's conversation.
+#[tokio::test]
+async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
+    )
+    .await;
+    snapshot_answering(&mut socket).await;
+
+    fleet.emit(SessionUpdate::CronPromptAppended {
+        key: SessionSlot::for_label("TestOrg", "proj", Some("w1")),
+        text: "run the morning summary".to_owned(),
+    });
+    // The evidence is ORDER, never a timeout: a frame forged for the other
+    // seat would have to arrive ahead of an update this connection does hear,
+    // and waiting for it NOT to arrive would hang on the correct behaviour.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+
+    let msg = next_server(&mut socket).await;
+    assert!(
+        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        "a delivery for another seat must not draw on this one: {msg:?}",
+    );
+}
+
+/// The text of a user turn, when the frame is one.
+fn user_text(msg: &forge_primitives::Message) -> Option<String> {
+    let forge_primitives::Message::User { message, .. } = msg else {
+        return None;
+    };
+    let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+        return None;
+    };
+    Some(text.clone())
+}
+
+/// A prompt one client sends draws for every other client on that seat, and
+/// for the one that sent it.
+///
+/// The CLI queues a prompt a client hands it and never echoes it on
+/// stream-json, so nothing on the wire carries the words the reader said: a
+/// second viewer watches the assistant answer something nobody saw, and the
+/// sender itself draws nothing of its own. The send is the one place the words
+/// are known, so the frame is forged from it.
+///
+/// The sender is included on purpose. The terminal pushes the user's own
+/// bubble locally on every send for exactly this reason, so withholding the
+/// frame from the sender would be the client inventing a rule the terminal
+/// does not have.
+#[tokio::test]
+async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.intercept_dispatch();
+
+    let mut sender = connect(&url).await;
+    let mut watcher = connect(&url).await;
+    // A third view on the same seat, watching one of the other two send.
+    let mut onlooker = connect(&url).await;
+    for socket in [&mut sender, &mut watcher, &mut onlooker] {
+        send(
+            socket,
+            ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+        )
+        .await;
+        let ServerMessage::Snapshot { .. } = next_server(socket).await else {
+            panic!("a seat that exists is answered with its snapshot")
+        };
+    }
+
+    send(
+        &mut sender,
+        ClientMessage::Command {
+            command: Box::new(Command::Prompt {
+                key: lead_seat(),
+                text: "hello there".to_owned(),
+                attachments: Vec::new(),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let drawn = |update: &SessionUpdate| {
+        matches!(update, SessionUpdate::ChatAppended {
+            msg,
+            origin: Some(forge_workspace::PromptOrigin::View),
+            ..
+        } if user_text(msg).as_deref() == Some("hello there"))
+    };
+    update_until(&mut watcher, "the prompt a client sent, drawn for another client", drawn).await;
+    update_until(&mut sender, "the prompt a client sent, drawn for the client that sent it", drawn)
+        .await;
+    update_until(&mut onlooker, "a third view's send, drawn for this one", drawn).await;
+
+    // And exactly once: the evidence is ORDER, never a timeout,a nd a second
+    // forged frame would have to arrive ahead of an update every subscriber
+    // hears. Two connections on one seat both forging is the shape this
+    // catches.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+    let msg = next_server(&mut onlooker).await;
+    assert!(
+        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        "one send draws one frame per view: {msg:?}",
+    );
+}
+
+/// A send the core refuses draws nothing, in any view.
+///
+/// It never reached a model, so there is no turn to draw. Drawing it anyway
+/// would open a live turn in every view but the sender - the sender at least
+/// hears the refusal on its own socket, and those other views hear only the
+/// frame, so their turn bar would spin with nothing left to close it.
+#[tokio::test]
+async fn a_prompt_the_core_refuses_draws_nothing() {
+    let (url, fleet) = a_server().await;
+    // A seat with a session behind it, so the subscribe is answered - but no
+    // dispatch intercept, so the prompt itself is refused.
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let mut sender = connect(&url).await;
+    send(
+        &mut sender,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let ServerMessage::Snapshot { .. } = next_server(&mut sender).await else {
+        panic!("a seat that exists is answered with its snapshot")
+    };
+
+    send(
+        &mut sender,
+        ClientMessage::Command {
+            command: Box::new(Command::Prompt {
+                key: lead_seat(),
+                text: "hello there".to_owned(),
+                attachments: Vec::new(),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    // The refusal first, so the barrier below cannot overtake it: the frame a
+    // dispatch emits goes through the fan-out, and a barrier emitted before the
+    // refusal could be read ahead of the Error and end the read too early.
+    let mut drawn = false;
+    loop {
+        match next_server_within(&mut sender, 5_000).await {
+            Some(ServerMessage::Update { update }) => {
+                drawn |= matches!(&*update, SessionUpdate::ChatAppended { msg, .. }
+                    if user_text(msg).as_deref() == Some("hello there"));
+            }
+            Some(ServerMessage::Error { .. }) => break,
+            Some(other) => panic!("a send answers with the refusal or the words: {other:?}"),
+            None => panic!("waited for the refusal of a send and never heard it"),
+        }
+    }
+
+    // And now the order proof: a frame from that dispatch would be in the
+    // fan-out ahead of this barrier, so reading to the barrier and seeing none
+    // is the negative. The evidence is ORDER, never a timeout.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+    loop {
+        match next_server(&mut sender).await {
+            ServerMessage::Update { update } => {
+                drawn |= matches!(&*update, SessionUpdate::ChatAppended { msg, .. }
+                    if user_text(msg).as_deref() == Some("hello there"));
+                if matches!(*update, SessionUpdate::TurnCancelled { .. }) {
+                    break;
+                }
+            }
+            ServerMessage::Error { .. } => {}
+            other => panic!("a send draws, refuses, or says nothing: {other:?}"),
+        }
+    }
+    assert!(!drawn, "a refused prompt reached no model, so no view draws it as a turn");
 }

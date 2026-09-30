@@ -322,7 +322,7 @@ impl Composer {
             // The CLI announces a compaction on the status frame and
             // clears it with a null, which is the only place either is
             // said. Everything else on the conversation is the chat's.
-            SessionUpdate::ChatAppended { key, msg } => {
+            SessionUpdate::ChatAppended { key, msg, .. } => {
                 if let Message::System { subtype, data, .. } = msg
                     && subtype == "status"
                 {
