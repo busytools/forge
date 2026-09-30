@@ -7,11 +7,14 @@ import { renderProse } from './prose';
 
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 
-/** Whether any rule the sheet writes for `unit` carries `said`. */
+/**
+ * Whether any rule the sheet writes for `unit` carries `said`.
+ *
+ * Scoped on `.prose` alone: prose draws in the work a turn did and in what the
+ * reader typed, which the terminal folds as a document too.
+ */
 function declares(unit: string, said: string): boolean {
-  const rules = SHEET.matchAll(
-    new RegExp(`\\.work \\.prose [^{}]*\\b${unit}\\b[^{}]*\\{([^}]*)\\}`, 'g'),
-  );
+  const rules = SHEET.matchAll(new RegExp(`\\.prose [^{}]*\\b${unit}\\b[^{}]*\\{([^}]*)\\}`, 'g'));
   return [...rules].some((rule) => rule[1]?.includes(said) ?? false);
 }
 

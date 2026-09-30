@@ -73,6 +73,22 @@ describe('one turn, as the page draws it', () => {
     expect(body).toContain('just check');
   });
 
+  it('draws what the reader typed as the document the terminal draws', () => {
+    // The terminal sends a user block through the same markdown path it sends
+    // an assistant's (`message.rs`'s `block_markdown_for`), so a heading someone
+    // types arrives as a heading and a fence as the page's own code panel. The
+    // issue names the shapes where the two readings diverge most - a fence, an
+    // inline span, and a fence that never closes, which in a prompt is normal
+    // rather than an error.
+    const body = draw(prompt('Run this:\n\n```sh\njust check\n```\n\nand read `out`.'));
+
+    expect(body, 'a fence in what the reader typed draws as the code panel').toContain(
+      'class="code"',
+    );
+    expect(body, 'and an inline span draws as a code span').toContain('<code>out</code>');
+    expect(body, 'and the words are still there').toContain('just check');
+  });
+
   it('draws the runs the fold cut, rather than regrouping what it holds', () => {
     // A question splits a run, so this turn holds TWO groups with a card
     // between them. A component that grouped its own rows instead of drawing
@@ -129,10 +145,12 @@ describe('one turn, as the page draws it', () => {
     };
 
     const body = draw(attached);
-    const mine = between(body, '<div class="mine"', '</div>');
+    // The words are read inside the turn's own block; what came with them draws
+    // after the prose, so its name and its size are asserted on the page.
+    const mine = between(body, '<div class="mine"', '<div class="attrow"');
     expect(mine, 'the words are still the turn').toContain('what is wrong with this layout?');
-    expect(mine, 'and what came with them is named').toContain('image/png');
-    expect(mine, 'with the size the payload states').toContain('68 B');
+    expect(body, 'and what came with them is named').toContain('image/png');
+    expect(body, 'with the size the payload states').toContain('68 B');
     expect(body, 'and no bytes in the page').not.toContain('iVBORw0KGgo');
   });
 
@@ -152,11 +170,11 @@ describe('one turn, as the page draws it', () => {
       uuid: 'u3',
     };
 
-    const mine = between(draw(linked), '<div class="mine"', '</div>');
-    expect(mine, 'the name the wire gave it').toContain('image/png');
+    const body = draw(linked);
+    expect(body, 'the name the wire gave it').toContain('image/png');
     // A payload with no length has no size, and the span that would hold one
     // draws a bare dash in its place.
-    expect(mine, 'and no size beside it').not.toContain('<span class="n">');
+    expect(body, 'and no size beside it').not.toContain('<span class="n">');
   });
 
   it('draws the compaction line only while one is in flight', () => {
