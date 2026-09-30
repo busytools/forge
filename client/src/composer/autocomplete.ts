@@ -100,9 +100,11 @@ function token(draft: string): { text: string; from: number } {
  * A list with no rows opens nothing: a popover holding only a header reads as a
  * list that lost its rows rather than as a query that matched nothing.
  *
- * `sources` is a pull because reading the file index is the expensive half of a
- * list and the record it comes from is replaced on every frame the server
- * sends: a draft that opens nothing must not pay for one that does.
+ * `sources` is a pull because the record it comes from is replaced on every
+ * frame the server sends, so a draft that opens nothing must not rebuild a
+ * list it will not draw - the file index among them is the whole working tree.
+ * All four are built together on the pull, so what a list reads stays what the
+ * derived offer depends on.
  */
 export function offer(draft: string, sources: () => Sources): Offer | null {
   const { text: last, from } = token(draft);

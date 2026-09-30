@@ -15,8 +15,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Connection } from '../socket';
-import type { SessionSlot } from '../wire/types';
+import { record as blank, wire } from './testing';
 import type { ComposerRecord } from './view';
 
 vi.mock('./wire', async (importOriginal) => {
@@ -50,16 +49,20 @@ vi.mock('./autocomplete', async (importOriginal) => {
   return { ...real, offer: counting('offer', real.offer) };
 });
 
-const { default: Driver } = await import('./testing/Driver.svelte');
+const { default: Harness } = await import('./Harness.svelte');
 const counts = await import('../session/testing/counts');
-
-const SLOT: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
 /** The size of a seat's file index, measured from a live one. */
 const FILES = 2286;
 
-/** A record the size a seat carries, fresh each time, as the wire hands it over. */
-function record(): ComposerRecord {
+/**
+ * The seat's record: the shared fixture with the lists a real seat carries.
+ *
+ * The index is the point of this file, so it is the one field built rather
+ * than defaulted - `filesFrom` is the builder whose per-frame cost the
+ * composer used to pay.
+ */
+function seat(): ComposerRecord {
   const entries: Record<string, unknown> = {};
   for (let i = 0; i < FILES; i += 1) {
     const rel = `crates/forge-server/src/deep/dir/file_${i}.rs`;
@@ -78,36 +81,32 @@ function record(): ComposerRecord {
     entries[rel] = {
       rel_path: rel,
       rel_path_lower: rel,
-      basename_lower: rel.split('/').pop(),
+      basename_lower: rel.split('/').pop() ?? rel,
       depth: 3,
     };
   }
-  return {
-    composer: { take: null, notice: null, compacting: false, sign_in: null },
-    pending_ask: null,
-    header: { turn_in_flight: false },
+  return blank({
     slash_commands: [
       { name: '/clear', description: 'Clear chat history' },
       { name: '/compact', description: 'Compact the conversation' },
     ],
     subagents: [{ name: 'Explore', description: 'Read-only search' }],
     file_index: { entries },
-  };
+  });
 }
 
-const seat = { lifecycle: 'Running', reason: null, waking: false, pendingDepth: 1 } as const;
-const connection = {
-  dispatch: () => null,
-  onMessage: () => () => undefined,
-} as unknown as Pick<Connection, 'dispatch' | 'onMessage'>;
+/** The harness's own state, which a test sets the way a page would re-render it. */
+interface Page {
+  record: ComposerRecord;
+}
 
-let app: { push: (next: ComposerRecord) => void } | null = null;
+let app: Record<string, unknown> | null = null;
 
 function open(): void {
-  app = mount(Driver, {
+  app = mount(Harness, {
     target: document.body,
-    props: { initial: record(), slot: SLOT, connection, seat, dictation: false },
-  }) as unknown as { push: (next: ComposerRecord) => void };
+    props: { wire: wire(), initial: { record: seat() }, dictation: false },
+  });
   flushSync();
 }
 
@@ -122,7 +121,9 @@ function type(text: string): void {
 
 /** One arriving frame, which answers the page with a whole new record. */
 function arrive(): void {
-  app?.push(record());
+  const page = app?.['page'] as Page | undefined;
+  if (page === undefined) throw new Error('the harness exposed no props');
+  page.record = seat();
   flushSync();
 }
 

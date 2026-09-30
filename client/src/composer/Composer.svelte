@@ -85,11 +85,13 @@
   const line = $derived(notice !== null && dismissed === notice.text ? null : notice);
 
   /**
-   * The lists a draft is matched against, pulled when one is opened.
+   * The lists a draft is matched against, pulled when a list is opened rather
+   * than on every frame.
    *
-   * The record is replaced on every frame the server sends, so building these
-   * eagerly rebuilds the whole file index per frame for a draft that opens
-   * nothing.
+   * All four are built together on the pull, which is what keeps `held`'s
+   * dependencies equal to the sources it reads. What the pull saves is the
+   * record being replaced per frame, so a draft that opens nothing never
+   * rebuilds a list it will not draw.
    */
   function sources(): Sources {
     return {
