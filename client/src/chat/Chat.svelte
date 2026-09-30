@@ -1,6 +1,7 @@
 <script lang="ts">
   import { VList, type VListHandle } from 'virtua/svelte';
 
+  import { subjectKey } from '../protocol';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import { Chat, NOTHING, type Conversation, type Turn as HeldTurn } from './conversation';
@@ -46,6 +47,18 @@
   let working: Chat | null = null;
   let first = true;
   /**
+   * The conversation built for one seat over one connection.
+   *
+   * **It is keyed on the seat's own name rather than on the props**, because
+   * the page re-derives the object it hands this column on every read it
+   * makes, and a live seat re-reads on every frame it emits: an effect keyed on
+   * the props is torn down and rebuilt under each of them, which leaves the
+   * column empty for as long as the next list takes to measure. A key is a
+   * string, and a string is written only when it changes.
+   */
+  const seat = $derived(subjectKey({ session: slot }));
+  let opened: { seat: string; connection: Connection; stop: () => void } | null = null;
+  /**
    * Pages of older turns asked for and not yet answered.
    *
    * **Counted rather than flagged, and armed by the ASK.** The compensation
@@ -65,17 +78,32 @@
   const shift = $derived(outstanding > 0 || settling);
 
   $effect(() => {
-    const chat = new Chat(connection, slot);
+    const which = seat;
+    const open = connection;
+    if (opened !== null && opened.seat === which && opened.connection === open) return;
+    opened?.stop();
+    const chat = new Chat(open, slot);
     working = chat;
     const unsubscribe = chat.value.subscribe((value) => {
       held = value;
     });
     const stop = chat.start();
-    return () => {
-      unsubscribe();
-      stop();
-      working = null;
+    opened = {
+      seat: which,
+      connection: open,
+      stop: () => {
+        unsubscribe();
+        stop();
+        working = null;
+      },
     };
+  });
+
+  // The column's own teardown, which the effect above cannot do: it stops a
+  // conversation only to put the next one in its place.
+  $effect(() => () => {
+    opened?.stop();
+    opened = null;
   });
 
   // The first page is drawn at the end rather than the start. It runs once per
