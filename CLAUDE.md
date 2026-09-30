@@ -868,6 +868,76 @@ inspected.
     server so a client does not have to is the trade to look at hardest,
     because every view reads the server and a change there is one the
     clients have to be told about.
+24. **The terminal is the reference implementation until it is deleted.**
+    Ved, 2026-09-30: *"for any of this, take a look at how CLI is done.
+    TUI has done a very tight integration. We can either pull things out
+    in the shared crate or we can port it... have it as a project scope
+    rule to check for any of these issues to see how TUI has solved it.
+    And if I was not aware, maybe suggest some changes if they are
+    required. That's a goal until we move the TUI completely."*
+
+    **The step is a read, not an intention.** Before fixing a client
+    issue, read how the terminal meets the same problem, and say in the
+    pull request what it does and whether this change matches it. The
+    terminal shares a process with the whole core and has been the only
+    view for forge's life, so it has usually met the problem already -
+    and its answer is the vocabulary the client is being brought to
+    parity with, which is why a difference is a decision to state rather
+    than an accident to discover.
+
+    **Two moves, and the choice between them is the interesting part.**
+    **Lift** the shared piece into a crate both views can read, which is
+    the better answer when the piece is a decision about the data - a
+    fold, a mapping, a turn boundary. **Port** it when the piece is
+    presentation and the two views legitimately differ, which is the
+    answer for anything a character grid decided. Rule 22's split is the
+    test, and the two-stacks section above is where it lives.
+
+    **A divergence that survives is worth naming in the pull request,
+    not hiding.** The client is meant to differ where the grid forced
+    the terminal's hand - a glyph, an arrow, a width - and those are
+    decisions. What the rule forbids is the third case: a client
+    answering a question the terminal already answered, differently,
+    because nobody looked.
+
+    **The rule expires with the crate.** It is a parity obligation
+    rather than a permanent architecture, so the TUI's deletion removes
+    it rather than converting it.
+25. **No message the CLI sends may be dropped, on the server or on the
+    client.** Ved, 2026-09-30: *"all the updates that we are getting,
+    not only for the server and the client, for both, is that we do not
+    want to drop any message updates coming from CLI. Every CLI, every
+    message... No message should be dropped on the server side and also
+    on the client side as well when it is rendering. If we are dropping
+    it, rather, show them. When I notice that, I will ask you what it
+    is. We can look back in the transcript and we can find a better way
+    to represent that."*
+
+    **The default for a frame with no vocabulary is to draw it as
+    itself, not to drop it.** A frame that arrives and draws nothing is
+    indistinguishable from a frame that never arrived, and a reader
+    will assume the second. A frame drawn plainly is odd on screen and
+    can be improved; a frame dropped is a silence nobody can act on.
+
+    **This is a rendering obligation, not a promise to render well.**
+    The rule exists so the gap is visible, and finding the right shape
+    for it is the next question rather than this one. So an unknown
+    frame gets a row, and the row is allowed to be ugly.
+
+    **A filtered frame is a drop.** `filter_map` returning `None`, a
+    `retain`, a placeholder string standing in for content, an arm with
+    no matching case: each of those is this rule's subject whether or
+    not the code calls itself a filter.
+
+    **The read path and the live path are one obligation.** The same
+    message arrives once as a frame and once replayed from the
+    transcript, so a transform that rewrites content on one side and
+    not the other is a defect of this rule as much as a missing arm is,
+    and it is the harder one to see because both sides look complete
+    from where you are standing.
+
+    Audience: everything that draws. The terminal is not exempt in
+    principle - it is exempt only because it is being deleted.
 
 ## Claude Code worktree interop
 
