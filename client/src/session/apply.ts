@@ -203,7 +203,12 @@ export const HANDLERS: Record<string, Apply> = {
  * page reads, the process walk, the working tree - so a page answers them with
  * a read.
  */
-export const REPLACES: readonly string[] = ['spawning', 'connected', 'session_replaced'];
+export const REPLACES: readonly string[] = [
+  'spawning',
+  'connected',
+  'history_replayed',
+  'session_replaced',
+];
 
 /**
  * The variants that touch nothing on this record.

@@ -685,6 +685,13 @@ impl SessionTask {
                     // each review's submit origin.
                     self.drain_review_activity_for(&caller);
                 }
+                // The frame joins the conversation this task is carrying,
+                // BEFORE it is emitted: the replay answers with that
+                // conversation, so a frame missing from it is a frame a
+                // consumer joining later never sees - and a compaction is the
+                // case that makes it plain, because the boundary drops the
+                // transport's copy and the replay is what rebuilds it.
+                self.retain(&msg);
                 // `None`: a frame off the wire is the CLI's own, and carries
                 // no prompt origin.
                 self.emit(SessionUpdate::ChatAppended { key: self.key.clone(), msg, origin: None });
@@ -907,6 +914,29 @@ impl SessionTask {
                 "no SessionUpdate subscriber took the event"
             );
         }
+    }
+
+    /// Add one frame to the conversation this task is carrying.
+    ///
+    /// **The accumulator, and it is what makes a replay a conversation rather
+    /// than a photograph of the connect.** The history handed over at connect
+    /// is empty for a fresh session and stops at the connect for a resumed
+    /// one, so a replay answering with it alone would hand a consumer joining
+    /// late a seat that never spoke - worse than the read it replaced.
+    ///
+    /// A compaction boundary bumps the count rather than the frame list: the
+    /// CLI's boundary frame is a `ChatAppended` like any other and stays in
+    /// the conversation, and the count is what a view draws its marker from.
+    fn retain(&mut self, message: &forge_primitives::Message) {
+        let Some((history, compaction_count)) = self.conversation.as_mut() else {
+            // Before the first connect there is no conversation to add to,
+            // and no frame to add: the CLI says nothing until it connects.
+            return;
+        };
+        if matches!(message, forge_primitives::Message::CompactBoundary { .. }) {
+            *compaction_count = compaction_count.saturating_add(1);
+        }
+        history.push(message.clone());
     }
 
     /// Flush `caller`'s buffered review activity into its batched

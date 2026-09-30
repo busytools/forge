@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use forge_primitives::SessionSlot;
+
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
@@ -15,7 +17,6 @@ use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{conversation_for, encode_subject, page, walk_processes_if_stale};
 use crate::delivery::delivery_turn;
 use crate::live::Live;
-use crate::transport::conversation::Conversation;
 use crate::{Command, SessionUpdate};
 
 /// Take the upgrade and give the connection its own task.
@@ -60,7 +61,7 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
 /// Every client message is answered: a client is never left waiting on a
 /// message this server chose to drop, which is the failure that reads as a
 /// hang rather than as an error.
-async fn drive(socket: &mut WebSocket, state: &TransportState) -> anyhow::Result<()> {
+async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::Result<()> {
     let mut watched: Vec<Subject> = Vec::new();
     // None until the client's first SUBSCRIBE, which is what decides whether
     // this connection answers - not its first message, so a client whose first
@@ -80,16 +81,47 @@ async fn drive(socket: &mut WebSocket, state: &TransportState) -> anyhow::Result
     for what in &watched {
         if let Subject::Session(slot) = what {
             Live::lock(&state.live).detach(slot);
+            release_when_unwatched(state, slot);
         }
     }
     outcome
+}
+
+/// How long a seat's conversation outlives the last client showing it.
+///
+/// **A refresh is an `unsubscribe` and a `subscribe`**, which is what the
+/// client sends on every update for the open seat, coalesced at 50 ms - so a
+/// release that fired on the unsubscribe would drop the seat on the path the
+/// client takes most. The grace is the smallest thing that lets a refresh's
+/// own gap pass.
+const RELEASE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Let the seat's conversation go once nobody has shown it for
+/// [`RELEASE_GRACE`].
+///
+/// The timer re-reads the attachment count rather than trusting the state it
+/// was scheduled from: a refresh re-subscribes within the grace, and a
+/// release that fired anyway would drop the seat the client is looking at.
+fn release_when_unwatched(state: &Arc<TransportState>, slot: &SessionSlot) {
+    // Still held by another connection: nothing to schedule.
+    if Live::lock(&state.live).holds(slot) {
+        return;
+    }
+    let state = Arc::clone(state);
+    let slot = slot.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(RELEASE_GRACE).await;
+        if !Live::lock(&state.live).holds(&slot) {
+            state.conversations.release(&slot);
+        }
+    });
 }
 
 /// The connection's own loop, so that every way out of it runs the release
 /// above rather than only the clean one.
 async fn run_connection(
     socket: &mut WebSocket,
-    state: &TransportState,
+    state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
 ) -> anyhow::Result<()> {
@@ -171,7 +203,7 @@ async fn next_update(
 /// Answer one client message.
 async fn handle_client(
     socket: &mut WebSocket,
-    state: &TransportState,
+    state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
     msg: Message,
@@ -317,8 +349,8 @@ async fn handle_client(
                     let seat = conversation.clone();
                     let opening = before.clone();
                     tokio::task::spawn_blocking(move || {
-                        Conversation::fold_held(&held);
-                        let held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        held.fold();
+                        let held = held.lock();
                         page(held.messages(), held.spans(), opening.as_deref(), turns)
                     })
                     .await
@@ -355,6 +387,7 @@ async fn handle_client(
                 watched.remove(at);
                 if let Subject::Session(slot) = &what {
                     Live::lock(&state.live).detach(slot);
+                    release_when_unwatched(state, slot);
                 }
             }
             Ok(())

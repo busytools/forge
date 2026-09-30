@@ -24,11 +24,13 @@
 //!
 //! Nothing drops messages from the front. A page cursor is a message index,
 //! so a prefix dropped under a client holding one would answer the wrong
-//! window silently. Memory follows what is being watched instead: a
-//! conversation is released after the last connection showing its seat goes.
+//! window silently - and a conversation is not a cache, so it cannot be let
+//! go and rebuilt: the seat's copy here is released when nobody is showing
+//! it, and the next ask takes a replay from the session task, which is the
+//! one producer and holds its own copy for the seat's life.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use forge_primitives::{ContentBlock, Message, SessionSlot};
 
@@ -60,21 +62,39 @@ pub struct Conversation {
     /// stalls update delivery for every client on every seat.
     /// [`Conversation::fold_held`] is where it runs instead.
     dirty: bool,
+    /// The messages are out being folded, so what is here is half a state.
+    ///
+    /// **A reader must wait rather than look.** A fold takes the messages out
+    /// in O(1), renders them off the lock, and puts them back with the spans,
+    /// so between those two the seat reads as no messages against the
+    /// PREVIOUS fold's boundaries, and a page sliced on those walks off the
+    /// end of an empty list. Two requests on one seat is the ordinary case
+    /// for that, not an exotic one.
+    folding: bool,
 }
 
 impl Conversation {
     /// A conversation from the history a connect, a resume or a replay
     /// carried.
+    ///
+    /// **It does not fold.** The spans come from the next
+    /// [`Held::fold`], which runs on a blocking task; folding here would run
+    /// an 18 ms render on whatever task built this, and that task is the
+    /// socket's single stream folder.
+    ///
+    /// `has_dispatches` is the exception and it is a scan rather than a
+    /// render: it has to be right the moment a conversation exists, because a
+    /// record may read it before any fold has run.
     pub fn new(messages: Vec<Message>, compaction_count: u32) -> Self {
-        let mut conversation = Self {
+        let has_dispatches = messages.iter().any(is_dispatch);
+        Self {
             messages,
             spans: Vec::new(),
             compaction_count,
-            has_dispatches: false,
+            has_dispatches,
             dirty: true,
-        };
-        conversation.refold();
-        conversation
+            folding: false,
+        }
     }
 
     /// The conversation a seat with nothing behind it answers as.
@@ -84,10 +104,15 @@ impl Conversation {
 
     /// Replace the whole conversation, which is what a connect, a resume or a
     /// replay says: the history it carries is the truth about this seat.
+    ///
+    /// **It marks the fold rather than running it**, for the reason
+    /// [`Conversation::new`] gives: this is reached from the stream fold, and
+    /// a render there stalls every seat rather than this one.
     pub fn seed(&mut self, messages: Vec<Message>, compaction_count: u32) {
         self.messages = messages;
         self.compaction_count = compaction_count;
-        self.refold();
+        self.has_dispatches = self.messages.iter().any(is_dispatch);
+        self.dirty = true;
     }
 
     /// One frame the session emitted.
@@ -97,35 +122,13 @@ impl Conversation {
         self.dirty = true;
     }
 
-    fn refold(&mut self) {
-        self.spans = crate::transcript::render(&self.messages).turns;
-        self.has_dispatches = self.messages.iter().any(is_dispatch);
-        self.dirty = false;
-    }
-
-    /// Fold if the messages moved, outside this lock and off the reactor.
-    ///
-    /// The caller is a blocking task that has nothing else to do with the
-    /// conversation until this returns.
-    pub fn fold_held(held: &Mutex<Self>) {
-        let folded = {
-            let mut conversation = held.lock().unwrap_or_else(PoisonError::into_inner);
-            conversation.take_dirty()
-        };
-        let Some(messages) = folded else {
-            return;
-        };
-        let spans = crate::transcript::render(&messages).turns;
-        let mut conversation = held.lock().unwrap_or_else(PoisonError::into_inner);
-        conversation.merge_fold(messages, spans);
-    }
-
     /// The messages if the fold is behind them, taken in O(1).
     fn take_dirty(&mut self) -> Option<Vec<Message>> {
         if !self.dirty {
             return None;
         }
         self.dirty = false;
+        self.folding = true;
         Some(std::mem::take(&mut self.messages))
     }
 
@@ -135,6 +138,7 @@ impl Conversation {
         folded.append(&mut self.messages);
         self.messages = folded;
         self.spans = spans;
+        self.folding = false;
         // The tail arrived while the fold ran and is not in those spans, so
         // the next reader folds again rather than cutting a turn on a list
         // that has moved.
@@ -183,6 +187,63 @@ fn is_dispatch(message: &Message) -> bool {
     })
 }
 
+/// One seat's conversation, and the fold that may be running over it.
+///
+/// **Two locks, because a fold must not be held against the stream and a
+/// reader must not see half of one.** A fold takes the messages out in O(1)
+/// under the mutex, renders them outside it - so the socket's single stream
+/// folder never waits on a render - and puts them back under the mutex with
+/// the spans. Between those two the seat holds no messages and the PREVIOUS
+/// fold's boundaries, and a page sliced on those walks off the end of an
+/// empty list.
+///
+/// So the mutex is paired with a condvar: a reader waits out a fold in
+/// progress rather than looking at it. The wait is on the reader's own
+/// blocking task, and it is bounded by one render.
+pub struct Held {
+    conversation: Mutex<Conversation>,
+    folded: Condvar,
+}
+
+impl Held {
+    pub fn new(conversation: Conversation) -> Self {
+        Self { conversation: Mutex::new(conversation), folded: Condvar::new() }
+    }
+
+    /// The conversation, waiting out a fold that is running over it.
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, Conversation> {
+        let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
+        while conversation.folding {
+            conversation = self.folded.wait(conversation).unwrap_or_else(PoisonError::into_inner);
+        }
+        conversation
+    }
+
+    /// Fold if the messages moved, outside the lock and off the reactor.
+    ///
+    /// The caller is a blocking task that has nothing else to do with the
+    /// conversation until this returns.
+    pub fn fold(&self) {
+        let folded = {
+            let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
+            // A fold already running owns the messages; this caller has
+            // nothing to do, and waiting here would be waiting on a peer
+            // rather than on work it can start.
+            if conversation.folding {
+                return;
+            }
+            conversation.take_dirty()
+        };
+        let Some(messages) = folded else {
+            return;
+        };
+        let spans = crate::transcript::render(&messages).turns;
+        let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
+        conversation.merge_fold(messages, spans);
+        self.folded.notify_all();
+    }
+}
+
 /// The conversations the transport is holding, one per live seat.
 ///
 /// **Every live seat, not only the watched ones, and nothing is released.**
@@ -193,7 +254,7 @@ fn is_dispatch(message: &Message) -> bool {
 /// one producer of the conversation rather than two.
 #[derive(Default)]
 pub struct Conversations {
-    held: Mutex<HashMap<SessionSlot, Arc<Mutex<Conversation>>>>,
+    held: Mutex<HashMap<SessionSlot, Arc<Held>>>,
     /// Fires when a seat is first held, so a request that had to ask for a
     /// replay knows when its answer has landed.
     seeded: tokio::sync::Notify,
@@ -205,20 +266,16 @@ impl Conversations {
     }
 
     /// The seat's conversation if one is held.
-    pub fn get(&self, slot: &SessionSlot) -> Option<Arc<Mutex<Conversation>>> {
+    pub fn get(&self, slot: &SessionSlot) -> Option<Arc<Held>> {
         self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone)
     }
 
     /// Hold `conversation` for `slot`, unless the stream got there first.
-    pub fn insert(
-        &self,
-        slot: &SessionSlot,
-        conversation: Conversation,
-    ) -> Arc<Mutex<Conversation>> {
+    pub fn insert(&self, slot: &SessionSlot, conversation: Conversation) -> Arc<Held> {
         let held = {
             let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
             Arc::clone(
-                held.entry(slot.clone()).or_insert_with(|| Arc::new(Mutex::new(conversation))),
+                held.entry(slot.clone()).or_insert_with(|| Arc::new(Held::new(conversation))),
             )
         };
         self.seeded.notify_waiters();
@@ -254,10 +311,7 @@ impl Conversations {
                 // conversation would leave that conversation in place and the
                 // new history discarded.
                 match self.get(slot) {
-                    Some(held) => held
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .seed(history.clone(), *compaction_count),
+                    Some(held) => held.lock().seed(history.clone(), *compaction_count),
                     None => {
                         self.insert(slot, Conversation::new(history.clone(), *compaction_count));
                     }
@@ -275,10 +329,22 @@ impl Conversations {
                     self.held.lock().unwrap_or_else(PoisonError::into_inner).remove(slot);
                     return;
                 }
-                held.lock().unwrap_or_else(PoisonError::into_inner).append(msg.clone());
+                held.lock().append(msg.clone());
             }
             _ => {}
         }
+    }
+
+    /// Let the seat's conversation go.
+    ///
+    /// **Safe here and not in the design this replaced**, where the read was
+    /// the only other source and a released seat had nothing to rebuild from.
+    /// The session task holds the conversation for the seat's life, so the
+    /// next ask takes a replay. What the release buys is the PEAK - a seat
+    /// nobody is showing costs the task's copy alone - rather than the floor,
+    /// which is one conversation per ever-connected seat either way.
+    pub fn release(&self, slot: &SessionSlot) {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).remove(slot);
     }
 
     /// How many seats are held.
@@ -394,7 +460,7 @@ mod tests {
 
         let read = |held: &Conversations| {
             let held = held.get(&a_seat()).expect("the seat is held");
-            let held = held.lock().expect("the lock");
+            let held = held.lock();
             held.messages().iter().map(said).collect::<Vec<_>>()
         };
         let expected = vec!["first".to_owned(), "second".to_owned()];
@@ -421,7 +487,7 @@ mod tests {
         });
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
-        let conversation = conversation.lock().expect("the lock");
+        let conversation = conversation.lock();
         let said: Vec<String> = conversation.messages().iter().map(said).collect();
         assert_eq!(said, vec!["from the replay".to_owned(), "after".to_owned()]);
     }
@@ -438,7 +504,7 @@ mod tests {
 
         assert_eq!(held.len(), 1, "the seat is held from its connect");
         let conversation = held.get(&a_seat()).expect("the seat is held");
-        let conversation = conversation.lock().expect("the lock");
+        let conversation = conversation.lock();
         assert_eq!(conversation.messages().len(), 1, "carrying the history the connect brought");
     }
 
@@ -479,7 +545,7 @@ mod tests {
 
         let read = || {
             let conversation = held.get(&a_seat()).expect("the seat is held");
-            let conversation = conversation.lock().expect("the lock");
+            let conversation = conversation.lock();
             conversation.has_dispatches()
         };
         assert!(!read(), "precondition: the seeded conversation holds no dispatch");

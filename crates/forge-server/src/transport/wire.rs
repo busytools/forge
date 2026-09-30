@@ -13,7 +13,7 @@
 //! later without a server change.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::Result;
 use forge_primitives::review::{ReviewSet, ReviewThread};
@@ -32,7 +32,7 @@ use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, PendingAsk, ViewSurface};
 use crate::transcript::TurnSpan;
 use crate::transport::TransportState;
-use crate::transport::conversation::Conversation;
+use crate::transport::conversation::Held;
 use crate::transport::envelope::Subject;
 use crate::work::{WorkState, work_from_scan};
 
@@ -662,10 +662,7 @@ const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 /// No lock is held across the wait, and two callers on two cold seats do not
 /// serialise: each waits on its own seat's arrival, and the notice only says
 /// that some seat was seeded.
-pub async fn conversation_for(
-    state: &TransportState,
-    slot: &SessionSlot,
-) -> Option<Arc<Mutex<Conversation>>> {
+pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Option<Arc<Held>> {
     if let Some(held) = state.conversations.get(slot) {
         return Some(held);
     }
@@ -933,8 +930,8 @@ async fn session(
         Some(held) => {
             let seat = slot.clone();
             tokio::task::spawn_blocking(move || {
-                Conversation::fold_held(&held);
-                let held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                held.fold();
+                let held = held.lock();
                 (
                     page(held.messages(), held.spans(), None, SUBSCRIBE_TURNS).turns,
                     held.compaction_count(),
