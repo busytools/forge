@@ -349,28 +349,26 @@
           bind:value={draft}
           {oninput}
           onkeydown={onkey}></textarea>
+        {#if dictation}
+          <button
+            class="mic"
+            type="button"
+            aria-label={composer.take === null ? 'start a take' : 'submit the take'}
+            onclick={mic}
+          >
+            <Icon name="mic" />
+          </button>
+        {/if}
         {#if filled}
           <button class="send" type="button" title="send" aria-label="send" onclick={send}>
             <Icon name="send" />
           </button>
         {/if}
       </div>
-      {#if filled || dictation}
+      {#if filled}
         <div class="foot">
-          {#if filled}
-            <span><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
-            <span><kbd>Enter</kbd> send</span>
-          {/if}
-          {#if dictation}
-            <button
-              class="mic"
-              type="button"
-              aria-label={composer.take === null ? 'start a take' : 'submit the take'}
-              onclick={mic}
-            >
-              <Icon name="mic" />
-            </button>
-          {/if}
+          <span><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
+          <span><kbd>Enter</kbd> send</span>
         </div>
       {/if}
     </div>

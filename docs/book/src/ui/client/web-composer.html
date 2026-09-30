@@ -66,17 +66,19 @@
   .hint.sugg .tab { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px;
     margin-left: 8px; }
 
-  .box { border: 1.5px solid rgba(244,118,0,.45); border-radius: 16px;
+  .box { border: 1.5px solid var(--ctl); border-radius: 16px;
     background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
     backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
-    padding: 11px 14px; display: flex; flex-direction: column; gap: 8px;
+    padding: 10px 13px; display: flex; flex-direction: column; gap: 0;
     transition: border-color .3s ease; }
-  .box:focus-within { border-color: var(--accent); }
+  /* The accent arrives along the bottom edge rather than around the whole
+     frame, so the box does not compete with the conversation above it. */
+  .box:focus-within { box-shadow: inset 0 -2px 0 var(--accent), 0 14px 38px rgba(0,0,0,.42); }
   .box.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
   .box.tr { border-color: var(--blue); }
   .box.done { border-color: var(--ok); }
   .box.err { border-color: var(--bad); }
-  .line { display: flex; align-items: flex-start; gap: 10px; }
+  .line { display: flex; align-items: flex-end; gap: 10px; }
   .line .txt { flex: 1; min-width: 0; font-size: var(--fs-prose); line-height: 1.5;
     white-space: pre-wrap; word-break: break-word; }
   .ph { color: var(--dim); font-style: italic; }
@@ -84,8 +86,11 @@
   .caret { display: inline-block; width: 7px; height: 1.05em; background: var(--accent);
     vertical-align: text-bottom; animation: blink 1s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
-  .send { color: var(--accent); padding-top: 3px; }
-  .foot { display: flex; align-items: center; gap: 10px; padding-left: 25px;
+  .line .mic { flex: none; margin-left: 6px; width: 24px; height: 24px;
+    display: grid; place-items: center; color: var(--dim); }
+  .send { color: var(--accent); display: grid; place-items: center; width: 24px;
+    height: 24px; }
+  .foot { display: flex; align-items: center; gap: 10px;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .foot .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
 
@@ -236,7 +241,7 @@ character-cell row. Slash commands keep their magenta, because that is a real di
       <div class="lab">idle</div>
       <div class="comp">
         <div class="box">
-          <div class="line"><span class="txt ph">Type a message&#8230;</span></div>
+          <div class="line"><span class="txt ph">Type a message&#8230;</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
     </div>
@@ -245,6 +250,7 @@ character-cell row. Slash commands keep their magenta, because that is a real di
       <div class="comp">
         <div class="box">
           <div class="line"><span class="txt">Fix the flaky retry test in <span class="slash">crates/forge-web</span> and run the gate<span class="caret"></span></span>
+            <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
             <span class="send"><svg class="ic"><use href="#i-send"/></svg></span></div>
           <div class="foot"><span class="k">&#8593;</span> history
             <span class="k">&#8679;&#9166;</span> newline
@@ -260,7 +266,7 @@ character-cell row. Slash commands keep their magenta, because that is a real di
       <div class="comp">
         <div class="hint login">Authentication required: claude.ai &#183; Anthropic OAuth (Pro)
           <span class="sub">Run `claude auth login` in another terminal to authenticate</span></div>
-        <div class="box"><div class="line"><span class="txt ph">Type a message&#8230;</span></div></div>
+        <div class="box"><div class="line"><span class="txt ph">Type a message&#8230;</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div></div>
       </div>
     </div>
     <div class="col">
@@ -269,6 +275,7 @@ character-cell row. Slash commands keep their magenta, because that is a real di
         <div class="hint cancel">Cancelling current turn&#8230; draft will auto-submit when ready.</div>
         <div class="hint sugg">Suggestion: <b>run the feature-config gate too</b><span class="tab">Tab</span></div>
         <div class="box"><div class="line"><span class="txt">push it once CI is green<span class="caret"></span></span>
+          <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
           <span class="send"><svg class="ic"><use href="#i-send"/></svg></span></div></div>
       </div>
     </div>
@@ -342,7 +349,7 @@ grows it by one line, and collapses when the take resolves.</p>
             </span>
             <span class="lbl">listening</span>
             <span class="esc">esc cancel</span></div>
-          <div class="line"><span class="txt ph">Type a message&#8230;</span></div>
+          <div class="line"><span class="txt ph">Type a message&#8230;</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">The settled segments are the words already
@@ -358,7 +365,7 @@ grows it by one line, and collapses when the take resolves.</p>
             </span>
             <span class="lbl">transcribing 2/6</span>
             <span class="esc">esc cancel</span></div>
-          <div class="line"><span class="txt ph">Type a message&#8230;</span></div>
+          <div class="line"><span class="txt ph">Type a message&#8230;</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">Same anatomy, frozen and dimmed toward blue. The
@@ -371,7 +378,7 @@ grows it by one line, and collapses when the take resolves.</p>
       <div class="lab">landed &middot; one green beat, then idle</div>
       <div class="comp">
         <div class="box done">
-          <div class="line"><span class="txt">fix the flaky retry test and<span class="caret"></span></span></div>
+          <div class="line"><span class="txt">fix the flaky retry test and<span class="caret"></span></span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">The row collapses, the words land at the caret,
@@ -382,11 +389,11 @@ grows it by one line, and collapses when the take resolves.</p>
       <div class="comp">
         <div class="box">
           <div class="notice q">nothing above -50 dBFS in 4s &#183; loudest was -38.2 &#183; try again</div>
-          <div class="line"><span class="txt ph">Type a message&#8230;</span></div>
+          <div class="line"><span class="txt ph">Type a message&#8230;</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
         <div class="box" style="margin-top:10px">
           <div class="notice bad">microphone is held by another application</div>
-          <div class="line"><span class="txt ph">Type a message&#8230;</span></div>
+          <div class="line"><span class="txt ph">Type a message&#8230;</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
     </div>
