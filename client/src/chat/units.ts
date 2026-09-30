@@ -587,10 +587,15 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
   /** What each question was answered with, by the call that asked it. */
   const answers = new Map<string, unknown>();
   /**
-   * Where the turn failed, which is what the frame recording it says.
+   * The LAST frame the turn failed on, which is what bounds the sweep.
    *
-   * **The sweep is bounded by that frame, not by the turn.** A turn that fails
-   * answers no call that was still out when it did - but the live path
+   * A call is abandoned when any failing frame follows it, so the bound is the
+   * last one rather than the first: a fold holding two failing turns settles
+   * both, and first-wins leaves the second turn's calls pending - the run's
+   * roll-up saying work is still going, which is the complaint the interrupt
+   * issue is filed about.
+   *
+   * **And the sweep is bounded by that frame, not by the turn.** The live path
    * accumulates every frame since the last page into ONE turn, so a sweep that
    * took the whole turn would mark calls the CLI started AFTERWARDS as failed
    * while they are still running: interrupt a turn, prompt again, and the new
@@ -608,7 +613,7 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     // frame follows it, so it is the turn's own verdict just as a failed
     // result is.
     if (frame.type === 'error' || (frame.type === 'result' && frame.is_error === true)) {
-      failedAt ??= at;
+      failedAt = at;
     }
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {

@@ -549,10 +549,9 @@ describe('one turn folded into the units a view draws', () => {
       'socket connection closed unexpectedly while reading stream-json',
     );
 
-    // Two frames that carry no words to draw, and each for its own reason: a
-    // frame whose string is blank draws an empty notice, and one whose `error`
-    // is not a string at all draws a row reading `null`. Both are still the
-    // end of the turn, so the call draws failed either way.
+    // The guard drops both of these, and each for its own reason: one carries a
+    // blank string and one carries no string at all. Both are still the end of
+    // the turn, so the call draws failed either way.
     for (const [said, why] of [
       [{ type: 'error', error: '   ' }, 'a blank string'],
       [{ type: 'error', error: null }, 'a value that is not a string'],
@@ -597,13 +596,40 @@ describe('one turn folded into the units a view draws', () => {
     expect(calls[1]?.status, 'and the one it started afterwards is still out').toBe('pending');
   });
 
+  it('sweeps the calls of every failure in the turn, not only the first', () => {
+    // Two failing turns in one fold - which the live path reaches when no page
+    // lands between them - settle BOTH turns' calls. First-wins sweeps the
+    // first and leaves the second's calls pending, so the roll-up says work is
+    // still going, which is the complaint #1323 is filed about, drawn again.
+    const first = said([
+      { type: 'tool_use', id: 'toolu_a', name: 'Bash', input: { command: 'just check' } },
+    ]);
+    const failed = { type: 'result', is_error: true, subtype: 'error_during_execution' };
+    const second = said([
+      { type: 'tool_use', id: 'toolu_b', name: 'Bash', input: { command: 'just check' } },
+    ]);
+
+    const units = fold([first, failed, second, failed]);
+    const calls = units.flatMap((unit) =>
+      unit.kind === 'group' ? unit.families.flatMap((one) => one.calls) : [],
+    );
+
+    expect(
+      calls.map((leaf) => leaf.status),
+      'both turns abandoned their calls',
+    ).toEqual(['failed', 'failed']);
+  });
+
   it('says a failed turn failed, and finalizes the call it left open', () => {
-    // The result frame is the interrupt capture's own (interrupt.jsonl): its
-    // fields verbatim, and its prompt carries no tool call - the call here is
-    // what an interrupt catches, which is the shape the capture shows rather
-    // than one it carries.
+    // The result frame is the interrupt capture's own (interrupt.jsonl) for
+    // every field the turn's verdict rides on - its subtype, `is_error`, its
+    // clock, its `terminal_reason` and its errors - and the usage block is the
+    // mockup's, because the capture's is all zeroes and this row has to draw
+    // figures. Its prompt carries no tool call either: the calls here are what
+    // an interrupt catches, which is the shape the capture shows rather than
+    // one it carries.
     //
-    // **And a answered call rides beside the open one**, because that is the
+    // **And an answered call rides beside the open one**, because that is the
     // ordinary interrupt: a turn that finished three calls and was killed in
     // the fourth. A fold that failed every call in a failed turn would paint
     // all four red, and only this second call can tell it from the right one.

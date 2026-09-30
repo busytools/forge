@@ -1064,7 +1064,7 @@ docs: Render the message body into rows.</div>
       <div class="work">
         <details class="turninfo" open>
           <summary>
-            <span>&#8617;</span><span>1m 19s</span><span class="sep">&#183;</span>
+            <svg class="ic st"><use href="#i-check"/></svg><span>1m 19s</span><span class="sep">&#183;</span>
             <span>4.2k&#8593; 1.1k&#8595;</span><span class="sep">&#183;</span>
             <span>93% cached</span><span class="sep">&#183;</span>
             <span>3.1k written</span><span class="tog">collapse</span>
@@ -1561,7 +1561,7 @@ docs: Render the message body into rows.</div>
     at(8000, () => { reveal(7); });
     at(9200, () => {
       if (clock) { clearInterval(clock); clock = null; }
-      $('lv-mark').innerHTML = '&#8617;';
+      $('lv-mark').innerHTML = OK;
       $('lv-time').textContent = elapsed((performance.now() - t0) / 1000);
       $('lv-think').style.display = 'none';
       $('lv-tok').textContent = '4.2k↑ 1.1k↓';
