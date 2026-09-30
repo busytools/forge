@@ -84,12 +84,21 @@
   const notice = $derived(noticeLine(composer.notice, sawTake));
   const line = $derived(notice !== null && dismissed === notice.text ? null : notice);
 
-  const sources = $derived<Sources>({
-    forgeCommands: FORGE_COMMANDS,
-    advertised: advisoriesFrom(record.slash_commands),
-    files: filesFrom(record.file_index),
-    agents: agentTypesFrom(record.subagents),
-  });
+  /**
+   * The lists a draft is matched against, pulled when one is opened.
+   *
+   * The record is replaced on every frame the server sends, so building these
+   * eagerly rebuilds the whole file index per frame for a draft that opens
+   * nothing.
+   */
+  function sources(): Sources {
+    return {
+      forgeCommands: FORGE_COMMANDS,
+      advertised: advisoriesFrom(record.slash_commands),
+      files: filesFrom(record.file_index),
+      agents: agentTypesFrom(record.subagents),
+    };
+  }
   const held = $derived(offer(draft, sources));
   const list = $derived(closed === draft ? null : held);
 

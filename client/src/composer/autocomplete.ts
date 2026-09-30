@@ -99,8 +99,12 @@ function token(draft: string): { text: string; from: number } {
  *
  * A list with no rows opens nothing: a popover holding only a header reads as a
  * list that lost its rows rather than as a query that matched nothing.
+ *
+ * `sources` is a pull because reading the file index is the expensive half of a
+ * list and the record it comes from is replaced on every frame the server
+ * sends: a draft that opens nothing must not pay for one that does.
  */
-export function offer(draft: string, sources: Sources): Offer | null {
+export function offer(draft: string, sources: () => Sources): Offer | null {
   const { text: last, from } = token(draft);
   if (last.startsWith('/') && last === draft) {
     return of('command', 0, last.slice(1), commands(sources));
@@ -146,10 +150,11 @@ function emojiOffer(draft: string): Offer | null {
 }
 
 /** forge's commands first, then the CLI's, with a name in both counted once. */
-function commands(sources: Sources): (query: string) => Row[] {
+function commands(sources: () => Sources): (query: string) => Row[] {
+  const { forgeCommands, advertised } = sources();
   const merged: Advisory[] = [
-    ...sources.forgeCommands,
-    ...sources.advertised.filter((command) => !isForgeCommand(command.name)),
+    ...forgeCommands,
+    ...advertised.filter((command) => !isForgeCommand(command.name)),
   ];
   // Ranked on the name WITHOUT its slash: the query is what came after the
   // trigger, and a slash at the front of the name would make every command a
@@ -169,10 +174,11 @@ function commands(sources: Sources): (query: string) => Row[] {
  * The files `query` matches, best first: a basename match leads a path match,
  * the shallower of two leads the deeper, and the alphabet settles the rest.
  */
-function files(sources: Sources): (query: string) => Row[] {
+function files(sources: () => Sources): (query: string) => Row[] {
+  const { files: held } = sources();
   return (query) => {
     const folded = query.toLowerCase();
-    const matched = sources.files
+    const matched = held
       .map((file) => ({ file, tier: fileTier(file, folded) }))
       .filter((entry) => entry.tier !== null);
     matched.sort(
@@ -206,9 +212,10 @@ function fileTier(file: FileEntry, query: string): number | null {
  * in its own order, so which of two matches comes first is the catalogue's
  * answer and not one this list invents.
  */
-function agents(sources: Sources): (query: string) => Row[] {
+function agents(sources: () => Sources): (query: string) => Row[] {
+  const { agents: held } = sources();
   return (query) =>
-    sources.agents
+    held
       .filter((agent) => matches([agent.name, agent.description], query))
       .map((agent) => ({
         insert: `&${agent.name}`,
