@@ -60,7 +60,7 @@ pub struct Conversation {
     /// **And it never runs under this lock.** The socket folds the core's
     /// stream in ONE task for every seat, so a fold holding a seat's lock
     /// stalls update delivery for every client on every seat.
-    /// [`Conversation::fold_held`] is where it runs instead.
+    /// [`Held::fold`] is where it runs instead.
     dirty: bool,
     /// The messages are out being folded, so what is here is half a state.
     ///
