@@ -61,6 +61,18 @@ test-all:
 conformance:
     RUSTFLAGS="-D warnings" cargo nextest run -p forge-test-harness
 
+# Rewrite the socket contract records from the current code. Run
+# deliberately, then READ the diff against the client before committing
+# it: what this writes is what the encoder currently emits, and a record
+# generated blind pins a wrong shape exactly as well as a right one.
+#
+# A field that moved here is a page that draws blank, so the question the
+# diff answers is "which client read follows this", not "does this look
+# plausible".
+conformance-record-socket:
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-test-harness --test socket_replay \
+        --no-tests=fail --run-ignored ignored-only write_the_socket_records
+
 # Runs the 15-clip fixture corpus through the whole dictation pipeline and
 # rewrites `crates/forge-dictate/bench/<machine>.toml`. Commit the result:
 # the file is the trend, and its diff is the signal.

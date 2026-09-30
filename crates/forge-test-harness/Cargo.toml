@@ -22,6 +22,12 @@ parking_lot.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+# `socket_replay` names the enums that cross the socket - `ServerMessage`,
+# `Subject`, `Command`, `SessionUpdate` - and the protocol version its
+# records are filed under. Dev-only for the same reason as the dependency
+# below: a test that reads the server's wire is not part of the harness's
+# production surface.
+forge-server = { workspace = true }
 # Workers MCP scenario tests need the in-process MCP server impl plus
 # its mock facade, both of which live in forge-workspace gated behind
 # the `testing` feature flag. Dev-only dep so the harness's production
