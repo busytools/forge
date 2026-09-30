@@ -23,7 +23,12 @@
 
   const lanes = $derived(
     families.map((family) => ({
-      key: family.label,
+      // A label is not an identity: the fold draws a family as `(label, row
+      // kind)`, and a built-in beside an MCP server named after it - a `Read`
+      // and an `mcp__read__query` - is two families with one word. Keying a
+      // lane by the word alone is a duplicate key, and a duplicate key stops
+      // the whole turn drawing at mount.
+      key: `${family.label}-${family.row.kind}`,
       glyph: iconOf(family.row),
       label: family.label,
       rows: family.calls,

@@ -38,6 +38,20 @@ describe('a run of peer messages, drawn as tool rows', () => {
     expect(out, 'is not drawn as settled').not.toContain('i-check');
   });
 
+  it('names a group by the message it opened with, not by the sender alone', () => {
+    // A handle two groups can share is the family this shape keeps producing:
+    // the sender alone does not separate two groups from one counterparty.
+    const opened = (body: string): string =>
+      draw([{ kind: 'message', cards: [card({ peer: 'forge/steward', body })] }]);
+
+    expect(opened('one'), 'the handle carries the sender').toContain(
+      'data-k="messages-forge/steward-one"',
+    );
+    expect(opened('two'), 'and the message it opened with').toContain(
+      'data-k="messages-forge/steward-two"',
+    );
+  });
+
   it('counts the messages, and reads a lone one as the group of one it is', () => {
     // The one departure from the terminal, which holds a group back until it
     // holds two. The count is the whole message, singular included.

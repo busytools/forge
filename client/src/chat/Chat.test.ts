@@ -208,6 +208,40 @@ describe('the chat column as it draws', () => {
     expect(html, 'with its org on the row').toContain('Gateway');
   });
 
+  it('draws a tool run whose lanes share a word, which a server named after a family reaches', () => {
+    // A lane's word is not an identity: `labelOf` writes a family word for a
+    // built-in and an MCP SERVER's name for its tools, so a `Read` beside
+    // `mcp__read__query` is two lanes both called `read`. The fold's own dedupe
+    // reads a family as `(label, row kind)`, and the lane's handle is that pair
+    // - keying it by the word alone is the duplicate-key crash one component
+    // over from the message rows, and this mount is what reaches it.
+    const server = stub();
+    draw({}, server);
+    server.answer([
+      {
+        key: 't1',
+        messages: [
+          {
+            type: 'assistant',
+            message: {
+              id: 'm1',
+              role: 'assistant',
+              model: 'claude-opus-5',
+              content: [
+                { type: 'tool_use', id: 'c1', name: 'Read', input: { file_path: 'a.rs' } },
+                { type: 'tool_use', id: 'c2', name: 'mcp__read__query', input: {} },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+
+    const html = document.body.innerHTML;
+    expect(drawn(), 'both lanes drew, so the turn drew').toContain('2 tool calls');
+    expect((html.match(/>read</g) ?? []).length, 'and each kept its own word').toBe(2);
+  });
+
   it('draws a peer message the socket sends live, through the frame the server forges', () => {
     // #1376: the server forges the frame a delivery needs and sends it beside
     // the typed update, so a peer message draws live through the `chat_appended`

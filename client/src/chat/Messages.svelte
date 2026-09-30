@@ -24,8 +24,14 @@
 
   const held = $derived(lanes.reduce((total, lane) => total + lane.cards.length, 0));
 
-  /** What names the run, which is the message it OPENED with: the rest append. */
-  const key = $derived(`messages-${lanes[0]?.cards[0]?.peer ?? 'empty'}`);
+  /**
+   * What names the run, which is the message it OPENED with: the rest append,
+   * so the handle does not move as they arrive. The sender alone would not
+   * separate two groups from one counterparty.
+   */
+  const key = $derived(
+    `messages-${lanes[0]?.cards[0]?.peer ?? 'empty'}-${firstLine(lanes[0]?.cards[0]?.body ?? '')}`,
+  );
 
   const drawn = $derived(
     lanes.map((lane) => ({
