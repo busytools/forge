@@ -1631,8 +1631,9 @@ mod tests {
     /// about how much it is covering. A key the fixture carries as `null`
     /// pins the key's existence and nothing behind it; an ARRAY it carries
     /// empty pins nothing about the element shape at all, so a field renamed
-    /// inside one is invisible to every pin in the tree. Both were true of
-    /// `tasks` and `crons` until they were seeded.
+    /// inside one is invisible to every pin in the tree. `projects[]/tasks[]`
+    /// and `projects[]/crons[]` are on that list: named on every run and not
+    /// yet seeded, which is #1367.
     ///
     /// Counted rather than listed, and printed on every run: the number is
     /// what says whether the fixture is the instrument it is taken for.

@@ -117,16 +117,27 @@ Those shapes are recorded under:
 crates/forge-test-harness/baselines/socket/<PROTOCOL_VERSION>/{frames,chat}.json
 ```
 
-`frames.json` carries every variant of the four enums that cross the
-socket - `ServerMessage`, `SessionUpdate`, `Subject` and `Command` - with
-the wire name each encodes as. The census behind it is a `match` with no
-wildcard arm, so a variant the server starts or stops sending is a compile
-error before it is ever a failing test.
+They live under `baselines/` beside the CLI captures and are not captures
+themselves: nothing here is recorded live. Both are derived from the
+current code, which is why regenerating one is a deliberate act.
+
+`frames.json` carries every variant of the five enums that cross the
+socket - `ServerMessage`, `SessionUpdate`, `Subject`, `Command` and
+`ClientMessage` - with the wire name each encodes as. The census behind it
+is one list per enum expanded into both a `match` with no wildcard arm and
+the names the record is built from, so a variant the server starts or stops
+sending is a compile error before it is ever a failing test, and there is
+no second list to drift. The client writes a `ClientMessage` tag by hand,
+so a rename there is a message the server refuses rather than a page that
+draws blank.
 
 `chat.json` carries the key set of the `Message` payload the chat fold
 reads, walked off the committed SDK baselines rather than derived from a
 schema. That is the payload `chat_appended` carries, and it is where a
-renamed field stops matching a name a page reads.
+renamed field stops matching a name a page reads. `frames.json` also
+carries the path-and-key shape of two sampled frames - the `chat_appended`
+update and a `page` with one turn in it, so the paging fields a client
+reads are pinned rather than declared.
 
 **Keys and paths only, never a value.** A key that is not an identifier is
 read as a map key and collapsed to its value's shape, because a model name
@@ -142,13 +153,17 @@ just conformance-record-socket
 
 Read the diff against the client before committing it. A field that moved
 is a page that draws blank, so the question the diff answers is which
-client read follows it.
+client read follows it. **Nothing reads the client for you**: the records
+say what the server emits, and whether a page reads those names is a person
+comparing the two against `client/src/`. The check is on the record, not on
+the agreement, and a change that renames a field without touching the page
+is caught here while a page that reads the wrong name is not.
 
 **The limits print themselves, every run.** The wire name of a variant is
 derived from its Rust name, so a container's `rename_all` is caught only
-for the variants a sample is built for; an update payload is pinned only
-for the variants sampled. Beside that, the three subject fixtures report
-what they actually pin: how many keys they carry, how many are `null` (the
-key exists, nothing behind it is pinned), and how many collections they
-carry empty, where an element shape is pinned nowhere at all and a field
-renamed inside one is invisible to every pin in the tree.
+for the variants a sample is built for; a payload is pinned only for the
+two frames sampled. Beside that, the three subject fixtures report what
+they actually pin: how many keys they carry, how many are `null` (the key
+exists, nothing behind it is pinned), and how many collections they carry
+empty, where an element shape is pinned nowhere at all and a field renamed
+inside one is invisible to every pin in the tree.

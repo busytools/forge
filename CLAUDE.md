@@ -14,7 +14,7 @@ forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + con
 forge-server     ───→ primitives + workspace
 forge-web        ───→ primitives + server (parked: nothing depends on it yet)
 forge-tui        ───→ primitives + workspace + server (no direct agent dep)
-forge-test-harness ─→ primitives + sdk + workspace
+forge-test-harness ─→ primitives + sdk + workspace + server
 ```
 
 - **`forge-primitives`** - every type that crosses a forge-* crate
