@@ -346,6 +346,59 @@ describe('one turn folded into the units a view draws', () => {
     );
   });
 
+  it('draws a prompt that landed mid-turn as a turn of the reader', () => {
+    // What the transcript read hoists out of an `attachment` row
+    // (`{"type":"attachment","attachment":{"type":"queued_command","prompt":…,
+    // "commandMode":"prompt"}}`): the shape a mid-turn prompt reaches this
+    // page as, since the CLI never echoes one on stream-json.
+    const queued = heard([
+      {
+        type: 'queued_command',
+        prompt: 'The lead charter.md, does it get included as part of the Rust binary itself?',
+        commandMode: 'prompt',
+      },
+    ]);
+
+    const units = fold([queued]);
+    expect(kinds(units)).toEqual(['user']);
+    expect(units[0]?.kind === 'user' ? units[0].text : '').toBe(
+      'The lead charter.md, does it get included as part of the Rust binary itself?',
+    );
+
+    // A prompt that carried more than words draws its words, and every other
+    // block as the placeholder the server's own fold gives it.
+    const multi = fold([
+      heard([
+        {
+          type: 'queued_command',
+          commandMode: 'prompt',
+          prompt: [
+            { type: 'text', text: 'What is wrong with this layout?' },
+            { type: 'image', source: { media_type: 'image/png' } },
+          ],
+        },
+      ]),
+    ]);
+    expect(multi[0]?.kind === 'user' ? multi[0].text : '').toBe(
+      'What is wrong with this layout?\n[image]',
+    );
+  });
+
+  it('keeps the completion notice the harness sends out of the conversation', () => {
+    // 3,070 rows of this machine's transcripts carry a queued_command in this
+    // mode, every one of them the harness reporting a background task - not
+    // something a person said, and the terminal drops the kind outright.
+    const notice = heard([
+      {
+        type: 'queued_command',
+        commandMode: 'task-notification',
+        prompt: '<task-notification>Task bj5g0t2kq completed</task-notification>',
+      },
+    ]);
+
+    expect(fold([notice])).toHaveLength(0);
+  });
+
   it("reports the clock the turn's own last row carried", () => {
     // The result frame carries no instant, and a turn read from a transcript
     // has no result frame at all - so the only clock a settled row can report

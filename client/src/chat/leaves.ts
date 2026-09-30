@@ -72,6 +72,8 @@ interface Block {
   is_error?: unknown;
   media_type?: unknown;
   url?: unknown;
+  prompt?: unknown;
+  commandMode?: unknown;
 }
 
 /** The blocks of a frame's content, for a frame that carries any. */

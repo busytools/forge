@@ -180,6 +180,31 @@ function after(text: string, marker: string): string | null {
   return at === -1 ? null : text.slice(at + marker.length);
 }
 
+/**
+ * The words a `queued_command` block carries: a plain string for a typed
+ * prompt, or a content-block array for a multi-modal one, where only the text
+ * blocks are what the reader typed and every other block draws as a `[type]`
+ * placeholder so the row shows something rather than a blank.
+ *
+ * A port of `queued_command_text` in forge-server's transcript fold, which is
+ * the same policy the terminal reads it through.
+ */
+function queuedText(prompt: unknown): string {
+  if (typeof prompt === 'string') return prompt;
+  if (!Array.isArray(prompt)) {
+    const raw = JSON.stringify(prompt);
+    return raw === undefined ? '[unrenderable]' : raw;
+  }
+  return prompt
+    .map((block) => {
+      const type = str(block, 'type');
+      if (type === 'text') return str(block, 'text');
+      return type === null ? null : `[${type}]`;
+    })
+    .filter((part): part is string => part !== null)
+    .join('\n');
+}
+
 /** The text between two markers, and what follows the second. */
 function between(text: string, open: string, close: string): [string, string] | null {
   const from = after(text, open);
@@ -600,6 +625,20 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
           }
         }
         push({ kind: frame.type === 'user' ? 'user' : 'text', text: block.text });
+        continue;
+      }
+
+      if (block.type === 'queued_command') {
+        // The harness's own background-completion notices ride this same
+        // block, and a run of them is task ids and output paths rather than
+        // anything a person said: the terminal drops them outright, and so
+        // does this. (The terminal also drops a prompt whose own text opens
+        // `<task-notification>`, which every row of the corpus carries the
+        // mode for; the mode is the field that says which of the three kinds
+        // arrived, so it is the one read.)
+        if (str(block, 'commandMode') !== 'task-notification') {
+          push({ kind: 'user', text: queuedText(block.prompt) });
+        }
         continue;
       }
 
