@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyUpdate, UNFED } from './apply';
+import { applyUpdate, HANDLERS, IGNORED, REPLACES, UNFED } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
 
 /**
@@ -573,5 +573,115 @@ describe('applyUpdate', () => {
       const held = empty();
       expect([...UNFED].every((field) => field in held)).toBe(true);
     });
+  });
+});
+
+/**
+ * Every variant `SessionUpdate` carries - 56 of them - read off the enum in
+ * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
+ * in any order: the assertions below filter over it, and the test beside the
+ * enum reads it back to check the two carry the same names.
+ *
+ * **The copy is the point.** Nothing compiles the link between the Rust enum
+ * and this table, so a variant added there arrives here as a name nothing
+ * knows - and a name nothing knows is a lookup that misses, which is a page
+ * that stops following its seat with nothing to report. The test beside the
+ * enum (`every_session_update_variant_is_classified_for_the_client`) reads
+ * both ends and fails on a name this list does not carry, so the two move
+ * together or one of them goes red.
+ */
+const EVERY_VARIANT = [
+  'spawning',
+  'connected',
+  'session_replaced',
+  'connection_failed',
+  'auth_required',
+  'slash_command_error',
+  'runtime_reload_completed',
+  'runtime_reload_failed',
+  'set_mode_failed',
+  'set_model_failed',
+  'permission_request',
+  'question_request',
+  'pending_interaction_resolved',
+  'mcp_operation_error',
+  'turn_complete',
+  'turn_cancelled',
+  'turn_error',
+  'chat_appended',
+  'hook_observation',
+  'status_snapshot',
+  'forge_account_identity',
+  'dictate_overrides',
+  'dictate_device_pin',
+  'oauth_credentials_snapshot',
+  'context_usage_snapshot',
+  'mcp_snapshot',
+  'sessions_listed',
+  'service_status',
+  'catalog_loaded',
+  'cli_version_changed',
+  'accounts_changed',
+  'plugins_inventory_updated',
+  'plugins_inventory_refresh_failed',
+  'plugins_cli_action_succeeded',
+  'plugins_cli_action_failed',
+  'plugins_update_run_progress',
+  'plugins_update_run_finished',
+  'plugins_rollback_succeeded',
+  'plugins_rollback_failed',
+  'peer_inflight_stats_changed',
+  'worker_status_changed',
+  'peer_envelope_appended',
+  'gotify_notification_appended',
+  'cron_prompt_appended',
+  'slack_message_appended',
+  'slack_post_pending',
+  'slack_draft_expired',
+  'prompt_queued_while_busy',
+  'review_activity_notice',
+  'dictate_availability',
+  'dictate_started',
+  'dictate_level',
+  'dictate_transcribing',
+  'dictate_progress',
+  'dictate_ended',
+  'fatal_error',
+] as const;
+
+describe('the variant list', () => {
+  it('carries the whole census, so the two assertions below can be trusted', () => {
+    // **The count, because `[].filter(f).toEqual([])` holds for every `f`.** A
+    // list truncated by an edit retires the assertions below it for the names
+    // it lost and reads green, so the length is asserted rather than floored:
+    // raise it in the same edit that adds a variant, as the plan says.
+    expect(
+      EVERY_VARIANT.length,
+      'the census no longer carries every variant the enum declares (56 of them): a truncated ' +
+        'census leaves the assertions below checking only the names it still has',
+    ).toBe(56);
+  });
+
+  it('classifies every variant the core can send', () => {
+    const unclassified = EVERY_VARIANT.filter(
+      (name) => !(name in HANDLERS) && !REPLACES.includes(name) && !IGNORED.includes(name),
+    );
+
+    expect(
+      unclassified,
+      'a variant nothing classifies reaches the page and is dropped without a word',
+    ).toEqual([]);
+  });
+
+  it('classifies each variant once', () => {
+    const twice = EVERY_VARIANT.filter(
+      (name) =>
+        (name in HANDLERS ? 1 : 0) +
+          (REPLACES.includes(name) ? 1 : 0) +
+          (IGNORED.includes(name) ? 1 : 0) >
+        1,
+    );
+
+    expect(twice, 'a variant claimed by two lists is a decision nobody can read').toEqual([]);
   });
 });
