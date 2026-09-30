@@ -96,9 +96,10 @@ function unreadable(pairs: readonly Pair[], palette: Readonly<Record<string, str
  * the dock's own gradient, where it measures 6.80-7.08 rather than the 7.38
  * the page gives, and `--hot` is `.dict .db` inside the composer's, at
  * 10.21-10.64 rather than 11.25. Both clear their floor there, but the
- * table's number is not the page's. `--dim` on the dock's gradient is the one
- * to watch, since `.opt.sel` lays the accent over it: 4.27-4.52 across the
- * gradient, so at the floor, and under it at the top.
+ * table's number is not the page's. `--ctl` is a third: `.opt .box2` draws it
+ * on the dock's gradient, where it measures 3.23-3.36 rather than the 3.50
+ * the page gives. `--ctl` on `--sel` is the thinnest margin of the three, at
+ * 3.10, which is the pair to watch if either value moves.
  *
  * `TEXT` is the floor on all but one row. Nothing here takes the 3:1
  * large-text floor: the sheet's largest is `.brand .word` at 22px and weight
@@ -119,6 +120,10 @@ const DRAWN: readonly Pair[] = [
   ['--dim', '--bg', TEXT],
   ['--dim', '--s1', TEXT],
   ['--dim', '--s2', TEXT],
+  ['--dim', '--sel', TEXT],
+  // A control's own mark, on the page and on the selected row's ground.
+  ['--ctl', '--bg', MARK],
+  ['--ctl', '--sel', MARK],
   ['--accent', '--bg', TEXT],
   ['--accent', '--s1', TEXT],
   ['--accent', '--s2', TEXT],
@@ -138,14 +143,13 @@ const DRAWN: readonly Pair[] = [
 
 /**
  * The palette's one token with no pair. `--line` is the hairline: section
- * rules, and the border around a control. Nothing is drawn on it, and a
+ * rules, code frames and popover dividers. Nothing is drawn on it, and a
  * separator is not information WCAG requires to be perceived - the single
  * rule that inks it, `.sess .facts .sep`, is a middot at 1.42:1.
  *
- * **What that leaves unchecked is `--line` as a control boundary**, which no
- * pair can express: `.opt .box2` is a 1.5px `--line` border, and a strict
- * reading of 1.4.11 puts the border identifying a control at 3:1. Named
- * rather than left out, so a token arriving without a pair still fails.
+ * A border that identifies a control is a different job and no longer this
+ * token's: it is `--ctl`, carried above at the 3:1 of 1.4.11. Named rather
+ * than left out, so a token arriving without a pair still fails.
  */
 const NOT_INK = ['--line'];
 

@@ -45,7 +45,15 @@ const DARK: Record<string, string> = {
   '--s1': '#0d111a',
   '--s2': '#141926',
   '--s3': '#1b2130',
+  // The selected option row's ground. Flat rather than the accent at 10%
+  // over the dock's gradient, so --dim on it is one number (4.65:1) and the
+  // contrast check can carry the pair.
+  '--sel': '#20140a',
   '--line': '#222a3c',
+  // The mark on a control with no fill or shadow to say so, which 1.4.11
+  // asks 3:1 of: 3.50:1 on the page, 3.23-3.36 on the dock's gradient where
+  // the option checkbox sits. --line stays the hairline.
+  '--ctl': '#516590',
   '--text': '#eaeef6',
   '--muted': '#8f98a8',
   // The quietest of the three text tokens, and the darkest step that clears

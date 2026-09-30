@@ -507,7 +507,7 @@ details.sec[open] > summary .arw { color: var(--accent); }
 details.acct { position: relative; }
 details.acct > summary { list-style: none; cursor: pointer; display: flex; align-items: center;
   gap: 7px; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
-  border: 1px solid var(--line); border-radius: 99px; padding: 2px 11px; }
+  border: 1px solid var(--ctl); border-radius: 99px; padding: 2px 11px; }
 details.acct > summary::-webkit-details-marker { display: none; }
 details.acct > summary:hover { border-color: #2e3850; color: var(--text); }
 details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--accent); }
@@ -736,11 +736,11 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .hooks > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
 .hooks > summary::-webkit-details-marker { display: none; }
 .hooks:hover { color: var(--muted); }
-.hooks .tog { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px;
+.hooks .tog { border: 1px solid var(--ctl); border-radius: 5px; padding: 0 6px;
   font-size: var(--fs-label); }
 .hooks .tog::after { content: "expand"; }
 .hooks[open] .tog::after { content: "collapse"; }
-.turninfo .tog { color: var(--muted); border: 1px solid var(--line);
+.turninfo .tog { color: var(--muted); border: 1px solid var(--ctl);
   border-radius: 6px; padding: 0 8px; font-size: var(--fs-data); }
 /* The chip's label follows the row it sits on. */
 .turninfo .tog::after { content: "expand"; }
@@ -1013,10 +1013,10 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .opt .ic.ed { color: var(--blue); }
 .opt .lbl { color: var(--dim); background: none; border: 0; padding: 0;
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
-.opt.sel { background: rgba(244,118,0,.1); }
+.opt.sel { background: var(--sel); }
 .opt.sel .lbl { color: var(--text); font-weight: 600; }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
-  border: 1.5px solid var(--line); display: grid; place-items: center; }
+  border: 1.5px solid var(--ctl); display: grid; place-items: center; }
 /* A question's row that is on, which the answer carries with it. The box is
    the only mark of it, so it is drawn rather than implied by the pointer. */
 .opt .box2.on { border-color: var(--ok); color: var(--ok); }
