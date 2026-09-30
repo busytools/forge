@@ -9,7 +9,7 @@
 //! the fold's envelope detection recognises, carrying the same prose the
 //! model received.
 
-use forge_primitives::{ContentBlock, Message, SessionSlot, UserEnvelope};
+use forge_primitives::{Message, SessionSlot};
 
 use crate::surface::SessionUpdate;
 
@@ -54,24 +54,16 @@ pub fn delivery_turn(update: &SessionUpdate, slot: &SessionSlot) -> Option<Messa
              received it but no view will draw it",
         );
     }
-    Some(Message::User {
-        message: UserEnvelope {
-            role: "user".to_owned(),
-            content: vec![ContentBlock::Text { text }],
-        },
-        // Forged rather than read off the wire: nothing routes on this id.
-        session_id: String::new(),
-        parent_tool_use_id: None,
-        uuid: None,
-        tool_use_result: None,
-        timestamp: None,
-    })
+    // Forged rather than read off the wire: nothing routes on its id, and the
+    // prose is the only thing the two copies of this turn agree on.
+    Some(Message::display_only_user(text))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::logged;
+    use forge_primitives::ContentBlock;
 
     /// Prose the parser cannot read draws nothing, while the model still
     /// received it - the one failure this forge can produce that no test

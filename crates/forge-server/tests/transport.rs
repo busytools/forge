@@ -848,3 +848,122 @@ async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
         "a delivery for another seat must not draw on this one: {msg:?}",
     );
 }
+
+/// The text of a user turn, when the frame is one.
+fn user_text(msg: &forge_primitives::Message) -> Option<String> {
+    let forge_primitives::Message::User { message, .. } = msg else {
+        return None;
+    };
+    let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+        return None;
+    };
+    Some(text.clone())
+}
+
+/// A prompt one client sends draws for every other client on that seat, and
+/// for the one that sent it.
+///
+/// The CLI queues a prompt a client hands it and never echoes it on
+/// stream-json, so nothing on the wire carries the words the reader said: a
+/// second viewer watches the assistant answer something nobody saw, and the
+/// sender itself draws nothing of its own. The send is the one place the words
+/// are known, so the frame is forged from it.
+///
+/// The sender is included on purpose. The terminal pushes the user's own
+/// bubble locally on every send for exactly this reason, so withholding the
+/// frame from the sender would be the client inventing a rule the terminal
+/// does not have.
+#[tokio::test]
+async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.intercept_dispatch();
+
+    let mut sender = connect(&url).await;
+    let mut watcher = connect(&url).await;
+    for socket in [&mut sender, &mut watcher] {
+        send(
+            socket,
+            ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+        )
+        .await;
+        let ServerMessage::Snapshot { .. } = next_server(socket).await else {
+            panic!("a seat that exists is answered with its snapshot")
+        };
+    }
+
+    send(
+        &mut sender,
+        ClientMessage::Command {
+            command: Box::new(Command::Prompt {
+                key: lead_seat(),
+                text: "hello there".to_owned(),
+                attachments: Vec::new(),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let drawn = |update: &SessionUpdate| {
+        matches!(update, SessionUpdate::ChatAppended { msg, .. }
+            if user_text(msg).as_deref() == Some("hello there"))
+    };
+    update_until(&mut watcher, "the prompt a client sent, drawn for another client", drawn).await;
+    update_until(&mut sender, "the prompt a client sent, drawn for the client that sent it", drawn)
+        .await;
+}
+
+/// A send the core refuses still draws the words.
+///
+/// The forge runs before the dispatch, which is what the terminal does: its
+/// `dispatch_prompt` pushes the user's bubble before it dispatches and does
+/// not take it back when the dispatch fails. Drawing only the sends that
+/// reached the model would be the client inventing a rule the reference
+/// implementation does not have, and it would silently swallow the reader's
+/// words on exactly the send that already went wrong.
+#[tokio::test]
+async fn a_prompt_the_core_refuses_still_draws() {
+    let (url, fleet) = a_server().await;
+    // A seat with no session behind it, so the dispatch is refused and the
+    // sender hears so. Every message the sender gets is read, in either order:
+    // the refusal is written to the socket by the handler while the frame
+    // waits in the connection's own queue, so which arrives first is a
+    // scheduling hop and not something to assert.
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let mut sender = connect(&url).await;
+    send(
+        &mut sender,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let ServerMessage::Snapshot { .. } = next_server(&mut sender).await else {
+        panic!("a seat that exists is answered with its snapshot")
+    };
+
+    send(
+        &mut sender,
+        ClientMessage::Command {
+            command: Box::new(Command::Prompt {
+                key: lead_seat(),
+                text: "hello there".to_owned(),
+                attachments: Vec::new(),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let (mut drawn, mut refused) = (false, false);
+    while !(drawn && refused) {
+        match next_server(&mut sender).await {
+            ServerMessage::Update { update } => {
+                drawn |= matches!(&*update, SessionUpdate::ChatAppended { msg, .. }
+                    if user_text(msg).as_deref() == Some("hello there"));
+            }
+            ServerMessage::Error { .. } => refused = true,
+            other => panic!("a send draws, refuses, or says nothing: {other:?}"),
+        }
+    }
+    assert!(refused, "precondition: the send this test is about was refused");
+}

@@ -10,7 +10,9 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_agent::env::cli_version::CliVersionInfo;
 use forge_primitives::cloud::service_status::ServiceIssue;
-use forge_primitives::{AvailableAgent, AvailableCommand, PeerInflightStats, SDKSessionInfo};
+use forge_primitives::{
+    AvailableAgent, AvailableCommand, Message, PeerInflightStats, SDKSessionInfo,
+};
 
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
@@ -3495,8 +3497,10 @@ impl Workspace {
         // residual signals at all depends on a session_state_changed
         // mirror being present, so it is CLI-version-dependent.
         let busy = self.domain_session_for(key).is_some_and(|d| d.lock().turn_in_flight());
+        // `route` rather than `dispatch`: the delivery's frame is the envelope
+        // one its own update forges, not a bare user turn.
         let result =
-            self.dispatch(Command::Prompt { key: key.clone(), text, attachments: Vec::new() });
+            self.route(Command::Prompt { key: key.clone(), text, attachments: Vec::new() });
         if busy && result.is_ok() {
             let _ = self
                 .update_sender()
@@ -3525,7 +3529,27 @@ impl Workspace {
     /// is registered for the requested key (e.g., the session was
     /// just closed), or [`DispatchError::SessionClosed`] when the
     /// task's command receiver has been dropped.
-    pub fn dispatch(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
+    pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
+        // A prompt is the reader's own words, and nothing else carries them: the
+        // CLI queues a prompt handed to it and never echoes it back, so a view
+        // drawing only frames shows the assistant answering something nobody saw.
+        // Emitted here because this is the one entry both entrances share, the
+        // terminal's submit and a client's command.
+        //
+        // NOT from `dispatch_workspace_prompt`, which is the delivery path: a
+        // delivery already draws as an envelope turn of its own, so a bare user
+        // turn beside it would draw the same words twice.
+        if let Command::Prompt { key, text, .. } = &cmd {
+            let _ = self.update_sender().send(SessionUpdate::ChatAppended {
+                key: key.clone(),
+                msg: Message::display_only_user(text.clone()),
+            });
+        }
+        self.route(cmd)
+    }
+
+    /// Route a command that carries no frame of its own.
+    fn route(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
         // Test intercept (when armed): capture EVERY Command - both
         // app-level and per-session - before any routing. Tests use
         // this to assert what would have been dispatched without

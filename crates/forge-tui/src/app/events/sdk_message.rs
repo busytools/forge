@@ -5370,3 +5370,43 @@ mod monitor_chat_block_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod forged_user_frame_tests {
+    //! The server forges a user turn for words the CLI will not echo back, and
+    //! sends it to every view including this one. A delivery's forged turn is
+    //! the row the terminal used to draw alone, and it must still draw; the
+    //! reader's own words are the case that must NOT, because the terminal
+    //! drew those at submit and a second copy is the same line twice.
+    use super::handle_user;
+    use crate::app::App;
+    use forge_primitives::Message;
+
+    fn rows(app: &App) -> usize {
+        app.messages().expect("a session to draw in").len()
+    }
+
+    #[test]
+    fn a_delivery_is_drawn_and_the_readers_own_words_are_not() {
+        let mut app = App::test_default();
+        let before = rows(&app);
+
+        handle_user(
+            &mut app,
+            Message::display_only_user("[Cron]\n\nrun the morning summary".to_owned()),
+        );
+        let drawn = rows(&app);
+        assert!(
+            drawn > before,
+            "a delivery's forged turn draws a row of its own: {before} before, {drawn} after",
+        );
+
+        handle_user(&mut app, Message::display_only_user("what the reader typed".to_owned()));
+        assert_eq!(
+            rows(&app),
+            drawn,
+            "the terminal drew the reader's words at submit, so a frame carrying them \
+             must not draw a second row",
+        );
+    }
+}

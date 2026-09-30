@@ -543,6 +543,26 @@ impl Message {
             }
         }
     }
+
+    /// A user turn forged rather than read off the wire, for prose the model
+    /// received and the CLI does not echo back.
+    ///
+    /// Carries no id: the forge happens before the CLI has written the turn to
+    /// its transcript, and the CLI never sends that id, so no honest one exists
+    /// to put here. Nothing routes on the empty `session_id` either.
+    pub fn display_only_user(text: String) -> Self {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::Text { text }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+            timestamp: None,
+        }
+    }
 }
 
 /// The Anthropic-API-shaped envelope inside an `Assistant` message.
