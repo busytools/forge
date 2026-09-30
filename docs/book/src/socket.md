@@ -314,10 +314,16 @@ than facts about a session.
   socket, and it is what this page is for. It is a client rather than an
   instrument, and it runs from `just client-dev` rather than from an
   installed bundle, so what is missing is a released one rather than a
-  consumer. The instruments are the two they always were:
-  `forge-protocol-client` under `crates/forge-server/src/bin/`, built by a
-  normal build and neither installed nor shipped, and the integration tests
-  that open real clients against a server they start themselves.
+  consumer. The instruments are three, and they are not equal:
+  `forge-protocol-client` and `forge-fold-cost`, both under
+  `crates/forge-server/src/bin/` and neither installed nor shipped - the
+  first by a normal build, the second only with `--features testing`,
+  because it serves a fixture fleet - and the integration tests that open
+  real clients against a server they start themselves.
+  `forge-fold-cost` also measures: it prices one request in `ps` CPU time
+  against an idle arm, on a server over a real transcript, and every arm
+  prints the bytes and turns it moved so a reader can tell an arm that
+  stopped seeing the conversation from one that worked.
 
 ## Today
 

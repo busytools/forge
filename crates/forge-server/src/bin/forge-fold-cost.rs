@@ -11,9 +11,15 @@
 //! Two roles, and the server is the default:
 //!
 //! ```text
+//! cargo build --release -p forge-server --features testing --bin forge-fold-cost
 //! forge-fold-cost --transcript /tmp/hub.jsonl --breakdown      # serve
 //! forge-fold-cost --measure --pid <that pid> --arm refresh    # measure
 //! ```
+//!
+//! **Build it in release.** The profile moves the headline figure by 7x -
+//! the same transcript and the same command read 1,413 ms for a read in a
+//! debug build and 204 ms in a release one - so every figure printed with a
+//! run carries the profile it was built as.
 //!
 //! **Every arm prints its own denominator** - the frames it read, the bytes
 //! they carried, the turns and messages they held - because an arm that
@@ -62,8 +68,10 @@ struct Args {
     /// The project the fixture declares. Its directory is under `--dir`.
     #[arg(long, default_value = "seat")]
     project: String,
-    /// Where the fixture's config dir goes. It is the workspace's own store,
-    /// so it is wiped and rewritten on every boot.
+    /// Where the fixture's config dir goes. The workspace's store lives under
+    /// it and the transcript is written into it, so a fresh directory gives a
+    /// fresh seat; nothing here clears one, so a rerun over the same directory
+    /// reuses the store it left.
     #[arg(long, default_value = "/tmp/forge-fold-cost")]
     dir: PathBuf,
     /// The port. Fixed rather than ephemeral: a harness that samples `ps`
@@ -86,8 +94,13 @@ struct Args {
     /// `refresh` is an attach then `--asks` subscribe-reloads, each an
     /// `unsubscribe` and a `subscribe`, which is what the client sends on
     /// every update.
+    ///
+    /// **A closed set, so a mistyped arm is refused rather than run as
+    /// `more`.** An arm that ran a different workload under the name a
+    /// person typed is the defect this instrument exists to find, and it is
+    /// the same mistake whether the code or the caller makes it.
     #[arg(long, default_value = "refresh")]
-    arm: String,
+    arm: Arm,
     /// How many turns each `more` asks for.
     #[arg(long, default_value_t = 20)]
     turns: u32,
@@ -99,31 +112,103 @@ struct Args {
     seconds: f64,
 }
 
-/// This process's CPU time, or another's, at `ps`'s 10 ms resolution.
+/// Another process's CPU time, at `ps`'s 10 ms resolution.
+///
+/// **A PID that cannot be read is an error, never a zero.** A stale PID is
+/// the ordinary case - the server prints its PID once and a person pastes it
+/// after a restart - and a zero here is the strongest false positive this
+/// instrument can produce: a full, plausible denominator of bytes and turns
+/// beside "the server cost nothing". The denominator exists so an arm that
+/// stopped seeing the conversation can be told from one that worked; the CPU
+/// half needs the same guard.
 fn cpu_seconds(pid: u32) -> anyhow::Result<f64> {
-    let out =
-        std::process::Command::new("ps").args(["-p", &pid.to_string(), "-o", "time="]).output()?;
+    let out = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "time="])
+        .output()
+        .map_err(|error| anyhow::anyhow!("ps could not be run for pid {pid}: {error}"))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "ps failed for pid {pid} ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim(),
+        );
+    }
     let text = String::from_utf8_lossy(&out.stdout);
-    let text = text.trim();
+    parse_cpu_time(text.trim())
+        .ok_or_else(|| anyhow::anyhow!("ps reported no CPU time for pid {pid}: `{text}`"))
+}
+
+/// `[[dd-]hh:]mm:ss.cc` as seconds, or `None` when it is not that.
+fn parse_cpu_time(text: &str) -> Option<f64> {
     let (days, rest) = match text.split_once('-') {
-        Some((days, rest)) => (days.parse::<f64>().unwrap_or(0.0), rest),
+        Some((days, rest)) => (days.parse::<f64>().ok()?, rest),
         None => (0.0, text),
     };
-    let mut parts: Vec<f64> =
-        rest.split(':').map(|part| part.parse::<f64>().unwrap_or(0.0)).collect();
+    let mut parts = rest.split(':').map(str::parse::<f64>).collect::<Result<Vec<f64>, _>>().ok()?;
+    if parts.is_empty() {
+        return None;
+    }
     while parts.len() < 3 {
         parts.insert(0, 0.0);
     }
-    Ok(days * 86400.0 + parts[0] * 3600.0 + parts[1] * 60.0 + parts[2])
+    Some(days * 86400.0 + parts[0] * 3600.0 + parts[1] * 60.0 + parts[2])
+}
+
+/// What this run was built as, which moves the headline figure by 7x.
+///
+/// Same transcript, same command: a debug build reads 1,413 ms where a
+/// release one reads 204. A number about this server means something only
+/// with the conditions beside it, and this is the condition that moves it
+/// most - so it is printed rather than assumed.
+fn profile() -> &'static str {
+    if cfg!(debug_assertions) { "debug" } else { "release" }
 }
 
 /// This process's resident set, which is what holding a conversation costs.
-fn rss() -> String {
-    std::process::Command::new("ps")
-        .args(["-p", &std::process::id().to_string(), "-o", "rss="])
+fn rss() -> anyhow::Result<u64> {
+    let pid = std::process::id();
+    let out = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "rss="])
         .output()
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-        .unwrap_or_default()
+        .map_err(|error| anyhow::anyhow!("ps could not be run for pid {pid}: {error}"))?;
+    if !out.status.success() {
+        anyhow::bail!("ps failed for this process's rss ({})", out.status);
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("ps reported no rss for this process"))
+}
+
+/// The workload an arm sends, as a closed set.
+///
+/// **A closed set rather than a string, so a mistyped arm is refused rather
+/// than run as something else.** An arm that ran a different workload under
+/// the name a person typed is the defect this instrument exists to find, and
+/// it is the same mistake whether the code or the caller makes it.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Arm {
+    /// Nothing at all, and the baseline every other arm is charged against.
+    Idle,
+    /// One connect and one subscribe: the price of arriving.
+    Subscribe,
+    /// An attach, then `--asks` pages.
+    More,
+    /// An attach, then `--asks` subscribe-reloads, each an `unsubscribe` and
+    /// a `subscribe` - what the client sends on every update for the open
+    /// seat.
+    Refresh,
+}
+
+impl Arm {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Subscribe => "subscribe",
+            Self::More => "more",
+            Self::Refresh => "refresh",
+        }
+    }
 }
 
 /// What one arm moved, and what it cost.
@@ -131,7 +216,7 @@ fn rss() -> String {
 /// The denominator is not decoration: it is what tells a reader that the arm
 /// saw a conversation at all.
 #[derive(Default)]
-struct Arm {
+struct Measured {
     cpu_ms: f64,
     wall_ms: f64,
     frames: u64,
@@ -141,8 +226,8 @@ struct Arm {
     asks: u32,
 }
 
-impl Arm {
-    fn report(&self, arm: &str, idle: &Arm) -> String {
+impl Measured {
+    fn report(&self, arm: &str, idle: &Measured) -> String {
         let share = if idle.wall_ms > 0.0 { self.wall_ms / idle.wall_ms } else { 0.0 };
         format!(
             "{{\"arm\": \"{arm}\", \"charged_cpu_ms\": {:.1}, \"wall_ms\": {:.1}, \
@@ -212,7 +297,7 @@ async fn attach(
         answering: false,
     };
     socket.send(Message::Text(serde_json::to_string(&opening)?.into())).await?;
-    let mut uncounted = Arm::default();
+    let mut uncounted = Measured::default();
     let _ = read_one(&mut socket, &mut uncounted).await?;
     Ok(socket)
 }
@@ -224,24 +309,24 @@ async fn work(
     socket: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
-    arm: &mut Arm,
+    arm: &mut Measured,
 ) -> anyhow::Result<()> {
     let mut before = None;
-    let asks = if args.arm == "subscribe" { 1 } else { args.asks };
+    let asks = if args.arm == Arm::Subscribe { 1 } else { args.asks };
     for _ in 0..asks {
-        let asked = match args.arm.as_str() {
-            "subscribe" => {
+        let asked = match args.arm {
+            Arm::Subscribe => {
                 ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: false }
             }
             // The client's own order: let the seat go, then ask for it again.
             // Nothing answers an unsubscribe, so the read below waits for the
             // subscribe's snapshot.
-            "refresh" => {
+            Arm::Refresh => {
                 let let_go = ClientMessage::Unsubscribe { what: Subject::Session(seat.clone()) };
                 socket.send(Message::Text(serde_json::to_string(&let_go)?.into())).await?;
                 ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: false }
             }
-            _ => ClientMessage::More {
+            Arm::Idle | Arm::More => ClientMessage::More {
                 conversation: seat.clone(),
                 before: before.clone(),
                 turns: args.turns,
@@ -264,7 +349,7 @@ async fn read_one(
     socket: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
-    arm: &mut Arm,
+    arm: &mut Measured,
 ) -> anyhow::Result<ServerMessage> {
     loop {
         let Some(message) = socket.next().await else {
@@ -303,7 +388,7 @@ async fn measure(args: &Args) -> anyhow::Result<()> {
     };
     let seat = SessionSlot::lead(&args.org, &args.project);
 
-    let mut idle = Arm::default();
+    let mut idle = Measured::default();
     let started = Instant::now();
     let before = cpu_seconds(pid)?;
     tokio::time::sleep(Duration::from_secs_f64(args.seconds)).await;
@@ -313,8 +398,8 @@ async fn measure(args: &Args) -> anyhow::Result<()> {
     // Nothing to do for `idle`: the bracket above is the whole arm, and it is
     // the baseline every other arm is charged against rather than a workload
     // of its own.
-    if args.arm == "idle" {
-        println!("{}", Arm::default().report("idle", &idle));
+    if args.arm == Arm::Idle {
+        println!("{}", Measured::default().report("idle", &idle));
         return Ok(());
     }
 
@@ -322,19 +407,21 @@ async fn measure(args: &Args) -> anyhow::Result<()> {
     // its own connect is inside the bracket. Every other arm measures the
     // price of staying, so its attach is taken before the bracket - charging
     // a connect to a refresh would report arriving as staying.
-    let mut socket = match args.arm.as_str() {
-        "subscribe" => a_socket(args).await?,
+    let mut socket = match args.arm {
+        Arm::Subscribe => a_socket(args).await?,
         _ => attach(args, &seat).await?,
     };
-    let mut arm =
-        Arm { asks: if args.arm == "subscribe" { 1 } else { args.asks }, ..Arm::default() };
+    let mut arm = Measured {
+        asks: if args.arm == Arm::Subscribe { 1 } else { args.asks },
+        ..Measured::default()
+    };
     let started = Instant::now();
     let before = cpu_seconds(pid)?;
     work(args, &seat, &mut socket, &mut arm).await?;
     arm.wall_ms = started.elapsed().as_secs_f64() * 1000.0;
     arm.cpu_ms = (cpu_seconds(pid)? - before) * 1000.0;
 
-    println!("{}", arm.report(&args.arm, &idle));
+    println!("{}", arm.report(args.arm.name(), &idle));
     Ok(())
 }
 
@@ -362,10 +449,18 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
     fleet.seed_transcript(&args.org, &args.project, "lead", &rows).map_err(anyhow::Error::msg)?;
     let seat = SessionSlot::lead(&args.org, &args.project);
 
-    // The denominator, on stdout before the socket opens. A reader who sees no
-    // conversation on the wire cannot tell "the fix works" from "the file was
-    // not there", and this is the line that tells them apart.
-    println!("seeded {} rows / {} bytes as {}/{}", rows.len(), bytes, args.org, args.project);
+    // The conditions and the denominator, on stdout before the socket opens.
+    // A reader who sees no conversation on the wire cannot tell "the fix
+    // works" from "the file was not there" - and a reader who does not know
+    // the profile cannot tell a 200 ms figure from a 1,400 ms one.
+    println!(
+        "built {}; seeded {} rows / {} bytes as {}/{}",
+        profile(),
+        rows.len(),
+        bytes,
+        args.org,
+        args.project
+    );
 
     let surface = fleet.surface();
     if args.breakdown {
@@ -385,16 +480,21 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Where the time goes inside one request, taken once before any client
-/// attaches: a fix that removes one of these three is worth what that one
-/// costs and no more.
+/// Where the CONVERSATION's time goes inside one request, taken once before
+/// any client attaches: a fix that removes one of these three is worth what
+/// that one costs and no more.
+///
+/// **These three are not the whole request.** A subscribe also runs the git
+/// scan, the file-index walk, the reviews, the MCP read, the process walk and
+/// the rest, so the sum here is a share of a request rather than its cost -
+/// measured at about 85% of one on the transcript these break down.
 fn breakdown(surface: &Arc<ViewSurface>, seat: &SessionSlot, cwd: &Path) -> anyhow::Result<String> {
-    let peak = rss();
+    let fleet = rss()?;
 
     let started = Instant::now();
     let read = surface.conversation(seat, cwd);
     let read_ms = started.elapsed().as_millis();
-    let holding = rss();
+    let holding = rss()?;
 
     let started = Instant::now();
     let rendered = forge_server::transcript::render(&read.messages);
@@ -406,10 +506,10 @@ fn breakdown(surface: &Arc<ViewSurface>, seat: &SessionSlot, cwd: &Path) -> anyh
 
     Ok(format!(
         "breakdown: read {read_ms} ms, fold {fold_ms} ms, encode {encode_ms} ms over {} \
-         messages; resident {peak} KiB with the fleet, {holding} KiB holding the read, {} KiB \
+         messages; resident {fleet} KiB with the fleet, {holding} KiB holding the read, {} KiB \
          holding read + fold + encode ({} turns)",
         read.messages.len(),
-        rss(),
+        rss()?,
         turns.len(),
     ))
 }
