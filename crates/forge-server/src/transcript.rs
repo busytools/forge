@@ -1666,19 +1666,31 @@ mod tests {
     /// blank line between two turns, which is the defect #1324 names; the
     /// assertion is about the CUT, because a fold that dropped the text alone
     /// would still leave the empty turn standing.
+    ///
+    /// **Two signals, and each is pinned alone.** Across 10,148 queued blocks
+    /// in this machine's transcripts, 3,113 carry the mode, 3,113 open with
+    /// the tag, and none disagrees - so the pair looks redundant, and a row
+    /// carrying both could not tell a two-signal guard from a one-signal one.
     #[test]
     fn a_notification_row_opens_no_turn() {
-        let notice = user(vec![ContentBlock::QueuedCommand {
-            prompt: serde_json::Value::String(
-                "<task-notification>Task bj5g0t2kq completed</task-notification>".to_owned(),
-            ),
+        let by_mode = user(vec![ContentBlock::QueuedCommand {
+            prompt: serde_json::Value::String("Task bj5g0t2kq done".to_owned()),
             command_mode: Some("task-notification".to_owned()),
             source_uuid: None,
         }]);
+        let by_tag = user(vec![ContentBlock::QueuedCommand {
+            prompt: serde_json::Value::String(
+                "<task-notification>Task bj5g0t2kq completed</task-notification>".to_owned(),
+            ),
+            command_mode: Some("prompt".to_owned()),
+            source_uuid: None,
+        }]);
 
-        let rendered = render(&[notice]);
-        assert!(rendered.turns.is_empty(), "a completion notice opens no turn");
-        assert!(rendered.units.is_empty(), "and draws no unit of its own");
+        for (notice, signal) in [(by_mode, "the mode"), (by_tag, "the tag")] {
+            let rendered = render(&[notice]);
+            assert!(rendered.turns.is_empty(), "a completion notice opens no turn: {signal}");
+            assert!(rendered.units.is_empty(), "and draws no unit of its own: {signal}");
+        }
     }
 
     /// A sub-agent's frames are not the chat's. The terminal suppresses

@@ -405,18 +405,25 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it('keeps the completion notice the harness sends out of the conversation', () => {
-    // 3,070 rows of this machine's transcripts carry a queued_command in this
-    // mode, every one of them the harness reporting a background task - not
-    // something a person said, and the terminal drops the kind outright.
-    const notice = heard([
+    // The harness's background-completion report is not something a person
+    // said, and the terminal drops the kind outright. **Two signals, and each
+    // is pinned alone**: across 10,148 queued blocks in this machine's
+    // transcripts, 3,113 carry the mode, 3,113 open with the tag, and none
+    // disagrees - so the pair looks redundant and a row carrying both could
+    // not tell a two-signal guard from a one-signal one.
+    const byMode = heard([
+      { type: 'queued_command', commandMode: 'task-notification', prompt: 'Task bj5g0t2kq done' },
+    ]);
+    const byTag = heard([
       {
         type: 'queued_command',
-        commandMode: 'task-notification',
+        commandMode: 'prompt',
         prompt: '<task-notification>Task bj5g0t2kq completed</task-notification>',
       },
     ]);
 
-    expect(fold([notice])).toHaveLength(0);
+    expect(fold([byMode]), 'the mode alone drops it').toHaveLength(0);
+    expect(fold([byTag]), 'and so does the tag alone').toHaveLength(0);
   });
 
   it('reads the image in a tool result the way the wire nests it', () => {

@@ -85,6 +85,12 @@ describe('a settled turn\u2019s row', () => {
     expect(drawn.some((fact) => fact === 'in=0')).toBe(false);
   });
 
+  it('carries the toggle word as text rather than as a stylesheet rule', () => {
+    // A `::after` label is generated content, so the disclosure's accessible
+    // name is whatever the user agent makes of it.
+    expect(draw(FULL)).toContain('>expand<');
+  });
+
   it('marks the row from the sprite, not from a character cell', () => {
     const body = draw(FULL);
 
