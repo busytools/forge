@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { MORE_TURNS } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
-import type { Connection } from '../socket';
+import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { Chat, type PageTurn } from './conversation';
 
@@ -27,12 +27,21 @@ const turn = (key: string | null, ...texts: string[]): PageTurn => ({
 /** One assistant message carrying prose. */
 const said = (text: string): unknown => ({
   type: 'assistant',
+  uuid: `a-${text}`,
   message: {
     id: `m-${text}`,
     role: 'assistant',
     model: 'claude-opus-5',
     content: [{ type: 'text', text }],
   },
+});
+
+/** The frame a turn ends on, which is what tells a page's copy of it settled. */
+const ended = (): unknown => ({
+  type: 'result',
+  uuid: 'r-1',
+  subtype: 'success',
+  is_error: false,
 });
 
 /** A page of whole turns, as the server answers `more`. */
@@ -97,9 +106,35 @@ const dispatched = (): unknown => ({
   },
 });
 
-/** A `user` frame carrying the reader's own words. */
+/**
+ * A delivery frame as forge forges it: the reader's words and NO id.
+ *
+ * Nobody on the server can supply one - the outbound prompt carries none, the
+ * CLI mints the transcript's own afterwards, and the CLI never echoes what it
+ * was given - so a turn opened by one is matched to its page copy by the
+ * frames the two share.
+ */
+const forged = (text: string): unknown => ({
+  type: 'user',
+  message: { role: 'user', content: [{ type: 'text', text }] },
+});
+
+/** The same words as the CLI persisted them, carrying the id the CLI minted. */
+const minted = (text: string): unknown => ({
+  type: 'user',
+  uuid: `c-${text}`,
+  message: { role: 'user', content: [{ type: 'text', text }] },
+});
+
+/**
+ * A `user` frame carrying the reader's own words.
+ *
+ * Its id is derived from the text the way the `turn` helper's is, so a frame
+ * and the page row carrying the same words are the same frame.
+ */
 const typed = (text: string): unknown => ({
   type: 'user',
+  uuid: `u-${text}`,
   message: { role: 'user', content: [{ type: 'text', text }] },
 });
 
@@ -113,6 +148,7 @@ const typed = (text: string): unknown => ({
 function fakeConnection() {
   const asks: ClientMessage[] = [];
   const listeners = new Set<(message: ServerMessage) => void>();
+  const statuses = new Set<(status: ConnectionStatus) => void>();
   const updates: SessionUpdate[] = [];
 
   const connection = {
@@ -128,7 +164,10 @@ function fakeConnection() {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    onStatus: () => () => undefined,
+    onStatus: (fn: (status: ConnectionStatus) => void) => {
+      statuses.add(fn);
+      return () => statuses.delete(fn);
+    },
     store: () => undefined,
     settings: () => null,
     status: () => 'open' as const,
@@ -147,6 +186,14 @@ function fakeConnection() {
     update(update: SessionUpdate): void {
       updates.push(update);
       this.send({ kind: 'update', update });
+    },
+    /** The connection's own life, which the column watches for a reconnect. */
+    reach(status: ConnectionStatus): void {
+      for (const fn of statuses) fn(status);
+    },
+    /** A refusal, which is the answer a page is not. */
+    refuse(what: string, why: string): void {
+      this.send({ kind: 'error', what, why });
     },
   };
 }
@@ -320,6 +367,242 @@ describe('the conversation the chat draws', () => {
 
     const after = get(chat.value).turns;
     expect(after.length, 'the repeated turn is the one already held, not a second row').toBe(1);
+  });
+
+  it('replaces a turn whose opening frame carries no id', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // A delivery forge forges and sends as a frame: no id at all, because
+    // nothing forge holds can mint the one the CLI will give it. The turn it
+    // opens is matched to the page's copy by the frames they SHARE, not by the
+    // opening one - which is what the two copies agree on either way.
+    server.update({ chat_appended: { key: LEAD, msg: forged('typed elsewhere') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    const built = get(chat.value).turns.at(-1)?.key ?? '';
+
+    // The page's copy is what the CLI persisted, which carries the id the CLI
+    // minted for it - NOT the forged frame's absence of one. The two agree on
+    // the assistant frame and on nothing else, which is what makes an id-keyed
+    // match fail here rather than passing on `null === null`.
+    server.send(
+      page([{ key: null, messages: [minted('typed elsewhere'), said('answer-1'), ended()] }], '1'),
+    );
+
+    const after = get(chat.value).turns;
+    expect(after.map((row) => row.key).includes(built), 'the frame-built row is gone').toBe(false);
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('typed elsewhere')).length,
+      'and the turn is held once, as the page has it',
+    ).toBe(1);
+  });
+
+  it('drops the drawn conversation when the seat changes occupant', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'the previous occupant')], '1'));
+
+    // A `/new`, a `/resume`, a login or a logout: the slot keeps its address
+    // and its contents are not the conversation drawn here.
+    server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
+
+    const after = get(chat.value);
+    expect(after.turns, 'the previous occupant turns are gone').toEqual([]);
+    expect(after.loaded, 'and the column is not claiming to hold a page').toBe(false);
+    expect(server.more().length, 'and it asks for the new occupant page').toBe(2);
+  });
+
+  it('drops a page an abandoned ask answered after the seat changed occupant', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'the previous occupant')], '1'));
+
+    // The reader reaches the top, which asks for older turns: that ask is in
+    // flight when the occupant changes.
+    chat.older();
+    server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
+    // The page the abandoned ask was waiting for lands after the swap. It
+    // carries neither an id nor an occupant, so the only way to know it is not
+    // the new occupant's is that an ask was abandoned.
+    server.send(page([turn('t0', 'older, previous occupant')], null));
+
+    const after = get(chat.value);
+    expect(
+      after.turns.map((row) => JSON.stringify(row.messages)),
+      'the abandoned answer is not the new occupant conversation',
+    ).toEqual([]);
+  });
+
+  it('loads the new occupant when the abandoned ask is refused instead', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'the previous occupant')], '1'));
+
+    chat.older();
+    server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
+    // A refused ask is answered by no page at all: the count of abandoned asks
+    // is spent on a page that is never coming, and the next page - the new
+    // occupant's own - would be swallowed as if it were that answer.
+    server.refuse('more', 'the conversation is gone');
+    server.send(page([turn('n1', 'the new occupant')], null));
+
+    expect(
+      get(chat.value).turns.map((row) => JSON.stringify(row.messages)),
+      'the new occupant page is drawn',
+    ).toEqual([JSON.stringify(turn('n1', 'the new occupant').messages)]);
+  });
+
+  it('loads the new occupant after a socket drop took the abandoned ask', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'the previous occupant')], '1'));
+
+    // An ask in flight, then the socket goes: the page it was waiting for dies
+    // with it, which is what the reconnect's own ask exists to answer.
+    chat.older();
+    server.reach('closed');
+    server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
+    server.reach('open');
+    server.send(page([turn('n1', 'the new occupant')], null));
+
+    expect(
+      get(chat.value).turns.map((row) => JSON.stringify(row.messages)),
+      'the reconnect answer is drawn, not swallowed as the dead ask reply',
+    ).toEqual([JSON.stringify(turn('n1', 'the new occupant').messages)]);
+  });
+
+  it('does not let a page read mid-turn split the turn it copies', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The wire's real order: the CLI never echoes a prompt, so a turn in
+    // flight is opened by the ASSISTANT's first frame and the reader's words
+    // reach the client only in a page - which is read while the turn is still
+    // being written, so it holds the words and the frame they landed before,
+    // and nothing after.
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    server.send(
+      page([turn('t1', 'first'), { key: null, messages: [typed('mine'), said('answer-1')] }], '1'),
+    );
+
+    // The rest of the turn arrives after that page.
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-2') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-3') } });
+
+    const rows = get(chat.value).turns.map((row) => JSON.stringify(row.messages));
+    const mine = rows.filter((messages) => messages.includes('mine'));
+    expect(mine.length, 'the reader words and the whole answer are one row').toBe(1);
+    expect(mine[0], 'and that row carries the frames that followed the page').toContain('answer-3');
+    expect(
+      rows.filter((messages) => messages.includes('answer-2')).length,
+      'with no second row holding the tail',
+    ).toBe(1);
+  });
+
+  it('keeps the turn being written when a page of older turns lands', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], '1'));
+
+    // The wire's real order: the CLI never echoes a prompt, so the turn in
+    // flight is opened by the assistant's first frame.
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    // The reader scrolls up, which asks for the turns above what is held. That
+    // page is the fold's account of OLDER turns, so it cannot carry this one -
+    // and dropping it there leaves the answer nowhere, with nothing asking the
+    // server for it again.
+    chat.older();
+    server.send(page([turn('t0', 'older')], null));
+
+    const held = get(chat.value).turns.map((row) => JSON.stringify(row.messages));
+    expect(
+      held.some((messages) => messages.includes('answer-1')),
+      'an older page does not drop the turn being written',
+    ).toBe(true);
+    expect(get(chat.value).turns[0]?.key, 'and the older page still landed above').toBe('t0');
+  });
+
+  it('keeps a live turn a newest page was serialized without', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    // A newest page that repeats what it held before that frame landed.
+    server.send(page([turn('t1', 'first')], '1'));
+
+    const held = get(chat.value).turns.map((row) => JSON.stringify(row.messages));
+    expect(
+      held.some((messages) => messages.includes('answer-1')),
+      'a page that does not share a frame with the turn does not drop it',
+    ).toBe(true);
+  });
+
+  it('replaces a live turn with the page that settled it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    const built = get(chat.value).turns.at(-1)?.key ?? '';
+
+    // The fold's own account of that turn, and settled: it carries the result
+    // frame, so it is not a page read while the turn was still being written.
+    server.send(
+      page(
+        [turn('t1', 'first'), { key: null, messages: [typed('mine'), said('answer-1'), ended()] }],
+        '1',
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    expect(after.map((row) => row.key).includes(built), 'the frame-built row is gone').toBe(false);
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('answer-1')).length,
+      'and the turn is held once, as the page has it',
+    ).toBe(1);
+  });
+
+  it('replaces a live turn from the page own copy of a row it already holds', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    // A page read before the answer: the row this client holds carries the
+    // reader's words and nothing else, which is what a read taken early gives.
+    server.send(page([{ key: null, messages: [typed('mine')] }], '1'));
+    const held = get(chat.value).turns.at(-1)?.key ?? '';
+    // The answer then arrives as frames, opening a live turn over that row.
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-2') } });
+
+    // The next page repeats that row, and its own copy carries the frames. A
+    // repeated row is handed back as the object already held, whose messages
+    // are older - asking THAT object is asking the wrong copy.
+    server.send(
+      page(
+        [{ key: null, messages: [typed('mine'), said('answer-1'), said('answer-2'), ended()] }],
+        '1',
+      ),
+    );
+
+    const rows = get(chat.value).turns.map((row) => JSON.stringify(row.messages));
+    expect(
+      rows.filter((messages) => messages.includes('answer-2')).length,
+      'the turn is held once, not as a stale copy beside a live one',
+    ).toBe(1);
+    expect(rows.length, 'and no extra row survives it').toBe(2);
+    expect(held, 'the row kept the name the page gave it').toBe('turn-u-mine');
   });
 
   it('keeps every row keyed when older turns arrive', () => {

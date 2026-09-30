@@ -160,6 +160,12 @@ function messagesOf(turn: PageTurn): unknown[] {
   return Array.isArray(turn.messages) ? turn.messages : [];
 }
 
+/** A frame's own id, or `null` when it carries none. */
+function uuidOf(message: unknown): string | null {
+  const id = (message as { uuid?: unknown } | null)?.uuid;
+  return typeof id === 'string' && id !== '' ? id : null;
+}
+
 /**
  * Whether a frame opens a turn of its own rather than joining the live one:
  * what a person said.
@@ -203,6 +209,15 @@ export class Chat {
    * the end of it.
    */
   private inFlight: 'newest' | 'older' | null = null;
+  /**
+   * Answers still coming for asks this conversation stopped wanting.
+   *
+   * A seat that changes occupant clears what is held and asks again, and the
+   * ask made before the swap is answered anyway - a page carries neither an id
+   * nor an occupant, so this is the whole of what can tell them apart. A
+   * `session_id` on the page is the real fix and is a wire change.
+   */
+  private abandoned = 0;
   /** What `start` has to undo, and `null` while the chat is stopped. */
   private running: (() => void) | null = null;
 
@@ -240,7 +255,15 @@ export class Chat {
     // where the conversation is asked for again, and the reader keeps what
     // they have until the fresh answer lands.
     const stopStatus = this.connection.onStatus((status) => {
-      if (status === 'open') this.ask(null);
+      // A dropped socket takes any page in flight with it, and the reconnect
+      // answers with an ask of its own - so an ask this conversation was told
+      // to forget is answered by nothing, and its count must not outlive it.
+      if (status !== 'open') {
+        this.inFlight = null;
+        this.abandoned = 0;
+      } else {
+        this.ask(null);
+      }
     });
     this.running = () => {
       stopMessages();
@@ -305,6 +328,11 @@ export class Chat {
         // took any error as its own would draw a refused subscription, or a
         // refused command, as a conversation this forge will not answer for.
         if (message.what !== 'more') return;
+        // A refused ask is answered by no page at all, so the ask it belongs to
+        // is over - and a count of asks this conversation was told to forget is
+        // spent on pages that are never coming.
+        this.inFlight = null;
+        this.abandoned = 0;
         this.inner.update((held) => ({ ...held, refused: message.why, loaded: true }));
         return;
       case 'update':
@@ -325,11 +353,21 @@ export class Chat {
    * from being drawn again.
    */
   private takePage(rows: unknown, cursor: string | null, direction: 'newest' | 'older'): void {
+    if (this.abandoned > 0) {
+      // The answer to an ask the conversation stopped wanting: a seat that
+      // changed occupant under it cleared what was held and asked again, and a
+      // page carries neither an id nor an occupant - so a count of abandoned
+      // asks is the only thing that can tell this answer from the new one.
+      this.abandoned -= 1;
+      return;
+    }
     this.inFlight = null;
     this.inner.update((held) => {
       const known = new Map(held.turns.map((turn) => [turn.key, turn]));
       const taken = new Set(known.keys());
       const named: Turn[] = [];
+      /** Each row's messages after the reconciliation, which hold the page's own. */
+      const copies: unknown[][] = [];
       for (const row of pageTurns(rows)) {
         // What the turn is held under: the fold's own name where it gave one,
         // and the name this conversation gave it where it did not. Reading
@@ -339,7 +377,31 @@ export class Chat {
         const name = row.key ?? nameOf(row.messages);
         const repeated = known.get(name);
         if (repeated !== undefined) {
-          named.push(repeated);
+          // A repeated row is handed back as the object already held, and the
+          // page's copy of it can be the NEWER of the two - a read taken after
+          // frames the held row was built before. So the two are reconciled by
+          // what each is missing, and the held object is kept only where the
+          // page says nothing new: a row the reader is looking at is not drawn
+          // again by an answer that says nothing.
+          const heldIds = new Set(repeated.messages.map(uuidOf));
+          const pageIds = new Set(row.messages.map(uuidOf));
+          const missed = repeated.messages.filter((message) => {
+            const id = uuidOf(message);
+            return id === null || !pageIds.has(id);
+          });
+          const adds = row.messages.filter((message) => {
+            const id = uuidOf(message);
+            return id === null || !heldIds.has(id);
+          });
+          const messages =
+            adds.length === 0
+              ? repeated.messages
+              : missed.length === 0
+                ? row.messages
+                : [...row.messages, ...missed];
+          const settled = messages === repeated.messages ? repeated : { ...repeated, messages };
+          named.push(settled);
+          copies.push(settled.messages);
           continue;
         }
         const key = nameIn(row, taken);
@@ -347,13 +409,59 @@ export class Chat {
         const fresh: Turn = { key, messages: messagesOf(row), live: false };
         known.set(key, fresh);
         named.push(fresh);
+        copies.push(fresh.messages);
       }
-      const inPage = new Set(named.map((turn) => turn.key));
-      // A page is the fold's own account of the turns it covers, so a turn the
-      // frames built inside that range has been replaced by it and is dropped
-      // rather than drawn twice - once as the frames had it, once as the fold
-      // settled it.
+      // A row the page settled: a turn the server has an END for, which is a
+      // `result` frame where the wire carries one and any row but the last
+      // otherwise - the last row is the transcript's own tail, and that is the
+      // one turn a page can have been read while it was still being written.
+      const settledRow = (index: number): boolean =>
+        copies[index]?.some(
+          (message) => (message as { type?: unknown } | null)?.type === 'result',
+        ) === true || index !== named.length - 1;
+      // A live turn and a page row are the same exchange when they share a
+      // frame: frames belong to one turn, so a shared id is that turn.
+      const shares = (messages: unknown[], turn: Turn): boolean => {
+        const ids = new Set(messages.map(uuidOf).filter((id) => id !== null));
+        return turn.messages.some((message) => {
+          const id = uuidOf(message);
+          return id !== null && ids.has(id);
+        });
+      };
+      const replaced = new Set<Turn>();
+      const drawn = named.map((row, index) => {
+        // The exchange is the row's messages AFTER the reconciliation above,
+        // which hold the page's own copy of it: a repeated row is handed back
+        // as the held object, whose messages can be the older of the two, so a
+        // row taken before that reconciliation reads as not carrying what the
+        // page plainly carries.
+        const copy = copies[index] ?? [];
+        const live = held.turns.find((turn) => turn.live && shares(copy, turn));
+        if (live === undefined) return row;
+        // The page is the account of the turn it copies, so the live turn is
+        // replaced either way - and where the copy is settled it is the whole
+        // account, so the row stands as it is.
+        replaced.add(live);
+        if (settledRow(index)) return row;
+        // A copy read while the turn was still being written is not: the row
+        // stands in its place, marked live, and carries both the words no frame
+        // did (the CLI never echoes a prompt) and the frames the page was read
+        // too early to have - so the frames still to come join it rather than
+        // opening a second row.
+        const ids = new Set(copy.map(uuidOf));
+        const grown = live.messages.filter((message) => {
+          const id = uuidOf(message);
+          return id === null || !ids.has(id);
+        });
+        return { key: row.key, messages: [...copy, ...grown], live: true };
+      });
+      const inPage = new Set(drawn.map((turn) => turn.key));
       const rest = held.turns.filter((turn) => !turn.live && !inPage.has(turn.key));
+      // A live turn no row of this page shares a frame with is one the page
+      // cannot be an account of - a page of OLDER turns, or one serialized
+      // before those frames landed - and it is kept: dropping it there leaves
+      // the reader's own words nowhere, with nothing asking for them again.
+      const loose = held.turns.filter((turn) => turn.live && !replaced.has(turn));
       return {
         ...held,
         loaded: true,
@@ -364,9 +472,25 @@ export class Chat {
         // walk, and the first page establishes it.
         cursor: direction === 'older' || !held.loaded ? cursor : held.cursor,
         prepends: held.prepends + (direction === 'older' ? 1 : 0),
-        turns: direction === 'older' ? [...named, ...rest] : [...rest, ...named],
+        turns:
+          direction === 'older' ? [...drawn, ...rest, ...loose] : [...rest, ...drawn, ...loose],
       };
     });
+  }
+
+  /**
+   * Start over for the occupant that just arrived.
+   *
+   * The turns go rather than being replaced in place, because a page that
+   * answered before the swap is the OLD occupant's and nothing in a page says
+   * which occupant it came from - so what is held has to be nothing, and the
+   * ask has to go out after the swap rather than before it.
+   */
+  private replaced(): void {
+    if (this.inFlight !== null) this.abandoned += 1;
+    this.inFlight = null;
+    this.inner.set(NOTHING);
+    this.ask(null);
   }
 
   /** One frame, folded into the turn it belongs to. */
@@ -377,6 +501,12 @@ export class Chat {
       const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
       if (message === undefined) return;
       this.append(message);
+      return;
+    }
+    // The seat changed occupant under this column - a `/new`, a `/resume`, a
+    // login or a logout - so what is drawn is another session's conversation.
+    if (variant === 'session_replaced') {
+      this.replaced();
       return;
     }
     // A turn that has settled is the server's fold's to draw, and the frames
