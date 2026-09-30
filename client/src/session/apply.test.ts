@@ -577,9 +577,10 @@ describe('applyUpdate', () => {
 });
 
 /**
- * Every variant `SessionUpdate` carries, read off
- * `crates/forge-workspace/src/protocol.rs:842` - 56 of them, in the order the
- * enum declares them.
+ * Every variant `SessionUpdate` carries - 56 of them - read off the enum in
+ * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
+ * in any order: the assertions below filter over it, and the test beside the
+ * enum reads it back to check the two carry the same names.
  *
  * **The copy is the point.** Nothing compiles the link between the Rust enum
  * and this table, so a variant added there arrives here as a name nothing

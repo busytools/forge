@@ -1556,6 +1556,11 @@ mod session_update_variants {
     /// large, where a payload key or a status word would answer for a variant
     /// nothing classifies.
     ///
+    /// The client's census of variants is read back as well, rather than
+    /// trusted because its length is asserted: a count binds it to nothing.
+    /// **`IGNORED` has no runtime reader at all** - nothing but these tests
+    /// consults it - so what it holds is only as right as this control.
+    ///
     /// What it does not reach: `client/src/wire/fleet.ts` keeps a table of its
     /// own for the fleet's redraws. That is a different question and is
     /// deliberately partial, so this binding stops at `apply.ts`.
@@ -1601,6 +1606,22 @@ mod session_update_variants {
             "client/src/session/apply.ts classifies {stale:?}, which the enum does not declare: \
              a line for a name the wire never sends is one nobody can tell from a live one",
         );
+
+        // **And the census the client's own assertions filter over is read
+        // too**, rather than trusted because its count is asserted. That count
+        // binds it to nothing; this is what binds it to the enum. It lives in
+        // the client's TEST file, beside the assertions that filter over it.
+        let census_source = include_str!("../../../client/src/session/apply.test.ts");
+        let mut census = array_entries(census_source, "EVERY_VARIANT");
+        let mut declared_names = declared.names.clone();
+        census.sort();
+        declared_names.sort();
+        assert_eq!(
+            census, declared_names,
+            "the client's `EVERY_VARIANT` and the enum's variants are not the same set: the \
+             census is what the client's own assertions filter over, so a variant missing from \
+             it is a variant nothing checks",
+        );
     }
 
     /// What one parse of the enum found.
@@ -1618,47 +1639,107 @@ mod session_update_variants {
     fn classified_names(client: &str) -> Vec<String> {
         let mut names = Vec::new();
         let mut table = "";
+        // Whether a list's `[` has been seen and its `]` has not.
+        let mut open = false;
         for line in client.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with("export const HANDLERS") {
                 table = "handlers";
+                open = false;
                 continue;
             }
-            if trimmed.starts_with("export const REPLACES") {
-                table = "replaces";
-            } else if trimmed.starts_with("export const IGNORED") {
-                table = "ignored";
+            if trimmed.starts_with("export const REPLACES")
+                || trimmed.starts_with("export const IGNORED")
+            {
+                table = "list";
+                open = false;
             } else if trimmed.starts_with("export const") {
                 table = "";
+                open = false;
                 continue;
             }
-            let hold = |token: &str| is_wire_name(token);
             match table {
-                // A key of the handler table: two spaces in, then
-                // `name: (held, payload) => {`. The indent is the anchor - an
-                // object literal INSIDE a handler is deeper, and reads as a key
-                // otherwise.
+                // A key of the handler table. The INDENT is the anchor: entries
+                // sit at exactly two spaces, and an object literal inside a
+                // handler's body is deeper. What follows the colon is not read,
+                // so a key written against a bare function name - `turn_error:
+                // settled,` - counts the same as an inline arrow.
                 "handlers" => {
                     if let Some(rest) =
                         line.strip_prefix("  ").filter(|rest| !rest.starts_with(' '))
-                        && let Some(key) = rest.split_once(": (").map(|(key, _)| key)
-                        && hold(key)
+                        && let Some(key) = rest.split_once(':').map(|(key, _)| key)
+                        && is_wire_name(key)
                     {
                         names.push(key.to_owned());
                     }
                 }
-                // `['spawning', 'connected']`, one line or many.
-                "replaces" | "ignored" => {
-                    for entry in trimmed.split('\'').skip(1).step_by(2) {
-                        if hold(entry) {
-                            names.push(entry.to_owned());
+                // `['spawning', 'connected']`, one line or many. **Only an
+                // array is read, and only its entries**: the span between two
+                // exports also carries prose, and a comment quoting a name must
+                // not answer for a line that classifies it.
+                "list" => {
+                    if !open {
+                        // The LAST bracket on the line: the declaration's own
+                        // type carries a `[]` before the array opens.
+                        let Some((_, after)) = trimmed.rsplit_once('[') else {
+                            continue;
+                        };
+                        match after.split_once(']') {
+                            Some((entries, _)) => {
+                                names.extend(quoted_names(entries).map(str::to_owned));
+                            }
+                            None => {
+                                open = true;
+                                names.extend(quoted_names(after).map(str::to_owned));
+                            }
                         }
+                    } else if trimmed.starts_with(']') {
+                        open = false;
+                    } else if trimmed.starts_with('\'') {
+                        names.extend(quoted_names(trimmed).map(str::to_owned));
                     }
                 }
                 _ => {}
             }
         }
         names
+    }
+
+    /// The quoted entries of one `const NAME = [ ... ]` block, exported or not,
+    /// which is how the client's census of variants is written.
+    fn array_entries(client: &str, name: &str) -> Vec<String> {
+        let heading = format!("const {name}");
+        let mut entries = Vec::new();
+        let mut open = false;
+        for line in client.lines() {
+            let trimmed = line.trim();
+            if !open {
+                let declared = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+                if !declared.starts_with(&heading) {
+                    continue;
+                }
+                let Some((_, after)) = trimmed.rsplit_once('[') else {
+                    continue;
+                };
+                match after.split_once(']') {
+                    Some((inside, _)) => entries.extend(quoted_names(inside).map(str::to_owned)),
+                    None => {
+                        open = true;
+                        entries.extend(quoted_names(after).map(str::to_owned));
+                    }
+                }
+            } else if trimmed.starts_with(']') {
+                break;
+            } else if trimmed.starts_with('\'') {
+                entries.extend(quoted_names(trimmed).map(str::to_owned));
+            }
+        }
+        entries
+    }
+
+    /// The names quoted in a run of text: the odd segments of a split on `'`.
+    fn quoted_names(text: &str) -> impl Iterator<Item = &str> {
+        text.split('\'').skip(1).step_by(2).filter(|entry| is_wire_name(entry))
     }
 
     /// Whether a token reads as a wire name, which is what keeps a bare word in
@@ -1677,7 +1758,13 @@ mod session_update_variants {
             if trimmed.starts_with("pub enum SessionUpdate {") {
                 return nearest;
             }
-            // Only the run of attribute lines directly above the enum counts.
+            // Comments and blank lines do not break the run above the enum: a
+            // doc comment between the attribute and the enum says the same
+            // thing, and reading it as "no rename_all" would red a control on a
+            // reformatting.
+            if trimmed.is_empty() || trimmed.starts_with("//") {
+                continue;
+            }
             nearest = trimmed
                 .strip_prefix("#[serde(rename_all = \"")
                 .and_then(|rest| rest.split('"').next())
