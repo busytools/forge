@@ -12,9 +12,10 @@ use tokio::sync::{mpsc, oneshot};
 use super::PROTOCOL_VERSION;
 use super::TransportState;
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
-use super::wire::{encode_subject, page, walk_processes_if_stale};
+use super::wire::{conversation_for, encode_subject, page, walk_processes_if_stale};
 use crate::delivery::delivery_turn;
 use crate::live::Live;
+use crate::transport::conversation::Conversation;
 use crate::{Command, SessionUpdate};
 
 /// Take the upgrade and give the connection its own task.
@@ -280,7 +281,10 @@ async fn handle_client(
         }
         ClientMessage::More { conversation, before, turns } => {
             let roster = state.surface.roster();
-            let Some(cwd) = roster.cwd_for(&conversation) else {
+            // A seat forge holds no session for is an ANSWER rather than an
+            // empty page: a client drawing nothing would read the second as a
+            // broken conversation rather than as a seat nobody has started.
+            if roster.cwd_for(&conversation).is_none() {
                 return send(
                     socket,
                     ServerMessage::Error {
@@ -289,7 +293,7 @@ async fn handle_client(
                     },
                 )
                 .await;
-            };
+            }
             // Reading a seat is watching it, so paging refreshes the walk the
             // same way subscribing does. The window in the walk is what keeps
             // a client paging a long conversation from walking on every page.
@@ -299,35 +303,37 @@ async fn handle_client(
                 roster.claude_pid(&conversation),
             )
             .await;
-            // The read and the fold both run over the WHOLE conversation, and the
-            // window slices the boundaries between them, so a turn crosses
-            // whole. Slicing on a count of messages instead is what would hand
-            // a client half a turn.
+            // The window slices the boundaries the fold reported, so a turn
+            // crosses whole. Slicing on a count of messages instead is what
+            // would hand a client half a turn.
             //
-            // Off the task that serves every other client: the read walks a
-            // whole transcript off disk and the fold walks what it read, and
-            // the fold's own doc says a caller offloads it rather than running
-            // it in a handler.
-            let (messages, spans) = {
-                let reader = Arc::clone(&state.surface);
-                let (seat, root) = (conversation.clone(), cwd.clone());
-                tokio::task::spawn_blocking(move || {
-                    let messages = reader.conversation(&seat, &root).messages;
-                    let spans = crate::transcript::render(&messages).turns;
-                    (messages, spans)
-                })
-                .await
-                .unwrap_or_else(|error| {
-                    tracing::warn!(
-                        event_name = "transcript_fold_failed",
-                        %error,
-                        slot = %conversation.display(),
-                        "the fold did not finish; the page is answered empty",
-                    );
-                    (Vec::new(), Vec::new())
-                })
+            // The fold runs in a blocking task and NOT under the lock: the
+            // socket folds the core's stream in one task for every seat, so a
+            // fold holding a seat's lock would stall update delivery for every
+            // client on every seat rather than for a second reader of this one.
+            let held = conversation_for(state, &conversation).await;
+            let page = match held {
+                Some(held) => {
+                    let seat = conversation.clone();
+                    let opening = before.clone();
+                    tokio::task::spawn_blocking(move || {
+                        Conversation::fold_held(&held);
+                        let held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        page(held.messages(), held.spans(), opening.as_deref(), turns)
+                    })
+                    .await
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(
+                            event_name = "transcript_fold_failed",
+                            %error,
+                            slot = %seat.display(),
+                            "the fold did not finish; the page is answered empty",
+                        );
+                        page(&[], &[], before.as_deref(), turns)
+                    })
+                }
+                None => page(&[], &[], before.as_deref(), turns),
             };
-            let page = page(&messages, &spans, before.as_deref(), turns);
             send(
                 socket,
                 ServerMessage::Page { conversation, turns: page.turns, cursor: page.cursor },
@@ -529,6 +535,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -562,6 +569,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };

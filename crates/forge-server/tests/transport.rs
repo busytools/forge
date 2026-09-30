@@ -35,20 +35,34 @@ fn lead_seat() -> SessionSlot {
 /// workspace's store lives under it, and a surface whose files vanished
 /// under it is not what a test means to exercise.
 async fn a_server() -> (String, Fleet) {
+    let (url, fleet, _state) = a_server_with_state().await;
+    (url, fleet)
+}
+
+/// [`a_server`], keeping the state a test needs to put a seat's conversation
+/// where a `Connected` would have left it.
+///
+/// **The transport does not read a transcript**, so a fixture that seeds one
+/// has to hand the conversation over itself - see
+/// [`Fleet::hold_conversation`]. A test that skipped that would ask for a page
+/// on a seat nothing has seeded and get the empty one.
+async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     let dir = tempfile::tempdir().expect("tempdir").keep();
     let fleet = Fleet::in_dir(&dir, &[("TestOrg", &["proj"])]).expect("the fleet builds");
     let state = Arc::new(TransportState {
         surface: fleet.surface(),
         work: Arc::new(WorkCache::new()),
+        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
         config: forge_primitives::WebConfig::default(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = serve(state, listener).await;
+        let _ = serve(served, listener).await;
     });
-    (format!("ws://{addr}/socket"), fleet)
+    (format!("ws://{addr}/socket"), fleet, state)
 }
 
 /// A client connected to a server this test started, with the greeting
@@ -563,10 +577,13 @@ fn a_turns_rows(turn: usize) -> String {
 /// the ones above it.
 #[tokio::test]
 async fn a_more_is_answered_with_a_page_of_whole_turns() {
-    let (url, fleet) = a_server().await;
+    let (url, fleet, state) = a_server_with_state().await;
     let rows: Vec<String> = (0..20).map(a_turns_rows).collect();
     let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
     fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
 
     let mut socket = connect(&url).await;
     send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })

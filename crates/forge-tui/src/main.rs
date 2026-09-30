@@ -156,6 +156,9 @@ fn run() -> anyhow::Result<()> {
                     std::sync::Arc::clone(&workspace),
                 )),
                 work: std::sync::Arc::new(forge_server::work::WorkCache::new()),
+                conversations: std::sync::Arc::new(
+                    forge_server::transport::conversation::Conversations::new(),
+                ),
                 // This process is another viewer of the same seats, so the
                 // attachment count has to see it: a turn finishing on a seat
                 // this terminal is showing is one the reader watched.

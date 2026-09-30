@@ -70,6 +70,7 @@ impl TransportState {
         Ok(Self {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(Live::new()),
             config: WebConfig::default(),
         })
@@ -276,6 +277,42 @@ impl Fleet {
         std::fs::create_dir_all(&dir)?;
         self.workspace.seed_test_running_session_id(&slot, SEEDED_SESSION);
         std::fs::write(dir.join(format!("{SEEDED_SESSION}.jsonl")), rows.join("\n"))?;
+        Ok(())
+    }
+
+    /// Hold the seat's conversation on `state`, read from the transcript a
+    /// fixture just seeded.
+    ///
+    /// **The transport no longer reads a transcript**, so a fixture that wants
+    /// a seat to answer with one has to put it there. It does that by reading
+    /// through the surface - which is what a fixture may do and a server may
+    /// not - and inserting it, which is the state a `Connected` would have
+    /// left.
+    ///
+    /// `has_dispatches` is left to the conversation's own rule rather than
+    /// passed in: a fixture that set it by hand would pin a value the fold
+    /// computes, and the two could disagree without a test saying so.
+    pub fn hold_conversation(
+        &self,
+        state: &TransportState,
+        org: &str,
+        project: &str,
+        label: &str,
+    ) -> Result<(), FixtureError> {
+        let slot = if label == "lead" {
+            SessionSlot::lead(org, project)
+        } else {
+            SessionSlot::worker(org, project, label)
+        };
+        let cwd = self
+            .workspace
+            .cwd_for_session(&slot)
+            .ok_or_else(|| format!("{project} holds no session for {label}"))?;
+        let read = self.surface.conversation(&slot, std::path::Path::new(&cwd));
+        state.conversations.insert(
+            &slot,
+            crate::transport::conversation::Conversation::new(read.messages, read.compaction_count),
+        );
         Ok(())
     }
 

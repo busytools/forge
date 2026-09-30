@@ -33,12 +33,19 @@ pub mod wire;
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// What a connection answers from: the surface it reads and dispatches
-/// through, the working-tree cache behind the git read, the live state a
-/// late subscriber cannot reconstruct for itself, and the configuration the
-/// greeting carries the client's half of.
+/// through, the working-tree cache behind the git read, the conversations
+/// the stream has seeded, the live state a late subscriber cannot
+/// reconstruct for itself, and the configuration the greeting carries the
+/// client's half of.
+///
+/// The conversations are here rather than on the surface because they are
+/// the TRANSPORT's: they exist so this socket stops reading a whole
+/// transcript per client per request, and the terminal reading the same seat
+/// through the surface keeps its own copy in its own session state.
 pub struct TransportState {
     pub surface: Arc<ViewSurface>,
     pub work: Arc<WorkCache>,
+    pub conversations: Arc<conversation::Conversations>,
     pub live: Mutex<Live>,
     pub config: WebConfig,
 }
@@ -65,10 +72,17 @@ pub async fn serve(state: Arc<TransportState>, listener: TcpListener) -> anyhow:
     Ok(())
 }
 
-/// Fold the core's stream into the live state this transport holds.
+/// Fold the core's stream into the live state and the conversations this
+/// transport holds.
+///
+/// **One fold for the whole socket rather than one per connection**, and it
+/// is what seeds a seat: `Connected` and `HistoryReplayed` both arrive here,
+/// emitted by the session task in its own order, so a conversation and the
+/// frames that follow it have one producer.
 async fn fold_the_stream(state: Arc<TransportState>) {
     let mut updates = state.surface.subscribe_mirror();
     while let Some(update) = updates.recv().await {
         crate::live::Live::lock(&state.live).apply(&update);
+        state.conversations.apply(&update);
     }
 }

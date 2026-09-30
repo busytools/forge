@@ -46,6 +46,7 @@ async fn a_server() -> (String, Fleet) {
     let state = Arc::new(TransportState {
         surface: fleet.surface(),
         work: Arc::new(WorkCache::new()),
+        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
         config: forge_primitives::WebConfig::default(),
     });

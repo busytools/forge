@@ -470,6 +470,7 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
     let state = Arc::new(TransportState {
         surface,
         work: Arc::new(WorkCache::new()),
+        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
         config: forge_primitives::WebConfig::default(),
     });
