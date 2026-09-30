@@ -25,13 +25,13 @@
   const held = $derived(lanes.reduce((total, lane) => total + lane.cards.length, 0));
 
   /**
-   * What names the run, which is the message it OPENED with: the rest append,
-   * so the handle does not move as they arrive. The sender alone would not
-   * separate two groups from one counterparty.
+   * What names the run: the wire's own id for the message it OPENED with.
+   *
+   * The rest append, so the handle does not move as they arrive - and an id is
+   * what a sender's name is not: two messages from one counterparty, with one
+   * body between them, would otherwise name two groups the same thing.
    */
-  const key = $derived(
-    `messages-${lanes[0]?.cards[0]?.peer ?? 'empty'}-${firstLine(lanes[0]?.cards[0]?.body ?? '')}`,
-  );
+  const key = $derived(`messages-${lanes[0]?.cards[0]?.id ?? 'unnamed'}`);
 
   const drawn = $derived(
     lanes.map((lane) => ({
@@ -66,7 +66,7 @@
     </summary>
     <div class="body">
       <div class="pbody">
-        {#each paragraphs(card.body) as paragraph (paragraph)}
+        {#each paragraphs(card.body) as paragraph, at (at)}
           <p>{paragraph}</p>
         {/each}
       </div>

@@ -6,6 +6,7 @@ import Messages from './Messages.svelte';
 import type { MessageLane, PeerCard } from './units';
 
 const card = (over: Partial<PeerCard> = {}): PeerCard => ({
+  id: 't-1',
   peer: 'forge/steward',
   body: 'picking up the render half now.',
   kind: 'message',
@@ -38,18 +39,14 @@ describe('a run of peer messages, drawn as tool rows', () => {
     expect(out, 'is not drawn as settled').not.toContain('i-check');
   });
 
-  it('names a group by the message it opened with, not by the sender alone', () => {
-    // A handle two groups can share is the family this shape keeps producing:
-    // the sender alone does not separate two groups from one counterparty.
-    const opened = (body: string): string =>
-      draw([{ kind: 'message', cards: [card({ peer: 'forge/steward', body })] }]);
+  it('names a group by the message identity, which two identical messages cannot share', () => {
+    // The wire's own id is the one field that separates two messages from one
+    // sender with one body, which is what a handle has to survive.
+    const opened = (id: string): string =>
+      draw([{ kind: 'message', cards: [card({ id, peer: 'forge/steward', body: 'same' })] }]);
 
-    expect(opened('one'), 'the handle carries the sender').toContain(
-      'data-k="messages-forge/steward-one"',
-    );
-    expect(opened('two'), 'and the message it opened with').toContain(
-      'data-k="messages-forge/steward-two"',
-    );
+    expect(opened('t-1'), 'the handle is the message own id').toContain('data-k="messages-t-1"');
+    expect(opened('t-2'), 'so the two cannot share it').toContain('data-k="messages-t-2"');
   });
 
   it('counts the messages, and reads a lone one as the group of one it is', () => {

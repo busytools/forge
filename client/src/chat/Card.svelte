@@ -18,7 +18,7 @@
       <Icon name="question" class="qm" />
       {pair.question}
     </div>
-    {#each pair.picked_labels as picked (picked)}
+    {#each pair.picked_labels as picked, at (at)}
       <div class="a">
         <Icon name="check" class="am" />
         <span class="picked">{picked}</span>

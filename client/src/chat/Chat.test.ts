@@ -242,6 +242,37 @@ describe('the chat column as it draws', () => {
     expect((html.match(/>read</g) ?? []).length, 'and each kept its own word').toBe(2);
   });
 
+  it('draws a message whose body repeats a paragraph, which a text key refuses', () => {
+    // The same class as the lanes: a paragraph keyed by its own words collides
+    // the moment a body says the same thing twice, and a keyed list refuses the
+    // duplicate at mount.
+    const server = stub();
+    draw({}, server);
+    server.answer([
+      {
+        key: 't1',
+        messages: [
+          {
+            type: 'user',
+            uuid: 'u-repeated',
+            message: {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: "[Message id=t-rep from agent 'forge/steward' (org 'Busytools')]\n\nsame\n\nsame",
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(drawn(), 'the message drew, both paragraphs of it').toContain('1 message');
+    expect((document.body.innerHTML.match(/<p>same<\/p>/g) ?? []).length, 'both are drawn').toBe(2);
+  });
+
   it('draws a peer message the socket sends live, through the frame the server forges', () => {
     // #1376: the server forges the frame a delivery needs and sends it beside
     // the typed update, so a peer message draws live through the `chat_appended`

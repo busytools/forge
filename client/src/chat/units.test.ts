@@ -218,6 +218,28 @@ describe('one turn folded into the units a view draws', () => {
     ).toEqual([2, 1]);
   });
 
+  it('carries the id the message arrived with, which is what names its group', () => {
+    // A handle whose uniqueness is not guaranteed is what has thrown twice in
+    // this shape, and the wire's own id is the one field that separates two
+    // messages from one sender.
+    const arrived = heard([
+      text("[Message id=t-9c1 from agent 'forge/steward' (org 'Busytools')]\n\nhi"),
+    ]);
+    const sent = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_01Bg',
+        name: 'mcp__forge__agents__ask',
+        input: { project: 'forge', label: 'steward', prompt: 'hi' },
+      },
+    ]);
+    const cardOf = (units: Unit[]): { id?: string } | undefined =>
+      units[0]?.kind === 'messages' ? units[0].lanes[0]?.cards[0] : undefined;
+
+    expect(cardOf(fold([arrived]))?.id, 'an envelope is named by its own id').toBe('t-9c1');
+    expect(cardOf(fold([sent]))?.id, 'and a call by the id the wire gave it').toBe('toolu_01Bg');
+  });
+
   it('rolls a message group up from what each send came back with', () => {
     // The mark on a group is its aggregate, so a send that failed draws the
     // failure mark and one still out draws the ring - the sheet's own sentence,

@@ -78,6 +78,12 @@ export interface Self {
 
 /** One peer message, as the envelope it arrived in or the call that sent it. */
 export interface PeerCard {
+  /**
+   * The wire's own id for the message: the envelope's, or the `tool_use` id of
+   * the call that sent it. It is what a view names the group by, so a handle
+   * never has to be derived from a name two messages can share.
+   */
+  id: string;
   peer: string;
   body: string;
   /**
@@ -352,21 +358,23 @@ function projectOf(address: string): string {
  * (the turn-opening probe): with no reader to compare against, the
  * counterparty draws as in this project and carries no org tag.
  */
-function peerCard(
-  peer: string,
-  body: string,
-  kind: MessageKind,
-  org: string | null,
-  self: Self | null,
-  status: CallStatus,
-): PeerCard {
+function peerCard(one: {
+  id: string;
+  peer: string;
+  body: string;
+  kind: MessageKind;
+  org: string | null;
+  self: Self | null;
+  status: CallStatus;
+}): PeerCard {
   return {
-    peer,
-    body,
-    kind,
-    here: self === null || projectOf(peer) === self.project,
-    org: org !== null && (self === null || org !== self.org) ? org : null,
-    status,
+    id: one.id,
+    peer: one.peer,
+    body: one.body,
+    kind: one.kind,
+    here: one.self === null || projectOf(one.peer) === one.self.project,
+    org: one.org !== null && (one.self === null || one.org !== one.self.org) ? one.org : null,
+    status: one.status,
   };
 }
 
@@ -426,11 +434,23 @@ function inbound(text: string, self: Self | null): Envelope | null {
     ['Reply id=', 'reply'],
   ] as const) {
     if (!header.startsWith(prefix)) continue;
-    const rest = after(header.slice(prefix.length), ' from agent ');
-    if (rest === null) return null;
-    const who = sender(rest);
+    const spec = header.slice(prefix.length);
+    const at = spec.indexOf(' from agent ');
+    if (at === -1) return null;
+    const who = sender(spec.slice(at + ' from agent '.length));
     if (who === null) return null;
-    return { kind: 'peer', card: peerCard(who.from, body, lane, who.org, self, 'completed') };
+    return {
+      kind: 'peer',
+      card: peerCard({
+        id: spec.slice(0, at),
+        peer: who.from,
+        body,
+        kind: lane,
+        org: who.org,
+        self,
+        status: 'completed',
+      }),
+    };
   }
 
   if (header.startsWith('Ask id=')) {
@@ -528,6 +548,7 @@ function outbound(
   input: unknown,
   self: Self | null,
   result: Block | undefined,
+  id: string,
 ): PeerCard | null {
   const fields = obj(input);
   const ask =
@@ -538,24 +559,20 @@ function outbound(
   if (name === 'mcp__forge__agents__ask' || name === 'mcp__forge__agents__tell') {
     const peer = address(fields);
     if (peer === null) return null;
-    return peerCard(peer, str(fields, ask ? 'prompt' : 'message') ?? '', lane, null, self, status);
+    const body = str(fields, ask ? 'prompt' : 'message') ?? '';
+    return peerCard({ id, peer, body, kind: lane, org: null, self, status });
   }
   if (name === 'mcp__forge__peers__ask_agent' || name === 'mcp__forge__peers__tell_agent') {
     const peer = str(fields, 'target');
     if (peer === null) return null;
-    return peerCard(peer, str(fields, ask ? 'prompt' : 'message') ?? '', lane, null, self, status);
+    const body = str(fields, ask ? 'prompt' : 'message') ?? '';
+    return peerCard({ id, peer, body, kind: lane, org: null, self, status });
   }
   if (name === 'mcp__forge__workers__ask' || name === 'mcp__forge__workers__tell') {
     const peer = str(fields, 'label');
     if (peer === null) return null;
-    return peerCard(
-      peer,
-      str(fields, ask ? 'question' : 'message') ?? '',
-      lane,
-      null,
-      self,
-      status,
-    );
+    const body = str(fields, ask ? 'question' : 'message') ?? '';
+    return peerCard({ id, peer, body, kind: lane, org: null, self, status });
   }
   return null;
 }
@@ -1042,7 +1059,7 @@ export function fold(
         const id = typeof block.id === 'string' ? block.id : '';
         if (isMonitor(name)) continue;
 
-        const card = outbound(name, block.input, self, results.get(id));
+        const card = outbound(name, block.input, self, results.get(id), id);
         if (card !== null) {
           flushRun();
           peers.push(card);
