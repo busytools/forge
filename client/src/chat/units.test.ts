@@ -81,7 +81,9 @@ describe('one turn folded into the units a view draws', () => {
     for (const breaker of [question, peer]) {
       const units = fold([call('read', 0), breaker, call('read', 1)]);
       expect(units, 'the run splits around a call drawn on its own').toHaveLength(3);
-      expect(kinds(units)[1], 'and that call is the unit in the middle').toMatch(/question|peer/);
+      expect(kinds(units)[1], 'and that call is the unit in the middle').toMatch(
+        /question|messages/,
+      );
     }
   });
 
@@ -139,10 +141,14 @@ describe('one turn folded into the units a view draws', () => {
     expect(fold([blank])).toHaveLength(1);
   });
 
-  it('draws a peer run as one group and a lone message as the card it is', () => {
+  it('draws peer traffic as one message group, a lone message included', () => {
     // The strings are the producers' own, from `peers/types.rs`'s
     // `to_prose`: a test using a shape nothing writes is what let three
     // envelopes draw as the reader's own turn with the suite green.
+    //
+    // **And a lone message groups**, which is the one place this shape departs
+    // from the terminal: its own `merge_messaging_groups` holds a group back
+    // until it holds two, where this draws a group of one.
     const one = heard([
       text("[Message id=t-1 from agent 'steward' (org 'Busytools')]\n\nIT IMPORTED"),
     ]);
@@ -150,18 +156,19 @@ describe('one turn folded into the units a view draws', () => {
       text("[Message id=t-2 from agent 'planner' (org 'Busytools')]\n\npicking it up"),
     ]);
 
-    expect(kinds(fold([one]))).toEqual(['peer']);
-    expect(kinds(fold([one, two]))).toEqual(['peers']);
-    const [peers] = fold([one, two]);
-    expect(peers?.kind === 'peers' ? peers.cards.length : 0).toBe(2);
+    expect(kinds(fold([one])), 'a lone message is a group of one').toEqual(['messages']);
+    expect(kinds(fold([one, two]))).toEqual(['messages']);
+    const [group] = fold([one, two]);
+    expect(group?.kind === 'messages' ? group.lanes.length : 0, 'one kind, one lane').toBe(1);
+    expect(group?.kind === 'messages' ? group.lanes[0]?.cards.length : 0).toBe(2);
   });
 
-  it("draws a question and a reply that carry the producer's trailer", () => {
-    // Both end with a clause inside the bracket - a question names the tool to
-    // answer with, a reply says what it answers - so a matcher anchored on the
-    // org clause's `)]` never fires and the envelope draws as the reader's own
-    // turn: the orange panel with a raw header on screen.
-    const question = heard([
+  it('gives each kind of peer traffic its own lane, in the order they arrived', () => {
+    // Both trailers end with a clause inside the bracket - a question names the
+    // tool to answer with, a reply says what it answers - so a matcher anchored
+    // on the org clause's `)]` never fires and the envelope draws as the
+    // reader's own turn: the orange panel with a raw header on screen.
+    const ask = heard([
       text(
         "[Question id=q-1 from agent 'steward' (org 'Busytools') - reply with agents__tell in_reply_to=q-1]\n\nis the cron issue filed?",
       ),
@@ -171,15 +178,130 @@ describe('one turn folded into the units a view draws', () => {
         "[Reply id=t-2 from agent 'planner' (org 'Busytools') to your earlier ask]\n\ntaking the render half",
       ),
     ]);
+    const message = heard([text("[Message id=t-3 from agent 'steward' (org 'Busytools')]\n\nFYI")]);
 
-    const units = fold([question, reply]);
-    expect(kinds(units), 'neither is a turn of the reader').toEqual(['peers']);
-    const [peers] = units;
-    const cards = peers?.kind === 'peers' ? peers.cards : [];
-    expect(cards[0]?.kind).toBe('question');
-    expect(cards[0]?.peer).toBe('steward');
-    expect(cards[0]?.body).toBe('is the cron issue filed?');
-    expect(cards[1]?.kind).toBe('reply');
+    const [group] = fold([ask, reply, message]);
+    const lanes = group?.kind === 'messages' ? group.lanes : [];
+
+    // A question draws on the ask lane whatever the wire calls it: the lane
+    // word is the traffic's own, and both directions of a question share it.
+    expect(lanes.map((lane) => lane.kind)).toEqual(['ask', 'reply', 'message']);
+    expect(lanes.map((lane) => lane.cards.length)).toEqual([1, 1, 1]);
+    expect(lanes[0]?.cards[0]?.body).toBe('is the cron issue filed?');
+    expect(lanes[0]?.cards[0]?.peer).toBe('steward');
+  });
+
+  it('keeps one lane per kind however the kinds interleave', () => {
+    // **Merged by kind, not by run**, which is what the terminal's own tally
+    // draws - a lane per row and label over the whole group - and what keeps a
+    // lane's word unique. Two lanes both headed `ask` collide on the key a view
+    // opens the lane's leaves by, and Svelte refuses a duplicate key at mount:
+    // the whole turn stops drawing, with nothing in an SSR render to show it.
+    const ask = (id: string): unknown =>
+      heard([
+        text(
+          `[Question id=${id} from agent 'steward' (org 'Busytools') - reply with agents__tell in_reply_to=${id}]\n\nis it filed?`,
+        ),
+      ]);
+    const message = heard([text("[Message id=t-m from agent 'steward' (org 'Busytools')]\n\nFYI")]);
+
+    const [group] = fold([ask('q-1'), message, ask('q-2')]);
+    const lanes = group?.kind === 'messages' ? group.lanes : [];
+
+    expect(
+      lanes.map((lane) => lane.kind),
+      'one lane per kind, first seen first',
+    ).toEqual(['ask', 'message']);
+    expect(
+      lanes.map((lane) => lane.cards.length),
+      'and both asks on the one lane',
+    ).toEqual([2, 1]);
+  });
+
+  it('carries the id the message arrived with, which is what names its group', () => {
+    // A handle whose uniqueness is not guaranteed is what has thrown twice in
+    // this shape, and the wire's own id is the one field that separates two
+    // messages from one sender.
+    const arrived = heard([
+      text("[Message id=t-9c1 from agent 'forge/steward' (org 'Busytools')]\n\nhi"),
+    ]);
+    const sent = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_01Bg',
+        name: 'mcp__forge__agents__ask',
+        input: { project: 'forge', label: 'steward', prompt: 'hi' },
+      },
+    ]);
+    const cardOf = (units: Unit[]): { id?: string } | undefined =>
+      units[0]?.kind === 'messages' ? units[0].lanes[0]?.cards[0] : undefined;
+
+    expect(cardOf(fold([arrived]))?.id, 'an envelope is named by its own id').toBe('t-9c1');
+    expect(cardOf(fold([sent]))?.id, 'and a call by the id the wire gave it').toBe('toolu_01Bg');
+  });
+
+  it('rolls a message group up from what each send came back with', () => {
+    // The mark on a group is its aggregate, so a send that failed draws the
+    // failure mark and one still out draws the ring - the sheet's own sentence,
+    // "a failed delivery included", and what the terminal's `aggregate_status`
+    // does for the same run.
+    const ask = (id: string): unknown =>
+      said([
+        {
+          type: 'tool_use',
+          id,
+          name: 'mcp__forge__agents__ask',
+          input: { project: 'forge', label: 'steward', prompt: 'is it filed?' },
+        },
+      ]);
+    const answer = (id: string, failed: boolean): unknown =>
+      heard([
+        {
+          type: 'tool_result',
+          tool_use_id: id,
+          content: failed ? 'the seat has no session' : 'yes',
+          is_error: failed,
+        },
+      ]);
+    const status = (units: Unit[]): string | null =>
+      units[0]?.kind === 'messages' ? units[0].status : null;
+
+    expect(status(fold([ask('toolu_a'), answer('toolu_a', false)])), 'a send that landed').toBe(
+      'completed',
+    );
+    expect(status(fold([ask('toolu_b'), answer('toolu_b', true)])), 'one that did not').toBe(
+      'failed',
+    );
+    expect(status(fold([ask('toolu_c')])), 'and one still out').toBe('in_progress');
+  });
+
+  it('marks the counterparty by class, and tags the org only when it is not the reader own', () => {
+    // The reader is `forge/chat-kinds`: `forge/steward` is a worker in this
+    // project, a bare name is another project's own agent, and the org tag is
+    // the case the project name cannot settle - the same name under another
+    // org. All three are the producer's own spellings.
+    const here = heard([
+      text("[Message id=t-1 from agent 'forge/steward' (org 'Busytools')]\n\nin this project"),
+    ]);
+    const other = heard([
+      text("[Message id=t-2 from agent 'gateway-backend' (org 'Busytools')]\n\nanother project"),
+    ]);
+    const away = heard([
+      text("[Message id=t-3 from agent 'gateway-backend' (org 'Gateway')]\n\nanother org"),
+    ]);
+    const self = { org: 'Busytools', project: 'forge', label: 'chat-kinds' };
+
+    const [group] = fold([here, other, away], null, self);
+    const cards = group?.kind === 'messages' ? (group.lanes[0]?.cards ?? []) : [];
+
+    expect(
+      cards.map((card) => card.here),
+      'this project, then not',
+    ).toEqual([true, false, false]);
+    expect(
+      cards.map((card) => card.org),
+      'the org only where it is not the reader own',
+    ).toEqual([null, null, 'Gateway']);
   });
 
   it('draws an external delivery as a notice rather than as a turn of the reader', () => {
@@ -400,8 +522,9 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const units = fold([queued]);
-    expect(kinds(units), 'not a turn of the reader').toEqual(['peer']);
-    expect(units[0]?.kind === 'peer' ? units[0].card.peer : null).toBe('lead');
+    expect(kinds(units), 'not a turn of the reader').toEqual(['messages']);
+    const first = units[0];
+    expect(first?.kind === 'messages' ? first.lanes[0]?.cards[0]?.peer : null).toBe('lead');
   });
 
   it('keeps the completion notice the harness sends out of the conversation', () => {

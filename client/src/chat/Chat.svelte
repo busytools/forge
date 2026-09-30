@@ -249,7 +249,7 @@
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">
-        <Turn {turn} {cwd} compacting={compacting && turn.key === newest} />
+        <Turn {turn} {cwd} {slot} compacting={compacting && turn.key === newest} />
       </div>
     {/snippet}
   </VList>

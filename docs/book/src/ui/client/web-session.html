@@ -21,8 +21,10 @@
      (a tool family with its calls as leaves), details.leaf (one call that
      opens on its own), .mine (a user turn - the orange rule is the
      attribution, so it carries no label), .attrow (what a turn attached),
-     .code, .dif, .notice, .peer,
-     .msg (a messaging group), .card (an answered question), .mon. */
+     .code, .dif, .notice, .card (an answered question), .mon.
+     A run of peer messages is a tool run: it takes details.kind, .knd and
+     details.leaf with .mk, .k and .org for the counterparty, so traffic and
+     work read as one system rather than two. */
   :root {
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
     --sel:#20140a; --line:#222a3c; --ctl:#516590;
@@ -328,31 +330,16 @@
   .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
   .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
 
-  /* peer traffic */
-  .peer { display: flex; align-items: center; gap: 9px; padding: 7px 12px; border-radius: 9px;
-    border: 1px solid rgba(78,201,201,.28); background: rgba(78,201,201,.06);
-    font-family: var(--mono); font-size: var(--fs-base); margin: 6px 0; }
-  .peer .dir { color: var(--teal); flex: none; }
-  .peer .from { color: var(--text); font-weight: 700; flex: none; }
-  .peer .txt { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  details.msg { border: 1px solid rgba(78,201,201,.22); border-radius: 10px; margin: 7px 0;
-    background: rgba(78,201,201,.03); }
-  details.msg > summary { list-style: none; display: flex; align-items: center; gap: 9px;
-    padding: 8px 12px; cursor: pointer; font-family: var(--mono); font-size: var(--fs-group); }
-  details.msg > summary::-webkit-details-marker { display: none; }
-  details.msg > summary:hover { background: rgba(78,201,201,.06); }
-  details.msg > summary .c { font-weight: 700; }
-  details.msg > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-label); }
-  details.msg[open] > summary .arw { color: var(--teal); }
-  .msgbody { padding: 0 12px 10px; }
-  .mmsg { display: flex; align-items: center; gap: 9px; padding: 3px 0;
-    font-family: var(--mono); font-size: var(--fs-base); min-width: 0; }
-  .mmsg .dir { color: var(--teal); }
-  .mmsg .kb { color: var(--muted); font-weight: 700; flex: none; }
-  .mmsg .who { color: var(--text); flex: none; }
-  .mmsg .txt { color: var(--dim); overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; }
+  /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
+  details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
+  details.leaf > summary .k { color: var(--text); font-weight: 700; }
+  details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
+    border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex: none; }
+  .pbody { font-family: var(--ui); font-size: var(--fs-base); color: var(--muted);
+    border-left: 1px solid var(--line); padding: 2px 0 2px 13px; margin: 5px 0; }
+  .pbody p + p { margin-top: 9px; }
+  .pbody code { font-family: var(--mono); font-size: .88em; color: var(--text);
+    background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
 
   /* an answered question survives the dock clearing */
   .card { margin: 8px 0; padding: 2px 0; }
@@ -687,6 +674,8 @@
   <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></symbol>
   <symbol id="i-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4v9a3 3 0 0 0 3 3h12"/><path d="m15 12 3 4-3 4"/></symbol>
   <symbol id="i-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4v9a3 3 0 0 1-3 3H6"/><path d="m9 12-3 4 3 4"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M12 8V4H8"/><path d="M9 14h.01M15 14h.01"/></symbol>
+  <symbol id="i-away" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/><path d="M12 12h9"/><path d="m18 9 3 3-3 3"/></symbol>
 </svg>
 
 <input type="checkbox" id="l" hidden>
@@ -1081,24 +1070,51 @@ docs: Render the message body into rows.</div>
             <span class="typed">"and keep the multiSelect case too"</span></div>
         </div>
 
-        <div class="peer"><svg class="ic dir"><use href="#i-in"/></svg>
-          <span class="from">companies</span>
-          <span class="txt">is the cron issue filed? the wake dies on the 2nd</span></div>
-
-        <details class="msg" open>
+        <details class="kind" open>
           <summary><svg class="ic st"><use href="#i-check"/></svg>
-            <span class="c">3 messages</span>
+            <span class="nm">1 message</span>
             <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="msgbody">
-            <div class="mmsg"><svg class="ic dir"><use href="#i-in"/></svg>
-              <span class="kb">message</span><span class="who">steward</span>
-              <span class="txt">IT IMPORTED. The window is lost&#8230;</span></div>
-            <div class="mmsg"><svg class="ic dir"><use href="#i-in"/></svg>
-              <span class="kb">message</span><span class="who">planner</span>
-              <span class="txt">picking up the migration now&#8230;</span></div>
-            <div class="mmsg"><svg class="ic dir"><use href="#i-in"/></svg>
-              <span class="kb">reply</span><span class="who">tester</span>
-              <span class="txt">take the render half, I&#39;ll take the partition&#8230;</span></div>
+          <div class="leaves">
+            <div class="knd"><svg class="ic gl"><use href="#i-in"/></svg><span class="nm">message</span></div>
+            <details class="leaf">
+              <summary><svg class="ic mk"><use href="#i-bot"/></svg>
+                <span class="tn"><span class="k">forge/steward</span> &#183; is the cron issue filed?</span>
+                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="pbody">
+                <p>is the cron issue filed? the wake dies on the 2nd.</p></div></div>
+            </details>
+          </div>
+        </details>
+
+        <details class="kind" open>
+          <summary><svg class="ic st"><use href="#i-check"/></svg>
+            <span class="nm">3 messages</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="leaves">
+            <div class="knd"><svg class="ic gl"><use href="#i-in"/></svg><span class="nm">message</span></div>
+            <details class="leaf">
+              <summary><svg class="ic mk"><use href="#i-bot"/></svg>
+                <span class="tn"><span class="k">forge/steward</span> &#183; IT IMPORTED. The window is lost</span>
+                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="pbody">
+                <p>IT IMPORTED. The window is lost, so the report has to come from the capture.</p></div></div>
+            </details>
+            <details class="leaf">
+              <summary><svg class="ic mk"><use href="#i-away"/></svg>
+                <span class="tn"><span class="k">companies</span> &#183; picking up the migration now</span>
+                <span class="org">Gateway</span>
+                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="pbody">
+                <p>picking up the migration now. Nothing blocked on your side.</p></div></div>
+            </details>
+            <div class="knd"><svg class="ic gl"><use href="#i-in"/></svg><span class="nm">reply</span></div>
+            <details class="leaf">
+              <summary><svg class="ic mk"><use href="#i-bot"/></svg>
+                <span class="tn"><span class="k">forge/tester</span> &#183; take the render half, I&#39;ll take the partition</span>
+                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="pbody">
+                <p>take the render half, I&#39;ll take the partition.</p></div></div>
+            </details>
           </div>
         </details>
 
@@ -1106,7 +1122,7 @@ docs: Render the message body into rows.</div>
         <div class="notice warn"><span class="sev">Warning</span>Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</div>
         <div class="notice err"><span class="sev">Error</span>Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</div>
 
-        <div class="compacting"><span class="ring"></span>Compacting context&#8230;</div>
+        <div class="compacting"><span class="ring"></span>Compacting context...</div>
 
         <details class="hooks">
           <summary><span>&#8627; hook summary &#183; 3 actions</span>

@@ -67,14 +67,47 @@ export interface Notice {
   text: string;
 }
 
-/** A peer message, as the envelope it arrived in or the call that sent it. */
+/** The lane a peer message draws on: the traffic's own three words. */
+export type MessageKind = 'ask' | 'message' | 'reply';
+
+/** The reader's own seat, for the two facts a message row compares against. */
+export interface Self {
+  org: string;
+  project: string;
+}
+
+/** One peer message, as the envelope it arrived in or the call that sent it. */
 export interface PeerCard {
+  /**
+   * The wire's own id for the message: the envelope's, or the `tool_use` id of
+   * the call that sent it. It is what a view names the group by, so a handle
+   * never has to be derived from a name two messages can share.
+   */
+  id: string;
   peer: string;
   body: string;
-  /** True when it arrived rather than was sent. */
-  inbound: boolean;
-  /** `question`, `message` or `reply` inbound; `ask` or `tell` outbound. */
-  kind: string;
+  /**
+   * Which lane it draws on, never which way it travelled: direction is not
+   * drawn, so a question this session sent and one it received both read
+   * `ask`.
+   */
+  kind: MessageKind;
+  /** Whether the counterparty is in this project, which the row's mark says. */
+  here: boolean;
+  /** The counterparty's org, shown only when it is not the reader's own. */
+  org: string | null;
+  /**
+   * What became of the message: a send with no answer yet is still out, one
+   * whose result came back in error did not arrive, and an envelope that
+   * arrived is done.
+   */
+  status: CallStatus;
+}
+
+/** One lane of a message group: its kind, and the messages that arrived as it. */
+export interface MessageLane {
+  kind: MessageKind;
+  cards: PeerCard[];
 }
 
 /** What one turn's hooks did. */
@@ -132,9 +165,14 @@ export type Unit =
   /** A maximal run of consecutive tool calls, drawn as one group. */
   | { kind: 'group'; families: FamilyLeaves[]; status: CallStatus }
   | { kind: 'question'; asked: AnsweredQuestion[] }
-  | { kind: 'peer'; card: PeerCard }
-  /** Two or more consecutive peer messages, drawn as one group with a count. */
-  | { kind: 'peers'; cards: PeerCard[] }
+  /**
+   * A run of peer messages, drawn as one group with a lane per kind.
+   *
+   * A lone message is a group of one, which is the one place this shape
+   * departs from the terminal: its own fold holds a messaging group back until
+   * it holds two.
+   */
+  | { kind: 'messages'; lanes: MessageLane[]; status: CallStatus }
   | { kind: 'notice'; notice: Notice }
   | { kind: 'hooks'; key: string; actions: number; infos: HookInfo[] }
   /** What a settled turn did, under the work it did it with. */
@@ -307,6 +345,48 @@ function sender(rest: string): { from: string; org: string } | null {
   return { from: rest.slice(1, name), org: rest.slice(name + 8, org) };
 }
 
+/** The project an address names: `project/label` is a worker, a bare name an own agent. */
+function projectOf(address: string): string {
+  const cut = address.lastIndexOf('/');
+  return cut === -1 ? address : address.slice(0, cut);
+}
+
+/**
+ * One peer message, with the two facts its row compares against the reader.
+ *
+ * `self` is the seat the page draws, and `null` when the fold runs without one
+ * (the turn-opening probe): with no reader to compare against, the
+ * counterparty draws as in this project and carries no org tag.
+ */
+function peerCard(one: {
+  id: string;
+  peer: string;
+  body: string;
+  kind: MessageKind;
+  org: string | null;
+  self: Self | null;
+  status: CallStatus;
+}): PeerCard {
+  return {
+    id: one.id,
+    peer: one.peer,
+    body: one.body,
+    kind: one.kind,
+    here: one.self === null || projectOf(one.peer) === one.self.project,
+    org: one.org !== null && (one.self === null || one.org !== one.self.org) ? one.org : null,
+    status: one.status,
+  };
+}
+
+/** What a send's own result says became of it, and a send with none is still out. */
+function messageStatus(result: Block | undefined): CallStatus {
+  if (result === undefined) return 'in_progress';
+  return result.is_error === true ? 'failed' : 'completed';
+}
+
+/** What an envelope's prose turned into: a peer message, or a line nobody typed. */
+type Envelope = { kind: 'peer'; card: PeerCard } | { kind: 'notice'; notice: Notice };
+
 /**
  * A Slack id is not a name to print.
  *
@@ -338,7 +418,7 @@ function isSlackId(value: string): boolean {
  * the two kinds that carry a trailer: a question ends `- reply with ...` and
  * a reply ends `to your earlier ask`, both inside the brackets.
  */
-function inbound(text: string): Unit | null {
+function inbound(text: string, self: Self | null): Envelope | null {
   if (!text.startsWith('[')) return null;
   const close = text.indexOf(']');
   if (close === -1) return null;
@@ -348,17 +428,29 @@ function inbound(text: string): Unit | null {
   // their own spacing and are read below.
   const body = tail.startsWith('\n\n') ? tail.slice(2) : '';
 
-  for (const [prefix, kind] of [
-    ['Question id=', 'question'],
+  for (const [prefix, lane] of [
+    ['Question id=', 'ask'],
     ['Message id=', 'message'],
     ['Reply id=', 'reply'],
   ] as const) {
     if (!header.startsWith(prefix)) continue;
-    const rest = after(header.slice(prefix.length), ' from agent ');
-    if (rest === null) return null;
-    const who = sender(rest);
+    const spec = header.slice(prefix.length);
+    const at = spec.indexOf(' from agent ');
+    if (at === -1) return null;
+    const who = sender(spec.slice(at + ' from agent '.length));
     if (who === null) return null;
-    return { kind: 'peer', card: { peer: who.from, body, inbound: true, kind } };
+    return {
+      kind: 'peer',
+      card: peerCard({
+        id: spec.slice(0, at),
+        peer: who.from,
+        body,
+        kind: lane,
+        org: who.org,
+        self,
+        status: 'completed',
+      }),
+    };
   }
 
   if (header.startsWith('Ask id=')) {
@@ -451,40 +543,36 @@ function inbound(text: string): Unit | null {
  * server's own answer is `None`, which draws the call as the tool row it is
  * rather than as a peer block with a nameless peer.
  */
-function outbound(name: string, input: unknown): PeerCard | null {
+function outbound(
+  name: string,
+  input: unknown,
+  self: Self | null,
+  result: Block | undefined,
+  id: string,
+): PeerCard | null {
   const fields = obj(input);
   const ask =
     name.endsWith('__ask') || name.endsWith('__ask_agent') || name.endsWith('__workers__ask');
+  const lane: MessageKind = ask ? 'ask' : 'message';
+  const status = messageStatus(result);
 
   if (name === 'mcp__forge__agents__ask' || name === 'mcp__forge__agents__tell') {
     const peer = address(fields);
     if (peer === null) return null;
-    return {
-      peer,
-      body: str(fields, name.endsWith('__ask') ? 'prompt' : 'message') ?? '',
-      inbound: false,
-      kind: ask ? 'ask' : 'tell',
-    };
+    const body = str(fields, ask ? 'prompt' : 'message') ?? '';
+    return peerCard({ id, peer, body, kind: lane, org: null, self, status });
   }
   if (name === 'mcp__forge__peers__ask_agent' || name === 'mcp__forge__peers__tell_agent') {
     const peer = str(fields, 'target');
     if (peer === null) return null;
-    return {
-      peer,
-      body: str(fields, ask ? 'prompt' : 'message') ?? '',
-      inbound: false,
-      kind: ask ? 'ask' : 'tell',
-    };
+    const body = str(fields, ask ? 'prompt' : 'message') ?? '';
+    return peerCard({ id, peer, body, kind: lane, org: null, self, status });
   }
   if (name === 'mcp__forge__workers__ask' || name === 'mcp__forge__workers__tell') {
     const peer = str(fields, 'label');
     if (peer === null) return null;
-    return {
-      peer,
-      body: str(fields, ask ? 'question' : 'message') ?? '',
-      inbound: false,
-      kind: ask ? 'ask' : 'tell',
-    };
+    const body = str(fields, ask ? 'question' : 'message') ?? '';
+    return peerCard({ id, peer, body, kind: lane, org: null, self, status });
   }
   return null;
 }
@@ -643,7 +731,11 @@ function noticeFields(words: string): {
  * never has to decide where a turn begins: it decides how the blocks inside
  * one read.
  */
-export function fold(messages: readonly unknown[], cwd: string | null = null): Unit[] {
+export function fold(
+  messages: readonly unknown[],
+  cwd: string | null = null,
+  self: Self | null = null,
+): Unit[] {
   const frames = messages as Frame[];
   /** Every result the turn holds, by the call it answers. */
   const results = new Map<string, ReturnType<typeof blocksOf>[number]>();
@@ -795,8 +887,24 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
   const flushPeers = (): void => {
     const cards = peers;
     peers = [];
-    if (cards.length === 1 && cards[0] !== undefined) units.push({ kind: 'peer', card: cards[0] });
-    else if (cards.length > 1) units.push({ kind: 'peers', cards });
+    if (cards.length === 0) return;
+    // One lane per KIND, first seen first - not one per run. The terminal's own
+    // tally draws a lane per kind over the whole group, and a lane's word is
+    // what a view opens its leaves by: two runs of the same kind would give two
+    // lanes the same word, which a keyed list refuses at mount.
+    const lanes: MessageLane[] = [];
+    const seen = new Map<MessageKind, MessageLane>();
+    for (const card of cards) {
+      const held = seen.get(card.kind);
+      if (held !== undefined) {
+        held.cards.push(card);
+        continue;
+      }
+      const lane: MessageLane = { kind: card.kind, cards: [card] };
+      seen.set(card.kind, lane);
+      lanes.push(lane);
+    }
+    units.push({ kind: 'messages', lanes, status: aggregateStatus(cards.map((c) => c.status)) });
   };
 
   const push = (unit: Unit): void => {
@@ -897,7 +1005,7 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     for (const block of blocksOf(frame.message?.content)) {
       if (block.type === 'text' && typeof block.text === 'string') {
         if (frame.type === 'user') {
-          const envelope = inbound(stripEscapes(block.text));
+          const envelope = inbound(stripEscapes(block.text), self);
           if (envelope !== null) {
             if (envelope.kind === 'peer') {
               // A peer message is a row the CLI answered as a turn of its own,
@@ -929,7 +1037,7 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         // rows in this machine's transcripts are a peer envelope, and the
         // envelope is a row of its own rather than the reader's - the same
         // check the text arm above runs, for the same reason it runs it.
-        const envelope = inbound(stripEscapes(words));
+        const envelope = inbound(stripEscapes(words), self);
         if (envelope !== null) {
           if (envelope.kind === 'peer') {
             flushRun();
@@ -951,7 +1059,7 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         const id = typeof block.id === 'string' ? block.id : '';
         if (isMonitor(name)) continue;
 
-        const card = outbound(name, block.input);
+        const card = outbound(name, block.input, self, results.get(id), id);
         if (card !== null) {
           flushRun();
           peers.push(card);

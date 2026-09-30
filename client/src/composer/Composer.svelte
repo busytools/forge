@@ -84,12 +84,23 @@
   const notice = $derived(noticeLine(composer.notice, sawTake));
   const line = $derived(notice !== null && dismissed === notice.text ? null : notice);
 
-  const sources = $derived<Sources>({
-    forgeCommands: FORGE_COMMANDS,
-    advertised: advisoriesFrom(record.slash_commands),
-    files: filesFrom(record.file_index),
-    agents: agentTypesFrom(record.subagents),
-  });
+  /**
+   * The lists a draft is matched against, pulled when a list is opened rather
+   * than on every frame.
+   *
+   * All four are built together on the pull, which is what keeps `held`'s
+   * dependencies equal to the sources it reads. What the pull saves is the
+   * record being replaced per frame, so a draft that opens nothing never
+   * rebuilds a list it will not draw.
+   */
+  function sources(): Sources {
+    return {
+      forgeCommands: FORGE_COMMANDS,
+      advertised: advisoriesFrom(record.slash_commands),
+      files: filesFrom(record.file_index),
+      agents: agentTypesFrom(record.subagents),
+    };
+  }
   const held = $derived(offer(draft, sources));
   const list = $derived(closed === draft ? null : held);
 
