@@ -24,8 +24,15 @@
  * they duplicate that surface inside every turn that used one.
  */
 
-import { aggregateStatus, labelOf, rowOf, type CallStatus, type KindRow } from './families';
-import { blocksOf, leafOf, type Block, type ToolLeaf } from './leaves';
+import {
+  aggregateStatus,
+  labelOf,
+  rowOf,
+  taskStatus,
+  type CallStatus,
+  type KindRow,
+} from './families';
+import { blocksOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
 import { stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
@@ -174,6 +181,12 @@ interface Frame {
   parent_tool_use_id?: unknown;
   hookCount?: unknown;
   hookInfos?: unknown;
+  task_id?: unknown;
+  tool_use_id?: unknown;
+  is_backgrounded?: unknown;
+  patch?: unknown;
+  summary?: unknown;
+  status?: unknown;
   estimated_tokens_delta?: unknown;
   duration_ms?: unknown;
   duration_api_ms?: unknown;
@@ -574,6 +587,56 @@ function turnFailure(frame: Frame): Notice | null {
 }
 
 /**
+ * The line a BACKGROUNDED task leaves behind, from the frame that ended it.
+ *
+ * The task frames arrive for every task the CLI runs, a foreground call and a
+ * dispatched agent among them, and for those the note would repeat what the
+ * row already says - the result that came back, or the report that is the
+ * call's own body. It is drawn where the wire says the task outlives its turn.
+ *
+ * The harness writes its own sentence for a command that finished and only the
+ * task's description for one that was stopped, so the wire's status word is
+ * drawn beside the summary exactly when the summary does not already say it.
+ * The tone follows that word the same way - green only for a task that
+ * finished, red only for one that failed or was killed, and no tone for a word
+ * this page does not know, because an unknown word is not a failure.
+ */
+function taskLine(summary: string | null, wire: string | null): BackgroundTask['note'] {
+  if (summary === null || summary.trim() === '') return null;
+  const said = wire !== null && !summary.includes(wire) ? `${summary} \u{b7} ${wire}` : summary;
+  const tone =
+    wire === 'completed'
+      ? 'sum'
+      : wire === 'failed' || wire === 'killed' || wire === 'stopped'
+        ? 'fail'
+        : null;
+  return { text: said, tone };
+}
+
+/**
+ * What a transcript's own completion notice says, which is the same fields the
+ * `task_notification` frame carries.
+ *
+ * A transcript holds no task frames at all - the CLI persists a background
+ * task's ending as a `<task-notification>` text block - so a page read has
+ * only this to end a call with, and without it the call reverts to drawing as
+ * finished at launch on every reconnect.
+ */
+function noticeFields(words: string): {
+  call: string | null;
+  status: string | null;
+  summary: string | null;
+} {
+  const inside = (tag: string): string | null => {
+    const open = words.indexOf(`<${tag}>`);
+    if (open === -1) return null;
+    const close = words.indexOf(`</${tag}>`, open);
+    return close === -1 ? null : words.slice(open + tag.length + 2, close).trim();
+  };
+  return { call: inside('tool-use-id'), status: inside('status'), summary: inside('summary') };
+}
+
+/**
  * Fold a turn's messages into the units a view draws.
  *
  * A `turn` is one page's worth of conversation as the server cut it, so this
@@ -602,6 +665,10 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
    * turn's first call draws red until its own result lands.
    */
   let failedAt: number | null = null;
+  /** What the wire reported about each backgrounded call, by call. */
+  const tasks = new Map<string, BackgroundTask>();
+  /** The call a task belongs to, which the frames that carry one name. */
+  const owners = new Map<string, string>();
   for (const [at, frame] of frames.entries()) {
     // A dispatched agent's frames are not the conversation, and its verdict is
     // not the session's: a sub-agent's failed result says nothing about the
@@ -615,8 +682,69 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     if (frame.type === 'error' || (frame.type === 'result' && frame.is_error === true)) {
       failedAt = at;
     }
+    if (frame.type === 'system') {
+      const task = str(frame, 'task_id');
+      const call = str(frame, 'tool_use_id');
+      if (frame.subtype === 'task_started' && call !== null) {
+        if (task !== null) owners.set(task, call);
+        // What the wire says about the task living past its turn, which is the
+        // only case the harness's summary is worth a line: a foreground call's
+        // result and a dispatch's report are already on the row.
+        tasks.set(call, {
+          status: 'in_progress',
+          note: null,
+          backgrounded: frame.is_backgrounded === true,
+        });
+      } else if (frame.subtype === 'task_updated' || frame.subtype === 'task_notification') {
+        // `task_updated` names only the task, so an update whose own
+        // `task_started` was never seen cannot be placed and is dropped rather
+        // than guessed at - which is the call the terminal makes on the same
+        // frame, and for the same reason: the wrong call would be worse than
+        // none.
+        const owner = call ?? (task === null ? null : (owners.get(task) ?? null));
+        if (owner === null) continue;
+        const held: BackgroundTask = tasks.get(owner) ?? {
+          status: 'in_progress',
+          note: null,
+          backgrounded: false,
+        };
+        const wire = str(frame, 'status') ?? str(obj(frame.patch), 'status');
+        tasks.set(owner, {
+          status: taskStatus(wire) ?? held.status,
+          note:
+            frame.subtype === 'task_notification'
+              ? taskLine(str(frame, 'summary'), wire)
+              : held.note,
+          backgrounded: held.backgrounded,
+        });
+      }
+      continue;
+    }
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {
+      // The transcript's own ending for a backgrounded call, which arrives as
+      // a text block rather than as the frames the live wire sends: a page read
+      // carries no task frames at all. It closes the endings persisted in THIS
+      // carrier; the same ending also reaches a transcript as a plain user row
+      // carrying the same XML, and what goes unread there is the ENDING - the
+      // row itself draws, as the reader's own turn, raw XML and all (#1364).
+      if (block.type === 'queued_command') {
+        const words = queuedText(block.prompt);
+        if (!isCompletion(block, words)) continue;
+        const said = noticeFields(words);
+        if (said.call === null) continue;
+        const held = tasks.get(said.call);
+        tasks.set(said.call, {
+          // The word the notice carries, or the status the call already had:
+          // a notice whose status is unreadable says the task ended without
+          // saying how, which is not a reason to walk a finished call back to
+          // running. (10 of this machine's 3,141 notices carry no status.)
+          status: taskStatus(said.status) ?? held?.status ?? 'in_progress',
+          note: taskLine(said.summary, said.status),
+          backgrounded: true,
+        });
+        continue;
+      }
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
         results.set(block.tool_use_id, block);
         // The record of what was answered rides beside the result, keyed the
@@ -837,7 +965,7 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         run.push({
           row: rowOf(name),
           label: labelOf(name),
-          leaf: leafOf(id, name, block.input, results.get(id), cwd, abandoned),
+          leaf: leafOf(id, name, block.input, results.get(id), cwd, tasks.get(id), abandoned),
         });
         continue;
       }

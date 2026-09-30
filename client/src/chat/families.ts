@@ -118,6 +118,35 @@ export function iconOf(row: KindRow): string {
 }
 
 /**
+ * A task frame's own status word, as the call it belongs to is drawn.
+ *
+ * The same four words the terminal maps to the same statuses: the wire says
+ * `running` where the row says in progress, and `stopped` is its word for a
+ * graceful cancel, which draws as the kill it is.
+ *
+ * **And one place it deliberately differs from the terminal.** An unrecognised
+ * word is `null` here rather than the terminal's `Pending`, so the caller
+ * keeps the status the call already had: a task whose update the page cannot
+ * read is a task it does not know has ended, and drawing it as pending again
+ * would walk a finished call back down.
+ */
+export function taskStatus(wire: string | null): CallStatus | null {
+  switch (wire) {
+    case 'running':
+      return 'in_progress';
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    case 'killed':
+    case 'stopped':
+      return 'killed';
+    default:
+      return null;
+  }
+}
+
+/**
  * What a run of calls reports.
  *
  * The roll-up says the run has a failure in it and never which call: the

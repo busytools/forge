@@ -31,9 +31,24 @@
   function asCode(piece: CallBody): string | null {
     return piece.kind === 'text' ? languageFor(call) : null;
   }
+
+  /**
+   * Which box a backgrounded call's notice goes at the end of: the last one
+   * the call's result drew, which is where the drawing puts it.
+   *
+   * `-1` when the body drew no line at all, which is a result carrying only an
+   * image - the notice is drawn in a box of its own there, because a line with
+   * nowhere to sit is a line dropped.
+   */
+  const tail = $derived(call.body.map((piece) => piece.kind).lastIndexOf('text'));
 </script>
 
-<details class="leaf" {open} data-k={`call-${call.id}`}>
+<details
+  class="leaf"
+  class:running={call.status === 'in_progress'}
+  {open}
+  data-k={`call-${call.id}`}
+>
   <summary>
     {#if call.status === 'completed'}
       <Icon name="check" class="st" />
@@ -92,10 +107,14 @@
                  whitespace rule turns out to be. -->
             <div class="term">
               {#if call.command !== null}<span class="pfx">$</span>
-                {call.command}<br />{/if}{piece.text}
+                {call.command}<br />{/if}{piece.text}{#if at === tail && call.note !== null}<br
+                /><span class={call.note.tone ?? undefined}>{call.note.text}</span>{/if}
             </div>
           {/if}
         {/each}
+        {#if tail === -1 && call.note !== null}
+          <div class="term"><span class={call.note.tone ?? undefined}>{call.note.text}</span></div>
+        {/if}
       {/if}
     </div>
   {/if}
