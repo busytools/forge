@@ -125,11 +125,11 @@ jobs:
       - run: cargo doc --workspace --no-deps --all-features
 
   # The client is not a cargo workspace member, so no other job here reaches
-  # it: without this the app's build, its typecheck and its tests run only
-  # when a person types them, and a gate that does not run reports what a
-  # gate that passes does.
+  # it: without this the client's steps run only when a person types them,
+  # and a gate that does not run reports what a gate that passes does. The
+  # steps are `just check`'s client recipes, in its order, plus the build.
   client:
-    name: client build, typecheck and tests
+    name: client format, lint, build, typecheck and tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -142,6 +142,9 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
       - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
       - run: npm run build
+      - run: npm run typecheck:markup
       - run: npm run typecheck
       - run: npm test
