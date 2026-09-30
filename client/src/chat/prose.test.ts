@@ -1,7 +1,39 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { fenceLanguage, languageOf, renderCode } from './code';
 import { renderProse } from './prose';
+
+const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
+
+/** Whether any rule the sheet writes for `unit` carries `said`. */
+function declares(unit: string, said: string): boolean {
+  const rules = SHEET.matchAll(
+    new RegExp(`\\.work \\.prose [^{}]*\\b${unit}\\b[^{}]*\\{([^}]*)\\}`, 'g'),
+  );
+  return [...rules].some((rule) => rule[1]?.includes(said) ?? false);
+}
+
+describe('the markdown a message carries, as the sheet draws it', () => {
+  it('marks each unit the way the terminal marks it', () => {
+    // A sheet edit that drops one of these is silent: the unit keeps drawing,
+    // only as the browser's default against a reset that zeroes margins. A
+    // fence is not here because the panel it draws is `.code`, covered above.
+    const marks: Array<[string, string, string]> = [
+      ['h1', 'font-size: var(--fs-prose)', 'every heading level is one size'],
+      ['h2', 'font-weight: 700', 'and bold'],
+      ['blockquote', 'border-left', 'a quote is marked by the rule this sheet insets with'],
+      ['table', 'border-collapse: collapse', 'cells share one grid'],
+      ['th', 'border-bottom', 'the header is ruled, and no body row is'],
+      ['hr', 'background: var(--line)', 'a break is a hairline'],
+      ['code', 'border-radius: 5px', "the chip takes the sheet's chip radius"],
+    ];
+    for (const [unit, said, why] of marks) {
+      expect(declares(unit, said), `${unit}: ${why}`).toBe(true);
+    }
+  });
+});
 
 describe('markdown, as the maintained module renders it', () => {
   it('renders the shapes the prose of a conversation uses', () => {

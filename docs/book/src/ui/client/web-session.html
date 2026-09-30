@@ -221,7 +221,25 @@
   .work .prose ul, .work .prose ol { padding-left: 22px; margin: 8px 0; }
   .work .prose li + li { margin-top: 4px; }
   .work .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
-    background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+    background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+  /* The rest of the markdown a message carries, in the vocabulary the terminal
+     settled: it draws every heading level as one bold line with a blank line
+     before it, marks a quote with a prefix and a dim colour, rules a table under
+     its header, and draws a break as a hairline. A fence is not here: it is the
+     code panel, which is `.code`. */
+  .work .prose h1, .work .prose h2, .work .prose h3,
+  .work .prose h4, .work .prose h5, .work .prose h6 {
+    font-size: var(--fs-prose); font-weight: 700; margin: 12px 0 6px; }
+  /* A rule down the left, which is how this sheet marks an inset everywhere else:
+     the reader's own turn, a command's output, a search hit, a call. */
+  .work .prose blockquote { border-left: 2px solid var(--line); color: var(--muted);
+    padding: 2px 0 2px 12px; margin: 10px 0; }
+  /* No rule between body rows: the terminal draws the one line under the header. */
+  .work .prose table { border-collapse: collapse; margin: 10px 0; }
+  .work .prose th, .work .prose td { text-align: left; padding: 4px 12px 4px 0; }
+  .work .prose th { color: var(--muted); font-weight: 700;
+    border-bottom: 1px solid var(--line); }
+  .work .prose hr { border: 0; height: 1px; background: var(--line); margin: 12px 0; }
 
   /* ---------- the family tree is the DEFAULT view ---------- */
   .kind { margin: 3px 0; }
