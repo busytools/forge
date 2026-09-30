@@ -130,6 +130,29 @@ describe('one turn, as the page draws it', () => {
     expect(body, 'and no bytes in the page').not.toContain('iVBORw0KGgo');
   });
 
+  it('draws no size for an attachment the wire gave as a url', () => {
+    const linked = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'this one is a link' },
+          {
+            type: 'image',
+            source: { type: 'url', media_type: 'image/png', url: 'https://example.test/a.png' },
+          },
+        ],
+      },
+      uuid: 'u3',
+    };
+
+    const mine = between(draw(linked), '<div class="mine"', '</div>');
+    expect(mine, 'the name the wire gave it').toContain('image/png');
+    // A payload with no length has no size, and the span that would hold one
+    // draws a bare dash in its place.
+    expect(mine, 'and no size beside it').not.toContain('<span class="n">');
+  });
+
   it('draws a mutation with its diff already open', () => {
     const body = draw(
       said([

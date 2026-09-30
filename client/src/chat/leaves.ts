@@ -61,7 +61,7 @@ function field(value: unknown, key: string): string | null {
 }
 
 /** A block, as one of the shapes the wire uses. */
-interface Block {
+export interface Block {
   type?: unknown;
   text?: unknown;
   id?: unknown;

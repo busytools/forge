@@ -25,7 +25,7 @@
  */
 
 import { aggregateStatus, labelOf, rowOf, type CallStatus, type KindRow } from './families';
-import { blocksOf, leafOf, type ToolLeaf } from './leaves';
+import { blocksOf, leafOf, type Block, type ToolLeaf } from './leaves';
 import { stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
@@ -246,6 +246,21 @@ function queuedText(prompt: unknown): string {
     })
     .filter((part): part is string => part !== null)
     .join('\n');
+}
+
+/**
+ * Whether a `queued_command` block is the harness's own background-completion
+ * notice, which nobody typed and this page does not draw.
+ *
+ * Both signals are read, because the terminal reads the text's own prefix
+ * where the mode is the field that says which of the three kinds arrived: a
+ * page keyed on one of them drifts from the other the first time either moves.
+ */
+function isCompletion(block: Block, words: string): boolean {
+  return (
+    str(block, 'commandMode') === 'task-notification' ||
+    words.trimStart().startsWith('<task-notification>')
+  );
 }
 
 /** The text between two markers, and what follows the second. */
@@ -687,19 +702,26 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
       }
 
       if (block.type === 'queued_command') {
-        // The harness's own background-completion notices ride this same
-        // block, and a run of them is task ids and output paths rather than
-        // anything a person said: the terminal drops them outright, and so
-        // does this. (The terminal also drops a prompt whose own text opens
-        // `<task-notification>`, which every row of the corpus carries the
-        // mode for; the mode is the field that says which of the three kinds
-        // arrived, so it is the one read.)
-        if (str(block, 'commandMode') !== 'task-notification') {
-          // A queued prompt is a turn the reader took, so what the frame
-          // attached rides it exactly as it rides one they typed.
-          push({ kind: 'user', text: queuedText(block.prompt), files: tookFiles ? [] : files });
-          tookFiles = true;
+        const words = queuedText(block.prompt);
+        if (isCompletion(block, words)) continue;
+        // **A queued prompt can be somebody else's words.** Half the queued
+        // rows in this machine's transcripts are a peer envelope, and the
+        // envelope is a row of its own rather than the reader's - the same
+        // check the text arm above runs, for the same reason it runs it.
+        const envelope = inbound(stripEscapes(words));
+        if (envelope !== null) {
+          if (envelope.kind === 'peer') {
+            flushRun();
+            peers.push(envelope.card);
+          } else {
+            push(envelope);
+          }
+          continue;
         }
+        // Otherwise it is a turn the reader took, so what the frame attached
+        // rides it exactly as it rides one they typed.
+        push({ kind: 'user', text: words, files: tookFiles ? [] : files });
+        tookFiles = true;
         continue;
       }
 

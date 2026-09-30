@@ -746,9 +746,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
   font-size: var(--fs-label); }
 .turninfo .tog { color: var(--muted); border: 1px solid var(--ctl);
   border-radius: 6px; padding: 0 8px; font-size: var(--fs-data); }
-/* The chip's label follows the row it sits on. */
-.turninfo .tog::after { content: "expand"; }
-.turninfo[open] .tog::after { content: "collapse"; }
 /* The body's two columns, each FACT a wrapper holding a label and its figure.
    A fact with no partner used to keep a cell in column with an empty span
    beside it, which is a grid auto-flowing rather than a body saying what it
