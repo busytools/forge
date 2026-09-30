@@ -82,28 +82,26 @@ function unreadable(pairs: readonly Pair[], palette: Readonly<Record<string, str
 }
 
 /**
- * Every pair the palette has to carry: the foreground token, the ground
- * under it, and the floor that applies.
+ * Every pair the palette has to carry: the foreground token, the ground under
+ * it, and the floor that applies. This comment says what the floors mean and
+ * where a number is not the page's; the table below is the list of what is
+ * drawn and where, so neither has to count the other.
  *
- * The grounds are the token surfaces the sheet and the components draw on -
- * the page (`--bg`), a popover, a card or the connect screen's own field
- * (`--s1`), a raised chip, an inline code ground, a diff header or a button
- * (`--s2`), and a progress track (`--s3`). Every pair but `--violet`'s comes
- * from a rule, in `assets/web.css` or in a component's own style block.
+ * The floor follows what the sheet draws the colour AS, not which token it
+ * is: `TEXT` for anything read as words, `MARK` for a surface that carries
+ * information without being text - a control's border, a bar fill. Nothing
+ * here takes the 3:1 large-text floor, since the sheet's largest is
+ * `.brand .word` at 22px and weight 650, neither 24px nor bold.
  *
- * Two rows name a ground darker than the one the page actually has, which is
- * the exception the limits above describe: `--blue` is `.opt .ic.ed` inside
- * the dock's own gradient, where it measures 6.80-7.08 rather than the 7.38
- * the page gives, and `--hot` is `.dict .db` inside the composer's, at
- * 10.21-10.64 rather than 11.25. Both clear their floor there, but the
- * table's number is not the page's. `--dim` on the dock's gradient is the one
- * to watch, since `.opt.sel` lays the accent over it: 4.27-4.52 across the
- * gradient, so at the floor, and under it at the top.
- *
- * `TEXT` is the floor on all but one row. Nothing here takes the 3:1
- * large-text floor: the sheet's largest is `.brand .word` at 22px and weight
- * 650, neither 24px nor bold. The `MARK` row is a bar fill inside a track,
- * which is not text at all.
+ * Every pair but `--violet`'s comes from a rule, in `assets/web.css` or in a
+ * component's own style block, and names the token that rule paints. Where a
+ * rule paints over a gradient or an alpha layer the row still has to name a
+ * token, so its number reads higher than the ground's: `--blue` is
+ * `.opt .ic.ed` in the dock's gradient, at 6.80-7.08 rather than 7.38;
+ * `--hot` is `.dict .db` in the composer's, at 10.21-10.64 rather than 11.25;
+ * `--ctl` is `.opt .box2` in the dock's gradient at 3.23-3.36 rather than
+ * 3.50, and 3.10 on the selected row's own ground. Each clears its floor
+ * where it lands.
  *
  * `--violet` is drawn by nothing - no rule in the sheet reads it - and is
  * pinned against the page so the token cannot sit in the palette with no
@@ -119,6 +117,10 @@ const DRAWN: readonly Pair[] = [
   ['--dim', '--bg', TEXT],
   ['--dim', '--s1', TEXT],
   ['--dim', '--s2', TEXT],
+  ['--dim', '--sel', TEXT],
+  // A control's own mark, on the page and on the selected row's ground.
+  ['--ctl', '--bg', MARK],
+  ['--ctl', '--sel', MARK],
   ['--accent', '--bg', TEXT],
   ['--accent', '--s1', TEXT],
   ['--accent', '--s2', TEXT],
@@ -138,16 +140,27 @@ const DRAWN: readonly Pair[] = [
 
 /**
  * The palette's one token with no pair. `--line` is the hairline: section
- * rules, and the border around a control. Nothing is drawn on it, and a
+ * rules, code frames and popover dividers. Nothing is drawn on it, and a
  * separator is not information WCAG requires to be perceived - the single
  * rule that inks it, `.sess .facts .sep`, is a middot at 1.42:1.
  *
- * **What that leaves unchecked is `--line` as a control boundary**, which no
- * pair can express: `.opt .box2` is a 1.5px `--line` border, and a strict
- * reading of 1.4.11 puts the border identifying a control at 3:1. Named
- * rather than left out, so a token arriving without a pair still fails.
+ * A border that identifies a control is a different job, and the sheet's own
+ * controls have left this token: the dock's checkbox and notes field, the two
+ * `.tog` chips and the account pill all draw `--ctl`, carried above at the
+ * 3:1 of 1.4.11. The connect screen's address field and its button still draw
+ * `--line`, over fills of 1.08:1 and 1.16:1 against the page, so neither fill
+ * separates from it and the field's boundary is drawn by its border alone.
+ * That screen is #1320 and owes its own drawing rather than a mirror here.
+ * Named rather than left out, so a token arriving without a pair still fails.
  */
 const NOT_INK = ['--line'];
+
+/**
+ * The one ground the sheet draws no text on: `--s3` is a progress track, and
+ * the only pair naming it is the bar fill. Named rather than left out, so a
+ * ground whose text pair goes missing is a failure and not a quiet exception.
+ */
+const NO_TEXT_GROUND = ['--s3'];
 
 /**
  * Two grounds one step apart, which is the shape a wrong entry in the table
@@ -197,6 +210,23 @@ describe('the palette', () => {
       Object.keys(rootTokens(null)).filter((token) => !paired.has(token)),
       'a palette token with no pair saying where it is drawn',
     ).toEqual([...NOT_INK]);
+  });
+
+  /**
+   * The guard above says a token is paired somewhere, which is not the same
+   * as the pair that matters still being there: dropping the `--dim` row
+   * leaves `--sel` paired by the control border, and this file goes green
+   * while the ground the selected row draws its text on is no longer checked.
+   */
+  it('carries text on every ground the table names', () => {
+    const grounds = new Set(DRAWN.map(([, ground]) => ground));
+    const withText = new Set(
+      DRAWN.filter(([, , floor]) => floor === TEXT).map(([, ground]) => ground),
+    );
+    expect(
+      [...grounds].filter((ground) => !withText.has(ground)).sort(),
+      'a ground that has lost its text pair',
+    ).toEqual([...NO_TEXT_GROUND]);
   });
 
   it('draws every pair it names at or above its floor', () => {

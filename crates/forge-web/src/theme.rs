@@ -28,7 +28,13 @@ const BG: &str = "#04050a";
 const S1: &str = "#0d111a";
 const S2: &str = "#141926";
 const S3: &str = "#1b2130";
+/// The selected option row's ground. Flat rather than the accent at 10% over
+/// the dock's gradient, so `--dim` on it is one number (4.65:1).
+const SEL: &str = "#20140a";
 const LINE: &str = "#222a3c";
+/// The mark on a control with no fill or shadow to say so, which 1.4.11 asks
+/// 3:1 of: 3.50:1 on the page and 3.23-3.36 on the dock's gradient.
+const CTL: &str = "#516590";
 const TEXT: &str = "#eaeef6";
 const MUTED: &str = "#8f98a8";
 /// The quietest of the three text tokens, and the darkest step that clears
@@ -62,7 +68,9 @@ const DARK: &[(&str, &str)] = &[
     ("--s1", S1),
     ("--s2", S2),
     ("--s3", S3),
+    ("--sel", SEL),
     ("--line", LINE),
+    ("--ctl", CTL),
     ("--text", TEXT),
     ("--muted", MUTED),
     ("--dim", DIM),
