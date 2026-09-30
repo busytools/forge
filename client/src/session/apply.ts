@@ -446,9 +446,17 @@ function push(take: Record<string, unknown>, peakDb: number): Record<string, unk
 }
 
 /**
- * The notice a finished take leaves, worded as `crates/forge-server/src/composer.rs`
- * words it - the record's notice is that one, and a second wording here would
- * be a second answer to the same question.
+ * The notice a finished take leaves, worded as `crates/forge-server/src/composer.rs:130-161`
+ * words it.
+ *
+ * **Five strings the server owns, copied here, and the copy is deliberate.**
+ * The record's notice arrives by two paths - this reducer, and a read carrying
+ * the server's own `ComposerWire.notice` - so a client wording of its own
+ * would make one event read two ways, and a poll re-syncs only the fields no
+ * update feeds, so the disagreement would persist. The day the read path
+ * normalises what it carries, this copy can go and the wording can be the
+ * client's; until then it is the server's, named here so the drift is a grep
+ * away rather than silent.
  */
 function noticeOf(
   outcome: Record<string, unknown>,
