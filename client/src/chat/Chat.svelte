@@ -180,24 +180,35 @@
 </script>
 
 {#if waking}
-  <!-- A seat with no session behind it. It claims nothing about a spawn: this
-       page cannot start one, and a line saying one is coming would be a
-       promise no code keeps. -->
-  <div class="hold off">
-    not running
-    <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
+  <!-- Each state below is the column in that state, so each carries the
+       column's own rules: without them the copy is the one thing on the page
+       drawn at no padding and no gutter, while the list beside it is not. -->
+  <div class="conv">
+    <!-- A seat with no session behind it. It claims nothing about a spawn:
+         this page cannot start one, and a line saying one is coming would be
+         a promise no code keeps. -->
+    <div class="hold off">
+      not running
+      <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
+    </div>
   </div>
 {:else if held.refused !== null}
-  <p class="hold off">This forge would not answer for this conversation: {held.refused}</p>
+  <div class="conv">
+    <p class="hold off">This forge would not answer for this conversation: {held.refused}</p>
+  </div>
 {:else if !held.loaded}
-  <!-- Connected, and the first page has not come back. It is its own state:
-       the empty copy here would say the seat has no history when the truth is
-       that nothing has answered yet. -->
-  <p class="hold">Reading the conversation...</p>
+  <div class="conv">
+    <!-- Connected, and the first page has not come back. It is its own state:
+         the empty copy here would say the seat has no history when the truth
+         is that nothing has answered yet. -->
+    <p class="hold">Reading the conversation...</p>
+  </div>
 {:else if held.turns.length === 0}
-  <div class="hold">
-    Nothing said yet
-    <span class="sub">this seat has no history: what is said here starts it</span>
+  <div class="conv">
+    <div class="hold">
+      Nothing said yet
+      <span class="sub">this seat has no history: what is said here starts it</span>
+    </div>
   </div>
 {:else}
   <!-- The list draws its own scroll viewport, so the sheet's `.conv` rules go
