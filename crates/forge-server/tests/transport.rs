@@ -757,3 +757,94 @@ async fn a_dropped_socket_leaves_no_subscription_behind() {
         fleet.subscriber_count(),
     );
 }
+
+/// A delivery reaches a socket client as the turn it draws, and then as the
+/// typed update it came from.
+///
+/// The CLI does not echo a prompt it was handed on stdin, so the wire carries
+/// nothing a view could draw and a page drawing only frames shows the
+/// assistant answering something nobody saw. The terminal forges that turn in
+/// its own process; this is the server's way out doing the same, so a client
+/// no longer has to.
+///
+/// The role is `answering: false` on purpose: a client with no dock to reply
+/// from is still shown the turn, and the forge must not be what makes an
+/// observer look like an answerer.
+#[tokio::test]
+async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
+    )
+    .await;
+    snapshot_answering(&mut socket).await;
+
+    fleet.emit(SessionUpdate::CronPromptAppended {
+        key: lead_seat(),
+        text: "run the morning summary".to_owned(),
+    });
+
+    let ServerMessage::Update { update } = next_server(&mut socket).await else {
+        panic!("a delivery a view draws as a turn has to reach the client drawing it")
+    };
+    let SessionUpdate::ChatAppended { key, msg } = *update else {
+        panic!("the frame is what a view draws, and it goes ahead of the typed update")
+    };
+    assert_eq!(key, lead_seat(), "the frame is addressed to the seat the delivery went to");
+    let forge_primitives::Message::User { message, .. } = msg else {
+        panic!("a delivery draws as the user turn the model's prompt was")
+    };
+    let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+        panic!("the turn carries the prose the model received")
+    };
+    assert!(
+        text.starts_with("[Cron]"),
+        "the prose is what the fold's envelope detection reads back, so it is the \
+         forged turn rather than some other user frame: {text}",
+    );
+
+    let ServerMessage::Update { update } = next_server(&mut socket).await else {
+        panic!("the typed update still goes out beside the frame")
+    };
+    assert!(
+        matches!(*update, SessionUpdate::CronPromptAppended { .. }),
+        "a view keeps the typed update too: the frame is what it draws, the update is what \
+         it knows",
+    );
+}
+
+/// The same stream carries the whole fleet, so a delivery to another seat
+/// draws nothing here.
+///
+/// The forged frame carries the delivery's own slot, so the routing that keeps
+/// another seat's news out of this connection has to keep its frame out too -
+/// a frame reaching the wrong seat is a client showing one seat's cron fire
+/// inside another seat's conversation.
+#[tokio::test]
+async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
+    )
+    .await;
+    snapshot_answering(&mut socket).await;
+
+    fleet.emit(SessionUpdate::CronPromptAppended {
+        key: SessionSlot::for_label("TestOrg", "proj", Some("w1")),
+        text: "run the morning summary".to_owned(),
+    });
+    // The evidence is ORDER, never a timeout: a frame forged for the other
+    // seat would have to arrive ahead of an update this connection does hear,
+    // and waiting for it NOT to arrive would hang on the correct behaviour.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+
+    let msg = next_server(&mut socket).await;
+    assert!(
+        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        "a delivery for another seat must not draw on this one: {msg:?}",
+    );
+}
