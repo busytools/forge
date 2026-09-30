@@ -105,7 +105,13 @@
     "ToggleMcpServer": "toggle_mcp_server",
     "UpsertReviewThread": "upsert_review_thread"
   },
-  "update_payload_sampled": {
+  "client_message": {
+    "Command": "command",
+    "More": "more",
+    "Subscribe": "subscribe",
+    "Unsubscribe": "unsubscribe"
+  },
+  "payload_sampled": {
     "ChatAppended": {
       "": [
         "kind",
@@ -131,6 +137,26 @@
         "subtype",
         "type",
         "uuid"
+      ]
+    },
+    "Page": {
+      "": [
+        "conversation",
+        "cursor",
+        "kind",
+        "turns"
+      ],
+      "/conversation": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/turns[]": [
+        "key",
+        "messages"
+      ],
+      "/turns[]/messages[]": [
+        "type"
       ]
     }
   }
