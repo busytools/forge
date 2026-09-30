@@ -183,6 +183,7 @@ interface Frame {
   hookInfos?: unknown;
   task_id?: unknown;
   tool_use_id?: unknown;
+  is_backgrounded?: unknown;
   patch?: unknown;
   summary?: unknown;
   status?: unknown;
@@ -685,7 +686,14 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
       const call = str(frame, 'tool_use_id');
       if (frame.subtype === 'task_started' && call !== null) {
         if (task !== null) owners.set(task, call);
-        tasks.set(call, { status: 'in_progress', note: null });
+        // What the wire says about the task living past its turn, which is the
+        // only case the harness's summary is worth a line: a foreground call's
+        // result and a dispatch's report are already on the row.
+        tasks.set(call, {
+          status: 'in_progress',
+          note: null,
+          backgrounded: frame.is_backgrounded === true,
+        });
       } else if (frame.subtype === 'task_updated' || frame.subtype === 'task_notification') {
         // `task_updated` names only the task, so an update whose own
         // `task_started` was never seen cannot be placed and is dropped rather
@@ -694,7 +702,11 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         // none.
         const owner = call ?? (task === null ? null : (owners.get(task) ?? null));
         if (owner === null) continue;
-        const held: BackgroundTask = tasks.get(owner) ?? { status: 'in_progress', note: null };
+        const held: BackgroundTask = tasks.get(owner) ?? {
+          status: 'in_progress',
+          note: null,
+          backgrounded: false,
+        };
         const wire = str(frame, 'status') ?? str(obj(frame.patch), 'status');
         tasks.set(owner, {
           status: taskStatus(wire) ?? held.status,
@@ -702,6 +714,7 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
             frame.subtype === 'task_notification'
               ? taskLine(str(frame, 'summary'), wire)
               : held.note,
+          backgrounded: held.backgrounded,
         });
       }
       continue;
@@ -710,16 +723,23 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     for (const block of blocksOf(frame.message?.content)) {
       // The transcript's own ending for a backgrounded call, which arrives as
       // a text block rather than as the frames the live wire sends: a page read
-      // carries no task frames at all, so without this the call draws as
-      // finished at launch every time the page re-reads.
+      // carries no task frames at all, and it closes the endings the CLI
+      // persisted in THIS carrier - the same ending also reaches a transcript
+      // as a user row carrying the same XML, which this fold does not see.
       if (block.type === 'queued_command') {
         const words = queuedText(block.prompt);
         if (!isCompletion(block, words)) continue;
         const said = noticeFields(words);
         if (said.call === null) continue;
+        const held = tasks.get(said.call);
         tasks.set(said.call, {
-          status: taskStatus(said.status) ?? 'in_progress',
+          // The word the notice carries, or the status the call already had:
+          // a notice whose status is unreadable says the task ended without
+          // saying how, which is not a reason to walk a finished call back to
+          // running. (10 of this machine's 3,141 notices carry no status.)
+          status: taskStatus(said.status) ?? held?.status ?? 'in_progress',
           note: taskLine(said.summary, said.status),
+          backgrounded: true,
         });
         continue;
       }

@@ -521,7 +521,7 @@ describe('one turn folded into the units a view draws', () => {
         },
       ]),
     ]);
-    expect(kinds(pdf)).toEqual(['user']);
+    expect(kinds(pdf), 'a document with no words is a turn of its own').toEqual(['user']);
     expect(pdf[0]?.kind === 'user' ? pdf[0].files.map((file) => file.mime) : []).toEqual([
       'application/pdf',
     ]);
@@ -802,6 +802,168 @@ describe('one turn folded into the units a view draws', () => {
     expect(odd[0]?.note?.tone, 'a word it does not know is not a failure').toBeNull();
   });
 
+  it('draws no line for a task the wire did not say outlives its turn', () => {
+    // A foreground call's own result is already on the row, and a dispatched
+    // agent's report is the row's own body: the harness's summary under either
+    // one repeats what the row already says - the subagent's report twice, and
+    // a foreground command's own title. Both shapes are in the captures.
+    const launch = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_01Fg',
+        name: 'Bash',
+        input: { command: 'sleep 1 && echo fg' },
+      },
+    ]);
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bf0y4w5hl',
+      tool_use_id: 'toolu_01Fg',
+      is_backgrounded: false,
+    };
+    const notified = {
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'bf0y4w5hl',
+      tool_use_id: 'toolu_01Fg',
+      status: 'completed',
+      summary: 'Sleep 65 seconds then echo a marker',
+    };
+
+    const units = fold([launch, started, notified]);
+    const calls = units.flatMap((unit) =>
+      unit.kind === 'group' ? unit.families.flatMap((one) => one.calls) : [],
+    );
+
+    expect(calls[0]?.status, 'the ending still settles the call').toBe('completed');
+    expect(calls[0]?.note, 'and the row is not given a line it already says').toBeNull();
+  });
+
+  it('keeps two tasks in flight apart whatever order their endings arrive in', () => {
+    // A backgrounded bash while a backgrounded agent runs is ordinary, and the
+    // endings arrive in the order the tasks finish rather than the order they
+    // started. The map from a task to its call is what keeps each ending with
+    // its own row; a fold keyed on the call that started last hands every
+    // ending to that one.
+    const first = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_01',
+        name: 'Bash',
+        input: { command: 'sleep 30', run_in_background: true },
+      },
+    ]);
+    const second = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_02',
+        name: 'Bash',
+        input: { command: 'sleep 60', run_in_background: true },
+      },
+    ]);
+    const started = (task: string, call: string): unknown => ({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: task,
+      tool_use_id: call,
+      is_backgrounded: true,
+    });
+    const killedSecond = {
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: 'task-b',
+      patch: { status: 'killed' },
+    };
+    const finishedFirst = {
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'task-a',
+      tool_use_id: 'toolu_01',
+      status: 'completed',
+      summary: 'the first one finished',
+    };
+
+    const units = fold([
+      first,
+      started('task-a', 'toolu_01'),
+      second,
+      started('task-b', 'toolu_02'),
+      killedSecond,
+      finishedFirst,
+    ]);
+    const calls = units.flatMap((unit) =>
+      unit.kind === 'group' ? unit.families.flatMap((one) => one.calls) : [],
+    );
+    expect(calls.map((leaf) => [leaf.id, leaf.status])).toEqual([
+      ['toolu_01', 'completed'],
+      ['toolu_02', 'killed'],
+    ]);
+
+    // An update naming a task this turn never saw started is dropped even with
+    // a live sibling beside it: the wrong call would be worse than none.
+    const orphan = fold([
+      first,
+      started('task-a', 'toolu_01'),
+      second,
+      started('task-b', 'toolu_02'),
+      {
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'task-gone',
+        patch: { status: 'killed' },
+      },
+    ]);
+    const held = orphan.flatMap((unit) =>
+      unit.kind === 'group' ? unit.families.flatMap((one) => one.calls) : [],
+    );
+    expect(
+      held.map((leaf) => leaf.status),
+      'both are still out',
+    ).toEqual(['in_progress', 'in_progress']);
+  });
+
+  it('keeps a finished call finished when a later update is unreadable', () => {
+    // The regression the `null` return from `taskStatus` exists to prevent: an
+    // update whose status word this page does not know must leave the call
+    // where it was, and walking a completed call back to running is the guess
+    // that would look most right.
+    const launch = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_01Bg',
+        name: 'Bash',
+        input: { command: 'sleep 30', run_in_background: true },
+      },
+    ]);
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bj5g0t2kq',
+      tool_use_id: 'toolu_01Bg',
+      is_backgrounded: true,
+    };
+    const finished = {
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: 'bj5g0t2kq',
+      patch: { status: 'completed' },
+    };
+    const unreadable = {
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: 'bj5g0t2kq',
+      patch: { status: 'half-done' },
+    };
+
+    const units = fold([launch, started, finished, unreadable]);
+    const calls = units.flatMap((unit) =>
+      unit.kind === 'group' ? unit.families.flatMap((one) => one.calls) : [],
+    );
+
+    expect(calls[0]?.status, 'the call stays where the readable frame put it').toBe('completed');
+  });
+
   it('leaves a backgrounded call running after the result that started it', () => {
     // The launch and its result as the capture has them
     // (crates/forge-test-harness/baselines/sdk/2.1.280/backgrounded_bash_lifecycle.jsonl).
@@ -869,6 +1031,8 @@ describe('one turn folded into the units a view draws', () => {
       subtype: 'task_started',
       task_id: 'bj5g0t2kq',
       tool_use_id: 'toolu_012ygCheCDa6s8YmU5JxxVp2',
+      // The capture's own field, and the one that makes the note worth a line.
+      is_backgrounded: true,
     };
     const ended = {
       type: 'system',
@@ -888,7 +1052,7 @@ describe('one turn folded into the units a view draws', () => {
     const first = fold([launch, launched, started, ended, notified]);
     const done = first[0]?.kind === 'group' ? first[0].families[0]?.calls[0] : undefined;
     expect(done?.status).toBe('completed');
-    expect(done?.note, 'the harness own sentence, drawn as it wrote it').toEqual({
+    expect(done?.note, 'the harness sentence, drawn as it wrote it').toEqual({
       text: 'Background command "Echo test string after brief sleep" completed (exit code 0)',
       tone: 'sum',
     });

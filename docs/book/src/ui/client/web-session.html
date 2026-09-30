@@ -289,9 +289,6 @@
   details.leaf:hover > summary .arw { color: var(--muted); }
   details.leaf[open] > summary { color: var(--text); }
   details.leaf[open] > summary .arw { color: var(--accent); }
-  /* A call the wire reports as still running says so at the row, which is the
-     one thing its own launch result cannot: that result is a clean one. */
-  details.leaf.running > summary { color: var(--text); }
 
   /* A call that stands alone and breaks the run: a peer block, an
      unanswered question, or a lifecycle call such as a Monitor. An edit is
@@ -992,15 +989,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
             </details>
             <details class="leaf running">
               <summary><span class="st"><span class="ring"></span></span><span class="tn">cargo nextest run -p forge-web</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="term">    Starting 42 tests across 3 binaries</div>
-              </div>
             </details>
             <details class="leaf running">
               <summary><span class="st"><span class="ring"></span></span><span class="tn">just check-feature-configs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="term">    Starting fmt-check...</div>
-              </div>
             </details>
             <!-- A call the reader backgrounded: its own result says the command
                  STARTED, and the ending arrives later as a frame of its own. -->
@@ -1010,6 +1001,16 @@ Consecutive tool calls between two user messages fold into one group.</div>
                 <div class="term"><span class="pfx">$</span> sleep 2 &amp;&amp; echo test string
 Command running in background with ID: bj5g0t2kq.
 <span class="sum">Background command "Echo test string after brief sleep" completed (exit code 0)</span></div>
+              </div>
+            </details>
+            <!-- The other ending a backgrounded call gets, in the tone the
+                 harness's own word earns. -->
+            <details class="leaf">
+              <summary><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">Run slow counting loop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="term"><span class="pfx">$</span> for i in $(seq 1 10000); do echo $i; sleep 1; done
+Command running in background with ID: a69098eff5f5d405a.
+<span class="fail">Run slow counting loop &middot; stopped</span></div>
               </div>
             </details>
 
