@@ -600,9 +600,10 @@ inspected.
 
     **The layering diagrams differ in grain deliberately. Do not
     reconcile them.** This file draws `forge-test-harness` on
-    primitives + sdk + workspace; `README.md` and `architecture.md`
-    draw it on primitives + sdk. `forge-workspace` is a dev-dependency
-    of the harness, so both are true and neither is stale. Naming
+    primitives + sdk + workspace + server; `README.md` and
+    `architecture.md` draw it on primitives + sdk. `forge-workspace`
+    and `forge-server` are dev-dependencies of the harness, so both are
+    true and neither is stale. Naming
     these documents as a set is what invites someone to make them
     agree, which would quietly change what two of them mean.
 19. **A terminal multiplexer is the common case, not the edge case.**

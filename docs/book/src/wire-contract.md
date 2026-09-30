@@ -121,8 +121,8 @@ They live under `baselines/` beside the CLI captures and are not captures
 themselves: nothing here is recorded live. Both are derived from the
 current code, which is why regenerating one is a deliberate act.
 
-`frames.json` carries every variant of the five enums that cross the
-socket - `ServerMessage`, `SessionUpdate`, `Subject`, `Command` and
+`frames.json` carries every variant of the five enums whose tags the socket
+itself chooses - `ServerMessage`, `SessionUpdate`, `Subject`, `Command` and
 `ClientMessage` - with the wire name each encodes as. The census behind it
 is one list per enum expanded into both a `match` with no wildcard arm and
 the names the record is built from, so a variant the server starts or stops
@@ -130,6 +130,11 @@ sending is a compile error before it is ever a failing test, and there is
 no second list to drift. The client writes a `ClientMessage` tag by hand,
 so a rename there is a message the server refuses rather than a page that
 draws blank.
+
+A `Message` also crosses, inside `chat_appended`, and its variant tags are
+not pinned here: they are the CLI's words rather than forge's, and what
+`chat.json` records of a message is the keys of the fields its variants
+carry.
 
 `chat.json` carries the key set of the `Message` payload the chat fold
 reads, walked off the committed SDK baselines rather than derived from a
@@ -159,11 +164,23 @@ comparing the two against `client/src/`. The check is on the record, not on
 the agreement, and a change that renames a field without touching the page
 is caught here while a page that reads the wrong name is not.
 
-**The limits print themselves, every run.** The wire name of a variant is
-derived from its Rust name, so a container's `rename_all` is caught only
-for the variants a sample is built for; a payload is pinned only for the
-two frames sampled. Beside that, the three subject fixtures report what
-they actually pin: how many keys they carry, how many are `null` (the key
-exists, nothing behind it is pinned), and how many collections they carry
-empty, where an element shape is pinned nowhere at all and a field renamed
-inside one is invisible to every pin in the tree.
+**Some limits print themselves on every run.** The three subject fixtures
+report what they actually pin: how many keys they carry, how many are
+`null` (the key exists, nothing behind it is pinned), and how many
+collections they carry empty, where an element shape is pinned nowhere at
+all and a field renamed inside one is invisible to every pin in the tree.
+
+**Others are declared rather than printed.** A payload is pinned only for
+the two frames sampled; the fields inside a variant nobody samples are not
+pinned at all. A container's `rename_all` and any variant-level
+`#[serde(rename)]` are covered for every variant, because the names are
+read out of serde rather than derived from the Rust ones - but that reads
+serde's DESERIALIZE side, and a client reads what serde WRITES. A split
+renaming, which names a variant one way out and another way in, is
+therefore invisible to the names here; the test asserts by source that no
+such renaming exists in the three files carrying these enums.
+
+That last check depends on serde's own unknown-variant message, which it
+formats rather than contracts: the parse finds nothing if the wording
+changes, and the emptiness assertion fails loudly rather than the
+comparison passing against an empty set.

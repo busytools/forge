@@ -264,9 +264,11 @@ matching:
 just conformance-record-socket
 ```
 
-A baseline that gains a frame can also gain keys, so expect `chat.json` to
-move on most upgrades. `frames.json` should not: nothing about it depends
-on the CLI version.
+**Both records move on a bump, `frames.json` included.** It is not only a
+census of the enums: one section carries the path-and-key shape of a
+sampled `chat_appended`, taken from the first decodable `Message` in the
+baselines, so a recapture that changes which scenario sorts first rewrites
+that section with no code change. Expect both to diff and read both.
 
 ### Reference captures are deliberately out of scope
 

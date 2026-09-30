@@ -18,16 +18,29 @@
 //! - The FIELD record is a path-and-key walk over encoded values. A renamed
 //!   field moves a line in `chat.json`.
 //!
-//! **What this cannot see, stated rather than implied.** The wire name of a
-//! variant is derived from its Rust name, so a change to a container's
-//! `rename_all` is caught only for the variants a sample is built for: all six
-//! `ServerMessage`s, all three `Subject`s, all four `ClientMessage`s, one
-//! `SessionUpdate` and one `Command`. The rest rest on their container
-//! attribute. A payload is pinned only for the two frames sampled below.
+//! **What this cannot see, stated rather than implied.** A payload is pinned
+//! only for the two frames sampled below, and the fields inside a variant
+//! nobody samples are not pinned at all. `Task` and `CronEntry` have no
+//! fixture behind them, which `wire.rs` counts and names on every run.
 //!
 //! **Nothing here reads the client.** The records say what the server emits;
 //! whether a page reads those names is a reader comparing the two, not a
 //! check. That comparison is the whole point of regenerating deliberately.
+//!
+//! **One dependency worth naming.** The wire names come from serde's own
+//! unknown-variant error, which is a message serde formats rather than a
+//! contract it promises. It fails closed: a parse that finds no
+//! `expected one of` clause yields nothing, and the emptiness assertion
+//! fires rather than the comparison passing against an empty set.
+//!
+//! **A SPLIT rename is the one naming change no name check here can read.**
+//! serde can name a variant one way on the way out and another on the way
+//! in, and the probe asks the deserialize side while the record is built
+//! from Rust names - so the record would state a tag the server does not
+//! send, green, and a client reading what serde WRITES draws blank. Only the
+//! two sampled frames catch it, for their own payloads. `assert_no_split_renames`
+//! asserts the shape is absent from the three sources carrying these enums,
+//! which is complete for it.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -69,19 +82,41 @@ fn wire_name(rust_name: &str) -> String {
 /// a compile error, and a pattern naming a variant that no longer exists is
 /// one too, so the list cannot disagree with the enum in either direction.
 /// `stringify!` makes the names the variants' own rather than retyped.
+///
+/// **The list is in declaration order, and that is load-bearing.** serde
+/// reports the names it accepts in the order the variants are declared, and
+/// `assert_serde_names!` compares the two as a SEQUENCE rather than a set:
+/// a set cannot see two variants swapping names with each other, which
+/// leaves the record stating the opposite of what the server sends. Each
+/// entry carries its own kind, because a tuple variant needs a different
+/// pattern and an interleaved list is the only way to keep the order.
 macro_rules! census {
     ($enum:ident,
-     structs [$($structs:ident),* $(,)?]
-     tuples [$($tuples:ident),* $(,)?],
+     [$($v:ident $kind:ident),* $(,)?],
      $census:ident, $names:ident) => {
+        census!(@arms $enum, $census; [] $($v $kind,)*);
+
+        const $names: &[&str] = &[ $( stringify!($v), )* ];
+    };
+
+    // The arms are accumulated here rather than written in place, so one
+    // interleaved list can carry both kinds: a struct variant and a tuple
+    // variant need different patterns, and a `match` cannot be handed a
+    // choice of pattern by a nested macro.
+    (@arms $enum:ident, $census:ident; [$($arms:tt)*]) => {
         fn $census(value: &$enum) -> &'static str {
             match value {
-                $( $enum::$structs { .. } => stringify!($structs), )*
-                $( $enum::$tuples(..) => stringify!($tuples), )*
+                $($arms)*
             }
         }
-
-        const $names: &[&str] = &[ $( stringify!($structs), )* $( stringify!($tuples), )* ];
+    };
+    (@arms $enum:ident, $census:ident; [$($arms:tt)*] $v:ident struct, $($rest:tt)*) => {
+        census!(@arms $enum, $census;
+            [$($arms)* $enum::$v { .. } => stringify!($v),] $($rest)*);
+    };
+    (@arms $enum:ident, $census:ident; [$($arms:tt)*] $v:ident tuple, $($rest:tt)*) => {
+        census!(@arms $enum, $census;
+            [$($arms)* $enum::$v(..) => stringify!($v),] $($rest)*);
     };
 }
 
@@ -107,7 +142,48 @@ fn serde_names(error: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Assert that the names this record carries are the names serde accepts.
+/// Assert that the sources carrying these enums hold no SPLIT renaming.
+///
+/// **This is the one naming change every other check in this file is blind
+/// to.** serde can name a variant one way on the way out and another on the
+/// way in - `#[serde(rename(serialize = "a", deserialize = "b"))]`, or the
+/// same split on a container's `rename_all`. The accepted-name probe asks
+/// serde's DESERIALIZE side, because that is the side its error comes from;
+/// the record is built from Rust names. So a split rename leaves the record
+/// stating a tag the server does not send, green, and a client - which reads
+/// what serde WRITES - draws blank.
+///
+/// The two sampled frames catch it for their own payloads and nothing else
+/// does, so the shape is asserted against the source instead, which is
+/// complete for it. Whitespace is stripped first, because
+/// `rename ( serialize` is the same attribute.
+fn assert_no_split_renames() {
+    const SPLIT: &[&str] = &[
+        "rename(serialize",
+        "rename_all(serialize",
+        "rename(deserialize",
+        "rename_all(deserialize",
+    ];
+    for (name, source) in [
+        ("envelope.rs", include_str!("../../forge-server/src/transport/envelope.rs")),
+        ("protocol.rs", include_str!("../../forge-workspace/src/protocol.rs")),
+        ("messages.rs", include_str!("../../forge-primitives/src/messages.rs")),
+    ] {
+        let flat: String = source.chars().filter(|ch| !ch.is_whitespace()).collect();
+        for pattern in SPLIT {
+            assert!(
+                !flat.contains(pattern),
+                "{name} carries a `{pattern}` renaming, which names a wire value one way on the \
+                 way out and another on the way in. The record is built from Rust names and the \
+                 serde probe asks the deserialize side, so the record would state a tag the \
+                 server does not send while every check here passed."
+            );
+        }
+    }
+}
+
+/// Assert that the names this record carries are the names serde accepts,
+/// **in the same order**.
 ///
 /// **`wire_name(stringify!(Variant))` is an assumption**, not a reading: it
 /// says a variant's wire name is its Rust name under `rename_all`. For a
@@ -115,81 +191,95 @@ fn serde_names(error: &str) -> Vec<String> {
 /// which left the rest stating a tag the server might not send - and a
 /// variant-level `#[serde(rename)]` produced exactly that, green, with a
 /// regeneration that diffed clean because both sides used the same
-/// assumption. Asking serde closes it for every variant of every enum: a
-/// `rename` anywhere moves a name out of the accepted set and out of this
-/// record at once, so the two cannot disagree.
+/// assumption.
+///
+/// **The comparison is a sequence, not a set.** The error names the tags
+/// serde accepts without saying which variant each belongs to, so a set
+/// cannot see two variants swapping names with each other - and a swap is
+/// the one attack that leaves the record stating the opposite of what the
+/// server sends while every name in it is a real one. serde lists them in
+/// declaration order, so each census list is kept in that order.
+///
+/// **A failure here is one of two things**, and the message says so: a name
+/// moved, or the census list is out of declaration order. Reordering the
+/// list to clear the message is the one repair that would lose the check.
 macro_rules! assert_serde_names {
     ($probe:expr, $enum:ty, $names:expr) => {{
         let Err(error) = serde_json::from_str::<$enum>($probe) else {
             panic!("{}: a tag no variant carries decoded", stringify!($enum));
         };
-        let accepted: BTreeSet<String> = serde_names(&error.to_string()).into_iter().collect();
+        let accepted = serde_names(&error.to_string());
         assert!(
             !accepted.is_empty(),
             "{}: serde named no variant, so this comparison proved nothing",
             stringify!($enum)
         );
-        let recorded: BTreeSet<String> = $names.iter().map(|name| wire_name(name)).collect();
+        let recorded: Vec<String> = $names.iter().map(|name| wire_name(name)).collect();
         assert_eq!(
             accepted,
             recorded,
-            "{}: the wire names serde accepts are not the ones this record carries, so the \
-             record states a tag the server does not send",
+            "{}: the wire names serde accepts are not the ones this record carries, in the \
+             order it carries them, so the record states a tag the server does not send. \
+             Either a name moved, or this census list is out of the enum's declaration order \
+             - reordering the list to silence this is the repair that loses the check.",
             stringify!($enum)
         );
     }};
 }
 
 census!(ServerMessage,
-    structs [Greeting, Snapshot, Update, Page, Reply, Error]
-    tuples [],
+    [Greeting struct, Snapshot struct, Update struct, Page struct, Reply struct, Error struct],
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
 census!(Subject,
-    structs [Home, Usage]
-    tuples [Session],
+    [Home struct, Session tuple, Usage struct],
     subject_census, SUBJECT_VARIANTS);
 
 census!(SessionUpdate,
-    structs [
-        Spawning, Connected, SessionReplaced, ConnectionFailed, AuthRequired,
-        SlashCommandError, RuntimeReloadCompleted, RuntimeReloadFailed, SetModeFailed,
-        SetModelFailed, PermissionRequest, QuestionRequest, PendingInteractionResolved,
-        McpOperationError, TurnComplete, TurnCancelled, TurnError, ChatAppended,
-        HookObservation, StatusSnapshot, ForgeAccountIdentity, DictateOverrides,
-        DictateDevicePin, OauthCredentialsSnapshot, ContextUsageSnapshot, McpSnapshot,
-        SessionsListed, ServiceStatus, CatalogLoaded, CliVersionChanged, AccountsChanged,
-        PluginsInventoryUpdated, PluginsInventoryRefreshFailed, PluginsCliActionSucceeded,
-        PluginsCliActionFailed, PluginsUpdateRunProgress, PluginsUpdateRunFinished,
-        PluginsRollbackSucceeded, PluginsRollbackFailed, PeerInflightStatsChanged,
-        WorkerStatusChanged, PeerEnvelopeAppended, GotifyNotificationAppended,
-        CronPromptAppended, SlackMessageAppended, SlackPostPending, SlackDraftExpired,
-        PromptQueuedWhileBusy, ReviewActivityNotice, DictateAvailability, DictateStarted,
-        DictateLevel, DictateTranscribing, DictateProgress, DictateEnded,
-    ]
-    tuples [FatalError],
+    [
+        Spawning struct, Connected struct, SessionReplaced struct, ConnectionFailed struct,
+        AuthRequired struct, SlashCommandError struct, RuntimeReloadCompleted struct,
+        RuntimeReloadFailed struct, SetModeFailed struct, SetModelFailed struct,
+        PermissionRequest struct, QuestionRequest struct, PendingInteractionResolved struct,
+        McpOperationError struct, TurnComplete struct, TurnCancelled struct, TurnError struct,
+        ChatAppended struct, HookObservation struct, StatusSnapshot struct,
+        ForgeAccountIdentity struct, DictateOverrides struct, DictateDevicePin struct,
+        OauthCredentialsSnapshot struct, ContextUsageSnapshot struct, McpSnapshot struct,
+        SessionsListed struct, ServiceStatus struct, CatalogLoaded struct,
+        CliVersionChanged struct, AccountsChanged struct, PluginsInventoryUpdated struct,
+        PluginsInventoryRefreshFailed struct, PluginsCliActionSucceeded struct,
+        PluginsCliActionFailed struct, PluginsUpdateRunProgress struct,
+        PluginsUpdateRunFinished struct, PluginsRollbackSucceeded struct,
+        PluginsRollbackFailed struct, PeerInflightStatsChanged struct,
+        WorkerStatusChanged struct, PeerEnvelopeAppended struct,
+        GotifyNotificationAppended struct, CronPromptAppended struct,
+        SlackMessageAppended struct, SlackPostPending struct, SlackDraftExpired struct,
+        PromptQueuedWhileBusy struct, ReviewActivityNotice struct, DictateAvailability struct,
+        DictateStarted struct, DictateLevel struct, DictateTranscribing struct,
+        DictateProgress struct, DictateEnded struct, FatalError tuple,
+    ],
     session_update_census, SESSION_UPDATE_VARIANTS);
 
 census!(Command,
-    structs [
-        Prompt, Cancel, SetMode, SetModel, NewSession, ResumeSession, RespondPermission,
-        RespondSlackPost, RespondQuestion, SetDictateOverride, ResetDictateOverrides,
-        SetDictateDevice, ReconnectMcpServer, ToggleMcpServer, SpawnProject, SpawnSession,
-        StartDefault, DeliverPeerPrompt, SpawnWorker, CloseWorker, OpenUrl, DespawnWorker,
-        DeliverWorkerPrompt, DeliverWorkerPromptToLead, DeliverGotifyMessage, DictateStart,
-        DictateStop, SaveReviewThreads, RemoveReviewThread, SetReviewThreadStatus,
-        CloseSession, UpsertReviewThread, SubmitReview,
-    ]
-    tuples [],
+    [
+        Prompt struct, Cancel struct, SetMode struct, SetModel struct, NewSession struct,
+        ResumeSession struct, RespondPermission struct, RespondSlackPost struct,
+        RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
+        SetDictateDevice struct, ReconnectMcpServer struct, ToggleMcpServer struct,
+        SpawnProject struct, SpawnSession struct, StartDefault struct, DeliverPeerPrompt struct,
+        SpawnWorker struct, CloseWorker struct, OpenUrl struct, DespawnWorker struct,
+        DeliverWorkerPrompt struct, DeliverWorkerPromptToLead struct,
+        DeliverGotifyMessage struct, DictateStart struct, DictateStop struct,
+        SaveReviewThreads struct, RemoveReviewThread struct, SetReviewThreadStatus struct,
+        CloseSession struct, UpsertReviewThread struct, SubmitReview struct,
+    ],
     command_census, COMMAND_VARIANTS);
 
 // What a client sends. Easy to leave out and it crosses the socket: the
 // client writes these tags by hand, so a rename here fails nothing until the
 // command does nothing when it is pressed.
 census!(ClientMessage,
-
-    structs [Subscribe, Unsubscribe, Command, More]
-    tuples [],
+    [Subscribe struct, Unsubscribe struct, Command struct, More struct],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
 /// Where the records live, named by the protocol the server speaks rather
@@ -333,6 +423,8 @@ fn seat() -> SessionSlot {
 /// rather than trusted.
 fn frames_record() -> Value {
     let seat = seat();
+
+    assert_no_split_renames();
 
     // Every name this record carries, against the names serde accepts. The
     // samples below check the same thing for eleven variants by encoding a
@@ -628,29 +720,28 @@ fn describe_drift(name: &str, committed: &str, fresh: &str) -> String {
     )
 }
 
-/// How many names a record pins, counted in whatever unit that record uses:
-/// a section of names counts its entries, and a section of paths counts the
-/// keys each path carries. `unreadable` when the JSON will not parse, which
-/// must not read as "nothing pinned".
+/// How many names a record pins. `unreadable` when the JSON will not parse,
+/// which must not read as "nothing pinned".
+///
+/// **Walked rather than matched against the shapes it happens to have.** An
+/// earlier version of this counted one shape and returned zero for the
+/// other, which is a denominator that lies quietly; a shallow version of the
+/// same mistake then counted the census sections of `frames.json` and missed
+/// the payload section nested one level deeper. A name is a string, a list
+/// of names is an array, and everything else is a container to descend.
 fn pinned(body: &str) -> String {
-    let Ok(Value::Object(sections)) = serde_json::from_str::<Value>(body) else {
-        return "unreadable".to_owned();
-    };
-    sections
-        .values()
-        .map(|section| match section {
-            // A path, and the keys it carries - `chat.json`'s shape.
-            Value::Array(keys) => keys.len(),
-            // A section of names, one per entry.
-            Value::Object(entries) if entries.values().all(Value::is_string) => entries.len(),
-            // A section of paths, each with its own key list.
-            Value::Object(entries) => {
-                entries.values().filter_map(Value::as_array).map(Vec::len).sum()
-            }
+    fn count(value: &Value) -> usize {
+        match value {
+            Value::Array(names) => names.len(),
+            Value::String(_) => 1,
+            Value::Object(entries) => entries.values().map(count).sum(),
             _ => 0,
-        })
-        .sum::<usize>()
-        .to_string()
+        }
+    }
+    match serde_json::from_str::<Value>(body) {
+        Ok(value) => count(&value).to_string(),
+        Err(_) => "unreadable".to_owned(),
+    }
 }
 
 /// Writes the records from the current code. Run deliberately:
@@ -662,10 +753,11 @@ fn pinned(body: &str) -> String {
 /// is not the work. The floors run here too, so a degraded record fails at
 /// the write rather than in whichever run reads it next.
 ///
-/// Each file is written beside its record and renamed over it, because a
-/// write in place truncates before it fills: a regeneration killed partway
-/// would otherwise leave a record holding half a shape and reading as a
-/// whole one.
+/// Each file is written beside its record and renamed over it, so a failure
+/// anywhere in the write leaves the record it found rather than half a new
+/// one. The staging name carries this process's id, because two
+/// regenerations sharing one name would have one clobber the other's bytes
+/// and the clean writer failing on a file the other had already moved.
 #[test]
 #[ignore = "writes the records; run deliberately"]
 fn write_the_socket_records() {
@@ -674,7 +766,7 @@ fn write_the_socket_records() {
     std::fs::create_dir_all(record_dir()).expect("create the record directory");
     for (name, body) in &built.records {
         let path = record_path(name);
-        let staging = path.with_extension("json.new");
+        let staging = path.with_extension(format!("json.{}.new", std::process::id()));
         std::fs::write(&staging, body).expect("write the staged record");
         std::fs::rename(&staging, &path).expect("move the record into place");
         eprintln!("wrote {}", path.display());
