@@ -2483,8 +2483,9 @@ impl Workspace {
 
     /// Spawn the worker-kick drainer task (#259). Takes the receiver
     /// out of `kick_dispatcher_rx_slot` and starts a tokio task that
-    /// loops on `recv()`, calls [`Self::dispatch`] for each request,
-    /// then sleeps `KICK_DISPATCH_INTERVAL` before the next pull.
+    /// loops on `recv()`, calls
+    /// [`Self::dispatch_workspace_prompt`] for each request, then sleeps
+    /// `KICK_DISPATCH_INTERVAL` before the next pull.
     ///
     /// Call once at construction, AFTER `Workspace::new` returns and
     /// the result is Arc-wrapped (mirrors `start_account_loading_tasks`
@@ -3569,14 +3570,26 @@ impl Workspace {
         cmd: Command,
         origin: PromptOrigin,
     ) -> Result<(), DispatchError> {
-        if let Command::Prompt { key, text, .. } = &cmd {
+        // The prose is taken before the move and emitted only once the command
+        // reached a session. A refused prompt never reached a model, so no view
+        // draws it as a turn - and the frame for one would open a live turn in
+        // every view but the sender, with nothing left to close it: the refusal
+        // is written to the asking socket alone.
+        let prompt = match &cmd {
+            Command::Prompt { key, text, .. } => Some((key.clone(), text.clone())),
+            _ => None,
+        };
+        let outcome = self.route(cmd);
+        if outcome.is_ok()
+            && let Some((key, text)) = prompt
+        {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
-                key: key.clone(),
-                msg: Message::display_only_user(text.clone()),
+                key,
+                msg: Message::display_only_user(text),
                 origin: Some(origin),
             });
         }
-        self.route(cmd)
+        outcome
     }
 
     /// Route a command that carries no frame of its own.
@@ -16225,22 +16238,33 @@ mod prompt_frame_origin_tests {
         Command::Prompt { key: key.clone(), text: "hello".to_owned(), attachments: Vec::new() }
     }
 
-    fn the_seat() -> SessionSlot {
-        SessionSlot::lead("TestOrg", "proj")
+    /// A fleet with one seat, and this seat's stream off the core's fan-out.
+    ///
+    /// The prompt is ACCEPTED through the dispatch intercept, which is this
+    /// crate's own way of saying "the core took it" without standing up a real
+    /// subprocess - the stub alone leaves the seat with no command sender, so
+    /// every dispatch is refused for a reason the fixture invented.
+    fn a_fleet() -> (Arc<Workspace>, mpsc::UnboundedReceiver<SessionUpdate>, SessionSlot) {
+        let (ws, rx) = Workspace::testing_stub();
+        ws.seed_test_project("proj", "/tmp/prompt-frame-origin");
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        ws.enable_test_dispatch_intercept();
+        (ws, rx, seat)
     }
 
     /// The terminal's own entry, which is what `App::dispatch_command` takes.
     #[test]
     fn the_uis_own_entry_marks_the_frame_as_the_uis() {
-        let (ws, mut rx) = Workspace::testing_stub();
+        let (ws, mut rx, seat) = a_fleet();
 
-        let _ = ws.dispatch(a_prompt(&the_seat()));
+        let dispatched = ws.dispatch(a_prompt(&seat));
 
+        assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
         assert!(
             matches!(
                 rx.try_recv(),
                 Ok(SessionUpdate::ChatAppended { origin: Some(PromptOrigin::Ui), key, .. })
-                    if key == the_seat()
+                    if key == seat
             ),
             "the words the terminal drew at submit are marked as its own, or it draws them twice",
         );
@@ -16249,15 +16273,16 @@ mod prompt_frame_origin_tests {
     /// The socket's entry, which is what `ViewSurface::dispatch` takes.
     #[test]
     fn a_views_entry_marks_the_frame_as_a_views() {
-        let (ws, mut rx) = Workspace::testing_stub();
+        let (ws, mut rx, seat) = a_fleet();
 
-        let _ = ws.dispatch_from_view(a_prompt(&the_seat()));
+        let dispatched = ws.dispatch_from_view(a_prompt(&seat));
 
+        assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
         assert!(
             matches!(
                 rx.try_recv(),
                 Ok(SessionUpdate::ChatAppended { origin: Some(PromptOrigin::View), key, .. })
-                    if key == the_seat()
+                    if key == seat
             ),
             "no view has drawn a send made over the socket, so every view has to",
         );
@@ -16266,13 +16291,35 @@ mod prompt_frame_origin_tests {
     /// The delivery path, which already draws as an envelope turn of its own.
     #[test]
     fn a_delivery_emits_no_frame() {
-        let (ws, mut rx) = Workspace::testing_stub();
+        let (ws, mut rx, seat) = a_fleet();
 
-        let _ = ws.dispatch_workspace_prompt(&the_seat(), "run the morning summary".to_owned());
+        let _ = ws.dispatch_workspace_prompt(&seat, "run the morning summary".to_owned());
 
         assert!(
             rx.try_recv().is_err(),
             "a bare user turn beside a delivery's envelope turn draws the same words twice",
+        );
+    }
+
+    /// A prompt the core refuses draws nothing anywhere.
+    ///
+    /// It never reached a model, so there is no turn to draw - and a frame for
+    /// one would open a live turn in every view but the sender, while the
+    /// refusal is written to the asking socket alone. Those views cannot learn
+    /// why, so the turn bar spins for the life of the connection.
+    #[test]
+    fn a_refused_prompt_emits_no_frame() {
+        // No intercept: the dispatch takes the real path and is refused, which
+        // is the case this pins.
+        let (ws, mut rx) = Workspace::testing_stub();
+        let nowhere = SessionSlot::lead("TestOrg", "no-such-project");
+
+        let refused = ws.dispatch(a_prompt(&nowhere));
+
+        assert!(refused.is_err(), "precondition: the core holds no session here: {refused:?}");
+        assert!(
+            rx.try_recv().is_err(),
+            "a refused prompt opened a turn in every view but the sender",
         );
     }
 }

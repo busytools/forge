@@ -934,22 +934,17 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
     );
 }
 
-/// A send the core refuses still draws the words.
+/// A send the core refuses draws nothing, in any view.
 ///
-/// The forge runs before the dispatch, which is what the terminal does: its
-/// `dispatch_prompt` pushes the user's bubble before it dispatches and does
-/// not take it back when the dispatch fails. Drawing only the sends that
-/// reached the model would be the client inventing a rule the reference
-/// implementation does not have, and it would silently swallow the reader's
-/// words on exactly the send that already went wrong.
+/// It never reached a model, so there is no turn to draw. Drawing it anyway
+/// would open a live turn in every view but the sender - the sender at least
+/// hears the refusal on its own socket, and those other views hear only the
+/// frame, so their turn bar would spin with nothing left to close it.
 #[tokio::test]
-async fn a_prompt_the_core_refuses_still_draws() {
+async fn a_prompt_the_core_refuses_draws_nothing() {
     let (url, fleet) = a_server().await;
-    // A seat with no session behind it, so the dispatch is refused and the
-    // sender hears so. Every message the sender gets is read, in either order:
-    // the refusal is written to the socket by the handler while the frame
-    // waits in the connection's own queue, so which arrives first is a
-    // scheduling hop and not something to assert.
+    // A seat with a session behind it, so the subscribe is answered - but no
+    // dispatch intercept, so the prompt itself is refused.
     fleet.install_agent("TestOrg", "proj", "lead");
     let mut sender = connect(&url).await;
     send(
@@ -974,22 +969,38 @@ async fn a_prompt_the_core_refuses_still_draws() {
     )
     .await;
 
-    let (mut drawn, mut refused) = (false, false);
-    while !(drawn && refused) {
-        // The reads are bounded here rather than through `next_server`, whose
-        // own panic reports a server that said nothing and not which property
-        // this test was waiting on.
-        let msg = next_server_within(&mut sender, 5_000).await.unwrap_or_else(|| {
-            panic!("waited for a refused send to draw the words: drawn={drawn} refused={refused}")
-        });
-        match msg {
-            ServerMessage::Update { update } => {
+    // The refusal first, so the barrier below cannot overtake it: the frame a
+    // dispatch emits goes through the fan-out, and a barrier emitted before the
+    // refusal could be read ahead of the Error and end the read too early.
+    let mut drawn = false;
+    loop {
+        match next_server_within(&mut sender, 5_000).await {
+            Some(ServerMessage::Update { update }) => {
                 drawn |= matches!(&*update, SessionUpdate::ChatAppended { msg, .. }
                     if user_text(msg).as_deref() == Some("hello there"));
             }
-            ServerMessage::Error { .. } => refused = true,
+            Some(ServerMessage::Error { .. }) => break,
+            Some(other) => panic!("a send answers with the refusal or the words: {other:?}"),
+            None => panic!("waited for the refusal of a send and never heard it"),
+        }
+    }
+
+    // And now the order proof: a frame from that dispatch would be in the
+    // fan-out ahead of this barrier, so reading to the barrier and seeing none
+    // is the negative. The evidence is ORDER, never a timeout.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+    loop {
+        match next_server(&mut sender).await {
+            ServerMessage::Update { update } => {
+                drawn |= matches!(&*update, SessionUpdate::ChatAppended { msg, .. }
+                    if user_text(msg).as_deref() == Some("hello there"));
+                if matches!(*update, SessionUpdate::TurnCancelled { .. }) {
+                    break;
+                }
+            }
+            ServerMessage::Error { .. } => {}
             other => panic!("a send draws, refuses, or says nothing: {other:?}"),
         }
     }
-    assert!(refused, "precondition: the send this test is about was refused");
+    assert!(!drawn, "a refused prompt reached no model, so no view draws it as a turn");
 }
