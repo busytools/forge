@@ -1584,10 +1584,15 @@ mod session_update_variants {
         );
     }
 
-    /// Whether the client's table name this variant: as a list entry, or as a
-    /// key of the handler table.
+    /// Whether the client's table names this variant: as a quoted list entry,
+    /// or as a key at the head of a line in the handler table.
+    ///
+    /// The key form is anchored to a line rather than searched for anywhere, so
+    /// a name prose happens to mention does not stand in for a line that acts
+    /// on it.
     fn names(client: &str, name: &str) -> bool {
-        client.contains(&format!("'{name}'")) || client.contains(&format!("{name}:"))
+        client.contains(&format!("'{name}'"))
+            || client.lines().any(|line| line.trim_start().starts_with(&format!("{name}:")))
     }
 
     /// Every wire name the enum declares, in the order it declares them.
@@ -1614,10 +1619,8 @@ mod session_update_variants {
             if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
                 continue;
             }
-            let variant: String = trimmed
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
+            let variant: String =
+                trimmed.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
             if !variant.starts_with(|c: char| c.is_ascii_uppercase()) {
                 continue;
             }
