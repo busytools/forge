@@ -107,5 +107,8 @@ describe('a settled turn\u2019s row', () => {
 
     expect(drawn, 'the row leads with the failure mark').toContain('i-x');
     expect(drawn, 'and not the check').not.toContain('i-check');
+    // The tone rides on the class, so the mark alone does not say the row
+    // failed: without this the mark could draw in the settled green.
+    expect(drawn, 'and the mark carries the tone it is drawn in').toContain('class="ic st err"');
   });
 });
