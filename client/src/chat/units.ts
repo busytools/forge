@@ -150,8 +150,8 @@ interface Frame {
   subtype?: unknown;
   uuid?: unknown;
   parent_tool_use_id?: unknown;
-  actions?: unknown;
-  hook_infos?: unknown;
+  hookCount?: unknown;
+  hookInfos?: unknown;
   estimated_tokens_delta?: unknown;
   duration_ms?: unknown;
   duration_api_ms?: unknown;
@@ -542,13 +542,17 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         continue;
       }
       if (frame.subtype === 'stop_hook_summary') {
-        const actions = typeof frame.actions === 'number' ? frame.actions : 0;
+        // The wire's own names, not the Rust fields they stand for: the
+        // message renames both on the way out (`hookCount`, `hookInfos`), so a
+        // read of `actions`/`hook_infos` is always undefined and the chip has
+        // never drawn on a real session.
+        const actions = typeof frame.hookCount === 'number' ? frame.hookCount : 0;
         if (actions > 0) {
           push({
             kind: 'hooks',
             key: typeof frame.uuid === 'string' ? frame.uuid : 'hooks',
             actions,
-            infos: (Array.isArray(frame.hook_infos) ? frame.hook_infos : []).map((info) => ({
+            infos: (Array.isArray(frame.hookInfos) ? frame.hookInfos : []).map((info) => ({
               command: str(info, 'command') ?? '',
               ...(typeof obj(info)['durationMs'] === 'number'
                 ? { durationMs: obj(info)['durationMs'] as number }

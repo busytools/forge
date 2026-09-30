@@ -738,8 +738,6 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .hooks:hover { color: var(--muted); }
 .hooks .tog { border: 1px solid var(--ctl); border-radius: 5px; padding: 0 6px;
   font-size: var(--fs-label); }
-.hooks .tog::after { content: "expand"; }
-.hooks[open] .tog::after { content: "collapse"; }
 .turninfo .tog { color: var(--muted); border: 1px solid var(--ctl);
   border-radius: 6px; padding: 0 8px; font-size: var(--fs-data); }
 /* The chip's label follows the row it sits on. */

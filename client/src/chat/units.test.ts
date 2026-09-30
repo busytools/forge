@@ -299,15 +299,34 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it('draws the turn hooks after the run they followed, and nothing when none fired', () => {
-    const hook = (actions: number): unknown => ({
+    // The captured row verbatim, less the synthetic parent id the fixture
+    // carries (crates/forge-test-harness/baselines/sdk/2.1.280/real_session_sample.jsonl).
+    // The two names are the wire's own - the message renames the Rust fields on
+    // the way out - so a fold reading `actions`/`hook_infos` draws nothing on a
+    // real session, which is what the chip did until it read these.
+    const hook = (count: number): unknown => ({
+      session_id: 'session_0',
       type: 'system',
       subtype: 'stop_hook_summary',
-      actions,
-      hook_infos: [],
-      uuid: 'hooks-1',
+      hookCount: count,
+      hookInfos: [{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }],
+      hookErrors: [],
+      hookAdditionalContext: [],
+      preventedContinuation: false,
+      stopReason: '',
+      hasOutput: true,
+      level: 'suggestion',
+      toolUseID: '00afa158-9a64-4fae-9c85-4866c0399894',
+      uuid: 'uuid_7',
     });
 
-    expect(kinds(fold([call('read', 0), hook(2)]))).toEqual(['group', 'hooks']);
+    const units = fold([call('read', 0), hook(1)]);
+    expect(kinds(units), 'the chip follows the run it came after').toEqual(['group', 'hooks']);
+    const chip = units[1];
+    expect(chip?.kind === 'hooks' ? chip.actions : null).toBe(1);
+    expect(chip?.kind === 'hooks' ? chip.infos : []).toEqual([
+      { command: 'echo fixture-stop-hook-ok', durationMs: 3 },
+    ]);
     expect(fold([hook(0)]), 'a frame reporting none draws nothing').toHaveLength(0);
   });
 

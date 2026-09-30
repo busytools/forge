@@ -172,8 +172,8 @@
           "type": "system",
           "subtype": "stop_hook_summary",
           "uuid": "hooks-1",
-          "actions": 3,
-          "hook_infos": [
+          "hookCount": 3,
+          "hookInfos": [
             {
               "command": "/Users/vedhavyas/.claude/hooks/session-start-style.sh",
               "durationMs": 412
