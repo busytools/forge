@@ -217,11 +217,17 @@ export const TRUNCATED = 'this is what fitted · keep going from the end';
  * A take that landed draws its words in the box rather than a line about them,
  * which is the terminal's own rule: the words ARE the notice. One that landed
  * part of a capped take says so as well, because the reader has to know the
- * take was cut rather than that they stopped speaking.
+ * take was cut rather than that they stopped speaking - but a notice this
+ * composer never saw a take for draws neither, since its row would be a note
+ * about words that are not in the box.
  */
-export function noticeLine(notice: Notice | null): { tone: string; text: string } | null {
+export function noticeLine(
+  notice: Notice | null,
+  sawTake: boolean,
+): { tone: string; text: string } | null {
   if (notice === null) return null;
   if (notice.kind === 'line') return { tone: notice.tone, text: notice.text };
+  if (!sawTake) return null;
   return notice.truncated ? { tone: 'warn', text: TRUNCATED } : null;
 }
 
