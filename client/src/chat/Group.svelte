@@ -14,7 +14,7 @@
   const calls = $derived(families.reduce((total, family) => total + family.calls.length, 0));
 
   /**
-   * What names the run, which is what a view keys its open state on.
+   * What names the run, which is the handle its row carries.
    *
    * The call the run OPENED with: the calls after it are appended, so the
    * thing that identifies the run does not move as they arrive.
