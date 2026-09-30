@@ -17,11 +17,11 @@ place.
 | Connect | [connect.md](./connect.md) | `web-connect.html` |
 | Home | [home.md](./home.md) | `web-home.html` |
 
-The session page, the chat and the composer are drawn but not built;
-their drawings are here and their pages land with them. `web-session.html`
-declares six sections and the client's plan owns four of them: the fifth
-is the composer's blocking states and the sixth is the diff review
-overlay, which is deliberately not built.
+The session page, the chat and the composer are built; their drawings are
+here and their pages are still to land. `web-session.html` declares six
+sections and the client's plan owns four of them: the fifth is the
+composer's blocking states and the sixth is the diff review overlay,
+which is deliberately not built.
 
 ## The spine
 

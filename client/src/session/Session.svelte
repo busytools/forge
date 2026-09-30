@@ -198,18 +198,22 @@
       </span>
     </div>
 
-    <div class="conv">
-      {#if conversation !== null}
-        {@render conversation(conversationProps)}
-      {:else if seat.waking}
-        <!-- The seat's own state, which this column owns: a seat nothing is
-             running behind says so rather than drawing an empty page. -->
+    <!-- The column's element is the chat's own where a chat is mounted: it
+         draws its own scroll viewport, and the sheet's `.conv` rules are that
+         viewport's padding and scrollbar, so a wrapper carrying them as well
+         would put a second scroller outside the one that scrolls. -->
+    {#if conversation !== null}
+      {@render conversation(conversationProps)}
+    {:else if seat.waking}
+      <!-- The seat's own state, which this column owns: a seat nothing is
+           running behind says so rather than drawing an empty page. -->
+      <div class="conv">
         <div class="hold off">
           not running
           <span class="sub">{seat.reason ?? 'this seat has no session behind it'}</span>
         </div>
-      {/if}
-    </div>
+      </div>
+    {/if}
   </main>
 
   <Inspector {wire} {record} {slot} {now} onclose={() => (rightChosen = false)} />

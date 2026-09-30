@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Chat from '../chat/Chat.svelte';
   import type { Attempt } from '../connect/attempt';
   import Composer from '../composer/Composer.svelte';
   import { dictationOffered } from '../composer/view';
@@ -70,11 +71,17 @@
   <Fixture />
 {:else if route.name === 'session'}
   {#if connection !== null && home.wire !== null}
-    <!-- The box is wired in HERE and nowhere else, and the page takes two things
-         from its presence: the composer it draws, and whether this client can
-         answer the prompts that composer shows. Absent it, a session page has
-         no box at all and the seat is subscribed as an observer. -->
+    <!-- Both columns the session page draws are handed over HERE, and this is
+         the only place that does it. The page takes them as snippets rather
+         than importing them, so one it is not given is a column that draws
+         nothing at all: no loading row, no empty copy, no way to tell a
+         missing column from a quiet one. It is also where the composer's
+         presence decides whether this client can answer the prompts it
+         shows; absent it, the seat is subscribed as an observer. -->
     <Session slot={route.slot} {connection} wire={home.wire}>
+      {#snippet conversation(props)}
+        <Chat {...props} />
+      {/snippet}
       {#snippet composer(props)}
         <Composer {...props} dictation={dictate} />
       {/snippet}
