@@ -57,7 +57,9 @@ describe('one turn, as the page draws it', () => {
     // The reader's turn carries no label: the rule beside it is the
     // attribution, which is the design's own decision rather than a missing
     // word.
-    expect(body).toContain('<div class="mine">run the gate</div>');
+    const mine = between(body, '<div class="mine"', '</div>');
+    expect(mine).toContain('run the gate');
+    expect(mine, 'and nothing in it names the speaker').not.toMatch(/you|user|prompt/i);
     expect(
       between(body, '<div class="work">', '<details'),
       'the work block draws the prose',
@@ -98,6 +100,34 @@ describe('one turn, as the page draws it', () => {
     expect(body).toContain('<div class="searchhit">');
     expect(body).toContain('<div class="where"><span class="ln">142:</span> <span class="fl">');
     expect(body).toContain('<div class="src">render_group_summary(unit, width)</div>');
+  });
+
+  it('names what a turn attached, and draws none of its pixels', () => {
+    const attached = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is wrong with this layout?' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+            },
+          },
+        ],
+      },
+      uuid: 'u2',
+    };
+
+    const body = draw(attached);
+    const mine = between(body, '<div class="mine"', '</div>');
+    expect(mine, 'the words are still the turn').toContain('what is wrong with this layout?');
+    expect(mine, 'and what came with them is named').toContain('image/png');
+    expect(mine, 'with the size the payload states').toContain('68 B');
+    expect(body, 'and no bytes in the page').not.toContain('iVBORw0KGgo');
   });
 
   it('draws a mutation with its diff already open', () => {

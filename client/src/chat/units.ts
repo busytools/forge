@@ -94,10 +94,24 @@ export interface TurnInfo {
   session_cost_usd: number | null;
 }
 
+/**
+ * One thing the reader attached to a turn, as the wire describes it.
+ *
+ * The wire carries no name: a pasted image is a mime type and a base64
+ * payload, and a document the same. So the row draws the mime it does have,
+ * with the size the payload's own length states.
+ */
+export interface AttachedFile {
+  /** The block's own kind, which the row falls back to when there is no mime. */
+  kind: string;
+  mime: string | null;
+  bytes: number | null;
+}
+
 /** One thing a view draws, in the order the conversation produced it. */
 export type Unit =
-  /** A turn the user wrote. */
-  | { kind: 'user'; text: string }
+  /** A turn the user wrote, with whatever they attached to it. */
+  | { kind: 'user'; text: string; files: AttachedFile[] }
   /** Prose the assistant wrote. */
   | { kind: 'text'; text: string }
   /** A maximal run of consecutive tool calls, drawn as one group. */
@@ -178,6 +192,35 @@ function isDispatched(frame: Frame): boolean {
 function after(text: string, marker: string): string | null {
   const at = text.indexOf(marker);
   return at === -1 ? null : text.slice(at + marker.length);
+}
+
+/**
+ * What a base64 payload stands for, which is what an attachment weighed.
+ *
+ * Four characters carry three bytes, and the padding is not a byte: a row that
+ * printed the encoded length would overstate every image it drew.
+ */
+function payloadBytes(data: unknown): number | null {
+  if (typeof data !== 'string' || data === '') return null;
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  return Math.floor((data.length * 3) / 4) - padding;
+}
+
+/** The attachments a frame's content carries, in the order it carries them. */
+function attachmentsOf(content: readonly unknown[]): AttachedFile[] {
+  const out: AttachedFile[] = [];
+  for (const block of blocksOf(content)) {
+    if (block.type !== 'image' && block.type !== 'document') continue;
+    // Both kinds nest their mime and their bytes under `source`, which is the
+    // shape a tool result's image is read in too.
+    const source = obj(block.source);
+    out.push({
+      kind: block.type,
+      mime: str(source, 'media_type'),
+      bytes: payloadBytes(source['data']),
+    });
+  }
+  return out;
 }
 
 /**
@@ -608,6 +651,13 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
 
     if (frame.type !== 'assistant' && frame.type !== 'user') continue;
 
+    // What the frame attached, read before its blocks are walked: the wire
+    // puts the thing AFTER the words it came with, and they are one row - so
+    // the words are pushed with it rather than the attachment following them
+    // as a row of its own.
+    const files = frame.type === 'user' ? attachmentsOf(blocksOf(frame.message?.content)) : [];
+    let tookFiles = false;
+
     for (const block of blocksOf(frame.message?.content)) {
       if (block.type === 'text' && typeof block.text === 'string') {
         if (frame.type === 'user') {
@@ -624,7 +674,15 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
             continue;
           }
         }
-        push({ kind: frame.type === 'user' ? 'user' : 'text', text: block.text });
+        if (frame.type === 'user') {
+          // The attachments ride the frame's first turn of words: a second
+          // text block in the same frame is the same reader saying more, not
+          // the same file sent twice.
+          push({ kind: 'user', text: block.text, files: tookFiles ? [] : files });
+          tookFiles = true;
+        } else {
+          push({ kind: 'text', text: block.text });
+        }
         continue;
       }
 
@@ -637,7 +695,10 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         // mode for; the mode is the field that says which of the three kinds
         // arrived, so it is the one read.)
         if (str(block, 'commandMode') !== 'task-notification') {
-          push({ kind: 'user', text: queuedText(block.prompt) });
+          // A queued prompt is a turn the reader took, so what the frame
+          // attached rides it exactly as it rides one they typed.
+          push({ kind: 'user', text: queuedText(block.prompt), files: tookFiles ? [] : files });
+          tookFiles = true;
         }
         continue;
       }
@@ -663,7 +724,20 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
           label: labelOf(name),
           leaf: leafOf(id, name, block.input, results.get(id), cwd),
         });
+        continue;
       }
+
+      if (block.type === 'image' || block.type === 'document') {
+        // Read by the frame rather than here: the attachment is part of the
+        // turn the words above it opened, not a row of its own.
+        continue;
+      }
+    }
+
+    // A frame that attached something and said nothing is still a turn the
+    // reader took, and the row draws what they sent rather than nothing.
+    if (frame.type === 'user' && !tookFiles && files.length > 0) {
+      push({ kind: 'user', text: '', files });
     }
   }
 

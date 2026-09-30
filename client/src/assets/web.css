@@ -609,6 +609,12 @@ details.acct[open] > summary { color: var(--accent); }
 .work .prose li + li { margin-top: 4px; }
 .work .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
   background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+/* What a turn carried besides its words: named, and never the bytes. The wire
+   sends no file name, so the mime is what there is to name it by. */
+.attrow { display: flex; align-items: center; gap: 9px; margin-top: 10px;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
+.attrow .gl { color: var(--dim); }
+.attrow .n { color: var(--dim); }
 
 /* the family tree is the default view */
 .kind { margin: 3px 0; }

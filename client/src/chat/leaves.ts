@@ -72,6 +72,7 @@ interface Block {
   is_error?: unknown;
   media_type?: unknown;
   url?: unknown;
+  source?: unknown;
   prompt?: unknown;
   commandMode?: unknown;
 }
@@ -100,10 +101,13 @@ export function bodyOf(content: unknown): CallBody[] {
       if (text.trim() !== '') out.push({ kind: 'text', text });
     }
     if (block.type === 'image') {
+      // The wire nests both under `source`, which is the shape a user turn's
+      // own attachment carries: read off the block they are always absent, and
+      // a tool's image draws with no mime at all.
       out.push({
         kind: 'image',
-        mime: typeof block.media_type === 'string' ? block.media_type : null,
-        uri: typeof block.url === 'string' ? block.url : null,
+        mime: field(block.source, 'media_type'),
+        uri: field(block.source, 'url'),
       });
     }
   }

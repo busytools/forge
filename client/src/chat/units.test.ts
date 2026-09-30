@@ -399,6 +399,69 @@ describe('one turn folded into the units a view draws', () => {
     expect(fold([notice])).toHaveLength(0);
   });
 
+  it('reads the image in a tool result the way the wire nests it', () => {
+    // A result whose content is one image block, the shape this machine's own
+    // transcripts carry: both the mime and the bytes sit under `source`, so
+    // read off the block itself a tool's image draws with no mime at all.
+    const drew = said([use('toolu_img', 'Read', { file_path: 'shot.png' })]);
+    const answered = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_img',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+        ],
+      },
+    ]);
+
+    const [group] = fold([drew, answered]);
+    const leaf = group?.kind === 'group' ? group.families[0]?.calls[0] : undefined;
+    expect(leaf?.body, 'the image, under the name the wire gives it').toEqual([
+      { kind: 'image', mime: 'image/png', uri: null },
+    ]);
+  });
+
+  it('draws what a user turn attached', () => {
+    // The live capture's own frame (user_message_blocks.jsonl, the scenario
+    // that sends a one-pixel PNG with its words): a user turn's attachment has
+    // no inbound route, so this is the shape it reaches the page as.
+    const attached = heard([
+      { type: 'text', text: 'Reply with the single word DONE.' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+        },
+      },
+    ]);
+
+    const [unit] = fold([attached]);
+    expect(unit?.kind).toBe('user');
+    expect(unit?.kind === 'user' ? unit.text : '').toBe('Reply with the single word DONE.');
+    expect(unit?.kind === 'user' ? unit.files : []).toEqual([
+      // 92 characters of base64 carry 68 bytes, and the row says the bytes.
+      { kind: 'image', mime: 'image/png', bytes: 68 },
+    ]);
+
+    // A document, with no words beside it: the same arm, and a turn of the
+    // reader's own rather than a row dropped. Its payload is redacted in the
+    // capture this shape comes from, so only the name is asserted.
+    const pdf = fold([
+      heard([
+        {
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: '<redacted>' },
+        },
+      ]),
+    ]);
+    expect(kinds(pdf)).toEqual(['user']);
+    expect(pdf[0]?.kind === 'user' ? pdf[0].files.map((file) => file.mime) : []).toEqual([
+      'application/pdf',
+    ]);
+  });
+
   it("reports the clock the turn's own last row carried", () => {
     // The result frame carries no instant, and a turn read from a transcript
     // has no result frame at all - so the only clock a settled row can report

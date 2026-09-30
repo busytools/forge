@@ -20,7 +20,8 @@
      .rail + .pane-tog (a collapsible pane and its handle), details.kind
      (a tool family with its calls as leaves), details.leaf (one call that
      opens on its own), .mine (a user turn - the orange rule is the
-     attribution, so it carries no label), .code, .dif, .notice, .peer,
+     attribution, so it carries no label), .attrow (what a turn attached),
+     .code, .dif, .notice, .peer,
      .msg (a messaging group), .card (an answered question), .mon. */
   :root {
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
@@ -208,6 +209,12 @@
   .mine { margin: 15px 0; padding: 10px 15px; border-left: 2px solid var(--accent);
     background: linear-gradient(90deg, rgba(244,118,0,.09), rgba(244,118,0,.015));
     border-radius: 0 10px 10px 0; }
+  /* What a turn carried besides its words: named, and never the bytes. The
+     wire sends no file name, so the mime is what there is to name it by. */
+  .attrow { display: flex; align-items: center; gap: 9px; margin-top: 10px;
+    font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
+  .attrow .gl { color: var(--dim); }
+  .attrow .n { color: var(--dim); }
   .work { padding: 4px 0 8px; }
   .work .prose p + p { margin-top: 10px; }
   /* The reset above zeroes the padding a list draws its markers in. */
@@ -1064,6 +1071,15 @@ docs: Render the message body into rows.</div>
             <span class="l"><b>session</b>$4.82 cumulative</span><span class="n"></span>
           </div>
         </details>
+      </div>
+
+      <div class="mine">
+        Here is the mock I am working from - the rail covers the composer in it.
+        <div class="attrow">
+          <svg class="ic gl"><use href="#i-read"/></svg>
+          <span>image/png</span>
+          <span class="n">92 KB</span>
+        </div>
       </div>
     </div>
 
