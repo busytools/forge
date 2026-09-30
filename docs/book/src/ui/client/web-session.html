@@ -224,11 +224,12 @@
     background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
   /* The rest of the markdown a message carries. A heading is the terminal's own
      mark: every level is one bold line with a blank line before it. The other
-     three marks are this sheet's, and are named as differences rather than
-     claimed as parity - the terminal prefixes a quote and colours it green where
-     this insets it behind the rule the sheet insets with, and it prints a break
-     as a literal `---` where this draws a hairline. A fence's panel is `.code`
-     rather than a mark of its own, and takes its block spacing below. */
+     three marks are this sheet's, named as differences rather than claimed as
+     parity: the terminal prefixes a quote and colours it green where this insets
+     it behind the rule the sheet insets with, it prints a break as a literal
+     `---` where this draws a hairline, and it prints a link's destination where
+     this draws an anchor. A fence's panel is `.code` rather than a mark of its
+     own, and takes its block spacing below. */
   .work .prose h1, .work .prose h2, .work .prose h3,
   .work .prose h4, .work .prose h5, .work .prose h6 {
     font-size: var(--fs-prose); font-weight: 700; margin: 12px 0 6px; }
