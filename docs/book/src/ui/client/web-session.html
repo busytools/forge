@@ -227,8 +227,8 @@
      three marks are this sheet's, and are named as differences rather than
      claimed as parity - the terminal prefixes a quote and colours it green where
      this insets it behind the rule the sheet insets with, and it prints a break
-     as a literal `---` where this draws a hairline. A fence is not here at all:
-     it is the code panel, which is `.code`. */
+     as a literal `---` where this draws a hairline. A fence's panel is `.code`
+     rather than a mark of its own, and takes its block spacing below. */
   .work .prose h1, .work .prose h2, .work .prose h3,
   .work .prose h4, .work .prose h5, .work .prose h6 {
     font-size: var(--fs-prose); font-weight: 700; margin: 12px 0 6px; }
@@ -833,7 +833,7 @@
              labelled panel, a quote, a break and a table. One message, so the
              vocabulary is on the page rather than only in the sheet. -->
         <div class="prose">
-          <h2>The note</h2>
+          <h2 id="the-note">The note</h2>
           <p>Send this before the merge, so the bot carries the header on every request.</p>
           <div class="code">
             <div class="lang">yaml</div>
