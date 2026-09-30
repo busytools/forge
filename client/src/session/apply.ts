@@ -208,7 +208,6 @@ export const IGNORED: readonly string[] = [
   'set_model_failed',
   'slash_command_error',
   'slack_message_appended',
-  'spawning',
   'status_snapshot',
   'worker_status_changed',
 ];
