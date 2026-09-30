@@ -881,6 +881,25 @@ pub enum SessionUpdate {
         /// per-session count, which has no other durable source.
         compaction_count: u32,
     },
+    /// The conversation a seat is carrying, asked for by
+    /// `Command::ReplayConversation`.
+    ///
+    /// **It is not a `Connected`, and the difference is not bookkeeping.** A
+    /// view reads `Connected` as a session STARTING - it seeds the bucket,
+    /// adopts the id, resets the mode and re-tags - so a replay wearing that
+    /// shape would make every attached view re-seed the seat as though it had
+    /// just launched. This says only: here is the conversation you asked for.
+    ///
+    /// It exists so a consumer joining a session it did not watch begin can be
+    /// handed the history by the task that PRODUCES it, in that task's own
+    /// emission order, rather than reading the transcript alongside the
+    /// frames - two producers of one truth, which is a race no reconciliation
+    /// closes.
+    HistoryReplayed {
+        key: SessionSlot,
+        history: Vec<Message>,
+        compaction_count: u32,
+    },
     /// The slot's occupant changed under it - a `/new`, a `/resume`, a
     /// login or a logout. The slot keeps its bucket, in its place on
     /// screen; its contents reset, meaning the rendered conversation,
@@ -1277,6 +1296,7 @@ impl SessionUpdate {
         match self {
             Self::Spawning { key, .. }
             | Self::Connected { key, .. }
+            | Self::HistoryReplayed { key, .. }
             | Self::SessionReplaced { key, .. }
             | Self::ConnectionFailed { key, .. }
             | Self::AuthRequired { key, .. }
@@ -1348,6 +1368,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .finish_non_exhaustive(),
             Self::Connected { key, .. } => {
                 f.debug_struct("Connected").field("key", key).finish_non_exhaustive()
+            }
+            Self::HistoryReplayed { key, .. } => {
+                f.debug_struct("HistoryReplayed").field("key", key).finish_non_exhaustive()
             }
             Self::SessionReplaced { key, .. } => {
                 f.debug_struct("SessionReplaced").field("key", key).finish_non_exhaustive()

@@ -16,6 +16,7 @@ use crate::surface::ViewSurface;
 use crate::work::WorkCache;
 
 mod connection;
+pub mod conversation;
 pub mod envelope;
 pub mod wire;
 
