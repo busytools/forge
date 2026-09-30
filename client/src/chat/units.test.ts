@@ -709,6 +709,7 @@ describe('one turn folded into the units a view draws', () => {
       subtype: 'task_started',
       task_id: 'bj5g0t2kq',
       tool_use_id: 'toolu_01Bg',
+      is_backgrounded: true,
     };
     const ended = {
       type: 'system',
@@ -1136,6 +1137,42 @@ describe('one turn folded into the units a view draws', () => {
     const dead = second[0]?.kind === 'group' ? second[0].families[0]?.calls[0] : undefined;
     expect(dead?.status, 'a stopped task draws as the kill it is').toBe('killed');
     expect(dead?.note).toEqual({ text: 'Run slow counting loop \u{b7} stopped', tone: 'fail' });
+  });
+
+  it('settles a foreground task from the turn, not from its own task frame', () => {
+    // `task_started` arrives for every task the CLI runs, and the wire says
+    // whether it outlives its turn. A foreground call does not, so its task
+    // frame does not get to overrule the turn's verdict: a call the turn
+    // abandoned draws failed, which is what the sweep is for. Letting the task
+    // status win draws it running forever, which is the complaint the interrupt
+    // issue is filed about, drawn again.
+    const launch = said([
+      { type: 'tool_use', id: 'toolu_fg', name: 'Bash', input: { command: 'just check' } },
+    ]);
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bfg0001',
+      tool_use_id: 'toolu_fg',
+      is_backgrounded: false,
+    };
+    const ended = { type: 'result', is_error: true, subtype: 'error_during_execution' };
+
+    const interrupted = fold([launch, started, ended]);
+    const row = interrupted[0]?.kind === 'group' ? interrupted[0].families[0]?.calls[0] : undefined;
+    expect(row?.status, 'an abandoned foreground call draws failed, not running').toBe('failed');
+
+    // The flag-less shape the corpus carries (`workflow.jsonl`), whose task does
+    // not say it outlives the turn either, and whose failing result still
+    // settles the row.
+    const unnamed = { ...started, is_backgrounded: undefined };
+    const answered = heard([
+      { type: 'tool_result', tool_use_id: 'toolu_fg', content: 'exit 1', is_error: true },
+    ]);
+
+    const settled = fold([launch, unnamed, answered]);
+    const second = settled[0]?.kind === 'group' ? settled[0].families[0]?.calls[0] : undefined;
+    expect(second?.status, 'and a failing result still settles it').toBe('failed');
   });
 
   it("reports the clock the turn's own last row carried", () => {

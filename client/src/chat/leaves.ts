@@ -201,9 +201,12 @@ export function titleOf(name: string, input: unknown, cwd: string | null): strin
  * that has not come back yet still carries what its own input says, because an
  * edit's diff is in the call rather than in the answer.
  *
- * `task` is the same for a backgrounded call, and it WINS over the result: the
- * result only ever says the command started, so a call the wire has reported
- * as running has to draw as running however clean its launch result was.
+ * `task` settles the call when the wire gave it an ending, and holds it open
+ * only where the wire said the task OUTLIVES its turn: such a call's launch
+ * result says only that the command started, so it has to draw as running
+ * however clean that result was. A foreground task still running is settled by
+ * its result and the turn's verdict, like a call with no task frame at all -
+ * so an abandoned foreground call draws failed rather than running.
  *
  * `abandoned` is the turn's verdict on a call it never answered: a turn that
  * failed is a turn whose open calls never get a result, and they draw as
@@ -220,7 +223,10 @@ export function leafOf(
   abandoned = false,
 ): ToolLeaf {
   const body = diffsOf(name, input);
-  const settled = task !== undefined ? task.status : settledBy(result, abandoned);
+  const settled =
+    task !== undefined && (task.backgrounded || task.status !== 'in_progress')
+      ? task.status
+      : settledBy(result, abandoned);
   return {
     id,
     row: rowOf(name),
