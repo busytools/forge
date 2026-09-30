@@ -587,11 +587,12 @@ function turnFailure(frame: Frame): Notice | null {
 }
 
 /**
- * The line a task leaves behind, from the frame that ended it.
+ * The line a BACKGROUNDED task leaves behind, from the frame that ended it.
  *
- * **Any task, not only a backgrounded command**: a dispatched agent's
- * notification carries a summary the same way, and the terminal draws it on
- * the same row.
+ * The task frames arrive for every task the CLI runs, a foreground call and a
+ * dispatched agent among them, and for those the note would repeat what the
+ * row already says - the result that came back, or the report that is the
+ * call's own body. It is drawn where the wire says the task outlives its turn.
  *
  * The harness writes its own sentence for a command that finished and only the
  * task's description for one that was stopped, so the wire's status word is
@@ -723,9 +724,10 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     for (const block of blocksOf(frame.message?.content)) {
       // The transcript's own ending for a backgrounded call, which arrives as
       // a text block rather than as the frames the live wire sends: a page read
-      // carries no task frames at all, and it closes the endings the CLI
-      // persisted in THIS carrier - the same ending also reaches a transcript
-      // as a user row carrying the same XML, which this fold does not see.
+      // carries no task frames at all. It closes the endings persisted in THIS
+      // carrier; the same ending also reaches a transcript as a plain user row
+      // carrying the same XML, and what goes unread there is the ENDING - the
+      // row itself draws, as the reader's own turn, raw XML and all (#1364).
       if (block.type === 'queued_command') {
         const words = queuedText(block.prompt);
         if (!isCompletion(block, words)) continue;

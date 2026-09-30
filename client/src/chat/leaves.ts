@@ -21,13 +21,13 @@ export type CallBody =
   | { kind: 'image'; mime: string | null; uri: string | null };
 
 /**
- * A call the wire reports a TASK for, which is any tool the CLI runs as one.
+ * What the wire reports about a call it runs as a TASK, backgrounded or not.
  *
  * The launch result of a backgrounded call says only that the command started,
  * so a fold that settles the call from its result draws a running command as a
  * finished one. The task frames are what say otherwise: `task_started` opens
- * the call's own clock, `task_updated` carries the ending, and
- * `task_notification` carries what the harness said at it.
+ * the call's own clock and says whether it outlives its turn, `task_updated`
+ * carries the ending, and `task_notification` carries what the harness said.
  */
 export interface BackgroundTask {
   status: CallStatus;

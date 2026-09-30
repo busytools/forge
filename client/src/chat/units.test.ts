@@ -802,6 +802,51 @@ describe('one turn folded into the units a view draws', () => {
     expect(odd[0]?.note?.tone, 'a word it does not know is not a failure').toBeNull();
   });
 
+  it('keeps the status a notice with no word for it does not state', () => {
+    // The other arm of the same rule, and the only shape that reaches it: a
+    // notice carrying a call id and no `<status>`. Every status-less notice on
+    // this machine lacks the id and is dropped before here, so this is what
+    // keeps the arm reachable - and what it must not do is walk the call back
+    // to running, which the task frames have already said ended.
+    const launch = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_01St',
+        name: 'Bash',
+        input: { command: 'sleep 30', run_in_background: true },
+      },
+    ]);
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bj5g0t2kq',
+      tool_use_id: 'toolu_01St',
+      is_backgrounded: true,
+    };
+    const killed = {
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: 'bj5g0t2kq',
+      patch: { status: 'killed' },
+    };
+    const wordless = heard([
+      {
+        type: 'queued_command',
+        commandMode: 'task-notification',
+        prompt:
+          '<task-notification>\n<tool-use-id>toolu_01St</tool-use-id>\n' +
+          '<summary>Run slow counting loop</summary>\n</task-notification>',
+      },
+    ]);
+
+    const units = fold([launch, started, killed, wordless]);
+    const calls = units.flatMap((unit) =>
+      unit.kind === 'group' ? unit.families.flatMap((one) => one.calls) : [],
+    );
+
+    expect(calls[0]?.status, 'the notice keeps the status the frames set').toBe('killed');
+  });
+
   it('draws no line for a task the wire did not say outlives its turn', () => {
     // A foreground call's own result is already on the row, and a dispatched
     // agent's report is the row's own body: the harness's summary under either
@@ -835,6 +880,18 @@ describe('one turn folded into the units a view draws', () => {
     const calls = units.flatMap((unit) =>
       unit.kind === 'group' ? unit.families.flatMap((one) => one.calls) : [],
     );
+
+    // The absent field is its own case, and the corpus carries it: a
+    // `local_workflow` task's `task_started` names no `is_backgrounded` at all,
+    // and its notification carries a summary - read as anything but "not said
+    // to be backgrounded", that workflow draws the duplicate line the case
+    // above exists to remove. (`legacy-surface` carries the same shape with
+    // `false`.)
+    const unstated = fold([launch, { ...started, is_backgrounded: undefined }, notified]);
+    const silent = unstated.flatMap((unit) =>
+      unit.kind === 'group' ? unit.families.flatMap((one) => one.calls) : [],
+    );
+    expect(silent[0]?.note, 'a task that does not say is not treated as backgrounded').toBeNull();
 
     expect(calls[0]?.status, 'the ending still settles the call').toBe('completed');
     expect(calls[0]?.note, 'and the row is not given a line it already says').toBeNull();
