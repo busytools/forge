@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import Card from './Card.svelte';
+  import Compacting from './Compacting.svelte';
   import type { Turn as HeldTurn } from './conversation';
   import Group from './Group.svelte';
   import Hooks from './Hooks.svelte';
@@ -90,7 +91,7 @@
     <div class="work">
       {#each block.units as unit, index (`${at}-${index}`)}
         {#if compacting && at === layout.length - 1 && index === block.footer}
-          {@render compactingLine()}
+          <Compacting />
         {/if}
         {#if unit.kind === 'text'}
           <Prose text={unit.text} />
@@ -111,15 +112,11 @@
         {/if}
       {/each}
       {#if compacting && at === layout.length - 1 && block.trailing}
-        {@render compactingLine()}
+        <Compacting />
       {/if}
     </div>
   {/if}
 {/each}
 {#if loose}
-  <div class="work">{@render compactingLine()}</div>
+  <div class="work"><Compacting /></div>
 {/if}
-
-{#snippet compactingLine()}
-  <div class="compacting"><span class="ring"></span>Compacting context...</div>
-{/snippet}

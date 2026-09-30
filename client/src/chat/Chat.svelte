@@ -4,6 +4,7 @@
   import { subjectKey } from '../protocol';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
+  import Compacting from './Compacting.svelte';
   import { Chat, NOTHING, type Conversation, type Turn as HeldTurn } from './conversation';
   import Turn from './Turn.svelte';
 
@@ -220,7 +221,7 @@
          is that nothing has answered yet. -->
     <p class="hold">Reading the conversation...</p>
     {#if compacting}
-      <div class="compacting"><span class="ring"></span>Compacting context...</div>
+      <Compacting />
     {/if}
   </div>
 {:else if held.turns.length === 0}
@@ -230,7 +231,7 @@
       <span class="sub">this seat has no history: what is said here starts it</span>
     </div>
     {#if compacting}
-      <div class="compacting"><span class="ring"></span>Compacting context...</div>
+      <Compacting />
     {/if}
   </div>
 {:else}
