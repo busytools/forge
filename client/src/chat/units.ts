@@ -82,6 +82,14 @@ export interface HookInfo {
  * draws as a dash rather than as a zero.
  */
 export interface TurnInfo {
+  /**
+   * Whether the turn failed, which is what its own row leads with.
+   *
+   * The mark follows the turn: an interrupted turn draws the failure mark, and
+   * the failure line under it carries the words. Two signals disagreeing on one
+   * row - a check above "Turn failed" - is the defect this row was filed about.
+   */
+  failed: boolean;
   duration_ms: number | null;
   api_ms: number | null;
   ended_at_utc: string | null;
@@ -170,6 +178,11 @@ interface Frame {
   duration_ms?: unknown;
   duration_api_ms?: unknown;
   total_cost_usd?: unknown;
+  is_error?: unknown;
+  errors?: unknown;
+  terminal_reason?: unknown;
+  /** The string `Message::Error` carries, which is the CLI's own words for it. */
+  error?: unknown;
   usage?: unknown;
   tool_use_result?: unknown;
   state?: unknown;
@@ -515,6 +528,7 @@ function reportOf(
     return typeof value === 'number' ? value : null;
   };
   return {
+    failed: frame.is_error === true,
     duration_ms: typeof frame.duration_ms === 'number' ? frame.duration_ms : null,
     api_ms: typeof frame.duration_api_ms === 'number' ? frame.duration_api_ms : null,
     ended_at_utc: endedAt,
@@ -526,6 +540,37 @@ function reportOf(
     cache_written_tokens: count('cache_creation_input_tokens'),
     session_cost_usd: typeof frame.total_cost_usd === 'number' ? frame.total_cost_usd : null,
   };
+}
+
+/**
+ * A word a frame carries beside the sentence that already means it.
+ *
+ * The frames below write their own ending into some of their sentences and
+ * not others - the CLI's end reason is inside some subtypes and not others -
+ * so the word is drawn exactly when the sentence does not already say it.
+ */
+function beside(sentence: string, word: string | null): string {
+  if (word === null || word === '' || sentence.includes(word)) return sentence;
+  return sentence === '' ? word : `${sentence} \u{b7} ${word}`;
+}
+
+/**
+ * What a turn that failed says, from the frame that recorded the failure.
+ *
+ * The subtype and the reason the CLI ended the stream with are what the reader
+ * is owed - `error_during_execution`, `aborted_streaming` - and the errors
+ * array, when the frame carries one, is the CLI's own diagnostic of it. Both
+ * go in one line, because a failure is one thing.
+ */
+function turnFailure(frame: Frame): Notice | null {
+  if (frame.is_error !== true) return null;
+  const subtype = str(frame, 'subtype');
+  const head = beside(subtype === 'success' ? '' : (subtype ?? ''), str(frame, 'terminal_reason'));
+  const errors = (Array.isArray(frame.errors) ? frame.errors : []).filter(
+    (one): one is string => typeof one === 'string' && one.trim() !== '',
+  );
+  const said = [head === '' ? 'Turn failed.' : `Turn failed: ${head}`, ...errors];
+  return { severity: 'error', text: said.join('\n').trimEnd() };
 }
 
 /**
@@ -541,7 +586,35 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
   const results = new Map<string, ReturnType<typeof blocksOf>[number]>();
   /** What each question was answered with, by the call that asked it. */
   const answers = new Map<string, unknown>();
-  for (const frame of frames) {
+  /**
+   * The LAST frame the turn failed on, which is what bounds the sweep.
+   *
+   * A call is abandoned when any failing frame follows it, so the bound is the
+   * last one rather than the first: a fold holding two failing turns settles
+   * both, and first-wins leaves the second turn's calls pending - the run's
+   * roll-up saying work is still going, which is the complaint the interrupt
+   * issue is filed about.
+   *
+   * **And the sweep is bounded by that frame, not by the turn.** The live path
+   * accumulates every frame since the last page into ONE turn, so a sweep that
+   * took the whole turn would mark calls the CLI started AFTERWARDS as failed
+   * while they are still running: interrupt a turn, prompt again, and the new
+   * turn's first call draws red until its own result lands.
+   */
+  let failedAt: number | null = null;
+  for (const [at, frame] of frames.entries()) {
+    // A dispatched agent's frames are not the conversation, and its verdict is
+    // not the session's: a sub-agent's failed result says nothing about the
+    // turn the parent is still running. The drawing loop skips these frames
+    // the same way, so a pre-pass that read one would finalize calls the loop
+    // never drew a row for.
+    if (isDispatched(frame)) continue;
+    // A fatal error is the CLI's last-gasp signal before teardown: no result
+    // frame follows it, so it is the turn's own verdict just as a failed
+    // result is.
+    if (frame.type === 'error' || (frame.type === 'result' && frame.is_error === true)) {
+      failedAt = at;
+    }
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
@@ -604,9 +677,13 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     units.push(unit);
   };
 
-  for (const frame of frames) {
+  for (const [at, frame] of frames.entries()) {
     // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
     if (isDispatched(frame)) continue;
+    // Whether this call was open when the turn failed: the ones before that
+    // frame are the ones it abandoned, and a call the CLI opened after it is
+    // one the CLI is still running.
+    const abandoned = failedAt !== null && at < failedAt;
 
     // Watched before anything else reads the frame: whatever a turn turns out
     // to be, the clock on its own rows is the only one a later row can report.
@@ -660,7 +737,23 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         info: reportOf(frame, model, thinking, endedAt),
         key: typeof frame.uuid === 'string' ? frame.uuid : null,
       });
+      // The failure is a row of its own rather than a mark on the report: the
+      // terminal states it the same way, as a line under the turn it belongs
+      // to, and the report row is left saying only what the turn spent.
+      const failure = turnFailure(frame);
+      if (failure !== null) units.push({ kind: 'notice', notice: failure });
       thinking = null;
+      continue;
+    }
+
+    if (frame.type === 'error') {
+      // The string is all the turn leaves: no result frame follows, so there
+      // is no report row to hang it on. The terminal surfaces the same string
+      // on the same frame, for the same reason.
+      const said = str(frame, 'error');
+      if (said !== null && said.trim() !== '') {
+        push({ kind: 'notice', notice: { severity: 'error', text: said } });
+      }
       continue;
     }
 
@@ -744,7 +837,7 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         run.push({
           row: rowOf(name),
           label: labelOf(name),
-          leaf: leafOf(id, name, block.input, results.get(id), cwd),
+          leaf: leafOf(id, name, block.input, results.get(id), cwd, abandoned),
         });
         continue;
       }

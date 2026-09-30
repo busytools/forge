@@ -165,6 +165,11 @@ export function titleOf(name: string, input: unknown, cwd: string | null): strin
  * `result` is what a later frame recorded for it, when one has arrived: a call
  * that has not come back yet still carries what its own input says, because an
  * edit's diff is in the call rather than in the answer.
+ *
+ * `abandoned` is the turn's verdict on a call it never answered: a turn that
+ * failed is a turn whose open calls never get a result, and they draw as
+ * failed rather than as still running - which is what the terminal does with
+ * them on the same frame.
  */
 export function leafOf(
   id: string,
@@ -172,10 +177,10 @@ export function leafOf(
   input: unknown,
   result: Block | undefined,
   cwd: string | null,
+  abandoned = false,
 ): ToolLeaf {
   const body = diffsOf(name, input);
-  const settled =
-    result === undefined ? 'pending' : result.is_error === true ? 'failed' : 'completed';
+  const settled = settledBy(result, abandoned);
   return {
     id,
     row: rowOf(name),
@@ -185,6 +190,12 @@ export function leafOf(
     status: settled,
     body: result === undefined ? body : [...body, ...bodyOf(result.content)],
   };
+}
+
+/** What settles a call with no task frame of its own: its result, or the turn that never sent one. */
+function settledBy(result: Block | undefined, abandoned: boolean): CallStatus {
+  if (result === undefined) return abandoned ? 'failed' : 'pending';
+  return result.is_error === true ? 'failed' : 'completed';
 }
 
 /** Whether a call's body draws as a source file: a read that named one this page knows. */

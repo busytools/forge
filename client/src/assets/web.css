@@ -762,6 +762,9 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .turninfo > summary > span { white-space: nowrap; }
 .turninfo > summary::-webkit-details-marker { display: none; }
 .turninfo .sep { opacity: .5; }
+/* The row's verdict, when it has one: a turn that did not finish leads with the
+   failure mark, and the row's own colour is not a verdict. */
+.turninfo > summary .st.err { color: var(--bad); }
 /* A compaction in flight, and the chip a turn's hooks collapse to. */
 .compacting { display: flex; align-items: center; gap: 9px; color: var(--accent);
   font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }

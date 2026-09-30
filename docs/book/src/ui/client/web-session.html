@@ -388,6 +388,8 @@
   .turninfo > summary > span { white-space: nowrap; }
   .turninfo > summary::-webkit-details-marker { display: none; }
   .turninfo .sep { opacity: .5; }
+  /* The row's verdict, when it has one: the mark follows the turn. */
+  .turninfo > summary .st.err { color: var(--bad); }
   .turninfo .tog { color: var(--muted); border: 1px solid var(--ctl);
     border-radius: 6px; padding: 0 8px; font-size: var(--fs-data); }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
@@ -1097,12 +1099,19 @@ docs: Render the message body into rows.</div>
 
         <details class="turninfo">
           <summary>
-            <span>&#8617;</span><span>2m 41s</span><span class="sep">&#183;</span>
+            <svg class="ic st err"><use href="#i-x"/></svg><span>2m 41s</span><span class="sep">&#183;</span>
             <span>18.4k&#8593; 3.1k&#8595;</span><span class="sep">&#183;</span>
             <span>94% cached</span><span class="sep">&#183;</span>
             <span>12.6k written</span><span class="tog">expand</span>
           </summary>
         </details>
+
+        <!-- A turn that did not finish says so twice, and neither is the
+             other's echo: the row above leads with the FAILURE mark - the mark
+             follows the turn - and this line carries its words. The calls the
+             turn left open draw as failed. -->
+        <div class="notice err"><span class="sev">Error</span>Turn failed: error_during_execution &#183; aborted_streaming
+[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null</div>
       </div>
 
       <div class="mine">
@@ -1112,7 +1121,7 @@ docs: Render the message body into rows.</div>
       <div class="work">
         <details class="turninfo" open>
           <summary>
-            <span>&#8617;</span><span>1m 19s</span><span class="sep">&#183;</span>
+            <svg class="ic st"><use href="#i-check"/></svg><span>1m 19s</span><span class="sep">&#183;</span>
             <span>4.2k&#8593; 1.1k&#8595;</span><span class="sep">&#183;</span>
             <span>93% cached</span><span class="sep">&#183;</span>
             <span>3.1k written</span><span class="tog">collapse</span>
@@ -1609,7 +1618,7 @@ docs: Render the message body into rows.</div>
     at(8000, () => { reveal(7); });
     at(9200, () => {
       if (clock) { clearInterval(clock); clock = null; }
-      $('lv-mark').innerHTML = '&#8617;';
+      $('lv-mark').innerHTML = OK;
       $('lv-time').textContent = elapsed((performance.now() - t0) / 1000);
       $('lv-think').style.display = 'none';
       $('lv-tok').textContent = '4.2k↑ 1.1k↓';
