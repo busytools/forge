@@ -36,6 +36,7 @@ import Router from '../shell/Router.svelte';
 import { connect, type Connection, type ConnectionStatus } from '../socket';
 import type { Store, StoreValue } from '../stores';
 import type { SessionSlot } from '../wire/types';
+import { REPLACES } from './apply';
 import { POLL_MS, watchSession, type SessionRead } from './live';
 import Session from './Session.svelte';
 
@@ -471,6 +472,27 @@ function updateOf(update: SessionUpdate): ServerMessage {
   return { kind: 'update', update };
 }
 
+/** The seat taking a new occupant, which is a read rather than a patch. */
+function occupant(sessionId: string): SessionUpdate {
+  return {
+    connected: {
+      key: LEAD,
+      session_id: sessionId,
+      cwd: '/tmp',
+      current_model: null,
+      available_models: [],
+      mode: null,
+      history: [],
+      compaction_count: 0,
+    },
+  };
+}
+
+/** The same occupant arriving under another name the seat is replaced by. */
+function occupantAs(name: string): SessionUpdate {
+  return { [name]: Object.values(occupant('new'))[0] };
+}
+
 /** A prompt as the CLI writes one: the frame shape the dev fixture carries. */
 function spoke(text: string, uuid = 'u1'): Record<string, unknown> {
   return {
@@ -545,6 +567,23 @@ describe('the record a page holds over an update stream', () => {
     page.stop();
   });
 
+  it('asks for a whole record for every name that replaces the seat', () => {
+    // The three are one property - a seat that wakes, connects or takes a new
+    // occupant cannot be answered by the record the last one left - and the
+    // branch that reads them is what a page's whole history hangs on.
+    for (const name of REPLACES) {
+      const connection = drivable();
+      const page = watch(connection);
+      page.land(snapshotOf(LEAD));
+      const asked = page.reads();
+
+      page.land(updateOf(occupantAs(name)));
+
+      expect(page.reads(), `${name} was never re-read`).toBe(asked + 1);
+      page.stop();
+    }
+  });
+
   it('stops listening and lets the subscription go with the last reader', () => {
     const connection = drivable();
     const page = watch(connection);
@@ -608,6 +647,56 @@ describe('the slow read for what no update carries', () => {
     page.land(snapshotOf(LEAD, { work: { branch: 'feature', changed: 0, gate: 'in_repo' } }));
 
     expect(page.read().wire?.work.branch, 'the working tree never moved').toBe('feature');
+    page.stop();
+  });
+
+  it('does not let an answer older than a seat swap stand in for the swap', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    expect(page.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
+
+    // A poll asks for the nine while the seat is still this occupant's.
+    vi.advanceTimersByTime(POLL_MS + 1);
+    const asked = page.reads();
+
+    // The seat takes a new occupant before that answer comes back.
+    page.land(updateOf(occupant('new')));
+    expect(page.reads(), 'the swap asked while a read was already in flight').toBe(asked);
+
+    // The poll's answer lands: the seat as it was BEFORE the swap.
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+
+    expect(
+      page.read().wire?.conversation.turns,
+      'an answer from before the swap was published as the new record',
+    ).toHaveLength(1);
+    expect(page.reads(), 'the swap was never asked for a whole record').toBe(asked + 1);
+
+    // And the answer the swap did ask for replaces the record rather than
+    // merging into the one the previous occupant left.
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+    expect(page.read().wire?.conversation.turns, 'the swap never took the record').toHaveLength(0);
+    page.stop();
+  });
+
+  it('keeps a swap whole when an unrelated error lands before its answer', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+
+    page.land(updateOf(occupant('new')));
+    // An error names no subject, so it is not this seat's record - and it must
+    // not spend the answer the swap is waiting for.
+    page.land({ kind: 'error', what: 'more', why: 'no page' });
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+
+    expect(
+      page.read().wire?.conversation.turns,
+      'an error for something else let the swap answer be merged',
+    ).toHaveLength(0);
     page.stop();
   });
 

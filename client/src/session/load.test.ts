@@ -201,7 +201,7 @@ function open(turns: unknown[] = load.turns): ReturnType<typeof seat> {
   return server;
 }
 
-/** One arriving frame, driven through the coalescing window to its read. */
+/** One arriving frame, and the flush that lets the page draw what it moved. */
 function arrive(frame: () => void): void {
   frame();
   vi.advanceTimersByTime(50);

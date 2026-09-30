@@ -37,8 +37,28 @@ function result(isError = false): Record<string, unknown> {
   };
 }
 
-function state(state: string): Record<string, unknown> {
-  return { type: 'system', subtype: 'session_state_changed', session_id: 's', state };
+/**
+ * The frame a turn opens with.
+ *
+ * The CLI re-fires one at the head of every turn, and it is where the model a
+ * `/model` switch moved to, and the mode a `/mode` moved to, reach a reader.
+ * The shape is off the live captures: `model` is the CLI's own spelling, the
+ * `[1m]` marker included, and the mode is camelCase.
+ */
+function initFrame(fields: Record<string, unknown> = {}): Record<string, unknown> {
+  return { type: 'system', subtype: 'init', session_id: 's', ...fields };
+}
+
+/** A take as a READ answered with it: the wire's own shape, and no generation. */
+function readTake(): Record<string, unknown> {
+  return {
+    phase: 'recording',
+    levels: [0.4],
+    peak_db: -20,
+    progress: [1, null],
+    floor_db: -50,
+    elapsed_ms: 4_200,
+  };
 }
 
 /** A prompt as the CLI writes one, which is the frame shape the dev fixture carries. */
@@ -131,6 +151,19 @@ describe('applyUpdate', () => {
   });
 
   describe('the turn in flight', () => {
+    // The rising edge is the frame a turn OPENS with, because the frame a
+    // reader might expect to carry it - `system/session_state_changed` - is
+    // emitted only behind an environment variable forge never sets, and
+    // appears in none of the committed live captures. The CLI re-fires `init`
+    // at the head of every turn, which is the frame that does arrive.
+    it('opens on the frame a turn begins with', () => {
+      const next = applyUpdate(empty(), {
+        chat_appended: { key: SLOT, msg: initFrame({ model: 'claude-opus-5' }) },
+      });
+
+      expect(next.header.turn_in_flight, 'a turn that began never read as running').toBe(true);
+    });
+
     it('closes on a result frame', () => {
       const held = { ...empty(), header: { ...empty().header, turn_in_flight: true } };
       const next = applyUpdate(held, { chat_appended: { key: SLOT, msg: result() } });
@@ -138,22 +171,11 @@ describe('applyUpdate', () => {
       expect(next.header.turn_in_flight).toBe(false);
     });
 
-    it('opens on the CLI saying the session is running, and closes on idle', () => {
-      const running = applyUpdate(empty(), {
-        chat_appended: { key: SLOT, msg: state('running') },
-      });
-      expect(running.header.turn_in_flight).toBe(true);
+    it('closes on a result that failed, which is a turn that ended too', () => {
+      const held = { ...empty(), header: { ...empty().header, turn_in_flight: true } };
+      const next = applyUpdate(held, { chat_appended: { key: SLOT, msg: result(true) } });
 
-      const idle = applyUpdate(running, { chat_appended: { key: SLOT, msg: state('idle') } });
-      expect(idle.header.turn_in_flight).toBe(false);
-    });
-
-    it('stays open while the session waits on an answer', () => {
-      const next = applyUpdate(empty(), {
-        chat_appended: { key: SLOT, msg: state('requires_action') },
-      });
-
-      expect(next.header.turn_in_flight).toBe(true);
+      expect(next.header.turn_in_flight).toBe(false);
     });
 
     it('closes on a turn error, which is the only one of the three the core emits', () => {
@@ -161,6 +183,84 @@ describe('applyUpdate', () => {
       const next = applyUpdate(held, { turn_error: { key: SLOT, message: 'stdin write failed' } });
 
       expect(next.header.turn_in_flight).toBe(false);
+    });
+  });
+
+  describe('the header the frames move', () => {
+    it('takes the mode and the effort a hook observation carries', () => {
+      const next = applyUpdate(empty(), {
+        hook_observation: {
+          key: SLOT,
+          tool_use_id: 'tool-1',
+          permission_mode: 'plan',
+          effort: 'max',
+          agent_id: null,
+          agent_type: null,
+        },
+      });
+
+      expect(next.header.permission_mode).toBe('plan');
+      expect(next.header.effort).toBe('max');
+    });
+
+    it('leaves the header alone for a hook observation that names neither', () => {
+      const held = applyUpdate(empty(), {
+        hook_observation: { key: SLOT, permission_mode: 'plan', effort: 'max' },
+      });
+      const next = applyUpdate(held, { hook_observation: { key: SLOT, tool_use_id: null } });
+
+      expect(next, 'a hook with nothing to say narrowed the header').toBe(held);
+    });
+
+    it('takes the mode and the model a turn opens with', () => {
+      const next = applyUpdate(empty(), {
+        chat_appended: {
+          key: SLOT,
+          msg: initFrame({ model: 'claude-opus-5[1m]', permissionMode: 'acceptEdits' }),
+        },
+      });
+
+      expect(next.header.permission_mode).toBe('acceptEdits');
+      expect(next.header.model?.resolved_id).toBe('claude-opus-5[1m]');
+    });
+
+    it('keeps the name a connect resolved when the frame names the same model', () => {
+      const held = {
+        ...empty(),
+        header: {
+          ...empty().header,
+          model: { resolved_id: 'claude-opus-5', display_name_long: 'Opus 5' },
+        },
+      };
+
+      const next = applyUpdate(held, {
+        chat_appended: { key: SLOT, msg: initFrame({ model: 'claude-opus-5' }) },
+      });
+
+      expect(next.header.model, 'a frame naming the model already held renamed it').toEqual({
+        resolved_id: 'claude-opus-5',
+        display_name_long: 'Opus 5',
+      });
+    });
+
+    it('names a switched model from the catalogue the record already holds', () => {
+      const held = {
+        ...empty(),
+        header: {
+          ...empty().header,
+          model: { resolved_id: 'claude-opus-5', display_name_long: 'Opus 5' },
+          available_models: [{ id: 'claude-sonnet-4-6', display_name: 'Sonnet 4.6' }],
+        },
+      };
+
+      const next = applyUpdate(held, {
+        chat_appended: { key: SLOT, msg: initFrame({ model: 'claude-sonnet-4-6' }) },
+      });
+
+      expect(next.header.model).toEqual({
+        resolved_id: 'claude-sonnet-4-6',
+        display_name_long: 'Sonnet 4.6',
+      });
     });
   });
 
@@ -182,8 +282,11 @@ describe('applyUpdate', () => {
       // a reducer reading the record's name finds nothing on the wire.
       const next = applyUpdate(held, { context_usage_snapshot: { key: SLOT, percent: 7 } });
 
-      expect(next.header.context.percent).toBe(42);
-      expect(next.header.context.max_tokens).toBe(200_000);
+      expect(
+        next.header.context.percent,
+        'a payload naming a field nothing sends moved the usage',
+      ).toBe(42);
+      expect(next.header.context.max_tokens, 'and the half it did send stood').toBe(200_000);
     });
 
     it('reads an absent percentage as absent rather than as the last one', () => {
@@ -358,6 +461,58 @@ describe('applyUpdate', () => {
       expect(ended.composer.notice).toBeNull();
     });
 
+    it('resolves a take the record was read with, which carries no generation', () => {
+      // `TakeWire` has no generation: a take a READ answered with is one this
+      // client never saw start, so there is none to compare a report against.
+      const held = {
+        ...empty(),
+        composer: { ...empty().composer, take: readTake() },
+      };
+
+      const ended = applyUpdate(held, {
+        dictate_ended: {
+          key: SLOT,
+          outcome: { landed: { text: 'hello', truncated: false } },
+          generation: 7,
+        },
+      });
+
+      expect(ended.composer.take, 'a read take never ended').toBeNull();
+      expect(ended.composer.notice).toEqual({
+        kind: 'landed',
+        text: 'hello',
+        truncated: false,
+      });
+    });
+
+    it('keeps a read take running through a progress report', () => {
+      const held = { ...empty(), composer: { ...empty().composer, take: readTake() } };
+
+      const next = applyUpdate(held, {
+        dictate_progress: { key: SLOT, generation: 7, done: 2, total: 3 },
+      });
+
+      expect(take(next)['progress']).toEqual([2, 3]);
+    });
+
+    it("keeps a read take's own clock, which the wire carried", () => {
+      const held = { ...empty(), composer: { ...empty().composer, take: readTake() } };
+
+      const next = applyUpdate(held, { dictate_level: { key: SLOT, peak_db: -10 } });
+
+      expect(take(next)['elapsed_ms'], "the take's clock was reset by a reading").toBe(4_200);
+    });
+
+    it('keeps the take for a progress report that carries no counts', () => {
+      const held = applyUpdate(empty(), {
+        dictate_started: { key: SLOT, floor_db: -50, generation: 1 },
+      });
+
+      const next = applyUpdate(held, { dictate_progress: { key: SLOT, generation: 1 } });
+
+      expect(next, 'a report with nothing in it narrowed the take').toBe(held);
+    });
+
     it('raises the sign-in hint an auth_required carries', () => {
       const next = applyUpdate(empty(), {
         auth_required: {
@@ -371,6 +526,20 @@ describe('applyUpdate', () => {
         method_name: 'claude.ai',
         method_description: 'Run `claude auth login`',
       });
+    });
+
+    it('leaves a held sign-in alone for an auth_required that names no method', () => {
+      const held = applyUpdate(empty(), {
+        auth_required: {
+          key: SLOT,
+          method_name: 'claude.ai',
+          method_description: 'run `claude auth login`',
+        },
+      });
+
+      const next = applyUpdate(held, { auth_required: { key: SLOT } });
+
+      expect(next, 'a payload with nothing in it overwrote the sign-in').toBe(held);
     });
 
     it('compacts on the status frame and stops on the null that clears it', () => {

@@ -27,10 +27,10 @@ import { sessionFrom, type SessionRecord } from './wire';
 /**
  * How often the slices no update carries are read.
  *
- * A read is a whole encode, and the six of them are the slowest-moving part of
- * the record - a git scan and a process walk do not change between one frame
- * and the next - so this is the coarsest read that keeps a page honest rather
- * than the cheapest that keeps it moving.
+ * A read is a whole encode, and the nine slices it is asked for are the
+ * slowest-moving part of the record - a git scan and a process walk do not
+ * change between one frame and the next - so this is the coarsest read that
+ * keeps a page honest rather than the cheapest that keeps it moving.
  */
 export const POLL_MS = 5_000;
 
@@ -67,9 +67,6 @@ export function watchSession(
 ): Readable<SessionRead> {
   const subject = { session: slot };
   let held: Store | null = null;
-  // A read is a full encode on the server, so asking again while one is in
-  // flight queues them behind each other.
-  let reading = false;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
 
@@ -83,15 +80,25 @@ export function watchSession(
   let wire: SessionRecord | null = null;
 
   /**
-   * Whether the next answer is a whole record rather than a poll's.
+   * What a whole record is wanted for, and whether one is wanted at all.
    *
-   * Three things make one: the first read, a reconnect (its subscription is
-   * re-made, so its snapshot is the server's own account of where the seat is
-   * now), and a seat that spawned, connected or took a new occupant. Every
-   * other answer is a poll's, and a poll is only allowed to move what no
-   * update feeds.
+   * **An ask is recorded with what it was issued for, at the moment it went
+   * out.** A read is the whole server encode - hundreds of milliseconds on a
+   * busy seat - so one is often in flight when something replaces the record,
+   * and that answer was encoded from the state before it. Reading a flag at
+   * the answer instead would take whatever landed as the new record, which is
+   * how the previous occupant's conversation came to be drawn as this one's.
+   * So the mode travels WITH the ask, and a replacement wanted while an answer
+   * is in flight is asked for again rather than assumed.
+   *
+   * Three things want a whole record: the first read, a reconnect (the
+   * subscription is re-made, so its snapshot is the server's account of where
+   * the seat is now), and a seat that spawned, connected or took a new
+   * occupant. Every other answer is a poll's, and a poll moves only the slices
+   * no update feeds.
    */
-  let replacing = true;
+  let asking: 'replace' | 'merge' | null = null;
+  let replaceWanted = true;
 
   /** A poll's timer, which is armed with this page's subscription. */
   let poll: ReturnType<typeof setInterval> | null = null;
@@ -133,13 +140,14 @@ export function watchSession(
   /**
    * Ask the server for the record again.
    *
-   * Nothing is asked while one ask is in flight, and a drop takes the ask with
-   * it: the reconnect answers with a snapshot of its own, which is fresher than
-   * this one would have been.
+   * Nothing is asked while one ask is in flight - a full encode apiece, and a
+   * second would queue behind the first - so a replacement wanted now is
+   * recorded and asked for when the answer lands.
    */
   function reread(): void {
-    if (reading) return;
-    reading = true;
+    if (asking !== null) return;
+    asking = replaceWanted ? 'replace' : 'merge';
+    replaceWanted = false;
     connection.refresh(subject);
   }
 
@@ -150,14 +158,36 @@ export function watchSession(
     // that happens to say the same thing. `===` never matches it, so the page
     // would draw the home's own sections and none of the seat's.
     const key = subjectKey(subject);
-    reading = false;
+    // The subscription's own answer is the first whole record, and it is an
+    // ask this page made: the subscribe is what the server answers.
+    asking = 'replace';
+    replaceWanted = false;
     stopMessages = connection.onMessage((message) => {
-      if (message.kind === 'snapshot' || message.kind === 'error') {
-        if (message.kind === 'error' || subjectKey(message.subject) === key) {
-          reading = false;
-          read(replacing);
-          replacing = false;
+      if (message.kind === 'error') {
+        // **An error names the operation it is about, never a subject**, so it
+        // is not a fact about this seat's record and it does not answer the ask
+        // in flight. The one operation that can mean the ask is never coming
+        // back is a refused subscribe; anything else - a refused command, a
+        // page that could not be read, a frame the server did not know - leaves
+        // it standing, and with it whatever whole record is still wanted.
+        if (message.what === 'subscribe') {
+          asking = null;
+          read(false);
         }
+        return;
+      }
+      if (message.kind === 'snapshot') {
+        if (subjectKey(message.subject) !== key) return;
+        // What this answer is: the ask records what it was issued for, and an
+        // answer to no ask of ours - the subscription's own, or a reconnect's -
+        // is whatever the seat needs next. A whole record wanted while an ask
+        // was out cannot be answered by that ask's answer, whatever it was.
+        const mode = asking ?? (replaceWanted ? 'replace' : 'merge');
+        const stale = asking !== null && replaceWanted;
+        asking = null;
+        read(mode === 'replace' && !stale);
+        if (stale) reread();
+        else replaceWanted = false;
         return;
       }
       if (message.kind !== 'update') return;
@@ -177,7 +207,7 @@ export function watchSession(
       // tree - so only a read answers them.
       const [name] = variantOf(message.update);
       if (name !== null && REPLACES.includes(name)) {
-        replacing = true;
+        replaceWanted = true;
         reread();
         return;
       }
@@ -196,10 +226,11 @@ export function watchSession(
     // answer that died.
     stopStatus = connection.onStatus((next: ConnectionStatus) => {
       if (next !== 'open') {
-        reading = false;
-        // The record this page holds is from before the drop, so the answer
-        // the reconnect brings is a whole one rather than a poll's.
-        replacing = true;
+        // The ask in flight went with the drop, and the record this page holds
+        // is from before it: the answer the reconnect brings is a whole one
+        // rather than a poll's.
+        asking = null;
+        replaceWanted = true;
       }
     });
     poll = setInterval(() => {

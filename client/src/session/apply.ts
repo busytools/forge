@@ -16,7 +16,30 @@
 
 import { fold } from '../chat/units';
 import type { SessionUpdate } from '../protocol';
-import type { ComposerState, Conversation, McpConnection, McpServers, SessionRecord } from './wire';
+import type {
+  ComposerState,
+  Conversation,
+  Effort,
+  McpConnection,
+  McpServers,
+  ModelFacts,
+  PermissionMode,
+  SessionHeader,
+  SessionRecord,
+} from './wire';
+
+/** `EffortLevel`, as the core's own enum serialises. */
+const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/** `PermissionMode`, as its own serde writes it: camelCase, not snake. */
+const MODES: PermissionMode[] = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'dontAsk',
+  'auto',
+  'bypassPermissions',
+];
 
 /** What an update does to the record: a patch, or the record unchanged. */
 type Apply = (held: SessionRecord, payload: Record<string, unknown>) => SessionRecord;
@@ -34,20 +57,27 @@ export const HANDLERS: Record<string, Apply> = {
     if (msg === undefined) return held;
     const conversation = appendFrame(held.conversation, msg);
     const composer = compactingOf(held.composer, msg);
-    const turn = inFlightOf(held.header.turn_in_flight, msg);
+    const header = headerFrom(held.header, msg);
     if (
       conversation === held.conversation &&
       composer === held.composer &&
-      turn === held.header.turn_in_flight
+      header === held.header
     ) {
       return held;
     }
-    return {
-      ...held,
-      conversation,
-      composer,
-      header: { ...held.header, turn_in_flight: turn },
-    };
+    return { ...held, conversation, composer, header };
+  },
+
+  hook_observation: (held, payload) => {
+    // **The mode and the effort run under live here and nowhere else.** The
+    // CLI reports neither on a frame of its own; forge folds both out of a
+    // hook payload as it passes through, and hands them on this update. Both
+    // are optional there, and a hook that names neither says nothing rather
+    // than narrowing the header.
+    const mode = knownMode(held.header.permission_mode, payload['permission_mode']);
+    const effort = knownEffort(held.header.effort, payload['effort']);
+    if (mode === held.header.permission_mode && effort === held.header.effort) return held;
+    return { ...held, header: { ...held.header, permission_mode: mode, effort } };
   },
 
   context_usage_snapshot: (held, payload) => {
@@ -91,16 +121,23 @@ export const HANDLERS: Record<string, Apply> = {
     return { ...held, pending_ask: null };
   },
 
-  auth_required: (held, payload) => ({
-    ...held,
-    composer: {
-      ...held.composer,
-      sign_in: {
-        method_name: text(payload['method_name']) ?? '',
-        method_description: text(payload['method_description']) ?? '',
+  auth_required: (held, payload) => {
+    const method = text(payload['method_name']);
+    const description = text(payload['method_description']);
+    // A payload naming neither says nothing about how to sign in, and writing
+    // blanks would narrow a hint the record already holds.
+    if (method === null && description === null) return held;
+    return {
+      ...held,
+      composer: {
+        ...held.composer,
+        sign_in: {
+          method_name: method ?? '',
+          method_description: description ?? '',
+        },
       },
-    },
-  }),
+    };
+  },
 
   dictate_started: (held, payload) => {
     const floor = number(payload['floor_db']);
@@ -128,8 +165,11 @@ export const HANDLERS: Record<string, Apply> = {
 
   dictate_progress: (held, payload) => {
     const take = heldTake(held.composer);
-    if (take === null || take['generation'] !== payload['generation']) return held;
-    return withTake(held, { ...take, progress: [payload['done'], payload['total']] }, null);
+    if (take === null || !ofThisTake(take, payload)) return held;
+    const done = payload['done'];
+    const total = payload['total'];
+    if (done === undefined && total === undefined) return held;
+    return withTake(held, { ...take, progress: [done, total] }, null);
   },
 
   dictate_ended: (held, payload) => {
@@ -138,7 +178,7 @@ export const HANDLERS: Record<string, Apply> = {
     // A refusal resolves no take - it is the answer to one that never ran -
     // and a tail from a take that is gone is not this one.
     if (take === null && !('refused' in outcome)) return held;
-    if (take !== null && !('refused' in outcome) && take['generation'] !== payload['generation']) {
+    if (take !== null && !('refused' in outcome) && !ofThisTake(take, payload)) {
       return held;
     }
     const floor =
@@ -185,7 +225,6 @@ export const IGNORED: readonly string[] = [
   'fatal_error',
   'forge_account_identity',
   'gotify_notification_appended',
-  'hook_observation',
   'mcp_operation_error',
   'oauth_credentials_snapshot',
   'peer_envelope_appended',
@@ -327,9 +366,13 @@ function settled(held: SessionRecord): SessionRecord {
  * The boundary is `client/src/chat/conversation.ts`'s `append`, which is the
  * chat's own copy of the server's rule: what a person said opens a turn and
  * everything else joins the one already open, and a frame the fold draws
- * nothing out of is never a boundary whatever its type. One arm of that rule
- * is not mirrored - the chat separates a turn a page wrote from one the frames
- * are still writing, and these turns carry no such flag. The difference is
+ * nothing out of is never a boundary whatever its type.
+ *
+ * Two arms differ, and both are the record's shape rather than a second rule.
+ * A frame arriving with NO turn at all opens one here, where the chat can hold
+ * it nowhere - its turns are refilled by a page, and this record's are not.
+ * And the chat separates a turn a page wrote from one the frames are still
+ * writing, a distinction these turns carry no flag for. Each difference is
  * only where a turn breaks, and nothing draws these turns whole: the inspector
  * reads them flattened.
  */
@@ -358,19 +401,72 @@ function opensATurn(message: unknown): boolean {
 }
 
 /**
+ * What a frame says about the header: the turn, the mode and the model.
+ *
+ * **`init` is the frame a turn opens with, and the CLI re-fires it at the head
+ * of every one**, so it is where a turn beginning is said, and where the model
+ * a `/model` switch moved to and the mode a `/mode` moved to arrive. The frame
+ * a reader might expect to carry the turn's state - `system/session_state_changed` -
+ * is emitted only behind an environment variable forge never sets and appears
+ * in none of the committed live captures, so nothing here reads it.
+ */
+function headerFrom(held: SessionHeader, message: unknown): SessionHeader {
+  const frame = record(message);
+  const turn = inFlightOf(held.turn_in_flight, frame);
+  const opens = frame['type'] === 'system' && frame['subtype'] === 'init';
+  const mode = opens
+    ? knownMode(held.permission_mode, frame['permissionMode'])
+    : held.permission_mode;
+  const model = opens ? modelFrom(held, frame['model']) : held.model;
+  if (turn === held.turn_in_flight && mode === held.permission_mode && model === held.model) {
+    return held;
+  }
+  return { ...held, turn_in_flight: turn, permission_mode: mode, model };
+}
+
+/**
  * What a frame says about a turn being in flight.
  *
- * Two of the three things the core's own answer is made of - the runtime state
- * and the turn's result - and both ride the frame. The third is the stamp
- * forge puts on a dispatch of its own, which no update carries: the gap it
- * leaves is the one between a prompt being routed and the CLI's first frame
- * for it, and it closes on that frame.
+ * The rising edge is the frame a turn opens with and the falling edge is its
+ * result, whatever the result says. The third thing the core's own answer is
+ * made of is the stamp forge puts on a dispatch of its own, which no update
+ * carries: the gap it leaves is the one between a prompt being routed and the
+ * CLI's first frame for it, and it closes on that frame.
  */
-function inFlightOf(held: boolean, message: unknown): boolean {
-  const frame = record(message);
+function inFlightOf(held: boolean, frame: Record<string, unknown>): boolean {
   if (frame['type'] === 'result') return false;
-  if (frame['type'] !== 'system' || frame['subtype'] !== 'session_state_changed') return held;
-  return frame['state'] === 'running' || frame['state'] === 'requires_action';
+  if (frame['type'] === 'system' && frame['subtype'] === 'init') return true;
+  return held;
+}
+
+/**
+ * The model a frame names, as the record holds it: the id the CLI gave, and
+ * the name the record's own catalogue carries for it.
+ *
+ * A frame naming the model the session is already on changes nothing, which is
+ * the server's own rule (`reconcile_model_from_init`): a session that did not
+ * switch keeps the name its connect resolved rather than being renamed to the
+ * CLI's spelling of the same model. The server names a model the catalogue
+ * does not carry by humanizing its id; here the id stands, because a header
+ * that draws the CLI's own spelling is better than one that draws nothing.
+ */
+function modelFrom(held: SessionHeader, value: unknown): ModelFacts | null {
+  const id = text(value)?.trim();
+  if (id === undefined || id === '' || held.model?.resolved_id === id) return held.model;
+  const listed = held.available_models.map(record).find((entry) => entry['id'] === id);
+  return { resolved_id: id, display_name_long: text(listed?.['display_name']) ?? '' };
+}
+
+/** One of the modes this client knows, or `held` when the payload named none. */
+function knownMode(held: PermissionMode | null, value: unknown): PermissionMode | null {
+  const mode = text(value);
+  return mode !== null && MODES.includes(mode as PermissionMode) ? (mode as PermissionMode) : held;
+}
+
+/** One of the efforts this client knows, or `held` when the payload named none. */
+function knownEffort(held: Effort, value: unknown): Effort {
+  const effort = text(value);
+  return effort !== null && EFFORTS.includes(effort as Effort) ? (effort as Effort) : held;
 }
 
 /**
@@ -426,12 +522,28 @@ function withTake(
   take: Record<string, unknown>,
   notice: Record<string, unknown> | null,
 ): SessionRecord {
-  const elapsed = number(take['started_ms']);
-  const stamped = { ...take, elapsed_ms: elapsed === null ? 0 : Date.now() - elapsed };
+  // Only a take this page watched begin has a clock of its own. A take the
+  // record was READ with carries the duration the wire computed and no start,
+  // so its own reading of the elapsed time stands rather than restarting at 0.
+  const started = number(take['started_ms']);
+  const stamped = started === null ? take : { ...take, elapsed_ms: Date.now() - started };
   return {
     ...held,
     composer: { ...held.composer, take: stamped, notice: notice ?? held.composer.notice },
   };
+}
+
+/**
+ * Whether a report about a take is about THIS take.
+ *
+ * A take this page watched begin carries its own generation. One a read
+ * answered with carries none, because the wire's take has no such field - so
+ * there is no number to check a report against, and one arriving for it is
+ * about it by construction: only one take per seat is live at a time.
+ */
+function ofThisTake(take: Record<string, unknown>, payload: Record<string, unknown>): boolean {
+  const heldGeneration = take['generation'];
+  return heldGeneration === undefined || heldGeneration === payload['generation'];
 }
 
 /** One reading, as a fraction of the take's own range, keeping the newest cells. */
@@ -449,14 +561,16 @@ function push(take: Record<string, unknown>, peakDb: number): Record<string, unk
  * The notice a finished take leaves, worded as `crates/forge-server/src/composer.rs:130-161`
  * words it.
  *
- * **Five strings the server owns, copied here, and the copy is deliberate.**
- * The record's notice arrives by two paths - this reducer, and a read carrying
- * the server's own `ComposerWire.notice` - so a client wording of its own
- * would make one event read two ways, and a poll re-syncs only the fields no
- * update feeds, so the disagreement would persist. The day the read path
- * normalises what it carries, this copy can go and the wording can be the
- * client's; until then it is the server's, named here so the drift is a grep
- * away rather than silent.
+ * **The server's own words, because the same notice arrives by two paths.**
+ * A record can hold this from a read, which carries what the server wrote, or
+ * from this reducer; a client wording of its own would make one event read two
+ * ways, and a poll re-syncs only the fields no update feeds, so the
+ * disagreement would persist. Four of the notices are literals copied from
+ * there, the fifth is the core's own refusal message passed through, and the
+ * truncated line a landed take draws is mirrored already by
+ * `composer/view.ts`. The day the read path normalises what it carries, these
+ * copies can go and the wording can be the client's; until then it is the
+ * server's, named here so the drift is a grep away rather than silent.
  */
 function noticeOf(
   outcome: Record<string, unknown>,
