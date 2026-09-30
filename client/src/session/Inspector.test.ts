@@ -1,5 +1,6 @@
-import { render } from 'svelte/server';
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import { flushSync, mount, unmount } from 'svelte';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
@@ -12,8 +13,28 @@ const record: SessionRecord = sessionFrom(session);
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 const NOW = 1_700_000_000_000;
 
-const draw = (props: { record?: SessionRecord | null; wire?: HomeWire } = {}): string =>
-  render(Inspector, {
+let app: Record<string, unknown> | null = null;
+let host: HTMLElement | null = null;
+
+/** What the inspector is drawing right now, which is what an opening changes. */
+function drawn(): string {
+  return host?.innerHTML ?? '';
+}
+
+/**
+ * The inspector, mounted, as the markup it drew.
+ *
+ * **Mounted rather than server-rendered, because a section's body is drawn
+ * when it is open.** A server render has no way to open one, so it can only
+ * ever see the closed shape: names, summaries and nothing behind them.
+ */
+function draw(props: { record?: SessionRecord | null; wire?: HomeWire } = {}): string {
+  if (app !== null) void unmount(app);
+  document.body.innerHTML = '';
+  host = document.createElement('div');
+  document.body.append(host);
+  app = mount(Inspector, {
+    target: host,
     props: {
       wire: props.wire ?? homeWire,
       record: props.record === undefined ? record : props.record,
@@ -21,7 +42,31 @@ const draw = (props: { record?: SessionRecord | null; wire?: HomeWire } = {}): s
       now: NOW,
       onclose: () => {},
     },
-  }).body;
+  });
+  flushSync();
+  return host.innerHTML;
+}
+
+/**
+ * Open a section, which is what a reader does before its body means anything.
+ *
+ * jsdom does not implement `<summary>` activation, so a `click` would toggle
+ * nothing here while looking like it had; this is the property-and-event pair
+ * `bind:open` actually listens for.
+ */
+function openSection(name: string): void {
+  const found = document.querySelector(`details.sec[data-k="sec-${name}"]`);
+  if (!(found instanceof HTMLDetailsElement)) throw new Error(`no ${name} section was drawn`);
+  found.open = true;
+  found.dispatchEvent(new Event('toggle'));
+  flushSync();
+}
+
+afterEach(async () => {
+  if (app !== null) await unmount(app);
+  app = null;
+  document.body.innerHTML = '';
+});
 
 /** The `data-k` of every section the inspector drew, in the order it drew them. */
 function sections(body: string): string[] {
@@ -133,7 +178,7 @@ describe('the inspector as it draws', () => {
   });
 
   it('draws the monitors section with what a card is watching', () => {
-    const body = draw({
+    draw({
       record: {
         ...record,
         monitors: [
@@ -151,6 +196,8 @@ describe('the inspector as it draws', () => {
         ],
       },
     });
+    openSection('monitors');
+    const body = drawn();
     expect(sections(body)).toContain('monitors');
     expect(body).toContain('ci-watch');
     expect(body).toContain('persistent');
@@ -163,7 +210,7 @@ describe('the inspector as it draws', () => {
    * list is the shape it was drawing.
    */
   it('nests a process under its parent rather than indenting it with spaces', () => {
-    const body = draw({
+    draw({
       record: {
         ...record,
         processes: {
@@ -181,6 +228,8 @@ describe('the inspector as it draws', () => {
         },
       },
     });
+    openSection('processes');
+    const body = drawn();
     expect(sections(body)).toContain('processes');
     expect(body).toContain('cargo nextest run');
     expect(body).toContain('412 MB');
@@ -192,7 +241,9 @@ describe('the inspector as it draws', () => {
   });
 
   it('draws an empty MCP read as the failure it is, with the reason', () => {
-    const body = draw({ record: withMcp({ servers: [], error: 'the CLI refused' }) });
+    draw({ record: withMcp({ servers: [], error: 'the CLI refused' }) });
+    openSection('mcp servers');
+    const body = drawn();
     expect(body).toContain('failed');
     expect(body).toContain('the CLI refused');
   });
@@ -200,7 +251,7 @@ describe('the inspector as it draws', () => {
   it('hangs each slack subscription off the workspace it watches', () => {
     const project = homeWire.projects[0];
     if (project === undefined) throw new Error('the fixture holds no project');
-    const body = draw({
+    draw({
       wire: {
         ...homeWire,
         connectors: {
@@ -218,6 +269,8 @@ describe('the inspector as it draws', () => {
         },
       },
     });
+    openSection('slack');
+    const body = drawn();
     expect(sections(body)).toContain('slack');
     expect(body).toMatch(/<li>[\s\S]*Trust Machines[\s\S]*<ul class="subs">[\s\S]*#granite-alerts/);
   });
@@ -239,7 +292,9 @@ describe('the inspector as it draws', () => {
       created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
       updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     };
-    const body = draw({ wire: { ...homeWire, projects: [{ ...project, tasks: [task] }] } });
+    draw({ wire: { ...homeWire, projects: [{ ...project, tasks: [task] }] } });
+    openSection('tasks');
+    const body = drawn();
     expect(sections(body)).toContain('tasks');
     expect(body).toContain('Land the Claude version on the core');
     expect(body).toContain('class="tk now"');

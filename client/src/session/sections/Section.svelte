@@ -42,5 +42,7 @@
     {#if summary !== ''}<span class="c2">{summary}</span>{/if}
     <Chevron />
   </summary>
-  <div class="sb">{@render children()}</div>
+  {#if open}
+    <div class="sb">{@render children()}</div>
+  {/if}
 </details>
