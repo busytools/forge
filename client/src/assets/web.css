@@ -509,7 +509,7 @@ details.acct > summary { list-style: none; cursor: pointer; display: flex; align
   gap: 7px; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
   border: 1px solid var(--ctl); border-radius: 99px; padding: 2px 11px; }
 details.acct > summary::-webkit-details-marker { display: none; }
-details.acct > summary:hover { border-color: #2e3850; color: var(--text); }
+details.acct > summary:hover { color: var(--text); }
 details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--accent); }
 .pop { position: absolute; right: 0; top: calc(100% + 10px); width: 320px; z-index: 20;
   background: var(--s1); border: 1px solid rgba(34,42,60,.95); border-radius: 14px;
