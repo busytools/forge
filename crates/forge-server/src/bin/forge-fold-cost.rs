@@ -224,15 +224,40 @@ struct Measured {
     turns: u64,
     messages: u64,
     asks: u32,
+    /// The server this arm was charged to, so a row lifted out of a terminal
+    /// says which process it measured.
+    pid: u32,
 }
 
 impl Measured {
-    fn report(&self, arm: &str, idle: &Measured) -> String {
+    /// The line one arm reports.
+    ///
+    /// **It carries its conditions, not only its numbers.** The profile and
+    /// the server's PID go in every row, and the idle row carries the window
+    /// it measured - because this line is what a reader lifts into a report,
+    /// and two runs of one arm can differ by the CLIENT's build: a debug
+    /// client reads 2,695 ms of wall where a release one reads 1,250, on the
+    /// same server with identical denominators.
+    ///
+    /// **That is the bound this instrument has, and it is worth stating
+    /// rather than leaving to be found.** The charge is
+    /// `cpu - idle_cpu * share`, so where the idle arm reads 0.0 the charge
+    /// is insensitive to the client's build; where the server has background
+    /// work the baseline is non-zero, `share` moves with the client's wall,
+    /// and so does the charge. A `wall_ms` above is the client's, never the
+    /// server's.
+    fn report(&self, arm: &str, idle: &Measured, window: Option<f64>) -> String {
         let share = if idle.wall_ms > 0.0 { self.wall_ms / idle.wall_ms } else { 0.0 };
+        let window = match window {
+            Some(seconds) => format!(", \"window_s\": {seconds:.1}"),
+            None => String::new(),
+        };
         format!(
-            "{{\"arm\": \"{arm}\", \"charged_cpu_ms\": {:.1}, \"wall_ms\": {:.1}, \
-             \"frames\": {}, \"bytes\": {}, \"turns\": {}, \"messages\": {}, \"asks\": {}, \
-             \"idle_cpu_ms\": {:.1}, \"idle_share\": {:.3}}}",
+            "{{\"arm\": \"{arm}\", \"profile\": \"{}\", \"pid\": {}, \"charged_cpu_ms\": {:.1}, \
+             \"wall_ms\": {:.1}, \"frames\": {}, \"bytes\": {}, \"turns\": {}, \"messages\": {}, \
+             \"asks\": {}, \"idle_cpu_ms\": {:.1}, \"idle_share\": {:.3}{window}}}",
+            profile(),
+            self.pid,
             self.cpu_ms - idle.cpu_ms * share,
             self.wall_ms,
             self.frames,
@@ -388,7 +413,7 @@ async fn measure(args: &Args) -> anyhow::Result<()> {
     };
     let seat = SessionSlot::lead(&args.org, &args.project);
 
-    let mut idle = Measured::default();
+    let mut idle = Measured { pid, ..Measured::default() };
     let started = Instant::now();
     let before = cpu_seconds(pid)?;
     tokio::time::sleep(Duration::from_secs_f64(args.seconds)).await;
@@ -397,31 +422,41 @@ async fn measure(args: &Args) -> anyhow::Result<()> {
 
     // Nothing to do for `idle`: the bracket above is the whole arm, and it is
     // the baseline every other arm is charged against rather than a workload
-    // of its own.
+    // of its own. Its window goes on the row because every other arm is
+    // charged against it and the row cannot be read without one.
     if args.arm == Arm::Idle {
-        println!("{}", Measured::default().report("idle", &idle));
+        println!(
+            "{}",
+            Measured { pid, ..Measured::default() }.report("idle", &idle, Some(args.seconds))
+        );
         return Ok(());
     }
 
-    // `subscribe` is the price of arriving, so it is NOT attached first and
-    // its own connect is inside the bracket. Every other arm measures the
-    // price of staying, so its attach is taken before the bracket - charging
-    // a connect to a refresh would report arriving as staying.
-    let mut socket = match args.arm {
-        Arm::Subscribe => a_socket(args).await?,
-        _ => attach(args, &seat).await?,
+    // `subscribe` is the price of ARRIVING, so its socket is opened inside
+    // the bracket - a connect outside it would price a subscribe on a socket
+    // somebody else had already opened. Every other arm measures the price of
+    // staying, so its attach is taken before the bracket: charging a connect
+    // to a refresh would report arriving as staying.
+    let mut attached = match args.arm {
+        Arm::Subscribe => None,
+        _ => Some(attach(args, &seat).await?),
     };
     let mut arm = Measured {
         asks: if args.arm == Arm::Subscribe { 1 } else { args.asks },
+        pid,
         ..Measured::default()
     };
     let started = Instant::now();
     let before = cpu_seconds(pid)?;
+    let mut socket = match attached.take() {
+        Some(socket) => socket,
+        None => a_socket(args).await?,
+    };
     work(args, &seat, &mut socket, &mut arm).await?;
     arm.wall_ms = started.elapsed().as_secs_f64() * 1000.0;
     arm.cpu_ms = (cpu_seconds(pid)? - before) * 1000.0;
 
-    println!("{}", arm.report(args.arm.name(), &idle));
+    println!("{}", arm.report(args.arm.name(), &idle, None));
     Ok(())
 }
 
@@ -486,8 +521,9 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
 ///
 /// **These three are not the whole request.** A subscribe also runs the git
 /// scan, the file-index walk, the reviews, the MCP read, the process walk and
-/// the rest, so the sum here is a share of a request rather than its cost -
-/// measured at about 85% of one on the transcript these break down.
+/// the rest, so the sum here is a SHARE of a request rather than its cost -
+/// and the share moves with the transcript and the machine, which is why the
+/// printed line says so rather than quoting a percentage.
 fn breakdown(surface: &Arc<ViewSurface>, seat: &SessionSlot, cwd: &Path) -> anyhow::Result<String> {
     let fleet = rss()?;
 
@@ -506,7 +542,9 @@ fn breakdown(surface: &Arc<ViewSurface>, seat: &SessionSlot, cwd: &Path) -> anyh
 
     Ok(format!(
         "breakdown: read {read_ms} ms, fold {fold_ms} ms, encode {encode_ms} ms over {} \
-         messages; resident {fleet} KiB with the fleet, {holding} KiB holding the read, {} KiB \
+         messages (the CONVERSATION's share of a request, not the request: the git scan, the \
+         file-index walk, the reviews, the MCP read and the process walk are not in these \
+         three); resident {fleet} KiB with the fleet, {holding} KiB holding the read, {} KiB \
          holding read + fold + encode ({} turns)",
         read.messages.len(),
         rss()?,
