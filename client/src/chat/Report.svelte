@@ -14,6 +14,9 @@
    */
   let { info }: { info: TurnInfo } = $props();
 
+  /** Whether the row is open, so the toggle's word is text rather than a stylesheet rule. */
+  let open = $state(false);
+
   /** The record with an unattributed usage block dropped, which is the rule the terminal applies. */
   const held = $derived(attributed(info));
 
@@ -106,7 +109,7 @@
   }
 </script>
 
-<details class="turninfo">
+<details class="turninfo" bind:open>
   <summary>
     <!-- The settled mark, from the sprite rather than from a character cell:
          the arrow this used to be was drawn because a terminal had nothing
@@ -132,7 +135,10 @@
       <span class="sep">{'\u{b7}'}</span>
       <span>{money(held.session_cost_usd)} cumulative</span>
     {/if}
-    <span class="tog"></span>
+    <!-- The label is a text node rather than a `::after` rule: the CSS form
+         leaves the disclosure's accessible name to whatever the user agent
+         makes of generated content. -->
+    <span class="tog">{open ? 'collapse' : 'expand'}</span>
   </summary>
   <!-- Each fact is a pair of its own, placed where it is: the design kept a
        cell in column with an empty span beside it, which is a grid auto-flowing

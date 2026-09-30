@@ -18,6 +18,14 @@ export function duration(ms: number | null): string {
   return `${Math.floor(whole / 60)}m ${String(whole % 60).padStart(2, '0')}s`;
 }
 
+/** How much a payload weighed, in the unit that reads best. */
+export function bytes(count: number | null): string {
+  if (count === null) return MISSING;
+  if (count < 1024) return `${count} B`;
+  if (count < 1024 * 1024) return `${Math.round(count / 1024)} KB`;
+  return `${(count / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /** A token count as a row draws it: short, because a row has no room. */
 export function tokens(count: number): string {
   if (count < 1000) return String(count);

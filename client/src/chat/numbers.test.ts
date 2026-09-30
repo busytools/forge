@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { clock, duration, grouped, money, tokens } from './numbers';
+import { bytes, clock, duration, grouped, money, tokens } from './numbers';
 
 describe('the figures a turn row draws', () => {
   it('draws a span in the unit it reads best in', () => {
@@ -22,6 +22,17 @@ describe('the figures a turn row draws', () => {
   it('draws money as the CLI reported it', () => {
     expect(money(4.82)).toBe('$4.82');
     expect(money(0.004)).toBe('$0.00');
+  });
+
+  it('draws what a payload weighed in the unit that reads best', () => {
+    // Every tier, because the one a real attachment lands in is the one a
+    // one-pixel test image never reaches: bytes to a kilobyte, kilobytes to a
+    // megabyte, and the tenth of a megabyte that a rounded-away figure loses.
+    expect(bytes(728)).toBe('728 B');
+    expect(bytes(1023)).toBe('1023 B');
+    expect(bytes(92_160)).toBe('90 KB');
+    expect(bytes(2_621_440)).toBe('2.5 MB');
+    expect(bytes(null), 'a payload the wire did not state draws the dash').toBe('-');
   });
 
   it('draws the instant a turn ended in the zone of the reader', () => {

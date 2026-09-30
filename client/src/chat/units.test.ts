@@ -299,15 +299,35 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it('draws the turn hooks after the run they followed, and nothing when none fired', () => {
-    const hook = (actions: number): unknown => ({
+    // The captured row verbatim, less the synthetic parent id the fixture
+    // carries (crates/forge-test-harness/baselines/sdk/2.1.280/real_session_sample.jsonl).
+    // The two names are the wire's own - the message renames the Rust fields on
+    // the way out - so a fold reading `actions`/`hook_infos` draws nothing on a
+    // real session, which is what the chip did until it read these.
+    const hook = (count: number): unknown => ({
+      session_id: 'session_0',
       type: 'system',
       subtype: 'stop_hook_summary',
-      actions,
-      hook_infos: [],
-      uuid: 'hooks-1',
+      hookCount: count,
+      hookInfos: [{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }],
+      hookErrors: [],
+      hookAdditionalContext: [],
+      preventedContinuation: false,
+      stopReason: '',
+      hasOutput: true,
+      level: 'suggestion',
+      toolUseID: '00afa158-9a64-4fae-9c85-4866c0399894',
+      uuid: 'uuid_7',
     });
 
-    expect(kinds(fold([call('read', 0), hook(2)]))).toEqual(['group', 'hooks']);
+    const units = fold([call('read', 0), hook(1)]);
+    expect(kinds(units), 'the chip follows the run it came after').toEqual(['group', 'hooks']);
+    const chip = units[1];
+    expect(chip?.kind === 'hooks' ? chip.actions : null).toBe(1);
+    expect(
+      chip?.kind === 'hooks' ? chip.infos : [],
+      'the command and the duration the captured row carries',
+    ).toEqual([{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }]);
     expect(fold([hook(0)]), 'a frame reporting none draws nothing').toHaveLength(0);
   });
 
@@ -325,6 +345,186 @@ describe('one turn folded into the units a view draws', () => {
     expect(group?.kind === 'group' ? group.status : null, 'and the run reports the failure').toBe(
       'failed',
     );
+  });
+
+  it('draws a prompt that landed mid-turn as a turn of the reader', () => {
+    // What the transcript read hoists out of an `attachment` row
+    // (`{"type":"attachment","attachment":{"type":"queued_command","prompt":…,
+    // "commandMode":"prompt"}}`): the shape a mid-turn prompt reaches this
+    // page as, since the CLI never echoes one on stream-json.
+    const queued = heard([
+      {
+        type: 'queued_command',
+        prompt: 'The lead charter.md, does it get included as part of the Rust binary itself?',
+        commandMode: 'prompt',
+      },
+    ]);
+
+    const units = fold([queued]);
+    expect(kinds(units)).toEqual(['user']);
+    expect(units[0]?.kind === 'user' ? units[0].text : '').toBe(
+      'The lead charter.md, does it get included as part of the Rust binary itself?',
+    );
+
+    // A prompt that carried more than words draws its words, and every other
+    // block as the placeholder the server's own fold gives it.
+    const multi = fold([
+      heard([
+        {
+          type: 'queued_command',
+          commandMode: 'prompt',
+          prompt: [
+            { type: 'text', text: 'What is wrong with this layout?' },
+            { type: 'image', source: { media_type: 'image/png' } },
+          ],
+        },
+      ]),
+    ]);
+    expect(multi[0]?.kind === 'user' ? multi[0].text : '').toBe(
+      'What is wrong with this layout?\n[image]',
+    );
+  });
+
+  it('draws a queued peer envelope as the peer card it is', () => {
+    // 4,345 of this machine's queued prompts open with the envelope's own
+    // bracket: a queued prompt is often somebody else's words arriving, and
+    // drawn as the reader's own turn it is an accent bubble attributed to
+    // them. The header is the producer's, from `peers/types.rs`.
+    const queued = heard([
+      {
+        type: 'queued_command',
+        commandMode: 'prompt',
+        prompt:
+          "[Message id=t-a399a7fb from agent 'lead' (org 'Personal')]\n\nProceed with the shape as described.",
+      },
+    ]);
+
+    const units = fold([queued]);
+    expect(kinds(units), 'not a turn of the reader').toEqual(['peer']);
+    expect(units[0]?.kind === 'peer' ? units[0].card.peer : null).toBe('lead');
+  });
+
+  it('keeps the completion notice the harness sends out of the conversation', () => {
+    // The harness's background-completion report is not something a person
+    // said, and the terminal drops the kind outright. **Two signals, and each
+    // is pinned alone**: across 10,148 queued blocks in this machine's
+    // transcripts, 3,113 carry the mode, 3,113 open with the tag, and none
+    // disagrees - so the pair looks redundant and a row carrying both could
+    // not tell a two-signal guard from a one-signal one.
+    const byMode = heard([
+      { type: 'queued_command', commandMode: 'task-notification', prompt: 'Task bj5g0t2kq done' },
+    ]);
+    const byTag = heard([
+      {
+        type: 'queued_command',
+        commandMode: 'prompt',
+        prompt: '<task-notification>Task bj5g0t2kq completed</task-notification>',
+      },
+    ]);
+
+    expect(fold([byMode]), 'the mode alone drops it').toHaveLength(0);
+    expect(fold([byTag]), 'and so does the tag alone').toHaveLength(0);
+  });
+
+  it('reads the image in a tool result the way the wire nests it', () => {
+    // A result whose content is one image block, the shape this machine's own
+    // transcripts carry: both the mime and the bytes sit under `source`, so
+    // read off the block itself a tool's image draws with no mime at all.
+    const drew = said([use('toolu_img', 'Read', { file_path: 'shot.png' })]);
+    const answered = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_img',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+        ],
+      },
+    ]);
+
+    const [group] = fold([drew, answered]);
+    const leaf = group?.kind === 'group' ? group.families[0]?.calls[0] : undefined;
+    expect(leaf?.body, 'the image, under the name the wire gives it').toEqual([
+      { kind: 'image', mime: 'image/png', uri: null },
+    ]);
+  });
+
+  it('gives an attachment to the first turn of the frame, and not to both', () => {
+    // The wire puts the file between two turns of words, and the file belongs
+    // to the turn the frame opened: a second turn carrying it again draws the
+    // same attachment twice under one message.
+    const twice = heard([
+      { type: 'text', text: 'first' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      { type: 'text', text: 'second' },
+    ]);
+
+    const units = fold([twice]);
+    expect(kinds(units)).toEqual(['user', 'user']);
+    expect(
+      units[0]?.kind === 'user' ? units[0].files.length : 0,
+      'the turn the file came with carries it',
+    ).toBe(1);
+    expect(units[1]?.kind === 'user' ? units[1].files : [], 'and the next one does not').toEqual(
+      [],
+    );
+  });
+
+  it('states no size for an attachment the wire gave as a url', () => {
+    // A source the wire sends as a link carries no payload, so there is no
+    // size to state - and the row draws the name it has rather than a dash.
+    const linked = fold([
+      heard([
+        {
+          type: 'image',
+          source: { type: 'url', media_type: 'image/png', url: 'https://example.test/a.png' },
+        },
+      ]),
+    ]);
+
+    expect(linked[0]?.kind === 'user' ? linked[0].files : []).toEqual([
+      { kind: 'image', mime: 'image/png', bytes: null },
+    ]);
+  });
+
+  it('draws what a user turn attached', () => {
+    // The live capture's own frame (user_message_blocks.jsonl, the scenario
+    // that sends a one-pixel PNG with its words): a user turn's attachment has
+    // no inbound route, so this is the shape it reaches the page as.
+    const attached = heard([
+      { type: 'text', text: 'Reply with the single word DONE.' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+        },
+      },
+    ]);
+
+    const [unit] = fold([attached]);
+    expect(unit?.kind).toBe('user');
+    expect(unit?.kind === 'user' ? unit.text : '').toBe('Reply with the single word DONE.');
+    expect(unit?.kind === 'user' ? unit.files : []).toEqual([
+      // 92 characters of base64 carry 68 bytes, and the row says the bytes.
+      { kind: 'image', mime: 'image/png', bytes: 68 },
+    ]);
+
+    // A document, with no words beside it: the same arm, and a turn of the
+    // reader's own rather than a row dropped. Its payload is redacted in the
+    // capture this shape comes from, so only the name is asserted.
+    const pdf = fold([
+      heard([
+        {
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: '<redacted>' },
+        },
+      ]),
+    ]);
+    expect(kinds(pdf)).toEqual(['user']);
+    expect(pdf[0]?.kind === 'user' ? pdf[0].files.map((file) => file.mime) : []).toEqual([
+      'application/pdf',
+    ]);
   });
 
   it("reports the clock the turn's own last row carried", () => {

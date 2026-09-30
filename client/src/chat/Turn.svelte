@@ -1,9 +1,11 @@
 <script lang="ts">
+  import Icon from '../components/Icon.svelte';
   import Card from './Card.svelte';
   import type { Turn as HeldTurn } from './conversation';
   import Group from './Group.svelte';
   import Hooks from './Hooks.svelte';
   import Notice from './Notice.svelte';
+  import { bytes } from './numbers';
   import Prose from './Prose.svelte';
   import Report from './Report.svelte';
   import { fold, type Unit } from './units';
@@ -46,7 +48,13 @@
 {#each layout as block, at (at)}
   {#if block.mine}
     <!-- No label: the orange rule is the attribution. -->
-    <div class="mine">{block.unit.text}</div>
+    <div class="mine">
+      {block.unit.text}{#each block.unit.files as file, index (`att-${index}`)}<div class="attrow">
+          <Icon name="read" class="gl" />
+          <span>{file.mime ?? file.kind}</span>
+          {#if file.bytes !== null}<span class="n">{bytes(file.bytes)}</span>{/if}
+        </div>{/each}
+    </div>
   {:else}
     <div class="work">
       {#each block.units as unit, index (`${at}-${index}`)}

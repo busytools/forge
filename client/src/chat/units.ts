@@ -25,7 +25,7 @@
  */
 
 import { aggregateStatus, labelOf, rowOf, type CallStatus, type KindRow } from './families';
-import { blocksOf, leafOf, type ToolLeaf } from './leaves';
+import { blocksOf, leafOf, type Block, type ToolLeaf } from './leaves';
 import { stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
@@ -94,10 +94,24 @@ export interface TurnInfo {
   session_cost_usd: number | null;
 }
 
+/**
+ * One thing the reader attached to a turn, as the wire describes it.
+ *
+ * The wire carries no name: a pasted image is a mime type and a base64
+ * payload, and a document the same. So the row draws the mime it does have,
+ * with the size the payload's own length states.
+ */
+export interface AttachedFile {
+  /** The block's own kind, which the row falls back to when there is no mime. */
+  kind: string;
+  mime: string | null;
+  bytes: number | null;
+}
+
 /** One thing a view draws, in the order the conversation produced it. */
 export type Unit =
-  /** A turn the user wrote. */
-  | { kind: 'user'; text: string }
+  /** A turn the user wrote, with whatever they attached to it. */
+  | { kind: 'user'; text: string; files: AttachedFile[] }
   /** Prose the assistant wrote. */
   | { kind: 'text'; text: string }
   /** A maximal run of consecutive tool calls, drawn as one group. */
@@ -150,8 +164,8 @@ interface Frame {
   subtype?: unknown;
   uuid?: unknown;
   parent_tool_use_id?: unknown;
-  actions?: unknown;
-  hook_infos?: unknown;
+  hookCount?: unknown;
+  hookInfos?: unknown;
   estimated_tokens_delta?: unknown;
   duration_ms?: unknown;
   duration_api_ms?: unknown;
@@ -178,6 +192,75 @@ function isDispatched(frame: Frame): boolean {
 function after(text: string, marker: string): string | null {
   const at = text.indexOf(marker);
   return at === -1 ? null : text.slice(at + marker.length);
+}
+
+/**
+ * What a base64 payload stands for, which is what an attachment weighed.
+ *
+ * Four characters carry three bytes, and the padding is not a byte: a row that
+ * printed the encoded length would overstate every image it drew.
+ */
+function payloadBytes(data: unknown): number | null {
+  if (typeof data !== 'string' || data === '') return null;
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  return Math.floor((data.length * 3) / 4) - padding;
+}
+
+/** The attachments a frame's content carries, in the order it carries them. */
+function attachmentsOf(content: readonly unknown[]): AttachedFile[] {
+  const out: AttachedFile[] = [];
+  for (const block of blocksOf(content)) {
+    if (block.type !== 'image' && block.type !== 'document') continue;
+    // Both kinds nest their mime and their bytes under `source`, which is the
+    // shape a tool result's image is read in too.
+    const source = obj(block.source);
+    out.push({
+      kind: block.type,
+      mime: str(source, 'media_type'),
+      bytes: payloadBytes(source['data']),
+    });
+  }
+  return out;
+}
+
+/**
+ * The words a `queued_command` block carries: a plain string for a typed
+ * prompt, or a content-block array for a multi-modal one, where only the text
+ * blocks are what the reader typed and every other block draws as a `[type]`
+ * placeholder so the row shows something rather than a blank.
+ *
+ * A port of `queued_command_text` in forge-server's transcript fold, which is
+ * the same policy the terminal reads it through.
+ */
+function queuedText(prompt: unknown): string {
+  if (typeof prompt === 'string') return prompt;
+  if (!Array.isArray(prompt)) {
+    const raw = JSON.stringify(prompt);
+    return raw === undefined ? '[unrenderable]' : raw;
+  }
+  return prompt
+    .map((block) => {
+      const type = str(block, 'type');
+      if (type === 'text') return str(block, 'text');
+      return type === null ? null : `[${type}]`;
+    })
+    .filter((part): part is string => part !== null)
+    .join('\n');
+}
+
+/**
+ * Whether a `queued_command` block is the harness's own background-completion
+ * notice, which nobody typed and this page does not draw.
+ *
+ * Both signals are read, because the terminal reads the text's own prefix
+ * where the mode is the field that says which of the three kinds arrived: a
+ * page keyed on one of them drifts from the other the first time either moves.
+ */
+function isCompletion(block: Block, words: string): boolean {
+  return (
+    str(block, 'commandMode') === 'task-notification' ||
+    words.trimStart().startsWith('<task-notification>')
+  );
 }
 
 /** The text between two markers, and what follows the second. */
@@ -542,13 +625,17 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         continue;
       }
       if (frame.subtype === 'stop_hook_summary') {
-        const actions = typeof frame.actions === 'number' ? frame.actions : 0;
+        // The wire's own names, not the Rust fields they stand for: the
+        // message renames both on the way out (`hookCount`, `hookInfos`), so a
+        // read of `actions`/`hook_infos` is always undefined and the chip has
+        // never drawn on a real session.
+        const actions = typeof frame.hookCount === 'number' ? frame.hookCount : 0;
         if (actions > 0) {
           push({
             kind: 'hooks',
             key: typeof frame.uuid === 'string' ? frame.uuid : 'hooks',
             actions,
-            infos: (Array.isArray(frame.hook_infos) ? frame.hook_infos : []).map((info) => ({
+            infos: (Array.isArray(frame.hookInfos) ? frame.hookInfos : []).map((info) => ({
               command: str(info, 'command') ?? '',
               ...(typeof obj(info)['durationMs'] === 'number'
                 ? { durationMs: obj(info)['durationMs'] as number }
@@ -579,6 +666,13 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
 
     if (frame.type !== 'assistant' && frame.type !== 'user') continue;
 
+    // What the frame attached, read before its blocks are walked: the wire
+    // puts the thing AFTER the words it came with, and they are one row - so
+    // the words are pushed with it rather than the attachment following them
+    // as a row of its own.
+    const files = frame.type === 'user' ? attachmentsOf(blocksOf(frame.message?.content)) : [];
+    let tookFiles = false;
+
     for (const block of blocksOf(frame.message?.content)) {
       if (block.type === 'text' && typeof block.text === 'string') {
         if (frame.type === 'user') {
@@ -595,7 +689,39 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
             continue;
           }
         }
-        push({ kind: frame.type === 'user' ? 'user' : 'text', text: block.text });
+        if (frame.type === 'user') {
+          // The attachments ride the frame's first turn of words: a second
+          // text block in the same frame is the same reader saying more, not
+          // the same file sent twice.
+          push({ kind: 'user', text: block.text, files: tookFiles ? [] : files });
+          tookFiles = true;
+        } else {
+          push({ kind: 'text', text: block.text });
+        }
+        continue;
+      }
+
+      if (block.type === 'queued_command') {
+        const words = queuedText(block.prompt);
+        if (isCompletion(block, words)) continue;
+        // **A queued prompt can be somebody else's words.** Half the queued
+        // rows in this machine's transcripts are a peer envelope, and the
+        // envelope is a row of its own rather than the reader's - the same
+        // check the text arm above runs, for the same reason it runs it.
+        const envelope = inbound(stripEscapes(words));
+        if (envelope !== null) {
+          if (envelope.kind === 'peer') {
+            flushRun();
+            peers.push(envelope.card);
+          } else {
+            push(envelope);
+          }
+          continue;
+        }
+        // Otherwise it is a turn the reader took, so what the frame attached
+        // rides it exactly as it rides one they typed.
+        push({ kind: 'user', text: words, files: tookFiles ? [] : files });
+        tookFiles = true;
         continue;
       }
 
@@ -620,7 +746,20 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
           label: labelOf(name),
           leaf: leafOf(id, name, block.input, results.get(id), cwd),
         });
+        continue;
       }
+
+      if (block.type === 'image' || block.type === 'document') {
+        // Read by the frame rather than here: the attachment is part of the
+        // turn the words above it opened, not a row of its own.
+        continue;
+      }
+    }
+
+    // A frame that attached something and said nothing is still a turn the
+    // reader took, and the row draws what they sent rather than nothing.
+    if (frame.type === 'user' && !tookFiles && files.length > 0) {
+      push({ kind: 'user', text: '', files });
     }
   }
 
