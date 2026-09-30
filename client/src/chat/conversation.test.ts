@@ -37,6 +37,23 @@ const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
   cursor,
 });
 
+/** One `system` frame: the thinking-token counter, which draws nothing. */
+const counted = (tokens: number): unknown => ({
+  type: 'system',
+  subtype: 'thinking_tokens',
+  estimated_tokens: tokens,
+  estimated_tokens_delta: tokens,
+  uuid: `thinking-${tokens}`,
+});
+
+/** Another `system` subtype, which the fold draws nothing for either. */
+const progressed = (): unknown => ({
+  type: 'system',
+  subtype: 'task_progress',
+  task_id: 'task-1',
+  uuid: 'progress-1',
+});
+
 /**
  * A connection a test drives by hand.
  *
@@ -145,6 +162,42 @@ describe('the conversation the chat draws', () => {
     expect(after[0], 'the first turn is the object it was').toBe(before[0]);
     expect(after[1], 'and so is the one the frame did not touch').toBe(before[1]);
     expect(after[2], 'the frame opened a turn of its own').toBeDefined();
+  });
+
+  it('opens no row for a frame the fold draws nothing for', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    // Before any page has landed there is no turn for it to join, and it
+    // still opens none: a row it opened would draw nothing.
+    server.update({ chat_appended: { key: LEAD, msg: counted(1) } });
+    expect(get(chat.value).turns, 'a frame with no turn to join is held nowhere').toEqual([]);
+
+    server.send(page([turn('t1', 'first'), turn('t2', 'second')], null));
+
+    // The thinking-token counter arrives as a `system` frame and the CLI
+    // sends one about every fifty tokens, so a running seat receives
+    // thousands. Each one used to open a row of its own that the fold
+    // renders nothing into - and a row the reader never scrolls to is never
+    // measured, so it holds a whole turn's worth of scroll range rather than
+    // the 24px it draws at.
+    //
+    // It is one subtype of sixteen the CLI emits: the rule is the frame's
+    // TYPE, and a second subtype here is what keeps it from being read as
+    // this counter's name.
+    server.update({ chat_appended: { key: LEAD, msg: counted(50) } });
+    server.update({ chat_appended: { key: LEAD, msg: progressed() } });
+    server.update({ chat_appended: { key: LEAD, msg: counted(100) } });
+
+    const after = get(chat.value).turns;
+    expect(after.length, 'the frames opened no row of their own').toBe(2);
+    expect(after[after.length - 1]?.messages, 'and are held in the turn they arrived in').toEqual([
+      ...turn('t2', 'second').messages,
+      counted(50),
+      progressed(),
+      counted(100),
+    ]);
   });
 
   it('keeps every row keyed when older turns arrive', () => {
