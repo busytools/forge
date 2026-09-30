@@ -171,4 +171,76 @@ describe('the chat column as it draws', () => {
     expect(drawn()).toContain('not running');
     expect(drawn()).toContain('no model declared');
   });
+
+  it('draws a turn of interleaved peer messages as one group, both asks on one lane', () => {
+    // **This one mounts rather than renders**, because the row is where a keyed
+    // list lives: two runs of the same kind once drew two lanes with one name,
+    // and a duplicate key stops the whole turn drawing at mount - which an SSR
+    // render shows none of, because it writes duplicate-keyed markup happily.
+    const envelope = (text: string): unknown => ({
+      type: 'user',
+      uuid: `u-${text.length}`,
+      message: { role: 'user', content: [{ type: 'text', text }] },
+    });
+    const server = stub();
+    draw({}, server);
+    server.answer([
+      {
+        key: 't1',
+        messages: [
+          envelope(
+            "[Question id=q-1 from agent 'forge/steward' (org 'Busytools') - reply with agents__tell in_reply_to=q-1]\n\nis it filed?",
+          ),
+          envelope("[Message id=t-2 from agent 'gateway-backend' (org 'Gateway')]\n\nFYI"),
+          envelope(
+            "[Question id=q-3 from agent 'forge/steward' (org 'Busytools') - reply with agents__tell in_reply_to=q-3]\n\nand the wake?",
+          ),
+        ],
+      },
+    ]);
+
+    const html = document.body.innerHTML;
+    expect(drawn(), 'every message is on the page, both asks included').toContain('3 messages');
+    expect((html.match(/>ask</g) ?? []).length, 'the two asks share one lane').toBe(1);
+    expect((html.match(/>message</g) ?? []).length, 'and the message its own').toBe(1);
+    expect(html, 'a counterparty in this project').toContain('i-bot');
+    expect(html, 'and one somewhere else').toContain('i-away');
+    expect(html, 'with its org on the row').toContain('Gateway');
+  });
+
+  it('draws a peer message the socket sends live, through the frame the server forges', () => {
+    // #1376: the server forges the frame a delivery needs and sends it beside
+    // the typed update, so a peer message draws live through the `chat_appended`
+    // the client already handles. Its own turn, because a user frame is what a
+    // turn opens on - what matters here is that the row draws at all.
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    server.send({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'user',
+            uuid: 'u-live',
+            message: {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: "[Message id=t-live from agent 'forge/steward' (org 'Busytools')]\n\npicking it up",
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    const html = document.body.innerHTML;
+    expect(drawn(), 'the message is on the page as a group of one').toContain('1 message');
+    expect(html, 'marked by the counterparty class').toContain('i-bot');
+    expect(html, 'and labelled by its sender').toContain('forge/steward');
+  });
 });

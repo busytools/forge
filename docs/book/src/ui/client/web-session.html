@@ -21,8 +21,10 @@
      (a tool family with its calls as leaves), details.leaf (one call that
      opens on its own), .mine (a user turn - the orange rule is the
      attribution, so it carries no label), .attrow (what a turn attached),
-     .code, .dif, .notice, .peer,
-     .msg (a messaging group), .card (an answered question), .mon. */
+     .code, .dif, .notice, .card (an answered question), .mon.
+     A run of peer messages is a tool run: it takes details.kind, .knd and
+     details.leaf with .mk, .k and .org for the counterparty, so traffic and
+     work read as one system rather than two. */
   :root {
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
     --sel:#20140a; --line:#222a3c; --ctl:#516590;
@@ -1120,7 +1122,7 @@ docs: Render the message body into rows.</div>
         <div class="notice warn"><span class="sev">Warning</span>Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</div>
         <div class="notice err"><span class="sev">Error</span>Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</div>
 
-        <div class="compacting"><span class="ring"></span>Compacting context&#8230;</div>
+        <div class="compacting"><span class="ring"></span>Compacting context...</div>
 
         <details class="hooks">
           <summary><span>&#8627; hook summary &#183; 3 actions</span>
@@ -1238,7 +1240,7 @@ docs: Render the message body into rows.</div>
         </div>
 
         <div class="beat" data-beat="5">
-          <div class="compacting"><span class="ring"></span>Compacting context&#8230;</div>
+          <div class="compacting"><span class="ring"></span>Compacting context...</div>
         </div>
 
         <div class="beat" data-beat="6">

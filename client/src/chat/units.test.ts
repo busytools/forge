@@ -191,6 +191,68 @@ describe('one turn folded into the units a view draws', () => {
     expect(lanes[0]?.cards[0]?.peer).toBe('steward');
   });
 
+  it('keeps one lane per kind however the kinds interleave', () => {
+    // **Merged by kind, not by run**, which is what the terminal's own tally
+    // draws - a lane per row and label over the whole group - and what keeps a
+    // lane's word unique. Two lanes both headed `ask` collide on the key a view
+    // opens the lane's leaves by, and Svelte refuses a duplicate key at mount:
+    // the whole turn stops drawing, with nothing in an SSR render to show it.
+    const ask = (id: string): unknown =>
+      heard([
+        text(
+          `[Question id=${id} from agent 'steward' (org 'Busytools') - reply with agents__tell in_reply_to=${id}]\n\nis it filed?`,
+        ),
+      ]);
+    const message = heard([text("[Message id=t-m from agent 'steward' (org 'Busytools')]\n\nFYI")]);
+
+    const [group] = fold([ask('q-1'), message, ask('q-2')]);
+    const lanes = group?.kind === 'messages' ? group.lanes : [];
+
+    expect(
+      lanes.map((lane) => lane.kind),
+      'one lane per kind, first seen first',
+    ).toEqual(['ask', 'message']);
+    expect(
+      lanes.map((lane) => lane.cards.length),
+      'and both asks on the one lane',
+    ).toEqual([2, 1]);
+  });
+
+  it('rolls a message group up from what each send came back with', () => {
+    // The mark on a group is its aggregate, so a send that failed draws the
+    // failure mark and one still out draws the ring - the sheet's own sentence,
+    // "a failed delivery included", and what the terminal's `aggregate_status`
+    // does for the same run.
+    const ask = (id: string): unknown =>
+      said([
+        {
+          type: 'tool_use',
+          id,
+          name: 'mcp__forge__agents__ask',
+          input: { project: 'forge', label: 'steward', prompt: 'is it filed?' },
+        },
+      ]);
+    const answer = (id: string, failed: boolean): unknown =>
+      heard([
+        {
+          type: 'tool_result',
+          tool_use_id: id,
+          content: failed ? 'the seat has no session' : 'yes',
+          is_error: failed,
+        },
+      ]);
+    const status = (units: Unit[]): string | null =>
+      units[0]?.kind === 'messages' ? units[0].status : null;
+
+    expect(status(fold([ask('toolu_a'), answer('toolu_a', false)])), 'a send that landed').toBe(
+      'completed',
+    );
+    expect(status(fold([ask('toolu_b'), answer('toolu_b', true)])), 'one that did not').toBe(
+      'failed',
+    );
+    expect(status(fold([ask('toolu_c')])), 'and one still out').toBe('in_progress');
+  });
+
   it('marks the counterparty by class, and tags the org only when it is not the reader own', () => {
     // The reader is `forge/chat-kinds`: `forge/steward` is a worker in this
     // project, a bare name is another project's own agent, and the org tag is

@@ -90,6 +90,12 @@ export interface PeerCard {
   here: boolean;
   /** The counterparty's org, shown only when it is not the reader's own. */
   org: string | null;
+  /**
+   * What became of the message: a send with no answer yet is still out, one
+   * whose result came back in error did not arrive, and an envelope that
+   * arrived is done.
+   */
+  status: CallStatus;
 }
 
 /** One lane of a message group: its kind, and the messages that arrived as it. */
@@ -160,7 +166,7 @@ export type Unit =
    * departs from the terminal: its own fold holds a messaging group back until
    * it holds two.
    */
-  | { kind: 'messages'; lanes: MessageLane[] }
+  | { kind: 'messages'; lanes: MessageLane[]; status: CallStatus }
   | { kind: 'notice'; notice: Notice }
   | { kind: 'hooks'; key: string; actions: number; infos: HookInfo[] }
   /** What a settled turn did, under the work it did it with. */
@@ -352,6 +358,7 @@ function peerCard(
   kind: MessageKind,
   org: string | null,
   self: Self | null,
+  status: CallStatus,
 ): PeerCard {
   return {
     peer,
@@ -359,7 +366,14 @@ function peerCard(
     kind,
     here: self === null || projectOf(peer) === self.project,
     org: org !== null && (self === null || org !== self.org) ? org : null,
+    status,
   };
+}
+
+/** What a send's own result says became of it, and a send with none is still out. */
+function messageStatus(result: Block | undefined): CallStatus {
+  if (result === undefined) return 'in_progress';
+  return result.is_error === true ? 'failed' : 'completed';
 }
 
 /** What an envelope's prose turned into: a peer message, or a line nobody typed. */
@@ -416,7 +430,7 @@ function inbound(text: string, self: Self | null): Envelope | null {
     if (rest === null) return null;
     const who = sender(rest);
     if (who === null) return null;
-    return { kind: 'peer', card: peerCard(who.from, body, lane, who.org, self) };
+    return { kind: 'peer', card: peerCard(who.from, body, lane, who.org, self, 'completed') };
   }
 
   if (header.startsWith('Ask id=')) {
@@ -509,26 +523,39 @@ function inbound(text: string, self: Self | null): Envelope | null {
  * server's own answer is `None`, which draws the call as the tool row it is
  * rather than as a peer block with a nameless peer.
  */
-function outbound(name: string, input: unknown, self: Self | null): PeerCard | null {
+function outbound(
+  name: string,
+  input: unknown,
+  self: Self | null,
+  result: Block | undefined,
+): PeerCard | null {
   const fields = obj(input);
   const ask =
     name.endsWith('__ask') || name.endsWith('__ask_agent') || name.endsWith('__workers__ask');
   const lane: MessageKind = ask ? 'ask' : 'message';
+  const status = messageStatus(result);
 
   if (name === 'mcp__forge__agents__ask' || name === 'mcp__forge__agents__tell') {
     const peer = address(fields);
     if (peer === null) return null;
-    return peerCard(peer, str(fields, ask ? 'prompt' : 'message') ?? '', lane, null, self);
+    return peerCard(peer, str(fields, ask ? 'prompt' : 'message') ?? '', lane, null, self, status);
   }
   if (name === 'mcp__forge__peers__ask_agent' || name === 'mcp__forge__peers__tell_agent') {
     const peer = str(fields, 'target');
     if (peer === null) return null;
-    return peerCard(peer, str(fields, ask ? 'prompt' : 'message') ?? '', lane, null, self);
+    return peerCard(peer, str(fields, ask ? 'prompt' : 'message') ?? '', lane, null, self, status);
   }
   if (name === 'mcp__forge__workers__ask' || name === 'mcp__forge__workers__tell') {
     const peer = str(fields, 'label');
     if (peer === null) return null;
-    return peerCard(peer, str(fields, ask ? 'question' : 'message') ?? '', lane, null, self);
+    return peerCard(
+      peer,
+      str(fields, ask ? 'question' : 'message') ?? '',
+      lane,
+      null,
+      self,
+      status,
+    );
   }
   return null;
 }
@@ -844,15 +871,23 @@ export function fold(
     const cards = peers;
     peers = [];
     if (cards.length === 0) return;
-    // One lane per kind, in the order the kinds first arrived: a run of the
-    // same kind is one lane, and a different kind opens the next.
+    // One lane per KIND, first seen first - not one per run. The terminal's own
+    // tally draws a lane per kind over the whole group, and a lane's word is
+    // what a view opens its leaves by: two runs of the same kind would give two
+    // lanes the same word, which a keyed list refuses at mount.
     const lanes: MessageLane[] = [];
+    const seen = new Map<MessageKind, MessageLane>();
     for (const card of cards) {
-      const lane = lanes.at(-1);
-      if (lane !== undefined && lane.kind === card.kind) lane.cards.push(card);
-      else lanes.push({ kind: card.kind, cards: [card] });
+      const held = seen.get(card.kind);
+      if (held !== undefined) {
+        held.cards.push(card);
+        continue;
+      }
+      const lane: MessageLane = { kind: card.kind, cards: [card] };
+      seen.set(card.kind, lane);
+      lanes.push(lane);
     }
-    units.push({ kind: 'messages', lanes });
+    units.push({ kind: 'messages', lanes, status: aggregateStatus(cards.map((c) => c.status)) });
   };
 
   const push = (unit: Unit): void => {
@@ -1007,7 +1042,7 @@ export function fold(
         const id = typeof block.id === 'string' ? block.id : '';
         if (isMonitor(name)) continue;
 
-        const card = outbound(name, block.input, self);
+        const card = outbound(name, block.input, self, results.get(id));
         if (card !== null) {
           flushRun();
           peers.push(card);

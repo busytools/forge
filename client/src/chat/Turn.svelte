@@ -102,7 +102,7 @@
         {:else if unit.kind === 'question'}
           <Card asked={unit.asked} />
         {:else if unit.kind === 'messages'}
-          <Messages lanes={unit.lanes} />
+          <Messages lanes={unit.lanes} status={unit.status} />
         {:else if unit.kind === 'notice'}
           <Notice notice={unit.notice} />
         {:else if unit.kind === 'hooks'}

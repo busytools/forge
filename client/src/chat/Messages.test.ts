@@ -1,6 +1,7 @@
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import type { CallStatus } from './families';
 import Messages from './Messages.svelte';
 import type { MessageLane, PeerCard } from './units';
 
@@ -10,12 +11,33 @@ const card = (over: Partial<PeerCard> = {}): PeerCard => ({
   kind: 'message',
   here: true,
   org: null,
+  status: 'completed',
   ...over,
 });
 
-const draw = (lanes: MessageLane[]): string => render(Messages, { props: { lanes } }).body;
+const draw = (lanes: MessageLane[], status: CallStatus = 'completed'): string =>
+  render(Messages, { props: { lanes, status } }).body;
 
 describe('a run of peer messages, drawn as tool rows', () => {
+  it('leads with the mark the group earned, not a constant check', () => {
+    // The sheet's own sentence: the mark rolls the whole group up, "a failed
+    // delivery included". A constant check draws a send that never arrived as
+    // settled, and a send still out as settled too.
+    const ask = (status: CallStatus): MessageLane[] => [
+      { kind: 'ask', cards: [card({ kind: 'ask', status })] },
+    ];
+
+    const landed = draw(ask('completed'), 'completed');
+    const failed = draw(ask('failed'), 'failed');
+    const out = draw(ask('in_progress'), 'in_progress');
+
+    expect(landed, 'a group whose sends landed').toContain('i-check');
+    expect(failed, 'one with a send that did not arrive').toContain('i-x');
+    expect(failed, 'in the failure tone').toContain('st err');
+    expect(out, 'and one still out').toContain('ring');
+    expect(out, 'is not drawn as settled').not.toContain('i-check');
+  });
+
   it('counts the messages, and reads a lone one as the group of one it is', () => {
     // The one departure from the terminal, which holds a group back until it
     // holds two. The count is the whole message, singular included.
