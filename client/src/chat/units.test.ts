@@ -689,6 +689,121 @@ describe('one turn folded into the units a view draws', () => {
     );
   });
 
+  it('leaves a backgrounded call running after the result that started it', () => {
+    // The launch and its result as the capture has them
+    // (crates/forge-test-harness/baselines/sdk/2.1.280/backgrounded_bash_lifecycle.jsonl).
+    // The result is a clean one that says the command STARTED, so a fold with
+    // no task frames draws a running command as a finished one.
+    const launch = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_012ygCheCDa6s8YmU5JxxVp2',
+        name: 'Bash',
+        input: {
+          command: 'sleep 1 && echo forge-bash-bg-ok',
+          description: 'Echo test string after brief sleep',
+          run_in_background: true,
+        },
+      },
+    ]);
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bj5g0t2kq',
+      tool_use_id: 'toolu_012ygCheCDa6s8YmU5JxxVp2',
+      description: 'Echo test string after brief sleep',
+      is_backgrounded: true,
+      task_type: 'local_bash',
+      uuid: '30b960f6-c50d-4594-bd15-2fddf70ee88e',
+    };
+    const launched = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_012ygCheCDa6s8YmU5JxxVp2',
+        content: 'Command running in background with ID: bj5g0t2kq.',
+        is_error: false,
+      },
+    ]);
+
+    const [group] = fold([launch, launched, started]);
+    const call = group?.kind === 'group' ? group.families[0]?.calls[0] : undefined;
+    expect(call?.status, 'the launch result is not the end of a backgrounded call').toBe(
+      'in_progress',
+    );
+    expect(group?.kind === 'group' ? group.status : null, 'and the run says so').toBe(
+      'in_progress',
+    );
+  });
+
+  it('settles a backgrounded call on the frame that ends it, with what that frame said', () => {
+    const launch = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_012ygCheCDa6s8YmU5JxxVp2',
+        name: 'Bash',
+        input: { command: 'sleep 1 && echo forge-bash-bg-ok', run_in_background: true },
+      },
+    ]);
+    const launched = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_012ygCheCDa6s8YmU5JxxVp2',
+        content: 'Command running in background with ID: bj5g0t2kq.',
+      },
+    ]);
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bj5g0t2kq',
+      tool_use_id: 'toolu_012ygCheCDa6s8YmU5JxxVp2',
+    };
+    const ended = {
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: 'bj5g0t2kq',
+      patch: { status: 'completed', end_time: 1790162965845 },
+    };
+    const notified = {
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'bj5g0t2kq',
+      tool_use_id: 'toolu_012ygCheCDa6s8YmU5JxxVp2',
+      status: 'completed',
+      summary: 'Background command "Echo test string after brief sleep" completed (exit code 0)',
+    };
+
+    const first = fold([launch, launched, started, ended, notified]);
+    const done = first[0]?.kind === 'group' ? first[0].families[0]?.calls[0] : undefined;
+    expect(done?.status).toBe('completed');
+    expect(done?.note, 'the harness own sentence, drawn as it wrote it').toEqual({
+      text: 'Background command "Echo test string after brief sleep" completed (exit code 0)',
+      tone: 'sum',
+    });
+
+    // The killed end, as stop_task.jsonl carries it: the patch says `killed`,
+    // the notification says `stopped`, and a summary that says neither is the
+    // one the status word is drawn beside.
+    const killed = {
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: 'bj5g0t2kq',
+      patch: { status: 'killed', end_time: 1790162923382 },
+    };
+    const stopped = {
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'bj5g0t2kq',
+      tool_use_id: 'toolu_012ygCheCDa6s8YmU5JxxVp2',
+      status: 'stopped',
+      summary: 'Run slow counting loop',
+    };
+
+    const second = fold([launch, launched, started, killed, stopped]);
+    const dead = second[0]?.kind === 'group' ? second[0].families[0]?.calls[0] : undefined;
+    expect(dead?.status, 'a stopped task draws as the kill it is').toBe('killed');
+    expect(dead?.note).toEqual({ text: 'Run slow counting loop \u{b7} stopped', tone: 'fail' });
+  });
+
   it("reports the clock the turn's own last row carried", () => {
     // The result frame carries no instant, and a turn read from a transcript
     // has no result frame at all - so the only clock a settled row can report

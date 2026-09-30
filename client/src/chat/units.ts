@@ -24,8 +24,15 @@
  * they duplicate that surface inside every turn that used one.
  */
 
-import { aggregateStatus, labelOf, rowOf, type CallStatus, type KindRow } from './families';
-import { blocksOf, leafOf, type Block, type ToolLeaf } from './leaves';
+import {
+  aggregateStatus,
+  labelOf,
+  rowOf,
+  taskStatus,
+  type CallStatus,
+  type KindRow,
+} from './families';
+import { blocksOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
 import { stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
@@ -174,6 +181,11 @@ interface Frame {
   parent_tool_use_id?: unknown;
   hookCount?: unknown;
   hookInfos?: unknown;
+  task_id?: unknown;
+  tool_use_id?: unknown;
+  patch?: unknown;
+  summary?: unknown;
+  status?: unknown;
   estimated_tokens_delta?: unknown;
   duration_ms?: unknown;
   duration_api_ms?: unknown;
@@ -574,6 +586,19 @@ function turnFailure(frame: Frame): Notice | null {
 }
 
 /**
+ * The line a backgrounded call leaves behind, from the frame that ended it.
+ *
+ * The harness writes its own sentence for a command that finished and only the
+ * task's description for one that was stopped, so the wire's status word is
+ * drawn beside the summary exactly when the summary does not already say it.
+ */
+function taskLine(summary: string | null, wire: string | null): BackgroundTask['note'] {
+  if (summary === null || summary.trim() === '') return null;
+  const said = wire !== null && !summary.includes(wire) ? `${summary} \u{b7} ${wire}` : summary;
+  return { text: said, tone: wire === 'completed' ? 'sum' : 'fail' };
+}
+
+/**
  * Fold a turn's messages into the units a view draws.
  *
  * A `turn` is one page's worth of conversation as the server cut it, so this
@@ -602,6 +627,10 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
    * turn's first call draws red until its own result lands.
    */
   let failedAt: number | null = null;
+  /** What the wire reported about each backgrounded call, by call. */
+  const tasks = new Map<string, BackgroundTask>();
+  /** The call a task belongs to, which the frames that carry one name. */
+  const owners = new Map<string, string>();
   for (const [at, frame] of frames.entries()) {
     // A dispatched agent's frames are not the conversation, and its verdict is
     // not the session's: a sub-agent's failed result says nothing about the
@@ -614,6 +643,32 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     // result is.
     if (frame.type === 'error' || (frame.type === 'result' && frame.is_error === true)) {
       failedAt = at;
+    }
+    if (frame.type === 'system') {
+      const task = str(frame, 'task_id');
+      const call = str(frame, 'tool_use_id');
+      if (frame.subtype === 'task_started' && call !== null) {
+        if (task !== null) owners.set(task, call);
+        tasks.set(call, { status: 'in_progress', note: null });
+      } else if (frame.subtype === 'task_updated' || frame.subtype === 'task_notification') {
+        // `task_updated` names only the task, so an update whose own
+        // `task_started` was never seen cannot be placed and is dropped rather
+        // than guessed at - which is the call the terminal makes on the same
+        // frame, and for the same reason: the wrong call would be worse than
+        // none.
+        const owner = call ?? (task === null ? null : (owners.get(task) ?? null));
+        if (owner === null) continue;
+        const held: BackgroundTask = tasks.get(owner) ?? { status: 'in_progress', note: null };
+        const wire = str(frame, 'status') ?? str(obj(frame.patch), 'status');
+        tasks.set(owner, {
+          status: taskStatus(wire) ?? held.status,
+          note:
+            frame.subtype === 'task_notification'
+              ? taskLine(str(frame, 'summary'), wire)
+              : held.note,
+        });
+      }
+      continue;
     }
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {
@@ -837,7 +892,7 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
         run.push({
           row: rowOf(name),
           label: labelOf(name),
-          leaf: leafOf(id, name, block.input, results.get(id), cwd, abandoned),
+          leaf: leafOf(id, name, block.input, results.get(id), cwd, tasks.get(id), abandoned),
         });
         continue;
       }

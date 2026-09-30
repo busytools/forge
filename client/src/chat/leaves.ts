@@ -20,6 +20,21 @@ export type CallBody =
   | { kind: 'diff'; path: string; old: string; new: string }
   | { kind: 'image'; mime: string | null; uri: string | null };
 
+/**
+ * A call that outlives the turn it started in, as the wire reports it.
+ *
+ * The launch result of a backgrounded call says only that the command
+ * started, so a fold that settles the call from its result draws a running
+ * command as a finished one. The task frames are what say otherwise:
+ * `task_started` opens the call's own clock, `task_updated` carries the
+ * ending, and `task_notification` carries what the harness said at it.
+ */
+export interface BackgroundTask {
+  status: CallStatus;
+  /** What the harness said when the task ended, when it said anything. */
+  note: { text: string; tone: 'sum' | 'fail' } | null;
+}
+
 /** One call, as its own row. */
 export interface ToolLeaf {
   /** The `tool_use` id the wire gave it, which is what its result names. */
@@ -40,6 +55,11 @@ export interface ToolLeaf {
    */
   command: string | null;
   status: CallStatus;
+  /**
+   * What the harness said when a backgrounded call ended: drawn as the last
+   * line of the box the call's result drew, and `null` for every other call.
+   */
+  note: { text: string; tone: 'sum' | 'fail' } | null;
   /** What the row opens on. Empty for a call that has not come back yet. */
   body: CallBody[];
 }
@@ -166,6 +186,10 @@ export function titleOf(name: string, input: unknown, cwd: string | null): strin
  * that has not come back yet still carries what its own input says, because an
  * edit's diff is in the call rather than in the answer.
  *
+ * `task` is the same for a backgrounded call, and it WINS over the result: the
+ * result only ever says the command started, so a call the wire has reported
+ * as running has to draw as running however clean its launch result was.
+ *
  * `abandoned` is the turn's verdict on a call it never answered: a turn that
  * failed is a turn whose open calls never get a result, and they draw as
  * failed rather than as still running - which is what the terminal does with
@@ -177,10 +201,11 @@ export function leafOf(
   input: unknown,
   result: Block | undefined,
   cwd: string | null,
+  task: BackgroundTask | undefined = undefined,
   abandoned = false,
 ): ToolLeaf {
   const body = diffsOf(name, input);
-  const settled = settledBy(result, abandoned);
+  const settled = task !== undefined ? task.status : settledBy(result, abandoned);
   return {
     id,
     row: rowOf(name),
@@ -188,6 +213,7 @@ export function leafOf(
     title: titleOf(name, input, cwd),
     command: field(input, 'command')?.trim() || null,
     status: settled,
+    note: task?.note ?? null,
     body: result === undefined ? body : [...body, ...bodyOf(result.content)],
   };
 }
