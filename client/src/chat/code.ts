@@ -116,9 +116,17 @@ export function fenceLanguage(info: string): string | null {
   return first === undefined ? null : namedFor(first);
 }
 
-/** The language this page has for `name`, or `null` for one it does not. */
+/**
+ * The language this page has for `name`, or `null` for one it does not.
+ *
+ * The lookup is on the table's OWN keys: a name arrives from a fence's info
+ * string, which is the model's own text, and `constructor` and `__proto__`
+ * resolve on an object literal to the object's own members rather than to
+ * nothing.
+ */
 function namedFor(name: string): string | null {
-  return NAMED[name.toLowerCase()] ?? null;
+  const key = name.toLowerCase();
+  return Object.hasOwn(NAMED, key) ? (NAMED[key] ?? null) : null;
 }
 
 /** `text` with the characters that would end its element escaped. */

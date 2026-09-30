@@ -94,7 +94,7 @@ describe('the chat column under a page that re-reads', () => {
     );
   });
 
-  it('draws what a Read came back with as the page own code panel', () => {
+  it("draws what a Read came back with as the page's own code panel", () => {
     const server = stub();
     app = mount(Churned, {
       target: document.body,

@@ -112,6 +112,21 @@ describe('a code block in a message', () => {
     expect(renderProse('```rust\nfn main() {')).toContain('<div class="lang">rust</div>');
   });
 
+  it('draws a fence naming no language as plain text, not as a throw', () => {
+    // `constructor` and `__proto__` are the two keys a lowercased lookup still
+    // resolves on an object literal, and an info string is the model's own text
+    // - so the one thing this must not do is throw inside the render.
+    for (const info of ['constructor', '__proto__']) {
+      const html = renderProse(`\`\`\`${info}\nlet a = 1 < 2;\n\`\`\``);
+
+      expect(html, `${info}: the panel draws`).toContain('<div class="code">');
+      expect(html, `${info}: the fence still labels it`).toContain(
+        `<div class="lang">${info}</div>`,
+      );
+      expect(html, `${info}: the body is escaped text`).toContain('&lt;');
+    }
+  });
+
   it('colours the fence through the same lookup a read body uses', () => {
     expect(renderProse('```rust\npub fn main() {}\n```')).toContain('hljs-');
     expect(renderProse('```toml\n[accounts]\n```')).toContain('hljs-');
@@ -148,6 +163,8 @@ describe('a source file, as the maintained highlighter draws it', () => {
     expect(languageOf('client/src/chat/Chat.svelte')).toBeNull();
     expect(languageOf('a/file.py')).toBe('python');
     expect(languageOf('no-extension')).toBeNull();
+    // A path whose extension names an object member rather than a language.
+    expect(languageOf('a/x.constructor')).toBeNull();
   });
 
   it('marks the tokens up in the classes the highlighter emits', () => {
