@@ -689,6 +689,119 @@ describe('one turn folded into the units a view draws', () => {
     );
   });
 
+  it('ends a backgrounded call on the update alone, on the call it belongs to', () => {
+    // **The frame the commit names as the ending, alone.** Every live capture
+    // follows a `task_updated` with a `task_notification` carrying the same
+    // tool_use_id, so a fold that resolved only the notification would pass
+    // every other test here - and a task ending on a bare update would draw as
+    // running forever. `task_started` is the only frame that names the call a
+    // task id belongs to, which is what the update resolves through.
+    const launch = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_01Bg',
+        name: 'Bash',
+        input: { command: 'sleep 30', run_in_background: true },
+      },
+    ]);
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bj5g0t2kq',
+      tool_use_id: 'toolu_01Bg',
+    };
+    const ended = {
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: 'bj5g0t2kq',
+      patch: { status: 'completed' },
+    };
+
+    const [group] = fold([launch, started, ended]);
+    const calls = group?.kind === 'group' ? group.families.flatMap((one) => one.calls) : [];
+    expect(calls, 'one call, patched rather than joined by a second row').toHaveLength(1);
+    expect(calls[0]?.id, 'and the call the launch opened').toBe('toolu_01Bg');
+    expect(calls[0]?.status, 'the update alone is the ending').toBe('completed');
+
+    // A word the page does not know leaves the call where it was rather than
+    // guessing: `completed` is the guess that would look right and be wrong.
+    const odd = fold([
+      launch,
+      started,
+      { type: 'system', subtype: 'task_updated', task_id: 'bj5g0t2kq', patch: { status: '?' } },
+    ]);
+    const held = odd[0]?.kind === 'group' ? odd[0].families.flatMap((one) => one.calls) : [];
+    expect(held[0]?.status, 'an unknown word changes nothing').toBe('in_progress');
+
+    // And an update whose own `task_started` was never seen is dropped rather
+    // than guessed at: `task_updated` names only the task, so the wrong call
+    // would be worse than none - which is the terminal's call on the same
+    // frame. The control rides beside it: the same frames WITH the start do
+    // end the call, so a fold that dropped every update could not pass.
+    const orphan = fold([
+      launch,
+      {
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'bj5g0t2kq',
+        patch: { status: 'killed' },
+      },
+    ]);
+    const alone = orphan[0]?.kind === 'group' ? orphan[0].families.flatMap((one) => one.calls) : [];
+    expect(alone[0]?.status, 'an unplaced update leaves the call where it was').toBe('pending');
+  });
+
+  it('ends a backgrounded call from the notice a transcript carries instead', () => {
+    // **The page read's only ending.** A transcript holds no task frames at
+    // all - zero across every one on this machine - and persists the ending as
+    // a `<task-notification>` text block instead, so a page that read only the
+    // frames would draw the call as finished at launch every time it re-reads.
+    // The block's own fields are the frame's: id, status and summary.
+    const launch = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_01ED98Nzdco6KEJMBXvs1EKN',
+        name: 'Bash',
+        input: { command: 'sleep 30', run_in_background: true },
+      },
+    ]);
+    const notice = heard([
+      {
+        type: 'queued_command',
+        commandMode: 'task-notification',
+        prompt:
+          '<task-notification>\n<task-id>banr9rj33</task-id>\n' +
+          '<tool-use-id>toolu_01ED98Nzdco6KEJMBXvs1EKN</tool-use-id>\n' +
+          '<status>stopped</status>\n<summary>Watch the docs workflow run</summary>\n</task-notification>',
+      },
+    ]);
+
+    const [group] = fold([launch, notice]);
+    const calls = group?.kind === 'group' ? group.families.flatMap((one) => one.calls) : [];
+    expect(calls[0]?.status, 'a stopped task draws as the kill it is').toBe('killed');
+    expect(calls[0]?.note, 'and carries what the notice said').toEqual({
+      text: 'Watch the docs workflow run \u{b7} stopped',
+      tone: 'fail',
+    });
+
+    // The tone follows the same word the status does: an unknown one gets no
+    // tone at all, because red is a claim and so is green.
+    const unknown = fold([
+      launch,
+      heard([
+        {
+          type: 'queued_command',
+          commandMode: 'task-notification',
+          prompt:
+            '<task-notification>\n<tool-use-id>toolu_01ED98Nzdco6KEJMBXvs1EKN</tool-use-id>\n' +
+            '<status>halfway</status>\n<summary>Watch the docs workflow run</summary>\n</task-notification>',
+        },
+      ]),
+    ]);
+    const odd = unknown[0]?.kind === 'group' ? unknown[0].families.flatMap((one) => one.calls) : [];
+    expect(odd[0]?.note?.tone, 'a word it does not know is not a failure').toBeNull();
+  });
+
   it('leaves a backgrounded call running after the result that started it', () => {
     // The launch and its result as the capture has them
     // (crates/forge-test-harness/baselines/sdk/2.1.280/backgrounded_bash_lifecycle.jsonl).

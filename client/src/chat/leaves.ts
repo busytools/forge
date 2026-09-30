@@ -31,8 +31,14 @@ export type CallBody =
  */
 export interface BackgroundTask {
   status: CallStatus;
-  /** What the harness said when the task ended, when it said anything. */
-  note: { text: string; tone: 'sum' | 'fail' } | null;
+  /**
+   * What the harness said when the task ended, when it said anything.
+   *
+   * The tone is the status word's own reading - green for a task that
+   * finished, red for one that failed or was killed - and `null` for a word
+   * this page does not know, which is not a failure and is not a success.
+   */
+  note: { text: string; tone: 'sum' | 'fail' | null } | null;
 }
 
 /** One call, as its own row. */
@@ -59,7 +65,7 @@ export interface ToolLeaf {
    * What the harness said when a backgrounded call ended: drawn as the last
    * line of the box the call's result drew, and `null` for every other call.
    */
-  note: { text: string; tone: 'sum' | 'fail' } | null;
+  note: { text: string; tone: 'sum' | 'fail' | null } | null;
   /** What the row opens on. Empty for a call that has not come back yet. */
   body: CallBody[];
 }

@@ -586,16 +586,52 @@ function turnFailure(frame: Frame): Notice | null {
 }
 
 /**
- * The line a backgrounded call leaves behind, from the frame that ended it.
+ * The line a task leaves behind, from the frame that ended it.
+ *
+ * **Any task, not only a backgrounded command**: a dispatched agent's
+ * notification carries a summary the same way, and the terminal draws it on
+ * the same row.
  *
  * The harness writes its own sentence for a command that finished and only the
  * task's description for one that was stopped, so the wire's status word is
  * drawn beside the summary exactly when the summary does not already say it.
+ * The tone follows that word the same way - green only for a task that
+ * finished, red only for one that failed or was killed, and no tone for a word
+ * this page does not know, because an unknown word is not a failure.
  */
 function taskLine(summary: string | null, wire: string | null): BackgroundTask['note'] {
   if (summary === null || summary.trim() === '') return null;
   const said = wire !== null && !summary.includes(wire) ? `${summary} \u{b7} ${wire}` : summary;
-  return { text: said, tone: wire === 'completed' ? 'sum' : 'fail' };
+  const tone =
+    wire === 'completed'
+      ? 'sum'
+      : wire === 'failed' || wire === 'killed' || wire === 'stopped'
+        ? 'fail'
+        : null;
+  return { text: said, tone };
+}
+
+/**
+ * What a transcript's own completion notice says, which is the same fields the
+ * `task_notification` frame carries.
+ *
+ * A transcript holds no task frames at all - the CLI persists a background
+ * task's ending as a `<task-notification>` text block - so a page read has
+ * only this to end a call with, and without it the call reverts to drawing as
+ * finished at launch on every reconnect.
+ */
+function noticeFields(words: string): {
+  call: string | null;
+  status: string | null;
+  summary: string | null;
+} {
+  const inside = (tag: string): string | null => {
+    const open = words.indexOf(`<${tag}>`);
+    if (open === -1) return null;
+    const close = words.indexOf(`</${tag}>`, open);
+    return close === -1 ? null : words.slice(open + tag.length + 2, close).trim();
+  };
+  return { call: inside('tool-use-id'), status: inside('status'), summary: inside('summary') };
 }
 
 /**
@@ -672,6 +708,21 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     }
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {
+      // The transcript's own ending for a backgrounded call, which arrives as
+      // a text block rather than as the frames the live wire sends: a page read
+      // carries no task frames at all, so without this the call draws as
+      // finished at launch every time the page re-reads.
+      if (block.type === 'queued_command') {
+        const words = queuedText(block.prompt);
+        if (!isCompletion(block, words)) continue;
+        const said = noticeFields(words);
+        if (said.call === null) continue;
+        tasks.set(said.call, {
+          status: taskStatus(said.status) ?? 'in_progress',
+          note: taskLine(said.summary, said.status),
+        });
+        continue;
+      }
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
         results.set(block.tool_use_id, block);
         // The record of what was answered rides beside the result, keyed the

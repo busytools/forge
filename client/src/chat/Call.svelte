@@ -108,12 +108,12 @@
             <div class="term">
               {#if call.command !== null}<span class="pfx">$</span>
                 {call.command}<br />{/if}{piece.text}{#if at === tail && call.note !== null}<br
-                /><span class={call.note.tone}>{call.note.text}</span>{/if}
+                /><span class={call.note.tone ?? undefined}>{call.note.text}</span>{/if}
             </div>
           {/if}
         {/each}
         {#if tail === -1 && call.note !== null}
-          <div class="term"><span class={call.note.tone}>{call.note.text}</span></div>
+          <div class="term"><span class={call.note.tone ?? undefined}>{call.note.text}</span></div>
         {/if}
       {/if}
     </div>

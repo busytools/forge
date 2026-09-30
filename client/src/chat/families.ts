@@ -120,10 +120,15 @@ export function iconOf(row: KindRow): string {
 /**
  * A task frame's own status word, as the call it belongs to is drawn.
  *
- * The same map the terminal applies to the same field: the wire says
+ * The same four words the terminal maps to the same statuses: the wire says
  * `running` where the row says in progress, and `stopped` is its word for a
- * graceful cancel, which draws as the kill it is. A word this page does not
- * know is `null` rather than a guess, so the call keeps the status it had.
+ * graceful cancel, which draws as the kill it is.
+ *
+ * **And one place it deliberately differs from the terminal.** An unrecognised
+ * word is `null` here rather than the terminal's `Pending`, so the caller
+ * keeps the status the call already had: a task whose update the page cannot
+ * read is a task it does not know has ended, and drawing it as pending again
+ * would walk a finished call back down.
  */
 export function taskStatus(wire: string | null): CallStatus | null {
   switch (wire) {
