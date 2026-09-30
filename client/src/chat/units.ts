@@ -82,6 +82,14 @@ export interface HookInfo {
  * draws as a dash rather than as a zero.
  */
 export interface TurnInfo {
+  /**
+   * Whether the turn failed, which is what its own row leads with.
+   *
+   * The mark follows the turn: an interrupted turn draws the failure mark, and
+   * the failure line under it carries the words. Two signals disagreeing on one
+   * row - a check above "Turn failed" - is the defect this row was filed about.
+   */
+  failed: boolean;
   duration_ms: number | null;
   api_ms: number | null;
   ended_at_utc: string | null;
@@ -520,6 +528,7 @@ function reportOf(
     return typeof value === 'number' ? value : null;
   };
   return {
+    failed: frame.is_error === true,
     duration_ms: typeof frame.duration_ms === 'number' ? frame.duration_ms : null,
     api_ms: typeof frame.duration_api_ms === 'number' ? frame.duration_api_ms : null,
     ended_at_utc: endedAt,
@@ -578,14 +587,17 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
   /** What each question was answered with, by the call that asked it. */
   const answers = new Map<string, unknown>();
   /**
-   * Whether the turn failed, which is what the frame recording it says.
+   * Where the turn failed, which is what the frame recording it says.
    *
-   * A turn that fails answers no call that was still out when it did, so a
-   * call left with nothing to settle it is one the CLI abandoned rather than
-   * one still running.
+   * **The sweep is bounded by that frame, not by the turn.** A turn that fails
+   * answers no call that was still out when it did - but the live path
+   * accumulates every frame since the last page into ONE turn, so a sweep that
+   * took the whole turn would mark calls the CLI started AFTERWARDS as failed
+   * while they are still running: interrupt a turn, prompt again, and the new
+   * turn's first call draws red until its own result lands.
    */
-  let abandoned = false;
-  for (const frame of frames) {
+  let failedAt: number | null = null;
+  for (const [at, frame] of frames.entries()) {
     // A dispatched agent's frames are not the conversation, and its verdict is
     // not the session's: a sub-agent's failed result says nothing about the
     // turn the parent is still running. The drawing loop skips these frames
@@ -595,8 +607,9 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     // A fatal error is the CLI's last-gasp signal before teardown: no result
     // frame follows it, so it is the turn's own verdict just as a failed
     // result is.
-    if (frame.type === 'error') abandoned = true;
-    if (frame.type === 'result' && frame.is_error === true) abandoned = true;
+    if (frame.type === 'error' || (frame.type === 'result' && frame.is_error === true)) {
+      failedAt ??= at;
+    }
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
@@ -659,9 +672,13 @@ export function fold(messages: readonly unknown[], cwd: string | null = null): U
     units.push(unit);
   };
 
-  for (const frame of frames) {
+  for (const [at, frame] of frames.entries()) {
     // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
     if (isDispatched(frame)) continue;
+    // Whether this call was open when the turn failed: the ones before that
+    // frame are the ones it abandoned, and a call the CLI opened after it is
+    // one the CLI is still running.
+    const abandoned = failedAt !== null && at < failedAt;
 
     // Watched before anything else reads the frame: whatever a turn turns out
     // to be, the clock on its own rows is the only one a later row can report.

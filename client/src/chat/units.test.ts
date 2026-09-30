@@ -573,6 +573,30 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(units), 'and draws no failure line here').toEqual(['group']);
   });
 
+  it('sweeps only the calls that were open when the turn failed', () => {
+    // The live path accumulates every frame since the last page into ONE turn,
+    // so a sweep that took the whole turn would mark calls the CLI opened
+    // AFTERWARDS as failed while they are still running: interrupt a turn,
+    // prompt again, and the new turn's first call draws red until its own
+    // result lands.
+    const before = said([
+      { type: 'tool_use', id: 'toolu_before', name: 'Bash', input: { command: 'just check' } },
+    ]);
+    const ended = { type: 'result', is_error: true, subtype: 'error_during_execution' };
+    const after = said([
+      { type: 'tool_use', id: 'toolu_after', name: 'Read', input: { file_path: 'a.rs' } },
+    ]);
+
+    const units = fold([before, ended, after]);
+    const calls = units.flatMap((unit) =>
+      unit.kind === 'group' ? unit.families.flatMap((one) => one.calls) : [],
+    );
+
+    expect(calls.map((leaf) => leaf.id)).toEqual(['toolu_before', 'toolu_after']);
+    expect(calls[0]?.status, 'the call the turn ended on is abandoned').toBe('failed');
+    expect(calls[1]?.status, 'and the one it started afterwards is still out').toBe('pending');
+  });
+
   it('says a failed turn failed, and finalizes the call it left open', () => {
     // The result frame is the interrupt capture's own (interrupt.jsonl): its
     // fields verbatim, and its prompt carries no tool call - the call here is
@@ -613,6 +637,7 @@ describe('one turn folded into the units a view draws', () => {
     ).toEqual(['completed', 'failed']);
     expect(group?.kind === 'group' ? group.status : null, 'and the run says so').toBe('failed');
     expect(report?.kind, 'the report row still reports what the turn spent').toBe('report');
+    expect(report?.kind === 'report' ? report.info.failed : null, 'and marks it failed').toBe(true);
     expect(notice?.kind === 'notice' ? notice.notice.severity : null).toBe('error');
     expect(notice?.kind === 'notice' ? notice.notice.text : '').toBe(
       'Turn failed: error_during_execution \u{b7} aborted_streaming\n' +
@@ -673,6 +698,9 @@ describe('one turn folded into the units a view draws', () => {
     const report = units.find((unit) => unit.kind === 'report');
     expect(report?.kind === 'report' ? report.info.ended_at_utc : null).toBe(
       '2026-09-29T10:00:04.000Z',
+    );
+    expect(report?.kind === 'report' ? report.info.failed : null, 'and the row is not marked').toBe(
+      false,
     );
   });
 
