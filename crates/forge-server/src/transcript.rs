@@ -197,6 +197,13 @@ pub struct TurnSpan {
 pub struct Rendered {
     pub units: Vec<ChatUnit>,
     pub turns: Vec<TurnSpan>,
+    /// Every task ending the conversation holds, by the call each names.
+    ///
+    /// Read here because the fold is where it is read from at all - the
+    /// preamble's pass over the messages - and carried out so the turns built
+    /// from this answer do not walk the conversation again for it. A page is
+    /// the case that pays: it is built while a reader scrolls.
+    pub endings: HashMap<String, TaskEnding>,
 }
 
 /// Open a turn: the unit that opens it and the span a page is cut on are
@@ -414,7 +421,7 @@ pub fn render(messages: &[Message]) -> Rendered {
             span.key.clone_from(key);
         }
     }
-    Rendered { units, turns }
+    Rendered { units, turns, endings }
 }
 
 /// What a session-state frame says about a turn being in flight: `Some(true)`
@@ -815,20 +822,23 @@ fn is_task_notice(text: &str) -> bool {
 }
 
 /// What a persisted task ending says, which is what the live wire's
-/// `task_notification` frame says: the CLI writes the frame's five fields as
-/// XML into the transcript instead.
-pub(crate) struct TaskEnding {
+/// `task_notification` frame says: the CLI writes the frame's fields as XML
+/// into the transcript instead.
+///
+/// Public because [`Rendered`] carries them: a caller building turns needs the
+/// endings the fold already read, rather than a second walk to find them.
+pub struct TaskEnding {
     /// The call it ends, from the notice's `<tool-use-id>`.
-    pub(crate) call: String,
+    pub call: String,
     /// How the task ended. `None` for a word this does not know.
-    pub(crate) status: Option<ToolCallStatus>,
+    pub status: Option<ToolCallStatus>,
     /// The harness's own sentence about the outcome.
-    pub(crate) summary: String,
+    pub summary: String,
     /// The notice as the CLI wrote it, which a carried copy repeats verbatim.
-    pub(crate) text: String,
+    pub text: String,
     /// Where the notice sits in the conversation it was read from, which is
     /// what says whether a turn already holds it.
-    pub(crate) at: usize,
+    pub at: usize,
 }
 
 /// The notice as the block a view reads an ending from: the shape the scan
@@ -1145,8 +1155,11 @@ fn turn_report(
 ///
 /// **The last ending naming a call wins**, which is the rule the results
 /// pre-pass already keeps and the only one that reads a repeated ending as the
-/// newer word rather than the older. No call in this machine's transcripts
-/// carries two, so the rule is pinned by a test rather than by a case.
+/// newer word rather than the older. It is load-bearing rather than
+/// hypothetical: ten of this machine's calls carry two notices, and in each of
+/// them the first says the task completed and the second - written after a
+/// restart found no completion record - says it stopped. A first-wins fold
+/// draws those calls completed.
 pub(crate) fn task_endings(messages: &[Message]) -> HashMap<String, TaskEnding> {
     let mut out: HashMap<String, TaskEnding> = HashMap::new();
     for (at, message) in messages.iter().enumerate() {
@@ -1257,9 +1270,7 @@ mod tests {
     use crate::grouping::KindRow;
     use crate::model::ToolCallStatus;
 
-    use super::{
-        ChatUnit, NoticeSeverity, ToolLeaf, render, render_units, task_ending, task_endings,
-    };
+    use super::{ChatUnit, NoticeSeverity, ToolLeaf, render, render_units, task_ending};
 
     /// An assistant message carrying `content`.
     fn assistant(content: Vec<ContentBlock>) -> Message {
@@ -1927,6 +1938,50 @@ mod tests {
             .unwrap_or_else(|| panic!("the fold drew a call under {id}"))
     }
 
+    /// The text a call's row carries, in order.
+    fn texts_of(call: &ToolLeaf) -> Vec<String> {
+        call.content
+            .iter()
+            .filter_map(|piece| match piece {
+                ToolCallContent::Content { content: ChunkContent::Text { text } } => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A transcript's own messages, as the read hands them to the fold BEFORE
+    /// a view's normalisation: `session_history` is the read the spawn and the
+    /// terminal perform, and the surface's rewrite of the carriers is one
+    /// caller's step rather than part of the read itself.
+    fn read_raw(rows: &[&str]) -> Vec<Message> {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let projects = dir.join("projects").join("any-project-key");
+        std::fs::create_dir_all(&projects).expect("the project dir");
+        // A uuid, because the read refuses a name that is not one; it walks
+        // every project dir for the file, so no key has to be derived.
+        let session = "b095cf6c-1be5-4337-9965-0dc6e46f6b57";
+        std::fs::write(projects.join(format!("{session}.jsonl")), rows.join("\n"))
+            .expect("the transcript writes");
+        forge_workspace::session_history(&dir, session, "").messages
+    }
+
+    /// The notice a task ending arrives as, carrying `status` and `summary`
+    /// for `call`.
+    ///
+    /// Written rather than read off disk, because the rules these pin are
+    /// about inputs the corpus does not hold: an ending whose status word
+    /// nothing knows, and one that disagrees with the result beside it.
+    fn notice(call: &str, status: &str, summary: &str) -> Message {
+        user(vec![ContentBlock::Text {
+            text: format!(
+                "<task-notification>\n<tool-use-id>{call}</tool-use-id>\n\
+                 <status>{status}</status>\n<summary>{summary}</summary>\n</task-notification>"
+            ),
+        }])
+    }
+
     /// The second carrier opens no turn either.
     ///
     /// It is the same notice the attachment holds, and a fold that reads one
@@ -1943,74 +1998,150 @@ mod tests {
         );
     }
 
-    /// Both carriers end the call they name, across turns.
+    /// An ending ends the call it names, and what the harness said joins the
+    /// row rather than replacing it.
     ///
-    /// The launch's own result says the command is running in the background
-    /// and is not an error, so a fold that settles the call on it draws a
-    /// failed task as completed - the drawing #1322 was filed about, which is
-    /// still live for these two carriers. And the notice that ends it does not
-    /// have to be in the call's turn: in the second slice a turn of its own
-    /// sits between them, which is the case only a fold that sees across turns
-    /// can read.
+    /// Three slices, one property each time: the text carrier and the
+    /// attachment carrier, one where a turn of its own sits between the notice
+    /// and its call, and one where the call is a dispatched agent - 699 of
+    /// this machine's 2,194 paired endings name an `Agent` rather than a
+    /// backgrounded command.
+    ///
+    /// The launch's own result says the task is running and is not an error,
+    /// so a fold that settles the call on it draws a failed or killed task as
+    /// completed. That result's text must survive alongside the notice's
+    /// sentence: it is what names the task's output file.
     #[test]
-    fn both_carriers_end_the_call_they_name() {
-        for (rows, call, said) in [
+    fn an_ending_ends_the_call_it_names() {
+        for (rows, call, status, said, result_says) in [
             (
                 crate::fixtures::SAME_TURN_USER_ROW,
                 "call_da4c7ee117d14d48ba99e036",
+                ToolCallStatus::Failed,
                 "Background command \"Watch the account-lifecycle CI run\" failed with exit code 1",
+                "Command is running in background with ID: t00000001.",
             ),
             (
                 crate::fixtures::CROSS_TURN_ATTACHMENT,
                 "call_17c05f64497746b0ac450728",
+                ToolCallStatus::Failed,
                 "Background command \"Restart the harness with a long terminate window\" failed with exit code 100",
+                "Command is running in background with ID: t00000003.",
+            ),
+            (
+                crate::fixtures::KILLED_AGENT,
+                "toolu_013WM27Lt98mvnUq573pXxYD",
+                ToolCallStatus::Killed,
+                "Agent \"Run slow counting loop\" was stopped by user",
+                "Async agent launched successfully.",
             ),
         ] {
             let units = folded_transcript(rows);
             let call = call_in(&units, call);
+            let texts = texts_of(call);
 
-            assert_eq!(call.status, ToolCallStatus::Failed, "the notice's own word ends the call");
-            let body: Vec<&str> = call
-                .content
-                .iter()
-                .filter_map(|piece| match piece {
-                    ToolCallContent::Content { content: ChunkContent::Text { text } } => {
-                        Some(text.as_str())
-                    }
-                    _ => None,
-                })
-                .collect();
-            assert!(body.contains(&said), "and what the harness said rides its row: {body:?}");
+            assert_eq!(call.status, status, "the notice's own word ends the call: {texts:?}");
+            assert!(
+                texts.iter().any(|text| text == said),
+                "and what the harness said rides its row: {texts:?}",
+            );
+            assert!(
+                texts.iter().any(|text| text.starts_with(result_says)),
+                "beside the result's own text rather than in place of it: {texts:?}",
+            );
         }
     }
 
     /// Two endings naming one call: the later word is the one that stands.
     ///
-    /// The rule is the one the results pre-pass already keeps, where a second
-    /// result for a call replaces the first, and it reads a repeated ending as
-    /// the newer word rather than the older. **No call in this machine's
-    /// transcripts carries two**, so this pins the rule rather than a case -
-    /// which is why the notices here are written rather than read off disk,
-    /// unlike every other test in this file.
+    /// The pair is a real one, twelve minutes apart: the first notice says the
+    /// command completed, and the second - written after a restart found no
+    /// completion record - says it stopped. Ten of this machine's calls carry
+    /// two notices, so the rule decides drawings rather than a hypothetical,
+    /// and a first-wins fold draws this call completed when it stopped. The
+    /// rule is the one the results pre-pass already keeps, where a second
+    /// result for a call replaces the first.
     #[test]
-    fn a_second_ending_naming_one_call_wins() {
-        let ending = |status: &str, summary: &str| {
-            user(vec![ContentBlock::Text {
-                text: format!(
-                    "<task-notification>\n<tool-use-id>toolu_1</tool-use-id>\n\
-                     <status>{status}</status>\n<summary>{summary}</summary>\n</task-notification>"
-                ),
-            }])
-        };
+    fn the_later_ending_naming_one_call_wins() {
+        let units = folded_transcript(crate::fixtures::DUPLICATE_ENDINGS);
+        let call = call_in(&units, "call_370cb30e2834491daf5bb4e2");
+        let texts = texts_of(call);
 
-        let endings = task_endings(&[
-            ending("failed", "the first word"),
-            ending("completed", "the second word"),
-        ]);
+        assert_eq!(call.status, ToolCallStatus::Killed, "the second notice's word: {texts:?}");
+        assert!(
+            texts.iter().any(|text| text
+                == "Background shell command didn't finish before the previous session ended"),
+            "and the sentence it carried: {texts:?}",
+        );
+        assert!(
+            !texts.iter().any(|text| text.contains("completed (exit code 0)")),
+            "not the first notice's word: {texts:?}",
+        );
+    }
 
-        let held = endings.get("toolu_1").expect("the call is keyed by its own id");
-        assert_eq!(held.summary, "the second word", "the later notice is the word that stands");
-        assert_eq!(held.status, Some(ToolCallStatus::Completed), "status and all");
+    /// The fold reads the raw carrier too - a message list taken straight off
+    /// a transcript, before any view's normalisation.
+    ///
+    /// **A guard for the fold's own contract, not dead weight.** `render` and
+    /// `render_units` are public and take the CLI's own messages; the
+    /// surface's rewrite of the carriers into one block is one caller's step,
+    /// not part of the read. A fold that read only the normalised shape would
+    /// leave the second, quieter contract - a caller handing it a transcript -
+    /// drawing the raw XML as the reader's own turn.
+    #[test]
+    fn a_raw_transcripts_notice_is_read() {
+        let units = render_units(&read_raw(crate::fixtures::SAME_TURN_USER_ROW));
+
+        assert!(
+            !units.iter().any(|unit| matches!(unit, ChatUnit::UserTurn { .. })),
+            "the row the CLI wrote draws no turn of its own",
+        );
+        assert_eq!(
+            call_in(&units, "call_da4c7ee117d14d48ba99e036").status,
+            ToolCallStatus::Failed,
+            "and the ending it carries still ends the call",
+        );
+    }
+
+    /// How an ending's own word meets the status the call already had.
+    ///
+    /// **Two deliberate divergences from the terminal, and both are read by
+    /// whoever next aligns forge with it.**
+    ///
+    /// An unrecognised word keeps the status the call had, where the terminal
+    /// maps every unknown to `Pending`. A task whose ending forge cannot read
+    /// is one it does not know has ended, and pending is a claim that it did
+    /// not stop.
+    ///
+    /// And a recognised word stands even over a result that failed. The notice
+    /// is the CLI's last word about the task, and the page's own fold reads it
+    /// the same way - the two folds are one vocabulary. The terminal keeps a
+    /// `Failed` or `Killed` call when a notification arrives, because it
+    /// applies one to a live card a real failure has already settled, and no
+    /// read of a transcript holds that state.
+    #[test]
+    fn an_endings_word_meets_the_status_the_call_already_had() {
+        let launch = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_ending".to_owned(),
+            name: "Bash".to_owned(),
+            input: serde_json::json!({"command": "just check"}),
+        }]);
+        let failed = tool_result("toolu_ending", true);
+
+        for (status, expected) in
+            [("reticulating", ToolCallStatus::Failed), ("completed", ToolCallStatus::Completed)]
+        {
+            let units = render_units(&[
+                launch.clone(),
+                failed.clone(),
+                notice("toolu_ending", status, "what the harness said"),
+            ]);
+            assert_eq!(
+                call_in(&units, "toolu_ending").status,
+                expected,
+                "the ending's word is {status}",
+            );
+        }
     }
 
     /// A sub-agent's frames are not the chat's. The terminal suppresses

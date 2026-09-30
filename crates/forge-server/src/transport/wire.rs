@@ -29,7 +29,7 @@ use serde_json::Value;
 use crate::composer::{NoticeWire, Phase, SignIn};
 use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, ConversationHistory, PendingAsk, ViewSurface};
-use crate::transcript::{TaskEnding, TurnSpan};
+use crate::transcript::{Rendered, TaskEnding, TurnSpan};
 use crate::transport::TransportState;
 use crate::transport::envelope::Subject;
 use crate::work::{WorkState, work_from_scan};
@@ -631,12 +631,14 @@ fn turn_ranges<'a>(
         .collect()
 }
 
-/// `messages` as the whole turns `spans` names, in conversation order.
-pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
-    let endings = crate::transcript::task_endings(messages);
-    turn_ranges(messages, spans)
+/// `messages` as the whole turns `rendered` names, in conversation order.
+///
+/// The fold's own answer is what a caller passes, so the endings it read ride
+/// along rather than being searched for again here.
+pub fn all_turns(messages: &[Message], rendered: &Rendered) -> Vec<TurnWire> {
+    turn_ranges(messages, &rendered.turns)
         .into_iter()
-        .map(|(from, to, key)| turn_wire(messages, from, to, key, &endings))
+        .map(|(from, to, key)| turn_wire(messages, from, to, key, &rendered.endings))
         .collect()
 }
 
@@ -661,13 +663,13 @@ pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
 /// conversation, and a client reading `None` as "nothing above" stops after
 /// the first page. The message the page's first turn opens at is the one thing
 /// that always names it.
-pub fn page(messages: &[Message], spans: &[TurnSpan], before: Option<&str>, turns: u32) -> Page {
+pub fn page(messages: &[Message], rendered: &Rendered, before: Option<&str>, turns: u32) -> Page {
     // A page of no turns ends where it began: its cursor would name the turn it
     // already opened at, so a client walking back would ask for the same page
     // forever.
     let turns = turns.max(1) as usize;
-    let ranges = turn_ranges(messages, spans);
-    let opens = opens_of(spans);
+    let ranges = turn_ranges(messages, &rendered.turns);
+    let opens = opens_of(&rendered.turns);
 
     // A cursor names the message the previous page BEGAN at, so the page above
     // ends where that one started: the two meet exactly.
@@ -680,10 +682,9 @@ pub fn page(messages: &[Message], spans: &[TurnSpan], before: Option<&str>, turn
     // would walk and encode the whole conversation on a path a reader hits
     // while scrolling.
     let first = ends_at.saturating_sub(turns);
-    let endings = crate::transcript::task_endings(messages);
     let page_turns: Vec<TurnWire> = ranges[first..ends_at]
         .iter()
-        .map(|&(from, to, key)| turn_wire(messages, from, to, key, &endings))
+        .map(|&(from, to, key)| turn_wire(messages, from, to, key, &rendered.endings))
         .collect();
 
     // `None` is the real "nothing above this page": a page already opening on
@@ -903,13 +904,13 @@ async fn session(
     // The read and the fold that finds its turns, in one blocking task: the
     // fold walks the whole conversation, and running it on the reactor would
     // put that walk in front of every other client's message.
-    let (conversation, spans) = {
+    let (conversation, rendered) = {
         let reader = Arc::clone(&state.surface);
         let (seat, root) = (slot.clone(), cwd.to_path_buf());
         tokio::task::spawn_blocking(move || {
             let read = reader.conversation(&seat, &root);
-            let spans = crate::transcript::render(&read.messages).turns;
-            (read, spans)
+            let rendered = crate::transcript::render(&read.messages);
+            (read, rendered)
         })
         .await
         .unwrap_or_else(|error| {
@@ -919,7 +920,10 @@ async fn session(
                 slot = %slot.display(),
                 "the transcript read did not finish; the record is answered without it",
             );
-            (ConversationHistory::default(), Vec::new())
+            (
+                ConversationHistory::default(),
+                Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
+            )
         })
     };
     // ONE scan for the working tree, its branch, its count and its PR: the four
@@ -946,7 +950,7 @@ async fn session(
         monitors: surface.monitors(slot),
         pending_ask: surface.pending_ask(slot).as_ref().map(PendingAskWire::from),
         conversation: ConversationWire {
-            turns: all_turns(&conversation.messages, &spans),
+            turns: all_turns(&conversation.messages, &rendered),
             compaction_count: conversation.compaction_count,
         },
         header: SessionHeaderWire {
@@ -1010,9 +1014,9 @@ mod tests {
         )
     }
 
-    /// The messages and turn spans a page is cut on, over a transcript of `rows`,
-    /// read the way the transport reads them.
-    fn a_conversation(rows: &[&str]) -> (Vec<Message>, Vec<TurnSpan>) {
+    /// The messages and the fold's own answer for them, over a transcript of
+    /// `rows`, read the way the transport reads them.
+    fn a_conversation(rows: &[&str]) -> (Vec<Message>, Rendered) {
         let dir = tempfile::tempdir().expect("tempdir").keep();
         let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
             .expect("the fleet builds");
@@ -1022,8 +1026,8 @@ mod tests {
         let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
 
         let messages = surface.conversation(&seat, &cwd).messages;
-        let spans = crate::transcript::render(&messages).turns;
-        (messages, spans)
+        let rendered = crate::transcript::render(&messages);
+        (messages, rendered)
     }
 
     /// `turns` finished turns, as the transcript rows they are.
@@ -1044,8 +1048,8 @@ mod tests {
     }
 
     /// The words every turn of a conversation opened on, oldest first.
-    fn every_turn(messages: &[Message], spans: &[TurnSpan]) -> Vec<String> {
-        page(messages, spans, None, u32::MAX).turns.iter().map(opened_on).collect()
+    fn every_turn(messages: &[Message], rendered: &Rendered) -> Vec<String> {
+        page(messages, rendered, None, u32::MAX).turns.iter().map(opened_on).collect()
     }
 
     /// A turn's frames as the messages they are, so a test can fold one turn
@@ -1123,8 +1127,8 @@ mod tests {
                 "Background command \"Restart the harness with a long terminate window\" failed with exit code 100",
             ),
         ] {
-            let (messages, spans) = a_conversation(rows);
-            let turns = all_turns(&messages, &spans);
+            let (messages, rendered) = a_conversation(rows);
+            let turns = all_turns(&messages, &rendered);
             // Folded the way a client folds a page: one turn at a time.
             let folded: Vec<Vec<ChatUnit>> = turns
                 .iter()
@@ -1174,6 +1178,33 @@ mod tests {
                 )),
                 "and no turn draws the raw notice as the reader's own words",
             );
+
+            // **And the carry survives a page, which is the path a client
+            // walking history actually reads.** `page` cuts its own window
+            // from the same fold, and a carry that only `all_turns` made would
+            // leave the ending unreachable where scrolling looks for it - a
+            // hole no test above this line would show.
+            let mut paged: Vec<Vec<ChatUnit>> = Vec::new();
+            let mut before: Option<String> = None;
+            loop {
+                let page = page(&messages, &rendered, before.as_deref(), 1);
+                for turn in &page.turns {
+                    paged.push(crate::transcript::render_units(&turn_messages(turn)));
+                }
+                match page.cursor {
+                    Some(cursor) if Some(&cursor) != before.as_ref() => before = Some(cursor),
+                    _ => break,
+                }
+            }
+            let paged_drawn: usize = paged
+                .iter()
+                .filter(|units| {
+                    calls(units).iter().any(|leaf| {
+                        leaf.id == call && leaf.status == crate::model::ToolCallStatus::Failed
+                    })
+                })
+                .count();
+            assert_eq!(paged_drawn, 1, "a page of one turn, folded alone, still ends the call");
         }
     }
 
@@ -1184,13 +1215,13 @@ mod tests {
     fn a_page_of_no_turns_still_walks_backwards() {
         let rows = turns_of(6);
         let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
-        let (messages, spans) = a_conversation(&borrowed);
+        let (messages, rendered) = a_conversation(&borrowed);
 
         // Reached the way a client reaches one, from the cursor below it.
-        let lower = page(&messages, &spans, None, 2);
+        let lower = page(&messages, &rendered, None, 2);
         let cursor = lower.cursor.expect("there is a page above this one");
 
-        let above = page(&messages, &spans, Some(&cursor), 0);
+        let above = page(&messages, &rendered, Some(&cursor), 0);
 
         assert!(!above.turns.is_empty(), "a page carries turns rather than none at all");
         assert_ne!(
@@ -1205,13 +1236,13 @@ mod tests {
     /// reaches them.
     #[test]
     fn the_rows_before_the_first_turn_ride_the_first_page() {
-        let (messages, spans) = a_conversation(&[
+        let (messages, rendered) = a_conversation(&[
             r#"{"type":"assistant","uuid":"a0","message":{"id":"m0","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"a delivery arrived"}]}}"#,
             r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"},"session_id":"s"}"#,
             r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
         ]);
 
-        let first = page(&messages, &spans, None, 10);
+        let first = page(&messages, &rendered, None, 10);
 
         assert_eq!(first.turns.len(), 1, "precondition: this conversation is one turn");
         assert_eq!(
@@ -1232,16 +1263,19 @@ mod tests {
     /// would stop there, with the whole of it unreachable.
     #[test]
     fn a_conversation_with_no_turns_still_pages() {
-        let (messages, spans) = a_conversation(&[
+        let (messages, rendered) = a_conversation(&[
             r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"[Cron]\n\nstand-up"},"session_id":"s"}"#,
             r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"morning"}]}}"#,
             r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
         ]);
 
-        assert!(spans.is_empty(), "precondition: nothing in this conversation opens a turn");
+        assert!(
+            rendered.turns.is_empty(),
+            "precondition: nothing in this conversation opens a turn",
+        );
         assert!(!messages.is_empty(), "precondition: and it has content");
 
-        let page = page(&messages, &spans, None, 10);
+        let page = page(&messages, &rendered, None, 10);
 
         assert_eq!(page.turns.len(), 1, "the conversation rides one turn rather than none");
         assert_eq!(page.turns[0].messages.len(), messages.len(), "and that turn carries all of it");
@@ -1256,19 +1290,19 @@ mod tests {
     /// moved - an empty one, since the two boundaries are the same message.
     #[test]
     fn a_user_row_with_two_blocks_opens_one_turn() {
-        let (messages, spans) = a_conversation(&[
+        let (messages, rendered) = a_conversation(&[
             r#"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"text","text":"one"},{"type":"text","text":"two"}]},"session_id":"s"}"#,
             r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"reply"}]}}"#,
             r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
         ]);
 
-        assert_eq!(spans.len(), 2, "precondition: the fold opens a turn per block");
+        assert_eq!(rendered.turns.len(), 2, "precondition: the fold opens a turn per block");
         assert_eq!(
-            spans[0].opens_at, spans[1].opens_at,
+            rendered.turns[0].opens_at, rendered.turns[1].opens_at,
             "precondition: and both open at the one message that carried them",
         );
 
-        let page = page(&messages, &spans, None, 10);
+        let page = page(&messages, &rendered, None, 10);
 
         assert_eq!(page.turns.len(), 1, "one message is one turn on the page");
         assert_eq!(
@@ -1284,8 +1318,8 @@ mod tests {
     fn a_page_opens_on_a_turn_and_the_pages_meet_exactly() {
         let rows = turns_of(50);
         let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
-        let (messages, spans) = a_conversation(&borrowed);
-        let first = page(&messages, &spans, None, 10);
+        let (messages, rendered) = a_conversation(&borrowed);
+        let first = page(&messages, &rendered, None, 10);
 
         // A page is the turns it was asked for, each opening where a turn
         // does. A page beginning anywhere else hands a client the tail of one
@@ -1309,8 +1343,8 @@ mod tests {
         // repeat turns - the client keys them and drops the repeats - but it
         // may never skip one, because a skipped turn is history the reader has
         // no way to ask for again.
-        let all = every_turn(&messages, &spans);
-        let second = page(&messages, &spans, first.cursor.as_deref(), 10);
+        let all = every_turn(&messages, &rendered);
+        let second = page(&messages, &rendered, first.cursor.as_deref(), 10);
         let second_turns: Vec<String> = second.turns.iter().map(opened_on).collect();
 
         assert!(!second_turns.is_empty(), "asking for more turns returns some");
@@ -1339,14 +1373,14 @@ mod tests {
     fn walking_back_through_history_sees_every_turn_and_ends() {
         let rows = turns_of(25);
         let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
-        let (messages, spans) = a_conversation(&borrowed);
-        let every = every_turn(&messages, &spans);
+        let (messages, rendered) = a_conversation(&borrowed);
+        let every = every_turn(&messages, &rendered);
 
         let mut seen: Vec<String> = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pages = 0;
         loop {
-            let asked = page(&messages, &spans, cursor.as_deref(), 5);
+            let asked = page(&messages, &rendered, cursor.as_deref(), 5);
             pages += 1;
             assert!(pages < every.len() + 2, "the walk terminates rather than cycling");
             seen.extend(asked.turns.iter().map(opened_on));

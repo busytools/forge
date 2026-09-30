@@ -308,13 +308,13 @@ async fn handle_client(
             // whole transcript off disk and the fold walks what it read, and
             // the fold's own doc says a caller offloads it rather than running
             // it in a handler.
-            let (messages, spans) = {
+            let (messages, rendered) = {
                 let reader = Arc::clone(&state.surface);
                 let (seat, root) = (conversation.clone(), cwd.clone());
                 tokio::task::spawn_blocking(move || {
                     let messages = reader.conversation(&seat, &root).messages;
-                    let spans = crate::transcript::render(&messages).turns;
-                    (messages, spans)
+                    let rendered = crate::transcript::render(&messages);
+                    (messages, rendered)
                 })
                 .await
                 .unwrap_or_else(|error| {
@@ -324,10 +324,17 @@ async fn handle_client(
                         slot = %conversation.display(),
                         "the fold did not finish; the page is answered empty",
                     );
-                    (Vec::new(), Vec::new())
+                    (
+                        Vec::new(),
+                        crate::transcript::Rendered {
+                            units: Vec::new(),
+                            turns: Vec::new(),
+                            endings: std::collections::HashMap::new(),
+                        },
+                    )
                 })
             };
-            let page = page(&messages, &spans, before.as_deref(), turns);
+            let page = page(&messages, &rendered, before.as_deref(), turns);
             send(
                 socket,
                 ServerMessage::Page { conversation, turns: page.turns, cursor: page.cursor },
