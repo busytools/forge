@@ -289,6 +289,9 @@
   details.leaf:hover > summary .arw { color: var(--muted); }
   details.leaf[open] > summary { color: var(--text); }
   details.leaf[open] > summary .arw { color: var(--accent); }
+  /* A call the wire reports as still running says so at the row, which is the
+     one thing its own launch result cannot: that result is a clean one. */
+  details.leaf.running > summary { color: var(--text); }
 
   /* A call that stands alone and breaks the run: a peer block, an
      unanswered question, or a lifecycle call such as a Monitor. An edit is
@@ -985,16 +988,26 @@ Consecutive tool calls between two user messages fold into one group.</div>
 <span class="sum">Summary [92.418s] 1258 tests run: 1258 passed, 1174 skipped</span></div>
               </div>
             </details>
-            <details class="leaf">
+            <details class="leaf running">
               <summary><span class="st"><span class="ring"></span></span><span class="tn">cargo nextest run -p forge-web</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="term">    Starting 42 tests across 3 binaries</div>
               </div>
             </details>
-            <details class="leaf">
+            <details class="leaf running">
               <summary><span class="st"><span class="ring"></span></span><span class="tn">just check-feature-configs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="term">    Starting fmt-check...</div>
+              </div>
+            </details>
+            <!-- A call the reader backgrounded: its own result says the command
+                 STARTED, and the ending arrives later as a frame of its own. -->
+            <details class="leaf">
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">Echo test string after brief sleep</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="term"><span class="pfx">$</span> sleep 2 &amp;&amp; echo test string
+Command running in background with ID: bj5g0t2kq.
+<span class="sum">Background command "Echo test string after brief sleep" completed (exit code 0)</span></div>
               </div>
             </details>
 
