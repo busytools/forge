@@ -27,6 +27,7 @@ import { MORE_TURNS, slotOf } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
+import { fold } from './units';
 
 /** One turn as a page carries it: the fold's name, and the CLI's messages. */
 export interface PageTurn {
@@ -87,11 +88,28 @@ export const NOTHING: Conversation = {
 /**
  * What names a turn the fold did not.
  *
- * A digest of the turn's own messages, which is stable under everything that
- * happens above and below it - a prepend changes no held turn's content, and
- * an append lands in a turn of its own. It is not a hash for safety: the worst
- * a collision does is hand two turns one name, which is what the ordinal in
- * `nameIn` is for.
+ * **The turn's FIRST message id**, because a turn can grow: a frame that draws
+ * nothing joins the turn it arrived in, and a name digested from the whole
+ * message list then disagrees with the page that repeats the grown turn - the
+ * row already held is left where it is and the turn draws twice.
+ *
+ * The digest is the fallback for a message with no id, and it is not a hash
+ * for safety: the worst a collision does is hand two turns one name, which is
+ * what the ordinal in `nameIn` is for.
+ */
+function nameOf(messages: unknown[]): string {
+  const id = (messages[0] as { uuid?: unknown } | undefined)?.uuid;
+  if (typeof id === 'string' && id !== '') return `turn-${id}`;
+  return digest(messages);
+}
+
+/**
+ * A digest of a turn's whole content, for a turn whose first message has no id.
+ *
+ * **Not a substitute for `nameOf`**: it covers every message, so a turn that
+ * GROWS takes a different name from one that does not - the rename `nameOf`
+ * exists to prevent. It is reached only by a page whose turn opens on a
+ * message with no id, which the wire does not send, and nothing covers it.
  */
 function digest(messages: unknown[]): string {
   const text = JSON.stringify(messages) ?? '';
@@ -114,7 +132,7 @@ function digest(messages: unknown[]): string {
  * looking at.
  */
 function nameIn(turn: PageTurn, taken: ReadonlySet<string>): string {
-  const base = turn.key ?? digest(turn.messages);
+  const base = turn.key ?? nameOf(turn.messages);
   if (!taken.has(base)) return base;
   for (let nth = 2; ; nth += 1) {
     const candidate = `${base}#${nth}`;
@@ -146,8 +164,9 @@ function messagesOf(turn: PageTurn): unknown[] {
  * Whether a frame opens a turn of its own rather than joining the live one:
  * what a person said.
  *
- * Read only while a turn is live; a frame arriving with none open is the
- * caller's own case.
+ * Its answer decides only while a turn is live: a non-`system` frame that
+ * draws something and arrives above a settled turn opens one whatever this
+ * says.
  */
 function opensATurn(message: unknown): boolean {
   const type = (message as { type?: unknown } | null)?.type;
@@ -317,7 +336,7 @@ export class Chat {
         // only the fold's name makes every unnamed turn a stranger on the way
         // back in, so the page draws it twice - once where it already was and
         // once where the page put it.
-        const name = row.key ?? digest(row.messages);
+        const name = row.key ?? nameOf(row.messages);
         const repeated = known.get(name);
         if (repeated !== undefined) {
           named.push(repeated);
@@ -376,30 +395,45 @@ export class Chat {
    * prompt appended to the turn above it would draw the reader's own words
    * inside the answer to their last one.
    *
-   * **A `system` frame joins the turn it arrived in, settled or not, and is
-   * held nowhere when there is none.** A turn opens where a person's own words
-   * do and nowhere else - the server's own rule - so a system frame belongs
-   * inside the turn it arrived in, and before the first of those it belongs to
-   * no turn at all. A row opened on one holds a row's space whatever the fold
-   * draws into it, and the CLI emits one about every fifty thinking tokens: on
-   * a running seat that was thousands of rows a minute.
+   * **A frame the fold draws nothing out of never opens a row: it joins the
+   * turn it arrived in, settled or not, and is held nowhere when there is
+   * none.** Such a row holds a row's space while drawing nothing, and a row
+   * the reader never scrolls to keeps the list's estimate rather than its own
+   * height - a blank row per tool call on a running seat, and thousands a
+   * minute from the CLI's thinking-token counter. That is the server's
+   * boundary too: a turn opens for a person's own words and for nothing else -
+   * a prompt the CLI queued mid-turn included, though that one reaches a page
+   * through the transcript rather than through here - and everything else
+   * draws inside the turn already open.
    *
-   * Holding none of them loses nothing informative: a page carries a turn's
-   * messages from its first, so the opening rows ride the first page. That
-   * page is `start`'s ask or a reconnect - the update that would ask for one
-   * when a turn settles is defined and never sent - so the window is a round
-   * trip rather than a turn.
+   * Holding a frame that belongs to no turn loses nothing informative: a page
+   * carries a turn's messages from its first, so the opening rows ride the
+   * first page. That page is `start`'s ask or a reconnect - the update that
+   * would ask for one when a turn settles is defined and never sent - so the
+   * window is a round trip rather than a turn.
    */
   private append(message: unknown): void {
     this.inner.update((held) => {
       const last = held.turns[held.turns.length - 1];
-      const joins =
-        last !== undefined && (isSystem(message) || (last.live && !opensATurn(message)));
-      if (joins) {
+      // What a row of its own would hold, asked of the fold rather than of the
+      // frame's shape: a frame it draws nothing out of is never a row, whatever
+      // its type or subtype, because such a row holds a row's space and draws
+      // nothing - and a row the reader never scrolls to keeps the list's
+      // estimate rather than its own height. A tool result and an assistant
+      // frame carrying only thinking are two of these, and both arrive on a
+      // running seat between one turn and the next.
+      const draws = fold([message]).length > 0;
+      // A turn opens where a person's own words do, while a turn is live: the
+      // server's own rule, so everything else joins the turn it arrived in,
+      // settled or not. A frame arriving with no turn at all is held nowhere,
+      // which loses nothing - a page carries a turn's messages from its first.
+      const opens =
+        draws && !isSystem(message) && (last === undefined || opensATurn(message) || !last.live);
+      if (!opens) {
+        if (last === undefined) return held;
         const grown: Turn = { ...last, messages: [...last.messages, message] };
         return { ...held, turns: [...held.turns.slice(0, -1), grown] };
       }
-      if (isSystem(message)) return held;
       const taken = new Set(held.turns.map((turn) => turn.key));
       const key = nameIn({ key: liveName(message, held.turns.length), messages: [message] }, taken);
       // Every turn above it is the object it was: only the row that grew is
