@@ -16,6 +16,15 @@ publish = false
 # never see this code.
 testing = ["forge-workspace/testing", "forge-workspace/test-helpers"]
 
+# The measurement harness: a server over a fixture fleet, plus the client that
+# prices a request against it. It needs `testing` for the fleet, so it is
+# skipped rather than failed on a build that has that feature off - and no
+# production build has it on.
+[[bin]]
+name = "forge-fold-cost"
+path = "src/bin/forge-fold-cost.rs"
+required-features = ["testing"]
+
 [lints]
 workspace = true
 
