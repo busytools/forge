@@ -1566,6 +1566,293 @@ pub enum DispatchError {
 }
 
 #[cfg(test)]
+mod session_update_variants {
+    /// The client's reducer classifies a `SessionUpdate` by the name it crosses
+    /// under, and a name it has no line for is a lookup that misses: the session
+    /// page stops following its seat and keeps drawing the last record it read,
+    /// with nothing to say it has fallen behind.
+    ///
+    /// **Both ends are parsed, and both ends are the tables themselves.** A
+    /// hand-typed list is a copy no rename moves - the first version of this
+    /// test read `turn_cancelled` from a literal while serde had already moved
+    /// to `turn_cancelled_probe`, and it stayed green. The enum's names are
+    /// derived from its own source by the rule it declares; the client's are
+    /// read out of the three tables that classify, and not out of the file at
+    /// large, where a payload key or a status word would answer for a variant
+    /// nothing classifies.
+    ///
+    /// The client's census of variants is read back as well, rather than
+    /// trusted because its length is asserted: a count binds it to nothing.
+    /// **`IGNORED` has no runtime reader at all** - nothing but these tests
+    /// consults it - so what it holds is only as right as this control.
+    ///
+    /// What it does not reach: `client/src/wire/fleet.ts` keeps a table of its
+    /// own for the fleet's redraws. That is a different question and is
+    /// deliberately partial, so this binding stops at `apply.ts`.
+    #[test]
+    fn every_session_update_variant_is_classified_for_the_client() {
+        let source = include_str!("protocol.rs");
+        let client = include_str!("../../../client/src/session/apply.ts");
+        let declared = wire_names(source);
+        let classified = classified_names(client);
+
+        // The derivation implements ONE `rename_all` rule, so it is only as good
+        // as the enum declaring that rule: changing the attribute moves every
+        // name at once, and nothing else here would notice.
+        assert_eq!(
+            rename_all(source).as_deref(),
+            Some("snake_case"),
+            "this control derives wire names with serde's snake_case rule and the enum no longer \
+             declares it: extend the derivation before trusting anything below",
+        );
+
+        // The denominator, and it is the enum's own: a parse that stops matching
+        // never reaches its closing brace, and finding nothing is what a clean
+        // run looks like - so this is what tells the two apart.
+        assert!(
+            declared.closed,
+            "the parse never reached the end of `SessionUpdate`, so it is the parse that moved \
+             and not the client",
+        );
+
+        let missing: Vec<&String> =
+            declared.names.iter().filter(|name| !classified.contains(name)).collect();
+        assert!(
+            missing.is_empty(),
+            "client/src/session/apply.ts has no line for {missing:?}, and a variant the client \
+             does not classify stops the session page following its seat: add each to HANDLERS \
+             when the record has a field for it, and to REPLACES or IGNORED when it does not",
+        );
+
+        let stale: Vec<&String> =
+            classified.iter().filter(|name| !declared.names.contains(name)).collect();
+        assert!(
+            stale.is_empty(),
+            "client/src/session/apply.ts classifies {stale:?}, which the enum does not declare: \
+             a line for a name the wire never sends is one nobody can tell from a live one",
+        );
+
+        // **And the census the client's own assertions filter over is read
+        // too**, rather than trusted because its count is asserted. That count
+        // binds it to nothing; this is what binds it to the enum. It lives in
+        // the client's TEST file, beside the assertions that filter over it.
+        let census_source = include_str!("../../../client/src/session/apply.test.ts");
+        let mut census = array_entries(census_source, "EVERY_VARIANT");
+        let mut declared_names = declared.names.clone();
+        census.sort();
+        declared_names.sort();
+        assert_eq!(
+            census, declared_names,
+            "the client's `EVERY_VARIANT` and the enum's variants are not the same set: the \
+             census is what the client's own assertions filter over, so a variant missing from \
+             it is a variant nothing checks",
+        );
+    }
+
+    /// What one parse of the enum found.
+    struct Census {
+        names: Vec<String>,
+        /// Whether the parse reached the enum's closing brace.
+        closed: bool,
+    }
+
+    /// The names the client's three classifying tables hold.
+    ///
+    /// The handler table's keys, and the quoted entries of the two lists. The
+    /// `UNFED` export is skipped rather than read: those are the record's field
+    /// names, and a field is not a variant.
+    fn classified_names(client: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut table = "";
+        // Whether a list's `[` has been seen and its `]` has not.
+        let mut open = false;
+        for line in client.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("export const HANDLERS") {
+                table = "handlers";
+                open = false;
+                continue;
+            }
+            if trimmed.starts_with("export const REPLACES")
+                || trimmed.starts_with("export const IGNORED")
+            {
+                table = "list";
+                open = false;
+            } else if trimmed.starts_with("export const") {
+                table = "";
+                open = false;
+                continue;
+            }
+            match table {
+                // A key of the handler table. The INDENT is the anchor: entries
+                // sit at exactly two spaces, and an object literal inside a
+                // handler's body is deeper. What follows the colon is not read,
+                // so a key written against a bare function name - `turn_error:
+                // settled,` - counts the same as an inline arrow.
+                "handlers" => {
+                    if let Some(rest) =
+                        line.strip_prefix("  ").filter(|rest| !rest.starts_with(' '))
+                        && let Some(key) = rest.split_once(':').map(|(key, _)| key)
+                        && is_wire_name(key)
+                    {
+                        names.push(key.to_owned());
+                    }
+                }
+                // `['spawning', 'connected']`, one line or many. **Only an
+                // array is read, and only its entries**: the span between two
+                // exports also carries prose, and a comment quoting a name must
+                // not answer for a line that classifies it.
+                "list" => {
+                    if !open {
+                        // The LAST bracket on the line: the declaration's own
+                        // type carries a `[]` before the array opens.
+                        let Some((_, after)) = trimmed.rsplit_once('[') else {
+                            continue;
+                        };
+                        if let Some((entries, _)) = after.split_once(']') {
+                            names.extend(quoted_names(entries).map(str::to_owned));
+                        } else {
+                            open = true;
+                            names.extend(quoted_names(after).map(str::to_owned));
+                        }
+                    } else if trimmed.starts_with(']') {
+                        open = false;
+                    } else if trimmed.starts_with('\'') {
+                        names.extend(quoted_names(trimmed).map(str::to_owned));
+                    }
+                }
+                _ => {}
+            }
+        }
+        names
+    }
+
+    /// The quoted entries of one `const NAME = [ ... ]` block, exported or not,
+    /// which is how the client's census of variants is written.
+    fn array_entries(client: &str, name: &str) -> Vec<String> {
+        let heading = format!("const {name}");
+        let mut entries = Vec::new();
+        let mut open = false;
+        for line in client.lines() {
+            let trimmed = line.trim();
+            if !open {
+                let declared = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+                if !declared.starts_with(&heading) {
+                    continue;
+                }
+                let Some((_, after)) = trimmed.rsplit_once('[') else {
+                    continue;
+                };
+                if let Some((inside, _)) = after.split_once(']') {
+                    entries.extend(quoted_names(inside).map(str::to_owned));
+                } else {
+                    open = true;
+                    entries.extend(quoted_names(after).map(str::to_owned));
+                }
+            } else if trimmed.starts_with(']') {
+                break;
+            } else if trimmed.starts_with('\'') {
+                entries.extend(quoted_names(trimmed).map(str::to_owned));
+            }
+        }
+        entries
+    }
+
+    /// The names quoted in a run of text: the odd segments of a split on `'`.
+    fn quoted_names(text: &str) -> impl Iterator<Item = &str> {
+        text.split('\'').skip(1).step_by(2).filter(|entry| is_wire_name(entry))
+    }
+
+    /// Whether a token reads as a wire name, which is what keeps a bare word in
+    /// a declaration from being taken for an entry.
+    fn is_wire_name(token: &str) -> bool {
+        !token.is_empty()
+            && token.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    }
+
+    /// The `rename_all` the enum itself declares, which is what turns a variant
+    /// name into the name it crosses under.
+    fn rename_all(source: &str) -> Option<String> {
+        let mut nearest = None;
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("pub enum SessionUpdate {") {
+                return nearest;
+            }
+            // Comments and blank lines do not break the run above the enum: a
+            // doc comment between the attribute and the enum says the same
+            // thing, and reading it as "no rename_all" would red a control on a
+            // reformatting.
+            if trimmed.is_empty() || trimmed.starts_with("//") {
+                continue;
+            }
+            nearest = trimmed
+                .strip_prefix("#[serde(rename_all = \"")
+                .and_then(|rest| rest.split('"').next())
+                .map(str::to_owned);
+        }
+        None
+    }
+
+    /// Every wire name the enum declares, in the order it declares them.
+    ///
+    /// The derivation serde applies to it: `rename_all` on the enum, and an
+    /// explicit `#[serde(rename = "...")]` on the variant above it.
+    fn wire_names(source: &str) -> Census {
+        let mut names = Vec::new();
+        let mut closed = false;
+        let mut inside = false;
+        let mut renamed: Option<String> = None;
+        for line in source.lines() {
+            if !inside {
+                inside = line.starts_with("pub enum SessionUpdate {");
+                continue;
+            }
+            if line == "}" {
+                closed = true;
+                break;
+            }
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("#[serde(rename = \"") {
+                renamed = rest.split('"').next().map(str::to_owned);
+                continue;
+            }
+            if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
+                continue;
+            }
+            let variant: String =
+                trimmed.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            if !variant.starts_with(|c: char| c.is_ascii_uppercase()) {
+                // A field inside a variant's body, or the brace closing one. A
+                // rename attribute above a field belongs to the FIELD, so it is
+                // dropped here rather than carried onto the next variant.
+                renamed = None;
+                continue;
+            }
+            names.push(renamed.take().unwrap_or_else(|| snake_case(&variant)));
+        }
+        Census { names, closed }
+    }
+
+    /// serde's own rule for this enum's `rename_all`, for a variant with no
+    /// explicit rename over it.
+    fn snake_case(name: &str) -> String {
+        let mut out = String::new();
+        for (at, c) in name.chars().enumerate() {
+            if c.is_ascii_uppercase() {
+                if at != 0 {
+                    out.push('_');
+                }
+                out.push(c.to_ascii_lowercase());
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
 mod workers_command_tests {
     use super::*;
 
