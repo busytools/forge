@@ -1181,32 +1181,6 @@ export function monitorLabel(monitor: MonitorRecord, now: number): string {
   return word;
 }
 
-/**
- * Whether the conversation holds a sub-agent dispatch at all.
- *
- * **The folded instances are not on the socket, and this is all a view can
- * know.** `subagents` on the record is the catalogue of agent TYPES the CLI
- * offers, and a page of history carries `ChatUnit`, which has no instance
- * variant - so neither the snapshot nor the `more` answer holds the cards the
- * inspector's section draws. Until the fold crosses, the section says so when
- * the conversation shows a dispatch: an absent section would read as "no
- * sub-agents ran", which is the same mistake as drawing a settled state for
- * one nobody described.
- */
-export function hasDispatches(messages: unknown[]): boolean {
-  return messages.some((message) => {
-    const frame = isRecord(message) ? message : {};
-    if (frame['type'] !== 'assistant') return false;
-    const parent = frame['parent_tool_use_id'];
-    if (typeof parent === 'string' && parent.trim() !== '') return false;
-    const inner = isRecord(frame['message']) ? frame['message'] : {};
-    return array(inner['content']).some((block) => {
-      const use = isRecord(block) ? block : {};
-      return use['type'] === 'tool_use' && (use['name'] === 'Task' || use['name'] === 'Agent');
-    });
-  });
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

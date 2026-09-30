@@ -32,7 +32,6 @@ vi.mock('./view', async (importOriginal) => {
     monitorsSection: counting('monitorsSection', real.monitorsSection),
     processTree: counting('processTree', real.processTree),
     walkedNote: counting('walkedNote', real.walkedNote),
-    hasDispatches: counting('hasDispatches', real.hasDispatches),
   };
 });
 
@@ -63,9 +62,6 @@ vi.mock('./wire', async (importOriginal) => {
     // `$state.raw` cannot be mutated in place, and ESM's strict mode turns the
     // first write into a thrown TypeError rather than a silent no-op.
     sessionFrom: counting('sessionFrom', (data: unknown) => frozen(real.sessionFrom(data))),
-    // The flatten is the whole conversation as one array, and it is handed to
-    // a scan that stops at the first dispatch.
-    framesOf: counting('framesOf', real.framesOf),
   };
 });
 
@@ -269,15 +265,14 @@ describe('what one arriving frame costs the inspector', () => {
    */
   it('re-derives what a frame for this seat moved, and nothing for a frame it did not', () => {
     const server = open();
-    // The page's own read on the way up is not an arriving frame, so the
-    // measurement starts after it.
+    // Read before the clear below: what the assertion is about is the record
+    // the page's own read was handed, and that read is the one thing here that
+    // is not an arriving frame.
+    const rows = counts.rowsCarried('sessionFrom');
     counts.clear();
 
     arrive(server.update);
     const event = counts.tally();
-    // Read before the two controls clear the counter: a `widthOf` taken after
-    // them would be summing an empty array and asserting the zero it found.
-    const scanned = counts.widthOf('hasDispatches');
     const called = (name: string): number => event.find((row) => row.name === name)?.calls ?? 0;
 
     counts.clear();
@@ -300,15 +295,10 @@ describe('what one arriving frame costs the inspector', () => {
       0,
     );
     expect(called('gitSection'), measured).toBe(1);
-    // Once, not once per section: the flatten is the whole conversation, so a
-    // second reader would pay for the same walk again.
-    expect(called('hasDispatches'), measured).toBe(1);
-    expect(called('framesOf'), measured).toBe(1);
-    // And over the whole conversation, which the call count above cannot say:
-    // every number in this file is about a record of a real size, and a fixture
-    // that stopped carrying one would leave all of them green. The frame above
-    // is part of that conversation now, because the page put it there.
-    expect(scanned, `the conversation reached the scan: ${measured}`).toBe(MESSAGES + 1);
+    // And over a record of a real size, which the call counts cannot say: every
+    // number in this file is about a conversation the record really carries, and
+    // a fixture that stopped carrying one would leave all of them green.
+    expect(rows, `the rows the record handed the page: ${measured}`).toBe(MESSAGES);
     expect(MESSAGES, 'the capture carries no conversation').toBeGreaterThan(0);
   });
 
@@ -364,30 +354,41 @@ describe('what one arriving frame costs the inspector', () => {
   });
 
   /**
-   * **A frame is applied to the record the page holds, so what it carries has
-   * to reach what is drawn.** That is the assertion the whole arrangement
-   * rests on: a page that applied updates into a tree nothing reads would draw
-   * a seat frozen at its last read.
+   * **The section follows the record's own answer, not a scan of its frames.**
+   * The server folds whether a seat dispatched where the conversation is folded,
+   * because a client holds only what it has been sent - so a page that scanned
+   * what it held would draw "no sub-agents ran" for a seat that dispatched an
+   * hour ago, which this section's own copy calls the same mistake as drawing a
+   * settled state for one nobody described.
+   *
+   * Both directions are asserted, because either alone is passed by a section
+   * that is always drawn or by one that never is.
    */
-  it('draws what the frame it was sent actually carries', () => {
-    // A seat that has dispatched nothing, so the section is absent to start
-    // with and the frame has something to move.
-    const server = open([]);
-    counts.clear();
+  it('draws the subagents section over an empty conversation when the record says it dispatched', () => {
+    open([], { has_dispatches: true });
+    const keys = drawn().map((section) => section.key);
 
+    expect(keys, `a record that dispatched drew no section: ${JSON.stringify(keys)}`).toContain(
+      'sec-subagents',
+    );
+  });
+
+  it('leaves the section absent for a frame that dispatched while the record says none', () => {
+    const server = open([], { has_dispatches: false });
+    counts.clear();
     const before = drawn().map((section) => section.key);
+
+    // A dispatch arrives as a frame. What the section draws from is the
+    // record's answer, which this seat's read has already given - and the
+    // reducer does not re-derive it, so the next read is what moves it.
     arrive(() => server.update(dispatched()));
 
     const after = drawn().map((section) => section.key);
     const measured = JSON.stringify({ before, after });
-    // Both halves, because a section that were always drawn would pass the
-    // second one alone.
     expect(before, `the section was there before the frame: ${measured}`).not.toContain(
       'sec-subagents',
     );
-    expect(after, `the seat's own frame did not reach the inspector: ${measured}`).toContain(
-      'sec-subagents',
-    );
+    expect(after, `a frame turned the section on: ${measured}`).not.toContain('sec-subagents');
   });
 });
 
