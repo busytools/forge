@@ -23,7 +23,8 @@
      attribution, so it carries no label), .code, .dif, .notice, .peer,
      .msg (a messaging group), .card (an answered question), .mon. */
   :root {
-    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
+    --line:#222a3c; --ctl:#516590;
     --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
     --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
     --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
@@ -177,9 +178,9 @@
   details.acct { position: relative; }
   details.acct > summary { list-style: none; cursor: pointer; display: flex; align-items: center;
     gap: 7px; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
-    border: 1px solid var(--line); border-radius: 99px; padding: 2px 11px; }
+    border: 1px solid var(--ctl); border-radius: 99px; padding: 2px 11px; }
   details.acct > summary::-webkit-details-marker { display: none; }
-  details.acct > summary:hover { border-color: #2e3850; color: var(--text); }
+  details.acct > summary:hover { color: var(--text); }
   details.acct[open] > summary { border-color: rgba(244,118,0,.45); color: var(--accent); }
   .pop { position: absolute; right: 0; top: calc(100% + 10px); width: 320px; z-index: 20;
     background: var(--s1); border: 1px solid rgba(34,42,60,.95); border-radius: 14px;
@@ -342,7 +343,7 @@
   .hooks { display: flex; align-items: center; gap: 8px; margin: 4px 0;
     font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
   .hooks:hover { color: var(--muted); }
-  .hooks .tog { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; font-size: var(--fs-label); }
+  .hooks .tog { border: 1px solid var(--ctl); border-radius: 5px; padding: 0 6px; font-size: var(--fs-label); }
 
   .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -352,7 +353,7 @@
   .turninfo > summary > span { white-space: nowrap; }
   .turninfo > summary::-webkit-details-marker { display: none; }
   .turninfo .sep { opacity: .5; }
-  .turninfo .tog { color: var(--muted); border: 1px solid var(--line);
+  .turninfo .tog { color: var(--muted); border: 1px solid var(--ctl);
     border-radius: 6px; padding: 0 8px; font-size: var(--fs-data); }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
