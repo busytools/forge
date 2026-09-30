@@ -1030,6 +1030,11 @@ docs: Render the message body into rows.</div>
         <div class="notice info"><span class="sev">Info</span>Mode changed: default &#8594; acceptEdits</div>
         <div class="notice warn"><span class="sev">Warning</span>Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</div>
         <div class="notice err"><span class="sev">Error</span>Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</div>
+        <!-- A turn that did not finish says so in its own line under it, and
+             the calls it left open draw as failed: the row above reports what
+             the turn spent and nothing more. -->
+        <div class="notice err"><span class="sev">Error</span>Turn failed: error_during_execution &#183; aborted_streaming
+[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null</div>
 
         <div class="compacting"><span class="ring"></span>Compacting context&#8230;</div>
 
