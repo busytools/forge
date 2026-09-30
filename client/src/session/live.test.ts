@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 
 import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import type { AddressInfo, RawData, WebSocketServer as Server } from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * `ws` by its CommonJS entry, because this file runs in jsdom and the
@@ -36,7 +36,7 @@ import Router from '../shell/Router.svelte';
 import { connect, type Connection, type ConnectionStatus } from '../socket';
 import type { Store, StoreValue } from '../stores';
 import type { SessionSlot } from '../wire/types';
-import { watchSession, type SessionRead } from './live';
+import { POLL_MS, watchSession, type SessionRead } from './live';
 import Session from './Session.svelte';
 
 /**
@@ -555,5 +555,76 @@ describe('the record a page holds over an update stream', () => {
     page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
 
     expect(page.read().wire, 'a stopped page is still following the seat').toBe(held);
+  });
+});
+
+/**
+ * The slices no update carries - the process walk, the working tree, the pull
+ * request, the monitors, the CLI's background tasks and the composer's three
+ * lists - are the reason a page cannot simply follow the stream: nothing in it
+ * mentions them. A slow read is what keeps them honest.
+ *
+ * The clock is faked here and nowhere else in this file, and the socket cases
+ * above need the real one, so each case below starts and ends its own.
+ */
+describe('the slow read for what no update carries', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('asks for the session on the poll interval', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    const asked = page.reads();
+
+    vi.advanceTimersByTime(POLL_MS + 1);
+
+    expect(page.reads(), 'the page never asked again').toBe(asked + 1);
+    page.stop();
+  });
+
+  it('stops asking once the last reader has gone', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    page.stop();
+    const asked = page.reads();
+
+    vi.advanceTimersByTime(POLL_MS * 3);
+
+    expect(page.reads(), 'a stopped page is still reading the seat').toBe(asked);
+  });
+
+  it('takes the slices no update feeds from what the poll answered with', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { work: { branch: 'main', changed: 3, gate: 'in_repo' } }));
+
+    page.land(snapshotOf(LEAD, { work: { branch: 'feature', changed: 0, gate: 'in_repo' } }));
+
+    expect(page.read().wire?.work.branch, 'the working tree never moved').toBe('feature');
+    page.stop();
+  });
+
+  it('does not walk back a slice an update already advanced', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    const advanced = page.read().wire;
+
+    // A poll's answer, taken before the frame landed: its conversation is
+    // empty, and taking it would drop the frame the page is holding.
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+
+    expect(page.read().wire?.conversation, 'the poll walked the conversation back').toEqual(
+      advanced?.conversation,
+    );
+    page.stop();
   });
 });

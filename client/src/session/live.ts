@@ -21,8 +21,18 @@ import { slotOf, subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
-import { applyUpdate, REPLACES, variantOf } from './apply';
+import { applyUpdate, REPLACES, UNFED, variantOf } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
+
+/**
+ * How often the slices no update carries are read.
+ *
+ * A read is a whole encode, and the six of them are the slowest-moving part of
+ * the record - a git scan and a process walk do not change between one frame
+ * and the next - so this is the coarsest read that keeps a page honest rather
+ * than the cheapest that keeps it moving.
+ */
+export const POLL_MS = 5_000;
 
 /** What the session page has to draw from, and why it has nothing when it does not. */
 export interface SessionRead {
@@ -72,12 +82,26 @@ export function watchSession(
    */
   let wire: SessionRecord | null = null;
 
+  /**
+   * Whether the next answer is a whole record rather than a poll's.
+   *
+   * Three things make one: the first read, a reconnect (its subscription is
+   * re-made, so its snapshot is the server's own account of where the seat is
+   * now), and a seat that spawned, connected or took a new occupant. Every
+   * other answer is a poll's, and a poll is only allowed to move what no
+   * update feeds.
+   */
+  let replacing = true;
+
+  /** A poll's timer, which is armed with this page's subscription. */
+  let poll: ReturnType<typeof setInterval> | null = null;
+
   function publish(next: SessionRecord | null, refused: string | null): void {
     wire = next;
     view.set({ wire: next, refused });
   }
 
-  function read(): void {
+  function read(replace: boolean): void {
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
@@ -86,7 +110,24 @@ export function watchSession(
     }
     const data = held.snapshot();
     if (data === null) return;
-    publish(sessionFrom(data), null);
+    const fresh = sessionFrom(data);
+    publish(replace || wire === null ? fresh : merged(wire, fresh), null);
+  }
+
+  /**
+   * A poll's answer, keeping only the slices no update carries.
+   *
+   * **The conversation is the one to watch here.** A poll is asked for while
+   * frames are arriving, and its answer was encoded after some of them and
+   * before others - so taking its whole record would drop the frames that
+   * landed in between, and the page would walk backwards on a busy seat.
+   */
+  function merged(held: SessionRecord, fresh: SessionRecord): SessionRecord {
+    const out = { ...held };
+    for (const field of UNFED) {
+      Object.assign(out, { [field]: fresh[field] });
+    }
+    return out;
   }
 
   /**
@@ -114,7 +155,8 @@ export function watchSession(
       if (message.kind === 'snapshot' || message.kind === 'error') {
         if (message.kind === 'error' || subjectKey(message.subject) === key) {
           reading = false;
-          read();
+          read(replacing);
+          replacing = false;
         }
         return;
       }
@@ -135,6 +177,7 @@ export function watchSession(
       // tree - so only a read answers them.
       const [name] = variantOf(message.update);
       if (name !== null && REPLACES.includes(name)) {
+        replacing = true;
         reread();
         return;
       }
@@ -152,8 +195,16 @@ export function watchSession(
     // snapshot of its own - so the pacing must not stay stuck waiting on an
     // answer that died.
     stopStatus = connection.onStatus((next: ConnectionStatus) => {
-      if (next !== 'open') reading = false;
+      if (next !== 'open') {
+        reading = false;
+        // The record this page holds is from before the drop, so the answer
+        // the reconnect brings is a whole one rather than a poll's.
+        replacing = true;
+      }
     });
+    poll = setInterval(() => {
+      reread();
+    }, POLL_MS);
   }
 
   function unwatch(): void {
@@ -161,6 +212,8 @@ export function watchSession(
     stopStatus?.();
     stopMessages = null;
     stopStatus = null;
+    if (poll !== null) clearInterval(poll);
+    poll = null;
     connection.unsubscribe(subject);
     held = null;
     wire = null;
@@ -168,7 +221,10 @@ export function watchSession(
 
   const view: Writable<SessionRead> = writable(NOTHING, () => {
     watch();
-    read();
+    // The subscription's own answer is the first read; this is for a store
+    // that already holds one, so a page remounting on a live connection does
+    // not draw nothing while the subscription is re-made.
+    read(true);
     return unwatch;
   });
 
