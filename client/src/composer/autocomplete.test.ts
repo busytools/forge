@@ -14,7 +14,11 @@ function file(relPath: string): FileEntry {
   };
 }
 
-const sources: Sources = {
+/**
+ * The lists, as a pull rather than a value: the caller reads them only for the
+ * list it is opening, so a draft that opens nothing never builds the index.
+ */
+const sources = (): Sources => ({
   forgeCommands: [
     { name: '/compact', description: 'Compact session context' },
     { name: '/model', description: 'Show / set session model' },
@@ -37,7 +41,7 @@ const sources: Sources = {
     { name: 'cli-version', description: 'settled 3m' },
     { name: 'cli-audit', description: 'never run' },
   ],
-};
+});
 
 /**
  * Four triggers, one popover shape.
@@ -97,7 +101,10 @@ describe('what a list is ranked and cut by', () => {
   });
 
   it('counts every match in the header, not the window it draws', () => {
-    const many = { ...sources, files: [...Array(300).keys()].map((n) => file(`src/home${n}.rs`)) };
+    const many = (): Sources => ({
+      ...sources(),
+      files: [...Array(300).keys()].map((n) => file(`src/home${n}.rs`)),
+    });
     const held = offer('@home', many);
     expect(held?.total, 'the header states how many matched').toBe(300);
     expect(held?.rows.length, 'the window scrolls over a bounded set').toBe(200);
