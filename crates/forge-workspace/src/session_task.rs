@@ -42,6 +42,21 @@ pub(crate) struct SessionTask {
     /// reference cycle (Workspace holds Task's command_tx; Task
     /// holds Workspace).
     pub(crate) workspace: std::sync::Weak<crate::Workspace>,
+    /// The conversation this task is carrying, kept so
+    /// `Command::ReplayConversation` can hand it to a consumer that joined
+    /// after this session started.
+    ///
+    /// **Held here because here is where it is produced.** The task is handed
+    /// the history at connect and emits every frame after it, so what it keeps
+    /// is in one order with the frames around it. A consumer reading the
+    /// transcript instead would be a second producer, and a read and a stream
+    /// cannot be reconciled: the read picks up rows written while it runs,
+    /// which the stream also delivers.
+    ///
+    /// It is the same conversation a view holds, so the cost is proportional
+    /// to what is RUNNING rather than to what is being read - which is the
+    /// price of having one producer rather than two.
+    pub(crate) conversation: Option<(Vec<forge_primitives::Message>, u32)>,
 }
 
 impl SessionTask {
@@ -207,6 +222,9 @@ impl SessionTask {
                 compaction_count,
             } => {
                 let history = history_updates.unwrap_or_default();
+                // Kept before the update takes it, so a consumer that joins
+                // later can be handed what this task was handed.
+                self.conversation = Some((history.clone(), compaction_count));
                 // The slot the task was spawned under, which the CLI's
                 // own id never moves: it names the occupant, this names
                 // the seat.
@@ -778,6 +796,23 @@ impl SessionTask {
                     );
                 }
             }
+            // Answered by this task rather than the agent: the conversation
+            // is the task's own, so it never leaves this loop.
+            Command::ReplayConversation { key: _ } => {
+                let Some((history, compaction_count)) = self.conversation.as_ref() else {
+                    tracing::debug!(
+                        target: "forge_workspace::session_task",
+                        slot = %self.key.display(),
+                        "a replay was asked for before this session connected; nothing to hand back",
+                    );
+                    return;
+                };
+                self.emit(SessionUpdate::HistoryReplayed {
+                    key: self.key.clone(),
+                    history: history.clone(),
+                    compaction_count: *compaction_count,
+                });
+            }
             other => {
                 let sid = self.session_id_string();
                 // `/new` starts under an id minted here, so the row this
@@ -1206,6 +1241,11 @@ pub(crate) fn execute_command_via_handle(
     cmd: Command,
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
+        // Answered by the task before it reaches here: the conversation is
+        // the task's own and never crosses to the agent. A caller reading
+        // this as dead code should note the arm in `SessionTask::execute_command`
+        // is what returns early - the match here is exhaustive, not a route.
+        Command::ReplayConversation { key: _ } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));

@@ -183,10 +183,20 @@ fn is_dispatch(message: &Message) -> bool {
     })
 }
 
-/// The conversations the transport is holding, one per seat it is showing.
+/// The conversations the transport is holding, one per live seat.
+///
+/// **Every live seat, not only the watched ones, and nothing is released.**
+/// A conversation has no read behind it any more, so letting one go is not a
+/// bound - nothing could rebuild it, and the next ask for that seat would
+/// have no answer. What it holds is therefore proportional to what is
+/// RUNNING rather than to what is being read, which is the price of having
+/// one producer of the conversation rather than two.
 #[derive(Default)]
 pub struct Conversations {
     held: Mutex<HashMap<SessionSlot, Arc<Mutex<Conversation>>>>,
+    /// Fires when a seat is first held, so a request that had to ask for a
+    /// replay knows when its answer has landed.
+    seeded: tokio::sync::Notify,
 }
 
 impl Conversations {
@@ -199,53 +209,59 @@ impl Conversations {
         self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone)
     }
 
-    /// Hold `conversation` for `slot`, unless another reader got there first.
+    /// Hold `conversation` for `slot`, unless the stream got there first.
     pub fn insert(
         &self,
         slot: &SessionSlot,
         conversation: Conversation,
     ) -> Arc<Mutex<Conversation>> {
-        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(held.entry(slot.clone()).or_insert_with(|| Arc::new(Mutex::new(conversation))))
+        let held = {
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            Arc::clone(
+                held.entry(slot.clone()).or_insert_with(|| Arc::new(Mutex::new(conversation))),
+            )
+        };
+        self.seeded.notify_waiters();
+        held
     }
 
-    /// Let the seat go, which the last connection showing it does.
-    pub fn release(&self, slot: &SessionSlot) {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).remove(slot);
-    }
-
-    /// Fold one update into every held seat it names.
+    /// A future that resolves when some seat is newly held.
     ///
-    /// **A seat nobody has asked for is not materialised here.** Doing it on
-    /// an update would hold the whole fleet, and the point of materialising on
-    /// the ask is that memory follows what is being watched rather than what
-    /// is running.
+    /// **Enable it before looking the seat up**, or a seat seeded between the
+    /// lookup and the wait leaves the caller waiting for something that has
+    /// already happened - and bound the wait, because a seat whose session is
+    /// gone never answers at all.
+    pub fn seeded_notice(&self) -> tokio::sync::futures::Notified<'_> {
+        self.seeded.notified()
+    }
+
+    /// Fold one update into the seat it names.
     pub fn apply(&self, update: &SessionUpdate) {
         let Some(slot) = update.slot() else {
             return;
         };
-        let Some(held) = self.get(slot) else {
-            return;
-        };
         match update {
             // A connect, a resume and a replay all say the same thing about
-            // this seat - here is its conversation - so they all RESEED it.
+            // this seat - here is its conversation - so they all RESEED it,
+            // materialising it if this is the first word about the seat.
             // Appending a replay instead would put the history in front of
             // the frames the seat already carried.
             SessionUpdate::Connected { history, compaction_count, .. }
             | SessionUpdate::SessionReplaced { history, compaction_count, .. }
             | SessionUpdate::HistoryReplayed { history, compaction_count, .. } => {
-                held.lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .seed(history.clone(), *compaction_count);
+                let fresh = Conversation::new(history.clone(), *compaction_count);
+                self.insert(slot, fresh);
             }
             SessionUpdate::ChatAppended { msg, .. } => {
+                let Some(held) = self.get(slot) else {
+                    return;
+                };
                 // A compaction rewrote the conversation the CLI holds, and
                 // what the held copy should become is a question only the
                 // transcript can answer. Dropping it costs one replay at the
                 // next ask and cannot keep a conversation the CLI threw away.
                 if matches!(msg, Message::CompactBoundary { .. }) {
-                    self.release(slot);
+                    self.held.lock().unwrap_or_else(PoisonError::into_inner).remove(slot);
                     return;
                 }
                 held.lock().unwrap_or_else(PoisonError::into_inner).append(msg.clone());
@@ -254,7 +270,7 @@ impl Conversations {
         }
     }
 
-    /// How many seats are held, which is what a test asserts the release on.
+    /// How many seats are held.
     pub fn len(&self) -> usize {
         self.held.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
@@ -383,15 +399,35 @@ mod tests {
         assert_eq!(said, vec!["from the replay".to_owned(), "after".to_owned()]);
     }
 
-    /// A seat nobody has asked for is not materialised by the stream. Doing it
-    /// on an update would hold the whole fleet, and memory is meant to follow
-    /// what is being watched rather than what is running.
+    /// A connect holds the seat's conversation whether or not anyone is
+    /// watching it, because nothing can rebuild one that was let go: the
+    /// conversation has no read behind it, so a seat dropped is a seat whose
+    /// next ask has no answer.
     #[test]
-    fn a_seat_nobody_asked_for_is_not_held() {
+    fn a_connect_holds_the_seat_without_anyone_watching() {
         let held = Conversations::new();
 
-        held.apply(&a_replay(vec![a_frame("unwatched")]));
+        held.apply(&a_connect(vec![a_frame("running, unwatched")]));
 
-        assert_eq!(held.len(), 0, "an update for an unheld seat holds nothing");
+        assert_eq!(held.len(), 1, "the seat is held from its connect");
+        let conversation = held.get(&a_seat()).expect("the seat is held");
+        let conversation = conversation.lock().expect("the lock");
+        assert_eq!(conversation.messages().len(), 1, "carrying the history the connect brought");
+    }
+
+    /// A frame on a seat nothing has seeded is dropped rather than inventing
+    /// a conversation: a seat whose connect this transport never saw is asked
+    /// for a replay, and until that lands there is nothing to append to.
+    #[test]
+    fn a_frame_before_a_seat_is_seeded_holds_nothing() {
+        let held = Conversations::new();
+
+        held.apply(&SessionUpdate::ChatAppended {
+            key: a_seat(),
+            msg: a_frame("before the seed"),
+            origin: None,
+        });
+
+        assert_eq!(held.len(), 0, "a frame alone does not materialise a seat");
     }
 }

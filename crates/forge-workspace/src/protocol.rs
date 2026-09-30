@@ -258,6 +258,22 @@ pub enum Command {
     Cancel {
         key: SessionSlot,
     },
+    /// Ask the session task to emit the conversation it is carrying, as
+    /// [`SessionUpdate::HistoryReplayed`].
+    ///
+    /// **The task is asked rather than the transcript read**, because the task
+    /// is what PRODUCES the conversation: it is handed the history at connect
+    /// and it emits every frame after it, so a history it hands back is in its
+    /// own order with the frames around it. A reader that walked the file
+    /// instead would be a second producer of the same truth, and the two
+    /// cannot be reconciled - the read picks up rows written while it runs,
+    /// which the stream also delivers, and no identity ties them together.
+    ///
+    /// A no-op for a seat whose session is gone: nothing is emitted and the
+    /// asker's wait times out.
+    ReplayConversation {
+        key: SessionSlot,
+    },
     SetMode {
         key: SessionSlot,
         mode: PermissionMode,
@@ -587,6 +603,7 @@ impl Command {
         match self {
             Self::Prompt { key, .. }
             | Self::Cancel { key }
+            | Self::ReplayConversation { key }
             | Self::SetMode { key, .. }
             | Self::SetModel { key, .. }
             | Self::NewSession { key, .. }
@@ -633,6 +650,9 @@ impl std::fmt::Debug for Command {
                 f.debug_struct("Prompt").field("key", key).finish_non_exhaustive()
             }
             Self::Cancel { key } => f.debug_struct("Cancel").field("key", key).finish(),
+            Self::ReplayConversation { key } => {
+                f.debug_struct("ReplayConversation").field("key", key).finish()
+            }
             Self::SetMode { key, mode } => {
                 f.debug_struct("SetMode").field("key", key).field("mode", mode).finish()
             }
