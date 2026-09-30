@@ -1547,60 +1547,152 @@ mod session_update_variants {
     /// page stops following its seat and keeps drawing the last record it read,
     /// with nothing to say it has fallen behind.
     ///
-    /// **The names are derived from this file, not typed out beside it.** A
-    /// hand-typed list is a third copy of the enum, and a copy no rename moves:
-    /// the first version of this test read `turn_cancelled` from a literal while
-    /// serde had already moved to `turn_cancelled_probe`, and the gate stayed
-    /// green. The derivation is the one serde applies to this enum -
-    /// `rename_all = "snake_case"`, with an explicit `#[serde(rename)]` winning
-    /// over it - so a variant renamed here, or renamed on the wire, moves a name
-    /// this test then looks for and does not find.
+    /// **Both ends are parsed, and both ends are the tables themselves.** A
+    /// hand-typed list is a copy no rename moves - the first version of this
+    /// test read `turn_cancelled` from a literal while serde had already moved
+    /// to `turn_cancelled_probe`, and it stayed green. The enum's names are
+    /// derived from its own source by the rule it declares; the client's are
+    /// read out of the three tables that classify, and not out of the file at
+    /// large, where a payload key or a status word would answer for a variant
+    /// nothing classifies.
     ///
-    /// **What it does not cover: a name the client declares that the enum does
-    /// not.** Such an entry is inert - a lookup that never matches - and the
-    /// client's own test catches only a name claimed by two lists. Named here
-    /// rather than left to be assumed.
+    /// What it does not reach: `client/src/wire/fleet.ts` keeps a table of its
+    /// own for the fleet's redraws. That is a different question and is
+    /// deliberately partial, so this binding stops at `apply.ts`.
     #[test]
     fn every_session_update_variant_is_classified_for_the_client() {
-        let declared = wire_names(include_str!("protocol.rs"));
+        let source = include_str!("protocol.rs");
+        let client = include_str!("../../../client/src/session/apply.ts");
+        let declared = wire_names(source);
+        let classified = classified_names(client);
 
-        // The denominator, off the enum itself. A parse that stops matching the
-        // enum's shape finds NOTHING, and finding nothing is what a clean run
-        // looks like - so this is what tells the two apart.
-        assert!(
-            declared.len() >= 50,
-            "the parse found {} names where the enum carries 56: the enum's own shape moved, \
-             so this is the parse and not the client",
-            declared.len(),
+        // The derivation implements ONE `rename_all` rule, so it is only as good
+        // as the enum declaring that rule: changing the attribute moves every
+        // name at once, and nothing else here would notice.
+        assert_eq!(
+            rename_all(source).as_deref(),
+            Some("snake_case"),
+            "this control derives wire names with serde's snake_case rule and the enum no longer \
+             declares it: extend the derivation before trusting anything below",
         );
 
-        let client = include_str!("../../../client/src/session/apply.ts");
-        let missing: Vec<&String> = declared.iter().filter(|name| !names(client, name)).collect();
+        // The denominator, and it is the enum's own: a parse that stops matching
+        // never reaches its closing brace, and finding nothing is what a clean
+        // run looks like - so this is what tells the two apart.
+        assert!(
+            declared.closed,
+            "the parse never reached the end of `SessionUpdate`, so it is the parse that moved \
+             and not the client",
+        );
+
+        let missing: Vec<&String> =
+            declared.names.iter().filter(|name| !classified.contains(name)).collect();
         assert!(
             missing.is_empty(),
             "client/src/session/apply.ts has no line for {missing:?}, and a variant the client \
              does not classify stops the session page following its seat: add each to HANDLERS \
              when the record has a field for it, and to REPLACES or IGNORED when it does not",
         );
+
+        let stale: Vec<&String> =
+            classified.iter().filter(|name| !declared.names.contains(name)).collect();
+        assert!(
+            stale.is_empty(),
+            "client/src/session/apply.ts classifies {stale:?}, which the enum does not declare: \
+             a line for a name the wire never sends is one nobody can tell from a live one",
+        );
     }
 
-    /// Whether the client's table names this variant: as a quoted list entry,
-    /// or as a key at the head of a line in the handler table.
+    /// What one parse of the enum found.
+    struct Census {
+        names: Vec<String>,
+        /// Whether the parse reached the enum's closing brace.
+        closed: bool,
+    }
+
+    /// The names the client's three classifying tables hold.
     ///
-    /// The key form is anchored to a line rather than searched for anywhere, so
-    /// a name prose happens to mention does not stand in for a line that acts
-    /// on it.
-    fn names(client: &str, name: &str) -> bool {
-        client.contains(&format!("'{name}'"))
-            || client.lines().any(|line| line.trim_start().starts_with(&format!("{name}:")))
+    /// The handler table's keys, and the quoted entries of the two lists. The
+    /// `UNFED` export is skipped rather than read: those are the record's field
+    /// names, and a field is not a variant.
+    fn classified_names(client: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut table = "";
+        for line in client.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("export const HANDLERS") {
+                table = "handlers";
+                continue;
+            }
+            if trimmed.starts_with("export const REPLACES") {
+                table = "replaces";
+            } else if trimmed.starts_with("export const IGNORED") {
+                table = "ignored";
+            } else if trimmed.starts_with("export const") {
+                table = "";
+                continue;
+            }
+            let hold = |token: &str| is_wire_name(token);
+            match table {
+                // A key of the handler table: two spaces in, then
+                // `name: (held, payload) => {`. The indent is the anchor - an
+                // object literal INSIDE a handler is deeper, and reads as a key
+                // otherwise.
+                "handlers" => {
+                    if let Some(rest) =
+                        line.strip_prefix("  ").filter(|rest| !rest.starts_with(' '))
+                        && let Some(key) = rest.split_once(": (").map(|(key, _)| key)
+                        && hold(key)
+                    {
+                        names.push(key.to_owned());
+                    }
+                }
+                // `['spawning', 'connected']`, one line or many.
+                "replaces" | "ignored" => {
+                    for entry in trimmed.split('\'').skip(1).step_by(2) {
+                        if hold(entry) {
+                            names.push(entry.to_owned());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        names
+    }
+
+    /// Whether a token reads as a wire name, which is what keeps a bare word in
+    /// a declaration from being taken for an entry.
+    fn is_wire_name(token: &str) -> bool {
+        !token.is_empty()
+            && token.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    }
+
+    /// The `rename_all` the enum itself declares, which is what turns a variant
+    /// name into the name it crosses under.
+    fn rename_all(source: &str) -> Option<String> {
+        let mut nearest = None;
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("pub enum SessionUpdate {") {
+                return nearest;
+            }
+            // Only the run of attribute lines directly above the enum counts.
+            nearest = trimmed
+                .strip_prefix("#[serde(rename_all = \"")
+                .and_then(|rest| rest.split('"').next())
+                .map(str::to_owned);
+        }
+        None
     }
 
     /// Every wire name the enum declares, in the order it declares them.
     ///
-    /// The derivation serde applies to it: `rename_all = "snake_case"` on the
-    /// enum, and an explicit `#[serde(rename = "...")]` on the variant above it.
-    fn wire_names(source: &str) -> Vec<String> {
+    /// The derivation serde applies to it: `rename_all` on the enum, and an
+    /// explicit `#[serde(rename = "...")]` on the variant above it.
+    fn wire_names(source: &str) -> Census {
         let mut names = Vec::new();
+        let mut closed = false;
         let mut inside = false;
         let mut renamed: Option<String> = None;
         for line in source.lines() {
@@ -1609,6 +1701,7 @@ mod session_update_variants {
                 continue;
             }
             if line == "}" {
+                closed = true;
                 break;
             }
             let trimmed = line.trim();
@@ -1622,11 +1715,15 @@ mod session_update_variants {
             let variant: String =
                 trimmed.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
             if !variant.starts_with(|c: char| c.is_ascii_uppercase()) {
+                // A field inside a variant's body, or the brace closing one. A
+                // rename attribute above a field belongs to the FIELD, so it is
+                // dropped here rather than carried onto the next variant.
+                renamed = None;
                 continue;
             }
             names.push(renamed.take().unwrap_or_else(|| snake_case(&variant)));
         }
-        names
+        Census { names, closed }
     }
 
     /// serde's own rule for this enum's `rename_all`, for a variant with no
