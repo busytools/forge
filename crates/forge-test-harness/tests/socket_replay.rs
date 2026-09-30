@@ -19,9 +19,9 @@
 //!   field moves a line in `chat.json`.
 //!
 //! **What this cannot see, stated rather than implied.** A payload is pinned
-//! only for the two frames sampled below, and the fields inside a variant
-//! nobody samples are not pinned at all. `Task` and `CronEntry` have no
-//! fixture behind them, which `wire.rs` counts and names on every run.
+//! only for the frames sampled below, and the fields inside a variant nobody
+//! samples are not pinned at all. `Task` and `CronEntry` have no fixture
+//! behind them, which `wire.rs` counts and names on every run.
 //!
 //! **Nothing here reads the client.** The records say what the server emits;
 //! whether a page reads those names is a reader comparing the two, not a
@@ -38,9 +38,10 @@
 //! in, and the probe asks the deserialize side while the record is built
 //! from Rust names - so the record would state a tag the server does not
 //! send, green, and a client reading what serde WRITES draws blank. Only the
-//! two sampled frames catch it, for their own payloads. `assert_no_split_renames`
-//! asserts the shape is absent from the three sources carrying these enums,
-//! which is complete for it.
+//! sampled frames catch it, for their own payloads. `assert_no_split_renames`
+//! asserts the shape is absent from both sources carrying these enums - and
+//! from `messages.rs`, which carries none of them and is scanned for the chat
+//! payload's sake - which is complete for it.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -153,7 +154,7 @@ fn serde_names(error: &str) -> Vec<String> {
 /// stating a tag the server does not send, green, and a client - which reads
 /// what serde WRITES - draws blank.
 ///
-/// The two sampled frames catch it for their own payloads and nothing else
+/// The sampled frames catch it for their own payloads and nothing else
 /// does, so the shape is asserted against the source instead, which is
 /// complete for it. Whitespace is stripped first, because
 /// `rename ( serialize` is the same attribute.
@@ -404,7 +405,8 @@ fn sample_message() -> Message {
 struct Contract {
     records: Vec<(&'static str, String)>,
     frames: Vec<(&'static str, usize)>,
-    update_payload_sampled: Vec<&'static str>,
+    update_payload_sampled: Vec<String>,
+    payload_frames_sampled: Vec<String>,
     chat_keys: usize,
     chat_paths: usize,
     chat_nulls: usize,
@@ -503,7 +505,7 @@ fn frames_record() -> Value {
         );
     }
 
-    // The two payloads this record samples. `ChatAppended` is #1321's: the
+    // The payloads this record samples. `ChatAppended` is #1321's: the
     // Rust field is `actions` and the wire name is `hookCount`, and a fold
     // reading the Rust one draws nothing. `Page` is what the client pages on,
     // and an empty page pins nothing about a turn.
@@ -597,7 +599,31 @@ fn contract() -> Contract {
     }
     let chat_body = serde_json::to_string_pretty(&chat_body).expect("the chat record renders");
 
-    let frames = serde_json::to_string_pretty(&frames_record()).expect("the frame record renders");
+    let frames_record = frames_record();
+
+    // **Read off the record rather than written beside it.** A literal here
+    // is a denominator asserted rather than measured: adding a third sampled
+    // payload moved the record and left the printed line still saying one,
+    // which is the same defect as a counter that reads a shape it did not
+    // build.
+    let payload_frames_sampled: Vec<String> = frames_record
+        .get("payload_sampled")
+        .and_then(Value::as_object)
+        .map(|sampled| sampled.keys().cloned().collect())
+        .unwrap_or_default();
+
+    // Of those, the ones that are an `SessionUpdate`. **Both figures print**:
+    // the map's own total is what a sample for another enum moves, and the
+    // update count is the one with a denominator of its own. Reporting only
+    // the second left a sample added for `ServerMessage` moving the record
+    // with the printed line unchanged.
+    let update_payload_sampled: Vec<String> = payload_frames_sampled
+        .iter()
+        .filter(|name| SESSION_UPDATE_VARIANTS.contains(&name.as_str()))
+        .cloned()
+        .collect();
+
+    let frames = serde_json::to_string_pretty(&frames_record).expect("the frame record renders");
 
     Contract {
         records: vec![
@@ -611,7 +637,8 @@ fn contract() -> Contract {
             ("command", COMMAND_VARIANTS.len()),
             ("client_message", CLIENT_MESSAGE_VARIANTS.len()),
         ],
-        update_payload_sampled: vec!["ChatAppended"],
+        update_payload_sampled,
+        payload_frames_sampled,
         chat_keys: chat.keys(),
         chat_paths: chat.paths(),
         chat_nulls: chat.nulls.len(),
@@ -663,8 +690,9 @@ fn report(built: &Contract) {
         .join(" / ");
     eprintln!(
         "socket contract: frames {classified} classified ({per_enum}) | \
-         update payloads sampled {} of {} | \
+         payload frames sampled {} (update payloads {} of {}) | \
          chat payload {} keys over {} paths, {} null, {} empty collections",
+        built.payload_frames_sampled.len(),
         built.update_payload_sampled.len(),
         SESSION_UPDATE_VARIANTS.len(),
         built.chat_keys,
@@ -693,6 +721,24 @@ fn floors(built: &Contract) -> Result<(), String> {
         return Err(
             "the chat record carries no path and no key, so a rename inside a fold payload is as \
              invisible as it was before the record existed"
+                .to_owned(),
+        );
+    }
+    // The sampled counts have a floor for the same reason the others do, and
+    // this one had none: a map holding no update payload printed `sampled 0
+    // of 56`, which reads as a measurement rather than as a record that
+    // samples nothing. The writer runs these, so it is what stops a
+    // sample-free record reaching disk.
+    if built.payload_frames_sampled.is_empty() {
+        return Err("the record samples no payload frame at all, so every count it prints is a \
+             denominator against nothing"
+            .to_owned());
+    }
+    if built.update_payload_sampled.is_empty() {
+        return Err(
+            "the record samples no UPDATE payload, so the `N of 56` it prints is a denominator \
+             against nothing - which reads as a measurement rather than as a record that samples \
+             none"
                 .to_owned(),
         );
     }
