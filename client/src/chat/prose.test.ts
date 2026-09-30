@@ -16,18 +16,31 @@ function declares(unit: string, said: string): boolean {
 }
 
 describe('the markdown a message carries, as the sheet draws it', () => {
-  it('marks each unit the way the terminal marks it', () => {
-    // A sheet edit that drops one of these is silent: the unit keeps drawing,
-    // only as the browser's default against a reset that zeroes margins. A
-    // fence is not here because the panel it draws is `.code`, covered above.
+  it('draws every heading level as one bold line at the prose size', () => {
+    // A sheet edit that drops a level is silent: it keeps drawing, only as the
+    // browser's default against a reset that zeroes margins, which is an h1 at
+    // twice the prose size and an h4 at two thirds of it.
+    for (const level of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
+      expect(declares(level, 'font-size: var(--fs-prose)'), `${level}: one size`).toBe(true);
+      expect(declares(level, 'font-weight: 700'), `${level}: bold`).toBe(true);
+    }
+  });
+
+  it('rules a table header and no body row', () => {
+    expect(declares('th', 'border-bottom'), 'the header is ruled').toBe(true);
+    expect(declares('td', 'border-bottom'), 'a body row is not ruled').toBe(false);
+  });
+
+  it("gives each remaining unit a mark, on a token rather than the browser's", () => {
+    // The quote and the break are the sheet's marks rather than the terminal's,
+    // so this pins that each has one at all - unmarked, a quote reads as a
+    // paragraph and a link takes the browser's own blue.
     const marks: Array<[string, string, string]> = [
-      ['h1', 'font-size: var(--fs-prose)', 'every heading level is one size'],
-      ['h2', 'font-weight: 700', 'and bold'],
       ['blockquote', 'border-left', 'a quote is marked by the rule this sheet insets with'],
       ['table', 'border-collapse: collapse', 'cells share one grid'],
-      ['th', 'border-bottom', 'the header is ruled, and no body row is'],
       ['hr', 'background: var(--line)', 'a break is a hairline'],
       ['code', 'border-radius: 5px', "the chip takes the sheet's chip radius"],
+      ['a', 'color: var(--blue)', 'a link takes a palette token'],
     ];
     for (const [unit, said, why] of marks) {
       expect(declares(unit, said), `${unit}: ${why}`).toBe(true);
@@ -78,6 +91,9 @@ describe('a code block in a message', () => {
 
     expect(html).toContain('<div class="code">');
     expect(html).toContain('<div class="lang">yaml</div>');
+    // The delimiters never reach the panel. What this catches is a rule that
+    // slices the source range - the way the terminal's own splitter finds a
+    // fence - rather than taking the block's body off the token.
     expect(html).not.toContain('```');
   });
 

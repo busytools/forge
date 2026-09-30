@@ -385,7 +385,7 @@
             "content": [
               {
                 "type": "text",
-                "text": "## The note\n\nSend this before the merge, so the bot carries the header on every request.\n\n```yaml\nRate limiting is going into the api in PR #150. The liquidation bot has to send one header on every api request.\n\nSet `service_key` per environment in the bot's own config.\n```\n\n> The api ignores the header until the limits are live, so it can ship first.\n\nA head is one line per level, a fence is a panel rather than a box, and a quote keeps the terminal's prefix as a rule:\n\n| surface | mark |\n| --- | --- |\n| heading | one bold line |\n| fence | a panel with its language on the header |\n| quote | a rule down the left |"
+                "text": "## The note\n\nSend this before the merge, so the bot carries the header on every request.\n\n```yaml\nRate limiting is going into the api in PR #150. The liquidation bot has to send one header on every api request.\n\nSet `service_key` per environment in the bot's own config.\n```\n\n> The api ignores the header until the limits are live, so it can ship first.\n\nNothing needs rotating for this. The api [reference](https://example.com/config) lists the other environments.\n\n---\n\nOne value per environment:\n\n| environment | key |\n| --- | --- |\n| staging | service_key |\n| production | service_key |"
               }
             ]
           }

@@ -615,14 +615,23 @@ details.acct[open] > summary { color: var(--accent); }
   font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
 .attrow .gl { color: var(--dim); }
 .attrow .n { color: var(--dim); }
-/* The rest of the markdown a message carries, in the vocabulary the terminal
-   settled: it draws every heading level as one bold line with a blank line
-   before it, marks a quote with a prefix and a dim colour, rules a table under
-   its header, and draws a break as a hairline. A fence is not here: it is the
-   code panel, which is `.code`. */
+/* The rest of the markdown a message carries. A heading is the terminal's own
+   mark: every level is one bold line with a blank line before it. The other
+   three marks are this sheet's, and are named as differences rather than
+   claimed as parity - the terminal prefixes a quote and colours it green where
+   this insets it behind the rule the sheet insets with, and it prints a break
+   as a literal `---` where this draws a hairline. A fence is not here at all:
+   it is the code panel, which is `.code`. */
 .work .prose h1, .work .prose h2, .work .prose h3,
 .work .prose h4, .work .prose h5, .work .prose h6 {
   font-size: var(--fs-prose); font-weight: 700; margin: 12px 0 6px; }
+/* The panel is new markup inside prose, so it carries the block spacing every
+   other unit here has rather than sitting on the paragraph's own line box. */
+.work .prose .code { margin: 10px 0; }
+/* A colour rather than the browser's own link blue, which is off the palette
+   and measures about 2.2:1 on the page. The underline is the browser's, and
+   stays: a link is not carried by its colour alone. */
+.work .prose a { color: var(--blue); }
 /* A rule down the left, which is how this sheet marks an inset everywhere else:
    the reader's own turn, a command's output, a search hit, a call. */
 .work .prose blockquote { border-left: 2px solid var(--line); color: var(--muted);
