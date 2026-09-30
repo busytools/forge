@@ -104,7 +104,6 @@ function seat(turns: unknown[] = load.turns) {
   const listeners = new Set<(message: ServerMessage) => void>();
   const asked: Subject[] = [];
   let held: unknown = seats(turns);
-  let answered: unknown = seats(turns);
 
   const emit = (message: ServerMessage): void => {
     for (const listener of listeners) listener(message);
@@ -127,7 +126,9 @@ function seat(turns: unknown[] = load.turns) {
     unsubscribe: () => undefined,
     refresh: (what: Subject) => {
       asked.push(what);
-      held = answered;
+      // A re-answer is a whole new record, which is what a read costs a page:
+      // every slice arrives as a fresh object, so every reader of one re-runs.
+      held = seats(turns);
       emit({ kind: 'snapshot', subject: what, data: held });
     },
     dispatch: () => null,
@@ -146,16 +147,44 @@ function seat(turns: unknown[] = load.turns) {
   return {
     connection: connection as unknown as Connection,
     asked,
-    /** What the next read answers with, for a frame that changed the seat. */
-    next: (value: unknown) => {
-      answered = value;
-    },
-    /** One frame for this seat, which is what a new block or a tool result is. */
-    update: () => emit({ kind: 'update', update: { chat_appended: { key: LEAD } } }),
+    /**
+     * One frame for this seat, which is what a new block or a tool result is.
+     *
+     * **It carries a message, because the page applies it rather than reading
+     * the seat again.** A frame the fold draws nothing out of moves nothing,
+     * so a case that measures what a frame costs has to send one that does.
+     */
+    update: (msg: unknown = block()) =>
+      emit({ kind: 'update', update: { chat_appended: { key: LEAD, msg } } }),
     /** One frame for a seat this page is not looking at. */
-    other: () => emit({ kind: 'update', update: { chat_appended: { key: OTHER } } }),
+    other: () => emit({ kind: 'update', update: { chat_appended: { key: OTHER, msg: block() } } }),
     /** One frame that names no seat at all. */
     unnamed: () => emit({ kind: 'update', update: 'busy' }),
+  };
+}
+
+/** A frame the fold draws something out of: one line of what the seat said. */
+function block(text = 'hello'): Record<string, unknown> {
+  return {
+    type: 'assistant',
+    uuid: `a${text}`,
+    message: { role: 'assistant', content: [{ type: 'text', text }] },
+    session_id: 's',
+    parent_tool_use_id: null,
+  };
+}
+
+/** A frame the inspector's dispatch scan reads: a sub-agent call. */
+function dispatched(): Record<string, unknown> {
+  return {
+    type: 'assistant',
+    uuid: 'a-dispatch',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }],
+    },
+    session_id: 's',
+    parent_tool_use_id: null,
   };
 }
 
@@ -172,7 +201,7 @@ function open(turns: unknown[] = load.turns): ReturnType<typeof seat> {
   return server;
 }
 
-/** One arriving frame, driven through the coalescing window to its read. */
+/** One arriving frame, and the flush that lets the page draw what it moved. */
 function arrive(frame: () => void): void {
   frame();
   vi.advanceTimersByTime(50);
@@ -259,7 +288,10 @@ describe('what one arriving frame costs the inspector', () => {
     expect(unnamed, 'a frame naming no seat reached this page').toEqual([]);
 
     const measured = JSON.stringify({ event, other, unnamed });
-    expect(called('sessionFrom'), measured).toBe(1);
+    // **The frame is applied, not answered with a read.** The whole point of
+    // the arrangement is that a page follows a busy seat without asking the
+    // server to fold the transcript again, and this is the count that says so.
+    expect(called('sessionFrom'), `the frame re-read the seat: ${measured}`).toBe(0);
     expect(called('projectOf'), `the home did not move, so nothing re-reads it: ${measured}`).toBe(
       0,
     );
@@ -270,8 +302,9 @@ describe('what one arriving frame costs the inspector', () => {
     expect(called('framesOf'), measured).toBe(1);
     // And over the whole conversation, which the call count above cannot say:
     // every number in this file is about a record of a real size, and a fixture
-    // that stopped carrying one would leave all of them green.
-    expect(scanned, `the conversation reached the scan: ${measured}`).toBe(MESSAGES);
+    // that stopped carrying one would leave all of them green. The frame above
+    // is part of that conversation now, because the page put it there.
+    expect(scanned, `the conversation reached the scan: ${measured}`).toBe(MESSAGES + 1);
     expect(MESSAGES, 'the capture carries no conversation').toBeGreaterThan(0);
   });
 
@@ -308,8 +341,15 @@ describe('what one arriving frame costs the inspector', () => {
       `${measured} - a shut section built elements behind its summary`,
     ).toBe(0);
     // Where the line is: a summary still states its count with every section
-    // shut, so the arithmetic its summary needs is what may still run.
-    expect(called('monitorsSection'), measured).toBeGreaterThan(0);
+    // shut, so the arithmetic its summary needs is what may still run - and
+    // only where the slice it states moved. A frame carrying a message moves
+    // the conversation, which is what the mcp and git readers walk; it says
+    // nothing about the monitors, so that section is not recomputed at all.
+    expect(called('mcpSection'), measured).toBeGreaterThan(0);
+    expect(
+      called('monitorsSection'),
+      `${measured} - a shut section was recomputed for a slice that did not move`,
+    ).toBe(0);
 
     // The other half of the claim: the deferral is not a section that never
     // draws. Opening one draws the body it was holding back.
@@ -320,33 +360,19 @@ describe('what one arriving frame costs the inspector', () => {
   });
 
   /**
-   * **A read is answered with a whole new record, so nothing here is mutated
-   * in place.** That is what lets the page hold its read raw instead of
-   * proxying the tree - and this is the assertion that the shortcut is still a
-   * live page: an event that moved the seat has to move what is drawn.
+   * **A frame is applied to the record the page holds, so what it carries has
+   * to reach what is drawn.** That is the assertion the whole arrangement
+   * rests on: a page that applied updates into a tree nothing reads would draw
+   * a seat frozen at its last read.
    */
-  it('draws the record a frame it answered with actually carries', () => {
+  it('draws what the frame it was sent actually carries', () => {
     // A seat that has dispatched nothing, so the section is absent to start
     // with and the frame has something to move.
     const server = open([]);
     counts.clear();
 
     const before = drawn().map((section) => section.key);
-    server.next(
-      seats([
-        {
-          key: null,
-          messages: [
-            {
-              type: 'assistant',
-              message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }] },
-              parent_tool_use_id: null,
-            },
-          ],
-        },
-      ]),
-    );
-    arrive(server.update);
+    arrive(() => server.update(dispatched()));
 
     const after = drawn().map((section) => section.key);
     const measured = JSON.stringify({ before, after });

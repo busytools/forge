@@ -172,7 +172,10 @@ function uuidOf(message: unknown): string | null {
  *
  * Its answer decides only while a turn is live: a non-`system` frame that
  * draws something and arrives above a settled turn opens one whatever this
- * says.
+ * says. **And a frame the fold draws nothing out of is not a row at all**,
+ * whichever branch it takes - a call's own result arrives in a user frame and
+ * draws nothing on its own, which is what holds a call and the frames that
+ * update it in one turn.
  */
 function opensATurn(message: unknown): boolean {
   const type = (message as { type?: unknown } | null)?.type;

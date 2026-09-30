@@ -605,6 +605,55 @@ describe('the conversation the chat draws', () => {
     expect(held, 'the row kept the name the page gave it').toBe('turn-u-mine');
   });
 
+  it('keeps a call and the frames that update it in one turn', () => {
+    // The live path's own half of #1322, and #1359's rule is what holds it: a
+    // frame the fold draws nothing out of is not a row, so a call's own result
+    // - which arrives in a user frame - joins the turn the call is in rather
+    // than opening one. Without that, the task frames land in a turn of their
+    // own, where an update naming only its task can never find its call, and a
+    // backgrounded command draws as finished for the rest of the session.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const launch = {
+      type: 'assistant',
+      message: {
+        id: 'm-launch',
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_01Bg',
+            name: 'Bash',
+            input: { command: 'sleep 30', run_in_background: true },
+          },
+        ],
+      },
+    };
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bj5g0t2kq',
+      tool_use_id: 'toolu_01Bg',
+      uuid: 'task-1',
+    };
+
+    server.update({ chat_appended: { key: LEAD, msg: launch } });
+    server.update({ chat_appended: { key: LEAD, msg: result('toolu_01Bg') } });
+    server.update({ chat_appended: { key: LEAD, msg: started } });
+
+    const after = get(chat.value).turns;
+    expect(after.length, 'the result opened no turn of its own').toBe(2);
+    expect(after[after.length - 1]?.messages, 'and is held with the call it answers').toEqual([
+      launch,
+      result('toolu_01Bg'),
+      started,
+    ]);
+  });
+
   it('keeps every row keyed when older turns arrive', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

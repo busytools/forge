@@ -20,6 +20,36 @@ export type CallBody =
   | { kind: 'diff'; path: string; old: string; new: string }
   | { kind: 'image'; mime: string | null; uri: string | null };
 
+/**
+ * What the wire reports about a call it runs as a TASK, backgrounded or not.
+ *
+ * The launch result of a backgrounded call says only that the command started,
+ * so a fold that settles the call from its result draws a running command as a
+ * finished one. The task frames are what say otherwise: `task_started` opens
+ * the call's own clock and says whether it outlives its turn, `task_updated`
+ * carries the ending, and `task_notification` carries what the harness said.
+ */
+export interface BackgroundTask {
+  status: CallStatus;
+  /**
+   * Whether the wire said this task outlives its turn.
+   *
+   * **The note is only for that case.** A foreground call's own result already
+   * carries what it came back with, and a dispatched agent's report is the
+   * call's own body - drawing the harness's summary under either one repeats
+   * what the row already says, once in the row's title and once in the line.
+   */
+  backgrounded: boolean;
+  /**
+   * What the harness said when the task ended, when it said anything.
+   *
+   * The tone is the status word's own reading - green for a task that
+   * finished, red for one that failed or was killed - and `null` for a word
+   * this page does not know, which is not a failure and is not a success.
+   */
+  note: { text: string; tone: 'sum' | 'fail' | null } | null;
+}
+
 /** One call, as its own row. */
 export interface ToolLeaf {
   /** The `tool_use` id the wire gave it, which is what its result names. */
@@ -40,6 +70,11 @@ export interface ToolLeaf {
    */
   command: string | null;
   status: CallStatus;
+  /**
+   * What the harness said when a BACKGROUNDED call ended: drawn as the last
+   * line of the box the call's result drew, and `null` for every other call.
+   */
+  note: { text: string; tone: 'sum' | 'fail' | null } | null;
   /** What the row opens on. Empty for a call that has not come back yet. */
   body: CallBody[];
 }
@@ -166,6 +201,13 @@ export function titleOf(name: string, input: unknown, cwd: string | null): strin
  * that has not come back yet still carries what its own input says, because an
  * edit's diff is in the call rather than in the answer.
  *
+ * `task` settles the call when the wire gave it an ending, and holds it open
+ * only where the wire said the task OUTLIVES its turn: such a call's launch
+ * result says only that the command started, so it has to draw as running
+ * however clean that result was. A foreground task still running is settled by
+ * its result and the turn's verdict, like a call with no task frame at all -
+ * so an abandoned foreground call draws failed rather than running.
+ *
  * `abandoned` is the turn's verdict on a call it never answered: a turn that
  * failed is a turn whose open calls never get a result, and they draw as
  * failed rather than as still running - which is what the terminal does with
@@ -177,10 +219,14 @@ export function leafOf(
   input: unknown,
   result: Block | undefined,
   cwd: string | null,
+  task: BackgroundTask | undefined = undefined,
   abandoned = false,
 ): ToolLeaf {
   const body = diffsOf(name, input);
-  const settled = settledBy(result, abandoned);
+  const settled =
+    task !== undefined && (task.backgrounded || task.status !== 'in_progress')
+      ? task.status
+      : settledBy(result, abandoned);
   return {
     id,
     row: rowOf(name),
@@ -188,6 +234,7 @@ export function leafOf(
     title: titleOf(name, input, cwd),
     command: field(input, 'command')?.trim() || null,
     status: settled,
+    note: task?.backgrounded === true ? task.note : null,
     body: result === undefined ? body : [...body, ...bodyOf(result.content)],
   };
 }

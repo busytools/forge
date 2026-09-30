@@ -309,6 +309,8 @@
     white-space: pre-wrap; overflow-x: auto; }
   .term .pfx { color: var(--dim); }
   .term .sum { color: var(--ok); }
+  /* A task that ended badly is the same line in the bad tone. */
+  .term .fail { color: var(--bad); }
   .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
     margin: 4px 0; border-left: 1px solid var(--line); }
   .searchhit .ln { color: var(--accent); }
@@ -985,16 +987,30 @@ Consecutive tool calls between two user messages fold into one group.</div>
 <span class="sum">Summary [92.418s] 1258 tests run: 1258 passed, 1174 skipped</span></div>
               </div>
             </details>
-            <details class="leaf">
+            <details class="leaf running">
               <summary><span class="st"><span class="ring"></span></span><span class="tn">cargo nextest run -p forge-web</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            </details>
+            <details class="leaf running">
+              <summary><span class="st"><span class="ring"></span></span><span class="tn">just check-feature-configs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            </details>
+            <!-- A call the reader backgrounded: its own result says the command
+                 STARTED, and the ending arrives later as a frame of its own. -->
+            <details class="leaf">
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">Echo test string after brief sleep</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
-                <div class="term">    Starting 42 tests across 3 binaries</div>
+                <div class="term"><span class="pfx">$</span> sleep 2 &amp;&amp; echo test string
+Command running in background with ID: bj5g0t2kq.
+<span class="sum">Background command "Echo test string after brief sleep" completed (exit code 0)</span></div>
               </div>
             </details>
+            <!-- The other ending a backgrounded call gets, in the tone the
+                 harness's own word earns. -->
             <details class="leaf">
-              <summary><span class="st"><span class="ring"></span></span><span class="tn">just check-feature-configs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <summary><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">Run slow counting loop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
-                <div class="term">    Starting fmt-check...</div>
+                <div class="term"><span class="pfx">$</span> for i in $(seq 1 10000); do echo $i; sleep 1; done
+Command running in background with ID: a69098eff5f5d405a.
+<span class="fail">Run slow counting loop &middot; stopped</span></div>
               </div>
             </details>
 

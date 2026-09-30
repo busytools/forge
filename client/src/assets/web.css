@@ -681,12 +681,19 @@ details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; 
 details.leaf:hover > summary .arw { color: var(--muted); }
 details.leaf[open] > summary { color: var(--text); }
 details.leaf[open] > summary .arw { color: var(--accent); }
+/* A call the wire reports as still running says so at the row, which is the
+   one thing its own launch result cannot: that result is a clean one. */
+details.leaf.running > summary { color: var(--text); }
 
 .body { margin: 3px 0 6px 27px; }
 .term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
   border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
   white-space: pre-wrap; overflow-x: auto; }
 .term .pfx { color: var(--dim); }
+/* A line a command reported as its own result: the book's drawing has the
+   summary half, and a task that ended badly is the same line in the bad tone. */
+.term .sum { color: var(--ok); }
+.term .fail { color: var(--bad); }
 /* A source file a call read or wrote. Its token classes are the
    highlighter's own (`hljs-*`), coloured by the theme that ships beside the
    module: the `.k` / `.s` / `.f` rules that stood here read three tokens the

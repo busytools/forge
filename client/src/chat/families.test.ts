@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { aggregateStatus, familyOf, iconOf, labelOf, rowOf } from './families';
+import { aggregateStatus, familyOf, iconOf, labelOf, rowOf, taskStatus } from './families';
 
 describe('the row a call is summarised under', () => {
   it('keys a family tool on its family, and the row draws the family word', () => {
@@ -39,6 +39,25 @@ describe('the row a call is summarised under', () => {
     expect(iconOf(rowOf('Edit'))).toBe('edit');
     expect(iconOf(rowOf('mcp__forge__agents__list'))).toBe('mcp');
     expect(iconOf(rowOf('brand_new_tool'))).toBe('tool');
+  });
+});
+
+describe('the status word a task frame carries', () => {
+  it('reads the words the wire sends as the statuses a row draws', () => {
+    // The wire says `running` where the row says in progress, and `stopped` is
+    // its word for a graceful cancel, which draws as the kill it is.
+    expect(taskStatus('running')).toBe('in_progress');
+    expect(taskStatus('completed')).toBe('completed');
+    expect(taskStatus('failed')).toBe('failed');
+    expect(taskStatus('killed')).toBe('killed');
+    expect(taskStatus('stopped')).toBe('killed');
+  });
+
+  it('gives back nothing for a word it does not know, rather than a guess', () => {
+    // `completed` is the guess that would look right and be wrong: the caller
+    // keeps the status the call already had.
+    expect(taskStatus('half-done')).toBeNull();
+    expect(taskStatus(null)).toBeNull();
   });
 });
 

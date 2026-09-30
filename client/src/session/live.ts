@@ -1,16 +1,18 @@
 /**
  * The session over a live connection: the record it is answered with, and the
- * read that follows every update the seat is sent.
+ * update it applies to it.
  *
- * **Nothing is folded here, and that is the point.** A row's state, a
- * monitor's status and a server's connection state all arrive in the record
- * already decided, so an update is answered with a fresh read rather than with
- * arithmetic. This is the home's own arrangement, one subject down.
+ * **The update is the news, and it is already everything a page needs.** The
+ * terminal applies each variant to the state it holds, which is why it keeps
+ * up with a busy seat that this page used to fall behind: answering every
+ * update with a read is a full encode on the server - the transcript re-folded
+ * into turns, the process tree walked, the working tree scanned - so the page
+ * ran further behind the busier the seat was. A read is for a cold load, for a
+ * reconnect, and for the slices no update carries.
  *
  * The subject is the SEAT, and the connection routes an update to it by the
  * slot the update carries, so a store's contents are this seat's and nothing
- * else's. What arrives is therefore the whole test: no classification table is
- * needed, and none is kept.
+ * else's.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
@@ -19,16 +21,18 @@ import { slotOf, subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
+import { applyUpdate, REPLACES, UNFED, variantOf } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
 
 /**
- * How long an update waits before it is answered with a read.
+ * How often the slices no update carries are read.
  *
- * A burst becomes one read rather than one each: a turn in flight emits
- * several frames at once, and a read answers with the session as it stands
- * rather than as it was at the first of them.
+ * A read is a whole encode, and the nine slices it is asked for are the
+ * slowest-moving part of the record - a git scan and a process walk do not
+ * change between one frame and the next - so this is the coarsest read that
+ * keeps a page honest rather than the cheapest that keeps it moving.
  */
-const COALESCE_MS = 50;
+export const POLL_MS = 5_000;
 
 /** What the session page has to draw from, and why it has nothing when it does not. */
 export interface SessionRead {
@@ -63,24 +67,88 @@ export function watchSession(
 ): Readable<SessionRead> {
   const subject = { session: slot };
   let held: Store | null = null;
-  // A read is a full encode on the server - it walks the transcript and the
-  // process tree - so asking again while one is in flight queues them behind
-  // each other and the page falls further behind the busier the seat is.
-  let reading = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
 
-  function read(): void {
+  /**
+   * The record as it is held, which is what an update is applied to.
+   *
+   * Held beside the store rather than read back out of it: the reducer needs
+   * the value before this one, and a store is what a page reads, not a place
+   * to compute from.
+   */
+  let wire: SessionRecord | null = null;
+
+  /**
+   * What a whole record is wanted for, and whether one is wanted at all.
+   *
+   * **An ask is recorded with what it was issued for, at the moment it went
+   * out.** A read is the whole server encode - hundreds of milliseconds on a
+   * busy seat - so one is often in flight when something replaces the record,
+   * and that answer was encoded from the state before it. Reading a flag at
+   * the answer instead would take whatever landed as the new record, which is
+   * how the previous occupant's conversation came to be drawn as this one's.
+   * So the mode travels WITH the ask, and a replacement wanted while an answer
+   * is in flight is asked for again rather than assumed.
+   *
+   * Three things want a whole record: the first read, a reconnect (the
+   * subscription is re-made, so its snapshot is the server's account of where
+   * the seat is now), and a seat that spawned, connected or took a new
+   * occupant. Every other answer is a poll's, and a poll moves only the slices
+   * no update feeds.
+   */
+  let asking: 'replace' | 'merge' | null = null;
+  let replaceWanted = true;
+
+  /** A poll's timer, which is armed with this page's subscription. */
+  let poll: ReturnType<typeof setInterval> | null = null;
+
+  function publish(next: SessionRecord | null, refused: string | null): void {
+    wire = next;
+    view.set({ wire: next, refused });
+  }
+
+  function read(replace: boolean): void {
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
-      view.set({ wire: null, refused: state.why });
+      publish(null, state.why);
       return;
     }
     const data = held.snapshot();
     if (data === null) return;
-    view.set({ wire: sessionFrom(data), refused: null });
+    const fresh = sessionFrom(data);
+    publish(replace || wire === null ? fresh : merged(wire, fresh), null);
+  }
+
+  /**
+   * A poll's answer, keeping only the slices no update carries.
+   *
+   * **The conversation is the one to watch here.** A poll is asked for while
+   * frames are arriving, and its answer was encoded after some of them and
+   * before others - so taking its whole record would drop the frames that
+   * landed in between, and the page would walk backwards on a busy seat.
+   */
+  function merged(held: SessionRecord, fresh: SessionRecord): SessionRecord {
+    const out = { ...held };
+    for (const field of UNFED) {
+      Object.assign(out, { [field]: fresh[field] });
+    }
+    return out;
+  }
+
+  /**
+   * Ask the server for the record again.
+   *
+   * Nothing is asked while one ask is in flight - a full encode apiece, and a
+   * second would queue behind the first - so a replacement wanted now is
+   * recorded and asked for when the answer lands.
+   */
+  function reread(): void {
+    if (asking !== null) return;
+    asking = replaceWanted ? 'replace' : 'merge';
+    replaceWanted = false;
+    connection.refresh(subject);
   }
 
   function watch(): void {
@@ -90,13 +158,45 @@ export function watchSession(
     // that happens to say the same thing. `===` never matches it, so the page
     // would draw the home's own sections and none of the seat's.
     const key = subjectKey(subject);
-    reading = false;
+    // The subscription's own answer is the first whole record, and it is an
+    // ask this page made: the subscribe is what the server answers.
+    asking = 'replace';
+    replaceWanted = false;
     stopMessages = connection.onMessage((message) => {
-      if (message.kind === 'snapshot' || message.kind === 'error') {
-        if (message.kind === 'error' || subjectKey(message.subject) === key) {
-          reading = false;
-          read();
+      if (message.kind === 'error') {
+        // **An error names the operation it is about, never a subject**, so it
+        // does not answer the ask in flight. The one operation that can mean
+        // the ask is never coming back is a refused subscribe; anything else -
+        // a refused command, a page that could not be read, a frame the server
+        // did not know - leaves it standing, and with it whatever whole record
+        // is still wanted.
+        //
+        // Treating a refusal as this seat's rests on one seat per connection:
+        // the socket hangs a refusal on the oldest ask the connection has
+        // outstanding, and only a session subject can be refused at all. A
+        // second seat on one connection would need the subject on the error to
+        // tell the two apart.
+        if (message.what === 'subscribe') {
+          asking = null;
+          // A refusal is the seat's own answer and a page draws why from it;
+          // an error about anything else leaves the record as it is rather
+          // than republishing it unchanged.
+          if (held?.state().kind === 'refused') read(false);
         }
+        return;
+      }
+      if (message.kind === 'snapshot') {
+        if (subjectKey(message.subject) !== key) return;
+        // What this answer is: the ask records what it was issued for, and an
+        // answer to no ask of ours - the subscription's own, or a reconnect's -
+        // is whatever the seat needs next. A whole record wanted while an ask
+        // was out cannot be answered by that ask's answer, whatever it was.
+        const mode = asking ?? (replaceWanted ? 'replace' : 'merge');
+        const stale = asking !== null && replaceWanted;
+        asking = null;
+        read(mode === 'replace' && !stale);
+        if (stale) reread();
+        else replaceWanted = false;
         return;
       }
       if (message.kind !== 'update') return;
@@ -105,24 +205,46 @@ export function watchSession(
       // union of the subjects watched, so every other seat's frames arrive
       // here too. This is the server's own covering rule for a session - a
       // seat hears an update when the update's slot is that seat - and
-      // without it a busy fleet would drive a full re-encode of this page's
-      // transcript, process tree and git scan twenty times a second for data
-      // that did not change.
+      // without it a busy fleet would write another seat's frames into this
+      // page's record.
       const at = slotOf(message.update);
       if (at === null || subjectKey({ session: at }) !== key) return;
-      if (reading || timer !== null) return;
-      timer = setTimeout(() => {
-        timer = null;
-        reading = true;
-        connection.refresh(subject);
-      }, COALESCE_MS);
+
+      // The three variants that REPLACE the record rather than patching it: a
+      // seat waking up, connecting, or taking a new occupant. What they carry
+      // is not a record - the folded transcript, the process walk, the working
+      // tree - so only a read answers them.
+      const [name] = variantOf(message.update);
+      if (name !== null && REPLACES.includes(name)) {
+        replaceWanted = true;
+        reread();
+        return;
+      }
+
+      // Nothing to apply to yet: the first read has not landed, and the frames
+      // to come are answered by it.
+      if (wire === null) return;
+      const next = applyUpdate(wire, message.update);
+      // An update this record has nothing to do with: publishing it would
+      // redraw every reader of the page for no change at all.
+      if (next === wire) return;
+      publish(next, null);
     });
     // A drop takes any read in flight with it, and the reconnect answers with a
     // snapshot of its own - so the pacing must not stay stuck waiting on an
     // answer that died.
     stopStatus = connection.onStatus((next: ConnectionStatus) => {
-      if (next !== 'open') reading = false;
+      if (next !== 'open') {
+        // The ask in flight went with the drop, and the record this page holds
+        // is from before it: the answer the reconnect brings is a whole one
+        // rather than a poll's.
+        asking = null;
+        replaceWanted = true;
+      }
     });
+    poll = setInterval(() => {
+      reread();
+    }, POLL_MS);
   }
 
   function unwatch(): void {
@@ -130,15 +252,19 @@ export function watchSession(
     stopStatus?.();
     stopMessages = null;
     stopStatus = null;
-    if (timer !== null) clearTimeout(timer);
-    timer = null;
+    if (poll !== null) clearInterval(poll);
+    poll = null;
     connection.unsubscribe(subject);
     held = null;
+    wire = null;
   }
 
   const view: Writable<SessionRead> = writable(NOTHING, () => {
     watch();
-    read();
+    // The subscription's own answer is the first read; this is for a store
+    // that already holds one, so a page remounting on a live connection does
+    // not draw nothing while the subscription is re-made.
+    read(true);
     return unwatch;
   });
 
