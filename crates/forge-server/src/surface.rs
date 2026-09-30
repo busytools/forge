@@ -73,7 +73,9 @@ impl ViewSurface {
     /// the writes it needs and not the whole core, so nothing here grows a
     /// way to reach the workspace itself.
     pub fn dispatch(&self, command: Command) -> Result<(), DispatchError> {
-        self.workspace.dispatch(command)
+        // A view's entry rather than the core's: a prompt's frame says the
+        // words came from a view over the socket, which no view has drawn.
+        self.workspace.dispatch_from_view(command)
     }
 
     /// What the seat at `slot` is held on, as the core kept it, so a view

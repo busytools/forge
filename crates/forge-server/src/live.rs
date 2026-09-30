@@ -145,7 +145,9 @@ impl FleetNews<'_> {
 /// token of it: only the updates that can change what a row draws belong here.
 pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
     match update {
-        SessionUpdate::ChatAppended { key, msg } => match msg {
+        // A prompt frame is a user turn: neither arm below draws anything of
+        // it, so the origin does not change what the fleet folds.
+        SessionUpdate::ChatAppended { key, msg, .. } => match msg {
             Message::Result { is_error, subtype, .. }
                 if is_success_result(*is_error, subtype) =>
             {
@@ -233,7 +235,7 @@ mod tests {
     }
 
     fn appended(key: &SessionSlot, msg: Message) -> SessionUpdate {
-        SessionUpdate::ChatAppended { key: key.clone(), msg }
+        SessionUpdate::ChatAppended { key: key.clone(), msg, origin: None }
     }
 
     fn session_state(state: &str) -> Message {
@@ -445,6 +447,7 @@ mod tests {
             !live
                 .apply(&SessionUpdate::ChatAppended {
                     key: slot,
+                    origin: None,
                     msg: serde_json::from_value(serde_json::json!({
                         "type": "user",
                         "message": { "role": "user", "content": "hello" },

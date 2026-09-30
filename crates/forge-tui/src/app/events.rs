@@ -1245,7 +1245,10 @@ mod tests {
             app.set_session_id(Some(model::SessionId::new("test-session")));
         }
         let key = app.active_session_key.clone().expect("active key");
-        apply_session_update(app, forge_workspace::SessionUpdate::ChatAppended { key, msg });
+        apply_session_update(
+            app,
+            forge_workspace::SessionUpdate::ChatAppended { key, msg, origin: None },
+        );
     }
 
     #[test]

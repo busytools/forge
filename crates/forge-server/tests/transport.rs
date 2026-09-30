@@ -354,6 +354,7 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
             "session_id": "s",
         }))
         .expect("parse a result message"),
+        origin: None,
     });
 
     // The fold is the transport's own task, so the mark lands a scheduling
@@ -410,6 +411,7 @@ async fn a_turn_that_finished_unwatched_marks_its_row() {
             "session_id": "s",
         }))
         .expect("parse a result message"),
+        origin: None,
     });
     // That a completion reaches the home as a row change is a property of the
     // FILTER, and this connection watches the home. It says nothing about when
@@ -652,6 +654,7 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
             "session_id": "s",
         }))
         .expect("parse an assistant message"),
+        origin: None,
     });
     send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let (_, _, passed) = snapshot_answering(&mut socket).await;
@@ -789,7 +792,7 @@ async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
     let ServerMessage::Update { update } = next_server(&mut socket).await else {
         panic!("a delivery a view draws as a turn has to reach the client drawing it")
     };
-    let SessionUpdate::ChatAppended { key, msg } = *update else {
+    let SessionUpdate::ChatAppended { key, msg, .. } = *update else {
         panic!("the frame is what a view draws, and it goes ahead of the typed update")
     };
     assert_eq!(key, lead_seat(), "the frame is addressed to the seat the delivery went to");
@@ -881,7 +884,9 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
 
     let mut sender = connect(&url).await;
     let mut watcher = connect(&url).await;
-    for socket in [&mut sender, &mut watcher] {
+    // A third view on the same seat, watching one of the other two send.
+    let mut onlooker = connect(&url).await;
+    for socket in [&mut sender, &mut watcher, &mut onlooker] {
         send(
             socket,
             ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
@@ -906,12 +911,27 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
     .await;
 
     let drawn = |update: &SessionUpdate| {
-        matches!(update, SessionUpdate::ChatAppended { msg, .. }
-            if user_text(msg).as_deref() == Some("hello there"))
+        matches!(update, SessionUpdate::ChatAppended {
+            msg,
+            origin: Some(forge_workspace::PromptOrigin::View),
+            ..
+        } if user_text(msg).as_deref() == Some("hello there"))
     };
     update_until(&mut watcher, "the prompt a client sent, drawn for another client", drawn).await;
     update_until(&mut sender, "the prompt a client sent, drawn for the client that sent it", drawn)
         .await;
+    update_until(&mut onlooker, "a third view's send, drawn for this one", drawn).await;
+
+    // And exactly once: the evidence is ORDER, never a timeout,a nd a second
+    // forged frame would have to arrive ahead of an update every subscriber
+    // hears. Two connections on one seat both forging is the shape this
+    // catches.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+    let msg = next_server(&mut onlooker).await;
+    assert!(
+        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        "one send draws one frame per view: {msg:?}",
+    );
 }
 
 /// A send the core refuses still draws the words.
@@ -956,7 +976,13 @@ async fn a_prompt_the_core_refuses_still_draws() {
 
     let (mut drawn, mut refused) = (false, false);
     while !(drawn && refused) {
-        match next_server(&mut sender).await {
+        // The reads are bounded here rather than through `next_server`, whose
+        // own panic reports a server that said nothing and not which property
+        // this test was waiting on.
+        let msg = next_server_within(&mut sender, 5_000).await.unwrap_or_else(|| {
+            panic!("waited for a refused send to draw the words: drawn={drawn} refused={refused}")
+        });
+        match msg {
             ServerMessage::Update { update } => {
                 drawn |= matches!(&*update, SessionUpdate::ChatAppended { msg, .. }
                     if user_text(msg).as_deref() == Some("hello there"));

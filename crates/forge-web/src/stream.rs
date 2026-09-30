@@ -153,7 +153,7 @@ fn session_updates(
                             live = LiveTurn::default();
                         }
                         let appended = append(&update, &slot, &mut conversation);
-                        if let SessionUpdate::ChatAppended { key, msg } = &update
+                        if let SessionUpdate::ChatAppended { key, msg, .. } = &update
                             && key == &slot
                         {
                             crate::session::apply_to_live_turn(msg, &mut live);
@@ -278,7 +278,7 @@ fn append(update: &SessionUpdate, slot: &SessionSlot, conversation: &mut Vec<Mes
         conversation.push(turn);
         return true;
     }
-    let SessionUpdate::ChatAppended { key, msg } = update else {
+    let SessionUpdate::ChatAppended { key, msg, .. } = update else {
         return false;
     };
     if key != slot {
@@ -419,7 +419,7 @@ mod tests {
         .expect("a parented frame");
 
         let appended = append(
-            &SessionUpdate::ChatAppended { key: slot.clone(), msg: child },
+            &SessionUpdate::ChatAppended { key: slot.clone(), msg: child, origin: None },
             &slot,
             &mut conversation,
         );
@@ -482,6 +482,7 @@ mod tests {
         let mut live = Live::lock(&state.live);
         live.apply(&SessionUpdate::ChatAppended {
             key: slot.clone(),
+            origin: None,
             msg: serde_json::from_value(serde_json::json!({
                 "type": "result",
                 "subtype": "success",

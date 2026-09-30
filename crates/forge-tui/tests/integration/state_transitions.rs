@@ -461,6 +461,7 @@ async fn sdk_message_for_unknown_slot_is_dropped_even_with_empty_app_session_id(
         SessionUpdate::ChatAppended {
             key: forge_workspace::SessionSlot::from_str_for_test("real-session-abc"),
             msg: wire_msg,
+            origin: None,
         },
     );
 
@@ -538,7 +539,10 @@ async fn a_frame_lands_on_its_slot_even_when_the_wire_id_names_another_session()
     }))
     .expect("assistant Message decodes");
 
-    send_client_event(&mut app, SessionUpdate::ChatAppended { key: key.clone(), msg: wire_msg });
+    send_client_event(
+        &mut app,
+        SessionUpdate::ChatAppended { key: key.clone(), msg: wire_msg, origin: None },
+    );
 
     assert_eq!(active_session_key(&app), key, "the frame stays on the slot that addressed it",);
     assert_eq!(
@@ -588,6 +592,7 @@ async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
         SessionUpdate::ChatAppended {
             key: forge_workspace::SessionSlot::from_str_for_test("stale-session-xyz"),
             msg: wire_msg,
+            origin: None,
         },
     );
 

@@ -25,7 +25,7 @@ use forge_gateway::ProviderHost as _;
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, SessionUpdate};
+use crate::protocol::{Command, DispatchError, PromptOrigin, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
@@ -3484,6 +3484,13 @@ impl Workspace {
     /// gotify or slack delivery, kick, notices), signalling
     /// `PromptQueuedWhileBusy` first when the target's turn is in
     /// flight so the TUI bridges the spinner across the gap.
+    ///
+    /// **A delivery drawn in a view needs an update here, paired with an arm
+    /// in `forge-server`'s `delivery_turn`.** This path emits no frame of its
+    /// own - the forge for one is `delivery_turn`, downstream, and it ends in
+    /// `_ => return None`. So a prompt sent from here whose typed update has
+    /// no arm there draws nothing in any view, silently: a kick takes this
+    /// path and has no update, and is invisible for that reason.
     pub fn dispatch_workspace_prompt(
         self: &Arc<Self>,
         key: &SessionSlot,
@@ -3530,19 +3537,43 @@ impl Workspace {
     /// just closed), or [`DispatchError::SessionClosed`] when the
     /// task's command receiver has been dropped.
     pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
-        // A prompt is the reader's own words, and nothing else carries them: the
-        // CLI queues a prompt handed to it and never echoes it back, so a view
-        // drawing only frames shows the assistant answering something nobody saw.
-        // Emitted here because this is the one entry both entrances share, the
-        // terminal's submit and a client's command.
-        //
-        // NOT from `dispatch_workspace_prompt`, which is the delivery path: a
-        // delivery already draws as an envelope turn of its own, so a bare user
-        // turn beside it would draw the same words twice.
+        self.dispatch_with_origin(cmd, PromptOrigin::Ui)
+    }
+
+    /// Dispatch one command a view sent over the socket.
+    ///
+    /// Apart from the origin it stamps on a prompt's frame, this is
+    /// [`Self::dispatch`] exactly. The two entries exist so the origin comes
+    /// from the code path rather than from the command: a client cannot claim
+    /// to be the terminal's own UI, which would have the terminal skip words
+    /// it never saw.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::dispatch`].
+    pub fn dispatch_from_view(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
+        self.dispatch_with_origin(cmd, PromptOrigin::View)
+    }
+
+    /// Route a command, emitting the user turn a prompt draws.
+    ///
+    /// A prompt is the reader's own words, and nothing else carries them: the
+    /// CLI queues a prompt handed to it and never echoes it back, so a view
+    /// drawing only frames shows the assistant answering something nobody saw.
+    ///
+    /// NOT from `dispatch_workspace_prompt`, which is the delivery path: a
+    /// delivery already draws as an envelope turn of its own, so a bare user
+    /// turn beside it would draw the same words twice.
+    fn dispatch_with_origin(
+        self: &Arc<Self>,
+        cmd: Command,
+        origin: PromptOrigin,
+    ) -> Result<(), DispatchError> {
         if let Command::Prompt { key, text, .. } = &cmd {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
                 msg: Message::display_only_user(text.clone()),
+                origin: Some(origin),
             });
         }
         self.route(cmd)
@@ -15622,7 +15653,7 @@ mod kick_dispatcher_tests {
     //!
     //! Tests observe via `command_intercept` (`enable_test_dispatch_intercept`
     //! plus `drain_test_dispatch_buffer`); the drainer calls
-    //! `Workspace::dispatch(Command::Prompt {..})` for each
+    //! `Workspace::dispatch_workspace_prompt` for each
     //! `KickRequest`, which the intercept buffer captures verbatim.
     //!
     //! Time is paused (`start_paused = true`) so the drainer's
@@ -16177,6 +16208,71 @@ provider = "anthropic"
         assert!(
             workspace.list_projects()[0].sessions.is_empty(),
             "no runtime: no scan ran, the catalog stays empty"
+        );
+    }
+}
+
+#[cfg(test)]
+mod prompt_frame_origin_tests {
+    //! A prompt's frame says where its words came from, and the answer is the
+    //! entry the caller took rather than a value off the wire. One view draws
+    //! on that answer - the terminal's own words are drawn at submit, another
+    //! view's are not - so a wrong origin is a reader shown their own line
+    //! twice, or a send nobody draws at all.
+    use super::*;
+
+    fn a_prompt(key: &SessionSlot) -> Command {
+        Command::Prompt { key: key.clone(), text: "hello".to_owned(), attachments: Vec::new() }
+    }
+
+    fn the_seat() -> SessionSlot {
+        SessionSlot::lead("TestOrg", "proj")
+    }
+
+    /// The terminal's own entry, which is what `App::dispatch_command` takes.
+    #[test]
+    fn the_uis_own_entry_marks_the_frame_as_the_uis() {
+        let (ws, mut rx) = Workspace::testing_stub();
+
+        let _ = ws.dispatch(a_prompt(&the_seat()));
+
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(SessionUpdate::ChatAppended { origin: Some(PromptOrigin::Ui), key, .. })
+                    if key == the_seat()
+            ),
+            "the words the terminal drew at submit are marked as its own, or it draws them twice",
+        );
+    }
+
+    /// The socket's entry, which is what `ViewSurface::dispatch` takes.
+    #[test]
+    fn a_views_entry_marks_the_frame_as_a_views() {
+        let (ws, mut rx) = Workspace::testing_stub();
+
+        let _ = ws.dispatch_from_view(a_prompt(&the_seat()));
+
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(SessionUpdate::ChatAppended { origin: Some(PromptOrigin::View), key, .. })
+                    if key == the_seat()
+            ),
+            "no view has drawn a send made over the socket, so every view has to",
+        );
+    }
+
+    /// The delivery path, which already draws as an envelope turn of its own.
+    #[test]
+    fn a_delivery_emits_no_frame() {
+        let (ws, mut rx) = Workspace::testing_stub();
+
+        let _ = ws.dispatch_workspace_prompt(&the_seat(), "run the morning summary".to_owned());
+
+        assert!(
+            rx.try_recv().is_err(),
+            "a bare user turn beside a delivery's envelope turn draws the same words twice",
         );
     }
 }

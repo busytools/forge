@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::{App, session, turn};
-use forge_workspace::{SessionSlot, SessionUpdate};
+use forge_workspace::{PromptOrigin, SessionSlot, SessionUpdate};
 
 /// Side-effects shared by `Connected` and `SessionReplaced`: refresh
 /// MCP + status + oauth-credentials + context-usage snapshots, and
@@ -108,7 +108,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
     if let Some(key) = target_key.as_ref()
         && let Some(turn) = forge_server::delivery::delivery_turn(&update, key)
     {
-        apply_session_update_chat_appended(app, key, turn);
+        apply_session_update_chat_appended(app, key, turn, None);
     }
     match update {
         SessionUpdate::Spawning { key, project_name, cwd, display_name } => {
@@ -221,8 +221,8 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::McpSnapshot { key, servers, error } => {
             redraw &= apply_session_update_mcp_snapshot(app, &key, servers, error);
         }
-        SessionUpdate::ChatAppended { key, msg } => {
-            apply_session_update_chat_appended(app, &key, msg);
+        SessionUpdate::ChatAppended { key, msg, origin } => {
+            apply_session_update_chat_appended(app, &key, msg, origin);
         }
         SessionUpdate::HookObservation {
             key,
@@ -1181,12 +1181,53 @@ fn apply_mcp_snapshot_presentation(
 /// viewport); [`apply_sdk_message_presentation`] temp-swaps
 /// `active_session_key` to route background sessions through the
 /// same path.
+///
+/// `origin` is set only on a prompt frame, and it decides whether this process
+/// draws the words. Its own input handler drew them at submit, so drawing the
+/// frame too would show the reader their own line twice; a view that sent them
+/// over the socket has no such drawing, and the frame is the only thing that
+/// carries them here.
 pub(super) fn apply_session_update_chat_appended(
     app: &mut App,
     key: &SessionSlot,
     msg: forge_primitives::Message,
+    origin: Option<PromptOrigin>,
 ) {
+    if let Some(origin) = origin {
+        let Some(text) = prompt_frame_text(&msg) else {
+            return;
+        };
+        match origin {
+            PromptOrigin::Ui => return,
+            PromptOrigin::View => {
+                // Inside the same pivot the presentation below uses, so a
+                // background seat's words land in that seat's bucket rather
+                // than in the focused one.
+                if app.active_session_key.as_ref() == Some(key) {
+                    super::sdk_message::push_other_views_prompt(app, &text);
+                } else {
+                    crate::app::active_bucket_scope::with_pivoted(app, key.clone(), |app| {
+                        super::sdk_message::push_other_views_prompt(app, &text);
+                    });
+                }
+            }
+        }
+    }
     apply_sdk_message_presentation(app, key, msg);
+}
+
+/// The prose off a prompt frame, which is the one text block a forge put there.
+///
+/// `None` means the frame is not a prompt frame at all, which is the shape
+/// every wire frame has, and the origin is then a claim about nothing.
+fn prompt_frame_text(msg: &forge_primitives::Message) -> Option<String> {
+    let forge_primitives::Message::User { message, .. } = msg else {
+        return None;
+    };
+    let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+        return None;
+    };
+    Some(text.clone())
 }
 
 fn apply_sdk_message_presentation(
@@ -1464,6 +1505,67 @@ mod tests {
 
     use super::*;
     use crate::app::session::UiSession;
+
+    fn test_key() -> SessionSlot {
+        SessionSlot::from_str_for_test(App::TEST_SESSION_KEY)
+    }
+
+    /// A prompt frame's text, wrapped in the shape the server forges.
+    fn a_prompt_frame(text: &str, origin: PromptOrigin) -> SessionUpdate {
+        SessionUpdate::ChatAppended {
+            key: test_key(),
+            msg: forge_primitives::Message::display_only_user(text.to_owned()),
+            origin: Some(origin),
+        }
+    }
+
+    /// The reader's own words draw once, even when they are shaped like
+    /// something the fold stamps.
+    ///
+    /// The input handler draws the bubble at submit, so a prompt frame the
+    /// terminal itself sent is already drawn. Drawing it again would show the
+    /// reader their own line twice, the second copy wearing envelope chrome -
+    /// and a reader who pastes a cron or peer notice back into a session types
+    /// exactly that text.
+    #[test]
+    fn a_prompt_frame_from_this_view_draws_nothing() {
+        let mut app = App::test_default();
+        let drawn = app.messages().expect("a session").len();
+
+        apply_session_update(
+            &mut app,
+            a_prompt_frame("[Cron]\n\nrun the morning summary", PromptOrigin::Ui),
+        );
+
+        assert_eq!(
+            app.messages().expect("a session").len(),
+            drawn,
+            "the input handler drew these words at submit; the frame is here for other views",
+        );
+    }
+
+    /// And another view's words do draw, because nothing here drew them.
+    ///
+    /// The CLI does not echo a prompt back, so this frame is the only thing
+    /// that carries a send made over the socket. Dropping it is the assistant
+    /// answering words nobody saw, which is the defect the frame exists to
+    /// close.
+    #[test]
+    fn a_prompt_frame_from_another_view_draws_the_words_and_their_turn() {
+        let mut app = App::test_default();
+        let drawn = app.messages().expect("a session").len();
+
+        apply_session_update(
+            &mut app,
+            a_prompt_frame("hello from another view", PromptOrigin::View),
+        );
+
+        assert_eq!(
+            app.messages().expect("a session").len(),
+            drawn + 2,
+            "the words, and the placeholder the answer to them lands in",
+        );
+    }
 
     /// Only a landed take rides the clipboard along, and it copies
     /// exactly what was inserted - truncated or whole; every other
@@ -2632,6 +2734,7 @@ mod tests {
             SessionUpdate::ChatAppended {
                 key: background.clone(),
                 msg: result_frame(&background.display(), false),
+                origin: None,
             },
         );
 
@@ -2667,6 +2770,7 @@ mod tests {
             SessionUpdate::ChatAppended {
                 key: background.clone(),
                 msg: result_frame(&background.display(), false),
+                origin: None,
             },
         );
 
@@ -2705,6 +2809,7 @@ mod tests {
             SessionUpdate::ChatAppended {
                 key: background.clone(),
                 msg: result_frame(&background.display(), false),
+                origin: None,
             },
         );
 
@@ -2746,6 +2851,7 @@ mod tests {
             SessionUpdate::ChatAppended {
                 key: background.clone(),
                 msg: result_frame(&background.display(), false),
+                origin: None,
             },
         );
         app.status = crate::app::AppStatus::Thinking;
@@ -2788,6 +2894,7 @@ mod tests {
             SessionUpdate::ChatAppended {
                 key: active.clone(),
                 msg: result_frame(&active.display(), false),
+                origin: None,
             },
         );
 
@@ -2817,6 +2924,7 @@ mod tests {
             SessionUpdate::ChatAppended {
                 key: background.clone(),
                 msg: result_frame(&background.display(), false),
+                origin: None,
             },
         );
 
@@ -2849,6 +2957,7 @@ mod tests {
             SessionUpdate::ChatAppended {
                 key: background.clone(),
                 msg: result_frame(&background.display(), true),
+                origin: None,
             },
         );
 
@@ -4216,11 +4325,13 @@ mod focus_seam_tests {
             &mut app,
             &SessionSlot::from_str_for_test("worker-uuid"),
             user_frame("worker-uuid"),
+            None,
         );
         apply_session_update_chat_appended(
             &mut app,
             &SessionSlot::from_str_for_test("worker-uuid"),
             assistant_frame("worker-uuid"),
+            None,
         );
 
         assert_eq!(
@@ -4265,6 +4376,7 @@ mod focus_seam_tests {
             &mut app,
             &SessionSlot::from_str_for_test("worker-uuid"),
             user_frame("worker-uuid"),
+            None,
         );
         apply_session_update(
             &mut app,
@@ -4326,6 +4438,7 @@ mod focus_seam_tests {
             &mut app,
             &SessionSlot::from_str_for_test("bg-uuid"),
             user_frame("bg-uuid"),
+            None,
         );
         apply_session_update(
             &mut app,

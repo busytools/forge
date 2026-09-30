@@ -828,6 +828,24 @@ pub enum SpawnRole {
     },
 }
 
+/// Who submitted the prompt a [`SessionUpdate::ChatAppended`] frame carries.
+///
+/// The CLI does not echo a prompt handed to it on stdin, so the frame that
+/// draws one is forged, and whether a view has already drawn those words is a
+/// fact about the dispatch rather than about the words. It is therefore set
+/// where the dispatch happens, by which entry the caller took, and never read
+/// off the wire.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptOrigin {
+    /// The forge process's own input handler submitted it, so that view has
+    /// already drawn the words and must not draw them a second time.
+    Ui,
+    /// A view submitted it over the socket, and no view drew it: a composer
+    /// that is not optimistic has only this frame to draw its own send from.
+    View,
+}
+
 /// Update envelope: forge-workspace -> forge-tui.
 ///
 /// Permission/Question variants do NOT carry response oneshots -
@@ -961,6 +979,13 @@ pub enum SessionUpdate {
     ChatAppended {
         key: SessionSlot,
         msg: Message,
+        /// Set only on a prompt frame, where it says who submitted the words.
+        ///
+        /// `None` for every frame the CLI sent and for every turn a delivery
+        /// forges, so a reader that ignores this behaves as it did before the
+        /// field existed.
+        #[serde(default)]
+        origin: Option<PromptOrigin>,
     },
     HookObservation {
         key: SessionSlot,

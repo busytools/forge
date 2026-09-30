@@ -378,7 +378,9 @@ async fn send_update(socket: &mut WebSocket, update: SessionUpdate) -> anyhow::R
     {
         send(
             socket,
-            ServerMessage::Update { update: Box::new(SessionUpdate::ChatAppended { key, msg }) },
+            ServerMessage::Update {
+                update: Box::new(SessionUpdate::ChatAppended { key, msg, origin: None }),
+            },
         )
         .await?;
     }
