@@ -111,10 +111,14 @@
 
 <details class="turninfo" bind:open>
   <summary>
-    <!-- The settled mark, from the sprite rather than from a character cell:
-         the arrow this used to be was drawn because a terminal had nothing
-         else, and it reads as punctuation beside real icons. -->
-    <Icon name="check" class="st" />
+    <!-- The mark follows the turn: a turn that did not finish leads with the
+         failure mark, and the line under this row carries its words. A check
+         above "Turn failed" is two signals disagreeing on one row. -->
+    {#if held.failed}
+      <Icon name="x" class="st err" />
+    {:else}
+      <Icon name="check" class="st" />
+    {/if}
     <span>{duration(held.duration_ms)}</span>
     {#if held.input_tokens !== null}
       <span class="sep">{'\u{b7}'}</span>

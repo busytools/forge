@@ -6,6 +6,7 @@ import type { TurnInfo } from './units';
 
 /** A settled turn with everything the CLI can report. */
 const FULL: TurnInfo = {
+  failed: false,
   duration_ms: 161_000,
   api_ms: 64_000,
   ended_at_utc: '2026-09-29T10:18:31.000Z',
@@ -47,6 +48,7 @@ describe('a settled turn\u2019s row', () => {
 
   it('holds an absent field with a dash rather than a zero', () => {
     const nothing: TurnInfo = {
+      failed: false,
       duration_ms: null,
       api_ms: null,
       ended_at_utc: null,
@@ -96,5 +98,14 @@ describe('a settled turn\u2019s row', () => {
 
     expect(body, 'the settled mark is an icon every other row also uses').toContain('i-check');
     expect(body, 'and not the arrow a terminal drew').not.toContain('\u{21A9}');
+  });
+
+  it('marks a turn that failed with the failure mark, not the check', () => {
+    // Two signals disagreeing on one row - a check above "Turn failed" - is the
+    // defect this row was filed about, so the mark follows the turn.
+    const drawn = draw({ ...FULL, failed: true });
+
+    expect(drawn, 'the row leads with the failure mark').toContain('i-x');
+    expect(drawn, 'and not the check').not.toContain('i-check');
   });
 });
