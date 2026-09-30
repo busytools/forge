@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -320,6 +321,24 @@ describe('the box', () => {
     expect(drawn(), 'the reader is told what they are waiting for').toContain('Running /compact');
   });
 
+  it('rests as one row, because a footer with nothing to say is a strip of its own', () => {
+    open({ dictation: true });
+
+    expect(
+      document.querySelector('.foot'),
+      'an empty box draws a footer row whose only content is the microphone',
+    ).toBeNull();
+  });
+
+  it('puts the way into a take on the input line rather than in a row of its own', () => {
+    open({ dictation: true });
+
+    expect(
+      document.querySelector('.line .mic'),
+      'the microphone sits on its own strip below the draft',
+    ).not.toBeNull();
+  });
+
   it('offers the way into a take only when this install can dictate', () => {
     open();
     expect(
@@ -342,6 +361,83 @@ describe('the box', () => {
         command: { dictate_start: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
       },
     ]);
+  });
+});
+
+// A path rather than a URL: this file runs under jsdom, where `import.meta.url`
+// is the dev server's and not a file the disk can be read at. It resolves
+// against the client directory, which is where every recipe runs this from.
+const sheet = readFileSync('src/assets/web.css', 'utf8');
+
+/** The last rule body the sheet writes for this exact selector. */
+function sheetRule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const found = [...sheet.matchAll(new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm'))];
+  const body = found.at(-1)?.[1];
+  // A miss must not read as an empty rule: a not.toContain leg would pass on it.
+  if (body === undefined) throw new Error(`the sheet writes no rule for ${selector}`);
+  return body;
+}
+
+/**
+ * How the box says it has the keyboard. The composer focuses its field on
+ * mount, so the resting look IS the focused look, which is why the accent
+ * moving off the frame is the change rather than a detail of it.
+ */
+describe('the frame', () => {
+  it('keeps the accent off the frame at rest and draws it along the bottom edge on focus', () => {
+    expect(
+      sheetRule('.box'),
+      'the resting frame is not the control border every other control rests at',
+    ).toContain('border: 1.5px solid var(--ctl)');
+
+    const focus = sheetRule('.box:focus-within');
+    expect(focus, 'nothing on the box says where the keyboard is').toContain(
+      'inset 0 -2px 0 var(--accent)',
+    );
+    expect(
+      focus,
+      'focus still paints the whole 1.5px frame, so the box shouts again',
+    ).not.toContain('border-color');
+  });
+
+  it('puts the controls on the last line, so they follow the caret down', () => {
+    expect(
+      sheetRule('.line'),
+      'the controls sit in the middle of a grown draft rather than on the line the caret is on',
+    ).toContain('align-items: flex-end');
+  });
+
+  it('keeps the separation the rows above the draft had before C moved the field and the footer', () => {
+    expect(sheet, 'a row above the draft lost the 8px the box used to give it').toMatch(
+      /\.dict \+ \.line[^{]*\{[^}]*margin-top: 8px/,
+    );
+  });
+
+  it('centres the send in whatever box it gets, with no offset of its own', () => {
+    const rule = sheetRule('.send');
+    expect(rule, 'the send is not centred, so its icon tops out at the 44px phone floor').toContain(
+      'place-items: center',
+    );
+    expect(
+      rule,
+      'the send carries an offset, which was a nudge for the alignment axis C moved',
+    ).not.toContain('padding-top');
+  });
+
+  it('gives both controls on the input line the same pointer floor', () => {
+    for (const control of ['.line .mic', '.send']) {
+      const rule = sheetRule(control);
+      expect(rule, `${control} is a bare glyph rather than a 24px target`).toContain('width: 24px');
+      expect(rule, `${control} takes no height of its own`).toContain('height: 24px');
+    }
+  });
+
+  it('draws no ring on the field, because the box is the only focus mark', () => {
+    expect(
+      sheetRule('.line .txt:focus'),
+      'the field draws a second accent rectangle inside the box',
+    ).toContain('outline: none');
   });
 });
 

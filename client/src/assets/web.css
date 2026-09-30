@@ -11,9 +11,9 @@
    with an offset, so it reads on any ground and clears a border rather than
    sitting on it. `:focus-visible` rather than `:focus`, so a pointer press
    does not draw it while a Tab still does.
-   Without this the sheet had no ring at all and the one rule that touched
-   focus removed it (`.line .txt`), which leaves a keyboard user unable to
-   see where they are. */
+   A control that draws none owes a replacement: the composer's field is the
+   only one, and the box around it draws the accent along its own bottom edge
+   as the whole of that mark. */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -850,35 +850,50 @@ details.msg[open] > summary .arw { color: var(--teal); }
 .hint.login { color: var(--warn); }
 .hint.login .sub { color: var(--dim); display: block; font-size: var(--fs-data); }
 
-.box { border: 1.5px solid rgba(244,118,0,.45); border-radius: 16px;
+.box { border: 1.5px solid var(--ctl); border-radius: 16px;
   background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
   backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
-  padding: 11px 14px; display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 13px; display: flex; flex-direction: column; gap: 0;
   transition: border-color .3s ease; }
-.box:focus-within { border-color: var(--accent); }
+/* The accent arrives along the bottom edge rather than around the whole frame,
+   so the box does not compete with the conversation above it. The resting
+   shadow is repeated because `box-shadow` replaces rather than adds. */
+.box:focus-within { box-shadow: inset 0 -2px 0 var(--accent), 0 14px 38px rgba(0,0,0,.42); }
 .box.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
 .box.tr { border-color: var(--blue); }
 .box.done { border-color: var(--ok); }
 .box.err { border-color: var(--bad); }
-.line { display: flex; align-items: flex-start; gap: 10px; }
+/* The controls take the last line, so they follow the caret down as the draft
+   grows rather than floating in the middle of a paragraph. */
+.line { display: flex; align-items: flex-end; gap: 10px; }
+/* The separation the box's gap gave every row above the draft: C moved the
+   field and the footer together and left only that pair tight, so this stays
+   per pair rather than a gap. */
+.dict + .line, .dict + .ac,
+.notice + .line, .notice + .ac,
+.ac + .line { margin-top: 8px; }
 /* The draft. A field rather than a span, so it carries no chrome of the
    page's: the box's own border is the identity. */
 .line .txt { flex: 1; min-width: 0; font-family: inherit; color: inherit;
   font-size: var(--fs-prose); line-height: 1.5; background: none; border: 0;
   padding: 0; resize: none; overflow-y: auto; max-height: 40vh;
   field-sizing: content; }
-/* The box's own border is this field's focus indicator, so the ring is
-   suppressed for a POINTER press only: `:not(:focus-visible)` keeps the ring
-   for Tab and drops it otherwise. Removing it outright is the anti-pattern
-   the rule above exists to end. */
-.line .txt:focus:not(:focus-visible) { outline: none; }
+/* The box's bottom edge is this field's focus indicator, so the field draws
+   none of its own. */
+.line .txt:focus { outline: none; }
 .line .txt::placeholder { color: var(--dim); font-style: italic; }
-.send { color: var(--accent); padding-top: 3px; background: none; border: 0;
-  cursor: pointer; display: flex; }
-.foot { display: flex; align-items: center; gap: 10px; padding-left: 25px;
+/* The way into a take, on the input line rather than on a strip of its own:
+   24px is the floor a pointer target takes. */
+.line .mic { flex: none; margin-left: 6px; width: 24px; height: 24px;
+  display: grid; place-items: center; color: var(--dim); background: none;
+  border: 0; padding: 0; cursor: pointer; }
+/* The send, at the same 24px pointer floor as the mic and centred in whatever
+   box it gets, since the phone width gives every control a 44px floor and the
+   icon would otherwise sit at the top of it. */
+.send { color: var(--accent); background: none; border: 0; cursor: pointer;
+  display: grid; place-items: center; width: 24px; height: 24px; }
+.foot { display: flex; align-items: center; gap: 10px;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.foot .mic { margin-left: auto; background: none; border: 0; padding: 0;
-  color: currentColor; display: flex; cursor: pointer; }
 
 /* The line a composer puts where the mockup puts key hints. The box's names
    the keys it honours; the list's says the one thing it cannot do, because
