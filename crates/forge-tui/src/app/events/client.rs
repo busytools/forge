@@ -526,10 +526,15 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         // The four deliveries were forged above, before the match.
         // `DictateAvailability`'s existence is the availability signal;
         // nothing caches either.
+        //
+        // A replay answers a consumer that ASKED for one, and this view never
+        // asks: its bucket is seeded by `Connected`, which it is present for
+        // because it is the view that starts the sessions.
         SessionUpdate::PeerEnvelopeAppended { .. }
         | SessionUpdate::GotifyNotificationAppended { .. }
         | SessionUpdate::SlackMessageAppended { .. }
         | SessionUpdate::CronPromptAppended { .. }
+        | SessionUpdate::HistoryReplayed { .. }
         | SessionUpdate::DictateAvailability => {}
         SessionUpdate::DictateStarted { key, floor_db, generation } => {
             app.dictate_take_pending = false;

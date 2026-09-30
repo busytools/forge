@@ -238,7 +238,8 @@ census!(Subject,
 
 census!(SessionUpdate,
     [
-        Spawning struct, Connected struct, SessionReplaced struct, ConnectionFailed struct,
+        Spawning struct, Connected struct, HistoryReplayed struct, SessionReplaced struct,
+        ConnectionFailed struct,
         AuthRequired struct, SlashCommandError struct, RuntimeReloadCompleted struct,
         RuntimeReloadFailed struct, SetModeFailed struct, SetModelFailed struct,
         PermissionRequest struct, QuestionRequest struct, PendingInteractionResolved struct,
@@ -263,7 +264,8 @@ census!(SessionUpdate,
 
 census!(Command,
     [
-        Prompt struct, Cancel struct, SetMode struct, SetModel struct, NewSession struct,
+        Prompt struct, Cancel struct, ReplayConversation struct, SetMode struct, SetModel struct,
+        NewSession struct,
         ResumeSession struct, RespondPermission struct, RespondSlackPost struct,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
         SetDictateDevice struct, ReconnectMcpServer struct, ToggleMcpServer struct,

@@ -10117,6 +10117,7 @@ provider = "anthropic"
             update_tx,
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
         task.run().await;
 

@@ -2062,6 +2062,7 @@ mod tests {
             update_tx: workspace.update_sender(),
             connected_once,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -2214,6 +2215,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(workspace),
+            conversation: None,
         };
         (task, update_rx)
     }
@@ -2239,6 +2241,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(workspace),
+            conversation: None,
         };
         (task, cmds)
     }
@@ -2582,6 +2585,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -2639,6 +2643,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -2924,6 +2929,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -2978,6 +2984,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -3032,6 +3039,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -3069,6 +3077,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::PermissionRequest {
@@ -3130,6 +3139,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::PermissionRequest {
@@ -3175,6 +3185,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::QuestionRequest {
@@ -3219,6 +3230,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::QuestionRequest {
@@ -3597,6 +3609,7 @@ provider = "anthropic"
             update_tx,
             connected_once: true,
             workspace: std::sync::Weak::new(),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -3698,6 +3711,7 @@ provider = "anthropic"
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -3839,6 +3853,7 @@ provider = "anthropic"
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -3906,6 +3921,7 @@ provider = "anthropic"
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -3948,6 +3964,7 @@ provider = "anthropic"
                 update_tx: workspace.update_sender(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
+                conversation: None,
             };
 
             let mut event = connected_event(&session_key.display(), "/tmp/count");
@@ -3997,6 +4014,7 @@ provider = "anthropic"
             // The seed a session-replacing re-spawn installs.
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         // A one-message resumed history (the --resume backfill).
@@ -4076,6 +4094,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -4986,6 +5005,7 @@ provider = "anthropic"
                 update_tx: workspace.update_sender(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
+                conversation: None,
             };
 
             task.translate_event(AgentEvent::ConnectionFailed {
@@ -5048,6 +5068,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         // The re-spawned agent fails to connect.
@@ -5137,6 +5158,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::ConnectionFailed {
