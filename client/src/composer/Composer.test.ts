@@ -537,7 +537,6 @@ interface Need {
 interface Ring {
   need: Need;
   colour: string;
-  order: number;
   strength: number;
 }
 
@@ -586,15 +585,15 @@ function painted(body: string): string | null {
 function rings(text: string): Ring[] {
   const found: Ring[] = [];
   const rules = [...text.matchAll(/^[ \t]*(\.box[^{]*?)\s*\{([^}]*)\}/gm)];
-  rules.forEach((rule, order) => {
+  for (const rule of rules) {
     const ask = need((rule[1] ?? '').trim());
     const colour = painted(rule[2] ?? '');
-    if (ask === null || colour === null) return;
+    if (ask === null || colour === null) continue;
     // A class and a pseudo-class are one of specificity each, and a `:not(...)`
     // is its most specific argument rather than all of them.
     const strength = ask.classes.length + (ask.focus ? 1 : 0) + (ask.without.length > 0 ? 1 : 0);
-    found.push({ need: ask, colour, order, strength });
-  });
+    found.push({ need: ask, colour, strength });
+  }
   return found;
 }
 
@@ -614,10 +613,11 @@ function ring(text: string, classes: string[], focus: boolean): string {
 }
 
 /**
- * How the box says it has the keyboard. The composer focuses its field on
- * mount, so the resting look IS the focused look, which is why the accent
- * arriving on the frame is the change rather than a detail of it: the box
- * shows one colour at a time, and focus is one of the states it answers.
+ * The frame is one ring with one meaning: the composer focuses its field on
+ * mount, so the box a reader types into carries the accent, and what the box is
+ * DOING takes the ring from focus. An ordering that happens to pick the right
+ * colour reads the same as a stated precedence, so the colour is resolved here
+ * the way a browser resolves it.
  */
 describe('the frame', () => {
   /** Every state the box draws, and the colour the ring takes for it. */
