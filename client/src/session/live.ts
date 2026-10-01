@@ -263,24 +263,26 @@ function createSeat(
     seat.replaceWanted = false;
     seat.stopMessages = connection.onMessage((message) => {
       if (message.kind === 'error') {
-        // **An error names the operation it is about, never a subject**, so it
-        // does not answer the ask in flight. The one operation that can mean
-        // the ask is never coming back is a refused subscribe; anything else -
-        // a refused command, a page that could not be read, a frame the server
-        // did not know - leaves it standing, and with it whatever whole record
-        // is still wanted.
+        // **An error names the operation it is about, never a subject**, and
+        // this client holds every seat it has visited, so the subject is not
+        // what tells this seat whether the error is its own. A refused
+        // subscribe is given to the store it was attributed to, which is what
+        // the socket does with the refusal, so this store reading `refused` IS
+        // that answer.
         //
-        // Treating a refusal as this seat's rests on one seat per connection:
-        // the socket hangs a refusal on the oldest ask the connection has
-        // outstanding, and only a session subject can be refused at all. A
-        // second seat on one connection would need the subject on the error to
-        // tell the two apart.
-        if (message.what === 'subscribe') {
+        // **Only that spends the ask in flight.** A blanket clear on any
+        // subscribe refusal spends a seat's whole-record ask on a refusal
+        // about another seat, and the answer it was waiting for is then merged
+        // rather than taken - the new occupant's record never adopted, and the
+        // previous conversation standing until the next replace. Anything
+        // else - a refused command, a page that could not be read, a frame the
+        // server did not know - leaves the ask standing too, and with it
+        // whatever whole record is still wanted.
+        if (message.what === 'subscribe' && seat.held?.state().kind === 'refused') {
           seat.asking = null;
-          // A refusal is the seat's own answer and a page draws why from it;
-          // an error about anything else leaves the record as it is rather
-          // than republishing it unchanged.
-          if (seat.held?.state().kind === 'refused') read(false);
+          // A refusal is the seat's own answer and a page draws why from it,
+          // rather than keeping the record it read before the refusal.
+          read(false);
         }
         return;
       }

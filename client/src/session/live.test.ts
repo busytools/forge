@@ -898,6 +898,33 @@ describe('the slow read for what no update carries', () => {
     page.stop();
   });
 
+  /**
+   * **A refusal names no subject, and this client now holds many seats.** The
+   * socket hangs a refusal on the oldest ask the connection has outstanding,
+   * and every held seat's listener is handed the error - so a seat whose own
+   * store was not the refused one must leave its ask standing. Spent here, the
+   * whole record a swap asked for is merged instead of taken, and the previous
+   * occupant's conversation stands until the next replace or a reconnect.
+   */
+  it("does not spend another seat's refusal on its own whole-record ask", () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    page.land(updateOf(occupant('new')));
+    expect(page.reads(), 'precondition: the swap asked for a whole record').toBe(1);
+
+    // Another seat's subscribe refused, while this page's ask is in flight.
+    page.land({ kind: 'error', what: 'subscribe', why: NO_SESSION });
+
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+    expect(
+      page.read().wire?.conversation.turns,
+      "another seat's refusal demoted the swap's whole record to a merge",
+    ).toHaveLength(0);
+    page.stop();
+  });
+
   it('keeps a swap whole when an unrelated error lands before its answer', () => {
     const connection = drivable();
     const page = watch(connection);
