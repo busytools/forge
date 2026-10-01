@@ -472,7 +472,7 @@ describe('the box', () => {
     ).not.toBeNull();
   });
 
-  it('offers the way into a take only when this install can dictate', () => {
+  it('offers the way in only when this install can dictate, and the way in is the door', () => {
     open();
     expect(
       document.querySelector('.mic'),
@@ -489,11 +489,8 @@ describe('the box', () => {
     mic.click();
     flushSync();
 
-    expect(harness.sent, 'the way in starts the take it offers').toEqual([
-      {
-        command: { dictate_start: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
-      },
-    ]);
+    expect(document.querySelector('.pop'), 'the mic is the door, not the trigger').not.toBeNull();
+    expect(harness.sent, 'and nothing on the page starts a take').toEqual([]);
   });
 });
 
@@ -1782,5 +1779,217 @@ describe('two clients on one seat', () => {
     flushSync();
 
     expect(drawn(), 'the refusal was swallowed').toContain('the prompt was already answered');
+  });
+});
+
+/**
+ * The dictation panel, which the mic opens.
+ *
+ * The form is the mockup's rather than the terminal's: each axis is a short
+ * exclusive set, so each is a row of chips. `dictation.test.ts` pins what the
+ * axes and the hint ARE; this pins what the panel DOES with them.
+ */
+describe('the dictation panel', () => {
+  /** The panel, opened by the mic, which is the only way in. */
+  function opened(over: Partial<ComposerProps> = {}, on?: Wire) {
+    const harness = open({ dictation: true, ...over }, on);
+    const mic = document.querySelector('.mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('the box drew no mic to open with');
+    mic.click();
+    flushSync();
+    return harness;
+  }
+
+  /** The words an element draws, with the markup's own whitespace collapsed. */
+  function words(el: Element | null | undefined): string {
+    return (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * Every chip a click can act on, with the axis it belongs to.
+   *
+   * Buttons only, and that is the assertion rather than an implementation
+   * detail: the mode's chips are spans, because nothing in the core can set
+   * one, and a mode drawn as a button would be a control nothing honours.
+   */
+  function chips(): { axis: string; label: string; on: boolean }[] {
+    return [...document.querySelectorAll('.pop .ax')].flatMap((group) => {
+      const axis = words(group.querySelector('.lbl'));
+      return [...group.querySelectorAll('button.chip')].map((chip) => ({
+        axis,
+        label: words(chip),
+        on: chip.classList.contains('on'),
+      }));
+    });
+  }
+
+  it('draws the in-force value on every axis, from the record rather than a default', () => {
+    opened({
+      record: record({
+        dictate_overrides: { styling: 'casual', structure: 'lists', context: null },
+      }),
+    });
+
+    const on = chips().filter((chip) => chip.on);
+    expect(on.map((chip) => `${chip.label}`)).toEqual([
+      'casual',
+      'may bullet a list',
+      'plain text',
+    ]);
+  });
+
+  it('marks an axis the session set, and only that one', () => {
+    opened({
+      record: record({
+        dictate_overrides: { styling: 'formal', structure: null, context: null },
+      }),
+    });
+
+    // The mode and the device carry a source tag of their own - they come from
+    // the config rather than from this session - so the tag is read by its
+    // words rather than by the class alone.
+    const marked = [...document.querySelectorAll('.pop .lbl .src')]
+      .filter((held) => held.textContent?.includes('this session') === true)
+      .map((held) => words(held.parentElement));
+    expect(marked, 'the source tag names the axes this session moved').toEqual([
+      'VOICE · this session',
+    ]);
+  });
+
+  it('asks the core for one axis when a chip is clicked', () => {
+    const harness = opened();
+
+    const chip = [...document.querySelectorAll('.pop .chip')].find(
+      (held) => held.textContent?.trim() === 'casual',
+    );
+    if (!(chip instanceof HTMLElement)) throw new Error('the voice axis drew no casual chip');
+    chip.click();
+    flushSync();
+
+    expect(harness.sent, 'one chip, one axis, in the core own vocabulary').toEqual([
+      {
+        command: {
+          set_dictate_override: {
+            key: { org: 'Busytools', project: 'forge', label: 'lead' },
+            update: { styling: 'casual' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('states the mode rather than offering it, because nothing can set it', () => {
+    opened({
+      record: record({
+        composer: { take: null, notice: null, compacting: false, sign_in: null, mode: 'hold' },
+      }),
+    });
+
+    const mode = [...document.querySelectorAll('.pop .ax')].find(
+      (group) => group.querySelector('.lbl')?.textContent?.includes('MODE') === true,
+    );
+    if (mode === undefined) throw new Error('the panel drew no mode row');
+
+    expect(
+      mode.querySelectorAll('button'),
+      'a mode chip would be a control nothing honours',
+    ).toHaveLength(0);
+    expect(mode.textContent, 'the value in force is stated').toContain('hold');
+    expect(mode.textContent, 'with its rule under it').toContain('release transcribes');
+    expect(mode.textContent, 'and where it comes from').toContain('forge.toml');
+  });
+
+  it('asks for the devices once, and picks one by its id', () => {
+    const shared = wire();
+    const harness = opened({ device: { device: 'mic-2' } }, shared);
+    expect(document.querySelector('.pop .dev')?.textContent, 'the pick the home carries').toContain(
+      'mic-2',
+    );
+
+    const door = document.querySelector('.pop .dev');
+    if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
+    door.click();
+    flushSync();
+    expect(shared.asked, 'one ask for one walk').toBe(1);
+
+    harness.say({
+      kind: 'devices',
+      devices: [
+        { id: 'mic-2', name: 'Shure SM7B', is_default: false },
+        { id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true },
+      ],
+      configured: 'mic-2',
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.pop .dev')?.textContent,
+      'the row names the device the walk found',
+    ).toContain('Shure SM7B');
+
+    const row = [...document.querySelectorAll('.pop .row')].find((held) =>
+      held.textContent?.includes('MacBook Pro Microphone'),
+    );
+    if (!(row instanceof HTMLElement)) throw new Error('the list drew no second device');
+    row.click();
+    flushSync();
+
+    expect(harness.sent.at(-1)?.command, 'a pick names the id, which is the identity').toEqual({
+      set_dictate_device: {
+        key: { org: 'Busytools', project: 'forge', label: 'lead' },
+        pick: { device: 'mic-9' },
+      },
+    });
+  });
+
+  it('resets every axis at once', () => {
+    const harness = opened();
+    const reset = document.querySelector('.pop .rst');
+    if (!(reset instanceof HTMLElement)) throw new Error('the panel drew no reset');
+    reset.click();
+    flushSync();
+
+    expect(harness.sent).toEqual([
+      {
+        command: {
+          reset_dictate_overrides: {
+            key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('advertises the bound key, and nothing when the binding is off', () => {
+    opened({
+      record: record({
+        composer: { take: null, notice: null, compacting: false, sign_in: null, bind: 'left_cmd' },
+      }),
+    });
+    expect(document.querySelector('.pop .hd')?.textContent).toContain('left to talk');
+
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+    opened({
+      record: record({
+        composer: { take: null, notice: null, compacting: false, sign_in: null, bind: 'off' },
+      }),
+    });
+    expect(
+      document.querySelector('.pop .hd')?.textContent,
+      'a hint naming a key that will never fire is worse than none',
+    ).not.toContain('to talk');
+  });
+
+  it('closes on Escape, and gives the keyboard back to the field', () => {
+    opened();
+    expect(document.querySelector('.pop')).not.toBeNull();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+
+    expect(document.querySelector('.pop'), 'the panel takes the Escape it is open for').toBeNull();
+    expect(document.activeElement, 'and the reader is typing again').toBe(field());
   });
 });

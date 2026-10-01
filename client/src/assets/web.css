@@ -926,7 +926,7 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 /* The composer's own slot at the foot of the chat column. Its padding is
    the only thing keeping the box off the column's bottom edge. */
 .composer { padding: 4px 0 2px; }
-.comp { display: flex; flex-direction: column; gap: 2px; }
+.comp { position: relative; display: flex; flex-direction: column; gap: 2px; }
 .hint { font-size: var(--fs-base); padding-left: 4px; }
 .hint.login { color: var(--warn); }
 .hint.login .sub { color: var(--dim); display: block; font-size: var(--fs-data); }
@@ -1040,6 +1040,63 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .blocked .ring { width: 13px; height: 13px; flex: none; border-radius: 50%;
   border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
   animation: spin 900ms linear infinite; }
+
+/* ---------- the dictation panel ----------
+   Everything under `.pop`, and deliberately so: bare `.chip`, `.note` and
+   `.dev` are names the sheet's other surfaces already use, and a bare rule here
+   would reach them by coming later. The panel is a popover hanging under the
+   box, in the mockup's own form: the axes are short exclusive sets, so each is
+   a row of chips rather than a list of rows. */
+/* Anchored ABOVE the box and never below it: the composer sits at the foot of
+   the page's column, so a panel hanging under it lands off the fold. It takes
+   the box's own width, which is the surface it belongs to, and scrolls rather
+   than growing past a short viewport. */
+.pop { position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; z-index: 5;
+  max-height: 70vh; overflow-y: auto; background: var(--s1);
+  border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 20px 48px rgba(0,0,0,.55); }
+.pop .hd { padding: 12px 15px 0; display: flex; align-items: center; gap: 9px; }
+.pop .hd .t { font-size: var(--fs-data); font-weight: 600; color: var(--text); }
+.pop .hd .k { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.pop .hd .k b { color: var(--hot); font-weight: 400; }
+.pop .scope { padding: 3px 15px 0; font-size: var(--fs-label); color: var(--dim); }
+.pop .ax { padding: 13px 15px 0; }
+.pop .lbl { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-label);
+  letter-spacing: .12em; color: var(--dim); }
+.pop .lbl .src { letter-spacing: 0; color: var(--hot); }
+.pop .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+/* The in-force chip is filled and outlined as well as coloured, so the state
+   is not carried by hue alone. */
+.pop .chip { font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+  background: none; white-space: nowrap; }
+.pop .chip.on { border-color: rgba(244,118,0,.5); background: var(--s3); color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(244,118,0,.22); }
+button.chip { cursor: pointer; }
+button.chip:hover { border-color: var(--ctl); color: var(--text); }
+.pop .note { font-size: var(--fs-label); color: var(--dim); margin-top: 8px; }
+.pop .note .mono { font-family: var(--mono); }
+.pop .dev { margin-top: 9px; width: 100%; display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 11px;
+  background: var(--s2); cursor: pointer; }
+.pop .dev:hover { border-color: var(--ctl); }
+.pop .dev .nm { font-size: var(--fs-base); color: var(--text); }
+.pop .dev .chev { margin-left: auto; color: var(--dim); }
+.pop .list { margin-top: 6px; border: 1px solid var(--line); border-radius: 11px;
+  overflow: hidden; }
+.pop .row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
+  border: 0; border-bottom: 1px solid var(--line); background: none; cursor: pointer;
+  text-align: left; }
+.pop .row:last-child { border-bottom: 0; }
+.pop .row:hover { background: var(--s2); }
+.pop .row .nm { font-size: var(--fs-base); color: var(--text); }
+.pop .row .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.pop .ft { padding: 13px 15px 14px; }
+.pop .rst { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  background: none; border: 0; padding: 0; cursor: pointer; }
+.pop .rst:hover { color: var(--muted); }
 
 /* ---------- autocomplete: four triggers, one popover shape ---------- */
 

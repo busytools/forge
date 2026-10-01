@@ -21,6 +21,7 @@ export const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'l
 export function record(over: Partial<ComposerRecord> = {}): ComposerRecord {
   return {
     composer: { take: null, notice: null, compacting: false, sign_in: null },
+    dictate_overrides: { styling: null, structure: null, context: null },
     pending_ask: null,
     header: { turn_in_flight: false },
     slash_commands: [],
@@ -144,7 +145,9 @@ export interface Sent {
 /** One connection two composers can be mounted on, which is two clients on one seat. */
 export interface Wire {
   sent: Sent[];
-  connection: Pick<Connection, 'dispatch' | 'onMessage'>;
+  /** How many times a panel asked for the device list, which one walk each. */
+  asked: number;
+  connection: Pick<Connection, 'dispatch' | 'onMessage' | 'devices'>;
   /** Say something to every composer attached, as the server would. */
   say(message: ServerMessage): void;
 }
@@ -159,12 +162,17 @@ export interface Wire {
 export function wire(): Wire {
   const sent: Sent[] = [];
   const listeners = new Set<(message: ServerMessage) => void>();
-  return {
+  const held: Wire = {
     sent,
+    asked: 0,
     connection: {
       dispatch(command: Record<string, Record<string, unknown>>) {
         sent.push({ command });
         return null;
+      },
+      devices() {
+        held.asked += 1;
+        return true;
       },
       onMessage(fn: (message: ServerMessage) => void) {
         listeners.add(fn);
@@ -175,4 +183,5 @@ export function wire(): Wire {
       for (const fn of listeners) fn(message);
     },
   };
+  return held;
 }
