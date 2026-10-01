@@ -55,8 +55,9 @@ const DARK: Record<string, string> = {
   // the option checkbox sits. --line stays the hairline.
   '--ctl': '#516590',
   // Prose, and the page's brightest text: a grey rather than a near-white, and
-  // the grey the chat's code blocks already draw in - the highlighter's own
-  // github-dark base - so prose joins them rather than inventing a value.
+  // the value the highlighter's github-dark theme names for code text rather
+  // than one picked to taste. Its base rule needs a `.hljs` container the code
+  // block never emits, so this token is still what a block's body text reads.
   // The terminal draws the same text at 6.10:1 (Ghostty `GitHub Dark`), the
   // page cannot follow it that far and stay above --muted, and this lands at
   // 13.19:1, with both ends of its band held in contrast.test.ts.
