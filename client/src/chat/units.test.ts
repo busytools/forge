@@ -160,17 +160,26 @@ describe('one turn folded into the units a view draws', () => {
   it('names a batch by its first card even when the wire gave the card no id', () => {
     // A card with no id in the data takes the frame and block it arrived in -
     // position, but one that cannot move - rather than keying its batch by an
-    // empty string, where two such batches in one turn would collide.
+    // empty string, where two such batches in one turn would collide. Three
+    // sources build a card: a call, a header, and a queued prompt's envelope.
     const call = said([
       { type: 'tool_use', name: 'mcp__forge__agents__tell', input: { project: 'x', message: 'm' } },
     ]);
     const envelope = heard([text("[Question id= from agent 'x' (org 'y')]\n\npicking it up")]);
+    const queued = heard([
+      {
+        type: 'queued_command',
+        prompt: "[Question id= from agent 'x' (org 'y')]\n\npicking it up",
+      },
+    ]);
 
     const fromCall = fold([call]);
     const fromEnvelope = fold([envelope]);
+    const fromQueued = fold([queued]);
 
     expect(fromCall[0]?.key, 'the call card takes the frame and block').toBe('p-a1#0');
     expect(fromEnvelope[0]?.key, 'and so does a header with no id after the marker').toBe('p-u1#0');
+    expect(fromQueued[0]?.key, 'and so does a queued prompt carrying one').toBe('p-u1#0');
   });
 
   it('breaks the run on anything that is not a call', () => {
