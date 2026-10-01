@@ -6,6 +6,9 @@ import type { ClientMessage, ServerMessage } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import Chat from './Chat.svelte';
+import { installResizeObserver } from './testing/viewport';
+
+installResizeObserver();
 
 /**
  * The list is a stub, as it is for the scroll tests: what has to be seen here

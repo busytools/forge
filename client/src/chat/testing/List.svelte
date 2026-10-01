@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
-  import { records, register } from './records';
+  import { geometry, pins, records, register } from './records';
 
   /**
    * A stand-in for `virtua`'s list, for tests that have to see what the column
@@ -20,6 +20,7 @@
     getKey,
     onscroll,
     children,
+    ...rest
   }: {
     data?: unknown[];
     shift?: boolean;
@@ -41,45 +42,77 @@
     return getKey === undefined ? `${at}` : getKey(row);
   }
 
-  let offset = 0;
-  let size = 0;
-  let viewport = 0;
-
   // Where virtua reads it: before the DOM updates, on the change itself.
   $effect.pre(() => {
     records.push({ length: data.length, shift });
   });
 
   export function getScrollOffset(): number {
-    return offset;
+    return geometry.offset;
   }
 
   export function getScrollSize(): number {
-    return size;
+    return geometry.size;
   }
 
   export function getViewportSize(): number {
-    return viewport;
+    return geometry.viewport;
   }
 
-  export function scrollToIndex(): void {
-    return undefined;
+  /**
+   * The element the column scrolls, made to behave like a scroll container.
+   *
+   * **jsdom performs no layout, so this is the layout the column's pin needs.**
+   * The element reports the size the test gave it and clamps what it is asked
+   * for, exactly as a browser clamps a scroll: the column pins the foot by
+   * asking for `scrollHeight`, and what it LANDS on is the foot.
+   */
+  function container(node: HTMLElement): () => void {
+    // Whole pixels, as a browser reports them, from a size the list measured
+    // as a fraction - which is the mismatch the follow has to survive.
+    Object.defineProperty(node, 'scrollHeight', {
+      configurable: true,
+      get: () => Math.floor(geometry.size),
+    });
+    Object.defineProperty(node, 'scrollTop', {
+      configurable: true,
+      get: () => geometry.offset,
+      set: (asked: number) => {
+        const landed = Math.max(0, Math.min(asked, Math.floor(geometry.size) - geometry.viewport));
+        pins.push({ asked, landed });
+        geometry.offset = landed;
+      },
+    });
+    return () => undefined;
   }
 
   /** Where the list is scrolled to, which a test drives the reader with. */
   export function scrolledTo(at: number, total: number, height: number): void {
-    offset = at;
-    size = total;
-    viewport = height;
+    geometry.offset = at;
+    geometry.size = total;
+    geometry.viewport = height;
     onscroll?.(at);
+  }
+
+  /**
+   * A clamp the browser made with nobody scrolling.
+   *
+   * A window grown until the history fits leaves the reader at the very end
+   * and fires no scroll event to say so, which is the case the follow's own
+   * clamp re-arm exists for.
+   */
+  export function settled(at: number, total: number, height: number): void {
+    geometry.offset = at;
+    geometry.size = total;
+    geometry.viewport = height;
   }
 
   // The column binds this component to a handle of its own, which a test
   // cannot reach; the module is the seam instead.
-  register({ scrolledTo });
+  register({ scrolledTo, settled });
 </script>
 
-<div class="conv">
+<div class="conv" {@attach container} {...rest}>
   {#each data as row, at (keyOf(row, at))}
     <div class="turn">{@render children?.(row)}</div>
   {/each}

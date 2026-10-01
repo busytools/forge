@@ -219,13 +219,15 @@ describe('the conversation the chat draws', () => {
 
     // The reader scrolls up: their place is a distance from the newest end,
     // and every turn below them may grow without it changing.
-    chat.position(false);
+    chat.following(false);
     const before = get(chat.value);
 
     server.update({ chat_appended: { key: LEAD, msg: said('a line arriving') } });
 
     const after = get(chat.value);
-    expect(after.atEnd, 'the reader is still where they were, not pulled to the end').toBe(false);
+    expect(after.following, 'the reader is still where they were, not pulled to the end').toBe(
+      false,
+    );
     expect(
       after.turns.slice(0, before.turns.length - 1),
       'and nothing above the turn the frame belongs to moved',

@@ -21,6 +21,9 @@ vi.mock('virtua/svelte', async () => {
 
 const { clear, firstGrowth, last, list } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
+const { installResizeObserver } = await import('./testing/viewport');
+
+installResizeObserver();
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
