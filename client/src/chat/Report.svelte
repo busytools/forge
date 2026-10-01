@@ -170,15 +170,13 @@
       <span class="sep">{'\u{b7}'}</span>
       <span>{tokens(held.cache_written_tokens)} written</span>
     {/if}
+    <!-- The cumulative cost is the one figure only the Result carries, so a
+         running row has none: the segment is dropped rather than drawn with a
+         placeholder in it, which would read as a figure rather than as one it
+         has not been given. -->
     {#if held.session_cost_usd !== null}
       <span class="sep">{'\u{b7}'}</span>
       <span>{money(held.session_cost_usd)} cumulative</span>
-    {:else if held.running}
-      <!-- The cumulative cost is the one figure only the Result carries, and a
-           running row draws it absent rather than leaving the slot out: an
-           empty gap reads as a field this row does not have. -->
-      <span class="sep">{'\u{b7}'}</span>
-      <span>- cumulative</span>
     {/if}
     <!-- The label is a text node rather than a `::after` rule: the CSS form
          leaves the disclosure's accessible name to whatever the user agent

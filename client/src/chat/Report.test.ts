@@ -141,13 +141,14 @@ describe('a settled turn\u2019s row', () => {
     expect(drawn.some((fact) => fact === 'in=0')).toBe(false);
   });
 
-  it('draws the running row what the frames carry, and the settle-only cost absent', () => {
-    // While the turn runs the row leads with a ring, shows the figures the
-    // frames already carry, and draws the one settle-only figure as a dash
-    // rather than leaving the slot out - an empty gap reads as a field this
-    // row does not have. The record keeps FULL's end stamp on purpose: the
-    // `ended` fact must dash on the RUNNING arm, not because the stamp is
-    // absent.
+  it('draws the running row what the frames carry, and no slot for the cost it lacks', () => {
+    // While the turn runs the row leads with a ring and shows the figures the
+    // frames already carry. The cumulative cost is settle-only, so a running
+    // row has none - and a slot with no value is not drawn at all: `- cumulative`
+    // reads as "cumulative nothing" rather than as a figure still to arrive,
+    // and a reader cannot tell that from a broken one. The record keeps FULL's
+    // end stamp on purpose: the `ended` fact must dash on the RUNNING arm, not
+    // because the stamp is absent.
     const running: TurnInfo = {
       ...FULL,
       running: true,
@@ -162,9 +163,23 @@ describe('a settled turn\u2019s row', () => {
       'thinking 434',
     );
     expect(summary, 'the token side the frames carry').toContain('4.2k\u{2191}');
-    expect(summary, 'and the cost drawn absent rather than dropped').toContain('- cumulative');
+    expect(summary, 'and no cost segment at all where the record carries none').not.toContain(
+      'cumulative',
+    );
     expect(summary, 'claiming no settled figure it has not been given').not.toContain('$');
     expect(facts(body), 'nor an end it does not have').toContain('ended=-');
+  });
+
+  it('draws the cost once the frames carry one', () => {
+    // The control for the arm above: dropping the whole segment rather than
+    // its empty state would pass that assertion and lose the figure.
+    const running: TurnInfo = { ...FULL, running: true, api_ms: null };
+    const body = draw(running);
+    const summary = body.slice(body.indexOf('<summary'), body.indexOf('</summary>'));
+
+    expect(summary, 'the cumulative cost, which only a settled Result carries').toContain(
+      '$4.82 cumulative',
+    );
   });
 
   it('carries the toggle word as text rather than as a stylesheet rule', () => {

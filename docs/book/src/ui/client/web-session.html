@@ -1385,14 +1385,13 @@ docs: Render the message body into rows.</div>
               <span id="lv-mark"><span class="ring"></span></span>
               <span id="lv-time">0.4s</span><span class="sep">&#183;</span>
               <span id="lv-think">thinking 434</span><span class="sep">&#183;</span>
-              <span id="lv-tok">4.2k&#8593;</span><span class="sep">&#183;</span>
+              <span id="lv-tok">1.1k&#8593; 62&#8595;</span><span class="sep">&#183;</span>
               <span>93% cached</span><span class="sep">&#183;</span>
-              <span>3.1k written</span><span class="sep" id="lv-cost-sep">&#183;</span>
-              <!-- The cumulative cost is the one figure only the Result carries:
-                   a running row draws it absent rather than leaving the slot
-                   out, because an empty gap reads as a field it does not have.
-                   The settle step in the script drops the segment with it. -->
-              <span id="lv-cost">- cumulative</span>
+              <span>3.1k written</span>
+              <!-- The cumulative cost is the one figure only the Result carries,
+                   so a running row has no segment for it at all: a slot with no
+                   value is not drawn, rather than held empty for a figure that
+                   has not arrived. -->
               <span class="tog">expand</span>
             </summary>
           </details>
@@ -1771,9 +1770,7 @@ docs: Render the message body into rows.</div>
     $('lv-mark').innerHTML = TICK;
     $('lv-time').textContent = '0.4s';
     $('lv-think').style.display = '';
-    $('lv-tok').textContent = '4.2k↑';
-    $('lv-cost-sep').style.display = '';
-    $('lv-cost').style.display = '';
+    $('lv-tok').textContent = '1.1k↑ 62↓';
 
     at(200, () => { reveal(1); stream($('lv-t1'), $('lv-c1'), T1, 1300); });
     at(1500, () => { reveal(2); t0 = performance.now();
@@ -1793,10 +1790,6 @@ docs: Render the message body into rows.</div>
       $('lv-time').textContent = elapsed((performance.now() - t0) / 1000);
       $('lv-think').style.display = 'none';
       $('lv-tok').textContent = '4.2k↑ 1.1k↓';
-      // A settled row with no cost drops the segment entirely, so the
-      // drawing must not keep a dash no settled state ever shows.
-      $('lv-cost-sep').style.display = 'none';
-      $('lv-cost').style.display = 'none';
       reveal(8);
     });
   }

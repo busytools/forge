@@ -269,6 +269,45 @@ describe('one turn folded into the units a view draws', () => {
     );
   });
 
+  it('counts a message once when the CLI repeats it once per content block', () => {
+    // One API call is several assistant frames - one per content block - and
+    // every one of them carries the whole call's usage block. All 46 shipped
+    // captures show it: `monitor_persistent_stream` has 11 frames over 7
+    // messages. The terminal keys by message id so a repeat overwrites
+    // (`LiveTurn::record`), which is the count this fold has to match.
+    const block = (id: string, part: number, tokens: number): unknown => ({
+      type: 'assistant',
+      uuid: `a${id}-${part}`,
+      timestamp: '2026-10-01T01:00:00Z',
+      message: {
+        id,
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [{ type: 'text', text: 'working' }],
+        usage: {
+          input_tokens: tokens,
+          output_tokens: tokens / 10,
+          cache_read_input_tokens: tokens * 10,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    });
+
+    // `m1` drew three times, `m2` once: two calls, not four frames.
+    const frames = [
+      block('m1', 0, 100),
+      block('m1', 1, 100),
+      block('m1', 2, 100),
+      block('m2', 0, 200),
+    ];
+    const running = fold(frames, null, null, true).filter((unit) => unit.kind === 'report');
+    const info = running[0]?.kind === 'report' ? running[0].info : null;
+
+    expect(info?.input_tokens, 'the two calls, not the four frames that drew them').toBe(300);
+    expect(info?.output_tokens, 'and the down count reads off the same calls').toBe(30);
+    expect(info?.cache_read_tokens, 'so do the cache figures').toBe(3000);
+  });
+
   it('breaks the run on anything that is not a call', () => {
     const units = fold([call('read', 0), said([text('here it is')]), call('bash', 1)]);
 
