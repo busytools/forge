@@ -410,6 +410,9 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable; }
+/* The refusal above a conversation already drawn: the server's words for the
+   ask that failed, at the column's own padding, with the rows left alone. */
+.refused { padding: 2px 8px 6px 0; color: var(--muted); }
 .conv::-webkit-scrollbar { width: 8px; }
 .conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
 .conv::-webkit-scrollbar-track { background: transparent; }

@@ -122,6 +122,34 @@ describe('the chat column as it draws', () => {
     expect(drawn()).toContain('forge holds no session for that seat');
   });
 
+  it('keeps the conversation drawn when a page is refused', () => {
+    // **A refusal is about an ASK, not about the conversation.** A page asked
+    // for before the seat's conversation is held is refused with words that
+    // say asking again may find it - so a column that replaced the turns with
+    // the refusal would take the reader's own history away, unmount the list
+    // and leave nothing able to ask again.
+    const say = (text: string): unknown => ({
+      type: 'assistant',
+      message: {
+        id: `m-${text}`,
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [{ type: 'text', text }],
+      },
+    });
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [say('the first answer')] }]);
+    flushSync();
+
+    server.send({ kind: 'error', what: 'more', why: 'the conversation is not held yet' });
+
+    expect(drawn(), 'the turn the reader was reading is still drawn').toContain('the first answer');
+    expect(drawn(), 'and the refusal is said beside it').toContain(
+      'the conversation is not held yet',
+    );
+  });
+
   it('draws the compaction line once, under the newest turn only', () => {
     // The prop is the conversation's, and the line is the newest turn's: a
     // column that handed it to every turn would draw a line per row, which is

@@ -210,7 +210,12 @@
       <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
     </div>
   </div>
-{:else if held.refused !== null}
+{:else if held.refused !== null && held.turns.length === 0}
+  <!-- A refusal with nothing drawn under it is the column in that state. With
+       turns held it is a line above them instead, because the refusal belongs
+       to the ask rather than to the conversation - replacing the list would
+       take the reader's own history away and unmount the thing whose scroll
+       asks again. -->
   <div class="conv">
     <p class="hold off">This forge would not answer for this conversation: {held.refused}</p>
   </div>
@@ -235,6 +240,12 @@
     {/if}
   </div>
 {:else}
+  {#if held.refused !== null}
+    <!-- The server's own words for the ask that failed, said beside the rows
+         it did not replace: the list stays mounted, so the reader keeps their
+         place and their next scroll to the top asks again. -->
+    <p class="refused">This forge would not answer for this conversation: {held.refused}</p>
+  {/if}
   <!-- The list draws its own scroll viewport, so the sheet's `.conv` rules go
        on that element rather than a wrapper around it: they are the column's
        padding, its scrollbar gutter and its scrollbar, and a wrapper would put
