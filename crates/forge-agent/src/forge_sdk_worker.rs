@@ -2272,9 +2272,9 @@ mod tests {
     ///
     /// Three carriers, because they do not co-occur: the reminder carries
     /// `isMeta` and `turnCompanion`, while a compaction summary carries
-    /// `isCompactSummary` and `isVisibleInTranscriptOnly` and no `isMeta`
-    /// (197 such rows across this machine's transcripts), so a read keyed on
-    /// `isMeta` alone lets the summary flip between the live and resume paths.
+    /// `isCompactSummary` and `isVisibleInTranscriptOnly` and no `isMeta`, so
+    /// a read keyed on `isMeta` alone lets the summary flip between the live
+    /// and resume paths.
     #[test]
     fn load_history_messages_carries_the_clis_synthetic_stamp() {
         use std::fmt::Write as _;
