@@ -113,7 +113,8 @@ export function permissionAsk(toolId = 'tu-1'): unknown {
 export function questionAsk(
   toolId = 'tu-q',
   prompt: Record<string, unknown> = {},
-  index = 1,
+  index = 0,
+  total = 1,
 ): unknown {
   return {
     kind: 'question',
@@ -143,7 +144,7 @@ export function questionAsk(
         ...prompt,
       },
       question_index: index,
-      total_questions: 3,
+      total_questions: total,
     },
   };
 }
