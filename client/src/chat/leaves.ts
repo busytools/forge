@@ -110,6 +110,7 @@ export interface Block {
   source?: unknown;
   prompt?: unknown;
   commandMode?: unknown;
+  thinking?: unknown;
 }
 
 /** The blocks of a frame's content, for a frame that carries any. */

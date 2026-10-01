@@ -22,7 +22,9 @@
      opens on its own), .mine (a user turn - the orange rule is the
      attribution, so it carries no label - whose words are markdown, like the
      work's, because the terminal folds a prompt as a document too),
-     .attrow (what a turn attached),
+     .attrow (what a turn attached), details.think (the model's own reasoning,
+     collapsed on its first words - drawn from the live frames, gone when the
+     next page lands, which strips thinking),
      .code, .dif, .notice, .card (an answered question), .mon.
      A run of peer messages is a tool run: it takes details.kind, .knd and
      details.leaf with .mk, .k and .org for the counterparty, so traffic and
@@ -223,6 +225,20 @@
   .attrow .gl { color: var(--dim); }
   .attrow .n { color: var(--dim); }
   .work { padding: 4px 0 8px; }
+  /* What the model thought. Collapsed, carrying the first of its own words: the
+     terminal's vocabulary for a block nothing else shows, where its own arm for
+     this block only sets a running status and counts the characters. */
+  details.think { margin: 3px 0; }
+  details.think > summary { list-style: none; display: flex; align-items: center; gap: 9px;
+    padding: 4px 10px; border-radius: 9px; cursor: pointer; color: var(--dim);
+    font-size: var(--fs-base); }
+  details.think > summary::-webkit-details-marker { display: none; }
+  details.think > summary:hover { background: rgba(27,33,48,.45); }
+  details.think > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  details.think > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
+  details.think > summary:hover .arw { color: var(--muted); }
+  details.think[open] > summary { color: var(--muted); }
+  details.think[open] > summary .arw { color: var(--accent); }
   /* Prose draws in both blocks - the work a turn did, and what the reader typed,
      which the terminal folds as a document too - so these read `.prose` alone. */
   .prose p + p { margin-top: 10px; }
@@ -835,6 +851,25 @@
       </div>
 
       <div class="work">
+        <!-- The model's own reasoning, which the wire carries and the terminal
+             does not draw: collapsed, carrying the first of its own words.
+             Drawn from the live frames: the transcript read strips thinking
+             blocks, so the row stays through settle and goes at the next page
+             read - a reload, a reconnect, an occupant change, an errored turn.
+             A completed turn asks for no page, which is why the row outlives
+             it. -->
+        <details class="think">
+          <summary>
+            <span class="tn">Both of them landed while I was in the tree, so this is what the reader gets instead of the wall</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg>
+          </summary>
+          <div class="body">
+            <div class="pbody">
+              <p>Both of them landed while I was in the tree, so this is what the reader gets instead of the wall. The alternative is a run of rows with no shape to it.</p>
+            </div>
+          </div>
+        </details>
+
         <div class="prose">
           <p>One family per block, its calls under it, and a call opens on its own. Edits are the exception: their diff is already there.</p>
         </div>

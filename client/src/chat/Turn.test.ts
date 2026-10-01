@@ -100,6 +100,33 @@ describe('one turn, as the page draws it', () => {
     expect(answered, 'and the assistant prose still joins').not.toContain('<br>');
   });
 
+  it('draws what the model thought as a collapsed row carrying its own words', () => {
+    // The terminal does not render thinking text at all - its arm sets a status
+    // and traces a count - so this is the client beyond it rather than beside
+    // it, in the terminal's own collapsed vocabulary: the row carries the first
+    // of its words, and the whole of it is behind the row's open.
+    const body = draw(
+      said([
+        {
+          type: 'thinking',
+          thinking: 'first the model wondered\nand then it kept going',
+          signature: 'sig',
+        },
+      ]),
+    );
+
+    // The summary alone, because the words are in the body too: an assertion on
+    // the whole render passes whether or not the row carries them.
+    const at = body.indexOf('<span class="tn">');
+    const summary = body.slice(at, body.indexOf('</summary>', at));
+    expect(summary, 'the row leads with the thinking own first words').toContain(
+      'first the model wondered',
+    );
+    expect(summary, 'and only that line of it').not.toContain('and then it kept going');
+    expect(summary, 'and carries the shared disclosure chevron').toContain('#i-chev');
+    expect(body, 'with the whole of it inside').toContain('and then it kept going');
+  });
+
   it('draws the runs the fold cut, rather than regrouping what it holds', () => {
     // A question splits a run, so this turn holds TWO groups with a card
     // between them. A component that grouped its own rows instead of drawing

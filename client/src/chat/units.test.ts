@@ -87,6 +87,101 @@ describe('one turn folded into the units a view draws', () => {
     }
   });
 
+  it('draws what the model thought, which the wire carries and nothing drew', () => {
+    // The body is on the wire - `ContentBlock::Thinking { thinking, signature }`
+    // in primitives, and a real transcript holds one - and this fold had no arm
+    // for it, so the block fell through and the words were dropped. An empty
+    // thinking draws nothing, the way the terminal skips one.
+    const thought = said([{ type: 'thinking', thinking: 'the model wondered', signature: 'sig' }]);
+    const empty = said([{ type: 'thinking', thinking: '', signature: 'sig' }]);
+
+    const units = fold([thought]);
+    expect(kinds(units), 'the thinking is a row rather than a drop').toEqual(['thinking']);
+    expect(units[0]?.kind === 'thinking' ? units[0].text : '').toBe('the model wondered');
+    expect(kinds(fold([empty])), 'and an empty one is not a row').toEqual([]);
+  });
+
+  it('keeps a run whole across a thinking row', () => {
+    // A thinking block is commentary ON the work rather than a separator
+    // between pieces of it: the terminal has no thinking variant at all, so its
+    // run cannot break on one. The regression was measured on a real turn:
+    // drawing each thought as its own unit split one run of 24 calls into
+    // twelve groups, where the same turn drew four.
+    const units = fold([
+      call('read', 0),
+      said([{ type: 'thinking', thinking: 'about the file', signature: 's' }]),
+      call('read', 1),
+    ]);
+
+    const groups = units.filter((unit) => unit.kind === 'group');
+    expect(kinds(units), 'the row draws above the run it interrupted').toEqual([
+      'thinking',
+      'group',
+    ]);
+    expect(
+      units.filter((u) => u.kind === 'thinking'),
+      'the words still draw',
+    ).toHaveLength(1);
+    expect(groups, 'one run, not two').toHaveLength(1);
+    expect(groups[0]?.kind === 'group' ? groups[0].families[0]?.calls.length : 0).toBe(2);
+  });
+
+  it('keeps a message batch whole across a thinking row', () => {
+    // The class list calls a run of peer messages a tool run, so the same rule
+    // holds: a thought between two messages is commentary, not a separator. The
+    // round measured thirteen of ninety-four real turns changing by exactly
+    // this unit when the batch split.
+    const tell = (n: number): unknown =>
+      said([
+        use(`toolu_tell_${n}`, 'mcp__forge__agents__tell', { project: 'x', message: `m${n}` }),
+      ]);
+
+    const units = fold([
+      tell(1),
+      said([{ type: 'thinking', thinking: 'between the messages', signature: 's' }]),
+      tell(2),
+    ]);
+
+    const batches = units.filter((unit) => unit.kind === 'messages');
+    expect(kinds(units), 'the row draws above the whole batch').toEqual(['thinking', 'messages']);
+    expect(batches, 'one batch, not two').toHaveLength(1);
+    expect(batches[0]?.key, 'named by the first message, which is data the turn cannot move').toBe(
+      'p-toolu_tell_1',
+    );
+    const cards =
+      batches[0]?.kind === 'messages' ? batches[0].lanes.flatMap((lane) => lane.cards) : [];
+    expect(cards, 'with both messages in it').toHaveLength(2);
+    expect(
+      units.filter((u) => u.kind === 'thinking'),
+      'the words still draw',
+    ).toHaveLength(1);
+  });
+
+  it('names a batch by its first card even when the wire gave the card no id', () => {
+    // A card with no id in the data takes the frame and block it arrived in -
+    // position, but one that cannot move - rather than keying its batch by an
+    // empty string, where two such batches in one turn would collide. Three
+    // sources build a card: a call, a header, and a queued prompt's envelope.
+    const call = said([
+      { type: 'tool_use', name: 'mcp__forge__agents__tell', input: { project: 'x', message: 'm' } },
+    ]);
+    const envelope = heard([text("[Question id= from agent 'x' (org 'y')]\n\npicking it up")]);
+    const queued = heard([
+      {
+        type: 'queued_command',
+        prompt: "[Question id= from agent 'x' (org 'y')]\n\npicking it up",
+      },
+    ]);
+
+    const fromCall = fold([call]);
+    const fromEnvelope = fold([envelope]);
+    const fromQueued = fold([queued]);
+
+    expect(fromCall[0]?.key, 'the call card takes the frame and block').toBe('p-a1#0');
+    expect(fromEnvelope[0]?.key, 'and so does a header with no id after the marker').toBe('p-u1#0');
+    expect(fromQueued[0]?.key, 'and so does a queued prompt carrying one').toBe('p-u1#0');
+  });
+
   it('breaks the run on anything that is not a call', () => {
     const units = fold([call('read', 0), said([text('here it is')]), call('bash', 1)]);
 
