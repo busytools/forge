@@ -73,8 +73,9 @@
   @media (prefers-reduced-motion: reduce) { .caret { animation: none; opacity: .85; } }
 
   /* Output arrives under the line, where a shell puts it. */
-  /* `--dim` measures 3.51:1 on this ground, under AA's 4.5:1 for normal
-     text, so the output reads in `--muted` (7.01:1). */
+  /* The output reads in `--muted` (7.01:1 on `--bg`). `--dim` measures
+     5.26:1 here and clears AA's 4.5:1, where the value it used to carry
+     measured 3.51:1 and did not. */
   .out { padding-left: 31px; color: var(--muted); }
   .out .ok { color: var(--ok); }
   .out .no { color: var(--bad); }

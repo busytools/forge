@@ -73,8 +73,9 @@
   .row button:hover:not(:disabled) { color: var(--accent); }
   .row button:disabled { color: var(--dim); border-color: var(--dim); cursor: default; }
 
-  /* `--dim` measures 3.51:1 on this ground, under AA's 4.5:1 for normal
-     text, so the row's middle reads in `--muted` (7.01:1). */
+  /* The row's middle reads in `--muted` (7.01:1 on `--bg`). `--dim` measures
+     5.26:1 here and clears AA's 4.5:1, where the value it used to carry
+     measured 3.51:1 and did not. */
   .say { color: var(--muted); font-size: var(--fs-data); }
   .door.failed .say { color: var(--bad); }
   .say code { font-family: var(--mono); color: var(--text); }

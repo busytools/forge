@@ -110,11 +110,14 @@ describe('the salvage copies', () => {
   });
 
   /**
-   * **The drawings are copies too, and nine of them drifted at once.** Each
-   * page under `docs/book/src/ui/client/` carries its own `:root`, and
-   * `--dim` went stale in every one of them when the token moved, so the
-   * pages a reader is sent to as the visual truth were naming a colour no
-   * surface draws.
+   * **The drawings are copies too, and seven of them were behind.** Each page
+   * under `docs/book/src/ui/client/` carries its own palette, so there is one
+   * copy of it for every drawing; the pages a reader is sent to as the visual
+   * truth were naming two colours no surface draws.
+   *
+   * The cause is per page rather than one event: the token moved and the
+   * pages drawn before it kept the old pair, while the two home variants were
+   * drawn after the move and were behind from their first commit.
    *
    * The comparison is against the SERVER's palette, the same source the copy
    * above is pinned to, so a drawing cannot agree with a stale client. A
@@ -233,15 +236,22 @@ function drawings(): string[] {
   return pages;
 }
 
-/** The tokens a drawing's `:root` declares, in the drawing's own spelling. */
+/**
+ * The tokens a drawing declares, in the drawing's own spelling.
+ *
+ * **Every `:root` block, not the first.** Three pages carry a second one - it
+ * holds `--pad` today - and a sweep that read only the first would be blind to
+ * a palette token moved into it, which is the same shape as the legend rows
+ * the first version of this sweep could not see.
+ */
 function declaredIn(page: string): Map<string, string> {
-  const root = /:root\s*\{([\s\S]*?)\n\s*\}/.exec(read(`${DRAWINGS}/${page}`))?.[1] ?? '';
-  return new Map(
-    [...root.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)].map((match) => [
-      match[1] as string,
-      match[2] as string,
-    ]),
-  );
+  const declared = new Map<string, string>();
+  for (const block of read(`${DRAWINGS}/${page}`).matchAll(/:root\s*\{([\s\S]*?)\n\s*\}/g)) {
+    for (const token of (block[1] as string).matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) {
+      declared.set(token[1] as string, token[2] as string);
+    }
+  }
+  return declared;
 }
 
 /**
