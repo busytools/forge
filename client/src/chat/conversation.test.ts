@@ -430,6 +430,35 @@ describe('the conversation the chat draws', () => {
     ).toBe(1);
   });
 
+  it('keeps a live delivery the page ends on a settled one saying the same words', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // The page's last row is an OLDER delivery, settled, saying what the next
+    // one says - which a repeating schedule makes ordinary. It is in reach of
+    // the words fallback, but its exchange is over, and replacing the live row
+    // with it drops the row the reader just received.
+    const settled = {
+      key: null,
+      messages: [forged('check the build'), said('answered the old one'), ended()],
+    };
+    server.send(page([settled], '2'));
+
+    server.update({ chat_appended: { key: LEAD, msg: forged('check the build') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answered the new one') } });
+    server.send(page([settled], null));
+
+    const after = get(chat.value).turns;
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('answered the new one')).length,
+      'the row the reader just received is still drawn',
+    ).toBe(1);
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('answered the old one')).length,
+      'beside the settled one it was confused with',
+    ).toBe(1);
+  });
+
   it('does not add an id-less frame a repeated row already carries', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

@@ -176,23 +176,19 @@ function uuidOf(message: unknown): string | null {
 }
 
 /**
- * What a person's own frames say, in order.
+ * What one frame says, when it is a person's own words.
  *
- * A delivery row is a display-only user turn with no id at all, and the prose
- * is the only thing its two copies agree on - the frame the stream drew and
- * the page that hands the same row back.
+ * A delivery row is a display-only user turn with no id at all, and its words
+ * are the only thing its two copies agree on.
  */
-function said(messages: unknown[]): string[] {
+function wordsOf(message: unknown): string[] {
   const words: string[] = [];
-  for (const message of messages) {
-    if ((message as { type?: unknown } | null)?.type !== 'user') continue;
-    const content = (message as { message?: { content?: unknown } | null } | null)?.message
-      ?.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      const text = (block as { text?: unknown } | null)?.text;
-      if (typeof text === 'string' && text !== '') words.push(text);
-    }
+  if ((message as { type?: unknown } | null)?.type !== 'user') return words;
+  const content = (message as { message?: { content?: unknown } | null } | null)?.message?.content;
+  if (!Array.isArray(content)) return words;
+  for (const block of content) {
+    const text = (block as { text?: unknown } | null)?.text;
+    if (typeof text === 'string' && text !== '') words.push(text);
   }
   return words;
 }
@@ -206,17 +202,21 @@ function sameWords(one: string[], other: string[]): boolean {
  * Whether a copy already carries a frame.
  *
  * The frame's own id where it has one. **A frame with no id is found by what
- * it says**, which is the only thing its two copies agree on: a delivery row
- * is forged rather than read off the wire and carries no id on purpose, so an
- * absent id read as "not carried" adds the same row a second time. A frame
- * with neither an id nor words - a tool result, a thought - is never found
- * this way, which repeats it rather than dropping it.
+ * it says**: a delivery row is forged rather than read off the wire and
+ * carries no id on purpose, so an absent id read as "not carried" adds the
+ * same row a second time. A frame with neither an id nor words - a tool
+ * result, a thought - is never found this way, which repeats it rather than
+ * dropping it.
  */
 function carries(messages: unknown[], message: unknown): boolean {
   const id = uuidOf(message);
   if (id !== null) return messages.some((held) => uuidOf(held) === id);
-  const words = said([message]);
-  return words.length > 0 && sameWords(words, said(messages));
+  const words = wordsOf(message);
+  if (words.length === 0) return false;
+  return sameWords(
+    words,
+    messages.flatMap((held) => wordsOf(held)),
+  );
 }
 
 /**
@@ -478,20 +478,20 @@ export class Chat {
       // **A row with no id at all reconciles on its prose**, which is the only
       // thing its two copies agree on - a delivery row is forged rather than
       // read off the wire, and an id invented for it would read as a match
-      // where there is none. That path is taken only against the page's LAST
-      // row - the one row a page can have been read while it was still being
-      // written - and only when the frame that opened the live turn carries no
-      // id either: a row repeating an older exchange's words is a different
-      // exchange that happens to say the same thing, and matching live against
-      // it would drop the row the reader just received.
-      const shares = (messages: unknown[], turn: Turn, tail: boolean): boolean => {
+      // where there is none. That path is taken only for the row a page can
+      // have been read while it was still being written: the LAST row, with no
+      // result frame. A settled row is an exchange that is over, so it cannot
+      // be the turn still arriving - and matching it replaces the live row
+      // with an older one that merely says the same words, which drops the row
+      // the reader just received.
+      const shares = (messages: unknown[], turn: Turn, unsettled: boolean): boolean => {
         const ids = new Set(messages.map(uuidOf).filter((id) => id !== null));
         const shared = turn.messages.some((message) => {
           const id = uuidOf(message);
           return id !== null && ids.has(id);
         });
         if (shared) return true;
-        if (!tail || uuidOf(turn.messages[0]) !== null) return false;
+        if (!unsettled) return false;
         return turn.messages.some((message) => carries(messages, message));
       };
       const replaced = new Set<Turn>();
@@ -502,9 +502,7 @@ export class Chat {
         // row taken before that reconciliation reads as not carrying what the
         // page plainly carries.
         const copy = copies[index] ?? [];
-        const live = held.turns.find(
-          (turn) => turn.live && shares(copy, turn, index === named.length - 1),
-        );
+        const live = held.turns.find((turn) => turn.live && shares(copy, turn, !settledRow(index)));
         if (live === undefined) return row;
         // The page is the account of the turn it copies, so the live turn is
         // replaced either way - and where the copy is settled it is the whole
