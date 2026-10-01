@@ -192,6 +192,10 @@ fn unified_window(headers: &HeaderMap, window: &str) -> Option<UsageWindow> {
         .get(format!("{UNIFIED_PREFIX}{window}-utilization"))
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<f64>().ok())
+        // A NaN survives the clamp, so a header carrying one would map to a
+        // window holding something that is not a reading. An infinity clamps
+        // into the range and is left one.
+        .filter(|raw| !raw.is_nan())
         .map(|raw| (raw * 100.0).clamp(0.0, 100.0))?;
     let resets_at = headers
         .get(format!("{UNIFIED_PREFIX}{window}-reset"))
@@ -279,6 +283,32 @@ mod tests {
         assert!(snapshot.seven_day_opus.is_none());
         assert!(snapshot.seven_day_sonnet.is_none());
         assert_eq!(snapshot.source, UsageSourceKind::Oauth);
+    }
+
+    /// **A utilisation that is not a number is not a window at zero.** `NaN`
+    /// passes a plain float parse and survives the clamp, so the window landed
+    /// as `Some` holding a value the panel draws as `0%` beside an empty track
+    /// - the one picture it refuses to draw for a window nobody has reported.
+    #[test]
+    fn a_nan_utilization_leaves_the_window_unreported() {
+        let mut headers = HeaderMap::new();
+        headers
+            .insert("anthropic-ratelimit-unified-5h-utilization", HeaderValue::from_static("nan"));
+
+        assert!(unified_window(&headers, "5h").is_none(), "a NaN is not a reading");
+    }
+
+    /// The other half of the same door, and the reason the check rejects `NaN`
+    /// alone: an infinity clamps into the range and is still a reading, so
+    /// widening this to every non-finite value would throw one away.
+    #[test]
+    fn an_infinite_utilization_still_clamps_to_the_range() {
+        let mut headers = HeaderMap::new();
+        headers
+            .insert("anthropic-ratelimit-unified-5h-utilization", HeaderValue::from_static("inf"));
+
+        let window = unified_window(&headers, "5h").expect("an infinity is a reading, clamped");
+        assert!((window.utilization - 100.0).abs() < f64::EPSILON, "got {}", window.utilization);
     }
 
     #[test]

@@ -18,8 +18,9 @@
 //!
 //! **Build it in release.** The profile moves the headline figure by 7x -
 //! the same transcript and the same command read 1,413 ms for a read in a
-//! debug build and 204 ms in a release one - so every figure printed with a
-//! run carries the profile it was built as.
+//! debug build and 204 ms in a release one - so every row says which build
+//! its figures came from. That is the MEASURING CLIENT's build, and the
+//! server's is a separate thing a row cannot report: see `client_profile`.
 //!
 //! **Every arm prints its own denominator** - the frames it read, the bytes
 //! they carried, the turns and messages they held - because an arm that
@@ -127,10 +128,14 @@ fn cpu_seconds(pid: u32) -> anyhow::Result<f64> {
         .output()
         .map_err(|error| anyhow::anyhow!("ps could not be run for pid {pid}: {error}"))?;
     if !out.status.success() {
+        // `ps` says nothing on stderr for a dead PID, which is its common
+        // case here, so the sentence carries the status rather than a colon
+        // with nothing after it.
+        let said = String::from_utf8_lossy(&out.stderr).trim().to_owned();
         anyhow::bail!(
-            "ps failed for pid {pid} ({}): {}",
+            "ps failed for pid {pid} ({}){}",
             out.status,
-            String::from_utf8_lossy(&out.stderr).trim(),
+            if said.is_empty() { String::new() } else { format!(": {said}") },
         );
     }
     let text = String::from_utf8_lossy(&out.stdout);
@@ -157,9 +162,20 @@ fn parse_cpu_time(text: &str) -> Option<f64> {
 /// What this run was built as, which moves the headline figure by 7x.
 ///
 /// Same transcript, same command: a debug build reads 1,413 ms where a
-/// release one reads 204. A number about this server means something only
-/// with the conditions beside it, and this is the condition that moves it
-/// most - so it is printed rather than assumed.
+/// release one reads 204, and a debug CLIENT reads 2,695 ms of wall where a
+/// release one reads 1,250.
+///
+/// **This is the MEASURING CLIENT's build, and it is not the server's.** A
+/// row's `charged_cpu_ms` is the server's CPU, which moves with the server's
+/// own build, and the two can differ: a release client measuring a debug
+/// server reports `client_profile: release` about a server built debug. The
+/// server's build is announced by its own serve line and is not recoverable
+/// from a row - `--pid` is an address, and the greeting carries a protocol
+/// version rather than a build.
+///
+/// **The serve line uses this too, and there the caller IS the server.** It
+/// says which build is listening; a row's `client_profile` says which build
+/// is measuring. Two processes, and they can disagree.
 fn profile() -> &'static str {
     if cfg!(debug_assertions) { "debug" } else { "release" }
 }
@@ -224,28 +240,32 @@ struct Measured {
     turns: u64,
     messages: u64,
     asks: u32,
-    /// The server this arm was charged to, so a row lifted out of a terminal
-    /// says which process it measured.
+    /// The PID this arm was charged to, echoed from `--pid`.
+    ///
+    /// **Echoed rather than verified**: nothing here checks that the process
+    /// owns the port, so a recycled PID is charged and then named as the
+    /// server. It is an address for a reader to check, not a claim.
     pid: u32,
 }
 
 impl Measured {
     /// The line one arm reports.
     ///
-    /// **It carries its conditions, not only its numbers.** The profile and
-    /// the server's PID go in every row, and the idle row carries the window
-    /// it measured - because this line is what a reader lifts into a report,
-    /// and two runs of one arm can differ by the CLIENT's build: a debug
-    /// client reads 2,695 ms of wall where a release one reads 1,250, on the
-    /// same server with identical denominators.
+    /// Every row carries the build it was MEASURED WITH, the PID it charged,
+    /// and - on the idle row, which every other arm is charged against - the
+    /// window ASKED FOR rather than the one the clock measured, so a reader
+    /// recomputing the charge from a lifted row gets a number slightly under
+    /// the printed one. The divisor is the idle arm's own wall time, which no
+    /// row prints; the gap is milliseconds normally and wider under load,
+    /// which is when someone is most likely to be recomputing.
     ///
-    /// **That is the bound this instrument has, and it is worth stating
-    /// rather than leaving to be found.** The charge is
-    /// `cpu - idle_cpu * share`, so where the idle arm reads 0.0 the charge
-    /// is insensitive to the client's build; where the server has background
-    /// work the baseline is non-zero, `share` moves with the client's wall,
-    /// and so does the charge. A `wall_ms` above is the client's, never the
-    /// server's.
+    /// **The client's build moves two of the figures, and the charge is only
+    /// as clean as the baseline.** `wall_ms` is the client's own and a debug
+    /// client reads 2,695 ms where a release one reads 1,250 on the same
+    /// server. `charged_cpu_ms` is `cpu - idle_cpu * share`, so where the
+    /// idle arm reads 0.0 the charge is insensitive to that build; where the
+    /// server has background work the baseline is non-zero, `share` moves
+    /// with the client's wall, and the charge moves with it.
     fn report(&self, arm: &str, idle: &Measured, window: Option<f64>) -> String {
         let share = if idle.wall_ms > 0.0 { self.wall_ms / idle.wall_ms } else { 0.0 };
         let window = match window {
@@ -253,9 +273,10 @@ impl Measured {
             None => String::new(),
         };
         format!(
-            "{{\"arm\": \"{arm}\", \"profile\": \"{}\", \"pid\": {}, \"charged_cpu_ms\": {:.1}, \
-             \"wall_ms\": {:.1}, \"frames\": {}, \"bytes\": {}, \"turns\": {}, \"messages\": {}, \
-             \"asks\": {}, \"idle_cpu_ms\": {:.1}, \"idle_share\": {:.3}{window}}}",
+            "{{\"arm\": \"{arm}\", \"client_profile\": \"{}\", \"charged_pid\": {}, \
+             \"charged_cpu_ms\": {:.1}, \"wall_ms\": {:.1}, \"frames\": {}, \"bytes\": {}, \
+             \"turns\": {}, \"messages\": {}, \"asks\": {}, \"idle_cpu_ms\": {:.1}, \
+             \"idle_share\": {:.3}{window}}}",
             profile(),
             self.pid,
             self.cpu_ms - idle.cpu_ms * share,
@@ -427,7 +448,11 @@ async fn measure(args: &Args) -> anyhow::Result<()> {
     if args.arm == Arm::Idle {
         println!(
             "{}",
-            Measured { pid, ..Measured::default() }.report("idle", &idle, Some(args.seconds))
+            Measured { pid, ..Measured::default() }.report(
+                Arm::Idle.name(),
+                &idle,
+                Some(args.seconds)
+            )
         );
         return Ok(());
     }
@@ -511,11 +536,11 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
     });
     // The seat's conversation, put where a `Connected` would have left it.
     //
-    // **The transport does not read a transcript**, so a server that was left
-    // to itself here would answer every arm from an empty conversation and
-    // report the cheapest result of all. The fixture reads through the
-    // surface - which a fixture may and a server may not - and holds what it
-    // read, which is the state a client attaching to a running seat meets.
+    // **The transport does not read a transcript**, so a server left to
+    // itself here would answer every arm from an empty conversation and
+    // report the cheapest result of all. The fixture reads the transcript raw
+    // and holds what it read - the state a client attaching to a running seat
+    // meets.
     fleet
         .hold_conversation(&state, &args.org, &args.project, "lead")
         .map_err(anyhow::Error::msg)?;
@@ -561,4 +586,31 @@ fn breakdown(surface: &Arc<ViewSurface>, seat: &SessionSlot, cwd: &Path) -> anyh
         rss()?,
         turns.len(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::ValueEnum;
+
+    use super::Arm;
+
+    /// An arm reports under the name it is ASKED FOR.
+    ///
+    /// **`name()` is a hand-written match and the report prints what it
+    /// says**, so a variant renamed without it would run one workload and
+    /// report another under the name a person typed - the defect this
+    /// instrument exists to find, made by the instrument. The census is the
+    /// enum's own, so a variant added is covered the day it lands.
+    #[test]
+    fn every_arm_reports_under_the_name_it_is_asked_for() {
+        for arm in Arm::value_variants() {
+            let asked =
+                arm.to_possible_value().expect("every arm has a name").get_name().to_owned();
+            assert_eq!(
+                arm.name(),
+                asked,
+                "the name this arm reports under is not the one a caller asks for",
+            );
+        }
+    }
 }
