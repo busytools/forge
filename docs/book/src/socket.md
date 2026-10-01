@@ -233,7 +233,7 @@ conversation, and what the composer is doing.
 | `reviews` | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty. |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue. |
 | `state` | The seat's scan cwd and what it dictates with, where it has overridden the defaults. |
-| `composer` | What the composer is doing: a take in flight with its meter and phase, the line a finished take left, whether the session is compacting, and a sign-in it is waiting on. The ask it is answering rides `pending_ask` rather than being copied here. |
+| `composer` | What the composer is doing: a take in flight with its meter and phase, the line a finished take left, whether the session is compacting, a sign-in it is waiting on, and the push-to-talk key and mode `forge.toml` configures. The ask it is answering rides `pending_ask` rather than being copied here. |
 
 **`usage`** is the token/cost pool behind a `/usage` view, scanned on the
 ask.

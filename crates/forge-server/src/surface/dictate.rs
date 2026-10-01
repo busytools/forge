@@ -41,6 +41,18 @@ impl ViewSurface {
             device: self.workspace.dictate_device_pick(),
         }
     }
+
+    /// The `[dictate] bind` key, as `forge.toml` declares it. The terminal
+    /// reads the same value for its own key handler; a client draws the
+    /// keyboard the record carries rather than hardcoding one.
+    pub fn dictate_bind(&self) -> forge_workspace::DictateBind {
+        self.workspace.dictate_bind()
+    }
+
+    /// How a press maps onto a take, as `forge.toml` declares it.
+    pub fn dictate_mode(&self) -> forge_workspace::DictateMode {
+        self.workspace.dictate_mode()
+    }
 }
 
 #[cfg(test)]
