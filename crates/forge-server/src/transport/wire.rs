@@ -1125,9 +1125,8 @@ mod tests {
     /// The messages and the fold's own answer for them, over a transcript of
     /// `rows`, read the way the transport reads them.
     fn a_conversation(rows: &[&str]) -> (Vec<Message>, Rendered) {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.seed_transcript("TestOrg", "proj", "lead", rows).expect("the transcript seeds");
         let seat = fixture_seat();
         let surface = fleet.surface();
@@ -1711,9 +1710,8 @@ mod tests {
     /// from nothing.
     #[tokio::test]
     async fn a_home_agents_row_carries_its_peer_counters() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
         fleet.seed_peer_stats(
             &fixture_seat(),
@@ -1756,9 +1754,8 @@ mod tests {
     /// missing row.
     #[tokio::test]
     async fn a_session_snapshot_carries_the_background_registry() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
         fleet.seed_view_facts(
             &fixture_seat(),
@@ -1803,9 +1800,8 @@ mod tests {
     /// carries the same id for a live dynamic worker, and nothing else does.
     #[tokio::test]
     async fn a_session_snapshot_carries_the_occupants_id() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
         fleet.seed_view_facts(
             &fixture_seat(),
@@ -1881,9 +1877,8 @@ mod tests {
     /// so no repo-visible artifact carries it).
     #[tokio::test]
     async fn a_session_snapshot_carries_the_pr_row() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
         let state = TransportState {
             surface: fleet.surface(),
@@ -1911,9 +1906,8 @@ mod tests {
     /// passes that. This drives the values a client draws.
     #[tokio::test]
     async fn the_pr_row_carries_the_scans_pr_and_its_closing_issues() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
         let seat = fixture_seat();
         let surface = fleet.surface();
@@ -1975,9 +1969,8 @@ mod tests {
     /// once is a fight over one directory.
     #[tokio::test]
     async fn a_usage_subscription_is_answered_with_the_pools_report() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
         // A stamp in the past on purpose: a record stamped "now" flips which
         // rolling windows hold it at midnight, so the assertion below would be
@@ -2099,9 +2092,8 @@ mod tests {
     /// The socket walks it on the reads that encode a subject.
     #[tokio::test]
     async fn a_stale_process_snapshot_is_walked_and_stored_where_both_readers_find_it() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let seat = fixture_seat();
         let stale = SystemTime::now() - Duration::from_secs(60);
         fleet.seed_view_facts(
@@ -2134,9 +2126,8 @@ mod tests {
     /// make the socket walk more often than the terminal's own cadence does.
     #[tokio::test]
     async fn a_fresh_process_snapshot_is_left_alone() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let seat = fixture_seat();
         let fresh = SystemTime::now();
         fleet.seed_view_facts(
@@ -2165,9 +2156,8 @@ mod tests {
     /// nothing read what they had set.
     #[tokio::test]
     async fn the_dictation_a_client_set_comes_back() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let seat = fixture_seat();
         // A session has to exist for the override to land on, which is why
         // this is a seat with a live agent rather than a bare project.
@@ -2286,9 +2276,8 @@ mode = \"toggle\"
     /// projects do declare one.
     #[tokio::test]
     async fn a_projects_row_carries_the_chip_field() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
@@ -2311,9 +2300,8 @@ mode = \"toggle\"
     /// never carried, so a client could create a cron and never see it again.
     #[tokio::test]
     async fn a_projects_schedules_ride_its_row() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.add_cron("proj", "a nightly sweep").expect("the cron is added");
         let state = TransportState {
             surface: fleet.surface(),
@@ -2341,18 +2329,18 @@ mode = \"toggle\"
     /// branch at all on a worker's row rather than another seat's.
     #[tokio::test]
     async fn a_workers_row_carries_its_own_tree_and_not_the_projects() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let dir = tempfile::tempdir().expect("tempdir");
         // The trees go up BEFORE the fleet does. A project's registry key is
         // derived from its path and the derivation canonicalises, so a key
         // taken while the directory is absent is not the key taken once it is
         // there - and a worker registered under the first is registered under
         // one nothing looks up again.
-        let root = dir.join("proj");
+        let root = dir.path().join("proj");
         let worktree = root.join(".claude/worktrees/w1");
         repo_at(&root, "main", 1);
         repo_at(&worktree, "worktree-em-dash-sweep", 2);
 
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
             .expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
         fleet.add_git_worker("TestOrg", "proj", "w1").expect("the worker is added");
@@ -2411,11 +2399,11 @@ mode = \"toggle\"
     /// whole read exists to remove, one row narrower.
     #[tokio::test]
     async fn a_seat_with_no_directory_borrows_no_tree() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let root = dir.join("proj");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("proj");
         repo_at(&root, "main", 1);
 
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
             .expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
         fleet.add_despawned_worker("proj", "gone").expect("the label is left behind");
@@ -2493,9 +2481,8 @@ mode = \"toggle\"
     /// would draw as `no processes` where the truth is `nothing known`.
     #[tokio::test]
     async fn a_seat_with_no_claude_process_keeps_the_snapshot_it_had() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let seat = fixture_seat();
         let held = SystemTime::now() - Duration::from_secs(60);
         fleet.seed_view_facts(

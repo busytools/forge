@@ -25,8 +25,7 @@ use serde_json::Value;
 /// carries REAL VALUES: a walk against a quiet fleet reports null everywhere
 /// and reads exactly as green.
 async fn a_server() -> (String, Fleet) {
-    let dir = tempfile::tempdir().expect("tempdir").keep();
-    let fleet = Fleet::in_dir(&dir, &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
     fleet.start("TestOrg", "proj").expect("the project starts");
     fleet.seed_task(Task {
         id: TaskId::from("t-1"),

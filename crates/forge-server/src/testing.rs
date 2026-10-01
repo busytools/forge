@@ -11,19 +11,16 @@
 //! a caller that wants a panic is the one that asks for it.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
 use forge_primitives::tasks::{Task, TaskStatus};
-use forge_primitives::{CronEntry, CronId, CronKind, WebConfig};
+use forge_primitives::{CronEntry, CronId, CronKind};
 use forge_workspace::{ProjectKey, Workspace};
 
 use crate::SessionUpdate;
-use crate::live::Live;
 use crate::surface::{PendingKind, ViewSurface};
 use crate::transport::TransportState;
-use crate::work::WorkCache;
 
 /// What a fixture hands back when it cannot build what was asked for.
 pub type FixtureError = Box<dyn std::error::Error + Send + Sync>;
@@ -58,42 +55,24 @@ pub struct Fleet {
     /// Where the workspace's store and the CLI's transcripts live, which a
     /// transcript fixture has to write into.
     config_dir: std::path::PathBuf,
+    /// Declared last so it drops after the store under it has closed, and
+    /// only set when the fleet made its own directory.
+    owned_dir: Option<tempfile::TempDir>,
 }
 
 /// The session id a seeded transcript belongs to. One per fleet is enough:
 /// a test that needs two reads two slots against their own files.
 const SEEDED_SESSION: &str = "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45";
 
-impl TransportState {
-    /// A server over a fixture fleet, for a test that opens a socket.
-    pub fn for_test() -> Result<Self, FixtureError> {
-        let fleet = Fleet::in_dir(&scratch_dir(), &[("TestOrg", &["proj"])])?;
-        Ok(Self {
-            surface: fleet.surface(),
-            work: Arc::new(WorkCache::new()),
-            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
-            live: Mutex::new(Live::new()),
-            config: WebConfig::default(),
-        })
-    }
-}
-
-/// A directory under the system temp dir, one per call.
-///
-/// `Fleet` writes a store under the directory it is given and needs it to
-/// outlive the fixture, so the directory is left in place rather than
-/// cleaned up. This module ships with the library, so it cannot reach for a
-/// temp-file crate: a dev-dependency is not in scope here.
-fn scratch_dir() -> std::path::PathBuf {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    std::env::temp_dir().join(format!(
-        "forge-server-test-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
 impl Fleet {
+    /// A fleet over a config directory of its own, removed with the fleet.
+    pub fn new(orgs: &[(&str, &[&str])]) -> Result<Self, FixtureError> {
+        let dir = tempfile::tempdir()?;
+        let mut fleet = Self::in_dir(dir.path(), orgs)?;
+        fleet.owned_dir = Some(dir);
+        Ok(fleet)
+    }
+
     /// A fleet whose `forge.toml` declares one project per name under each
     /// `(org, projects)` entry, in the order given. `config_dir` has to
     /// outlive the fleet - the workspace's store lives under it, and each
@@ -119,6 +98,7 @@ impl Fleet {
             surface: Arc::new(ViewSurface::new(Arc::clone(&workspace))),
             workspace,
             config_dir: config_dir.to_owned(),
+            owned_dir: None,
         })
     }
 
@@ -565,4 +545,37 @@ fn config(config_dir: &Path, orgs: &[(&str, &[&str])]) -> String {
         config_dir.join("models").display()
     ));
     sections.concat()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Fleet;
+
+    /// A fixture's directory goes with the fixture.
+    ///
+    /// Asserted across three, because one that abandons only its first
+    /// directory would pass with one.
+    #[test]
+    fn a_fixtures_directory_is_removed_with_the_fixture() {
+        let paths: Vec<std::path::PathBuf> = (0..3)
+            .map(|_| {
+                let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+                let path = fleet.config_dir.clone();
+                assert!(
+                    path.exists(),
+                    "the directory is there while the fixture is: {}",
+                    path.display(),
+                );
+                path
+            })
+            .collect();
+
+        for path in paths {
+            assert!(
+                !path.exists(),
+                "and is removed with it, not abandoned under the temp dir: {}",
+                path.display(),
+            );
+        }
+    }
 }

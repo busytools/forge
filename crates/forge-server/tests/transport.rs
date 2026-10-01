@@ -31,9 +31,8 @@ fn lead_seat() -> SessionSlot {
 /// A server over a fresh fixture fleet, the URL to reach it, and the fleet
 /// itself so a test can drive the core as well as the socket.
 ///
-/// The config directory is kept rather than dropped with the fleet: the
-/// workspace's store lives under it, and a surface whose files vanished
-/// under it is not what a test means to exercise.
+/// The fleet carries the config directory its store lives under, so the
+/// returned `Fleet` has to be held for as long as a test drives the socket.
 async fn a_server() -> (String, Fleet) {
     let (url, fleet, _state) = a_server_with_state().await;
     (url, fleet)
@@ -47,8 +46,7 @@ async fn a_server() -> (String, Fleet) {
 /// [`Fleet::hold_conversation`]. A test that skipped that would ask for a page
 /// on a seat nothing has seeded and get the empty one.
 async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
-    let dir = tempfile::tempdir().expect("tempdir").keep();
-    let fleet = Fleet::in_dir(&dir, &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
     let state = Arc::new(TransportState {
         surface: fleet.surface(),
         work: Arc::new(WorkCache::new()),
@@ -215,16 +213,9 @@ async fn update_until(
 /// said nothing" rather than as a bad answer to something.
 #[tokio::test]
 async fn a_client_can_open_the_socket() {
-    let state = Arc::new(TransportState::for_test().expect("the fixture builds"));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    tokio::spawn(async move {
-        let _ = serve(state, listener).await;
-    });
+    let (url, _fleet, _state) = a_server_with_state().await;
 
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/socket"))
-        .await
-        .expect("the socket opens");
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.expect("the socket opens");
     // The first thing the server says is its greeting, so a client knows it
     // is speaking to a forge and not to something else on the port.
     let msg = socket.next().await.expect("a greeting").expect("no error");

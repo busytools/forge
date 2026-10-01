@@ -14,7 +14,7 @@ publish = false
 # stub workspace with a seeded roster, so a view test drives a real page
 # without its own manifest naming `forge-workspace`. Production builds
 # never see this code.
-testing = ["forge-workspace/testing", "forge-workspace/test-helpers"]
+testing = ["dep:tempfile", "forge-workspace/testing", "forge-workspace/test-helpers"]
 
 # The measurement harness: a server over a fixture fleet, plus the client that
 # prices a request against it. It needs `testing` for the fleet, so it is
@@ -55,6 +55,9 @@ tokio = { workspace = true, features = ["sync", "net"] }
 # The Monitor tail read reports a file it could not open, which is a
 # diagnosis a reader makes from the log rather than from the page.
 tracing = { workspace = true }
+# The fleet fixture's own directory, which the fixture holds and removes
+# with itself. Gated with `testing`, so no production build links it.
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 # This crate's own tests drive the fleet fixture `testing` gates, so a
@@ -69,7 +72,6 @@ forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
 # are `forge-dictate`'s types, so the test that they arrive populated names
 # them here rather than asserting a shape without a value.
 forge-dictate = { workspace = true }
-tempfile = { workspace = true }
 # The connectors fixture seeds durable subscriptions, which are keyed by id.
 uuid = { workspace = true }
 # A test reads back the records a site emitted, which needs a subscriber to
