@@ -37,7 +37,7 @@ function chipBox(selector: string): boolean {
     .trim()
     .replace(/::?[\w-]+(?:\([^)]*\))?/g, '')
     .replace(/\[[^\]]*\]/g, '');
-  return /(^|[\s>+~])(?:details\.)?\.hooks$/.test(bare);
+  return /(^|[\s>+~])(?:details)?\.hooks$/.test(bare);
 }
 
 /** The values of `display` that lay a box's own children out in one row. */
@@ -91,16 +91,19 @@ describe('the hook chip a turn carries', () => {
     // regex over a page rather than a file read.
     expect(BOOK, "the book page's own sheet, extracted rather than empty").toContain('.hooks');
 
-    const laying = SHEETS.flatMap(([where, sheet]) =>
-      rules(sheet)
-        .filter((rule) => rule.selectors.some(chipBox))
-        .flatMap((rule) =>
-          [...rule.body.matchAll(/display\s*:\s*([^;]+)/g)]
-            .map(([, value = '']) => value.trim())
-            .filter((value) => ROW_DISPLAYS.includes(value))
-            .map((value) => `${where}: display: ${value}`),
-        ),
-    );
+    const laying = SHEETS.flatMap(([where, sheet]) => {
+      const boxes = rules(sheet).filter((rule) => rule.selectors.some(chipBox));
+      // The classifier's own denominator: a predicate that matches none of the
+      // spellings it claims reports every sheet clean, so each sheet has to
+      // name the chip's box before its silence means anything.
+      expect(boxes.length, `${where} spells the chip's own rule`).toBeGreaterThan(0);
+      return boxes.flatMap((rule) =>
+        [...rule.body.matchAll(/display\s*:\s*([^;]+)/g)]
+          .map(([, value = '']) => value.trim())
+          .filter((value) => ROW_DISPLAYS.includes(value))
+          .map((value) => `${where}: display: ${value}`),
+      );
+    });
 
     expect(laying, `the chip's own box lays its children in a row: ${laying.join(', ')}`).toEqual(
       [],
@@ -113,11 +116,20 @@ describe('the hook chip a turn carries', () => {
    * not on the page in that state at all.
    */
   it('draws the chip open in the book, where its rows can be seen', () => {
-    const open = /<details class="hooks" open>[\s\S]*?<\/details>/.exec(PAGE)?.[0];
-    expect(open, 'the book draws the chip open').toBeDefined();
-    expect(open, 'with the rows the chip counted').toContain('class="body"');
-    expect(open, 'each one of them drawn').toContain('class="term"');
-    expect(open, 'a command the chip ran').toContain('cargo fmt --check');
-    expect(open, 'with the duration it took').toContain('412ms');
+    const open = /<details class="hooks" open>[\s\S]*?<\/details>/.exec(PAGE)?.[0] ?? '';
+    expect(open, 'the book draws the chip open').not.toBe('');
+    expect(open, 'with the rows it holds in the shared body').toContain('class="body"');
+
+    // The sample rows are the drawing's own to re-word; what holds is the
+    // SHAPE - one row per action the chip counted, each a command with the
+    // duration it took.
+    const counted = /hook summary &#183; (\d+) actions/.exec(open)?.[1] ?? '';
+    expect(counted, 'the chip says how many actions it took').not.toBe('');
+    const rows = open.match(/<div class="term">[^<]+<\/div>/g) ?? [];
+    expect(rows.length, 'a row drawn per action the chip counted').toBe(Number(counted));
+    expect(
+      rows.filter((row) => !/\d+(\.\d+)?(ms|s)/.test(row)),
+      'every row a command with the duration it took',
+    ).toEqual([]);
   });
 });
