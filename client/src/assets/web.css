@@ -1122,10 +1122,15 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   font-size: var(--fs-label); color: var(--dim); letter-spacing: .06em;
   text-transform: uppercase; }
 .ac .h .n { margin-left: auto; }
+/* A group's label inside the list - forge's own commands, then the CLI's. It
+   scrolls with the rows rather than pinning, which is the terminal's divider. */
+.ac .grp { padding: 7px 13px 2px; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
 /* The window the candidates scroll in. Ten rows is the picker's own window
    and not its cap: the list behind it runs to two hundred, and the header
-   says how many that is. The height is ten rows of the type scale above,
-   so the tenth is whole, and it gives way to a fraction of the viewport so
+   says how many that is. The height is ten rows of the type scale above, so
+   a row is never cut in half, with a heading inside the window taking its
+   own height out of that; and it gives way to a fraction of the viewport so
    a short one - a phone on its side - still leaves the box on screen with
    nothing able to scroll to it. */
 .ac .rows { max-height: min(333px, 40vh); overflow-y: auto; scrollbar-gutter: stable; }

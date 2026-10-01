@@ -32,31 +32,42 @@
     tabindex="-1"
     aria-activedescendant={rowId(offer, marked)}
   >
-    {#each offer.rows as row, at (row.insert)}
-      {@const parts = mark(row.text, offer.query)}
-      <div
-        class="it"
-        class:sel={at === marked}
-        role="option"
-        id={rowId(offer, at)}
-        aria-selected={at === marked}
-        tabindex="-1"
-        onclick={() => onpick(at)}
-        onkeydown={(event) => {
-          if (event.key !== 'Enter' && event.key !== ' ') return;
-          event.preventDefault();
-          onpick(at);
-        }}
-      >
-        {#if row.glyph !== null}
-          <span class="g">{row.glyph}</span>
+    <!-- One group per heading, which is the shape a listbox's groups take: an
+         unlabelled one when the list heads nothing, which is every list but
+         the `/` list's whole one. -->
+    {#each offer.groups as group (group.from)}
+      <div role="group" aria-label={group.title}>
+        {#if group.title !== null}
+          <div class="grp">{group.title}</div>
         {/if}
-        <span class="p"
-          >{parts.before}{#if parts.hit !== ''}<em>{parts.hit}</em>{/if}{parts.after}</span
-        >
-        {#if row.detail !== ''}
-          <span class="d">{row.detail}</span>
-        {/if}
+        {#each group.rows as row, at (row.insert)}
+          {@const index = group.from + at}
+          {@const parts = mark(row.text, offer.query)}
+          <div
+            class="it"
+            class:sel={index === marked}
+            role="option"
+            id={rowId(offer, index)}
+            aria-selected={index === marked}
+            tabindex="-1"
+            onclick={() => onpick(index)}
+            onkeydown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              onpick(index);
+            }}
+          >
+            {#if row.glyph !== null}
+              <span class="g">{row.glyph}</span>
+            {/if}
+            <span class="p"
+              >{parts.before}{#if parts.hit !== ''}<em>{parts.hit}</em>{/if}{parts.after}</span
+            >
+            {#if row.detail !== ''}
+              <span class="d">{row.detail}</span>
+            {/if}
+          </div>
+        {/each}
       </div>
     {/each}
   </div>
