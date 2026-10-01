@@ -54,6 +54,14 @@ export interface RailGroup {
   heading: string;
   /** `needs` carries the heading's own colour, which is the sheet's rule. */
   klass: string;
+  /**
+   * How many rows this heading folds away, or `null` when it folds nothing.
+   *
+   * One field rather than a flag beside a number, so a heading cannot claim to
+   * fold and hide nothing: a folded section with no count reads as an empty
+   * one, which is the whole reason the count is drawn on it.
+   */
+  hidden: number | null;
   projects: RailProject[];
 }
 
@@ -67,7 +75,15 @@ export interface RailProject {
   age: string;
   asleep: boolean;
   row: Row;
+  /** The workers it draws, which are the ones awake. */
   workers: Row[];
+  /**
+   * The sleeping workers one row of theirs hides, empty when there are none:
+   * a reader working in a live project is not working in the seats beside it
+   * that have gone to sleep. Carried whole rather than as a count, because the
+   * row that hides them is the row that opens them.
+   */
+  sleeping: Row[];
   why: { line: string; bad: boolean } | null;
 }
 
@@ -443,25 +459,36 @@ function whyOf(rows: Row[]): { line: string; bad: boolean } | null {
  */
 export function railGroups(home: HomeWire, current: SessionSlot, now: number): RailGroup[] {
   const groups: RailGroup[] = [
-    { heading: 'needs you', klass: 'state needs', projects: [] },
-    { heading: 'working', klass: 'state', projects: [] },
-    { heading: 'asleep', klass: 'state', projects: [] },
+    { heading: 'needs you', klass: 'state needs', hidden: null, projects: [] },
+    { heading: 'working', klass: 'state', hidden: null, projects: [] },
+    // The sleeping half of the fleet is the one nobody is working in, so it is
+    // the one heading that folds: everything under it is still counted on the
+    // heading, because a fold that reads as an empty section is worse than no
+    // fold at all.
+    { heading: 'asleep', klass: 'state', hidden: 0, projects: [] },
   ];
 
   for (const entry of home.projects) {
     const { lead, workers } = projectRows(home, entry);
     const all = [lead, ...workers];
     const rank = all.reduce((best, row) => Math.min(best, rankOf(row.state, row.pending)), 2);
-    groups[rank]?.projects.push({
+    const group = groups[rank];
+    if (group === undefined) continue;
+    const sleeping = workers.filter((row) => rankOf(row.state, row.pending) === 2);
+    group.projects.push({
       name: entry.project.name,
       org: entry.project.org,
       current: entry.project.org === current.org && entry.project.name === current.project,
       age: whenOf(lead, now),
       asleep: rank === 2,
       row: lead,
-      workers,
+      workers: workers.filter((row) => rankOf(row.state, row.pending) !== 2),
+      sleeping,
       why: whyOf(all),
     });
+    // The rows the heading hides when it folds: the project's own row and
+    // every worker under it, drawn or folded.
+    if (group.hidden !== null) group.hidden += 1 + workers.length;
   }
   return groups.filter((group) => group.projects.length > 0);
 }

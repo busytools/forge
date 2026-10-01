@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import type { Connection } from '../socket';
-import type { HomeWire } from '../wire/home';
+import type { AgentRow, HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import Session from './Session.svelte';
 import SessionId from './SessionId.svelte';
@@ -225,6 +225,54 @@ function reaches(declared: string | undefined, rowCount: number): boolean {
   const end = tail === undefined ? start : Number(tail) < 0 ? rowCount : Number(tail);
   return start === 1 && end >= rowCount;
 }
+
+/** A row for the fixture's lead, in the state named. */
+function row(label: string, lifecycle: AgentRow['lifecycle']): AgentRow {
+  const first = homeWire.agents[0];
+  if (first === undefined) throw new Error('the fixture holds no agent');
+  return { ...first, slot: { ...first.slot, label }, label, lifecycle, pending: null };
+}
+
+describe('the rail folds', () => {
+  /**
+   * The asleep section folds, and the heading carries what it hides: a fold
+   * that read as an empty section would be worse than the rows it replaced.
+   */
+  it('folds the asleep heading, counting the rows behind it', () => {
+    const body = draw({ wire: { ...homeWire, agents: [row('lead', 'Sleeping')] } });
+    expect(body).toContain('class="gfold"');
+    expect(body).toContain('<span class="gh">asleep</span>');
+    expect(body, 'the fold does not say how much it hides').toContain('<span class="cn">1</span>');
+  });
+
+  /**
+   * A live project keeps its awake workers on the rows and folds the sleeping
+   * ones behind one of their own, which counts them.
+   */
+  it("folds a project's sleeping workers behind one counted row", () => {
+    const body = draw({
+      wire: {
+        ...homeWire,
+        agents: [
+          row('lead', 'Running'),
+          row('awake', 'Running'),
+          row('slept-1', 'Sleeping'),
+          row('slept-2', 'Sleeping'),
+        ],
+      },
+    });
+    expect(body).toContain('class="sfold"');
+    expect(body, 'the row hiding the sleeping seats does not count them').toContain('2 asleep');
+    expect(body, 'an awake worker was folded away').toContain('href="/session/TestOrg/proj/awake"');
+  });
+
+  it('draws no fold for a project whose workers are all awake', () => {
+    const body = draw({
+      wire: { ...homeWire, agents: [row('lead', 'Running'), row('awake', 'Running')] },
+    });
+    expect(body, 'a project with nothing asleep drew a fold').not.toContain('class="sfold"');
+  });
+});
 
 describe('the session id cell', () => {
   const cell = (id: string): string => render(SessionId, { props: { id } }).body;

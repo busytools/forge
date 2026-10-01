@@ -178,6 +178,59 @@ describe('the rail', () => {
     ).toBe('asked you a question');
   });
 
+  /**
+   * The asleep section folds, and its heading carries what it hides: a folded
+   * section with no count reads as an empty one.
+   */
+  it('counts the rows the asleep heading hides', () => {
+    const sleeping: AgentRow = { ...lead(), lifecycle: 'Sleeping', pending: null, reason: null };
+    const worker: AgentRow = { ...sleeping, slot: { ...sleeping.slot, label: 'w1' }, label: 'w1' };
+    const home = withHome({
+      agents: [{ ...sleeping, slot: { ...sleeping.slot, label: 'lead' } }, worker],
+    });
+    const asleep = railGroups(home, LEAD, 0).find((group) => group.heading === 'asleep');
+
+    expect(asleep?.hidden, 'the asleep heading hides nothing it does not count').toBe(2);
+    expect(
+      railGroups(homeWire, LEAD, 0).find((group) => group.heading === 'needs you')?.hidden,
+      'a group that does not fold claimed a count',
+    ).toBeNull();
+  });
+
+  /**
+   * A project's sleeping workers fold behind one row of their own: a reader
+   * working in a live project is not working in them.
+   */
+  it("folds a project's sleeping workers behind one row, keeping the awake ones", () => {
+    const leadRow: AgentRow = { ...lead(), lifecycle: 'Running', pending: null, reason: null };
+    const worker = (label: string, lifecycle: AgentRow['lifecycle']): AgentRow => ({
+      ...leadRow,
+      slot: { ...leadRow.slot, label },
+      label,
+      lifecycle,
+    });
+    const home = withHome({
+      agents: [
+        leadRow,
+        worker('w1', 'Running'),
+        worker('w2', 'Sleeping'),
+        worker('w3', 'LoggedOut'),
+      ],
+    });
+    const project = railGroups(home, LEAD, 0).find((group) => group.heading === 'working')
+      ?.projects[0];
+
+    expect(
+      project?.workers.map((row) => row.slot.label),
+      'an awake worker was folded away',
+    ).toEqual(['w1']);
+    expect(
+      project?.sleeping.map((row) => row.slot.label),
+      'the sleeping workers were not folded, in the order the roster lists them',
+    ).toEqual(['w2', 'w3']);
+    expect(project?.current, 'folding its workers moved the project out of working').toBe(true);
+  });
+
   it('marks the seat the page is showing', () => {
     const groups = railGroups(homeWire, LEAD, 0);
     const shown = groups.flatMap((group) => group.projects).find((entry) => entry.current);

@@ -1,10 +1,11 @@
 <script lang="ts">
+  import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import { hrefForSlot } from '../routes';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
-  import { fleetCount, railFooter, railGroups, railMark } from './view';
+  import { fleetCount, railFooter, railGroups, railMark, type RailProject } from './view';
 
   /**
    * The projects rail: every declared project, grouped by the strongest state
@@ -57,32 +58,70 @@
     </button>
   </div>
   <div class="scroll">
-    {#each groups as group (group.heading)}
-      <div class={group.klass}>{group.heading}</div>
-      {#each group.projects as project (project.org + '/' + project.name)}
-        <div class="pj" class:cur={project.current}>
-          <div class="pr">
-            <span class="dot {railMark(project.row.state)}"></span>
-            <span class="nm"><a href={hrefForSlot(project.row.slot)}>{project.name}</a></span>
-            <span class="org">{project.org}</span>
-            {#if project.asleep}
-              <span class="age">{project.age}</span>
-            {:else}
-              <CloseChip />
-            {/if}
-          </div>
-          {#if project.why !== null}
-            <div class="why" class:bad={project.why.bad}>{project.why.line}</div>
+    <!-- One project's block, drawn the same in a folded group and an open
+         one: the asleep heading is the only thing a folded group changes. -->
+    {#snippet projectBlock(project: RailProject)}
+      <div class="pj" class:cur={project.current}>
+        <div class="pr">
+          <span class="dot {railMark(project.row.state)}"></span>
+          <span class="nm"><a href={hrefForSlot(project.row.slot)}>{project.name}</a></span>
+          <span class="org">{project.org}</span>
+          {#if project.asleep}
+            <span class="age">{project.age}</span>
+          {:else}
+            <CloseChip />
           {/if}
-          {#each project.workers as worker (worker.slot.label)}
-            <div class="wk">
-              <span class="dot {railMark(worker.state)}"></span>
-              <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
-              <CloseChip />
-            </div>
-          {/each}
         </div>
-      {/each}
+        {#if project.why !== null}
+          <div class="why" class:bad={project.why.bad}>{project.why.line}</div>
+        {/if}
+        {#each project.workers as worker (worker.slot.label)}
+          <div class="wk">
+            <span class="dot {railMark(worker.state)}"></span>
+            <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
+            <CloseChip />
+          </div>
+        {/each}
+        <!-- The seats this project has asleep, behind one row that counts
+             them: they are rows a reader is not working in, and the count is
+             what keeps the fold from reading as a project with no workers. -->
+        {#if project.sleeping.length > 0}
+          <details class="sfold">
+            <summary class="wk">
+              <span class="dot off"></span>
+              <span class="nm">{project.sleeping.length} asleep</span>
+              <Chevron />
+            </summary>
+            {#each project.sleeping as worker (worker.slot.label)}
+              <div class="wk">
+                <span class="dot {railMark(worker.state)}"></span>
+                <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
+                <CloseChip />
+              </div>
+            {/each}
+          </details>
+        {/if}
+      </div>
+    {/snippet}
+
+    {#each groups as group (group.heading)}
+      {#if group.hidden === null}
+        <div class={group.klass}>{group.heading}</div>
+        {#each group.projects as project (project.org + '/' + project.name)}
+          {@render projectBlock(project)}
+        {/each}
+      {:else}
+        <details class="gfold">
+          <summary>
+            <span class="gh">{group.heading}</span>
+            <span class="cn">{group.hidden}</span>
+            <Chevron />
+          </summary>
+          {#each group.projects as project (project.org + '/' + project.name)}
+            {@render projectBlock(project)}
+          {/each}
+        </details>
+      {/if}
     {/each}
   </div>
 
