@@ -3589,13 +3589,13 @@ async fn the_four_sections_are_absent_when_the_session_reports_nothing() {
     }
 }
 
-/// The page draws with the built-in pair, and the sheet declares neither
+/// The page draws with the built-in face, and the sheet declares neither
 /// stack of its own. The absence is the load-bearing half: the injected
 /// block is emitted before the link, so a stack in the sheet's own `:root`
 /// would win on document order at equal specificity and the page would
 /// draw the OS face with nothing reporting it.
 #[tokio::test]
-async fn the_page_draws_with_the_built_in_pair() {
+async fn the_page_draws_with_the_built_in_face() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
     let (_bound, config) = start(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface()).await;

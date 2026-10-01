@@ -96,7 +96,7 @@ export function rootTokens(_theme: string | null): Record<string, string> {
  * set.
  *
  * A name nobody ships draws no stack rather than the built-in one: the
- * server refuses such a config at boot, and dressing it as the built-in pair
+ * server refuses such a config at boot, and dressing it as the built-in face
  * would make an ignored name read as the key working.
  */
 export function fontStack(name: string | null): { ui: string; mono: string } | null {

@@ -57,7 +57,7 @@ pub const MARK_NAMES: &[&str] = &[
 pub const THEME_NAMES: &[&str] = &["dark"];
 
 /// The typeface sets forge ships, by the name `[web] font` takes. The
-/// built-in pair has no name of its own: an unset key draws it, and the
+/// built-in face has no name of its own: an unset key draws it, and the
 /// one name here is the opt-out to the stacks the OS already has.
 pub const FONT_NAMES: &[&str] = &["system"];
 
