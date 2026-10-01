@@ -4017,6 +4017,88 @@ provider = "anthropic"
         }
     }
 
+    /// A replay answers with the conversation the task has CARRIED, not with
+    /// the history it was handed at connect.
+    ///
+    /// **This is the mechanism the transport's seed rests on and nothing else
+    /// observed it**: with `retain` mutated to a no-op the whole workspace
+    /// suite stays green, and a replay then hands back the connect alone -
+    /// which is empty for a fresh session and stops at the connect for a
+    /// resumed one, so a consumer joining late gets a seat that never spoke.
+    ///
+    /// The two halves are asserted apart so a change to either fails on its
+    /// own message: the frames the session emitted after its connect, and the
+    /// count a boundary moved.
+    #[tokio::test]
+    async fn a_replay_answers_with_the_conversation_the_task_has_carried() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::from_str_for_test("replay-carries-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+
+        // A FRESH session, which is the case that makes this load-bearing: the
+        // CLI hands over an empty history, so a replay answering from the
+        // connect alone would hand back nothing at all.
+        let mut event = connected_event(&session_key.display(), "/tmp/replay");
+        if let AgentEvent::Connected { history_updates, .. } = &mut event {
+            *history_updates = Some(Vec::new());
+        }
+        task.translate_event(event);
+
+        // One frame the session emitted after it, and one compaction boundary.
+        for msg in [
+            serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": "carried"},
+                "session_id": session_key.display(),
+            }))
+            .expect("a user frame"),
+            forge_primitives::Message::CompactBoundary {
+                trigger: "auto".to_owned(),
+                pre_tokens: 1,
+                uuid: "c1".to_owned(),
+                session_id: session_key.display(),
+            },
+        ] {
+            task.translate_event(AgentEvent::SdkMessage { session_id: session_key.display(), msg });
+        }
+        while update_rx.try_recv().is_ok() {}
+
+        task.execute_command(crate::protocol::Command::ReplayConversation {
+            key: session_key.clone(),
+        });
+
+        let mut replayed = None;
+        while let Ok(update) = update_rx.try_recv() {
+            if let SessionUpdate::HistoryReplayed { history, compaction_count, .. } = update {
+                replayed = Some((history, compaction_count));
+            }
+        }
+        let (history, compaction_count) =
+            replayed.expect("a replay is answered with the conversation");
+
+        assert_eq!(
+            history.len(),
+            2,
+            "the frames the session emitted after its connect are in the replay, not only the \
+             empty history the connect carried",
+        );
+        assert_eq!(compaction_count, 1, "and the boundary it crossed moved the count");
+    }
+
     /// A re-spawn that replaces the session seeds `connected_once =
     /// true`, so the new task's first Connected emits `SessionReplaced`
     /// (not a fresh Connected) carrying the resumed history. The TUI
