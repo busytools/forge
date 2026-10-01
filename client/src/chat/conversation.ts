@@ -210,14 +210,15 @@ function sameWords(one: string[], other: string[]): boolean {
  * neither of them. A frame with neither an id nor words - a tool result, a
  * thought - is never found this way, which repeats it rather than dropping it.
  *
- * `reconcile` is the one caller that narrows the words arm, and it says why
- * there: an id is unique and needs no guard, and the words are what an
- * exchange that is over can share with one still arriving.
+ * `prose` is what narrows the arm, and its one caller says why there: an id is
+ * unique and needs no guard, while the words are what a delivery row shares
+ * with the page's copy of it - and what a turn opened by an id-bearing frame
+ * must NOT be matched by.
  */
-function carries(messages: unknown[], message: unknown, reconcile = true): boolean {
+function carries(messages: unknown[], message: unknown, prose = true): boolean {
   const id = uuidOf(message);
   if (id !== null) return messages.some((held) => uuidOf(held) === id);
-  if (!reconcile) return false;
+  if (!prose) return false;
   const words = wordsOf(message);
   if (words.length === 0) return false;
   return messages.some((held) => sameWords(words, wordsOf(held)));
@@ -488,8 +489,15 @@ export class Chat {
       // be the turn still arriving - and matching it replaces the live row
       // with an older one that merely says the same words, which drops the row
       // the reader just received.
-      const shares = (messages: unknown[], turn: Turn, unsettled: boolean): boolean =>
-        turn.messages.some((message) => carries(messages, message, unsettled));
+      const shares = (messages: unknown[], turn: Turn, unsettled: boolean): boolean => {
+        // **The words arm is for the turn a frame with no id OPENED**, and for
+        // nothing else. A turn opened by an id-bearing frame is reconciled by
+        // ids, which are unique - and letting its later id-less frames match by
+        // words instead lets two page rows claim the SAME live turn, so both
+        // are drawn under its key and the list throws on the duplicate.
+        const words = unsettled && uuidOf(turn.messages[0]) === null;
+        return turn.messages.some((message) => carries(messages, message, words));
+      };
       const replaced = new Set<Turn>();
       const drawn = named.map((row, index) => {
         // The exchange is the row's messages AFTER the reconciliation above,
@@ -498,7 +506,12 @@ export class Chat {
         // row taken before that reconciliation reads as not carrying what the
         // page plainly carries.
         const copy = copies[index] ?? [];
-        const live = held.turns.find((turn) => turn.live && shares(copy, turn, !settledRow(index)));
+        // One row per live turn: a turn this page already drew is not the
+        // exchange a later row of the same page is an account of, and two rows
+        // under one key are what the list throws on.
+        const live = held.turns.find(
+          (turn) => turn.live && !replaced.has(turn) && shares(copy, turn, !settledRow(index)),
+        );
         if (live === undefined) return row;
         // The page is the account of the turn it copies, so the live turn is
         // replaced either way - and where the copy is settled it is the whole
