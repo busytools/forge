@@ -1770,6 +1770,34 @@ describe('the dock', () => {
     expect(document.activeElement, 'and they bring the keyboard with them').toBe(box());
   });
 
+  /**
+   * The keys a prompt's own box answers to are the box's own, and that routing
+   * is by the editor the box names rather than by its class - a restyle that
+   * renamed the class would otherwise reroute them in silence.
+   */
+  it('hands the keyboard back to the options when Escape lands in the own-words box', () => {
+    const harness = open({ record: record({ pending_ask: permissionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+
+    const box = document.querySelector('.dock [data-editor="dock"]');
+    expect(document.activeElement, 'the box the own-words row opened holds the keyboard').toBe(box);
+
+    press('Escape');
+
+    expect(document.querySelector('.dock [data-editor="dock"]'), 'the box closes').toBeNull();
+    expect(document.activeElement, 'and the keyboard goes back to the options').toBe(
+      document.querySelector('.dock [role="listbox"]'),
+    );
+    // The distinction the routing turns on: a key the dock reads as the field's
+    // own moves the mark, and the same key read as the dock's answers the
+    // prompt - which for a permission is a deny nobody asked for.
+    expect(harness.sent, 'a key in the field does not answer the prompt').toEqual([]);
+  });
+
   it('moves the mark from the keyboard once the dock has the slot', () => {
     const harness = open({ record: record({ pending_ask: permissionAsk() }) });
     const list = document.querySelector('.dock [role="listbox"]');
