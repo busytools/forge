@@ -89,6 +89,17 @@ describe('one turn, as the page draws it', () => {
     expect(body, 'and the words are still there').toContain('just check');
   });
 
+  it('keeps the newlines a reader typed, which assistant prose does not', () => {
+    // The terminal's split: a user block goes through the same path with
+    // `preserve_newlines`, an assistant block without it. A prompt is usually
+    // several lines, so this is the shape a person meets first.
+    const typed = draw(prompt('first line\nsecond line'));
+    const answered = draw(said([{ type: 'text', text: 'first line\nsecond line' }]));
+
+    expect(typed, 'the break the reader typed survives').toContain('<br>');
+    expect(answered, 'and the assistant prose still joins').not.toContain('<br>');
+  });
+
   it('draws the runs the fold cut, rather than regrouping what it holds', () => {
     // A question splits a run, so this turn holds TWO groups with a card
     // between them. A component that grouped its own rows instead of drawing

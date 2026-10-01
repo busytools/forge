@@ -19,6 +19,18 @@ function declares(unit: string, said: string): boolean {
 }
 
 describe('the markdown a message carries, as the sheet draws it', () => {
+  it('keeps a prompt newline as a break, where the same text joins for prose', () => {
+    // The terminal's own split: its user path passes `preserve_newlines`,
+    // which routes through `force_markdown_line_breaks`, and its assistant
+    // path does not - so a prompt's newlines survive and an assistant's
+    // wrapped line joins back into one. A prompt is usually several lines, so
+    // this is the shape a person meets first.
+    const typed = 'first line\nsecond line';
+
+    expect(renderProse(typed), 'assistant prose joins its soft break').not.toContain('<br>');
+    expect(renderProse(typed, true), 'and a prompt keeps it').toContain('<br>');
+  });
+
   it('draws every heading level as one bold line at the prose size', () => {
     // A sheet edit that drops a level is silent: it keeps drawing, only as the
     // browser's default against a reset that zeroes margins, which is an h1 at

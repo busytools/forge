@@ -83,7 +83,7 @@
   {#if block.mine}
     <!-- No label: the orange rule is the attribution. -->
     <div class="mine">
-      <Prose text={block.unit.text} />
+      <Prose text={block.unit.text} preserveLines />
       {#each block.unit.files as file, index (`att-${index}`)}
         <div class="attrow">
           <Icon name="read" class="gl" />
