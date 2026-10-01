@@ -1992,4 +1992,84 @@ describe('the dictation panel', () => {
     expect(document.querySelector('.pop'), 'the panel takes the Escape it is open for').toBeNull();
     expect(document.activeElement, 'and the reader is typing again').toBe(field());
   });
+
+  /**
+   * A walk that failed. The socket's own contract is explicit - the refusal is
+   * rendered where the list would have been - so an empty list region and a
+   * failed walk must not draw the same. This is the composer's own pattern for
+   * a refused dispatch, one file over.
+   */
+  it('draws a failed walk in the list region rather than as an empty list', () => {
+    const shared = wire();
+    const harness = opened({}, shared);
+
+    const door = document.querySelector('.pop .dev');
+    if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
+    door.click();
+    flushSync();
+
+    harness.say({ kind: 'error', what: 'devices', why: 'no permission to the microphone' });
+    flushSync();
+
+    const region = document.querySelector('.pop .list');
+    expect(region?.textContent, 'the refusal is drawn where the list would be').toContain(
+      'no permission to the microphone',
+    );
+    expect(
+      region?.textContent,
+      'and a failed walk does not read as a walk that found nothing',
+    ).not.toContain('No input devices found');
+  });
+
+  it('asks once however many times the row is clicked, and closes on the next', () => {
+    const shared = wire();
+    opened({}, shared);
+    const door = document.querySelector('.pop .dev');
+    if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
+
+    // Three clicks before any answer: each ask opens the microphone stack, so
+    // only the first may leave the panel.
+    door.click();
+    flushSync();
+    door.click();
+    door.click();
+    flushSync();
+    expect(shared.asked, 'the walk is the expensive part, so it is asked for once').toBe(1);
+
+    shared.say({
+      kind: 'devices',
+      devices: [{ id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true }],
+      configured: null,
+    });
+    flushSync();
+
+    const again = document.querySelector('.pop .dev');
+    if (!(again instanceof HTMLElement)) throw new Error('the row went with the list');
+    again.click();
+    flushSync();
+    expect(document.querySelector('.pop .list'), 'a click collapses it again').toBeNull();
+    expect(shared.asked, 'and collapsing asks for nothing').toBe(1);
+  });
+
+  it('marks a pin the walk could not find, where the terminal tags it too', () => {
+    const shared = wire();
+    opened({}, shared);
+    const door = document.querySelector('.pop .dev');
+    if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
+    door.click();
+    flushSync();
+
+    shared.say({
+      kind: 'devices',
+      devices: [{ id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true }],
+      configured: 'unplugged-1',
+    });
+    flushSync();
+
+    const row = document.querySelector('.pop .dev');
+    expect(row?.textContent, 'the pin is named rather than read off the list').toContain(
+      'not present',
+    );
+    expect(row?.classList.contains('missing'), 'and it is marked, not only worded').toBe(true);
+  });
 });

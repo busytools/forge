@@ -1077,6 +1077,12 @@ button.chip { cursor: pointer; }
 button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .pop .note { font-size: var(--fs-label); color: var(--dim); margin-top: 8px; }
 .pop .note .mono { font-family: var(--mono); }
+/* A walk that failed says so in the list region, in the error tone: an empty
+   region would read as a walk that found nothing. */
+.pop .note.bad { color: var(--bad); }
+.pop .dev .tag { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--bad); white-space: nowrap; }
+.pop .dev.missing .nm { color: var(--bad); }
 .pop .dev { margin-top: 9px; width: 100%; display: flex; align-items: center; gap: 9px;
   padding: 8px 10px; border: 1px solid var(--line); border-radius: 11px;
   background: var(--s2); cursor: pointer; }

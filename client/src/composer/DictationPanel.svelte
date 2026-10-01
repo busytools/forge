@@ -106,23 +106,50 @@
   let configured = $state<string | null>(null);
   let listOpen = $state(false);
   let walked = $state(false);
+  /** Whether a walk is in flight, so the row says it is looking. */
+  let walking = $state(false);
+  /** Why a walk failed, which the list region draws where the list would be. */
+  let refused = $state<string | null>(null);
 
   $effect(() => {
     return connection.onMessage((message) => {
-      if (message.kind !== 'devices') return;
-      devices = message.devices;
-      configured = message.configured;
-      walked = true;
-      listOpen = true;
+      if (message.kind === 'devices') {
+        devices = message.devices;
+        configured = message.configured;
+        walked = true;
+        walking = false;
+        refused = null;
+        listOpen = true;
+        return;
+      }
+      // The socket's contract is explicit: a walk that could not enumerate
+      // comes back as an error naming `devices`, and a client renders it where
+      // the list would have been. Drawing nothing would make a failed walk read
+      // exactly like a walk that found no inputs.
+      if (message.kind === 'error' && message.what === 'devices') {
+        refused = message.why;
+        walking = false;
+        listOpen = true;
+      }
     });
   });
 
+  /**
+   * Show the list, or put it away again.
+   *
+   * The walk is asked for ONCE: it opens the microphone stack, so a click while
+   * one is in flight must not start another, and a list already walked is not
+   * walked again. That is what makes clicking the row a toggle rather than a
+   * queue of walks.
+   */
   function openList(): void {
-    listOpen = true;
-    if (walked) return;
-    // One ask for one walk: a socket that is not open answers `false`, and the
-    // row then keeps drawing what it already knows rather than an empty list.
-    connection.devices();
+    listOpen = !listOpen;
+    if (!listOpen || walked || walking) return;
+    walking = true;
+    refused = null;
+    // A socket that is not open answers `false`, and the row then keeps drawing
+    // what it already knows rather than promising a list that is not coming.
+    if (!connection.devices()) walking = false;
   }
 
   /** The device in force: the process pick, else the pin, else the system's own. */
@@ -134,13 +161,64 @@
     return devices?.find((held) => held.id === wanted)?.name ?? wanted;
   });
 
+  /**
+   * Whether the input in force is one the walk could not find.
+   *
+   * A pin can name a device that is not plugged in, and the terminal tags that
+   * row rather than only failing at record time - so the id is named and marked
+   * instead of reading as an input that is present.
+   */
+  const missing = $derived.by(() => {
+    if (devices === null) return false;
+    const picked = typeof device === 'object' && device !== null ? device.device : null;
+    const wanted = picked ?? configured;
+    return wanted !== null && !devices.some((held) => held.id === wanted);
+  });
+
   function choose(pick: 'system' | { device: string }): void {
     listOpen = false;
     void connection.dispatch({ set_dictate_device: { key: slot, pick } });
   }
+
+  /** The panel's own box, whose top edge the cap is measured from. */
+  let pop = $state<HTMLDivElement | null>(null);
+  /** How tall the panel may be, in pixels, or `null` before it is measured. */
+  let room = $state<number | null>(null);
+
+  /**
+   * Cap the panel by the room above the box rather than by a share of the
+   * viewport.
+   *
+   * The page is a fixed-height element that does not scroll, so a panel taller
+   * than the room above it has its top clipped with no way to reach it - the
+   * title and the key hint go first, and nothing can scroll them back. Anchored
+   * here, the panel's own bottom edge IS the box's top edge, so the room is
+   * that offset; below the box is past the fold, which is why this opens upward
+   * and caps rather than flipping. The cap only ever shrinks the panel, and the
+   * panel scrolls inside it, so every row stays reachable.
+   */
+  $effect(() => {
+    const held = pop;
+    if (held === null) return;
+    const measure = (): void => {
+      // No floor: a floor is what reintroduces the clipped top, and a panel
+      // that shrinks to the room it has is always reachable while one whose
+      // header is cut off is not.
+      room = Math.max(0, held.getBoundingClientRect().bottom - 6);
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  });
 </script>
 
-<div class="pop" role="dialog" aria-label="Dictation">
+<div
+  class="pop"
+  role="dialog"
+  aria-label="Dictation"
+  bind:this={pop}
+  style={room === null ? undefined : `max-height: ${room}px`}
+>
   <div class="hd">
     <span class="t">Dictation</span>
     {#if hint !== null}
@@ -185,24 +263,31 @@
 
   <div class="ax">
     <div class="lbl">INPUT DEVICE</div>
-    <button class="dev" type="button" aria-expanded={listOpen} onclick={openList}>
+    <button class="dev" class:missing type="button" aria-expanded={listOpen} onclick={openList}>
       <Icon name="mic" />
       <span class="nm">{inForceDevice}</span>
+      {#if missing}<span class="tag">not present &#183; pinned in forge.toml</span>{/if}
       <span class="chev">&#9656;</span>
     </button>
     {#if listOpen}
       <div class="list" aria-label="Input device">
-        <button class="row" type="button" onclick={() => choose('system')}>
-          <span class="nm">System default</span>
-        </button>
-        {#each devices ?? [] as held (held.id)}
-          <button class="row" type="button" onclick={() => choose({ device: held.id })}>
-            <span class="nm">{held.name}</span>
-            {#if held.is_default}<span class="def">system picks it</span>{/if}
+        {#if walking}
+          <div class="note">Looking for inputs...</div>
+        {:else if refused !== null}
+          <div class="note bad">{refused}</div>
+        {:else}
+          <button class="row" type="button" onclick={() => choose('system')}>
+            <span class="nm">System default</span>
           </button>
-        {/each}
-        {#if walked && (devices ?? []).length === 0}
-          <div class="note">No input devices found.</div>
+          {#each devices ?? [] as held (held.id)}
+            <button class="row" type="button" onclick={() => choose({ device: held.id })}>
+              <span class="nm">{held.name}</span>
+              {#if held.is_default}<span class="def">system picks it</span>{/if}
+            </button>
+          {/each}
+          {#if walked && (devices ?? []).length === 0}
+            <div class="note">No input devices found.</div>
+          {/if}
         {/if}
       </div>
     {/if}
