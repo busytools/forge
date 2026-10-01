@@ -4,7 +4,7 @@
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
-  import { fleetCount, railGroups, railMark } from './view';
+  import { fleetCount, railFooter, railGroups, railMark } from './view';
 
   /**
    * The projects rail: every declared project, grouped by the strongest state
@@ -28,6 +28,11 @@
   } = $props();
 
   const groups = $derived(railGroups(home, current, now));
+  /**
+   * The account and the two builds, which sit under the list rather than in it:
+   * the projects scroll behind them.
+   */
+  const foot = $derived(railFooter(home, current));
 </script>
 
 <!--
@@ -79,5 +84,50 @@
         </div>
       {/each}
     {/each}
+  </div>
+
+  <!-- The rail's own footer: below the list, so the projects scroll behind it
+       rather than with it. Its class is its own - `.foot` is the composer's
+       key-hint line, and a second `.foot` would take that rule's mono and its
+       size with it. -->
+  <div class="rfoot">
+    {#if foot.account !== null}
+      <div class="who">
+        <span class="led {foot.account.tone}"></span>
+        <span class="an">{foot.account.name}</span>
+      </div>
+    {/if}
+    {#if foot.figures.length > 0}
+      <div class="frs">
+        {#each foot.figures as figure (figure.label)}
+          <div class="fr">
+            <span class="k">{figure.label}</span>
+            <span class="v" class:none={figure.dim}>{figure.value}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    {#if foot.windows.length > 0}
+      <div class="frs">
+        {#each foot.windows as window (window.label)}
+          <div class="bar">
+            <span class="lb">{window.label}</span>
+            <span class="tk"><span class="fl" style={`width:${window.percent}%`}></span></span>
+            <span class="pc">{window.text}</span>
+            {#if window.reset !== ''}<span class="eta">{window.reset}</span>{/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+    <div class="vers">
+      <div class="v">forge v{foot.versions.forge}</div>
+      {#if foot.versions.claude !== null}
+        <div class="v">
+          claude v{foot.versions.claude}{#if foot.versions.update !== null}<span class="up"
+              >{'\u{2191}'} v{foot.versions.update}</span
+            >{/if}
+        </div>
+      {/if}
+    </div>
   </div>
 </aside>

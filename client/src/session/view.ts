@@ -17,6 +17,7 @@
 
 import {
   artifactLabel,
+  availableVersion,
   chipFor,
   elapsedLabel,
   gateLine,
@@ -478,6 +479,14 @@ export interface AccountView {
   windows: AccountWindow[];
   spend: { daily: string; weekly: string; monthly: string } | null;
   balance: string | null;
+  /** The key's spending cap, or `null` when it declares none. */
+  cap: string | null;
+  /**
+   * Whether the account bills per token, which is what decides whether its
+   * figures are money or windows: `UsageSourceKind::OpenRouterKey` is the one
+   * source that fills `spend`.
+   */
+  spendBilled: boolean;
 }
 
 /**
@@ -531,6 +540,85 @@ export function accountChip(home: HomeWire, slot: SessionSlot): AccountView | nu
             monthly: money(spend['monthly']),
           },
     balance: typeof balance === 'number' ? money(balance) : null,
+    cap: spend !== null && typeof spend['limit'] === 'number' ? money(spend['limit']) : null,
+    spendBilled: snapshot?.['source'] === 'OpenRouterKey',
+  };
+}
+
+/** One figure on the rail's footer: what it is called and what it reads. */
+export interface FooterFigure {
+  label: string;
+  value: string;
+  /**
+   * Whether the value is a placeholder rather than a reading, which is what
+   * the cap row is whenever there is no amount to state.
+   */
+  dim: boolean;
+}
+
+/** The rail's footer: the account, what it is costing, and the two versions. */
+export interface RailFooter {
+  /** The account this project binds to, or `null` when none would serve it. */
+  account: { name: string; tone: string } | null;
+  /** The figures a spend-billed account reports; empty for a window-billed one. */
+  figures: FooterFigure[];
+  /** A window-billed account's windows, in the shape the chip already draws. */
+  windows: AccountWindow[];
+  versions: { forge: string; claude: string | null; update: string | null };
+}
+
+/**
+ * What a figure nobody has reported reads.
+ *
+ * `$-` rather than `$0.00`, because a zero is a reading and forge has none -
+ * the terminal's own placeholder, and the reason a cold account does not read
+ * as one that has spent nothing.
+ */
+const UNPROBED = '$-';
+
+/**
+ * The rail's footer: the account serving this seat's project, what it is
+ * costing, and the two builds behind the page.
+ *
+ * **The figures branch on the account's billing kind, which is the terminal's
+ * own rule**: a spend-billed key gets its periods, balance and cap, and a
+ * window-billed one gets its 5h and 7d windows in the same block. Drawn from
+ * one snapshot either way, so the footer states what the poller reported
+ * rather than a shape the account cannot fill.
+ *
+ * The account is read from the project's chip rather than from the seat's own
+ * binding, which the client has no read for: the chip is the roster's answer
+ * to which account serves this project, and the terminal names the seat's
+ * bound account instead.
+ */
+export function railFooter(home: HomeWire, slot: SessionSlot): RailFooter {
+  const versions = {
+    forge: home.forge_version_short,
+    claude: home.cli_version?.installed ?? null,
+    update: availableVersion(home.cli_version?.installed ?? null, home.cli_version?.latest ?? null),
+  };
+  const account = accountChip(home, slot);
+  if (account === null) return { account: null, figures: [], windows: [], versions };
+  const head = { name: account.name, tone: account.tone };
+  if (!account.spendBilled) {
+    return { account: head, figures: [], windows: account.windows, versions };
+  }
+  const spend = account.spend;
+  // Three states for the cap, as the terminal draws them: a cap to fill, a key
+  // with none, and a snapshot that has not landed. The two placeholders are
+  // dim, because a word saying there is no denominator is not a figure.
+  const cap = account.cap ?? (spend === null ? '\u{2014}' : 'not set');
+  return {
+    account: head,
+    figures: [
+      { label: 'day', value: spend?.daily ?? UNPROBED, dim: false },
+      { label: 'week', value: spend?.weekly ?? UNPROBED, dim: false },
+      { label: 'month', value: spend?.monthly ?? UNPROBED, dim: false },
+      { label: 'balance', value: account.balance ?? UNPROBED, dim: false },
+      { label: 'cap', value: cap, dim: account.cap === null },
+    ],
+    windows: [],
+    versions,
   };
 }
 

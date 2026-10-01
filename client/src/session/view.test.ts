@@ -17,6 +17,7 @@ import {
   processHeadline,
   processTree,
   type ProcessNode,
+  railFooter,
   railGroups,
   railMark,
   schedulesSection,
@@ -488,6 +489,116 @@ describe('the subagent gap', () => {
       hasDispatches([dispatch('Task', 'tu-parent')]),
       'a dispatch a sub-agent made is that instance call, not a card of its own',
     ).toBe(false);
+  });
+});
+
+/** The fixture's home with a chipped account and a usage snapshot behind it. */
+const withPool = (snapshot: unknown): HomeWire =>
+  withHome({
+    projects: [{ ...project(), chip: { account_name: 'Acct', state: 'ready' } }],
+    accounts: {
+      ...homeWire.accounts,
+      loading: [
+        {
+          display_name: 'Acct',
+          state: 'ready',
+          last_error: null,
+          retry_after: null,
+          auth: 'token',
+        },
+      ],
+      usage: [{ display_name: 'Acct', snapshot }],
+    },
+  });
+
+describe('the rail footer', () => {
+  it('states the five figures a spend-billed account reports', () => {
+    const footer = railFooter(
+      withPool({
+        source: 'OpenRouterKey',
+        spend: { daily: 1.5, weekly: 10, monthly: 42, limit: 50 },
+        balance: 12.25,
+      }),
+      LEAD,
+    );
+    expect(footer.figures).toEqual([
+      { label: 'day', value: '$1.50', dim: false },
+      { label: 'week', value: '$10.00', dim: false },
+      { label: 'month', value: '$42.00', dim: false },
+      { label: 'balance', value: '$12.25', dim: false },
+      { label: 'cap', value: '$50.00', dim: false },
+    ]);
+  });
+
+  /**
+   * The terminal's own three states for a figure nobody has reported: `$-` for
+   * a key that has not been probed, `not set` for one with no cap to fill, and
+   * a dash when there is no snapshot at all. A `$0.00` is a reading, and forge
+   * has none.
+   */
+  it('keeps the five rows a snapshot has not filled, rather than dropping any', () => {
+    const cold = railFooter(withPool({ source: 'OpenRouterKey' }), LEAD);
+    expect(cold.figures.map((figure) => figure.label)).toEqual([
+      'day',
+      'week',
+      'month',
+      'balance',
+      'cap',
+    ]);
+    expect(cold.figures.map((figure) => figure.value)).toEqual([
+      '$-',
+      '$-',
+      '$-',
+      '$-',
+      '\u{2014}',
+    ]);
+
+    const probed = railFooter(
+      withPool({ source: 'OpenRouterKey', spend: { daily: 1, weekly: 2, monthly: 3 } }),
+      LEAD,
+    );
+    expect(probed.figures.at(-1), 'an uncapped key claimed a cap').toEqual({
+      label: 'cap',
+      value: 'not set',
+      dim: true,
+    });
+  });
+
+  it('draws the windows rather than the figures for a window-billed account', () => {
+    const footer = railFooter(
+      withPool({
+        source: 'Oauth',
+        five_hour: { utilization: 68, reset_description: '1h 48m' },
+        seven_day: { utilization: 24, reset_description: '2d 6h' },
+      }),
+      LEAD,
+    );
+    expect(footer.figures, 'a window-billed account drew money figures').toEqual([]);
+    expect(footer.windows.map((window) => window.label)).toEqual(['5h', '7d']);
+  });
+
+  it('names the versions, and the newer CLI only when npm has one', () => {
+    const footer = railFooter(withPool(null), LEAD);
+    expect(footer.versions.forge).toBe(homeWire.forge_version_short);
+    expect(footer.versions.claude).toBe('1.0.0');
+    expect(footer.versions.update, 'a newer claude went unstated').toBe('1.1.0');
+
+    const level = withHome({ cli_version: { installed: '1.1.0', latest: '1.1.0' } });
+    expect(
+      railFooter(level, LEAD).versions.update,
+      'an equal version claimed an update',
+    ).toBeNull();
+  });
+
+  /** The account reads by its name, with the pool's own word for its health on
+   * the dot beside it and nothing else: the chip's billing word is gone. */
+  it('names the account and carries no billing word', () => {
+    const footer = railFooter(withPool(null), LEAD);
+    expect(footer.account).toEqual({ name: 'Acct', tone: 'ok' });
+  });
+
+  it('draws no footer account for a project that chips none', () => {
+    expect(railFooter(homeWire, LEAD).account).toBeNull();
   });
 });
 

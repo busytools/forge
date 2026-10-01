@@ -4,17 +4,10 @@
   import type { Connection } from '../socket';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
-  import AccountChip from './AccountChip.svelte';
   import Inspector from './Inspector.svelte';
   import Rail from './Rail.svelte';
   import { watchSession, type SessionRead } from './live';
-  import {
-    accountChip,
-    headerFacts,
-    seatState,
-    type ComposerProps,
-    type ConversationProps,
-  } from './view';
+  import { headerFacts, seatState, type ComposerProps, type ConversationProps } from './view';
   import type { SessionRecord } from './wire';
 
   /**
@@ -62,7 +55,6 @@
   const record: SessionRecord | null = $derived(read.wire);
   const seat = $derived(seatState(wire, slot));
   const facts = $derived(record === null ? null : headerFacts(record.header));
-  const account = $derived(accountChip(wire, slot));
 
   /**
    * Whether each rail is shown, and the two widths a rail stops being a
@@ -201,7 +193,6 @@
             <span class="v">{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span>
           </span>
         {/if}
-        {#if account !== null}<AccountChip view={account} />{/if}
       </span>
     </div>
 

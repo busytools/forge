@@ -53,6 +53,40 @@ function sections(body: string): string[] {
   return [...body.matchAll(/data-k="sec-([a-z ]+)"/g)].map((match) => match[1] ?? '');
 }
 
+/** The fixture's home with an account chipped for the seat's project. */
+function withAccount(): HomeWire {
+  const project = homeWire.projects[0];
+  const account = homeWire.accounts.loading[0];
+  if (project === undefined || account === undefined) {
+    throw new Error('the fixture holds no project or no account');
+  }
+  return {
+    ...homeWire,
+    accounts: {
+      ...homeWire.accounts,
+      loading: [{ ...account, state: 'ready' }],
+      usage: [
+        {
+          display_name: 'Acct',
+          snapshot: {
+            source: 'OpenRouterKey',
+            spend: { daily: 1.5, weekly: 10, monthly: 42, limit: 50 },
+            balance: 12.25,
+          },
+        },
+      ],
+    },
+    projects: [{ ...project, chip: { account_name: 'Acct', state: 'ready' } }],
+  };
+}
+
+/** The rail's footer alone, up to the column that follows it. */
+function footerOf(body: string): string {
+  const from = body.indexOf('class="rfoot"');
+  if (from < 0) throw new Error('the page drew no rail footer');
+  return body.slice(from, body.indexOf('<main', from));
+}
+
 describe('the session shell as it draws', () => {
   /**
    * The server's own rule: a section with nothing behind it is not drawn, and
@@ -119,25 +153,39 @@ describe('the session shell as it draws', () => {
     );
   });
 
-  it('draws the account chip for the account the project would bind to', () => {
-    const project = homeWire.projects[0];
-    const account = homeWire.accounts.loading[0];
-    if (project === undefined || account === undefined) {
-      throw new Error('the fixture holds no project or no account');
+  /**
+   * The footer is the rail's own, below the list rather than inside it: the
+   * account and the versions stay where they are while the projects scroll.
+   */
+  it('draws the account, its five figures and the versions in the rail footer', () => {
+    // The fixture's own version stands in a placeholder that renders escaped,
+    // so this reads the build the way the wire does.
+    const foot = footerOf(draw({ wire: { ...withAccount(), forge_version_short: '1.0.105' } }));
+    expect(foot).toContain('Acct');
+    for (const figure of ['day', 'week', 'month', 'balance', 'cap']) {
+      expect(foot, `the footer dropped the ${figure} row`).toContain(figure);
     }
-    const body = draw({
-      wire: {
-        ...homeWire,
-        accounts: {
-          ...homeWire.accounts,
-          loading: [{ ...account, state: 'ready' }],
-        },
-        projects: [{ ...project, chip: { account_name: 'Acct', state: 'ready' } }],
-      },
-    });
-    expect(body).toContain('class="acct"');
-    expect(body).toContain('Acct');
-    expect(body).toContain('class="st ok">ready');
+    expect(foot).toContain('$1.50');
+    expect(foot).toContain('$50.00');
+    expect(foot).toContain('forge v1.0.105');
+    expect(foot).toContain('claude v1.0.0');
+    expect(foot, 'a newer claude was not offered').toContain('\u{2191} v1.1.0');
+  });
+
+  /**
+   * The account reads by its NAME and nothing else: the billing word he cut,
+   * and the pool's repair word beside it, are both gone from the rail.
+   */
+  it('names the account with no billing word under it', () => {
+    const foot = footerOf(draw({ wire: withAccount() }));
+    expect(foot, 'a billing word reached the footer').not.toContain('token');
+    expect(foot, 'the account state word reached the footer').not.toContain('ready');
+  });
+
+  it('draws no header chip, whose slot the session id takes', () => {
+    expect(draw({ wire: withAccount() }), 'the account chip is still in the header').not.toContain(
+      'class="acct"',
+    );
   });
 
   it('draws the inspector banner with the project it is showing', () => {
@@ -176,6 +224,22 @@ function reaches(declared: string | undefined, rowCount: number): boolean {
   const end = tail === undefined ? start : Number(tail) < 0 ? rowCount : Number(tail);
   return start === 1 && end >= rowCount;
 }
+
+describe('the rail footer as the sheet lays it out', () => {
+  /**
+   * The scrolling goes BEHIND the footer, not with it: the list is the rail's
+   * one scroller, and the footer is the sibling that takes the height it needs
+   * rather than a share of what is left. A footer that could shrink is one a
+   * long list squashes.
+   */
+  it('keeps the footer out of the rail scroller and unsquashable', () => {
+    expect(body('.rail .scroll'), 'the list is no longer the scroller').toContain(
+      'overflow-y: auto',
+    );
+    expect(body('.rfoot'), 'the footer scrolls with the list').not.toContain('overflow-y');
+    expect(body('.rfoot'), 'a long list can squash the footer').toContain('flex: none');
+  });
+});
 
 describe('the app grid', () => {
   /**
