@@ -122,7 +122,7 @@ describe('one turn, as the page draws it', () => {
     expect(summary, 'the row leads with the thinking own first words').toContain(
       'first the model wondered',
     );
-    expect(summary, 'and says how to open it').toContain('>expand<');
+    expect(summary, 'and carries the shared disclosure chevron').toContain('#i-chev');
     expect(body, 'with the whole of it inside').toContain('and then it kept going');
   });
 

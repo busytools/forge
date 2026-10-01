@@ -234,9 +234,10 @@
   details.think > summary::-webkit-details-marker { display: none; }
   details.think > summary:hover { background: rgba(27,33,48,.45); }
   details.think > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  details.think > summary .tog { margin-left: auto; font-size: var(--fs-label); color: var(--dim);
-    flex: none; }
+  details.think > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
+  details.think > summary:hover .arw { color: var(--muted); }
   details.think[open] > summary { color: var(--muted); }
+  details.think[open] > summary .arw { color: var(--accent); }
   /* Prose draws in both blocks - the work a turn did, and what the reader typed,
      which the terminal folds as a document too - so these read `.prose` alone. */
   .prose p + p { margin-top: 10px; }
@@ -854,7 +855,7 @@
         <details class="think">
           <summary>
             <span class="tn">Both of them landed while I was in the tree, so this is what the reader gets instead of the wall</span>
-            <span class="tog">expand</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg>
           </summary>
           <div class="body">
             <div class="pbody">

@@ -736,9 +736,10 @@ details.think > summary { list-style: none; display: flex; align-items: center; 
 details.think > summary::-webkit-details-marker { display: none; }
 details.think > summary:hover { background: rgba(27,33,48,.45); }
 details.think > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-details.think > summary .tog { margin-left: auto; font-size: var(--fs-label); color: var(--dim);
-  flex: none; }
+details.think > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
+details.think > summary:hover .arw { color: var(--muted); }
 details.think[open] > summary { color: var(--muted); }
+details.think[open] > summary .arw { color: var(--accent); }
 
 /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
 details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }

@@ -580,9 +580,8 @@ export class Chat {
       // frame's shape: a frame it draws nothing out of is never a row, whatever
       // its type or subtype, because such a row holds a row's space and draws
       // nothing - and a row the reader never scrolls to keeps the list's
-      // estimate rather than its own height. A tool result and an assistant
-      // frame carrying only thinking are two of these, and both arrive on a
-      // running seat between one turn and the next.
+      // estimate rather than its own height. A tool result is one of these, and
+      // it arrives on a running seat between one turn and the next.
       const draws = fold([message]).length > 0;
       // A turn opens where a person's own words do, while a turn is live: the
       // server's own rule, so everything else joins the turn it arrived in,

@@ -3,7 +3,7 @@
   import Icon from '../components/Icon.svelte';
   import type { CallStatus } from './families';
   import GroupShell from './GroupShell.svelte';
-  import { firstLine } from './text';
+  import { firstLine, paragraphs } from './text';
   import type { MessageKind, MessageLane, PeerCard } from './units';
 
   /**
@@ -45,14 +45,6 @@
   /** The glyph a lane leads with: two lanes share the inbound arrow. */
   function glyphOf(kind: MessageKind): string {
     return kind === 'ask' ? 'question' : 'in';
-  }
-
-  /** A body's paragraphs, which are the blank-line breaks the prose arrives with. */
-  function paragraphs(body: string): string[] {
-    return body
-      .split('\n\n')
-      .map((one) => one.trim())
-      .filter((one) => one !== '');
   }
 </script>
 
