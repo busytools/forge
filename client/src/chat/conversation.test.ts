@@ -430,6 +430,33 @@ describe('the conversation the chat draws', () => {
     ).toBe(1);
   });
 
+  it('finds an id-less frame inside a row that carries two user rows', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // The ordinary shape, as the fold emits it: a delivery rides a turn the
+    // reader's own words opened, so one row carries two user rows. The frame
+    // being reconciled is IN that row, and a comparison against the whole
+    // row's words never equals one frame's - so both user rows read as not
+    // carried and are added back to the row that already says them.
+    const row = {
+      key: null,
+      messages: [forged('the reader asked'), said('an answer'), forged('a delivery')],
+    };
+    server.send(page([row], '2'));
+    server.send(page([row], '2'));
+
+    const after = get(chat.value).turns;
+    expect(
+      JSON.stringify(after).split('a delivery').length - 1,
+      'the delivery is carried by the row, not added to it again',
+    ).toBe(1);
+    expect(
+      JSON.stringify(after).split('the reader asked').length - 1,
+      'and so is the reader own row',
+    ).toBe(1);
+  });
+
   it('keeps a live delivery the page ends on a settled one saying the same words', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

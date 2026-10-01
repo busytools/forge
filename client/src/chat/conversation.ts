@@ -204,19 +204,23 @@ function sameWords(one: string[], other: string[]): boolean {
  * The frame's own id where it has one. **A frame with no id is found by what
  * it says**: a delivery row is forged rather than read off the wire and
  * carries no id on purpose, so an absent id read as "not carried" adds the
- * same row a second time. A frame with neither an id nor words - a tool
- * result, a thought - is never found this way, which repeats it rather than
- * dropping it.
+ * same row a second time. The copy is asked whether it says these words in any
+ * of its frames rather than whether it says only them - the fold's own turns
+ * carry more than one user row, and a comparison against the whole row finds
+ * neither of them. A frame with neither an id nor words - a tool result, a
+ * thought - is never found this way, which repeats it rather than dropping it.
+ *
+ * `reconcile` is the one caller that narrows the words arm, and it says why
+ * there: an id is unique and needs no guard, and the words are what an
+ * exchange that is over can share with one still arriving.
  */
-function carries(messages: unknown[], message: unknown): boolean {
+function carries(messages: unknown[], message: unknown, reconcile = true): boolean {
   const id = uuidOf(message);
   if (id !== null) return messages.some((held) => uuidOf(held) === id);
+  if (!reconcile) return false;
   const words = wordsOf(message);
   if (words.length === 0) return false;
-  return sameWords(
-    words,
-    messages.flatMap((held) => wordsOf(held)),
-  );
+  return messages.some((held) => sameWords(words, wordsOf(held)));
 }
 
 /**
@@ -484,16 +488,8 @@ export class Chat {
       // be the turn still arriving - and matching it replaces the live row
       // with an older one that merely says the same words, which drops the row
       // the reader just received.
-      const shares = (messages: unknown[], turn: Turn, unsettled: boolean): boolean => {
-        const ids = new Set(messages.map(uuidOf).filter((id) => id !== null));
-        const shared = turn.messages.some((message) => {
-          const id = uuidOf(message);
-          return id !== null && ids.has(id);
-        });
-        if (shared) return true;
-        if (!unsettled) return false;
-        return turn.messages.some((message) => carries(messages, message));
-      };
+      const shares = (messages: unknown[], turn: Turn, unsettled: boolean): boolean =>
+        turn.messages.some((message) => carries(messages, message, unsettled));
       const replaced = new Set<Turn>();
       const drawn = named.map((row, index) => {
         // The exchange is the row's messages AFTER the reconciliation above,
