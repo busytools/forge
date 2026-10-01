@@ -2265,11 +2265,16 @@ mod tests {
         assert_eq!(resumed.messages.len(), 3, "and the three turns still replay");
     }
 
-    /// The row the harness writes for a turn nobody typed carries
-    /// `isMeta`, and the mark has to survive the whole read the resume
-    /// uses - the scan, then the raw-row handoff into the replay
-    /// synthesizer - or a view draws the harness speaking as the
-    /// reader's own words.
+    /// The rows the harness writes for a turn nobody typed carry one of its
+    /// marks, and each has to survive the whole read the resume uses - the
+    /// scan, then the raw-row handoff into the replay synthesizer - or a view
+    /// draws the harness speaking as the reader's own words.
+    ///
+    /// Three carriers, because they do not co-occur: the reminder carries
+    /// `isMeta` and `turnCompanion`, while a compaction summary carries
+    /// `isCompactSummary` and `isVisibleInTranscriptOnly` and no `isMeta`
+    /// (197 such rows across this machine's transcripts), so a read keyed on
+    /// `isMeta` alone lets the summary flip between the live and resume paths.
     #[test]
     fn load_history_messages_carries_the_clis_synthetic_stamp() {
         use std::fmt::Write as _;
@@ -2287,6 +2292,10 @@ mod tests {
             jsonl,
             "{{\"type\":\"user\",\"uuid\":\"u-harness\",\"isMeta\":true,\"turnCompanion\":true,\"message\":{{\"role\":\"user\",\"content\":\"Skill /unslop was loaded earlier (see the invoked-skills reminder above); this is a NEW invocation.\"}}}}"
         );
+        let _ = writeln!(
+            jsonl,
+            "{{\"type\":\"user\",\"uuid\":\"u-compact\",\"isCompactSummary\":true,\"isVisibleInTranscriptOnly\":true,\"message\":{{\"role\":\"user\",\"content\":\"This session is being continued from a previous conversation that ran out of context.\"}}}}"
+        );
         std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
 
         let resumed = super::load_history_messages(config_dir.path(), session_id, "", session_id);
@@ -2303,8 +2312,12 @@ mod tests {
             .collect();
         assert_eq!(
             stamps,
-            vec![("u-typed".to_owned(), false), ("u-harness".to_owned(), true)],
-            "the harness's row must arrive stamped and the reader's must not",
+            vec![
+                ("u-typed".to_owned(), false),
+                ("u-harness".to_owned(), true),
+                ("u-compact".to_owned(), true),
+            ],
+            "every harness row must arrive stamped and the reader's must not",
         );
     }
 
