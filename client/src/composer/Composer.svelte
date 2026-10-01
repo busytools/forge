@@ -448,6 +448,10 @@
    * in the box question two opens. Not `askToolId`, which backs the comparison
    * that tells an answered prompt from the next and names what the dock
    * dispatches under.
+   *
+   * A held Slack post carries no id of its own and keys as null, so two in a row
+   * share one. That is safe only because its rows are the same two whatever the
+   * post is.
    */
   function ownKeyOf(current: ReturnType<typeof pendingAsk>): string | null {
     if (current === null) return null;
