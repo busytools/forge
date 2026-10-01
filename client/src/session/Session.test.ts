@@ -173,7 +173,7 @@ describe('the session shell as it draws', () => {
     expect(foot).toContain('$50.00');
     expect(foot).toContain('forge v1.0.105');
     expect(foot).toContain('claude v1.0.0');
-    expect(foot, 'a newer claude was not offered').toContain('\u{2191} v1.1.0');
+    expect(foot, 'a newer claude was not offered').toContain('\u{2192} v1.1.0');
   });
 
   /**
