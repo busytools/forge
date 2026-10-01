@@ -308,7 +308,19 @@ impl Fleet {
             .workspace
             .cwd_for_session(&slot)
             .ok_or_else(|| format!("{project} holds no session for {label}"))?;
-        let read = self.surface.conversation(&slot, std::path::Path::new(&cwd));
+        // The RAW read, which is what a connect carries and what a replay
+        // answers with - NOT `ViewSurface::conversation`, which converts the
+        // task notices on the way out. A fixture built on the converted one
+        // would exercise a shape production never seeds from, and a defect in
+        // the conversion at the seed could not be seen by any test here.
+        let read = forge_workspace::session_history(
+            self.workspace.config_dir(),
+            &self
+                .workspace
+                .running_session_id_for(&slot)
+                .ok_or_else(|| format!("{project} holds no running session for {label}"))?,
+            &cwd,
+        );
         state.conversations.insert(
             &slot,
             crate::transport::conversation::Conversation::new(read.messages, read.compaction_count),

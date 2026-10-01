@@ -94,6 +94,7 @@ impl Conversation {
     /// render: it has to be right the moment a conversation exists, because a
     /// record may read it before any fold has run.
     pub fn new(messages: Vec<Message>, compaction_count: u32) -> Self {
+        let messages = as_blocks(messages);
         let has_dispatches = messages.iter().any(is_dispatch);
         Self {
             messages,
@@ -117,7 +118,7 @@ impl Conversation {
     /// [`Conversation::new`] gives: this is reached from the stream fold, and
     /// a render there stalls every seat rather than this one.
     pub fn seed(&mut self, messages: Vec<Message>, compaction_count: u32) {
-        self.messages = messages;
+        self.messages = as_blocks(messages);
         // **The boundaries go with the messages they describe.** The fold's
         // turns name a prefix of the messages, and a reader that saw the new
         // list under the old boundaries would slice off the end of it.
@@ -132,6 +133,13 @@ impl Conversation {
 
     /// One frame the session emitted.
     pub fn append(&mut self, message: Message) {
+        // **A boundary that arrives moves the count**, the same way the
+        // session task's own retain does. Without this the record reports the
+        // value its last SEED carried, which is stale for every compaction
+        // since - and a view draws a marker from it.
+        if matches!(message, Message::CompactBoundary { .. }) {
+            self.compaction_count = self.compaction_count.saturating_add(1);
+        }
         self.has_dispatches |= is_dispatch(&message);
         self.messages.push(message);
         self.dirty = true;
@@ -187,6 +195,20 @@ impl Conversation {
     pub fn has_dispatches(&self) -> bool {
         self.has_dispatches
     }
+}
+
+/// A history as the CLI wrote it, with its task notices in the shape a view
+/// reads an ending from.
+///
+/// **The read converts these and the seed must too.** `notices_as_blocks` is
+/// applied where a conversation is READ off disk, and a held copy seeded from
+/// a connect or a replay takes the history as the WIRE carries it - so a
+/// resumed seat would serve a `<task-notification>` row as the reader's own
+/// words, with the ending unread and, for a notice in the same turn as its
+/// call, nothing ending that call at all. Idempotent, so a history that came
+/// through the read is unchanged.
+fn as_blocks(messages: Vec<Message>) -> Vec<Message> {
+    crate::transcript::notices_as_blocks(messages)
 }
 
 /// A frame that dispatches a sub-agent, as the conversation sees one.
@@ -763,6 +785,34 @@ mod tests {
             page.turns[0].messages.len(),
             1,
             "and the page carries what the reseed put there",
+        );
+    }
+
+    /// A task notice a history carries reaches the conversation in the shape a
+    /// view reads an ending from, not as the reader's own words.
+    ///
+    /// **The read converts these and a seed takes the history raw**, so
+    /// without this a resumed seat serves the `<task-notification>` XML as
+    /// text, the ending goes unread, and for a notice in the same turn as its
+    /// call nothing ends that call at all - the conversion #1364 shipped,
+    /// undone by the held copy.
+    #[test]
+    fn a_task_notice_in_a_seeded_history_is_a_block_and_not_text() {
+        let notice = "<task-notification><tool-use-id>tu1</tool-use-id>\
+                      <status>completed</status><summary>done</summary></task-notification>";
+        let conversation = Conversation::new(vec![a_frame(notice)], 0);
+
+        let Message::User { message, .. } = &conversation.messages()[0] else {
+            panic!("a user frame is what the history carried");
+        };
+        assert!(
+            matches!(
+                &message.content[0],
+                ContentBlock::QueuedCommand { command_mode: Some(mode), .. }
+                    if mode == "task-notification"
+            ),
+            "the notice is served as the block a view reads an ending from, not as text: {:?}",
+            message.content[0],
         );
     }
 

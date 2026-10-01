@@ -332,28 +332,33 @@ async fn handle_client(
             };
             let seat = conversation.clone();
             let opening = before.clone();
-            let page = tokio::task::spawn_blocking(move || {
+            let folded = tokio::task::spawn_blocking(move || {
                 held.read(|held| page(held.messages(), held.rendered(), opening.as_deref(), turns))
             })
-            .await
-            .unwrap_or_else(|error| {
+            .await;
+            // **A fold that did not finish is refused for the reason the arm
+            // above refuses.** An empty page carries `cursor: null`, which a
+            // client reads as the end of the history - so answering one here
+            // would make the seat unreachable rather than merely unread this
+            // time.
+            let Ok(page) = folded else {
                 tracing::warn!(
                     event_name = "transcript_fold_failed",
-                    %error,
                     slot = %seat.display(),
-                    "the fold did not finish; the page is answered empty",
+                    "the fold did not finish; this page is refused rather than answered empty",
                 );
-                page(
-                    &[],
-                    &crate::transcript::Rendered {
-                        units: Vec::new(),
-                        turns: Vec::new(),
-                        endings: std::collections::HashMap::new(),
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "more".to_owned(),
+                        why: format!(
+                            "the fold over {seat:?} did not finish, so this page cannot be \
+                             answered; asking again may find it"
+                        ),
                     },
-                    before.as_deref(),
-                    turns,
                 )
-            });
+                .await;
+            };
             send(
                 socket,
                 ServerMessage::Page { conversation, turns: page.turns, cursor: page.cursor },
