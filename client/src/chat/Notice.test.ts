@@ -17,16 +17,19 @@ function rulesFor(selector: string): string[] {
 }
 
 /**
- * Every selector member the sheet writes that names `.notice` as its own
- * first class - the unscoped form, however it is dressed: the bare rule, a
- * variant, a sibling.
+ * Every selector member the sheet writes whose FIRST compound names `.notice`
+ * - the unscoped form, however it is dressed: the bare rule, a variant, a
+ * type-dressed one like `div.notice`, a sibling. A member whose `.notice` sits
+ * behind a scope (`.conv .notice`) carries it in a later compound and is fine.
  */
 function unscopedNotice(): string[] {
   const found: string[] = [];
-  for (const rule of SHEET.matchAll(/([^{}]+)\{/g)) {
+  const code = SHEET.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const rule of code.matchAll(/([^{}]+)\{/g)) {
     for (const member of (rule[1] ?? '').split(',')) {
       const one = member.trim();
-      if (one.startsWith('.notice')) found.push(one);
+      const first = one.split(/\s+|[>+~]/)[0] ?? '';
+      if (first.includes('.notice')) found.push(one);
     }
   }
   return found;

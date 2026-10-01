@@ -1170,9 +1170,12 @@ describe('the frame', () => {
    */
   it('resets the notice row without reaching the chat deliveries that share the class', () => {
     // The bare rule first: it is the one a later reader would write, and the
-    // scoped rule below would throw before this ever ran.
+    // scoped rule below would throw before this ever ran. The match takes the
+    // class wherever a member's first compound names it - `.notice`, a
+    // variant, a type-dressed `div.notice` - and a scoped member, whose
+    // `.notice` sits behind `.comp`, is not a member this rule asks about.
     expect(sheet, 'a bare notice rule strips chrome a delivery needs').not.toMatch(
-      /^\.notice\s*\{[^}]*padding:\s*0/m,
+      /(^|,)\s*[a-z]*\.notice[^,{}]*\{[^}]*padding:\s*0/m,
     );
     expect(sheetRule('.comp .notice'), 'the row does not state its own chrome').toMatch(
       /padding:\s*0/,
