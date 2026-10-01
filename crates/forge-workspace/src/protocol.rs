@@ -1012,6 +1012,11 @@ pub enum SessionUpdate {
     TurnError {
         key: SessionSlot,
         message: String,
+        /// The failure's class, where the producer that built the event could
+        /// name one. **`None` is "not classified here" rather than "not
+        /// auth"**: a producer that never classified and an auth failure are
+        /// different facts, and a reader that folds them together holds a
+        /// session on `/login` for an error that was never about login.
         class: Option<TurnErrorClass>,
         terminal_reason: Option<TerminalReason>,
     },

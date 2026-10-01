@@ -1515,14 +1515,13 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     if let AgentEvent::AuthRequired { .. } = event {
         domain.awaiting_login = true;
     }
-    // The fallback, for one envelope only: `TurnError`'s producers are
-    // forge's own failed prompt write and failed cancel, not CLI output,
-    // so its text is the only thing there to read. The classifier is the
-    // TUI's presentation-time one, and the code that warns it can fire on
-    // ordinary error words is why it is not the primary here.
-    if let AgentEvent::TurnError { message, .. } = event
-        && forge_agent::translate::error_handling::classify_turn_error(message)
-            == forge_primitives::TurnErrorClass::AuthRequired
+    // A `TurnError` the classifier reads as auth-required holds the session
+    // on `/login`. The class is derived where the event is built, so it is
+    // read here rather than searched out of the message again, and a class
+    // the producer could not name stays unclassified rather than being
+    // guessed at.
+    if let AgentEvent::TurnError { class, .. } = event
+        && *class == forge_primitives::TurnErrorClass::AuthRequired
     {
         domain.awaiting_login = true;
     }
