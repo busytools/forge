@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
-  import { geometry, pins, records, register } from './records';
+  import { element, geometry, pins, records, register } from './records';
 
   /**
    * A stand-in for `virtua`'s list, for tests that have to see what the column
@@ -72,13 +72,19 @@
     // as a fraction - which is the mismatch the follow has to survive.
     Object.defineProperty(node, 'scrollHeight', {
       configurable: true,
-      get: () => Math.floor(geometry.size),
+      get: () => Math.floor(element.height),
+    });
+    // The element's own viewport, which the list's model can lag behind: a
+    // column that reads the model for this reads zero until it has measured.
+    Object.defineProperty(node, 'clientHeight', {
+      configurable: true,
+      get: () => element.viewport,
     });
     Object.defineProperty(node, 'scrollTop', {
       configurable: true,
       get: () => geometry.offset,
       set: (asked: number) => {
-        const landed = Math.max(0, Math.min(asked, Math.floor(geometry.size) - geometry.viewport));
+        const landed = Math.max(0, Math.min(asked, Math.floor(element.height) - element.viewport));
         pins.push({ asked, landed });
         geometry.offset = landed;
       },

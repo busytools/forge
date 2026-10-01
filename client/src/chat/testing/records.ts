@@ -74,11 +74,30 @@ export interface ListHandle {
  */
 export const geometry = { offset: 0, size: 0, viewport: 0 };
 
+/**
+ * What the ELEMENT itself reports, against which the list's model can lag.
+ *
+ * The browser clamps the scroll on the element and the column decides the foot
+ * from it, while the list's reported size is a measurement that lags a row
+ * that grew in this update - so a test has to be able to set the two apart.
+ */
+export const element = { height: 0, viewport: 0 };
+
 /** The size and viewport a list reports, with the reader at its start. */
 export function setGeometry(total: number, height: number): void {
   geometry.size = total;
   geometry.viewport = height;
   geometry.offset = 0;
+  // The element agrees with a list that has measured: the divergence is a
+  // test's own to introduce with `setElement`.
+  element.height = total;
+  element.viewport = height;
+}
+
+/** What the element reports: its own height and its own viewport. */
+export function setElement(height: number, viewport: number): void {
+  element.height = height;
+  element.viewport = viewport;
 }
 
 let mounted: ListHandle | null = null;

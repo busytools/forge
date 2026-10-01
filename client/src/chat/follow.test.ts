@@ -21,7 +21,7 @@ vi.mock('virtua/svelte', async () => {
   return { VList: List };
 });
 
-const { clear, list, pinned, setGeometry } = await import('./testing/records');
+const { clear, list, pinned, setElement, setGeometry } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
 
 const { clearObservers, installResizeObserver, resized } = await import('./testing/viewport');
@@ -242,6 +242,69 @@ describe('whether the column follows the newest end', () => {
     server.frame();
 
     expect(pinned(), 'the very end is the rule, not a threshold near it').toEqual([]);
+  });
+
+  it('re-arms at the foot the element clamps to while the model reads long', async () => {
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    // The model keeps estimates for rows it has never drawn, and they read
+    // longer than the element is. The reader is at the foot the browser
+    // clamps them to, and that is the end.
+    list()?.scrolledTo(FOOT, TOTAL + 400, VIEWPORT);
+    flushSync();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the end the reader is at is the element, not the model').toEqual([PIN, PIN]);
+  });
+
+  it('keeps following when its own pin lands before the list has measured', async () => {
+    const server = stub();
+    await draw(server);
+    clear();
+
+    // The pin asked for the foot as it was drawn, and its own scroll event
+    // follows in the same flush - before the list has measured its viewport.
+    // The reader has not moved; the column's own pin did.
+    list()?.scrolledTo(FOOT, TOTAL, 0);
+    flushSync();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the pin is the column moving the reader, not the reader moving').toEqual([
+      PIN,
+      PIN,
+    ]);
+  });
+
+  it('keeps following when the rows settle taller than its own pin', async () => {
+    const server = stub();
+    await draw(server);
+    clear();
+
+    // Both the element and the model settle past the height the pin asked
+    // for: the pin's scroll event arrives with the reader above the foot it
+    // aimed at, having moved nobody.
+    setElement(TOTAL + 400, VIEWPORT);
+    list()?.scrolledTo(FOOT, TOTAL + 400, VIEWPORT);
+    flushSync();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the pin left the reader at the foot it could see').toEqual([
+      { asked: ASKED + 400, landed: FOOT + 400 },
+      { asked: ASKED + 400, landed: FOOT + 400 },
+    ]);
   });
 
   it('brings the reader back for their own prompt', async () => {
