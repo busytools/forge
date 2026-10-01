@@ -17,14 +17,29 @@
   let {
     data = [],
     shift = false,
+    getKey,
     onscroll,
     children,
   }: {
     data?: unknown[];
     shift?: boolean;
+    /**
+     * How the real list identifies a row, which THIS STUB HAS TO HONOUR.
+     *
+     * Keyed by position, the stub reuses a row's DOM through a change of
+     * identity - so a test asserting what a row keeps across an update passes
+     * here and fails in a browser, which is exactly what a blind pin looks
+     * like.
+     */
+    getKey?: (row: unknown) => string;
     onscroll?: (offset: number) => void;
     children?: Snippet<[unknown]>;
   } = $props();
+
+  /** What a row is keyed by: the list's own keyer, or its position without one. */
+  function keyOf(row: unknown, at: number): string {
+    return getKey === undefined ? `${at}` : getKey(row);
+  }
 
   let offset = 0;
   let size = 0;
@@ -65,7 +80,7 @@
 </script>
 
 <div class="conv">
-  {#each data as row, at (at)}
+  {#each data as row, at (keyOf(row, at))}
     <div class="turn">{@render children?.(row)}</div>
   {/each}
 </div>
