@@ -74,6 +74,25 @@ describe('a settled turn\u2019s row', () => {
     expect(drawn.some((fact) => fact.startsWith('cached='))).toBe(false);
   });
 
+  it('draws the running-only segments on no settled row', () => {
+    // The thinking count and the cost dash are the running row's shapes: a
+    // settled record draws neither the count (its body holds it) nor a cost
+    // segment when it has no numeric cost. Each arm is one mutation away from
+    // drawing on every row, so each gets its own assertion.
+    const summary = (info: TurnInfo): string => {
+      const body = draw(info);
+      return body.slice(body.indexOf('<summary'), body.indexOf('</summary>'));
+    };
+
+    expect(
+      summary({ ...FULL, session_cost_usd: null }),
+      'no cost segment on a settled row that has none',
+    ).not.toContain('cumulative');
+    expect(summary(FULL), 'and no thinking count where the row is settled').not.toContain(
+      'thinking',
+    );
+  });
+
   it('drops an unattributed usage block rather than printing its zeroes', () => {
     const compaction: TurnInfo = {
       ...FULL,
