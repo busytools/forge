@@ -1007,4 +1007,121 @@ describe('the conversation the chat draws', () => {
     expect(get(chat.value).turns.map((row) => row.key)).toEqual(['t1']);
     expect(get(chat.value).turns[0]).toBe(held[0]);
   });
+
+  it('draws no two rows under one key when a page repeats an exchange the words arm can reach', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The delivery opens a live turn, so its name is the ordinal and its
+    // opener carries no id.
+    server.update({ chat_appended: { key: LEAD, msg: forged('check the build') } });
+
+    // A page read while that turn is in flight, whose last row is the ordinary
+    // two-user-row shape. The claim lands on the words, and the live turn's
+    // messages become the page's copy - so its opener now carries an id while
+    // its name stays the one it was opened with.
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          { key: null, messages: [typed('mine'), said('answer-1'), forged('check the build')] },
+        ],
+        null,
+      ),
+    );
+
+    // A later page: the settled account of that exchange, and then a fresh row
+    // repeating the same words. The repeat is an exchange of its own, and a
+    // claim landing on it too draws both rows under the live turn's key, which
+    // the list throws on.
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          {
+            key: null,
+            messages: [typed('mine'), said('answer-1'), forged('check the build'), ended()],
+          },
+          { key: null, messages: [forged('check the build')] },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    const keys = after.map((row) => row.key);
+    expect(new Set(keys).size, 'no two rows are drawn under one key').toBe(keys.length);
+    expect(after, 'and the repeat keeps a row of its own beside the exchange').toHaveLength(3);
+  });
+
+  it('lets one row of a page take a live turn, not two', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // A delivery with no id opens a live turn, and the answer joins it - so the
+    // opener carries no id and the words arm stays in reach.
+    server.update({ chat_appended: { key: LEAD, msg: forged('check the build') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+
+    // The page carries the settled account of that exchange - which shares the
+    // answer frame - and, last, a fresh delivery repeating the words. The
+    // account is what the live turn is, and the repeat must not take it as
+    // well: two rows under one key is what the list throws on.
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          { key: null, messages: [minted('check the build'), said('answer-1'), ended()] },
+          { key: null, messages: [forged('check the build')] },
+        ],
+        null,
+      ),
+    );
+
+    const keys = get(chat.value).turns.map((row) => row.key);
+    expect(new Set(keys).size, 'no two rows are drawn under one key').toBe(keys.length);
+  });
+
+  it('keeps a repeat from taking a live turn an id-bearing frame opened', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // A delivery, its answer, and a page read while the turn was in flight: the
+    // claim lands and the live turn's messages become the page's copy, so its
+    // opener now carries an id and its name stays the one it was opened with.
+    server.update({ chat_appended: { key: LEAD, msg: forged('check the build') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          { key: null, messages: [typed('mine'), said('answer-1'), forged('check the build')] },
+        ],
+        null,
+      ),
+    );
+    const exchange = get(chat.value).turns.at(-1)?.key ?? '';
+
+    // The repeat: another delivery of the same words, which opens a live turn
+    // of its own, and the page that hands it back without reaching back as far
+    // as the exchange. A turn an id-bearing frame opened is reconciled by ids,
+    // so the repeat finds its own live turn rather than the exchange - which
+    // would take the exchange's row and hand it the repeat's opening frame.
+    server.update({ chat_appended: { key: LEAD, msg: forged('check the build') } });
+    server.send(
+      page([turn('t1', 'first'), { key: null, messages: [forged('check the build')] }], null),
+    );
+
+    const after = get(chat.value).turns;
+    expect(
+      after.find((row) => row.key === exchange)?.messages[0],
+      'the exchange row still opens on its own frame',
+    ).toEqual(typed('mine'));
+  });
 });
