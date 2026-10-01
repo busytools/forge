@@ -333,7 +333,7 @@ async fn handle_client(
             let seat = conversation.clone();
             let opening = before.clone();
             let page = tokio::task::spawn_blocking(move || {
-                held.read(|held| page(held.messages(), held.spans(), opening.as_deref(), turns))
+                held.read(|held| page(held.messages(), held.rendered(), opening.as_deref(), turns))
             })
             .await
             .unwrap_or_else(|error| {
@@ -343,7 +343,16 @@ async fn handle_client(
                     slot = %seat.display(),
                     "the fold did not finish; the page is answered empty",
                 );
-                page(&[], &[], before.as_deref(), turns)
+                page(
+                    &[],
+                    &crate::transcript::Rendered {
+                        units: Vec::new(),
+                        turns: Vec::new(),
+                        endings: std::collections::HashMap::new(),
+                    },
+                    before.as_deref(),
+                    turns,
+                )
             });
             send(
                 socket,

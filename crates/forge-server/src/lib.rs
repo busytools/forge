@@ -20,6 +20,8 @@ pub mod delivery;
 pub mod envelope;
 pub mod family;
 pub mod file_index;
+#[cfg(test)]
+mod fixtures;
 pub mod grouping;
 pub mod live;
 pub mod model;

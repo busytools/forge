@@ -177,6 +177,9 @@
   .cm { display: flex; align-items: center; gap: 7px; }
   .cm .tk { width: 76px; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
   .cm .fl { height: 100%; background: var(--accent); }
+  /* A state of the header drawn beside the page's own: the context cell with
+     nothing reported yet, which a single example cannot show. */
+  .annot { display: flex; align-items: center; gap: 10px; padding: 5px 0 0; font-size: var(--fs-data); }
 
   details.acct { position: relative; }
   details.acct > summary { list-style: none; cursor: pointer; display: flex; align-items: center;
@@ -810,6 +813,13 @@
           </div>
         </details>
       </span>
+    </div>
+
+    <!-- The header's other context state: a usage nothing has reported yet
+         draws no track at all, so the cell cannot read as a bar at zero. -->
+    <div class="annot">
+      <span class="cm"><span class="fk">ctx</span><span class="v">&#8212;</span></span>
+      <span class="dim">nothing has reported a usage &#183; an empty track would read as 0%</span>
     </div>
 
     <div class="conv">

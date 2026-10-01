@@ -113,14 +113,24 @@ stops asking on - so an answer the server could not give would make the seat's
 history unreachable rather than merely late. An `error` naming `more` means
 ask again, not that the conversation is over.
 
-**`key` is `null` on every turn of a conversation the server was handed as
-history, and a client must not key by it.** The name comes from a `Result`
-frame, and a replayed history holds none: the reader that built it maps
-`user`, `assistant` and `system` rows and nothing else. A client that keys its
-rows by `key` collapses the whole conversation into one. It is carried because
-a live session does name its turns, and what a client does with it is its own
-business - the cursor is a position and is the one handle that always names a
-turn.
+**A turn can carry a frame the CLI did not send.** A backgrounded task's
+ending reaches a transcript as a row of its own, and a row that opens no turn
+itself still lands in a later turn than the call it ends whenever something
+that does open one - a delivery, a peer message, a person's next prompt - sits
+between the two, which happens to about a third of them. A turn holding such a
+call carries the ending as a frame too, which is what lets a client that folds
+one turn at a time read it. The forged frame has no `uuid`, because the row
+keeps the id the CLI minted for it and a second one would disagree; the row
+stays where it is, and a fold draws nothing for it, the ending being drawn on
+the call's own row.
+
+**`key` is `null` on every turn of a transcript-derived conversation, and a
+client must not key by it.** The name comes from a `Result` frame, and a
+transcript holds none: its reader maps `user`, `assistant` and `system` rows
+and nothing else. A client that keys its rows by `key` collapses the whole
+conversation into one. It is carried because a live session does name its
+turns, and what a client does with it is its own business - the cursor is a
+position and is the one handle that always names a turn.
 
 **The boundary between turns is the server's, and it is the only part of
 the fold that crosses.** How a run of tool calls groups within a turn is a

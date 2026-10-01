@@ -548,7 +548,7 @@ fn breakdown(surface: &Arc<ViewSurface>, seat: &SessionSlot, cwd: &Path) -> anyh
     let fold_ms = started.elapsed().as_millis();
 
     let started = Instant::now();
-    let turns = forge_server::transport::wire::all_turns(&read.messages, &rendered.turns);
+    let turns = forge_server::transport::wire::all_turns(&read.messages, &rendered);
     let encode_ms = started.elapsed().as_millis();
 
     Ok(format!(

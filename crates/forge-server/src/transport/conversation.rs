@@ -36,17 +36,24 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use forge_primitives::{ContentBlock, Message, SessionSlot};
 
 use crate::SessionUpdate;
-use crate::transcript::{TurnSpan, names_a_dispatch};
+use crate::transcript::{Rendered, names_a_dispatch};
 
 /// One seat's conversation: the messages, where its turns sit, how many times
 /// it has compacted, and whether a sub-agent was ever dispatched in it.
 ///
-/// All four come out of one read and one fold, so a page cut on `spans` and a
-/// record built from `messages` cannot disagree about where a turn begins,
-/// and the count cannot describe a different conversation than the one held.
+/// All four come out of one read and one fold, so a page cut on the fold's
+/// boundaries and a record built from `messages` cannot disagree about where a
+/// turn begins, and the count cannot describe a different conversation than
+/// the one held.
 pub struct Conversation {
     messages: Vec<Message>,
-    spans: Vec<TurnSpan>,
+    /// The fold's boundaries and task endings, which a page is cut on.
+    ///
+    /// **Its units are dropped**, because the transport draws nothing: a
+    /// client folds the frames a page hands it, and the units exist for a
+    /// view. Holding them would be the largest part of this struct's memory
+    /// for something nothing here reads.
+    rendered: Rendered,
     compaction_count: u32,
     has_dispatches: bool,
     /// The messages moved since the fold last ran.
@@ -90,7 +97,7 @@ impl Conversation {
         let has_dispatches = messages.iter().any(is_dispatch);
         Self {
             messages,
-            spans: Vec::new(),
+            rendered: Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
             compaction_count,
             has_dispatches,
             dirty: true,
@@ -111,12 +118,13 @@ impl Conversation {
     /// a render there stalls every seat rather than this one.
     pub fn seed(&mut self, messages: Vec<Message>, compaction_count: u32) {
         self.messages = messages;
-        // **The spans go with the messages they describe.** `messages` and
-        // `spans` are one value in two fields - the spans name a prefix of
-        // the messages - and a reader that saw the new list under the old
-        // boundaries would slice off the end of it. Clearing them makes the
-        // pair consistent at every instant; the fold rebuilds them.
-        self.spans.clear();
+        // **The boundaries go with the messages they describe.** The fold's
+        // turns name a prefix of the messages, and a reader that saw the new
+        // list under the old boundaries would slice off the end of it.
+        // Clearing them makes the pair consistent at every instant; the next
+        // fold rebuilds them.
+        self.rendered.turns.clear();
+        self.rendered.endings.clear();
         self.compaction_count = compaction_count;
         self.has_dispatches = self.messages.iter().any(is_dispatch);
         self.dirty = true;
@@ -140,11 +148,11 @@ impl Conversation {
     }
 
     /// Put a fold back, with whatever arrived while it ran appended.
-    fn merge_fold(&mut self, mut folded: Vec<Message>, spans: Vec<TurnSpan>) {
+    fn merge_fold(&mut self, mut folded: Vec<Message>, rendered: Rendered) {
         let folded_len = folded.len();
         folded.append(&mut self.messages);
         self.messages = folded;
-        self.spans = spans;
+        self.rendered = rendered;
         self.folding = false;
         // The tail arrived while the fold ran and is not in those spans, so
         // the next reader folds again rather than cutting a turn on a list
@@ -158,8 +166,8 @@ impl Conversation {
         &self.messages
     }
 
-    pub fn spans(&self) -> &[TurnSpan] {
-        &self.spans
+    pub fn rendered(&self) -> &Rendered {
+        &self.rendered
     }
 
     pub fn compaction_count(&self) -> u32 {
@@ -227,9 +235,9 @@ impl Held {
     }
 
     /// Put a fold's result back and wake every reader waiting on it.
-    fn install(&self, messages: Vec<Message>, spans: Vec<TurnSpan>) {
+    fn install(&self, messages: Vec<Message>, rendered: Rendered) {
         let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
-        conversation.merge_fold(messages, spans);
+        conversation.merge_fold(messages, rendered);
         self.folded.notify_all();
     }
 
@@ -263,8 +271,11 @@ impl Held {
         let Some(taken) = Folding::begin(self) else {
             return;
         };
-        let spans = crate::transcript::render(taken.messages()).turns;
-        taken.finish(spans);
+        let mut rendered = crate::transcript::render(taken.messages());
+        // The units are a view's, and the transport draws nothing: a page
+        // hands the frames on and the client folds them.
+        rendered.units.clear();
+        taken.finish(rendered);
     }
 }
 
@@ -308,9 +319,9 @@ impl<'a> Folding<'a> {
     }
 
     /// Put the fold back and wake the readers.
-    fn finish(mut self, spans: Vec<TurnSpan>) {
+    fn finish(mut self, rendered: Rendered) {
         let messages = self.messages.take().unwrap_or_default();
-        self.held.install(messages, spans);
+        self.held.install(messages, rendered);
     }
 }
 
@@ -320,7 +331,12 @@ impl Drop for Folding<'_> {
         let Some(messages) = self.messages.take() else {
             return;
         };
-        self.held.install(messages, Vec::new());
+        self.held.install(
+            messages,
+            // No boundaries: the fold did not reach its end, so the next one
+            // rebuilds them rather than this leaving half of one behind.
+            Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
+        );
     }
 }
 
@@ -398,18 +414,16 @@ impl Conversations {
                 }
             }
             SessionUpdate::ChatAppended { msg, .. } => {
-                let Some(held) = self.get(slot) else {
-                    return;
-                };
-                // A compaction rewrote the conversation the CLI holds, and
-                // what the held copy should become is a question only the
-                // transcript can answer. Dropping it costs one replay at the
-                // next ask and cannot keep a conversation the CLI threw away.
-                if matches!(msg, Message::CompactBoundary { .. }) {
-                    self.held.lock().unwrap_or_else(PoisonError::into_inner).remove(slot);
-                    return;
+                // **A compaction boundary is a frame like any other.** It
+                // once dropped the seat so the next ask would replay it, and
+                // that is the door this change closed everywhere else: a
+                // replay replaces a copy it did not produce, so dropping to
+                // refresh something is how a frame the task never sees gets
+                // lost. The boundary is appended, the task counts it, and a
+                // reader keeps the history a compaction did not take away.
+                if let Some(held) = self.get(slot) {
+                    held.lock().append(msg.clone());
                 }
-                held.lock().append(msg.clone());
             }
             // A delivery is a row a CONNECTION forges per client at send
             // time, so it never arrives here as a `ChatAppended` - and a held
@@ -653,7 +667,7 @@ mod tests {
         held.insert(&a_seat(), Conversation::new(vec![a_frame("one"), a_frame("two")], 0));
         let conversation = held.get(&a_seat()).expect("the seat is held");
         conversation.fold();
-        assert_eq!(conversation.lock().spans().len(), 2, "precondition: two turns folded");
+        assert_eq!(conversation.lock().rendered().turns.len(), 2, "precondition: two turns folded");
 
         held.apply(&a_replay(Vec::new()));
 
@@ -661,7 +675,7 @@ mod tests {
         let held = conversation.lock();
         assert!(held.messages().is_empty(), "the reseed replaced the messages");
         assert!(
-            held.spans().is_empty(),
+            held.rendered().turns.is_empty(),
             "and the boundaries went with them, rather than describing a list that is gone",
         );
     }

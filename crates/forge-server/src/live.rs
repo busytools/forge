@@ -78,12 +78,6 @@ impl Live {
         }
     }
 
-    /// Whether any page is showing `slot`, which is what decides if a seat's
-    /// conversation is still worth holding.
-    pub fn holds(&self, slot: &SessionSlot) -> bool {
-        self.attached.contains_key(slot)
-    }
-
     /// Fold one update in, answering what it asks of each page.
     ///
     /// The filter is what keeps a busy turn from re-sending the fleet for
