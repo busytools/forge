@@ -18,8 +18,9 @@
 //!
 //! **Build it in release.** The profile moves the headline figure by 7x -
 //! the same transcript and the same command read 1,413 ms for a read in a
-//! debug build and 204 ms in a release one - so every figure printed with a
-//! run carries the profile it was built as.
+//! debug build and 204 ms in a release one - so every row says which build
+//! its figures came from. That is the MEASURING CLIENT's build, and the
+//! server's is a separate thing a row cannot report: see `client_profile`.
 //!
 //! **Every arm prints its own denominator** - the frames it read, the bytes
 //! they carried, the turns and messages they held - because an arm that
@@ -171,6 +172,10 @@ fn parse_cpu_time(text: &str) -> Option<f64> {
 /// server's build is announced by its own serve line and is not recoverable
 /// from a row - `--pid` is an address, and the greeting carries a protocol
 /// version rather than a build.
+///
+/// **The serve line uses this too, and there the caller IS the server.** It
+/// says which build is listening; a row's `client_profile` says which build
+/// is measuring. Two processes, and they can disagree.
 fn profile() -> &'static str {
     if cfg!(debug_assertions) { "debug" } else { "release" }
 }
@@ -248,8 +253,11 @@ impl Measured {
     ///
     /// Every row carries the build it was MEASURED WITH, the PID it charged,
     /// and - on the idle row, which every other arm is charged against - the
-    /// window it measured, so a row lifted out of a terminal says where its
-    /// numbers came from.
+    /// window ASKED FOR rather than the one the clock measured, so a reader
+    /// recomputing the charge from a lifted row gets a number slightly under
+    /// the printed one. The divisor is the idle arm's own wall time, which no
+    /// row prints; the gap is milliseconds normally and wider under load,
+    /// which is when someone is most likely to be recomputing.
     ///
     /// **The client's build moves two of the figures, and the charge is only
     /// as clean as the baseline.** `wall_ms` is the client's own and a debug
