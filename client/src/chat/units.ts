@@ -127,6 +127,12 @@ export interface HookInfo {
  */
 export interface TurnInfo {
   /**
+   * Whether the turn is still running: what the row's mark says and why its
+   * settle-only figures draw absent. A record folded from the frames while
+   * the turn runs carries it; one built from the Result frame never does.
+   */
+  running: boolean;
+  /**
    * Whether the turn failed, which is what its own row leads with.
    *
    * The mark follows the turn: an interrupted turn draws the failure mark, and
@@ -257,7 +263,7 @@ interface Frame {
   tool_use_result?: unknown;
   state?: unknown;
   timestamp?: unknown;
-  message?: { content?: unknown; model?: unknown; stop_reason?: unknown };
+  message?: { content?: unknown; model?: unknown; stop_reason?: unknown; usage?: unknown };
 }
 
 /** Whether a frame came from a dispatched agent rather than the session's own. */
@@ -662,6 +668,7 @@ function reportOf(
     return typeof value === 'number' ? value : null;
   };
   return {
+    running: false,
     failed: frame.is_error === true,
     duration_ms: typeof frame.duration_ms === 'number' ? frame.duration_ms : null,
     api_ms: typeof frame.duration_api_ms === 'number' ? frame.duration_api_ms : null,
@@ -763,11 +770,18 @@ function noticeFields(words: string): {
  * A `turn` is one page's worth of conversation as the server cut it, so this
  * never has to decide where a turn begins: it decides how the blocks inside
  * one read.
+ *
+ * `live` is the caller's own fact - the turn was built from frames and no
+ * result has landed - and it cannot be read off the frames: a page read from
+ * the transcript carries no result frame either, because the transcript holds
+ * none, so "no result" also means "read from disk". A live turn without one
+ * draws a running report from what the frames already carry.
  */
 export function fold(
   messages: readonly unknown[],
   cwd: string | null = null,
   self: Self | null = null,
+  live = false,
 ): Unit[] {
   const frames = messages as Frame[];
   /** Every result the turn holds, by the call it answers. */
@@ -902,6 +916,16 @@ export function fold(
    * fact as a permanent dash.
    */
   let endedAt: string | null = null;
+  /** The instant the turn's first frame carried, which is where its clock starts. */
+  let startedAt: string | null = null;
+  /** Whether a result frame has landed, which is what ends a live turn. */
+  let sawResult = false;
+  /** The input-side usage summed across the turn's assistant frames, while it runs. */
+  let seenUsage = false;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheRead = 0;
+  let cacheWritten = 0;
 
   const flushRun = (): void => {
     const calls = run;
@@ -975,6 +999,7 @@ export function fold(
     // to be, the clock on its own rows is the only one a later row can report.
     if (typeof frame.timestamp === 'string' && frame.timestamp !== '') {
       endedAt = frame.timestamp;
+      startedAt ??= frame.timestamp;
     }
 
     if (frame.type === 'system') {
@@ -1014,8 +1039,24 @@ export function fold(
     if (frame.type === 'assistant' && typeof frame.message?.model === 'string') {
       model = frame.message.model;
     }
+    // Every assistant message carries the counters of its own call, which is
+    // what the running row counts up from. A frame with no usage block adds
+    // nothing; a block that is there contributes its counters, zero or not.
+    if (frame.type === 'assistant' && frame.message?.usage !== undefined) {
+      const usage = obj(frame.message.usage);
+      seenUsage = true;
+      inputTokens += typeof usage['input_tokens'] === 'number' ? usage['input_tokens'] : 0;
+      outputTokens += typeof usage['output_tokens'] === 'number' ? usage['output_tokens'] : 0;
+      cacheRead +=
+        typeof usage['cache_read_input_tokens'] === 'number' ? usage['cache_read_input_tokens'] : 0;
+      cacheWritten +=
+        typeof usage['cache_creation_input_tokens'] === 'number'
+          ? usage['cache_creation_input_tokens']
+          : 0;
+    }
 
     if (frame.type === 'result') {
+      sawResult = true;
       flushRun();
       flushPeers();
       units.push({
@@ -1207,5 +1248,37 @@ export function fold(
 
   flushRun();
   flushPeers();
+  // A live turn that has not settled draws its own row from what its frames
+  // already carry: the stamps give the span so far, the assistant messages'
+  // usage gives the token side, the counter frames give thinking. The
+  // cumulative cost is settle-only, and the row draws that as absent.
+  if (live && !sawResult) {
+    units.push({
+      kind: 'report',
+      key: 'live-report',
+      info: {
+        running: true,
+        failed: false,
+        duration_ms: spanMs(startedAt, endedAt),
+        api_ms: null,
+        ended_at_utc: endedAt,
+        model,
+        thinking_tokens: thinking,
+        input_tokens: seenUsage ? inputTokens : null,
+        output_tokens: seenUsage ? outputTokens : null,
+        cache_read_tokens: seenUsage ? cacheRead : null,
+        cache_written_tokens: seenUsage ? cacheWritten : null,
+        session_cost_usd: null,
+      },
+    });
+  }
   return units;
+}
+
+/** The wall clock between two stamps, or null when either is not a time. */
+function spanMs(start: string | null, end: string | null): number | null {
+  if (start === null || end === null) return null;
+  const from = Date.parse(start);
+  const to = Date.parse(end);
+  return Number.isFinite(from) && Number.isFinite(to) ? Math.max(0, to - from) : null;
 }

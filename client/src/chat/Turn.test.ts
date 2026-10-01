@@ -9,6 +9,11 @@ const draw = (...messages: unknown[]): string =>
   render(Turn, { props: { turn: { key: 't1', messages, live: false } as HeldTurn, cwd: null } })
     .body;
 
+/** The same turn while its frames are still arriving. */
+const live = (...messages: unknown[]): string =>
+  render(Turn, { props: { turn: { key: 't1', messages, live: true } as HeldTurn, cwd: null } })
+    .body;
+
 /** The same turn, while a compaction is in flight. */
 const compacting = (...messages: unknown[]): string =>
   render(Turn, {
@@ -125,6 +130,40 @@ describe('one turn, as the page draws it', () => {
     expect(summary, 'and only that line of it').not.toContain('and then it kept going');
     expect(summary, 'and carries the shared disclosure chevron').toContain('#i-chev');
     expect(body, 'with the whole of it inside').toContain('and then it kept going');
+  });
+
+  it('draws a running row for a turn the frames built and no result has settled', () => {
+    // The wiring this rides on is one line: `turn.live` reaching the fold. It
+    // cannot be inferred from the frames - a saved page carries no result
+    // frame either - so the caller's fact is the only carrier, and this pins
+    // that it is passed.
+    const working = {
+      type: 'assistant',
+      uuid: 'a1',
+      timestamp: '2026-10-01T06:00:00Z',
+      message: {
+        id: 'm1',
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [{ type: 'text', text: 'working' }],
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_input_tokens: 1000,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    };
+
+    const running = between(live(working), '<details class="turninfo"', '</details>');
+    expect(running, 'a ring, not a settled check').toContain('class="ring"');
+    expect(running, 'the figures the frames carry').toContain('100\u{2191}');
+    expect(running, 'the thinking count beside them').toContain('thinking');
+    expect(running, 'and the settle-only cost drawn absent').toContain('- cumulative');
+
+    expect(draw(working), 'the same frames read as a page draw no row at all').not.toContain(
+      'turninfo',
+    );
   });
 
   it('draws the runs the fold cut, rather than regrouping what it holds', () => {

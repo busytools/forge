@@ -206,6 +206,69 @@ describe('one turn folded into the units a view draws', () => {
     ).toContain('was loaded earlier');
   });
 
+  it('draws a running turn row from the frames the turn already carries', () => {
+    // While a turn runs, the frames carry usage on EVERY assistant message -
+    // measured per call on a real session (`197i 1995o 638592r 0w`) and on a
+    // saved page's own frames - so the running figures are a fold that never
+    // read them, not a wire that never sent them. `live` is the caller's fact
+    // and cannot be inferred from the frames: the server's saved page carries
+    // no result frame either (the page fixture is 231 assistant and 130 user
+    // rows, no result), so "no result" also means "read from disk".
+    const spoke = (at: number): unknown => ({
+      type: 'assistant',
+      uuid: `a${at}`,
+      timestamp: `2026-10-01T0${at}:00:00Z`,
+      message: {
+        id: `m${at}`,
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [{ type: 'text', text: 'working' }],
+        usage: {
+          input_tokens: 100 * at,
+          output_tokens: 10 * at,
+          cache_read_input_tokens: 1000 * at,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    });
+    const counter = { type: 'system', subtype: 'thinking_tokens', estimated_tokens_delta: 40 };
+    const frames = [spoke(1), counter, spoke(2)];
+
+    const running = fold(frames, null, null, true);
+    const reports = running.filter((unit) => unit.kind === 'report');
+    expect(reports, 'one row, and it is the running one').toHaveLength(1);
+    const info = reports[0]?.kind === 'report' ? reports[0].info : null;
+    expect(info?.running, 'marked running rather than settled').toBe(true);
+    expect(info?.input_tokens, 'the input side sums across messages').toBe(300);
+    expect(info?.output_tokens, 'and the down count arrives the same way').toBe(30);
+    expect(info?.cache_read_tokens, 'so do the cache figures').toBe(3000);
+    expect(info?.thinking_tokens, 'the deltas the fold already sums').toBe(40);
+    expect(info?.duration_ms, 'the span the stamps already measure').toBe(3_600_000);
+    expect(info?.session_cost_usd, 'the cumulative cost is settle-only').toBeNull();
+
+    // The control: read as a page, the same frames carry no row at all.
+    expect(
+      fold(frames, null, null).filter((unit) => unit.kind === 'report'),
+      'a page draws no running row',
+    ).toHaveLength(0);
+
+    // And a live turn whose result has landed draws only the settled row.
+    const result = {
+      type: 'result',
+      uuid: 'r1',
+      is_error: false,
+      subtype: 'success',
+      duration_ms: 1000,
+      usage: { input_tokens: 1, output_tokens: 2 },
+    };
+    const settled = fold([spoke(1), result], null, null, true);
+    const settledReports = settled.filter((unit) => unit.kind === 'report');
+    expect(settledReports, 'the settled row, not a running one beside it').toHaveLength(1);
+    expect(settledReports[0]?.kind === 'report' ? settledReports[0].info.running : true).toBe(
+      false,
+    );
+  });
+
   it('breaks the run on anything that is not a call', () => {
     const units = fold([call('read', 0), said([text('here it is')]), call('bash', 1)]);
 

@@ -1,11 +1,12 @@
 import { render } from 'svelte/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import Report from './Report.svelte';
 import type { TurnInfo } from './units';
 
 /** A settled turn with everything the CLI can report. */
 const FULL: TurnInfo = {
+  running: false,
   failed: false,
   duration_ms: 161_000,
   api_ms: 64_000,
@@ -48,6 +49,7 @@ describe('a settled turn\u2019s row', () => {
 
   it('holds an absent field with a dash rather than a zero', () => {
     const nothing: TurnInfo = {
+      running: false,
       failed: false,
       duration_ms: null,
       api_ms: null,
@@ -72,6 +74,58 @@ describe('a settled turn\u2019s row', () => {
     expect(drawn.some((fact) => fact.startsWith('cached='))).toBe(false);
   });
 
+  it('counts the wait since the last frame into a running row, and nothing into a settled one', () => {
+    // Both directions of the running branch are user-visible. Dropping the
+    // settled one makes a settled row report wall-clock since its stamp -
+    // time the turn never spent - and collapsing the derived to the record's
+    // span freezes the running clock the ticker exists to move. The clock is
+    // frozen so both sides read exactly.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-01T06:00:00.000Z'));
+    try {
+      const running: TurnInfo = {
+        ...FULL,
+        running: true,
+        duration_ms: 40_000,
+        ended_at_utc: '2026-10-01T05:58:30.000Z',
+        api_ms: null,
+        session_cost_usd: null,
+      };
+      const summary = (info: TurnInfo): string => {
+        const body = draw(info);
+        return body.slice(body.indexOf('<summary'), body.indexOf('</summary>'));
+      };
+
+      expect(summary(running), 'the span plus the 1m 30s wait since the last frame').toContain(
+        '2m 10s',
+      );
+      expect(summary(FULL), 'and a settled row reads its own span, not wall-clock since').toContain(
+        '2m 41s',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('draws the running-only segments on no settled row', () => {
+    // The thinking count and the cost dash are the running row's shapes: a
+    // settled record draws neither the count (its body holds it) nor a cost
+    // segment when it has no numeric cost. Each arm is one mutation away from
+    // drawing on every row, so each gets its own assertion.
+    const summary = (info: TurnInfo): string => {
+      const body = draw(info);
+      return body.slice(body.indexOf('<summary'), body.indexOf('</summary>'));
+    };
+
+    expect(
+      summary({ ...FULL, session_cost_usd: null }),
+      'no cost segment on a settled row that has none',
+    ).not.toContain('cumulative');
+    expect(summary(FULL), 'and no thinking count where the row is settled').not.toContain(
+      'thinking',
+    );
+  });
+
   it('drops an unattributed usage block rather than printing its zeroes', () => {
     const compaction: TurnInfo = {
       ...FULL,
@@ -85,6 +139,32 @@ describe('a settled turn\u2019s row', () => {
     expect(drawn, 'the counters vanish together').toContain('in=-');
     expect(drawn).toContain('out=-');
     expect(drawn.some((fact) => fact === 'in=0')).toBe(false);
+  });
+
+  it('draws the running row what the frames carry, and the settle-only cost absent', () => {
+    // While the turn runs the row leads with a ring, shows the figures the
+    // frames already carry, and draws the one settle-only figure as a dash
+    // rather than leaving the slot out - an empty gap reads as a field this
+    // row does not have. The record keeps FULL's end stamp on purpose: the
+    // `ended` fact must dash on the RUNNING arm, not because the stamp is
+    // absent.
+    const running: TurnInfo = {
+      ...FULL,
+      running: true,
+      api_ms: null,
+      session_cost_usd: null,
+    };
+    const body = draw(running);
+    const summary = body.slice(body.indexOf('<summary'), body.indexOf('</summary>'));
+
+    expect(body, 'the ring rather than a settled check').toContain('class="ring"');
+    expect(summary, 'the thinking count, which only a running row leads with').toContain(
+      'thinking 434',
+    );
+    expect(summary, 'the token side the frames carry').toContain('4.2k\u{2191}');
+    expect(summary, 'and the cost drawn absent rather than dropped').toContain('- cumulative');
+    expect(summary, 'claiming no settled figure it has not been given').not.toContain('$');
+    expect(facts(body), 'nor an end it does not have').toContain('ended=-');
   });
 
   it('carries the toggle word as text rather than as a stylesheet rule', () => {
