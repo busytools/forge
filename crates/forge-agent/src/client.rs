@@ -111,6 +111,9 @@ pub enum AgentEvent {
     TurnError {
         session_id: String,
         message: String,
+        /// The class of the failure, derived from `message` where the
+        /// event is built so no reader has to search the prose again.
+        class: forge_primitives::TurnErrorClass,
     },
     PermissionRequest {
         session_id: String,

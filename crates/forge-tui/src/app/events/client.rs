@@ -1191,34 +1191,54 @@ fn apply_mcp_snapshot_presentation(
 /// draws the words. Its own input handler drew them at submit, so drawing the
 /// frame too would show the reader their own line twice; a view that sent them
 /// over the socket has no such drawing, and the frame is the only thing that
-/// carries them here.
+/// carries them here. A prompt frame with NO origin is one forge forged
+/// itself - a worker kick, an auto-continue - and draws for the same reason:
+/// nothing else carries its words.
 pub(super) fn apply_session_update_chat_appended(
     app: &mut App,
     key: &SessionSlot,
     msg: forge_primitives::Message,
     origin: Option<PromptOrigin>,
 ) {
-    if let Some(origin) = origin {
-        let Some(text) = prompt_frame_text(&msg) else {
-            return;
-        };
-        match origin {
-            PromptOrigin::Ui => return,
-            PromptOrigin::View => {
-                // Inside the same pivot the presentation below uses, so a
-                // background seat's words land in that seat's bucket rather
-                // than in the focused one.
-                if app.active_session_key.as_ref() == Some(key) {
-                    super::sdk_message::push_other_views_prompt(app, &text);
-                } else {
-                    crate::app::active_bucket_scope::with_pivoted(app, key.clone(), |app| {
-                        super::sdk_message::push_other_views_prompt(app, &text);
-                    });
-                }
+    match origin {
+        Some(PromptOrigin::Ui) => return,
+        Some(PromptOrigin::View) => {
+            let Some(text) = prompt_frame_text(&msg) else {
+                return;
+            };
+            push_prompt_frame(app, key, &text);
+        }
+        None if forged_user_frame(&msg) => {
+            if let Some(text) = prompt_frame_text(&msg) {
+                push_prompt_frame(app, key, &text);
             }
         }
+        None => {}
     }
     apply_sdk_message_presentation(app, key, msg);
+}
+
+/// Draw one prompt frame's words into the bucket they were addressed to,
+/// opening the turn their answer lands in.
+fn push_prompt_frame(app: &mut App, key: &SessionSlot, text: &str) {
+    // Inside the same pivot the presentation uses, so a background seat's
+    // words land in that seat's bucket rather than in the focused one.
+    if app.active_session_key.as_ref() == Some(key) {
+        super::sdk_message::push_prompt_frame_turn(app, text);
+    } else {
+        crate::app::active_bucket_scope::with_pivoted(app, key.clone(), |app| {
+            super::sdk_message::push_prompt_frame_turn(app, text);
+        });
+    }
+}
+
+/// Whether a frame is a turn forge forged rather than one the CLI sent.
+///
+/// The mark is the empty session id: a forged turn exists before the CLI has
+/// written it, so no honest id exists to carry, and every frame the CLI sends
+/// carries one.
+fn forged_user_frame(msg: &forge_primitives::Message) -> bool {
+    matches!(msg, forge_primitives::Message::User { session_id, .. } if session_id.is_empty())
 }
 
 /// The prose off a prompt frame, which is the one text block a forge put there.
@@ -1516,11 +1536,11 @@ mod tests {
     }
 
     /// A prompt frame's text, wrapped in the shape the server forges.
-    fn a_prompt_frame(text: &str, origin: PromptOrigin) -> SessionUpdate {
+    fn a_prompt_frame(text: &str, origin: Option<PromptOrigin>) -> SessionUpdate {
         SessionUpdate::ChatAppended {
             key: test_key(),
             msg: forge_primitives::Message::display_only_user(text.to_owned()),
-            origin: Some(origin),
+            origin,
         }
     }
 
@@ -1539,7 +1559,7 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            a_prompt_frame("[Cron]\n\nrun the morning summary", PromptOrigin::Ui),
+            a_prompt_frame("[Cron]\n\nrun the morning summary", Some(PromptOrigin::Ui)),
         );
 
         assert_eq!(
@@ -1562,7 +1582,7 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            a_prompt_frame("hello from another view", PromptOrigin::View),
+            a_prompt_frame("hello from another view", Some(PromptOrigin::View)),
         );
 
         assert_eq!(
@@ -1570,6 +1590,51 @@ mod tests {
             drawn + 2,
             "the words, and the placeholder the answer to them lands in",
         );
+    }
+
+    /// A turn forge forged itself - a worker kick, an auto-continue - draws
+    /// the words the model received.
+    ///
+    /// It arrives with no origin, because no view submitted it, and no id,
+    /// because the CLI never echoed it - so the peer envelope path, which is
+    /// what draws a user frame here, has nothing to match and drew nothing.
+    /// The reader was shown an answer to a question nobody could see.
+    #[test]
+    fn a_forged_prompt_frame_draws_its_words_and_their_turn() {
+        let mut app = App::test_default();
+        let drawn = app.messages().expect("a session").len();
+
+        apply_session_update(&mut app, a_prompt_frame("get on with it", None));
+
+        assert_eq!(
+            app.messages().expect("a session").len(),
+            drawn + 2,
+            "the words, and the placeholder the answer to them lands in",
+        );
+    }
+
+    /// And a forged frame the parser still reads as an envelope draws once.
+    ///
+    /// The dispatcher paints envelope-shaped prose stamped, so the arm above
+    /// has to leave it alone: two painters would show one turn twice.
+    #[test]
+    fn a_forged_frame_the_parser_reads_as_an_envelope_draws_once() {
+        let mut app = App::test_default();
+
+        apply_session_update(&mut app, a_prompt_frame("[Cron]\n\nrun the morning summary", None));
+
+        let copies: Vec<String> = app
+            .messages()
+            .expect("a session")
+            .iter()
+            .flat_map(|message| message.blocks.iter())
+            .filter_map(|block| match block {
+                crate::app::MessageBlock::Text(text) => Some(text.text.clone()),
+                _ => None,
+            })
+            .filter(|text| text.contains("run the morning summary"))
+            .collect();
+        assert_eq!(copies.len(), 1, "one painter, one turn: {copies:?}");
     }
 
     /// Only a landed take rides the clipboard along, and it copies

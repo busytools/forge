@@ -1910,14 +1910,16 @@ fn is_editable_tool(tool_name: &str) -> bool {
     matches!(tool_name, "Bash" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit")
 }
 
-pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
-    if p.is_nan() {
-        return 0;
+/// The percentage to carry from a probe's report. `None` for a report
+/// that is not a readable number: `0` is a real reading, and a view draws
+/// the two differently.
+pub(crate) fn reported_percentage(p: f64) -> Option<u8> {
+    if !p.is_finite() {
+        return None;
     }
-    // Clamped to 0..=100 first, so neither truncation nor sign loss can fire.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let n = p.clamp(0.0, 100.0).round() as u8;
-    n
+    // The clamped, rounded report is one of the 101 integers `0..=100`, so
+    // it is that integer found by comparison rather than by a cast.
+    (0..=100u8).find(|n| f64::from(*n) >= p.clamp(0.0, 100.0).round())
 }
 
 #[cfg(test)]
@@ -1925,7 +1927,7 @@ mod tests {
     use super::{
         PendingQuestions, PendingResponses, SessionId, build_forge_system_prompt,
         deliver_permission_response, deliver_question_response, frame_session_id,
-        initial_mode_state, log_failed_mcp_servers, run_ask_user_question,
+        initial_mode_state, log_failed_mcp_servers, reported_percentage, run_ask_user_question,
         synth_permission_request,
     };
 
@@ -1983,6 +1985,32 @@ mod tests {
         let log = capture_logs(|| log_failed_mcp_servers(&init_frame_with_a_failed_server(), "s1"));
         assert!(log.contains("jetbrains"), "the record names the failed server: {log}");
         assert!(log.contains("s1"), "the record carries the resolved session id: {log}");
+    }
+
+    /// A report that is not a number is not a report of zero. Both views
+    /// draw a real `0%` where the truth is that nobody could read the
+    /// value, so an unreadable one has to arrive unreported.
+    #[test]
+    fn an_unreadable_percentage_is_unreported_rather_than_zero() {
+        for (report, label) in
+            [(f64::NAN, "NaN"), (f64::INFINITY, "infinity"), (f64::NEG_INFINITY, "-infinity")]
+        {
+            assert_eq!(
+                reported_percentage(report),
+                None,
+                "an unreadable report ({label}) must arrive unreported, not as a real 0%",
+            );
+        }
+    }
+
+    /// The readable path is the one the panels draw from: a finite report
+    /// keeps its figure, rounded and clamped into `0..=100`.
+    #[test]
+    fn a_readable_percentage_is_clamped_into_the_range() {
+        assert_eq!(reported_percentage(0.0), Some(0), "a reported zero is a real reading");
+        assert_eq!(reported_percentage(42.4), Some(42), "a mid-range report is kept");
+        assert_eq!(reported_percentage(150.0), Some(100), "an over-range report clamps to the top");
+        assert_eq!(reported_percentage(-5.0), Some(0), "an under-range report clamps to the floor");
     }
 
     /// An init frame whose `tools` array carries the sdk server's tools

@@ -2487,7 +2487,7 @@ impl Workspace {
     /// Spawn the worker-kick drainer task (#259). Takes the receiver
     /// out of `kick_dispatcher_rx_slot` and starts a tokio task that
     /// loops on `recv()`, calls
-    /// [`Self::dispatch_workspace_prompt`] for each request, then sleeps
+    /// [`Self::dispatch_forged_prompt`] for each request, then sleeps
     /// `KICK_DISPATCH_INTERVAL` before the next pull.
     ///
     /// Call once at construction, AFTER `Workspace::new` returns and
@@ -2517,7 +2517,7 @@ impl Workspace {
                     };
                     let session_key = req.slot.clone();
                     if let Err(err) =
-                        workspace.dispatch_workspace_prompt(&session_key, req.prompt_body)
+                        workspace.dispatch_forged_prompt(&session_key, req.prompt_body)
                     {
                         tracing::error!(
                             target: "forge_workspace::workspace",
@@ -3493,8 +3493,9 @@ impl Workspace {
     /// in `forge-server`'s `delivery_turn`.** This path emits no frame of its
     /// own - the forge for one is `delivery_turn`, downstream, and it ends in
     /// `_ => return None`. So a prompt sent from here whose typed update has
-    /// no arm there draws nothing in any view, silently: a kick takes this
-    /// path and has no update, and is invisible for that reason.
+    /// no arm there draws nothing in any view, silently: a prompt with no
+    /// envelope of its own takes [`Self::dispatch_forged_prompt`] instead,
+    /// which forges the frame here.
     pub fn dispatch_workspace_prompt(
         self: &Arc<Self>,
         key: &SessionSlot,
@@ -3516,6 +3517,28 @@ impl Workspace {
             let _ = self
                 .update_sender()
                 .send(SessionUpdate::PromptQueuedWhileBusy { key: key.clone() });
+        }
+        result
+    }
+
+    /// Dispatch a workspace-originated prompt whose words no view has drawn:
+    /// a worker kick, an auto-continue. [`Self::dispatch_workspace_prompt`]
+    /// exactly, plus the frame - nothing else carries these words, where a
+    /// delivery's own envelope update is what draws a delivery, and routing
+    /// one of those through here would draw its words twice.
+    pub fn dispatch_forged_prompt(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+    ) -> Result<(), DispatchError> {
+        let frame = Message::display_only_user(text.clone());
+        let result = self.dispatch_workspace_prompt(key, text);
+        if result.is_ok() {
+            let _ = self.update_sender().send(SessionUpdate::ChatAppended {
+                key: key.clone(),
+                msg: frame,
+                origin: None,
+            });
         }
         result
     }
@@ -8292,6 +8315,125 @@ provider = "anthropic"
         assert!(signalled, "a turn-in-flight dispatch signals PromptQueuedWhileBusy with the key");
     }
 
+    /// A prompt forge wrote itself and no view drew - a worker kick, an
+    /// auto-continue - draws as the words the model received: the CLI does
+    /// not echo a prompt back, and nothing else carries them. The delivery
+    /// path is the other half of the pair: a delivery's words are drawn by
+    /// the envelope update its own caller emits, so a bare frame beside it
+    /// would draw the same turn twice.
+    #[test]
+    fn a_forged_prompt_draws_its_words_where_a_delivery_prompt_forges_none() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("fkey", "/tmp/f-forged-prompt");
+        let cwd = project_expanded_path(&ws, "fkey");
+        ws.record_connected_session(&cwd, "f-uuid", None);
+        let key = SessionSlot::from_str_for_test("f-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-session".to_owned(),
+            },
+        );
+        ws.mark_session_connected_for_test(&key, "f-uuid");
+        ws.enable_test_dispatch_intercept();
+
+        ws.dispatch_forged_prompt(&key, "get on with it".to_owned()).expect("forged dispatch");
+        let drawn = drain_updates(&mut rx);
+        let frame = drawn.iter().find_map(|u| match u {
+            SessionUpdate::ChatAppended { msg, origin, .. } => Some((msg, origin)),
+            _ => None,
+        });
+        let Some((msg, origin)) = frame else {
+            panic!("a forged prompt draws its words; got {drawn:?}")
+        };
+        assert!(origin.is_none(), "no view drew these words, so the frame claims no origin");
+        let Message::User { message, .. } = msg else {
+            panic!("a forged prompt draws as the user turn the model received, got {msg:?}")
+        };
+        assert!(
+            matches!(
+                message.content.first(),
+                Some(forge_primitives::ContentBlock::Text { text }) if text == "get on with it"
+            ),
+            "the frame carries the prose the model received: {message:?}",
+        );
+
+        ws.dispatch_workspace_prompt(&key, "[Cron]\n\nrun the summary".to_owned())
+            .expect("delivery dispatch");
+        assert!(
+            !drain_updates(&mut rx).iter().any(|u| matches!(u, SessionUpdate::ChatAppended { .. })),
+            "a delivery's words are drawn by its own envelope update, so this path forges no frame",
+        );
+    }
+
+    /// A busy forged prompt signals the queue before it draws.
+    ///
+    /// The frame follows a dispatch that landed, and the signal comes off that
+    /// same dispatch, so the order a view reads is "queued" and then the
+    /// words - the reverse would draw a turn for a prompt still on its way.
+    #[test]
+    fn a_busy_forged_prompt_signals_before_it_draws() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("bkey", "/tmp/b-forged-prompt");
+        let cwd = project_expanded_path(&ws, "bkey");
+        ws.record_connected_session(&cwd, "b-uuid", None);
+        let key = SessionSlot::from_str_for_test("b-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-session".to_owned(),
+            },
+        );
+        ws.mark_session_connected_for_test(&key, "b-uuid");
+        ws.enable_test_dispatch_intercept();
+        ws.domain_session_for(&key).expect("domain").lock().turn_pending = true;
+
+        ws.dispatch_forged_prompt(&key, "get on with it".to_owned()).expect("busy dispatch");
+
+        let order: Vec<&str> = drain_updates(&mut rx)
+            .iter()
+            .filter_map(|u| match u {
+                SessionUpdate::PromptQueuedWhileBusy { .. } => Some("signal"),
+                SessionUpdate::ChatAppended { .. } => Some("frame"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            order,
+            ["signal", "frame"],
+            "the queue signal precedes the frame the words draw as",
+        );
+    }
+
+    /// A forged prompt that never landed draws nothing: the words did not
+    /// reach a model, so a frame for them would show a turn nothing answers.
+    #[test]
+    fn a_refused_forged_prompt_draws_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let gone = SessionSlot::from_str_for_test("no-such-seat");
+
+        let refused = ws.dispatch_forged_prompt(&gone, "get on with it".to_owned());
+
+        assert!(refused.is_err(), "a seat nothing holds refuses the dispatch");
+        assert!(
+            !drain_updates(&mut rx).iter().any(|u| matches!(u, SessionUpdate::ChatAppended { .. })),
+            "a refused prompt never reached a model, so nothing draws its words",
+        );
+    }
+
     /// The cron delivery path rides the helper: a cron fired into a
     /// mid-turn lead signals `PromptQueuedWhileBusy` on top of the
     /// `CronPromptAppended` echo; an idle fire stays silent.
@@ -11084,11 +11226,13 @@ mod worker_activity_tests {
         // draws a calm idle for a session held on `/login`.
         let by_error = SessionSlot::from_str_for_test("s-login-error");
         let domain = ws.register_domain_session(by_error.clone(), None);
+        let auth_message = "authentication failed: please log in";
         crate::session_task::apply_event_to_domain(
             &mut domain.lock(),
             &forge_agent::client::AgentEvent::TurnError {
                 session_id: "uuid".to_owned(),
-                message: "authentication failed: please log in".to_owned(),
+                message: auth_message.to_owned(),
+                class: forge_agent::translate::error_handling::classify_turn_error(auth_message),
             },
         );
         assert_eq!(
@@ -15670,8 +15814,9 @@ mod kick_dispatcher_tests {
     //!
     //! Tests observe via `command_intercept` (`enable_test_dispatch_intercept`
     //! plus `drain_test_dispatch_buffer`); the drainer calls
-    //! `Workspace::dispatch_workspace_prompt` for each
-    //! `KickRequest`, which the intercept buffer captures verbatim.
+    //! `Workspace::dispatch_forged_prompt` for each `KickRequest`, which the
+    //! intercept buffer captures verbatim and whose prompt frame the update
+    //! stream carries.
     //!
     //! Time is paused (`start_paused = true`) so the drainer's
     //! `tokio::time::sleep(KICK_DISPATCH_INTERVAL)` advances only when
@@ -15680,6 +15825,44 @@ mod kick_dispatcher_tests {
     use super::*;
     use crate::protocol::Command;
     use std::time::Duration;
+
+    /// A drained kick draws the words it sends the worker.
+    ///
+    /// They reach the model on stdin and the CLI does not echo them, so the
+    /// frame is the only thing a view can draw them from - and reverting the
+    /// drainer to the delivery path leaves every dispatch-side test in here
+    /// green, which is why this one asserts the frame.
+    #[tokio::test(start_paused = true)]
+    async fn a_drained_kick_draws_its_words() {
+        let (workspace, mut update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+
+        let key = sk("draws");
+        workspace
+            .enqueue_kick(KickRequest { slot: key.clone(), prompt_body: "get on with it".into() });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let mut frame = None;
+        while let Ok(update) = update_rx.try_recv() {
+            if let crate::protocol::SessionUpdate::ChatAppended { key: addressed, msg, .. } = update
+                && addressed == key
+            {
+                frame = Some(msg);
+            }
+        }
+        let Some(Message::User { message, .. }) = frame else {
+            panic!("a drained kick draws the words the worker received")
+        };
+        assert!(
+            matches!(
+                message.content.first(),
+                Some(forge_primitives::ContentBlock::Text { text }) if text == "get on with it"
+            ),
+            "the frame carries the kick's prose: {message:?}",
+        );
+    }
 
     /// Helper: a session key for kick tests.
     fn sk(name: &str) -> SessionSlot {

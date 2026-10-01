@@ -43,6 +43,14 @@ fn spawn_failure_kind(err: &anyhow::Error) -> SpawnFailureKind {
     }
 }
 
+/// The turn-error event for a failure forge hit itself, classified where
+/// the message is built: a reader branching on the class gets it without
+/// searching the prose.
+fn turn_error(session_id: String, message: String) -> AgentEvent {
+    let class = crate::translate::error_handling::classify_turn_error(&message);
+    AgentEvent::TurnError { session_id, message, class }
+}
+
 /// Sentinel `config_dir` for `ForgeSdkBridge` test stubs that never
 /// exercise the path. Production code constructs the bridge with a
 /// real account `config_dir`; tests that don't drive a session use
@@ -379,12 +387,7 @@ impl ForgeSdkBridge {
         self.dispatch_with_failure(
             "prompt",
             move |client| async move { forge_sdk_worker::send_prompt(&client, chunks).await },
-            move |err| {
-                Some(AgentEvent::TurnError {
-                    session_id: session_id.clone(),
-                    message: err.to_string(),
-                })
-            },
+            move |err| Some(turn_error(session_id.clone(), err.to_string())),
         )
     }
 
@@ -403,13 +406,7 @@ impl ForgeSdkBridge {
                     Ok(Err(e)) => Err(e.into()),
                     Err(_) => {
                         let message = "interrupt not acknowledged by the CLI".to_owned();
-                        if event_tx
-                            .send(AgentEvent::TurnError {
-                                session_id: session_id.clone(),
-                                message: message.clone(),
-                            })
-                            .is_err()
-                        {
+                        if event_tx.send(turn_error(session_id.clone(), message.clone())).is_err() {
                             tracing::warn!(
                                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
                                 "event channel closed; TurnError dropped",
@@ -420,10 +417,7 @@ impl ForgeSdkBridge {
                 }
             },
             move |err| {
-                Some(AgentEvent::TurnError {
-                    session_id: err_session_id,
-                    message: format!("interrupt not acknowledged: {err}"),
-                })
+                Some(turn_error(err_session_id, format!("interrupt not acknowledged: {err}")))
             },
         )
     }
@@ -725,7 +719,7 @@ impl ForgeSdkBridge {
                     return Ok(());
                 }
             };
-            let percentage = forge_sdk_worker::clamp_percentage_to_u8(usage.percentage);
+            let percentage = forge_sdk_worker::reported_percentage(usage.percentage);
             // `raw_max_tokens` is the model's nominal context-window
             // size; `max_tokens` is the effective cap after autocompact
             // reductions. Forge surfaces the raw size so the panel
@@ -733,11 +727,7 @@ impl ForgeSdkBridge {
             // rather than a fluctuating effective number.
             let max_tokens = Some(usage.raw_max_tokens);
             if event_tx
-                .send(AgentEvent::ContextUsage {
-                    session_id,
-                    percentage: Some(percentage),
-                    max_tokens,
-                })
+                .send(AgentEvent::ContextUsage { session_id, percentage, max_tokens })
                 .is_err()
             {
                 tracing::warn!(
@@ -1232,6 +1222,32 @@ mod tests {
         );
     }
 
+    /// The class rides the event from where the message is built, so a
+    /// reader gets the classification instead of searching the prose
+    /// again - the failure's text is all a `TurnError` carries.
+    #[test]
+    fn a_turn_error_carries_the_class_of_its_own_text() {
+        let auth = turn_error("s1".to_owned(), "authentication failed: please log in".to_owned());
+        let AgentEvent::TurnError { class, .. } = &auth else {
+            panic!("a built turn error is a TurnError, got {auth:?}")
+        };
+        assert_eq!(
+            class,
+            &forge_primitives::TurnErrorClass::AuthRequired,
+            "an auth-shaped failure carries the class, not a value a reader has to re-derive",
+        );
+
+        let plain = turn_error("s1".to_owned(), "stdin write failed".to_owned());
+        let AgentEvent::TurnError { class, .. } = &plain else {
+            panic!("a built turn error is a TurnError, got {plain:?}")
+        };
+        assert_eq!(
+            class,
+            &forge_primitives::TurnErrorClass::Other,
+            "a failure the classifier does not know is Other rather than unset",
+        );
+    }
+
     /// Bind the bridge's id slot. Every production bridge has one from
     /// the start: the slot is written once, where the spawn supplies the
     /// id the child will run under, and nothing writes it per frame. An
@@ -1341,12 +1357,7 @@ mod tests {
             .dispatch_with_failure(
                 "prompt",
                 |_client| async { Ok::<(), anyhow::Error>(()) },
-                |err| {
-                    Some(AgentEvent::TurnError {
-                        session_id: "s1".to_owned(),
-                        message: err.to_string(),
-                    })
-                },
+                |err| Some(turn_error("s1".to_owned(), err.to_string())),
             )
             .expect_err("no client, dispatch refused");
         assert!(err.to_string().contains("before active session"));
@@ -1526,12 +1537,7 @@ mod tests {
             .dispatch_with_failure(
                 "prompt",
                 |_client| async { Err::<(), _>(anyhow::anyhow!("stdin write failed")) },
-                |err| {
-                    Some(AgentEvent::TurnError {
-                        session_id: "s1".to_owned(),
-                        message: err.to_string(),
-                    })
-                },
+                |err| Some(turn_error("s1".to_owned(), err.to_string())),
             )
             .expect("dispatch accepted");
 

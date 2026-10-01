@@ -557,17 +557,19 @@ fn push_peer_envelope_user_turn_if_present(
     }
 }
 
-/// Push the user turn a prompt frame carries from a view other than this one.
+/// Push the user turn a prompt frame carries: the words the model received
+/// that no view here drew.
 ///
-/// The CLI does not echo a prompt back, so another view's send reaches this
-/// process only as the frame the server forged for it. The reader's own
-/// submission already drew its bubble and is skipped before it gets here, so
-/// everything reaching this is somebody else's words - and the assistant
-/// answers them, so they open a turn the way a delivery's do.
+/// The CLI does not echo a prompt back, so those words reach this process
+/// only as the frame the server forged for them - another view's send, or a
+/// turn forge forged itself, like a worker kick or an auto-continue. The
+/// reader's own submission already drew its bubble and is skipped before it
+/// gets here, and the assistant answers what does arrive, so it opens a turn
+/// the way a delivery's do.
 ///
 /// Envelope-shaped prose is left to the dispatcher below, which paints it
 /// stamped: drawing it here as well would show one turn twice.
-pub(super) fn push_other_views_prompt(app: &mut App, text: &str) {
+pub(super) fn push_prompt_frame_turn(app: &mut App, text: &str) {
     use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
 
     if text.is_empty() || forge_server::envelope::detect_inbound(text).is_some() {

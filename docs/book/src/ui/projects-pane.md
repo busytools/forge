@@ -207,7 +207,7 @@ The overlay's body is the same tree full-width (banner and rule span the overlay
 <details>
 <summary>Worker rows</summary>
 
-Rendered at every tier (Wide / Medium / the Narrow overlay). A project's spawned workers render as a tree-subtree beneath the lead row, connectors at column 4. Worker rows are flat regardless of who spawned them - a worker spawning a sub-worker still appears as a sibling under the same project (grouping by spawner is deferred to v2). A worker without a kick waits for its first message: charter text alone does not start it. A provided kick is delivered the moment the worker connects, through a rate-limited dispatcher, as a plain first user turn.
+Rendered at every tier (Wide / Medium / the Narrow overlay). A project's spawned workers render as a tree-subtree beneath the lead row, connectors at column 4. Worker rows are flat regardless of who spawned them - a worker spawning a sub-worker still appears as a sibling under the same project (grouping by spawner is deferred to v2). A worker without a kick waits for its first message: charter text alone does not start it. A provided kick is delivered the moment the worker connects, through a rate-limited dispatcher, as a plain first user turn drawn in the chat like any other.
 
 <div class="term">
 
