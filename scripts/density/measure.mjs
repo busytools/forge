@@ -64,7 +64,7 @@ const FIRA_ADVANCE_EM = 0.6154;
  * A different terminal font size does not move this: the aspect is the
  * emulator's line spacing, not the font size.
  */
-const CELL_ASPECT = 2.0;
+const CELL_ASPECT = Number(process.env.DENSITY_CELL_ASPECT ?? 2.0);
 
 /** The chromium the repo's own Playwright cache holds, newest first. */
 function headlessShell() {
