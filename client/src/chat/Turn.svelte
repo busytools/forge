@@ -83,11 +83,14 @@
   {#if block.mine}
     <!-- No label: the orange rule is the attribution. -->
     <div class="mine">
-      {block.unit.text}{#each block.unit.files as file, index (`att-${index}`)}<div class="attrow">
+      <Prose text={block.unit.text} preserveLines />
+      {#each block.unit.files as file, index (`att-${index}`)}
+        <div class="attrow">
           <Icon name="read" class="gl" />
           <span>{file.mime ?? file.kind}</span>
           {#if file.bytes !== null}<span class="n">{bytes(file.bytes)}</span>{/if}
-        </div>{/each}
+        </div>
+      {/each}
     </div>
   {:else}
     <div class="work">
