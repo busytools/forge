@@ -725,7 +725,7 @@ impl ForgeSdkBridge {
                     return Ok(());
                 }
             };
-            let percentage = forge_sdk_worker::clamp_percentage_to_u8(usage.percentage);
+            let percentage = forge_sdk_worker::reported_percentage(usage.percentage);
             // `raw_max_tokens` is the model's nominal context-window
             // size; `max_tokens` is the effective cap after autocompact
             // reductions. Forge surfaces the raw size so the panel
@@ -733,11 +733,7 @@ impl ForgeSdkBridge {
             // rather than a fluctuating effective number.
             let max_tokens = Some(usage.raw_max_tokens);
             if event_tx
-                .send(AgentEvent::ContextUsage {
-                    session_id,
-                    percentage: Some(percentage),
-                    max_tokens,
-                })
+                .send(AgentEvent::ContextUsage { session_id, percentage, max_tokens })
                 .is_err()
             {
                 tracing::warn!(
