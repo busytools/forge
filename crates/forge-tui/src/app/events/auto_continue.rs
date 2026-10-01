@@ -75,7 +75,7 @@ fn fire(app: &mut App, key: &SessionSlot) {
     let status = bucket.last_api_retry.and_then(|(_, status)| status);
 
     let Some(workspace) = app.workspace.as_ref() else { return };
-    if let Err(err) = workspace.dispatch_workspace_prompt(key, continuation_prompt(status)) {
+    if let Err(err) = workspace.dispatch_forged_prompt(key, continuation_prompt(status)) {
         // The session is gone rather than merely erroring: spend the
         // budget and let the band surface it.
         tracing::warn!(
@@ -379,9 +379,10 @@ mod tests {
         app.sessions.get_mut(&key).expect("bucket").auto_continue_due_at =
             Some(SystemTime::now() - Duration::from_secs(1));
         maybe_fire(&mut app);
+        let idle = drain(&mut updates);
         assert!(
-            updates.try_recv().is_err(),
-            "an idle continuation must not signal PromptQueuedWhileBusy",
+            !idle.iter().any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { .. })),
+            "an idle continuation must not signal PromptQueuedWhileBusy: {idle:?}",
         );
 
         // The counted case models a turn that started inside the
@@ -399,10 +400,61 @@ mod tests {
             Some(SystemTime::now() - Duration::from_secs(1));
         maybe_fire(&mut app);
 
-        let signal = updates.try_recv().expect("a mid-turn continuation signals");
+        let busy = drain(&mut updates);
         assert!(
-            matches!(signal, SessionUpdate::PromptQueuedWhileBusy { .. }),
-            "the signal carries the queue event, got {signal:?}",
+            busy.iter().any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { .. })),
+            "a mid-turn continuation signals the queue event: {busy:?}",
         );
+    }
+
+    /// The continuation's words draw in every view: the model answers them,
+    /// so a reader fed only the update stream must not be shown an answer to
+    /// a question nobody can see. The dispatch rides the drawing path, whose
+    /// frame carries the prose the model received.
+    #[test]
+    fn firing_draws_the_continuation_words() {
+        use forge_workspace::SessionUpdate;
+
+        let mut app = App::test_default();
+        let (ws, mut updates) = forge_workspace::Workspace::testing_stub();
+        app.workspace = Some(ws);
+        let _rx = app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        let key = app.active_session_key.clone().expect("active key");
+        seed_retry(&mut app, &key, ApiRetryError::ServerError, Some(529));
+        app.sessions.get_mut(&key).expect("bucket").auto_continue_due_at =
+            Some(SystemTime::now() - Duration::from_secs(1));
+
+        maybe_fire(&mut app);
+
+        let drawn = drain(&mut updates);
+        let frame = drawn
+            .iter()
+            .find_map(|u| match u {
+                SessionUpdate::ChatAppended { msg, .. } => Some(msg),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the continuation's words draw; got {drawn:?}"));
+        let forge_primitives::Message::User { message, .. } = frame else {
+            panic!("the frame is the user turn the model received, got {frame:?}")
+        };
+        let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+            panic!("the turn carries the continuation prompt: {message:?}")
+        };
+        assert!(
+            text.contains("HTTP 529") && text.contains("do not restart"),
+            "the frame carries the prose the model got: {text}",
+        );
+    }
+
+    /// Everything the workspace emitted for one fire, in order.
+    fn drain(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<forge_workspace::SessionUpdate>,
+    ) -> Vec<forge_workspace::SessionUpdate> {
+        let mut seen = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            seen.push(update);
+        }
+        seen
     }
 }
