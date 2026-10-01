@@ -141,8 +141,9 @@ reads, walked off the committed SDK baselines rather than derived from a
 schema. That is the payload `chat_appended` carries, and it is where a
 renamed field stops matching a name a page reads. `frames.json` also
 carries the path-and-key shape of the sampled frames - the `chat_appended`
-update and a `page` with one turn in it, so the paging fields a client
-reads are pinned rather than declared.
+update, a `page` with one turn in it, and a `devices` answer with one row -
+so the paging and picker fields a client reads are pinned rather than
+declared.
 
 **Keys and paths only, never a value.** A key that is not an identifier is
 read as a map key and collapsed to its value's shape, because a model name
