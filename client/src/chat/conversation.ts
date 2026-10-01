@@ -84,13 +84,10 @@ function runningOf(data: unknown): boolean {
 }
 
 /**
- * The seat's in-flight answer after one frame.
- *
- * The same rule the record folds (`apply.ts`'s `inFlightOf`), with one frame
- * more: the `error` the CLI gives up with ends a turn, and the record's copy
- * has no arm for it, so a turn that died would stay in flight there. Which copy
- * governs is settled by that frame being a real end; the record's is the stale
- * one.
+ * The seat's in-flight answer after one frame, the same rule the record folds
+ * (`apply.ts`'s `inFlightOf`): a turn opens on the frame it begins with and
+ * ends on its result or on the error the CLI gives up with, after which no
+ * result follows.
  */
 function movedRunning(held: boolean, message: unknown): boolean {
   const type = (message as { type?: unknown } | null)?.type;

@@ -432,14 +432,17 @@ function headerFrom(held: SessionHeader, message: unknown): SessionHeader {
 /**
  * What a frame says about a turn being in flight.
  *
- * The rising edge is the frame a turn opens with and the falling edge is its
- * result, whatever the result says. The third thing the core's own answer is
- * made of is the stamp forge puts on a dispatch of its own, which no update
- * carries: the gap it leaves is the one between a prompt being routed and the
- * CLI's first frame for it, and it closes on that frame.
+ * The rising edge is the frame a turn opens with and the falling edges are its
+ * result, whatever the result says, and the error the CLI gives up with, after
+ * which no result follows - the rule the core's own turn-commit marker clears
+ * on (`crates/forge-workspace/src/session_task.rs`), and the arm the chat's
+ * copy carries. The third thing the core's own answer is made of is the stamp
+ * forge puts on a dispatch of its own, which no update carries: the gap it
+ * leaves is the one between a prompt being routed and the CLI's first frame
+ * for it, and it closes on that frame.
  */
 function inFlightOf(held: boolean, frame: Record<string, unknown>): boolean {
-  if (frame['type'] === 'result') return false;
+  if (frame['type'] === 'result' || frame['type'] === 'error') return false;
   if (frame['type'] === 'system' && frame['subtype'] === 'init') return true;
   return held;
 }
