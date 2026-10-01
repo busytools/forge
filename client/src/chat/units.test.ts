@@ -271,7 +271,7 @@ describe('one turn folded into the units a view draws', () => {
 
   it('counts a message once when the CLI repeats it once per content block', () => {
     // One API call is several assistant frames - one per content block - and
-    // every one of them carries the whole call's usage block. All 46 shipped
+    // every one of them carries the whole call's usage block. All 48 shipped
     // captures show it: `monitor_persistent_stream` has 11 frames over 7
     // messages. The terminal keys by message id so a repeat overwrites
     // (`LiveTurn::record`), which is the count this fold has to match.
