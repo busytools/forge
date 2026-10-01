@@ -54,10 +54,12 @@ const DARK: Record<string, string> = {
   // asks 3:1 of: 3.50:1 on the page, 3.23-3.36 on the dock's gradient where
   // the option checkbox sits. --line stays the hairline.
   '--ctl': '#516590',
-  // Prose, and the page's brightest text: a grey rather than a near-white.
+  // Prose, and the page's brightest text: a grey rather than a near-white, and
+  // the grey the chat's code blocks already draw in - the highlighter's own
+  // github-dark base - so prose joins them rather than inventing a value.
   // The terminal draws the same text at 6.10:1 (Ghostty `GitHub Dark`), the
-  // page cannot follow it that far without dropping under --muted, and this
-  // lands at 13.19:1 - the ceiling in contrast.test.ts holds it there.
+  // page cannot follow it that far and stay above --muted, and this lands at
+  // 13.19:1, with both ends of its band held in contrast.test.ts.
   '--text': '#c9d1d9',
   '--muted': '#8f98a8',
   // The quietest of the three text tokens, and the darkest step that clears

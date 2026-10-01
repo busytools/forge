@@ -35,10 +35,12 @@ const LINE: &str = "#222a3c";
 /// The mark on a control with no fill or shadow to say so, which 1.4.11 asks
 /// 3:1 of: 3.50:1 on the page and 3.23-3.36 on the dock's gradient.
 const CTL: &str = "#516590";
-/// Prose, and the page's brightest text: a grey rather than a near-white.
+/// Prose, and the page's brightest text: a grey rather than a near-white, and
+/// the grey the chat's code blocks already draw in - the highlighter's own
+/// github-dark base - so prose joins them rather than inventing a value.
 /// The terminal draws the same text at 6.10:1 (Ghostty `GitHub Dark`), the
-/// page cannot follow it that far without dropping under `--muted`, and this
-/// lands at 13.19:1 - the ceiling in the client's contrast check holds it there.
+/// page cannot follow it that far and stay above `--muted`, and this lands at
+/// 13.19:1, with both ends of its band held in the client's contrast check.
 const TEXT: &str = "#c9d1d9";
 const MUTED: &str = "#8f98a8";
 /// The quietest of the three text tokens, and the darkest step that clears
