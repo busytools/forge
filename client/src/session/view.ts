@@ -381,18 +381,21 @@ export function copyLabel(outcome: CopyOutcome): string {
  * than `copy` is showing.
  *
  * The name is spelt out rather than left as the visible word, so a reader who
- * cannot see the id beside it still knows what the click does.
+ * cannot see the id beside it still knows what the click does - and it OPENS
+ * with the label it draws, because a name that stopped matching the visible
+ * text would leave someone speaking the label they can see with nothing to
+ * match.
  */
 export function copyReason(outcome: CopyOutcome): string {
   switch (outcome) {
     case 'ready':
       return 'copy the whole session id';
     case 'copied':
-      return 'the whole session id is on the clipboard';
+      return 'copied, the whole id is on the clipboard';
     case 'failed':
-      return 'the clipboard refused the write';
+      return 'copy failed, the clipboard refused the write';
     case 'no-clipboard':
-      return 'this page has no clipboard to write to: it needs a secure origin';
+      return 'copy needs https, this page has no clipboard to write to';
   }
 }
 

@@ -157,6 +157,11 @@ describe('the copy control', () => {
       copyReason('no-clipboard'),
     );
     expect(copyReason('ready')).toContain('session id');
+    // A name that stopped matching the label it draws would leave someone
+    // speaking the word they can see with nothing to match.
+    for (const outcome of ['ready', 'copied', 'failed', 'no-clipboard'] as const) {
+      expect(copyReason(outcome), `${outcome}'s name lost its label`).toContain(copyLabel(outcome));
+    }
   });
 });
 
