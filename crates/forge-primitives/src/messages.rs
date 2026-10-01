@@ -2106,7 +2106,7 @@ mod tests_message_extras {
             "session_id": "sess-summary",
             "uuid": "user-uuid-3",
             "isSynthetic": true,
-            "isReplay": true,
+            "isReplay": false,
             "message": {
                 "role": "user",
                 "content": "This session is being continued from a previous conversation that ran out of context."

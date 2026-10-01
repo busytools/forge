@@ -140,6 +140,7 @@ pub struct SessionMessage {
     pub tool_use_result: Option<Value>,
     /// The CLI's own mark that nobody typed this row: any of `isMeta`,
     /// `isCompactSummary`, `isVisibleInTranscriptOnly` or `turnCompanion`.
+    /// The wire spells the same mark `isSynthetic`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub synthetic: bool,
 }
