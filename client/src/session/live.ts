@@ -329,8 +329,20 @@ function createSeat(
         const moved = seat.asking !== null && seat.frames !== seat.askedAt;
         seat.asking = null;
         read(mode === 'replace' && !stale && !moved);
-        if (stale) reread();
-        else seat.replaceWanted = false;
+        // **A whole record an answer could not carry is still wanted.** Merging
+        // keeps the frame-fed state, which is what stops a take's notice coming
+        // back, but it also keeps the conversation and the header that answer
+        // was asked for - so the want is set and asked again rather than spent,
+        // and the fresh answer lands on the first clean window.
+        //
+        // Only a REPLACES answer that was outrun lands here: a poll's answer is
+        // a merge already, and its want was nothing.
+        if (stale || (moved && mode === 'replace')) {
+          seat.replaceWanted = true;
+          reread();
+        } else {
+          seat.replaceWanted = false;
+        }
         return;
       }
       if (message.kind !== 'update') return;
