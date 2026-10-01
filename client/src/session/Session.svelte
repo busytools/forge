@@ -47,8 +47,8 @@
   // place, and `$state` would re-proxy the tree it is handed on every frame.
   let read = $state.raw<SessionRead>({ wire: null, refused: null });
   $effect(() => {
-    // Read here rather than through `$derived`, so a seat change re-subscribes
-    // and the store the page left is let go with the last subscriber.
+    // Read here rather than through `$derived`, so a seat change subscribes the
+    // seat it moved to - the seat it left keeps its record and its subscription.
     const open = connection;
     const seat = slot;
     // The page answers for a seat only when it can: the dock that answers a

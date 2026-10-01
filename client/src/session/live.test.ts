@@ -34,7 +34,7 @@ import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
 import { subjectKey } from '../protocol';
 import Router from '../shell/Router.svelte';
 import { connect, type Connection, type ConnectionStatus } from '../socket';
-import type { Store, StoreValue } from '../stores';
+import type { Store, StoreState, StoreValue } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import { REPLACES } from './apply';
 import { POLL_MS, watchSession, type SessionRead } from './live';
@@ -61,6 +61,7 @@ async function stubServer(session: unknown) {
   const { port } = server.address() as AddressInfo;
 
   const received: Subscribe[] = [];
+  const gone: Subscribe[] = [];
   const sockets = new Set<import('ws').WebSocket>();
   server.on('connection', (socket) => {
     sockets.add(socket);
@@ -73,6 +74,10 @@ async function stubServer(session: unknown) {
     socket.send(JSON.stringify(greeting));
     socket.on('message', (data) => {
       const message = JSON.parse(text(data)) as Subscribe;
+      if (message.kind === 'unsubscribe') {
+        gone.push(message);
+        return;
+      }
       if (message.kind !== 'subscribe') return;
       received.push(message);
       const snapshot: ServerMessage = {
@@ -88,6 +93,8 @@ async function stubServer(session: unknown) {
     url: `ws://127.0.0.1:${port}/socket`,
     /** Every subscribe the client made, which is where the answering role is declared. */
     received,
+    /** Every unsubscribe the client sent: the other half of the count. */
+    gone,
     async close() {
       for (const socket of sockets) socket.terminate();
       await new Promise((resolve) => server.close(resolve));
@@ -155,6 +162,31 @@ function seatSubscribe(): Subscribe | undefined {
   return server?.received.find(
     (message) => message.kind === 'subscribe' && typeof message.what === 'object',
   );
+}
+
+/** How many times the client subscribed the seat, which is the count a journey is read by. */
+function seatSubscribes(): number {
+  return (
+    server?.received.filter(
+      (message) => message.kind === 'subscribe' && typeof message.what === 'object',
+    ).length ?? 0
+  );
+}
+
+/** Leave the page, keeping the connection it was reading through. */
+async function leave(): Promise<void> {
+  if (app === null) throw new Error('nothing is mounted to leave');
+  await unmount(app);
+  app = null;
+}
+
+/** Come back to the seat over the connection the last visit left. */
+function revisit(extra: Record<string, unknown> = {}): void {
+  if (connection === null) throw new Error('a revisit needs the connection its last visit made');
+  app = mount(Session, {
+    target: document.body,
+    props: { slot: LEAD, connection, wire: homeWire, ...extra },
+  });
 }
 
 describe('the session page over a socket', () => {
@@ -282,6 +314,64 @@ describe('the session page over a socket', () => {
     expect(seatSubscribe()?.answering, 'a page with a dock subscribed as an observer').toBe(true);
     expect(drawn(), 'the composer did not draw').toContain('class="box"');
   });
+
+  /**
+   * **The count is the property.** A seat's subscription belongs to the client
+   * rather than to the page showing it, so a visit, a leave and a return is
+   * ONE subscribe and no unsubscribe - where a subscription owned by the page
+   * makes a subscribe and an unsubscribe on every leg. Everything else here is
+   * what that buys; this is the number it is bought with.
+   */
+  it('subscribes a seat once across a visit, a leave and a return', async () => {
+    await open(sessionFixture);
+    expect(seatSubscribes(), 'precondition: the first visit subscribed the seat').toBe(1);
+
+    await leave();
+    revisit();
+    await settle();
+
+    expect(seatSubscribes(), 'the return subscribed the seat a second time').toBe(1);
+    expect(server?.gone, 'the leave took the seat away from the socket').toEqual([]);
+  });
+
+  /**
+   * A returning page draws from what is held rather than waiting on an answer,
+   * which is the burst a return used to cost. Nothing is flushed here beyond
+   * the mount: a page that needed the server to answer would draw nothing
+   * until a socket round trip had been and come back.
+   */
+  it('draws a returning page from the record it already holds', async () => {
+    await open(sessionFixture);
+    await leave();
+    revisit();
+    flushSync();
+
+    expect(sections(), 'the return drew nothing until the server answered again').toContain('git');
+  });
+
+  /**
+   * **A seat's role only ever rises, and a page that gains its dock later has
+   * to say so.** Every seat the app makes is subscribed answering, so this is
+   * the path a seat subscribed as an observer takes when a page with a dock
+   * arrives at it - and without it that page keeps the observer's role, which
+   * cancels every prompt it shows rather than hanging a turn.
+   */
+  it('re-asks a seat under the answering role when a page arrives with a dock', async () => {
+    await open(sessionFixture);
+    expect(seatSubscribe()?.answering, 'precondition: the first visit had no dock').toBe(false);
+
+    await leave();
+    const composer = createRawSnippet(() => ({ render: () => '<span class="box"></span>' }));
+    revisit({ composer });
+    await settle();
+
+    expect(seatSubscribes(), 'the second visit did not re-ask under the stronger role').toBe(2);
+    expect(
+      server?.received[1]?.answering,
+      'the escalation did not declare the answering role',
+    ).toBe(true);
+    expect(server?.gone, 'the escalation gave a subscription back').toEqual([]);
+  });
 });
 
 /** Answer every media query with `matches`, as a narrow window would. */
@@ -389,14 +479,26 @@ interface Driveable extends Omit<Connection, 'status'> {
   land(message: ServerMessage): void;
   wentTo(next: ConnectionStatus): void;
   reads(): number;
+  /** How many times a seat was subscribed on this connection. */
+  subscribes(): number;
+  /** How many subscriptions were given back. */
+  unsubscribes(): number;
   status(): ConnectionStatus;
 }
 
-function drivable(): Driveable {
+/** A seat the server holds no session for, worded as it words the refusal. */
+const NO_SESSION = 'forge holds no session for this seat';
+
+function drivable(refused = false): Driveable {
   const listeners = new Set<(message: ServerMessage) => void>();
   const watchers = new Set<(status: ConnectionStatus) => void>();
   const snapshot = new Map<string, unknown>();
   let reads = 0;
+  let subscribed = 0;
+  let unsubscribed = 0;
+
+  const seatState = (): StoreState =>
+    refused ? { kind: 'refused', why: NO_SESSION } : { kind: 'ready' };
 
   const store = (subject: Subject): Store => {
     const key = subjectKey(subject);
@@ -410,7 +512,7 @@ function drivable(): Driveable {
       }),
       snapshot: () => snapshot.get(key) ?? null,
       updates: () => [],
-      state: () => ({ kind: 'ready' }),
+      state: seatState,
       dropped: () => 0,
       set: (next: unknown) => {
         snapshot.set(key, next);
@@ -422,10 +524,13 @@ function drivable(): Driveable {
 
   return {
     subscribe: (what) => {
+      subscribed += 1;
       snapshot.set(subjectKey(what), null);
       return store(what);
     },
-    unsubscribe: () => {},
+    unsubscribe: () => {
+      unsubscribed += 1;
+    },
     refresh: () => {
       reads += 1;
     },
@@ -455,6 +560,8 @@ function drivable(): Driveable {
       for (const fn of watchers) fn(next);
     },
     reads: () => reads,
+    subscribes: () => subscribed,
+    unsubscribes: () => unsubscribed,
   };
 }
 
@@ -596,16 +703,112 @@ describe('the record a page holds over an update stream', () => {
     }
   });
 
-  it('stops listening and lets the subscription go with the last reader', () => {
+  /**
+   * **A page leaving a seat is the page leaving, not the seat ending.** The
+   * record and the frames arriving after the reader has gone stay with the
+   * seat, which is the whole change: a subscription owned by the page re-reads
+   * the seat on the way back in, and one owned by the client draws what it
+   * held.
+   */
+  it('keeps the seat after the last reader has gone', () => {
     const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD));
-    page.stop();
+    const away = watch(connection);
+    away.land(snapshotOf(LEAD));
+    away.stop();
+    const asked = connection.reads();
 
-    const held = page.read().wire;
-    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    connection.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
 
-    expect(page.read().wire, 'a stopped page is still following the seat').toBe(held);
+    const back = watch(connection);
+    expect(
+      back.read().wire?.conversation.turns,
+      'a frame that landed while nobody was showing the seat was lost',
+    ).toHaveLength(1);
+    expect(connection.reads(), 'the return asked the server for the seat again').toBe(asked);
+    expect(connection.subscribes(), 'the return subscribed the seat a second time').toBe(1);
+    back.stop();
+  });
+});
+
+/**
+ * The seat between visits: what the client holds, what it asks for again, and
+ * what it must not.
+ *
+ * **The client owns a seat's state, and a seat is not the page drawing it.**
+ * The terminal has done this for forge's life - one subscribe, every seat's
+ * record held, and moving between sessions changing what it draws and nothing
+ * else - so these are the cases that hold the same property here.
+ */
+describe('the seat the client holds between visits', () => {
+  /**
+   * A subscription lives on one socket, so a client that moved to another
+   * address holds a seat on each. A registry keyed on the slot alone hands the
+   * new connection the old connection's record, which then draws whatever the
+   * seat said before the move and takes no update from the socket now carrying
+   * it.
+   */
+  it('holds a seat per connection rather than per slot', () => {
+    const a = drivable();
+    const b = drivable();
+    const onA = watch(a);
+    onA.land(snapshotOf(LEAD));
+    expect(onA.read().wire, 'precondition: the first connection holds a record').not.toBeNull();
+
+    const onB = watch(b);
+
+    expect(b.subscribes(), 'the second connection never subscribed the seat itself').toBe(1);
+    expect(onB.read().wire, "one connection's record was drawn from another connection").toBeNull();
+    onB.stop();
+    onA.stop();
+  });
+
+  /**
+   * **A refusal is the one thing not worth holding.** The server watches
+   * nothing for a seat it refused - "a refused subscribe leaves nothing to
+   * hear" - so a cached refusal is a client holding a subscription that does
+   * not exist, and a seat that starts later would never be reached again.
+   */
+  it('does not hold a seat the server refused', () => {
+    const connection = drivable(true);
+    const first = watch(connection);
+    expect(first.read().refused, 'precondition: the server refused the seat').toBe(NO_SESSION);
+    first.stop();
+
+    const back = watch(connection);
+
+    expect(
+      connection.subscribes(),
+      'a seat the server held nothing behind was kept as though it were subscribed',
+    ).toBe(2);
+    expect(back.read().refused, 'the return drew nothing of the refusal').toBe(NO_SESSION);
+    back.stop();
+  });
+
+  /**
+   * A drop and its reconnect are the seat's, not the page's: the reconnect
+   * answers with a snapshot of its own, and it replaces the record rather than
+   * merging into it. Left to the page, a drop nobody was showing leaves the
+   * pacing armed for the pre-drop read, and the reconnect's whole record is
+   * merged away - the previous occupant's conversation standing as this one's.
+   */
+  it('replaces the record on a reconnect even when nobody was showing the seat', () => {
+    const connection = drivable();
+    const away = watch(connection);
+    away.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+    away.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    expect(away.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
+    away.stop();
+
+    connection.wentTo('closed');
+    connection.wentTo('open');
+    connection.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+
+    const back = watch(connection);
+    expect(
+      back.read().wire?.conversation.turns,
+      'the reconnect merged into the record the drop left instead of replacing it',
+    ).toHaveLength(0);
+    back.stop();
   });
 });
 
@@ -651,6 +854,32 @@ describe('the slow read for what no update carries', () => {
     expect(page.reads(), 'a stopped page is still reading the seat').toBe(asked);
   });
 
+  /**
+   * The poll runs for the seat being drawn, so a seat shown again arms it
+   * again - and arms it without reading on the way in, which is the burst this
+   * whole change exists to delete. A poll armed once at the seat's creation
+   * and dropped with the first reader leaves every seat shown later drawing
+   * the process walk and the working tree as they were when it was last read.
+   */
+  it('arms the poll again when the seat is shown again', () => {
+    const connection = drivable();
+    const showing = watch(connection);
+    showing.land(snapshotOf(LEAD));
+    showing.stop();
+
+    const back = watch(connection);
+    // The seat is answered as it would be on a socket, where the reconnect
+    // that carried the page back also answered the subscribe.
+    back.land(snapshotOf(LEAD));
+    const asked = connection.reads();
+    expect(asked, 'the return read the seat rather than drawing what it holds').toBe(0);
+
+    vi.advanceTimersByTime(POLL_MS + 1);
+
+    expect(connection.reads(), 'the poll never came back for a seat shown again').toBe(asked + 1);
+    back.stop();
+  });
+
   it('takes the slices no update feeds from what the poll answered with', () => {
     const connection = drivable();
     const page = watch(connection);
@@ -690,6 +919,33 @@ describe('the slow read for what no update carries', () => {
     // merging into the one the previous occupant left.
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
     expect(page.read().wire?.conversation.turns, 'the swap never took the record').toHaveLength(0);
+    page.stop();
+  });
+
+  /**
+   * **A refusal names no subject, and this client now holds many seats.** The
+   * socket hangs a refusal on the oldest ask the connection has outstanding,
+   * and every held seat's listener is handed the error - so a seat whose own
+   * store was not the refused one must leave its ask standing. Spent here, the
+   * whole record a swap asked for is merged instead of taken, and the previous
+   * occupant's conversation stands until the next replace or a reconnect.
+   */
+  it("does not spend another seat's refusal on its own whole-record ask", () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    page.land(updateOf(occupant('new')));
+    expect(page.reads(), 'precondition: the swap asked for a whole record').toBe(1);
+
+    // Another seat's subscribe refused, while this page's ask is in flight.
+    page.land({ kind: 'error', what: 'subscribe', why: NO_SESSION });
+
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+    expect(
+      page.read().wire?.conversation.turns,
+      "another seat's refusal demoted the swap's whole record to a merge",
+    ).toHaveLength(0);
     page.stop();
   });
 
