@@ -93,11 +93,12 @@ describe('a settled turn\u2019s row', () => {
     // While the turn runs the row leads with a ring, shows the figures the
     // frames already carry, and draws the one settle-only figure as a dash
     // rather than leaving the slot out - an empty gap reads as a field this
-    // row does not have.
+    // row does not have. The record keeps FULL's end stamp on purpose: the
+    // `ended` fact must dash on the RUNNING arm, not because the stamp is
+    // absent.
     const running: TurnInfo = {
       ...FULL,
       running: true,
-      ended_at_utc: null,
       api_ms: null,
       session_cost_usd: null,
     };

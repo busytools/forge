@@ -211,9 +211,9 @@ describe('one turn folded into the units a view draws', () => {
     // measured per call on a real session (`197i 1995o 638592r 0w`) and on a
     // saved page's own frames - so the running figures are a fold that never
     // read them, not a wire that never sent them. `live` is the caller's fact
-    // and cannot be inferred from the frames: a saved page carries no result
-    // frame either (231 assistant and 130 user rows, zero results, in every
-    // page fixture), so "no result" also means "read from disk".
+    // and cannot be inferred from the frames: the server's saved page carries
+    // no result frame either (the page fixture is 231 assistant and 130 user
+    // rows, no result), so "no result" also means "read from disk".
     const spoke = (at: number): unknown => ({
       type: 'assistant',
       uuid: `a${at}`,

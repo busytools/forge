@@ -772,10 +772,10 @@ function noticeFields(words: string): {
  * one read.
  *
  * `live` is the caller's own fact - the turn was built from frames and no
- * result has landed - and it cannot be read off the frames: a saved page
- * carries no result frame either (assistant and user rows only), so "no
- * result" also means "read from disk". A live turn without one draws a
- * running report from what the frames already carry.
+ * result has landed - and it cannot be read off the frames: a page read from
+ * the transcript carries no result frame either, because the transcript holds
+ * none, so "no result" also means "read from disk". A live turn without one
+ * draws a running report from what the frames already carry.
  */
 export function fold(
   messages: readonly unknown[],
