@@ -145,7 +145,7 @@ describe('the hook chip a turn carries', () => {
     const rows = open.match(/<div class="term">[^<]+<\/div>/g) ?? [];
     expect(rows.length, 'a row drawn per action the chip counted').toBe(Number(counted));
     expect(
-      rows.filter((row) => !/\d+(\.\d+)?(ms|s)/.test(row)),
+      rows.filter((row) => !/<div class="term">[^<]+ &#183; .*\d+(\.\d+)?(ms|s)/.test(row)),
       'every row a command with the duration it took',
     ).toEqual([]);
   });
