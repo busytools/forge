@@ -17,11 +17,10 @@ for any purpose, with or without fee. Each package ships its own copy of
 the licence text in its tarball.
 
 The face is SIL Open Font License 1.1, which travels with the font:
-`fonts/FiraCode-LICENSE.txt` is the upstream text, byte for byte. Fira
-Code is the two weights the mockups ask Google Fonts for, regular and
-medium, which is every weight the sheet asks of it. A rule wanting a
-third would get a synthesized bold, which in a monospace is worse than
-either real weight.
+`fonts/FiraCode-LICENSE.txt` is the upstream text, byte for byte. Only the
+mockups' regular and medium are vendored: the sheets ask 600, 650 and 700
+as well, and those draw a synthesized bold, which in a monospace is worse
+than either real weight.
 
 ## Where each came from, and how to update it
 
