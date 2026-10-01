@@ -749,8 +749,8 @@ mod tests {
     /// The CLI splits one API call across a frame per content block and
     /// repeats the whole call's usage on every one, so a rule that sums
     /// frames multiplies a call by the blocks it drew as. Measured over the
-    /// shipped captures: 294 assistant frames carrying usage over 201
-    /// message ids.
+    /// shipped captures: 294 assistant frames carrying usage over 193
+    /// distinct message ids.
     #[test]
     fn a_message_counts_once_however_many_frames_carry_its_usage() {
         let mut turn = LiveTurn::default();
