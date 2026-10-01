@@ -210,10 +210,10 @@ function sameWords(one: string[], other: string[]): boolean {
  * neither of them. A frame with neither an id nor words - a tool result, a
  * thought - is never found this way, which repeats it rather than dropping it.
  *
- * `prose` is what narrows the arm, and its one caller says why there: an id is
- * unique and needs no guard, while the words are what a delivery row shares
- * with the page's copy of it - and what a turn opened by an id-bearing frame
- * must NOT be matched by.
+ * `prose` narrows the arm at one of the four call sites, which says why there:
+ * an id is unique and needs no guard, while the words are what a delivery row
+ * shares with the page's copy of it - and what a turn an id-bearing frame
+ * opened must NOT be matched by.
  */
 function carries(messages: unknown[], message: unknown, prose = true): boolean {
   const id = uuidOf(message);
@@ -491,10 +491,10 @@ export class Chat {
       // the reader just received.
       const shares = (messages: unknown[], turn: Turn, unsettled: boolean): boolean => {
         // **The words arm is for the turn a frame with no id OPENED**, and for
-        // nothing else. A turn opened by an id-bearing frame is reconciled by
-        // ids, which are unique - and letting its later id-less frames match by
-        // words instead lets two page rows claim the SAME live turn, so both
-        // are drawn under its key and the list throws on the duplicate.
+        // nothing else. A turn an id-bearing frame opened is reconciled by ids,
+        // and a words-only match hands it a row that is not its own: a repeat
+        // takes the exchange's row and gives it the repeat's opening frame,
+        // which in the shorter shape leaves the exchange with no row at all.
         const words = unsettled && uuidOf(turn.messages[0]) === null;
         return turn.messages.some((message) => carries(messages, message, words));
       };
@@ -507,8 +507,9 @@ export class Chat {
         // page plainly carries.
         const copy = copies[index] ?? [];
         // One row per live turn: a turn this page already drew is not the
-        // exchange a later row of the same page is an account of, and two rows
-        // under one key are what the list throws on.
+        // exchange a later row of the same page is an account of. It is this
+        // that keeps two rows from landing under one key, which the virtualised
+        // list throws on.
         const live = held.turns.find(
           (turn) => turn.live && !replaced.has(turn) && shares(copy, turn, !settledRow(index)),
         );
