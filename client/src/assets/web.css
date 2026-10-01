@@ -447,7 +447,7 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 /* The asleep heading, which folds what is under it. It carries the count of
    the rows it hides, so a folded section does not read as an empty one. */
 details.gfold > summary { list-style: none; cursor: pointer; display: flex;
-  align-items: baseline; gap: 8px; padding: 12px 8px 4px; }
+  align-items: center; gap: 8px; padding: 12px 8px 4px; }
 details.gfold > summary::-webkit-details-marker { display: none; }
 details.gfold > summary .gh { font-size: var(--fs-label); font-weight: 700;
   letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
