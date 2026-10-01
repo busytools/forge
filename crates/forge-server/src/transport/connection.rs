@@ -370,9 +370,12 @@ async fn handle_client(
             .await
         }
         ClientMessage::Devices => {
-            // The walk is blocking and opens the microphone stack, so it runs
-            // off this connection's task: run inline it would hold every
-            // message this client sends behind a permission check.
+            // The walk opens the microphone stack and takes as long as it
+            // takes, so it runs in a blocking task rather than inline. This
+            // connection is serialized behind it for that duration - the same
+            // way `more`'s fold holds its caller - and what it does NOT do is
+            // hold the runtime, so other connections and the rest of the
+            // server carry on.
             let surface = Arc::clone(&state.surface);
             let outcome = tokio::task::spawn_blocking(move || surface.dictate_device_catalog())
                 .await
