@@ -96,6 +96,12 @@ describe('which editor holds the keyboard', () => {
  * It pins the attribute's mention rather than its rendering - a box that wrote
  * `data-editor={undefined}` still reads as found here - so the docking tests are
  * what prove a box actually carries it.
+ *
+ * Membership is pinned only for a name written as a literal: on a raw box, or as
+ * the prop the shared field is handed. A name written as an expression is pinned
+ * to be mentioned and no further, which is what lets the shared field's own
+ * dynamic box pass - the docking tests are what hold those to the name they were
+ * given.
  */
 describe('the census of boxes that can take text', () => {
   it('every element that can take text names an editor from the closed set', () => {
