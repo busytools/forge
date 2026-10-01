@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
@@ -16,6 +18,16 @@
    * without being asked - and the reader's own toggling takes it from there.
    */
   let { call, open = false }: { call: ToolLeaf; open?: boolean } = $props();
+
+  /**
+   * Whether the row is open, held HERE rather than drawn from the prop.
+   *
+   * The prop says where the row starts - a mutation's diff is open without
+   * being asked - and the element owns the state from then on: a row is
+   * re-rendered whenever the turn is, and an `open` attribute written from a
+   * prop on every update closes a row the reader has just opened.
+   */
+  let opened = $state(untrack(() => open));
 
   /** The tools whose body is a list of hits rather than prose or a command's output. */
   const SEARCHES = new Set(['Grep', 'Glob', 'LS']);
@@ -46,7 +58,7 @@
 <details
   class="leaf"
   class:running={call.status === 'in_progress'}
-  {open}
+  bind:open={opened}
   data-k={`call-${call.id}`}
 >
   <summary>
