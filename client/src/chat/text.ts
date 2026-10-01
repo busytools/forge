@@ -162,10 +162,12 @@ export function headline(name: string, input: unknown): string {
   if (name === 'Bash' || name === 'BashOutput') {
     return text('description') ?? text('command') ?? name;
   }
-  if (name === 'Skill' || name === 'advisor') {
+  if (name === 'Skill') {
     // The skill's own name, which is the argument the call carries and the
     // thing the family label cannot say: `skill` names the class, and the
     // tool's own name is `Skill`, so the row would otherwise repeat itself.
+    // `advisor` is not here: it carries `query`, and the chain below already
+    // names it.
     const skill = text('skill');
     if (skill === null) return name;
     const args = text('args');

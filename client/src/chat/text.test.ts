@@ -112,6 +112,10 @@ describe('the text a command produced, as a page draws it', () => {
       'pr-review-loop Retrospective gate',
     );
     expect(headline('Skill', {})).toBe('Skill');
+    // `advisor` shares the family but carries `query`, not `skill`: in this
+    // arm it would return the bare tool name, which is the regression the arm
+    // exists to remove - so it keeps the generic chain's own answer.
+    expect(headline('advisor', { query: 'how to handle X' })).toBe('how to handle X');
   });
 
   it('drops the working directory a reader is already in', () => {
