@@ -18,8 +18,9 @@
 //!
 //! **Build it in release.** The profile moves the headline figure by 7x -
 //! the same transcript and the same command read 1,413 ms for a read in a
-//! debug build and 204 ms in a release one - so every figure printed with a
-//! run carries the profile it was built as.
+//! debug build and 204 ms in a release one - so every row says which build
+//! its figures came from. That is the MEASURING CLIENT's build, and the
+//! server's is a separate thing a row cannot report: see `client_profile`.
 //!
 //! **Every arm prints its own denominator** - the frames it read, the bytes
 //! they carried, the turns and messages they held - because an arm that
@@ -127,10 +128,14 @@ fn cpu_seconds(pid: u32) -> anyhow::Result<f64> {
         .output()
         .map_err(|error| anyhow::anyhow!("ps could not be run for pid {pid}: {error}"))?;
     if !out.status.success() {
+        // `ps` says nothing on stderr for a dead PID, which is its common
+        // case here, so the sentence carries the status rather than a colon
+        // with nothing after it.
+        let said = String::from_utf8_lossy(&out.stderr).trim().to_owned();
         anyhow::bail!(
-            "ps failed for pid {pid} ({}): {}",
+            "ps failed for pid {pid} ({}){}",
             out.status,
-            String::from_utf8_lossy(&out.stderr).trim(),
+            if said.is_empty() { String::new() } else { format!(": {said}") },
         );
     }
     let text = String::from_utf8_lossy(&out.stdout);
@@ -157,9 +162,20 @@ fn parse_cpu_time(text: &str) -> Option<f64> {
 /// What this run was built as, which moves the headline figure by 7x.
 ///
 /// Same transcript, same command: a debug build reads 1,413 ms where a
-/// release one reads 204. A number about this server means something only
-/// with the conditions beside it, and this is the condition that moves it
-/// most - so it is printed rather than assumed.
+/// release one reads 204, and a debug CLIENT reads 2,695 ms of wall where a
+/// release one reads 1,250.
+///
+/// **This is the MEASURING CLIENT's build, and it is not the server's.** A
+/// row's `charged_cpu_ms` is the server's CPU, which moves with the server's
+/// own build, and the two can differ: a release client measuring a debug
+/// server reports `client_profile: release` about a server built debug. The
+/// server's build is announced by its own serve line and is not recoverable
+/// from a row - `--pid` is an address, and the greeting carries a protocol
+/// version rather than a build.
+///
+/// **The serve line uses this too, and there the caller IS the server.** It
+/// says which build is listening; a row's `client_profile` says which build
+/// is measuring. Two processes, and they can disagree.
 fn profile() -> &'static str {
     if cfg!(debug_assertions) { "debug" } else { "release" }
 }
@@ -224,15 +240,45 @@ struct Measured {
     turns: u64,
     messages: u64,
     asks: u32,
+    /// The PID this arm was charged to, echoed from `--pid`.
+    ///
+    /// **Echoed rather than verified**: nothing here checks that the process
+    /// owns the port, so a recycled PID is charged and then named as the
+    /// server. It is an address for a reader to check, not a claim.
+    pid: u32,
 }
 
 impl Measured {
-    fn report(&self, arm: &str, idle: &Measured) -> String {
+    /// The line one arm reports.
+    ///
+    /// Every row carries the build it was MEASURED WITH, the PID it charged,
+    /// and - on the idle row, which every other arm is charged against - the
+    /// window ASKED FOR rather than the one the clock measured, so a reader
+    /// recomputing the charge from a lifted row gets a number slightly under
+    /// the printed one. The divisor is the idle arm's own wall time, which no
+    /// row prints; the gap is milliseconds normally and wider under load,
+    /// which is when someone is most likely to be recomputing.
+    ///
+    /// **The client's build moves two of the figures, and the charge is only
+    /// as clean as the baseline.** `wall_ms` is the client's own and a debug
+    /// client reads 2,695 ms where a release one reads 1,250 on the same
+    /// server. `charged_cpu_ms` is `cpu - idle_cpu * share`, so where the
+    /// idle arm reads 0.0 the charge is insensitive to that build; where the
+    /// server has background work the baseline is non-zero, `share` moves
+    /// with the client's wall, and the charge moves with it.
+    fn report(&self, arm: &str, idle: &Measured, window: Option<f64>) -> String {
         let share = if idle.wall_ms > 0.0 { self.wall_ms / idle.wall_ms } else { 0.0 };
+        let window = match window {
+            Some(seconds) => format!(", \"window_s\": {seconds:.1}"),
+            None => String::new(),
+        };
         format!(
-            "{{\"arm\": \"{arm}\", \"charged_cpu_ms\": {:.1}, \"wall_ms\": {:.1}, \
-             \"frames\": {}, \"bytes\": {}, \"turns\": {}, \"messages\": {}, \"asks\": {}, \
-             \"idle_cpu_ms\": {:.1}, \"idle_share\": {:.3}}}",
+            "{{\"arm\": \"{arm}\", \"client_profile\": \"{}\", \"charged_pid\": {}, \
+             \"charged_cpu_ms\": {:.1}, \"wall_ms\": {:.1}, \"frames\": {}, \"bytes\": {}, \
+             \"turns\": {}, \"messages\": {}, \"asks\": {}, \"idle_cpu_ms\": {:.1}, \
+             \"idle_share\": {:.3}{window}}}",
+            profile(),
+            self.pid,
             self.cpu_ms - idle.cpu_ms * share,
             self.wall_ms,
             self.frames,
@@ -388,7 +434,7 @@ async fn measure(args: &Args) -> anyhow::Result<()> {
     };
     let seat = SessionSlot::lead(&args.org, &args.project);
 
-    let mut idle = Measured::default();
+    let mut idle = Measured { pid, ..Measured::default() };
     let started = Instant::now();
     let before = cpu_seconds(pid)?;
     tokio::time::sleep(Duration::from_secs_f64(args.seconds)).await;
@@ -397,31 +443,45 @@ async fn measure(args: &Args) -> anyhow::Result<()> {
 
     // Nothing to do for `idle`: the bracket above is the whole arm, and it is
     // the baseline every other arm is charged against rather than a workload
-    // of its own.
+    // of its own. Its window goes on the row because every other arm is
+    // charged against it and the row cannot be read without one.
     if args.arm == Arm::Idle {
-        println!("{}", Measured::default().report("idle", &idle));
+        println!(
+            "{}",
+            Measured { pid, ..Measured::default() }.report(
+                Arm::Idle.name(),
+                &idle,
+                Some(args.seconds)
+            )
+        );
         return Ok(());
     }
 
-    // `subscribe` is the price of arriving, so it is NOT attached first and
-    // its own connect is inside the bracket. Every other arm measures the
-    // price of staying, so its attach is taken before the bracket - charging
-    // a connect to a refresh would report arriving as staying.
-    let mut socket = match args.arm {
-        Arm::Subscribe => a_socket(args).await?,
-        _ => attach(args, &seat).await?,
+    // `subscribe` is the price of ARRIVING, so its socket is opened inside
+    // the bracket - a connect outside it would price a subscribe on a socket
+    // somebody else had already opened. Every other arm measures the price of
+    // staying, so its attach is taken before the bracket: charging a connect
+    // to a refresh would report arriving as staying.
+    let mut attached = match args.arm {
+        Arm::Subscribe => None,
+        _ => Some(attach(args, &seat).await?),
     };
     let mut arm = Measured {
         asks: if args.arm == Arm::Subscribe { 1 } else { args.asks },
+        pid,
         ..Measured::default()
     };
     let started = Instant::now();
     let before = cpu_seconds(pid)?;
+    let mut socket = match attached.take() {
+        Some(socket) => socket,
+        None => a_socket(args).await?,
+    };
     work(args, &seat, &mut socket, &mut arm).await?;
     arm.wall_ms = started.elapsed().as_secs_f64() * 1000.0;
     arm.cpu_ms = (cpu_seconds(pid)? - before) * 1000.0;
 
-    println!("{}", arm.report(args.arm.name(), &idle));
+    println!("{}", arm.report(args.arm.name(), &idle, None));
     Ok(())
 }
 
@@ -486,8 +546,9 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
 ///
 /// **These three are not the whole request.** A subscribe also runs the git
 /// scan, the file-index walk, the reviews, the MCP read, the process walk and
-/// the rest, so the sum here is a share of a request rather than its cost -
-/// measured at about 85% of one on the transcript these break down.
+/// the rest, so the sum here is a SHARE of a request rather than its cost -
+/// and the share moves with the transcript and the machine, which is why the
+/// printed line says so rather than quoting a percentage.
 fn breakdown(surface: &Arc<ViewSurface>, seat: &SessionSlot, cwd: &Path) -> anyhow::Result<String> {
     let fleet = rss()?;
 
@@ -506,10 +567,39 @@ fn breakdown(surface: &Arc<ViewSurface>, seat: &SessionSlot, cwd: &Path) -> anyh
 
     Ok(format!(
         "breakdown: read {read_ms} ms, fold {fold_ms} ms, encode {encode_ms} ms over {} \
-         messages; resident {fleet} KiB with the fleet, {holding} KiB holding the read, {} KiB \
+         messages (the CONVERSATION's share of a request, not the request: the git scan, the \
+         file-index walk, the reviews, the MCP read and the process walk are not in these \
+         three); resident {fleet} KiB with the fleet, {holding} KiB holding the read, {} KiB \
          holding read + fold + encode ({} turns)",
         read.messages.len(),
         rss()?,
         turns.len(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::ValueEnum;
+
+    use super::Arm;
+
+    /// An arm reports under the name it is ASKED FOR.
+    ///
+    /// **`name()` is a hand-written match and the report prints what it
+    /// says**, so a variant renamed without it would run one workload and
+    /// report another under the name a person typed - the defect this
+    /// instrument exists to find, made by the instrument. The census is the
+    /// enum's own, so a variant added is covered the day it lands.
+    #[test]
+    fn every_arm_reports_under_the_name_it_is_asked_for() {
+        for arm in Arm::value_variants() {
+            let asked =
+                arm.to_possible_value().expect("every arm has a name").get_name().to_owned();
+            assert_eq!(
+                arm.name(),
+                asked,
+                "the name this arm reports under is not the one a caller asks for",
+            );
+        }
+    }
 }
