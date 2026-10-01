@@ -1790,7 +1790,7 @@ describe('the dock', () => {
    * prompts, and the box question one was written in is not question two's.
    */
   it("opens the next question's own-words box empty when one call carries two", () => {
-    const harness = open({ record: record({ pending_ask: questionAsk('tu-q', {}, 1) }) });
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q', {}, 0, 2) }) });
 
     const ownWords = (): HTMLTextAreaElement => {
       const row = options()[2];
@@ -1809,7 +1809,7 @@ describe('the dock', () => {
 
     // Answered, and the batch moves to its second question under the same call.
     press('Enter');
-    harness.page.record = record({ pending_ask: questionAsk('tu-q', {}, 2) });
+    harness.page.record = record({ pending_ask: questionAsk('tu-q', {}, 1, 2) });
     flushSync();
 
     expect(ownWords().value, "question one's words do not come back in question two's box").toBe(
@@ -1977,10 +1977,10 @@ describe('the dock', () => {
 
     press('Enter');
 
-    // Both carried states show here. The wire's option ids are positional, so a
-    // stale toggle is a VALID id for the next question's same row and the core
-    // accepts it; and the mark sat past this question's rows, so nothing draws
-    // as marked and Enter answers with nothing until the reader arrows.
+    // What this shape reaches is the mark: it sat past this question's rows, so
+    // nothing draws as marked and Enter answers with nothing at all until the
+    // reader arrows. The stale toggle is invisible from here - the test below is
+    // the one that reaches it.
     expect(commands(harness), 'Enter answers with the row this question drew').toEqual([
       {
         respond_question: {
@@ -1992,7 +1992,35 @@ describe('the dock', () => {
     ]);
   });
 
-  it('keeps the mark and the toggles through a repaint of the same question', () => {
+  /**
+   * The toggle-only path, which the test above cannot reach: there the mark sat
+   * past the question's rows, so nothing was dispatched at all. Here the mark is
+   * in range and the ids are positional across the batch, so a row turned on for
+   * question one carries an id question two's own row also carries - the reader
+   * sees it still on for a question they have not answered.
+   */
+  it('draws the next question with nothing turned on, when a row shares the last one id', () => {
+    const harness = open({
+      record: record({ pending_ask: oneOf(['question_1', 'question_2'], 0) }),
+    });
+
+    options()[0]?.click();
+    flushSync();
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'question one has its first row on',
+    ).toEqual([true, false, false]);
+
+    harness.page.record = record({ pending_ask: oneOf(['question_1', 'question_2'], 1) });
+    flushSync();
+
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'and the question the reader has not answered draws with nothing on',
+    ).toEqual([false, false, false]);
+  });
+
+  it('keeps what the reader turned on through a repaint of the same question', () => {
     const harness = open({
       record: record({ pending_ask: oneOf(['q1-a', 'q1-b'], 0) }),
     });
