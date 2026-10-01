@@ -165,7 +165,7 @@ reading the text colour the browser paints with:
 | `--dim` on a card | 4.98:1 |
 | `--dim` at a card's deepest | 4.87:1 |
 | `--muted` on the page | 7.01:1 |
-| `--text` on a card | 16.24:1 |
+| `--text` on a card | 12.23:1 |
 
 **And looked at, because the number is not the whole test.** The three text
 tokens still rank as a ranking: text, then muted, then dim, at both widths
