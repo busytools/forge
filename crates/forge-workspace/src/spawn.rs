@@ -3858,13 +3858,25 @@ provider = "anthropic"
     /// lead-driven spawns at cap 1, and the live (non-`Failed`) count
     /// never exceeds 1.
     ///
-    /// Deliberately NOT "exactly one Ok": a winner whose subprocess
-    /// dies asynchronously is transitioned to `Failed` by the
-    /// spawn-failure handler, which frees its slot for a queued spawn -
-    /// the count invariant survives, the reply count does not.
+    /// Exactly one of the eight is admitted, which the stand-in is what
+    /// makes assertable: with a real child the reply count is tolerant,
+    /// because a winner whose subprocess dies asynchronously is
+    /// transitioned to `Failed` by the spawn-failure handler, freeing
+    /// its slot for a queued spawn.
+    ///
+    /// That stand-in is not only for determinism - a real child booted
+    /// against this fixture's config directory outlives the test: the
+    /// guard that removes the tree drops as soon as the assertions hold,
+    /// and the child then writes the CLI's `.claude.json` layout back
+    /// into the deleted path.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_spawns_keep_the_live_count_under_the_cap() {
         let (workspace, _config_dir) = stub_with_project_cap(1);
+        // Held for the test's lifetime: the receiver IS the stand-in's
+        // dispatcher, and dropping it fails the admitted spawn, which
+        // rolls the entry back and hands the freed slot on.
+        let (stand_in, _agent_rx) = Workspace::testing_stub_handle();
+        workspace.install_test_spawn_handle(stand_in);
 
         let mut handles = Vec::new();
         for n in 0..8 {
@@ -3907,7 +3919,7 @@ provider = "anthropic"
                 }
             }
         }
-        assert!(winners >= 1, "the first arrival always gets the free slot");
+        assert_eq!(winners, 1, "the cap admits the first arrival and refuses the other seven");
         let project = seeded_project(&workspace);
         let live = workspace.list_live_workers(&project).iter().filter(|w| w.is_live()).count();
         assert!(live <= 1, "no overshoot past the cap; got {live} live workers");
