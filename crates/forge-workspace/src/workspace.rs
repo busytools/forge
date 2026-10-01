@@ -15752,8 +15752,9 @@ mod kick_dispatcher_tests {
     //!
     //! Tests observe via `command_intercept` (`enable_test_dispatch_intercept`
     //! plus `drain_test_dispatch_buffer`); the drainer calls
-    //! `Workspace::dispatch_workspace_prompt` for each
-    //! `KickRequest`, which the intercept buffer captures verbatim.
+    //! `Workspace::dispatch_forged_prompt` for each `KickRequest`, which the
+    //! intercept buffer captures verbatim and whose prompt frame the update
+    //! stream carries.
     //!
     //! Time is paused (`start_paused = true`) so the drainer's
     //! `tokio::time::sleep(KICK_DISPATCH_INTERVAL)` advances only when
@@ -15762,6 +15763,44 @@ mod kick_dispatcher_tests {
     use super::*;
     use crate::protocol::Command;
     use std::time::Duration;
+
+    /// A drained kick draws the words it sends the worker.
+    ///
+    /// They reach the model on stdin and the CLI does not echo them, so the
+    /// frame is the only thing a view can draw them from - and reverting the
+    /// drainer to the delivery path leaves every dispatch-side test in here
+    /// green, which is why this one asserts the frame.
+    #[tokio::test(start_paused = true)]
+    async fn a_drained_kick_draws_its_words() {
+        let (workspace, mut update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+
+        let key = sk("draws");
+        workspace
+            .enqueue_kick(KickRequest { slot: key.clone(), prompt_body: "get on with it".into() });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let mut frame = None;
+        while let Ok(update) = update_rx.try_recv() {
+            if let crate::protocol::SessionUpdate::ChatAppended { key: addressed, msg, .. } = update
+                && addressed == key
+            {
+                frame = Some(msg);
+            }
+        }
+        let Some(Message::User { message, .. }) = frame else {
+            panic!("a drained kick draws the words the worker received")
+        };
+        assert!(
+            matches!(
+                message.content.first(),
+                Some(forge_primitives::ContentBlock::Text { text }) if text == "get on with it"
+            ),
+            "the frame carries the kick's prose: {message:?}",
+        );
+    }
 
     /// Helper: a session key for kick tests.
     fn sk(name: &str) -> SessionSlot {
