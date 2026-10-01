@@ -2292,6 +2292,19 @@ mod tests {
             "an unreported window draws the dash in place of its figure, keeping the unit: {row:?}",
         );
         assert!(!row.contains("0%"), "and no zero: {row:?}");
+
+        // One width in both states, which is what the ETA column above and the
+        // money column on a spend account line up against: a figure-format
+        // change that moved this row's right edge would otherwise pass
+        // everything here and shift both.
+        let mut app = App::test_default();
+        app.usage_mut().expect("active session").snapshot =
+            Some(window_snapshot(Some(15.0), Some(89.0)));
+        assert_eq!(
+            row.chars().count(),
+            window_row(&app, "5h").chars().count(),
+            "the row is one width in both states: {row:?}",
+        );
         assert!(
             !row.contains('\u{2591}'),
             "and no track, which reads as a window at zero: {row:?}",
