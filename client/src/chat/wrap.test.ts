@@ -20,13 +20,12 @@ import type { ToolLeaf } from './leaves';
  * someone reading "code should not wrap" into a `white-space: pre` and bringing
  * the sideways scroll back.
  *
- * **The rules are matched against the components' own markup, wherever they are
- * written.** A name-anchored scan misses a rule inside a `@media` block and a
- * rule whose selector reaches the same element by another path - the shape this
- * file exists to catch, since the block the fix deleted lived in exactly that
- * shape. So every rule in the sheet is tried against the element with
- * `matches`, comments are stripped first, and a selector jsdom cannot read is
- * a failure rather than a silent skip.
+ * **The rules are matched against the components' own markup, composed where
+ * the page composes them.** A fragment rendered bare is a fixture that cannot
+ * see an ancestor-scoped rule, and `.conv` is this sheet's own idiom for a rule
+ * about the conversation: `.prose .code pre { white-space: pre }` would pass a
+ * bare panel and silently clip a real one. Every rule in the parsed sheet is
+ * tried against the element with `matches`, wherever it is written.
  *
  * The terminal is the reference here (rule 24): it wraps a long code line
  * inside its panel, wraps a diff line and re-emits the indent on the
@@ -35,32 +34,44 @@ import type { ToolLeaf } from './leaves';
  */
 const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 
-/** A call carrying a diff and a command's own output, as the fold hands it over. */
-const CALL = render(Call, {
-  props: {
-    call: {
-      id: 'toolu_01',
-      row: { kind: 'family', family: 'edit' },
-      name: 'Edit',
-      title: 'Edit src/lib.rs',
-      command: null,
-      status: 'completed',
-      note: null,
-      body: [
-        { kind: 'diff', path: 'src/lib.rs', old: 'let a = 1;', new: 'let a = 2;' },
-        { kind: 'text', text: 'ok' },
-      ],
-    } as ToolLeaf,
-  },
-}).body;
+/** Where the page puts a conversation fragment: the containers it hangs in. */
+const inPage = (fragment: string): string =>
+  `<div class="conv"><div class="turn"><div class="work">${fragment}</div></div></div>`;
 
-/** A source file a call read, as the panel draws it. */
-const PANEL = render(Code, { props: { path: 'src/lib.rs', text: 'let a = 1;' } }).body;
+/** A call carrying a diff and a command's own output, as the fold hands it over. */
+const CALL = inPage(
+  render(Call, {
+    props: {
+      call: {
+        id: 'toolu_01',
+        row: { kind: 'family', family: 'edit' },
+        name: 'Edit',
+        title: 'Edit src/lib.rs',
+        command: null,
+        status: 'completed',
+        note: null,
+        body: [
+          { kind: 'diff', path: 'src/lib.rs', old: 'let a = 1;', new: 'let a = 2;' },
+          { kind: 'text', text: 'ok' },
+        ],
+      } as ToolLeaf,
+    },
+  }).body,
+);
+
+/** A source file in a message's prose, which is how a fence draws one. */
+const PANEL = inPage(
+  `<div class="prose">${render(Code, { props: { path: 'src/lib.rs', text: 'let a = 1;' } }).body}</div>`,
+);
 
 /** A message's prose, with a table in it, as the markdown renderer draws both. */
-const PROSE = render(Prose, {
-  props: { text: 'A paragraph with one_long_token_inside_it.\n\n| a | b |\n| - | - |\n| c | d |' },
-}).body;
+const PROSE = inPage(
+  render(Prose, {
+    props: {
+      text: 'A paragraph with one_long_token_inside_it.\n\n| a | b |\n| - | - |\n| c | d |',
+    },
+  }).body,
+);
 
 /**
  * Every declaration the sheet applies to the first `selector` in `html`,
@@ -81,8 +92,38 @@ function declarationsFor(html: string, selector: string): string {
   return appliedTo(styles.cssRules, element);
 }
 
+/** `rules` and their nested blocks, as the declarations they apply to `element`. */
+function appliedTo(rules: CSSRuleList, element: Element): string {
+  const applied: string[] = [];
+  const missed: string[] = [];
+  for (const rule of rules) {
+    const children = 'cssRules' in rule ? (rule as CSSGroupingRule).cssRules : null;
+    if ('selectorText' in rule) {
+      const { selectorText } = rule as CSSStyleRule;
+      // A nested rule is written with `&`, which no element matches and which
+      // throws nothing: it is a declaration this reader cannot place, so it
+      // fails loudly rather than reading as absent.
+      if (children !== null && children.length > 0) {
+        missed.push(selectorText);
+        continue;
+      }
+      try {
+        if (element.matches(selectorText)) applied.push(rule.cssText);
+      } catch {
+        missed.push(selectorText);
+      }
+      continue;
+    }
+    // A grouping rule carries what is written inside it, which is where a rule
+    // a media query guards lives.
+    if (children !== null) applied.push(appliedTo(children, element));
+  }
+  expect(missed, `selectors this reader could not place: ${missed.join(', ')}`).toEqual([]);
+  return applied.join('\n');
+}
+
 /**
- * Every value `declarations` gives `property`, one per rule that sets it.
+ * The values `declarations` gives `property`, duplicates collapsed.
  *
  * **Presence is not the question.** A rule that decides the other way collects
  * beside the one this file names - a second copy inside a media query, or a
@@ -91,32 +132,8 @@ function declarationsFor(html: string, selector: string): string {
  */
 function valuesOf(declarations: string, property: string): string[] {
   const set = new RegExp(`(?:^|[;{\\s])${property}:\\s*([^;}]+)`, 'g');
-  return [...declarations.matchAll(set)].map((match) => (match[1] ?? '').trim());
-}
-
-/** `rules` and their nested blocks, as the declarations they apply to `element`. */
-function appliedTo(rules: CSSRuleList, element: Element): string {
-  const applied: string[] = [];
-  const missed: string[] = [];
-  for (const rule of rules) {
-    // A style rule carries a selector; a grouping rule carries the rules
-    // written inside it, which is where a rule a media query guards lives.
-    // The order matters: a style rule carries both in the current spec, and
-    // recursing into its own empty list would read no declaration at all.
-    if ('selectorText' in rule) {
-      const { selectorText } = rule as CSSStyleRule;
-      try {
-        if (element.matches(selectorText)) applied.push(rule.cssText);
-      } catch {
-        missed.push(selectorText);
-      }
-      continue;
-    }
-    const nested = 'cssRules' in rule ? (rule as CSSGroupingRule).cssRules : null;
-    if (nested !== null) applied.push(appliedTo(nested, element));
-  }
-  expect(missed, `selectors jsdom could not read: ${missed.join(', ')}`).toEqual([]);
-  return applied.join('\n');
+  const found = [...declarations.matchAll(set)].map((match) => (match[1] ?? '').trim());
+  return [...new Set(found)].sort();
 }
 
 describe('a long line in the conversation', () => {
@@ -180,12 +197,17 @@ describe('a long line in the conversation', () => {
   it('breaks a long token in prose, which is what carries a paragraph', () => {
     // A paragraph wraps at its spaces and not inside a word, so a path, a hash
     // or a URL in a sentence would take the conversation sideways on its own.
-    // `overflow-wrap` inherits, so this one declaration is the paragraph's, a
-    // list item's and a quote's together.
-    const applied = declarationsFor(PROSE, '.prose');
+    // The paragraph declares nothing: `overflow-wrap` inherits, so the block is
+    // the element that has to carry it, and the paragraph is the element that
+    // has to leave it alone.
+    const paragraph = declarationsFor(PROSE, '.prose p');
+    const block = declarationsFor(PROSE, '.prose');
 
-    expect(applied, 'the prose block has a rule at all').not.toBe('');
-    expect(valuesOf(applied, 'overflow-wrap'), 'a token with nowhere to break fits').toEqual([
+    expect(
+      valuesOf(paragraph, 'overflow-wrap'),
+      'the paragraph declares nothing of its own',
+    ).toEqual([]);
+    expect(valuesOf(block, 'overflow-wrap'), 'and inherits the break from the block').toEqual([
       'anywhere',
     ]);
   });
@@ -209,8 +231,12 @@ describe('a long line in the conversation', () => {
     // them: a wrapping rule that has to be repeated inside a media query is a
     // scroller waiting to come back at the width nobody tests.
     expect(sheet, 'the sheet is the one this test read').toContain('.dif .ln .l');
-    expect(sheet.replace(/\/\*[\s\S]*?\*\//g, ''), 'no rule scrolls a box sideways').not.toContain(
-      'overflow-x',
+    const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
+    // The shorthand is the same defect, since it scrolls both axes; an
+    // `overflow-y` alone is not, and the rail and the conversation use it.
+    const scrollers = [...code.matchAll(/overflow(?!-y)(?:-x)?:\s*(auto|scroll)/g)].map(
+      (match) => match[0],
     );
+    expect(scrollers, 'no rule scrolls a box sideways').toEqual([]);
   });
 });

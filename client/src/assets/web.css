@@ -684,11 +684,13 @@ details.sec[open] > summary .arw { color: var(--accent); }
   padding: 2px 0 2px 12px; margin: 10px 0; }
 /* No rule between body rows: the terminal draws the one line under the header. */
 .prose table { border-collapse: collapse; margin: 10px 0; }
-/* A cell breaks a long token rather than widening the table past the column:
-   the terminal stacks a table its grid cannot hold, and wrapping keeps the
-   table the shape it is. Data cells only - a header that may break anywhere has
-   a one-character minimum, and a neighbouring column then slices the word - so
-   the header resets what it would otherwise inherit from the prose block. */
+/* A data cell breaks a long token rather than widening the table past the
+   column: the terminal stacks a table its grid cannot hold, and wrapping keeps
+   the table the shape it is - while a header that may break anywhere has a
+   one-character minimum and is sliced by a neighbouring column's demand for
+   width, so the header resets what it would otherwise inherit. A table whose
+   own header words do not fit the column still exceeds it; stacking is the
+   terminal's answer to that and not this one. */
 .prose th, .prose td { text-align: left; padding: 4px 12px 4px 0; }
 .prose td { overflow-wrap: anywhere; }
 .prose th { color: var(--muted); font-weight: 700; overflow-wrap: normal;
