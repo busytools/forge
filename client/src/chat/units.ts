@@ -1059,7 +1059,7 @@ export function fold(
             // The errors name no hook, so they are carried beside the hook
             // rows rather than against one of them.
             errors: (Array.isArray(frame.hookErrors) ? frame.hookErrors : []).filter(
-              (error): error is string => typeof error === 'string' && error.trim() !== '',
+              (error): error is string => typeof error === 'string',
             ),
           });
         }

@@ -11,6 +11,15 @@ const ONE: HookInfo[] = [{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }
 const draw = (actions: number, infos: HookInfo[] = ONE, errors: string[] = []): string =>
   render(Hooks, { props: { actions, infos, errors } }).body;
 
+/**
+ * The chip's own `<summary>`. The closed-chip state has to live here: a mark
+ * or a count drawn anywhere inside the open body only is a state a reader
+ * sees after opening the chip, which is the blind spot the failed state
+ * exists to close.
+ */
+const summaryOf = (body: string): string =>
+  body.slice(body.indexOf('<summary'), body.indexOf('</summary>'));
+
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 const PAGE = readFileSync(
   new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
@@ -78,16 +87,17 @@ describe('the hook chip a turn carries', () => {
    * failure on the page leads with, and the count of what the CLI reported.
    */
   it('marks the summary failed, and counts the errors, when the CLI reported any', () => {
-    const failed = draw(1, ONE, ['JSON validation failed']);
+    const failed = summaryOf(draw(1, ONE, ['JSON validation failed']));
 
     expect(failed, 'the failure mark a failed call, turn or run leads with').toContain('#i-x');
     expect(failed, 'and it is drawn as the shared state mark').toContain('class="ic st err"');
     expect(failed, 'with the count beside the action count').toContain('1 error<');
-    expect(draw(1, ONE, ['one', 'two']), 'plural when more than one came back').toContain(
-      '2 errors<',
-    );
+    expect(
+      summaryOf(draw(1, ONE, ['one', 'two'])),
+      'plural when more than one came back',
+    ).toContain('2 errors<');
 
-    const clean = draw(1);
+    const clean = summaryOf(draw(1));
     expect(clean, 'a summary with no errors carries no mark').not.toContain('#i-x');
     expect(clean, 'and says nothing about errors').not.toContain('error');
   });
