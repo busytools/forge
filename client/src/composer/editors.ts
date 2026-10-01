@@ -1,9 +1,13 @@
 /**
- * Every box in the client that can take text, and the one function that says
- * which of them holds the keyboard.
+ * Every box in the client that can take text, and the table that says which of
+ * them a take's words belong to.
  *
- * Focus is derived, never stored: nothing registers here, so nothing can go
- * stale and there is no mount order to get wrong.
+ * Derived, never stored: nothing registers here, so nothing can go stale and
+ * there is no mount order to get wrong.
+ *
+ * It is not yet the whole of the keyboard's routing. The surfaces still move the
+ * caret in their own effects, and the landing is the one caller this table has -
+ * so a surface added here does not have its keyboard follow by itself.
  *
  * Every box that can take text is one of these, and `editors.test.ts` sweeps the
  * tree for one that forgot to say so.
@@ -33,7 +37,7 @@ export type Where = {
 };
 
 /**
- * Which box holds the keyboard.
+ * Which box the reader's words belong to.
  *
  * A prompt takes it and holds it while the queue drains; anything else leaves it
  * where the reader put it. The remembered surface can be gone - a prompt answered
