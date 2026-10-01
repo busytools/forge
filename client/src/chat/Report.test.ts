@@ -1,5 +1,5 @@
 import { render } from 'svelte/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import Report from './Report.svelte';
 import type { TurnInfo } from './units';
@@ -72,6 +72,39 @@ describe('a settled turn\u2019s row', () => {
     // A share of nothing is not a share, so the fact is dropped rather than
     // drawn as a dash.
     expect(drawn.some((fact) => fact.startsWith('cached='))).toBe(false);
+  });
+
+  it('counts the wait since the last frame into a running row, and nothing into a settled one', () => {
+    // Both directions of the running branch are user-visible. Dropping the
+    // settled one makes a settled row report wall-clock since its stamp -
+    // time the turn never spent - and collapsing the derived to the record's
+    // span freezes the running clock the ticker exists to move. The clock is
+    // frozen so both sides read exactly.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-01T06:00:00.000Z'));
+    try {
+      const running: TurnInfo = {
+        ...FULL,
+        running: true,
+        duration_ms: 40_000,
+        ended_at_utc: '2026-10-01T05:58:30.000Z',
+        api_ms: null,
+        session_cost_usd: null,
+      };
+      const summary = (info: TurnInfo): string => {
+        const body = draw(info);
+        return body.slice(body.indexOf('<summary'), body.indexOf('</summary>'));
+      };
+
+      expect(summary(running), 'the span plus the 1m 30s wait since the last frame').toContain(
+        '2m 10s',
+      );
+      expect(summary(FULL), 'and a settled row reads its own span, not wall-clock since').toContain(
+        '2m 41s',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('draws the running-only segments on no settled row', () => {
