@@ -8372,6 +8372,68 @@ provider = "anthropic"
         );
     }
 
+    /// A busy forged prompt signals the queue before it draws.
+    ///
+    /// The frame follows a dispatch that landed, and the signal comes off that
+    /// same dispatch, so the order a view reads is "queued" and then the
+    /// words - the reverse would draw a turn for a prompt still on its way.
+    #[test]
+    fn a_busy_forged_prompt_signals_before_it_draws() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("bkey", "/tmp/b-forged-prompt");
+        let cwd = project_expanded_path(&ws, "bkey");
+        ws.record_connected_session(&cwd, "b-uuid", None);
+        let key = SessionSlot::from_str_for_test("b-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-session".to_owned(),
+            },
+        );
+        ws.mark_session_connected_for_test(&key, "b-uuid");
+        ws.enable_test_dispatch_intercept();
+        ws.domain_session_for(&key).expect("domain").lock().turn_pending = true;
+
+        ws.dispatch_forged_prompt(&key, "get on with it".to_owned()).expect("busy dispatch");
+
+        let order: Vec<&str> = drain_updates(&mut rx)
+            .iter()
+            .filter_map(|u| match u {
+                SessionUpdate::PromptQueuedWhileBusy { .. } => Some("signal"),
+                SessionUpdate::ChatAppended { .. } => Some("frame"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            order,
+            ["signal", "frame"],
+            "the queue signal precedes the frame the words draw as",
+        );
+    }
+
+    /// A forged prompt that never landed draws nothing: the words did not
+    /// reach a model, so a frame for them would show a turn nothing answers.
+    #[test]
+    fn a_refused_forged_prompt_draws_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let gone = SessionSlot::from_str_for_test("no-such-seat");
+
+        let refused = ws.dispatch_forged_prompt(&gone, "get on with it".to_owned());
+
+        assert!(refused.is_err(), "a seat nothing holds refuses the dispatch");
+        assert!(
+            !drain_updates(&mut rx).iter().any(|u| matches!(u, SessionUpdate::ChatAppended { .. })),
+            "a refused prompt never reached a model, so nothing draws its words",
+        );
+    }
+
     /// The cron delivery path rides the helper: a cron fired into a
     /// mid-turn lead signals `PromptQueuedWhileBusy` on top of the
     /// `CronPromptAppended` echo; an idle fire stays silent.
