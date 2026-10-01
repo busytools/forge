@@ -481,7 +481,13 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
         // correctly drops them. Replay has no input handler
         // contribution, so render the user text content blocks here
         // before dispatch.
-        if let forge_primitives::Message::User { message: envelope, .. } = msg {
+        // A stamped turn is the harness speaking: the walker below draws it on
+        // a line of its own, and drawing it here as well would show the same
+        // words twice - once of them as the reader's, which is #1449's
+        // misattribution.
+        if let forge_primitives::Message::User { message: envelope, .. } = msg
+            && !super::sdk_message::is_harness_user_turn(msg)
+        {
             // Render replay-time user text content blocks. The live raw
             // walker drops user text (those are echoes of input the input
             // handler already rendered); replay has no input handler
@@ -1579,6 +1585,38 @@ mod tests {
         }
     }
 
+    /// A user turn the CLI stamped as its own, which is the shape the scan
+    /// hands a replayed harness row back as.
+    fn harness_user_text(text: &str) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+            timestamp: None,
+            synthetic: true,
+        }
+    }
+
+    /// Every line the chat carries on a system row, which is the shape the
+    /// terminal draws a notice in.
+    fn system_row_texts(app: &App) -> Vec<String> {
+        app.messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::System(_)))
+            .flat_map(|m| m.blocks.iter())
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn user_bubble_texts(app: &App) -> Vec<String> {
         app.messages()
             .expect("active session")
@@ -1660,6 +1698,61 @@ mod tests {
         assert!(
             !app.replay_in_progress,
             "replay_in_progress must be cleared at end of load_resume_history",
+        );
+    }
+
+    /// Issue #1449, both halves on one rule: a user turn the CLI stamped as
+    /// synthetic is the harness speaking, so a view draws it, and never as
+    /// the reader's own words.
+    ///
+    /// Live, the walker dropped every wire user text as an input echo the
+    /// input handler had already drawn. On resume the replay drew this same
+    /// turn as a user bubble, because the suppression list is tag-based and
+    /// the harness's reminder carries no tag. The evidence for "not the
+    /// reader's" is the CLI's own stamp on the frame, never a match on the
+    /// words.
+    #[test]
+    fn a_stamped_user_turn_is_drawn_and_never_as_the_readers_own() {
+        const REMINDER: &str = "Skill /unslop was loaded earlier (see the invoked-skills \
+                                 reminder above); this is a NEW invocation - follow those \
+                                 instructions now, including any setup steps.";
+
+        // Live: the frame exactly as the CLI emits it, decoded from the wire
+        // so the stamp's own spelling is under test.
+        let frame: Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "session_id": "sess-live",
+            "uuid": "u-reminder-live",
+            "isSynthetic": true,
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": REMINDER}],
+            },
+        }))
+        .expect("the CLI's frame decodes");
+        let mut live = App::test_default();
+        super::super::sdk_message::handle_sdk_message(&mut live, frame);
+
+        assert!(
+            !user_bubble_texts(&live).iter().any(|text| text == REMINDER),
+            "live: the harness's words must not claim the reader's turn",
+        );
+        assert!(
+            system_row_texts(&live).iter().any(|text| text == REMINDER),
+            "live: and the words must still be drawn (rule 25), on a line of their own",
+        );
+
+        // Resume: the same turn, as the transcript read hands it back.
+        let mut resumed = App::test_default();
+        load_resume_history(&mut resumed, &[harness_user_text(REMINDER)]);
+
+        assert!(
+            !user_bubble_texts(&resumed).iter().any(|text| text == REMINDER),
+            "resume: the harness's words must not claim the reader's turn",
+        );
+        assert!(
+            system_row_texts(&resumed).iter().any(|text| text == REMINDER),
+            "resume: and the words must still be drawn (rule 25), on a line of their own",
         );
     }
 

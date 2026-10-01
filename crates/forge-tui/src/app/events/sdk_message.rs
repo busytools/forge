@@ -365,8 +365,19 @@ fn walk_assistant_content(
     }
 }
 
+/// Whether a user turn is the harness speaking rather than the reader.
+///
+/// The CLI's own stamp, carried through the wire decode and the transcript
+/// read: the harness's injected reminder arrives marked, and so does every
+/// other turn nobody typed. The mark says so, never a match on the words -
+/// the tag list is a set of content prefixes somebody has seen, and it can
+/// only ever be one release behind.
+pub(super) fn is_harness_user_turn(msg: &Message) -> bool {
+    matches!(msg, Message::User { synthetic: true, .. })
+}
+
 fn handle_user(app: &mut App, msg: Message) {
-    let Message::User { message, parent_tool_use_id, tool_use_result, .. } = msg else {
+    let Message::User { message, parent_tool_use_id, tool_use_result, synthetic, .. } = msg else {
         return;
     };
     // A genuine new user turn invalidates the previous turn's
@@ -380,9 +391,13 @@ fn handle_user(app: &mut App, msg: Message) {
     // survive them, since a turn's later thinking blocks arrive after
     // exactly these. The Result-side clear in `handle_result` covers
     // the clean turn-end case; this one is additive for the in-flight
-    // case.
-    if tool_use_result.is_none() {
+    // case. A stamped turn is the harness injecting a line mid-turn, so
+    // it is not a new reader turn either.
+    if tool_use_result.is_none() && !synthetic {
         app.set_latest_thinking_tokens(None);
+    }
+    if synthetic {
+        draw_harness_user_turn(app, &message.content);
     }
     walk_user_tool_results(app, &message.content);
     // The CLI never echoes stdin-injected prompts live on stream-json
@@ -407,6 +422,21 @@ fn handle_user(app: &mut App, msg: Message) {
             Some(&parsed.content),
             Some(result),
         );
+    }
+}
+
+/// Draw a stamped user turn's words as the line of their own they are, since
+/// nobody typed them and rule 25 draws what the CLI sends rather than
+/// dropping it.
+fn draw_harness_user_turn(app: &mut App, content: &[forge_primitives::ContentBlock]) {
+    for block in content {
+        let forge_primitives::ContentBlock::Text { text } = block else {
+            continue;
+        };
+        if text.is_empty() {
+            continue;
+        }
+        super::push_system_message_with_severity(app, Some(crate::app::SystemSeverity::Info), text);
     }
 }
 
@@ -3191,6 +3221,21 @@ mod thinking_tokens_clear_on_user_tests {
         }
     }
 
+    fn harness_turn(text: &str) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+            timestamp: None,
+            synthetic: true,
+        }
+    }
+
     fn tool_result_echo() -> Message {
         Message::User {
             message: UserEnvelope { role: "user".to_owned(), content: Vec::new() },
@@ -3214,6 +3259,22 @@ mod thinking_tokens_clear_on_user_tests {
             app.latest_thinking_tokens(),
             None,
             "real user turn must clear the prior turn's carry-over",
+        );
+    }
+
+    /// A stamped turn is the harness injecting a line mid-turn, not the
+    /// reader taking one, so the count must survive it exactly as it
+    /// survives a tool-result echo: clearing here restarts the tally and
+    /// undercounts the turn.
+    #[test]
+    fn stamped_harness_turn_preserves_thinking_tokens() {
+        let mut app = App::test_default();
+        app.set_latest_thinking_tokens(Some(150));
+        handle_user(&mut app, harness_turn("Skill /unslop was loaded earlier."));
+        assert_eq!(
+            app.latest_thinking_tokens(),
+            Some(150),
+            "a mid-turn harness line must NOT clear the active turn's count",
         );
     }
 
