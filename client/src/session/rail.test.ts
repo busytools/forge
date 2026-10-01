@@ -35,7 +35,7 @@ function rule(selector: string): string {
 }
 
 describe('the rail footer', () => {
-  it('separates the claude version from its upgrade arrow', () => {
+  it('separates the installed version from the one it moves to', () => {
     // The fixture answers 1.0.0 installed against 1.1.0 published, so the row
     // draws both halves and the separator between them is the whole subject.
     // Read as TEXT rather than as markup: the arrow and the version are two
