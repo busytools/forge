@@ -103,6 +103,11 @@ describe('which editor holds the keyboard', () => {
  * what lets the shared field's own dynamic box through, while a `Field` handed an
  * expression is an offender, its prop being the only place the name is written.
  * The docking tests are what hold each to the name it was given.
+ *
+ * The raw-box sweep is a text match to the tag's first `>`, so a box carrying an
+ * arrow ahead of `data-editor` reads as naming none, and it reports an `input`
+ * of any kind - a checkbox included. Both are false positives that fail loudly
+ * and are answered by looking; neither can hide a box.
  */
 describe('the census of boxes that can take text', () => {
   it('every element that can take text names an editor from the closed set', () => {

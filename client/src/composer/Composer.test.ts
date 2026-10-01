@@ -1977,10 +1977,11 @@ describe('the dock', () => {
 
     press('Enter');
 
-    // What this shape reaches is the mark: it sat past this question's rows, so
-    // nothing draws as marked and Enter answers with nothing at all until the
-    // reader arrows. The stale toggle is invisible from here - the test below is
-    // the one that reaches it.
+    // This shape exercises the mark: it sat past the question's rows, so on a
+    // dock that carried it over nothing would draw as marked and Enter would
+    // answer with nothing until the reader arrowed. A fresh dock draws its own
+    // first row marked instead, which is where the answer below comes from - and
+    // the test beneath this one is the one that reaches the toggle.
     expect(commands(harness), 'Enter answers with the row this question drew').toEqual([
       {
         respond_question: {
@@ -1994,22 +1995,25 @@ describe('the dock', () => {
 
   /**
    * The toggle-only path, which the test above cannot reach: there the mark sat
-   * past the question's rows, so nothing was dispatched at all. Here the mark is
-   * in range and the ids are positional across the batch, so a row turned on for
-   * question one carries an id question two's own row also carries - the reader
-   * sees it still on for a question they have not answered.
+   * past the question's rows, so nothing was dispatched for the toggle to show
+   * itself in. Here the row turned on for question one is the one whose id
+   * question two also draws, so a toggle that carried over would be drawn as on
+   * for a question the reader has not answered.
    */
   it("draws the next question with nothing turned on, when a row shares the last one's id", () => {
     const harness = open({
       record: record({ pending_ask: oneOf(['question_0', 'question_1'], 0) }),
     });
 
-    options()[0]?.click();
+    // The second row, whose id is the one question two draws first: turning on
+    // any other would leave the id shared with nothing and the check below
+    // holding whatever the toggle did.
+    options()[1]?.click();
     flushSync();
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
-      'question one has its first row on',
-    ).toEqual([true, false, false]);
+      'question one has its second row on',
+    ).toEqual([false, true, false]);
 
     harness.page.record = record({ pending_ask: oneOf(['question_1', 'question_2'], 1) });
     flushSync();
