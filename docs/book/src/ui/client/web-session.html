@@ -444,6 +444,8 @@
   .hooks:hover { color: var(--muted); }
   details.hooks > summary .arw { color: var(--dim); }
   details.hooks[open] > summary .arw { color: var(--accent); }
+  /* A failed summary's mark takes the bad tone rather than the chip's DIM. */
+  details.hooks > summary .st.err { color: var(--bad); }
 
   .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -1334,6 +1336,25 @@ docs: Render the message body into rows.</div>
             <div class="term">cargo fmt --check &#183; 412ms</div>
             <div class="term">cargo clippy --all-targets &#183; 890ms</div>
             <div class="term">git status --short &#183; 6ms</div>
+          </div>
+        </details>
+      </div>
+
+      <div class="mine">
+        <div class="prose">
+          <p>And a chip whose hooks failed: the mark and the count ride the closed chip, and each error draws under the hooks.</p>
+        </div>
+      </div>
+
+      <div class="work">
+        <details class="hooks" open>
+          <summary>
+            <svg class="ic st err"><use href="#i-x"/></svg>
+            <span>hook summary &#183; 1 action &#183; 1 error</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="term">${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh &#183; 0ms</div>
+            <div class="term"><span class="fail">JSON validation failed</span></div>
           </div>
         </details>
       </div>

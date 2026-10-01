@@ -207,4 +207,28 @@ describe('the hook chip a turn carries', () => {
       'every row a command with the duration it took',
     ).toEqual([]);
   });
+
+  /**
+   * The failed half the chip exists for, and a page drawing only the passing
+   * chip is the same one-state blind spot the open drawing was added to close.
+   * What holds is the SHAPE: the mark and the count on the closed chip, so the
+   * failure shows without opening it, and the error as a row under the hooks.
+   */
+  it('draws the failed chip in the book, its state on the closed chip', () => {
+    const chips = PAGE.match(/<details class="hooks" open>[\s\S]*?<\/details>/g) ?? [];
+    const failed = chips.find((chip) => chip.includes('#i-x')) ?? '';
+    expect(failed, 'the book draws the failed chip open').not.toBe('');
+
+    const summary = failed.slice(failed.indexOf('<summary'), failed.indexOf('</summary>'));
+    expect(summary, 'the mark on the closed chip').toContain('#i-x');
+    expect(summary, 'and the count beside the action count').toContain(
+      'hook summary &#183; 1 action &#183; 1 error',
+    );
+    expect(failed, 'the error as its own row, in the tone the sheets give a failure').toContain(
+      '<div class="term"><span class="fail">',
+    );
+    expect(BOOK, "the page's own sheet colours the failed summary's mark").toContain(
+      'details.hooks > summary .st.err',
+    );
+  });
 });
