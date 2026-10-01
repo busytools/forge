@@ -138,7 +138,9 @@ describe('the hook chip a turn carries', () => {
     // The sample rows are the drawing's own to re-word; what holds is the
     // SHAPE - one row per action the chip counted, each a command with the
     // duration it took.
-    const counted = /hook summary &#183; (\d+) actions/.exec(open)?.[1] ?? '';
+    // The chip spells one action in the singular, so a one-action drawing is a
+    // real rendering the page may hold.
+    const counted = /hook summary &#183; (\d+) actions?/.exec(open)?.[1] ?? '';
     expect(counted, 'the chip says how many actions it took').not.toBe('');
     const rows = open.match(/<div class="term">[^<]+<\/div>/g) ?? [];
     expect(rows.length, 'a row drawn per action the chip counted').toBe(Number(counted));
