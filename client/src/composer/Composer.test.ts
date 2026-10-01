@@ -387,6 +387,15 @@ describe('the box', () => {
     expect(document.querySelector('.dict'), 'a notice wins the row').toBeNull();
   });
 
+  it('hints in the terminal own words, three dots and all', () => {
+    // The placeholder is the whole of what the box says while it is empty, and
+    // it was the one of the three lines nothing pinned: reverting it to the
+    // single ellipsis character left every other test green.
+    open({});
+
+    expect(field().placeholder).toBe('Type a message...');
+  });
+
   it('replaces the box entirely for each reason it cannot take keys, and says why', () => {
     const cases: [Partial<ComposerProps>, string, string | null][] = [
       [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Connecting to Claude Code...', null],
