@@ -481,19 +481,26 @@
   </div>
 {:else if ask !== null}
   <div class="comp">
-    <Dock
-      {ask}
-      {slot}
-      {connection}
-      depth={seat.pendingDepth}
-      notice={refusal}
-      take={composer.take}
-      bind:notes={dockDraft}
-      bind:ownOpen={dockOpen}
-      land={dockLanded}
-      onanswer={remember}
-      onabandon={abandon}
-    />
+    <!-- Keyed on the prompt, so a batch's next question is a fresh dock: the
+         wire's option ids are positional, so a mark or a toggle left over from
+         the question before is a valid answer to the one after, and the core
+         accepts it. A repaint of the same prompt keeps its key, so a frame
+         arriving clears nothing the reader has turned on. -->
+    {#key ownKeyOf(ask)}
+      <Dock
+        {ask}
+        {slot}
+        {connection}
+        depth={seat.pendingDepth}
+        notice={refusal}
+        take={composer.take}
+        bind:notes={dockDraft}
+        bind:ownOpen={dockOpen}
+        land={dockLanded}
+        onanswer={remember}
+        onabandon={abandon}
+      />
+    {/key}
   </div>
 {:else}
   <div class="comp">

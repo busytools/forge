@@ -105,6 +105,31 @@ function bothFields(): HTMLTextAreaElement[] {
   });
 }
 
+/**
+ * One question of a batch, with its options named for the question they belong
+ * to.
+ *
+ * Distinct ids per question because the wire's are positional: a stale one from
+ * question one is a valid id for question two's same row, which is what makes
+ * carrying it over silent rather than rejected.
+ */
+function oneOf(ids: string[], index: number): unknown {
+  return questionAsk(
+    'tu-q',
+    {
+      multi_select: true,
+      options: ids.map((optionId, at) => ({
+        option_id: optionId,
+        label: `Row ${String(at + 1)}`,
+        description: null,
+        preview: null,
+      })),
+    },
+    index,
+    2,
+  );
+}
+
 /** Every option row the page is drawing, in order. */
 function options(): HTMLElement[] {
   return [...document.querySelectorAll('.opt')].map((row) => {
@@ -1932,6 +1957,57 @@ describe('the dock', () => {
       document.querySelector('.dock [data-editor="dock"]'),
       'and the box is still there to write in',
     ).not.toBeNull();
+  });
+
+  it('answers the next question with its own rows, not the ones the last one left', () => {
+    const harness = open({
+      record: record({ pending_ask: oneOf(['q1-a', 'q1-b', 'q1-c', 'q1-d'], 0) }),
+    });
+
+    // A row turned on for question one, and the mark left four rows down it.
+    options()[3]?.click();
+    flushSync();
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'question one has its fourth row on',
+    ).toEqual([false, false, false, true, false]);
+
+    harness.page.record = record({ pending_ask: oneOf(['q2-a', 'q2-b'], 1) });
+    flushSync();
+
+    press('Enter');
+
+    // Both carried states show here. The wire's option ids are positional, so a
+    // stale toggle is a VALID id for the next question's same row and the core
+    // accepts it; and the mark sat past this question's rows, so nothing draws
+    // as marked and Enter answers with nothing until the reader arrows.
+    expect(commands(harness), 'Enter answers with the row this question drew').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: { outcome: 'answered', selected_option_ids: ['q2-a'], annotation: null },
+        },
+      },
+    ]);
+  });
+
+  it('keeps the mark and the toggles through a repaint of the same question', () => {
+    const harness = open({
+      record: record({ pending_ask: oneOf(['q1-a', 'q1-b'], 0) }),
+    });
+
+    options()[0]?.click();
+    flushSync();
+
+    // The same question as a fresh frame carries it: a new object, one key.
+    harness.page.record = record({ pending_ask: oneOf(['q1-a', 'q1-b'], 0) });
+    flushSync();
+
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'a repaint does not clear what the reader turned on',
+    ).toEqual([true, false, false]);
   });
 
   it('moves the mark from the keyboard once the dock has the slot', () => {
