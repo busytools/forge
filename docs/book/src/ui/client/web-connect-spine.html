@@ -74,10 +74,10 @@
   @keyframes beat { 0%,100% { box-shadow: 0 0 0 0 rgba(244,118,0,.4); } 50% { box-shadow: 0 0 0 5px rgba(244,118,0,0); } }
   @media (prefers-reduced-motion: reduce) { .steps .now .mk { animation: none; } }
 
-  /* The rehearsal labels read in `--muted` (7.01:1 on `--bg`) rather than
-     `--dim`, which measures 5.26:1 here and clears AA's 4.5:1 at any size.
-     The value it used to carry measured 3.51:1 and did not, which is why
-     these were muted when the page was drawn. */
+  /* The rehearsal labels read in `--muted` (6.50:1 on this card's `--s1`)
+     rather than `--dim`, which measures 4.87:1 on the same ground and clears
+     AA's 4.5:1 at any size. The value it used to carry measured 3.26:1 there
+     and did not, which is why these were muted when the page was drawn. */
   .steps .k {
     font-size: var(--fs-label); letter-spacing: .08em; text-transform: uppercase;
     color: var(--muted); font-weight: 600;
