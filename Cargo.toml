@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-web", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
-version = "1.0.99"
+version = "1.0.100"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/busytools/forge"
@@ -119,14 +119,14 @@ transcribe-cpp = "0.2.2"
 cpal = "0.18"
 
 # Workspace-internal crates
-forge-primitives = { path = "crates/forge-primitives", version = "=1.0.99" }
-forge-gateway = { path = "crates/forge-gateway", version = "=1.0.99" }
-forge-connectors = { path = "crates/forge-connectors", version = "=1.0.99" }
-forge-sdk = { path = "crates/forge-sdk", version = "=1.0.99" }
-forge-agent = { path = "crates/forge-agent", version = "=1.0.99" }
-forge-dictate = { path = "crates/forge-dictate", version = "=1.0.99" }
-forge-workspace = { path = "crates/forge-workspace", version = "=1.0.99" }
-forge-server = { path = "crates/forge-server", version = "=1.0.99" }
+forge-primitives = { path = "crates/forge-primitives", version = "=1.0.100" }
+forge-gateway = { path = "crates/forge-gateway", version = "=1.0.100" }
+forge-connectors = { path = "crates/forge-connectors", version = "=1.0.100" }
+forge-sdk = { path = "crates/forge-sdk", version = "=1.0.100" }
+forge-agent = { path = "crates/forge-agent", version = "=1.0.100" }
+forge-dictate = { path = "crates/forge-dictate", version = "=1.0.100" }
+forge-workspace = { path = "crates/forge-workspace", version = "=1.0.100" }
+forge-server = { path = "crates/forge-server", version = "=1.0.100" }
 # forge-web is still a member and still builds, but nothing depends on it
 # until a client lands, so it has no alias here.
 
