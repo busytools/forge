@@ -842,6 +842,14 @@ mod tests {
         line: String,
     }
 
+    /// The counters `record` keeps off a frame, which is what a repeat is
+    /// compared on: `output_tokens` is the streaming placeholder the rule
+    /// deliberately leaves out, so a difference there is not one this rule
+    /// can see.
+    fn kept(usage: &Usage) -> (u64, u64, u64) {
+        (usage.input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens)
+    }
+
     /// The assumption last-wins rests on, checked against the shipped wire.
     ///
     /// `record` overwriting is only free while a repeat carries the same
@@ -866,7 +874,11 @@ mod tests {
         let mut differing = Vec::new();
         for path in &captures {
             let raw = std::fs::read_to_string(path).expect("the capture");
-            let mut seen: HashMap<String, Usage> = HashMap::new();
+            // Reset per capture: an id is only unique inside the capture that
+            // holds it. The redaction renames ids, so the three
+            // `real_session_*` captures each carry a `msg_0` for a different
+            // message.
+            let mut seen: HashMap<String, (u64, u64, u64)> = HashMap::new();
             // Counted per file so one capture going unreadable cannot hide
             // behind the others' frames.
             let mut carried = 0usize;
@@ -893,13 +905,14 @@ mod tests {
                     continue;
                 };
                 frames += 1;
+                let counters = kept(&usage);
                 match seen.get(&message.id) {
-                    Some(before) if *before != usage => {
+                    Some(before) if *before != counters => {
                         differing.push(format!("{}: {}", path.display(), message.id));
                     }
                     Some(_) => repeats += 1,
                     None => {
-                        seen.insert(message.id.clone(), usage);
+                        seen.insert(message.id.clone(), counters);
                     }
                 }
             }
