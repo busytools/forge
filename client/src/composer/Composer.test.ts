@@ -1798,6 +1798,45 @@ describe('the dock', () => {
     expect(harness.sent, 'a key in the field does not answer the prompt').toEqual([]);
   });
 
+  /**
+   * Shift+Enter is the box's own, which is the one key the fall-through gets
+   * wrong in the other direction: the field's branch checks the shift and the
+   * dock's does not, so a newline reaches `submit` and the prompt is answered
+   * with words the reader was still writing.
+   */
+  it('keeps Shift+Enter the box own, so a newline does not answer the prompt', () => {
+    const harness = open({ record: record({ pending_ask: permissionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+
+    const box = document.querySelector('.dock [data-editor="dock"]');
+    if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+    // Words already in the box, because an empty one is refused rather than
+    // sent - the harm is a half-written answer going out.
+    box.value = 'not this branch';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    box.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    flushSync();
+
+    expect(harness.sent, 'a newline in the box is not an answer').toEqual([]);
+    expect(
+      document.querySelector('.dock [data-editor="dock"]'),
+      'and the box is still there to write in',
+    ).not.toBeNull();
+  });
+
   it('moves the mark from the keyboard once the dock has the slot', () => {
     const harness = open({ record: record({ pending_ask: permissionAsk() }) });
     const list = document.querySelector('.dock [role="listbox"]');
