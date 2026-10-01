@@ -59,6 +59,17 @@ describe('which editor holds the keyboard', () => {
     expect(focusOf(where), 'the connect route owns the keyboard on its own screen').toBe('connect');
   });
 
+  it('does not name the dock when the prompt has no box of its own open', () => {
+    const where: Where = {
+      editor: 'composer',
+      remember: 'composer',
+      pending: true,
+      dockPresent: false,
+      composerPresent: true,
+    };
+    expect(focusOf(where), "a dock with no box open does not take a take's words").toBe('composer');
+  });
+
   it('names nowhere rather than an editor that is not mounted', () => {
     const where: Where = {
       editor: 'composer',

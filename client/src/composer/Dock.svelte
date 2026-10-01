@@ -12,6 +12,8 @@
     depth = 1,
     notice = null,
     take = null,
+    notes = $bindable(''),
+    ownOpen = $bindable(false),
     onanswer = () => {},
     onabandon = () => {},
   }: {
@@ -24,6 +26,15 @@
     notice?: string | null;
     /** A take still running behind the dock, which the blip names. */
     take?: Take | null;
+    /**
+     * What the reader has said in their own words.
+     *
+     * Held by the composer rather than here, because a landed take has to reach
+     * whichever box the table names and this one has no other way in.
+     */
+    notes?: string;
+    /** Whether that box is open, which is what makes this dock a destination. */
+    ownOpen?: boolean;
     onanswer?: (toolId: string | null) => void;
     onabandon?: () => void;
   } = $props();
@@ -122,8 +133,6 @@
   let marked = $state(0);
   /** The options a multi-select question has toggled, in the order they were. */
   let toggled = $state<string[]>([]);
-  /** What the reader has said in their own words, which the notes row carries. */
-  let notes = $state('');
   /** The field, so marking the own-words row can put the caret in it. */
   let field = $state<HTMLElement | null>(null);
   /** The listbox, which owns the keys while the dock has the slot. */
@@ -131,6 +140,12 @@
 
   const markedRow = $derived(rows[marked]);
   const notesOpen = $derived(markedRow !== undefined && markedRow.own);
+
+  // The composer decides where a take's words land, and this dock is only a
+  // destination while its box is open - so it has to say whether it is.
+  $effect(() => {
+    ownOpen = notesOpen;
+  });
 
   /**
    * Focus follows the marked row.
@@ -259,9 +274,14 @@
       : [...toggled, row.optionId];
   }
 
-  /** Whether a key landed in the field the own-words row opened. */
+  /**
+   * Whether a key landed in the field the own-words row opened.
+   *
+   * By the editor it names rather than by its class: the class is the sheet's
+   * styling hook, and a restyle that renamed it would silently reroute keys.
+   */
   const inField = (event: KeyboardEvent): boolean =>
-    event.target instanceof HTMLElement && event.target.classList.contains('notes');
+    event.target instanceof HTMLElement && event.target.closest('[data-editor="dock"]') !== null;
 
   /** The keys a dock answers to, which are the ones that can do what they say. */
   function onkey(event: KeyboardEvent): void {

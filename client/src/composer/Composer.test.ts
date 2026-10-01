@@ -1559,6 +1559,51 @@ describe('the dock', () => {
     expect(document.activeElement, 'the box takes the keyboard back').toBe(field());
   });
 
+  /**
+   * A take lands where the reader is looking. While a prompt has the slot that
+   * is the dock's own field - the composer draws no box of its own here - so
+   * words written to the draft land on nothing at all.
+   */
+  it("puts a take's words in the box that is actually showing", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    /** The dock's own box, which is the one the reader opened. */
+    const dockBox = (): HTMLTextAreaElement | null => {
+      const found = document.querySelector('.dock [data-editor="dock"]');
+      return found instanceof HTMLTextAreaElement ? found : null;
+    };
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+    expect(dockBox()?.value, 'the box the reader opened starts empty').toBe('');
+
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(dockBox()?.value, 'the words land in the dock, because that is the box on screen').toBe(
+      'the words',
+    );
+    expect(
+      document.querySelector('[data-editor="composer"]'),
+      'and the composer is not mounted at all while a prompt is up',
+    ).toBeNull();
+  });
+
   it('moves the mark from the keyboard once the dock has the slot', () => {
     const harness = open({ record: record({ pending_ask: permissionAsk() }) });
     const list = document.querySelector('.dock [role="listbox"]');

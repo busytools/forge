@@ -18,6 +18,7 @@
     type Held,
   } from './dictate-key';
   import { devicePick } from './dictation';
+  import { focusOf, type Where } from './editors';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -97,6 +98,28 @@
 
   const composer = $derived(composerState(record));
   const ask = $derived(pendingAsk(record));
+
+  /** What the reader wrote in the dock's box, which a landed take has to reach. */
+  let dockDraft = $state('');
+  /** Whether the dock has its own box open, which is what makes it a destination. */
+  let dockOpen = $state(false);
+
+  /**
+   * What the table needs to say which box holds the keyboard.
+   *
+   * This is the session route's box, so the connect screen's is never up beside
+   * it - and this one is not drawn at all while a prompt has the slot, because
+   * the dock morphs it.
+   */
+  const where = $derived({
+    editor: 'composer',
+    remember: 'composer',
+    pending: ask !== null,
+    composerPresent: ask === null,
+    connectPresent: false,
+    dockPresent: dockOpen,
+  } satisfies Where);
+
   const blocker = $derived(blocked(seat, composer, sent));
   const filled = $derived(draft.trim() !== '');
   const notice = $derived(noticeLine(composer.notice, sawTake));
@@ -140,6 +163,12 @@
     if (composer.take !== null) sawTake = true;
   });
 
+  // The dock's box belongs to the prompt, so what was written in it goes when
+  // the prompt does - which is what the dock's own mount used to do for it.
+  $effect(() => {
+    if (ask === null) dockDraft = '';
+  });
+
   /**
    * A landed take puts its words where the reader was about to type, then the
    * box takes one green beat.
@@ -157,10 +186,20 @@
     }
     if (held.kind !== 'landed' || !sawTake || landed === held.text) return;
     landed = held.text;
-    draft = joined(
-      untrack(() => draft),
-      held.text,
-    );
+    // Where the words go is the table's answer rather than this component's:
+    // while a prompt has the slot the reader's box is the dock's, and this one
+    // is not drawn at all.
+    if (untrack(() => focusOf(where)) === 'dock') {
+      dockDraft = joined(
+        untrack(() => dockDraft),
+        held.text,
+      );
+    } else {
+      draft = joined(
+        untrack(() => draft),
+        held.text,
+      );
+    }
     beat = true;
     const timer = setTimeout(() => {
       beat = false;
@@ -410,6 +449,8 @@
       depth={seat.pendingDepth}
       notice={refusal}
       take={composer.take}
+      bind:notes={dockDraft}
+      bind:ownOpen={dockOpen}
       onanswer={remember}
       onabandon={abandon}
     />

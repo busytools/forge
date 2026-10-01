@@ -23,6 +23,13 @@ export type Where = {
   /** Whether each route's box is on screen at all. */
   composerPresent?: boolean;
   connectPresent?: boolean;
+  /**
+   * Whether the dock's own box - the prompt's free-text row - is open.
+   *
+   * A prompt holds the keyboard whether or not that row is open, but it can only
+   * take a take's words when the reader has opened the box to put them in.
+   */
+  dockPresent?: boolean;
 };
 
 /**
@@ -34,7 +41,7 @@ export type Where = {
  * surface that is, never to a box that is not there.
  */
 export function focusOf(where: Where): Editor {
-  if (where.pending) return 'dock';
+  if (where.pending) return where.dockPresent === false ? fallback(where) : 'dock';
   const named = where.editor === 'dock' ? where.remember : where.editor;
   switch (named) {
     case 'dock':
