@@ -35,7 +35,7 @@ function rule(selector: string): string {
 }
 
 describe('the rail footer', () => {
-  it('separates the claude version from its upgrade arrow', () => {
+  it('separates the installed version from the one it moves to', () => {
     // The fixture answers 1.0.0 installed against 1.1.0 published, so the row
     // draws both halves and the separator between them is the whole subject.
     // Read as TEXT rather than as markup: the arrow and the version are two
@@ -46,7 +46,28 @@ describe('the rail footer', () => {
       .replace(/<!--.*?-->/g, '')
       .replace(/<[^>]*>/g, '');
     expect(words, 'the row reads as two figures, not as one').toContain(
-      'claude v1.0.0 \u{2191} v1.1.0',
+      'claude v1.0.0 \u{2192} v1.1.0',
+    );
+  });
+
+  /**
+   * **The row is a transition, and the notice is the half that carries the
+   * colour.** The arrow opens the notice span rather than standing between the
+   * two versions as a mark of its own: a side arrow is what says the pair is
+   * one version moving to another, where the up arrow it replaced read as a
+   * badge on the second one. The installed half stays `--muted`; the colour is
+   * what says which half is the notice.
+   *
+   * Read as markup, because whether the arrow sits inside the coloured span is
+   * a question about the tree, and no text assertion can see it.
+   */
+  it('opens the notice with the side arrow, and colours that half alone', () => {
+    expect(footer, 'the arrow is no longer part of the notice').toContain(
+      '<span class="up">\u{2192} v1.1.0</span>',
+    );
+    expect(rule('.rfoot .vers .up'), 'the notice lost its colour').toContain('var(--warn)');
+    expect(rule('.rfoot .vers .v'), 'the installed half took the notice colour').not.toContain(
+      'var(--warn)',
     );
   });
 });

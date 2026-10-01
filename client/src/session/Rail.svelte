@@ -151,7 +151,7 @@
                pair the row drew before. -->
           claude v{foot.versions.claude}
           {#if foot.versions.update !== null}<span class="up"
-              >{'\u{2191}'} v{foot.versions.update}</span
+              >{'\u{2192}'} v{foot.versions.update}</span
             >{/if}
         </div>
       {/if}
