@@ -730,3 +730,165 @@ pub struct WelcomeBlock {
     pub session_id: String,
     pub tip_seed: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use forge_primitives::{Message, Usage};
+
+    use super::{LiveTurn, LiveUsage};
+
+    /// The counters a frame carries, in the three the live turn keeps.
+    fn usage(input: u64, read: u64, written: u64) -> LiveUsage {
+        LiveUsage { input_tokens: input, cache_read_tokens: read, cache_written_tokens: written }
+    }
+
+    /// A frame counted once per message, not once per frame.
+    ///
+    /// The CLI splits one API call across a frame per content block and
+    /// repeats the whole call's usage on every one, so a rule that sums
+    /// frames multiplies a call by the blocks it drew as. Measured over the
+    /// shipped captures: 294 assistant frames carrying usage over 201
+    /// message ids.
+    #[test]
+    fn a_message_counts_once_however_many_frames_carry_its_usage() {
+        let mut turn = LiveTurn::default();
+        turn.start(std::time::Instant::now());
+        for _ in 0..3 {
+            turn.record("msg-1".to_owned(), usage(100, 1_000, 10));
+        }
+        turn.record("msg-2".to_owned(), usage(200, 2_000, 20));
+
+        let totals = turn.totals().expect("both messages reported usage");
+        assert_eq!(
+            totals.input_tokens, 300,
+            "the input side counts each message once and sums the messages, not the frames"
+        );
+        assert_eq!(
+            totals.cache_read_tokens, 3_000,
+            "the cache-read counter is keyed by message id the same way"
+        );
+        assert_eq!(totals.cache_written_tokens, 30, "and so is the cache-write counter");
+    }
+
+    /// Last-wins on a repeat, which is the half the wire does not decide.
+    ///
+    /// No shipped capture repeats a message id with differing usage (0 of the
+    /// 93 repeat frames), so nothing in the data says which frame should win
+    /// when one does. Pinned because the client's fold copies this rule: a
+    /// tiebreak only one side changes is a divergence no capture would show.
+    #[test]
+    fn a_repeated_id_overwrites_rather_than_adding() {
+        let mut turn = LiveTurn::default();
+        turn.start(std::time::Instant::now());
+        turn.record("msg-1".to_owned(), usage(100, 1_000, 10));
+        turn.record("msg-1".to_owned(), usage(250, 2_500, 25));
+
+        let totals = turn.totals().expect("the message reported usage");
+        assert_eq!(
+            totals.input_tokens, 250,
+            "a repeat overwrites: the last frame's input count is the one kept, not the sum"
+        );
+        assert_eq!(
+            totals.cache_read_tokens, 2_500,
+            "the cache-read counter keeps the last frame's figure too"
+        );
+        assert_eq!(totals.cache_written_tokens, 25, "and so does the cache-write counter");
+    }
+
+    /// Every capture file under `dir`, at any depth: the version directory is
+    /// named for the CLI, and a capture set can sit a level below it.
+    fn collect_captures(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("the baseline directory") {
+            let path = entry.expect("a baseline entry").path();
+            if path.is_dir() {
+                collect_captures(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// One line of a capture file: which way it went and the wire line.
+    #[derive(serde::Deserialize)]
+    struct CaptureEnvelope {
+        dir: String,
+        line: String,
+    }
+
+    /// The assumption last-wins rests on, checked against the shipped wire.
+    ///
+    /// `record` overwriting is only free while a repeat carries the same
+    /// usage as the frame before it. This is the tripwire on that: the day a
+    /// capture shows a differing repeat, the tiebreak starts deciding a real
+    /// case and has to be chosen deliberately on both sides of the rule.
+    #[test]
+    fn no_shipped_capture_repeats_a_message_id_with_different_usage() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../forge-test-harness/baselines/sdk");
+        let mut captures = Vec::new();
+        collect_captures(&dir, &mut captures);
+        assert!(
+            captures.len() > 40,
+            "the sweep has the captures to read: found {} under {}",
+            captures.len(),
+            dir.display()
+        );
+
+        let mut frames = 0usize;
+        let mut repeats = 0usize;
+        let mut differing = Vec::new();
+        for path in &captures {
+            let raw = std::fs::read_to_string(path).expect("the capture");
+            let mut seen: HashMap<String, Usage> = HashMap::new();
+            // Counted per file so one capture going unreadable cannot hide
+            // behind the others' frames.
+            let mut carried = 0usize;
+            let mut decoded = 0usize;
+            for envelope in
+                raw.lines().filter_map(|line| serde_json::from_str::<CaptureEnvelope>(line).ok())
+            {
+                if envelope.dir != "in" {
+                    continue;
+                }
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&envelope.line) else {
+                    continue;
+                };
+                if value["type"] == "assistant" {
+                    carried += 1;
+                }
+                let Ok(Message::Assistant { message, .. }) =
+                    serde_json::from_value::<Message>(value)
+                else {
+                    continue;
+                };
+                decoded += 1;
+                let Some(usage) = message.usage else {
+                    continue;
+                };
+                frames += 1;
+                match seen.get(&message.id) {
+                    Some(before) if *before != usage => {
+                        differing.push(format!("{}: {}", path.display(), message.id));
+                    }
+                    Some(_) => repeats += 1,
+                    None => {
+                        seen.insert(message.id.clone(), usage);
+                    }
+                }
+            }
+            assert_eq!(decoded, carried, "every assistant frame in {} decoded", path.display());
+        }
+
+        assert!(
+            frames > 100,
+            "the sweep read the captures: {frames} assistant frames carried usage"
+        );
+        assert!(repeats > 10, "and met repeats: {repeats}");
+        assert!(
+            differing.is_empty(),
+            "no shipped capture repeats a message id with different usage: {differing:?}"
+        );
+    }
+}
