@@ -111,6 +111,21 @@ describe('the hook chip a turn carries', () => {
   });
 
   /**
+   * The classifier's spellings, named directly. Both sheets write the chip's
+   * box rule as bare `.hooks` today, so a predicate that lost the
+   * `details.hooks` spelling would classify them identically and the scan above
+   * would never tell the two apart.
+   */
+  it('names both spellings of the chip box and nothing wider', () => {
+    expect(chipBox('.hooks'), 'the bare box').toBe(true);
+    expect(chipBox('details.hooks'), 'the box with its element named').toBe(true);
+    expect(chipBox('.conv .hooks'), 'the box reached through an ancestor').toBe(true);
+    expect(chipBox('.hooks .term'), 'a rule for something inside it').toBe(false);
+    expect(chipBox('div.hooks'), 'a chip drawn as another element').toBe(false);
+    expect(chipBox('.hooksy'), 'a name that merely starts the same').toBe(false);
+  });
+
+  /**
    * The book's page is the drawing the surface is judged by, and it drew the
    * chip only closed - which is a blind spot for this defect, whose rows are
    * not on the page in that state at all.
