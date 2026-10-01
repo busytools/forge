@@ -123,10 +123,15 @@ const SEATS = new WeakMap<Connection, Map<string, Seat>>();
  * - and every page after that is handed what the seat holds. Leaving gives
  * nothing back, so a return subscribes nothing and reads nothing.
  *
- * **A seat the server refused is the one exception**, and it is let go with
- * its last reader: a refusal is an answer rather than a subscription ("a
- * refused subscribe leaves nothing to hear"), so holding one holds nothing,
- * and a seat that starts later would never be reached again.
+ * **The subscribe happens at this call**, not when the returned store gets its
+ * first subscriber. Taking the store and never subscribing to it therefore
+ * leaves a subscription standing, and the only thing that releases a seat is a
+ * refusal.
+ *
+ * **A seat the server refused is that exception**, and it is let go with its
+ * last reader: a refusal is an answer rather than a subscription ("a refused
+ * subscribe leaves nothing to hear"), so holding one holds nothing, and a seat
+ * that starts later would never be reached again.
  */
 export function watchSession(
   connection: Connection,
