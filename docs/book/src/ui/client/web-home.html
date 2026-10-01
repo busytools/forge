@@ -741,7 +741,9 @@
         <div class="tok"><span class="sw" style="background:#0d111a"></span><code>--s1</code><span class="hx">#0d111a</span></div>
         <div class="tok"><span class="sw" style="background:#141926"></span><code>--s2</code><span class="hx">#141926</span></div>
         <div class="tok"><span class="sw" style="background:#1b2130"></span><code>--s3</code><span class="hx">#1b2130</span></div>
+        <div class="tok"><span class="sw" style="background:#20140a"></span><code>--sel</code><span class="hx">#20140a</span></div>
         <div class="tok"><span class="sw" style="background:#222a3c"></span><code>--line</code><span class="hx">#222a3c</span></div>
+        <div class="tok"><span class="sw" style="background:#516590"></span><code>--ctl</code><span class="hx">#516590</span></div>
         <div class="tok"><span class="sw" style="background:#788294"></span><code>--dim</code><span class="hx">#788294</span></div>
         <div class="tok"><span class="sw" style="background:#8f98a8"></span><code>--muted</code><span class="hx">#8f98a8</span></div>
         <div class="tok"><span class="sw" style="background:#c9d1d9"></span><code>--text</code><span class="hx">#c9d1d9</span></div>
@@ -749,11 +751,16 @@
         <div class="tok"><span class="sw" style="background:#82c76b"></span><code>--ok</code><span class="hx">#82c76b</span></div>
         <div class="tok"><span class="sw" style="background:#c9a13b"></span><code>--warn</code><span class="hx">#c9a13b</span></div>
         <div class="tok"><span class="sw" style="background:#e0683e"></span><code>--bad</code><span class="hx">#e0683e</span></div>
+        <div class="tok"><span class="sw" style="background:#61a0e0"></span><code>--blue</code><span class="hx">#61a0e0</span></div>
+        <div class="tok"><span class="sw" style="background:#4ec9c9"></span><code>--teal</code><span class="hx">#4ec9c9</span></div>
+        <div class="tok"><span class="sw" style="background:#b79ae0"></span><code>--violet</code><span class="hx">#b79ae0</span></div>
+        <div class="tok"><span class="sw" style="background:#ffb058"></span><code>--hot</code><span class="hx">#ffb058</span></div>
       </div>
       <p class="override">
-        Every surface reads these twelve tokens and nothing else, so a theme is one place to change
-        and no component needs a branch for it. <b>[web] theme</b> in <b>forge.toml</b> picks one by
-        name; the server emits the selected set as the page's root variables.
+        Every surface draws its colours from these eighteen tokens, so a theme is one place to
+        change and no component needs a branch for it. <b>[web] theme</b> in <b>forge.toml</b> picks
+        one by name; the greeting carries the name, and the client resolves that set onto the
+        page's root as inline custom properties.
       </p>
     </div>
   </div>
