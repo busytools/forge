@@ -220,7 +220,6 @@
   .perm.bypass { color: var(--bad); }
   .cm { display: flex; align-items: center; gap: 7px; }
   .cm .tk { width: 76px; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
-  .cm .fl { height: 100%; background: var(--accent); }
   /* A state of the header drawn beside the page's own: the context cell with
      nothing reported yet, which a single example cannot show. */
   .annot { display: flex; align-items: center; gap: 10px; padding: 5px 0 0; font-size: var(--fs-data); }
@@ -239,7 +238,10 @@
   .bar { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
   .bar .lb { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); width: 26px; }
   .bar .tk { flex: 1; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
-  .bar .fl { height: 100%; background: var(--accent); }
+  /* The filled part of a bar: a BLOCK, since a non-replaced inline box takes
+     neither a percentage width nor a height. One rule for every bar, and
+     scoped to the track because `.fl` names a file in a chat search hit too. */
+  .tk > .fl { display: block; height: 100%; background: var(--accent); }
   .bar .pc { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); width: 34px; text-align: right; }
   .bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px; text-align: right; }
 
@@ -598,15 +600,19 @@
   .file .mm { color: var(--bad); }
   .dir { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 5px 0 1px; }
 
-  .tk { display: flex; align-items: flex-start; gap: 9px; padding: 5px 0; }
-  .tk .b { width: 3px; align-self: stretch; border-radius: 99px; background: var(--s3); flex: none; }
-  .tk.now .b { background: var(--accent); }
-  .tk.done .b { background: var(--ok); }
-  .tk.blocked .b { background: var(--warn); }
-  .tk .s { font-size: var(--fs-base); color: var(--muted); }
-  .tk.done .s { color: var(--dim); text-decoration: line-through; }
-  .tk .meta { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); margin-top: 1px; }
-  .tk .meta b { color: var(--muted); font-weight: 500; }
+  /* A task row, scoped to a section body as the app scopes it: bare, this
+     rule also matched the context bar's track and gave it `display: flex` and
+     five pixels of vertical padding, which under border-box left the 5px
+     track with no content height for its fill at all. */
+  .sb .tk { display: flex; align-items: flex-start; gap: 9px; padding: 5px 0; }
+  .sb .tk .b { width: 3px; align-self: stretch; border-radius: 99px; background: var(--s3); flex: none; }
+  .sb .tk.now .b { background: var(--accent); }
+  .sb .tk.done .b { background: var(--ok); }
+  .sb .tk.blocked .b { background: var(--warn); }
+  .sb .tk .s { font-size: var(--fs-base); color: var(--muted); }
+  .sb .tk.done .s { color: var(--dim); text-decoration: line-through; }
+  .sb .tk .meta { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); margin-top: 1px; }
+  .sb .tk .meta b { color: var(--muted); font-weight: 500; }
 
   .sa { border: 1px solid var(--line); border-radius: 10px; background: rgba(13,17,26,.5);
     margin: 6px 0; overflow: hidden; }
