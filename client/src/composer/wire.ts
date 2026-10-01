@@ -9,6 +9,7 @@
  */
 
 import type { SessionSlot } from '../wire/types';
+import { bindFrom, modeFrom, type Bind, type Mode } from './dictate-key';
 
 /** What a take is doing, as `Phase` serialises. */
 export type TakePhase = 'recording' | 'transcribing';
@@ -42,6 +43,10 @@ export interface ComposerState {
   notice: Notice | null;
   compacting: boolean;
   signIn: SignIn | null;
+  /** The push-to-talk key `forge.toml` configured, which is the one honoured. */
+  bind: Bind;
+  /** How a press of that key maps onto a take, from the same section. */
+  mode: Mode;
 }
 
 /** One option a permission offers, with the action only the core may build on. */
@@ -141,6 +146,8 @@ export function composerFrom(value: unknown): ComposerState {
     notice: noticeFrom(held['notice']),
     compacting: held['compacting'] === true,
     signIn: signInFrom(held['sign_in']),
+    bind: bindFrom(held['bind']),
+    mode: modeFrom(held['mode']),
   };
 }
 
@@ -345,6 +352,8 @@ export const NO_COMPOSER: ComposerState = {
   notice: null,
   compacting: false,
   signIn: null,
+  bind: 'right_cmd',
+  mode: 'auto',
 };
 
 /** The slot a command is addressed to, which every command the composer sends carries. */

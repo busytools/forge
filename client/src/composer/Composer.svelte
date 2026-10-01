@@ -6,6 +6,7 @@
   import Dictation from './Dictation.svelte';
   import Dock from './Dock.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
+  import { boundCode, down, markChorded, up, type Action, type Held } from './dictate-key';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -76,6 +77,10 @@
   let marked = $state(0);
   /** The field, so focus can go back to it when the box returns. */
   let field = $state<HTMLTextAreaElement | null>(null);
+  /** The bound key's press in flight, from its press to its release. */
+  let pressed: Held | null = null;
+  /** Whether this platform delivers Cmd, which is what a binding names. */
+  const mac = navigator.platform.toLowerCase().includes('mac');
 
   const composer = $derived(composerState(record));
   const ask = $derived(pendingAsk(record));
@@ -274,6 +279,59 @@
     dismissed = notice?.text ?? null;
     bounced = null;
   }
+
+  /** What the bound key asks for, which is the terminal's own three. */
+  function act(action: Action): void {
+    if (action === 'begin') {
+      void connection.dispatch({ dictate_start: { key: slot } });
+      return;
+    }
+    void connection.dispatch({ dictate_stop: { key: slot, submit: action === 'finish' } });
+  }
+
+  /**
+   * The push-to-talk key, which is how a take begins and ends.
+   *
+   * Registered on the window rather than on the field: the binding is a bare
+   * modifier, so it arrives wherever the focus happens to be, and the
+   * terminal's own handler is global for the same reason. What the key means
+   * is read when one arrives rather than here, so this registers once instead
+   * of re-registering on every frame the record moves.
+   */
+  $effect(() => {
+    if (!dictation) return;
+    const onDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        // A live take consumes Esc, which is the terminal's own rule.
+        if (composer.take !== null) {
+          event.preventDefault();
+          act('cancel');
+        }
+        return;
+      }
+      if (event.code !== boundCode(composer.bind, mac)) {
+        // Any other key while the press is down makes it a chord, and the
+        // chord's release discards what the press began.
+        pressed = markChorded(pressed);
+        return;
+      }
+      const step = down(pressed, composer.take !== null, Date.now(), composer.mode);
+      pressed = step.held;
+      if (step.action !== null) act(step.action);
+    };
+    const onUp = (event: KeyboardEvent): void => {
+      if (event.code !== boundCode(composer.bind, mac)) return;
+      const step = up(pressed, Date.now(), composer.mode);
+      pressed = step.held;
+      if (step.action !== null) act(step.action);
+    };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+    };
+  });
 
   /**
    * The way into a take, and the way to submit the one that is running: the key

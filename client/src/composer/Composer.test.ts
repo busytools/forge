@@ -498,6 +498,154 @@ describe('the box', () => {
 });
 
 /**
+ * The push-to-talk key, which is the only thing that starts a take.
+ *
+ * The binding and the mode are read off the record rather than assumed: they
+ * are the user's `forge.toml`, and a page that hardcoded a chord would honour a
+ * different key on every install that moved it. `dictate-key.test.ts` pins what
+ * a press MEANS; this pins what the box DOES with it.
+ */
+describe('the key', () => {
+  /** A record whose composer carries the binding and the mode under test. */
+  const bound = (bind: string, mode: string, take: Record<string, unknown> | null = null) =>
+    record({
+      composer: { take, notice: null, compacting: false, sign_in: null, bind, mode },
+    });
+
+  /**
+   * The bound key's own event, as the browser delivers it.
+   *
+   * jsdom reports no platform, so the box takes the non-mac substitution: the
+   * right Control key is what Cmd's equivalent is where there is no Cmd.
+   */
+  function key(code: string, kind: 'keydown' | 'keyup'): void {
+    window.dispatchEvent(new KeyboardEvent(kind, { code, bubbles: true, cancelable: true }));
+    flushSync();
+  }
+
+  it('starts a take on the bound key, and transcribes it when the key is held', () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      expect(harness.sent, 'the key is how a take begins').toEqual([
+        {
+          command: {
+            dictate_start: { key: { org: 'Busytools', project: 'forge', label: 'lead' } },
+          },
+        },
+      ]);
+
+      vi.advanceTimersByTime(500);
+      key('ControlRight', 'keyup');
+      expect(harness.sent.at(-1)?.command, 'a hold released transcribes what was said').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes the binding off the record rather than assuming one', () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('left_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    expect(harness.sent, 'the key the config did not name is not the trigger').toEqual([]);
+
+    key('ControlLeft', 'keydown');
+    expect(harness.sent, 'the configured key is').toHaveLength(1);
+  });
+
+  it('arms nothing when the binding is off', () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('off', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    key('MetaRight', 'keydown');
+    expect(harness.sent, 'a key the config turned off starts no take').toEqual([]);
+  });
+
+  it('takes the mode off the record: a toggle stops on the press itself', () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'toggle', take());
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    key('ControlRight', 'keyup');
+
+    expect(harness.sent, 'the press IS the stop, and the release says nothing').toEqual([
+      {
+        command: {
+          dictate_stop: {
+            key: { org: 'Busytools', project: 'forge', label: 'lead' },
+            submit: true,
+          },
+        },
+      },
+    ]);
+  });
+
+  it('leaves a chord alone: the take its press began is abandoned, not transcribed', () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    // Another key while the modifier is down is a chord, not a dictation.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', code: 'KeyC', ctrlKey: true }));
+    flushSync();
+    key('ControlRight', 'keyup');
+
+    expect(
+      harness.sent.at(-1)?.command,
+      'the speculative take goes, nothing is transcribed',
+    ).toEqual({
+      dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: false },
+    });
+  });
+
+  it('abandons a live take on Escape, and leaves Escape alone otherwise', () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+    expect(harness.sent, 'Esc takes a live take, and does nothing when there is none').toEqual([]);
+
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+    expect(harness.sent, 'a live take consumes Esc').toEqual([
+      {
+        command: {
+          dictate_stop: {
+            key: { org: 'Busytools', project: 'forge', label: 'lead' },
+            submit: false,
+          },
+        },
+      },
+    ]);
+  });
+
+  it('starts nothing on an install that cannot dictate', () => {
+    const harness = open();
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    expect(harness.sent, 'the key follows the mic: no dictation, no take').toEqual([]);
+  });
+});
+
+/**
  * #1411: a message the reader has sent must not come back into the box.
  *
  * The draft is cleared on send, so the words arriving again are the second
