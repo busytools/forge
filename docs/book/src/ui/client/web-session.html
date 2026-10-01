@@ -23,7 +23,8 @@
      attribution, so it carries no label - whose words are markdown, like the
      work's, because the terminal folds a prompt as a document too),
      .attrow (what a turn attached), details.think (the model's own reasoning,
-     collapsed on its first words),
+     collapsed on its first words - drawn while the turn is live only, since
+     the transcript read strips thinking and a page read has none),
      .code, .dif, .notice, .card (an answered question), .mon.
      A run of peer messages is a tool run: it takes details.kind, .knd and
      details.leaf with .mk, .k and .org for the counterparty, so traffic and
@@ -851,7 +852,10 @@
 
       <div class="work">
         <!-- The model's own reasoning, which the wire carries and the terminal
-             does not draw: collapsed, carrying the first of its own words. -->
+             does not draw: collapsed, carrying the first of its own words.
+             Drawn while the turn is live only - the transcript read strips
+             thinking blocks, so a settled turn, a reload or a page read draws
+             none of these rows. -->
         <details class="think">
           <summary>
             <span class="tn">Both of them landed while I was in the tree, so this is what the reader gets instead of the wall</span>
