@@ -162,7 +162,7 @@
   .pj:hover { background: rgba(27,33,48,.5); }
   /* The asleep heading folds, and the count on it is what it hides. */
   details.gfold > summary { list-style: none; cursor: pointer; display: flex;
-    align-items: baseline; gap: 8px; padding: 12px 8px 4px; }
+    align-items: center; gap: 8px; padding: 12px 8px 4px; }
   details.gfold > summary::-webkit-details-marker { display: none; }
   details.gfold > summary .gh { font-size: var(--fs-label); font-weight: 700;
     letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
@@ -250,9 +250,7 @@
   .conv::-webkit-scrollbar { width: 8px; }
   .conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
   .conv::-webkit-scrollbar-track { background: transparent; }
-  .mine { margin: 15px 0; padding: 10px 15px; border-left: 2px solid var(--accent);
-    background: linear-gradient(90deg, rgba(244,118,0,.09), rgba(244,118,0,.015));
-    border-radius: 0 10px 10px 0; }
+  .mine { margin: 15px 0; padding: 10px 15px; border-left: 1px solid var(--accent); }
   /* What a turn carried besides its words: named, and never the bytes. The
      wire sends no file name, so the mime is what there is to name it by. */
   .attrow { display: flex; align-items: center; gap: 9px; margin-top: 10px;
@@ -270,6 +268,14 @@
   details.think > summary::-webkit-details-marker { display: none; }
   details.think > summary:hover { background: rgba(27,33,48,.45); }
   details.think > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The row's kind, ahead of its words: the mark is the size of the small mono
+     labels a row carries rather than the 15px a tool row's glyph takes. */
+  /* `tkind`, not `kind`: that name belongs to the family-tree disclosure
+     below, whose 3px margins would come with it. */
+  details.think > summary .tkind { display: flex; align-items: center; gap: 7px;
+    flex: none; color: var(--dim); }
+  details.think > summary .tkind .ic { width: 12px; height: 12px; flex: 0 0 12px; }
+  details.think > summary .tkind .word { color: var(--muted); }
   details.think > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
   details.think > summary:hover .arw { color: var(--muted); }
   details.think[open] > summary { color: var(--muted); }
@@ -749,6 +755,7 @@
   <symbol id="i-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4v9a3 3 0 0 1-3 3H6"/><path d="m9 12-3 4 3 4"/></symbol>
   <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M12 8V4H8"/><path d="M9 14h.01M15 14h.01"/></symbol>
   <symbol id="i-away" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/><path d="M12 12h9"/><path d="m18 9 3 3-3 3"/></symbol>
+  <symbol id="i-think" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
 </svg>
 
 <input type="checkbox" id="l" hidden>
@@ -932,6 +939,7 @@
              it. -->
         <details class="think">
           <summary>
+            <span class="tkind"><svg class="ic"><use href="#i-think"/></svg><span class="word">thinking</span></span>
             <span class="tn">Both of them landed while I was in the tree, so this is what the reader gets instead of the wall</span>
             <svg class="ic arw"><use href="#i-chev"/></svg>
           </summary>

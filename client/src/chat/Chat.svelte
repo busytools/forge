@@ -48,8 +48,15 @@
 
   let held = $state<Conversation>(NOTHING);
   let list = $state<VListHandle | null>(null);
+  /**
+   * The element that scrolls, which is the list's own viewport.
+   *
+   * Held so the follow can pin the foot by asking the BROWSER where it is:
+   * the list's reported size is a measurement that lags a row that grew in
+   * this update, and the element's own `scrollHeight` does not.
+   */
+  let viewport: HTMLElement | null = $state(null);
   let working: Chat | null = null;
-  let first = true;
   /**
    * The conversation built for one seat over one connection.
    *
@@ -83,6 +90,47 @@
 
   const shift = $derived(outstanding > 0 || settling);
 
+  /**
+   * The list's viewport, taken as an attachment.
+   *
+   * The list spreads what it does not recognise onto the element that
+   * scrolls, so this is that element rather than a second wrapper: `.conv` is
+   * the thing the sheet gives its padding and its scrollbar to, and it is the
+   * one whose `scrollHeight` is the foot the reader is pinned to.
+   *
+   * **And it is watched, with its content**, because a size change is the one
+   * thing that moves the foot with no frame and no scroll behind it: the rows
+   * are laid out and re-measured after this column's own effects have run, so
+   * the first pin of a page can land before there is anything to scroll, and a
+   * row that grows minutes later moves the foot again with nothing to re-pin.
+   *
+   * The same event is the terminal's other re-arm: its clamp re-engages the
+   * follow whenever the content fits under the reader - a window made large
+   * enough, a page that shrank - and a reader parked at what is now the very
+   * end is at the end, whether or not anything scrolled to say so.
+   */
+  function scrollViewport(node: HTMLElement): () => void {
+    viewport = node;
+    const content = node.firstElementChild;
+    const watcher = new ResizeObserver(() => {
+      if (atFoot()) working?.following(true);
+      if (held.following) land();
+    });
+    watcher.observe(node);
+    if (content !== null) watcher.observe(content);
+    return () => {
+      watcher.disconnect();
+      viewport = null;
+    };
+  }
+
+  /** Whether the reader sits at the very end of what the list holds. */
+  function atFoot(): boolean {
+    const total = list?.getScrollSize() ?? 0;
+    const height = list?.getViewportSize() ?? 0;
+    return (list?.getScrollOffset() ?? 0) + height >= Math.floor(total);
+  }
+
   $effect(() => {
     const which = seat;
     const open = connection;
@@ -112,14 +160,10 @@
     opened = null;
   });
 
-  // The first page is drawn at the end rather than the start. It runs once per
-  // conversation: after that the reader's own scroll position is the truth,
-  // and a second jump would take them away from where they had scrolled to.
-  $effect(() => {
-    if (!first || !held.loaded || held.turns.length === 0) return;
-    first = false;
-    list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
-  });
+  // The first page is drawn at the end rather than the start, and that is not
+  // a special case: the column OPENS following, so the first page is pinned by
+  // the follow below like any other. A reader who scrolls away from the end
+  // turns the follow off and the column stays where they left it.
 
   // A page landing settles one ask, and the last one leaves the compensation on
   // for one more tick: `virtua` applies it as the rows change, so a page that
@@ -160,20 +204,59 @@
    */
   const follows = $derived(held.turns.length === 0 ? null : `${held.turns.length}:${compacting}`);
 
+  /**
+   * Pin the foot: the scroll's own maximum, which is where the browser clamps.
+   *
+   * **Through the element rather than through the list's handle, and that is
+   * what makes it land.** `scrollToIndex` computes its target from the row
+   * sizes the list has already measured, and a row that grew in this very
+   * update is measured a moment LATER - so a scroll computed that way lands at
+   * the end of the previous total and leaves the newest content below the fold
+   * until the next frame happens to arrive, which on a turn that has just
+   * settled is never. Asking the element for `scrollHeight` cannot be early or
+   * late: the browser clamps it to the foot of what is actually drawn.
+   *
+   * The terminal pins the same way: while `auto_scroll` is on, every render
+   * sets its scroll target to its own max.
+   */
+  function land(): void {
+    if (viewport === null) return;
+    viewport.scrollTop = viewport.scrollHeight;
+  }
+
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
   // conversation means, and a page that grew without the view moving would
   // lose the very thing it was opened on. A reader anywhere else is left
-  // exactly where they are.
+  // exactly where they are - the state is the reader's own, and the two
+  // transitions that set it are the two below.
   $effect(() => {
-    if (follows === null || !held.loaded || !held.atEnd) return;
-    list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
+    if (follows === null || !held.loaded || !held.following) return;
+    land();
+    // **And once more after this frame's layout.** The foot a pin asks for is
+    // the one that is true at the moment it asks, and a row's own content -
+    // code, a disclosure opening, a table - is laid out after this column's
+    // effects have run. On a seat whose history is already written that is the
+    // whole of the difference between opening at the newest turn and opening
+    // most of a screen above it.
+    const settled = requestAnimationFrame(land);
+    return () => cancelAnimationFrame(settled);
   });
 
   /** Where the reader is, and whether they have reached the top. */
   function scrolled(offset: number): void {
+    // **The very end, with no reading threshold.** A reader a few pixels short
+    // of it is mid-line, and a tolerance here is a column that moves under them
+    // - the terminal's clamp re-engages its follow only at `scroll_offset >=
+    // max_scroll` for exactly this reason.
+    //
+    // Floored, and that is arithmetic rather than tolerance: the list reports
+    // its size as a fraction of a pixel and the browser clamps the scroll to a
+    // whole one, so the two are never equal at the foot and comparing them
+    // straight would read the very end as short of itself - the flag would
+    // switch itself off exactly where it has to hold.
+    const height = list?.getViewportSize() ?? 0;
     const total = list?.getScrollSize() ?? 0;
-    const viewport = list?.getViewportSize() ?? 0;
-    working?.position(offset + viewport >= total - 8);
+    working?.following(offset + height >= Math.floor(total));
     if (offset < REACH) loadOlder();
   }
 
@@ -257,6 +340,7 @@
     getKey={(turn: HeldTurn) => turn.key}
     {shift}
     onscroll={scrolled}
+    {@attach scrollViewport}
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">

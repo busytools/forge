@@ -69,8 +69,12 @@ export interface Conversation {
   cursor: string | null;
   /** The server's own words when it turned the conversation down. */
   refused: string | null;
-  /** Whether the reader is at the newest end, which is what decides whether it follows. */
-  atEnd: boolean;
+  /**
+   * Whether the reader follows the newest end, which is the column's own
+   * state and not something a comparison can derive: the terminal's
+   * `auto_scroll`, with its transitions.
+   */
+  following: boolean;
   /**
    * How many pages of OLDER turns have landed.
    *
@@ -90,7 +94,7 @@ export const NOTHING: Conversation = {
   loaded: false,
   cursor: null,
   refused: null,
-  atEnd: true,
+  following: true,
   prepends: 0,
 };
 
@@ -356,9 +360,19 @@ export class Chat {
     this.ask(null);
   }
 
-  /** Where the reader is, which decides whether the newest turn is followed. */
-  position(atEnd: boolean): void {
-    this.inner.update((held) => (held.atEnd === atEnd ? held : { ...held, atEnd }));
+  /**
+   * Where the reader is, which decides whether the newest turn is followed.
+   *
+   * **The rule is the terminal's, and it is exact.** `ChatViewport`'s
+   * `auto_scroll` is re-engaged by its clamp only at `scroll_offset >=
+   * max_scroll`, and disengaged by any scroll up - so a reader parked a few
+   * pixels short of the end is reading, not following, and the column may not
+   * move under them. A threshold here would pull them down mid-sentence.
+   */
+  following(follows: boolean): void {
+    this.inner.update((held) =>
+      held.following === follows ? held : { ...held, following: follows },
+    );
   }
 
   private read(): Conversation {
@@ -641,7 +655,14 @@ export class Chat {
       // nothing - and a row the reader never scrolls to keeps the list's
       // estimate rather than its own height. A tool result is one of these, and
       // it arrives on a running seat between one turn and the next.
-      const draws = fold([message]).length > 0;
+      const units = fold([message]);
+      const draws = units.length > 0;
+      // **A prompt brings the reader back to the end.** It is the one frame
+      // that is the reader's OWN words, and the terminal engages its follow on
+      // the prompt path for the same reason: they have just asked for
+      // something to arrive, so a column left where they had scrolled to would
+      // hide the very answer they are waiting on.
+      const follow = held.following || units.some((unit) => unit.kind === 'user');
       // A turn opens where a person's own words do, while a turn is live: the
       // server's own rule, so everything else joins the turn it arrived in,
       // settled or not. A frame arriving with no turn at all is held nowhere,
@@ -651,13 +672,17 @@ export class Chat {
       if (!opens) {
         if (last === undefined) return held;
         const grown: Turn = { ...last, messages: [...last.messages, message] };
-        return { ...held, turns: [...held.turns.slice(0, -1), grown] };
+        return { ...held, following: follow, turns: [...held.turns.slice(0, -1), grown] };
       }
       const taken = new Set(held.turns.map((turn) => turn.key));
       const key = nameIn({ key: liveName(message, held.turns.length), messages: [message] }, taken);
       // Every turn above it is the object it was: only the row that grew is
       // rebuilt, so growing one turn does not re-render the conversation.
-      return { ...held, turns: [...held.turns, { key, messages: [message], live: true }] };
+      return {
+        ...held,
+        following: follow,
+        turns: [...held.turns, { key, messages: [message], live: true }],
+      };
     });
   }
 }

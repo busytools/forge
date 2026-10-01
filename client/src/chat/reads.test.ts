@@ -18,6 +18,9 @@ vi.mock('virtua/svelte', async () => {
 });
 
 const { default: Churned } = await import('./testing/Churned.svelte');
+const { installResizeObserver } = await import('./testing/viewport');
+
+installResizeObserver();
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 

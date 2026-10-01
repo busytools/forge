@@ -15,8 +15,29 @@ export interface Handed {
 
 export const records: Handed[] = [];
 
+/**
+ * One scroll the column asked the list for.
+ *
+ * The follow is a decision about the reader's place rather than a prop, so the
+ * only thing a test can hold it by is the calls the column makes.
+ */
+export interface Pin {
+  /** The offset the column asked for. */
+  asked: number;
+  /** Where the clamp left the reader, which is the foot when it asked for it. */
+  landed: number;
+}
+
+export const pins: Pin[] = [];
+
+/** Every pin the last-mounted column has asked for. */
+export function pinned(): Pin[] {
+  return pins;
+}
+
 export function clear(): void {
   records.length = 0;
+  pins.length = 0;
 }
 
 /** The last pair the list was handed. */
@@ -38,6 +59,26 @@ export function firstGrowth(): Handed | undefined {
 export interface ListHandle {
   /** Where the reader scrolled to, which is what drives the column. */
   scrolledTo(at: number, total: number, height: number): void;
+  /** A clamp the browser made with nobody scrolling. */
+  settled(at: number, total: number, height: number): void;
+}
+
+/**
+ * The geometry the stub list reports, held here rather than in the component.
+ *
+ * **A list has measured its rows before any column asks it anything**, and a
+ * test that could only hand it a size once it was mounted could not say what
+ * the column does with the first page: the landing's own pin would read a list
+ * of no height. Set it before the mount and the landing sees what a real one
+ * would.
+ */
+export const geometry = { offset: 0, size: 0, viewport: 0 };
+
+/** The size and viewport a list reports, with the reader at its start. */
+export function setGeometry(total: number, height: number): void {
+  geometry.size = total;
+  geometry.viewport = height;
+  geometry.offset = 0;
 }
 
 let mounted: ListHandle | null = null;

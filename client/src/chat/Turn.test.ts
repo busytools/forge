@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
@@ -380,5 +382,19 @@ describe('one turn, as the page draws it', () => {
 
     expect(seated, 'another project draws away').toContain('i-away');
     expect(unseated, 'and with no seat to compare against, the ordinary case').toContain('i-bot');
+  });
+});
+
+describe('the block the reader typed', () => {
+  it('is marked by its line alone, with no wash behind it', () => {
+    // The wash duplicated the line, and over a turn of several user messages
+    // the column read as banded rather than as marked. Read off the sheet:
+    // jsdom performs no layout, so nothing rendered can see a background.
+    const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
+    const at = sheet.indexOf('.mine {');
+    expect(at, '.mine is in the sheet').toBeGreaterThan(-1);
+    const mine = sheet.slice(at, sheet.indexOf('}', at));
+    expect(mine, 'the line is the mark').toContain('border-left: 1px solid var(--accent)');
+    expect(mine, 'and nothing washes the block behind it').not.toContain('background');
   });
 });
