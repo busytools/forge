@@ -138,9 +138,9 @@ pub struct SessionMessage {
     /// tool-result block beside it holds only as prose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_use_result: Option<Value>,
-    /// The CLI's own stamp that nobody typed this row (`isMeta` on the
-    /// transcript row, `isSynthetic` on the wire frame).
-    #[serde(default)]
+    /// The CLI's own mark that nobody typed this row: any of `isMeta`,
+    /// `isCompactSummary`, `isVisibleInTranscriptOnly` or `turnCompanion`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub synthetic: bool,
 }
 

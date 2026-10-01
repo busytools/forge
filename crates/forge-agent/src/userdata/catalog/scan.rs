@@ -177,9 +177,17 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
         let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default().to_string();
         let sess = session_in_row(&value);
         let timestamp = value.get("timestamp").and_then(Value::as_str).map(str::to_owned);
-        // The CLI's own stamp that nobody typed this row - the harness's
-        // injected reminder carries it, and a reader's prompt does not.
-        let synthetic = value.get("isMeta").and_then(Value::as_bool).unwrap_or(false);
+        // The CLI's own stamps that nobody typed this row. They do not
+        // co-occur - the reminder carries `isMeta` and `turnCompanion`, a
+        // compaction summary carries `isCompactSummary` and
+        // `isVisibleInTranscriptOnly` and no `isMeta` - and the wire writes
+        // the whole set as one `isSynthetic`, so reading a subset here is
+        // what let a summary be the reader's turn on resume and the harness's
+        // line live.
+        let synthetic =
+            ["isMeta", "isCompactSummary", "isVisibleInTranscriptOnly", "turnCompanion"]
+                .iter()
+                .any(|flag| value.get(flag).and_then(Value::as_bool).unwrap_or(false));
         out.push(SessionMessage {
             kind,
             uuid,

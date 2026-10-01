@@ -61,9 +61,12 @@ pub enum Message {
         /// When the CLI wrote this frame, RFC 3339. The only record of when
         /// a turn ran that a transcript holds: no result frame reaches one.
         timestamp: Option<String>,
-        /// The CLI's own stamp that nobody typed this turn: `isSynthetic`
-        /// on the wire frame, `isMeta` on the transcript row. A view that
-        /// reads it draws the harness speaking rather than the reader.
+        /// The CLI's own mark that nobody typed this turn, folded from every
+        /// spelling the CLI gives it: the wire's `isSynthetic` or
+        /// `turnCompanion`, and the transcript row's `isMeta`,
+        /// `isCompactSummary`, `isVisibleInTranscriptOnly` or
+        /// `turnCompanion`. A view that reads it draws the harness speaking
+        /// rather than the reader.
         synthetic: bool,
     },
 
@@ -962,6 +965,12 @@ enum MessageRepr {
         // written against.
         #[serde(default, rename = "isSynthetic", skip_serializing_if = "std::ops::Not::not")]
         synthetic: bool,
+        // The other spelling of the same mark: a companion line the CLI
+        // writes for a turn carries `turnCompanion` and no `isSynthetic`.
+        // Read beside it rather than aliased, because a frame carrying both
+        // keys must still decode.
+        #[serde(default, rename = "turnCompanion", skip_serializing_if = "std::ops::Not::not")]
+        turn_companion: bool,
     },
     System(SystemRepr),
     RateLimitEvent {
@@ -1208,6 +1217,7 @@ impl From<MessageRepr> for Message {
                 tool_use_result,
                 timestamp,
                 synthetic,
+                turn_companion,
             } => Message::User {
                 message,
                 session_id,
@@ -1215,7 +1225,7 @@ impl From<MessageRepr> for Message {
                 uuid,
                 tool_use_result,
                 timestamp,
-                synthetic,
+                synthetic: synthetic || turn_companion,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
                 task_id,
@@ -1510,6 +1520,7 @@ impl From<Message> for MessageRepr {
                 tool_use_result,
                 timestamp,
                 synthetic,
+                turn_companion: false,
             },
             Message::System { subtype, session_id, data } => {
                 // `data` now carries the full shape (including `type`,
@@ -2092,6 +2103,33 @@ mod tests_message_extras {
             Some(&json!(true)),
             "the stamp must survive decode and re-encode, or every view reads these words as \
              the reader's own: {encoded}",
+        );
+
+        // A companion line the CLI writes for a turn - an image placeholder,
+        // a skill's "Base directory" note - carries `turnCompanion` and no
+        // `isSynthetic`, and nobody typed it either.
+        let companion = json!({
+            "type": "user",
+            "session_id": "sess-usr",
+            "uuid": "user-uuid-3",
+            "turnCompanion": true,
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "[Image: original 3260x1058, displayed at 2000x649. Multiply coordinates by 1.63 to map to original image.]"
+                }]
+            }
+        });
+
+        let msg: Message = serde_json::from_value(companion).expect("parse");
+        let encoded = serde_json::to_value(&msg).expect("encode");
+
+        assert_eq!(
+            encoded.get("isSynthetic"),
+            Some(&json!(true)),
+            "a companion frame is nobody's typed words either, and the mark is one field on \
+             the way out: {encoded}",
         );
     }
 
