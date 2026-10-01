@@ -29,8 +29,8 @@ const rules = (sheet: string): { selectors: string[]; body: string }[] =>
 
 /**
  * Whether a selector's last compound is the chip's own `<details>` box - bare
- * `.hooks` or `details.hooks` - rather than the live panel's `div.hooks` or
- * something inside it.
+ * `.hooks` or `details.hooks` - rather than something inside it, or a chip
+ * drawn as some other element.
  */
 function chipBox(selector: string): boolean {
   const bare = selector
@@ -86,6 +86,10 @@ describe('the hook chip a turn carries', () => {
    */
   it('draws the hook rows under the summary rather than beside it', () => {
     expect(draw(1), 'the chip the sheets style').toContain('<details class="hooks"');
+    // The scan's own denominator: an extraction that reads nothing makes the
+    // chip look clean while no rule was read at all, and this half is a
+    // regex over a page rather than a file read.
+    expect(BOOK, "the book page's own sheet, extracted rather than empty").toContain('.hooks');
 
     const laying = SHEETS.flatMap(([where, sheet]) =>
       rules(sheet)
@@ -111,7 +115,9 @@ describe('the hook chip a turn carries', () => {
   it('draws the chip open in the book, where its rows can be seen', () => {
     const open = /<details class="hooks" open>[\s\S]*?<\/details>/.exec(PAGE)?.[0];
     expect(open, 'the book draws the chip open').toBeDefined();
-    expect(open, 'with the rows it counted').toContain('class="body"');
-    expect(open, 'each drawn as a command with its duration').toContain('class="term"');
+    expect(open, 'with the rows the chip counted').toContain('class="body"');
+    expect(open, 'each one of them drawn').toContain('class="term"');
+    expect(open, 'a command the chip ran').toContain('cargo fmt --check');
+    expect(open, 'with the duration it took').toContain('412ms');
   });
 });
