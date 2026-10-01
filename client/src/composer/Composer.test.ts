@@ -1644,6 +1644,54 @@ describe('the dock', () => {
     ).toBeNull();
   });
 
+  /**
+   * The dock is a destination only while its box is on screen. A seat can fail
+   * with a prompt still waiting, which puts the blocker in the slot and takes
+   * the dock away with it - and a landing then has no box of the dock's to go
+   * to, so the words belong to the draft, which is held across the morph.
+   */
+  it("keeps a take's words when the blocker takes the dock away before they land", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+    expect(
+      document.querySelector('.dock [data-editor="dock"]'),
+      'the reader opened the box the words would go in',
+    ).not.toBeNull();
+
+    harness.page.seat = seatRead({ lifecycle: 'Failed', reason: 'the CLI exited with status 1' });
+    flushSync();
+    expect(document.querySelector('.dock'), 'and then the dock is gone').toBeNull();
+
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    harness.page.seat = seatRead();
+    harness.page.record = record();
+    flushSync();
+
+    expect(
+      field().value,
+      'the words are still the reader to send, because no dock was there to take them',
+    ).toBe('the words');
+  });
+
   it('moves the mark from the keyboard once the dock has the slot', () => {
     const harness = open({ record: record({ pending_ask: permissionAsk() }) });
     const list = document.querySelector('.dock [role="listbox"]');

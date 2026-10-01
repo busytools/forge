@@ -143,8 +143,16 @@
 
   // The composer decides where a take's words land, and this dock is only a
   // destination while its box is open - so it has to say whether it is.
+  //
+  // The cleanup is load-bearing: a seat can fail with a prompt still waiting,
+  // which puts the blocker in the slot and takes this dock off screen while the
+  // prompt stays, and a `true` left standing here would route a take's words to
+  // a box that is no longer there.
   $effect(() => {
     ownOpen = notesOpen;
+    return () => {
+      ownOpen = false;
+    };
   });
 
   /**
