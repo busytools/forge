@@ -6,7 +6,15 @@
   import Dictation from './Dictation.svelte';
   import Dock from './Dock.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
-  import { boundCode, down, markChorded, up, type Action, type Held } from './dictate-key';
+  import {
+    boundCode,
+    down,
+    isBareModifier,
+    markChorded,
+    up,
+    type Action,
+    type Held,
+  } from './dictate-key';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -302,17 +310,21 @@
     if (!dictation) return;
     const onDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
-        // A live take consumes Esc, which is the terminal's own rule.
+        // A live take consumes Esc, which is the terminal's rule: the surfaces
+        // under it never see the key, so one press is one command and the list
+        // a field would close stays where it is.
         if (composer.take !== null) {
           event.preventDefault();
+          event.stopPropagation();
           act('cancel');
         }
         return;
       }
       if (event.code !== boundCode(composer.bind, mac)) {
-        // Any other key while the press is down makes it a chord, and the
-        // chord's release discards what the press began.
-        pressed = markChorded(pressed);
+        // Any other KEY while the press is down makes it a chord, and the
+        // chord's release discards what the press began. A bare modifier is
+        // not a key: the terminal lets those through unchorded.
+        if (!isBareModifier(event.key)) pressed = markChorded(pressed);
         return;
       }
       const step = down(pressed, composer.take !== null, Date.now(), composer.mode);
@@ -325,10 +337,10 @@
       pressed = step.held;
       if (step.action !== null) act(step.action);
     };
-    window.addEventListener('keydown', onDown);
+    window.addEventListener('keydown', onDown, true);
     window.addEventListener('keyup', onUp);
     return () => {
-      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keydown', onDown, true);
       window.removeEventListener('keyup', onUp);
     };
   });

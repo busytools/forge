@@ -104,3 +104,16 @@ export function up(held: Held | null, at: number, mode: Mode): Step {
 export function markChorded(held: Held | null): Held | null {
   return held === null ? null : { ...held, chorded: true };
 }
+
+/**
+ * Whether an event is a bare modifier rather than a key.
+ *
+ * The terminal consumes every bare modifier without chording the hold, because
+ * a modifier is not text and not a shortcut - and a chord here would discard
+ * the take its press began, losing the reader's words to a key they brushed.
+ */
+export function isBareModifier(key: string): boolean {
+  return (
+    key === 'Alt' || key === 'AltGraph' || key === 'Control' || key === 'Meta' || key === 'Shift'
+  );
+}

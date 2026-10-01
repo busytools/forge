@@ -643,6 +643,91 @@ describe('the key', () => {
     key('ControlRight', 'keydown');
     expect(harness.sent, 'the key follows the mic: no dictation, no take').toEqual([]);
   });
+
+  /**
+   * A stray modifier is not a chord. The terminal consumes any other bare
+   * modifier without marking the hold chorded, because a modifier is not text
+   * and not a shortcut - and the client marking one would DISCARD the take its
+   * press began, losing the reader's words to a key they brushed.
+   */
+  it('leaves a stray modifier alone rather than chording the take', () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', code: 'ShiftLeft' }));
+      flushSync();
+      vi.advanceTimersByTime(500);
+      key('ControlRight', 'keyup');
+
+      expect(
+        harness.sent.at(-1)?.command,
+        'a brushed modifier must not lose what the reader said',
+      ).toEqual({
+        dictate_stop: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          submit: true,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * A live take consumes Escape, which is the terminal's rule and why the
+   * client's surfaces cannot both have it: the list under the field closes on
+   * an Escape nobody else took, and the dock's own Escape is the take's.
+   */
+  it('gives Escape to a live take rather than to the list underneath it', () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+    type('/');
+    expect(document.querySelector('.ac'), 'a list is open under the field').not.toBeNull();
+
+    press('Escape');
+
+    expect(harness.sent, 'the take takes the key').toEqual([
+      {
+        command: {
+          dictate_stop: {
+            key: { org: 'Busytools', project: 'forge', label: 'lead' },
+            submit: false,
+          },
+        },
+      },
+    ]);
+    expect(document.querySelector('.ac'), 'and the list stands').not.toBeNull();
+  });
+
+  it('abandons once when the dock holds both the take and the keyboard', () => {
+    const harness = open({
+      dictation: true,
+      record: record({
+        pending_ask: permissionAsk(),
+        composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      }),
+    });
+    flushSync();
+    expect(document.querySelector('.dock'), 'the dock has the box').not.toBeNull();
+
+    press('Escape');
+
+    expect(harness.sent, 'one keypress is one command').toEqual([
+      {
+        command: {
+          dictate_stop: {
+            key: { org: 'Busytools', project: 'forge', label: 'lead' },
+            submit: false,
+          },
+        },
+      },
+    ]);
+  });
 });
 
 /**
