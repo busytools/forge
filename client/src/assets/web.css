@@ -873,14 +873,16 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 }
 
 /* A delivery keeps the lines it arrived with: its body is often a second
-   line under the header the envelope carries. */
-.notice { margin: 10px 0; padding: 9px 13px; border-radius: 9px; font-size: var(--fs-prose);
+   line under the header the envelope carries. Scoped to the conversation,
+   because the composer's notice row shares the name and states its own
+   chrome - a bare name is what a third surface picks up. */
+.conv .notice { margin: 10px 0; padding: 9px 13px; border-radius: 9px; font-size: var(--fs-prose);
   white-space: pre-line; }
-.notice .sev { font-weight: 700; margin-right: 7px; }
-.notice.info { border: 1px solid var(--line); color: var(--dim); }
-.notice.warn { border: 1px solid rgba(201,161,59,.35); background: rgba(201,161,59,.07);
+.conv .notice .sev { font-weight: 700; margin-right: 7px; }
+.conv .notice.info { border: 1px solid var(--line); color: var(--dim); }
+.conv .notice.warn { border: 1px solid rgba(201,161,59,.35); background: rgba(201,161,59,.07);
   color: var(--warn); }
-.notice.err { border: 1px solid rgba(224,104,62,.35); background: rgba(224,104,62,.07);
+.conv .notice.err { border: 1px solid rgba(224,104,62,.35); background: rgba(224,104,62,.07);
   color: var(--bad); }
 
 /* ---------- the built-in typefaces ---------- */
@@ -952,7 +954,7 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
    field and the footer together and left only that pair tight, so this stays
    per pair rather than a gap. */
 .dict + .line, .dict + .ac,
-.notice + .line, .notice + .ac,
+.comp .notice + .line, .comp .notice + .ac,
 .ac + .line { margin-top: 8px; }
 /* The draft. A field rather than a span, so it carries no chrome of the
    page's: the box's own border is the identity. */
@@ -1024,21 +1026,16 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .wave.tr .wtr i.mid { background: #2f486d; }
 .wave.tr .wtr i.hot { background: #365582; }
 
-/* A notice shares the row with the take and wins it.
-   It carries the class name the chat's delivery notices use, so each rule here
-   is scoped to `.comp`: a bare one would sit later in the sheet than the chat's
-   and win for every delivery on the page, stripping the padding, margin, radius
-   and border a delivery keeps its own lines with.
-   The chat's rule reaches this row either way, and measured in the app it cost
-   the row 18px of vertical padding - it drew 60px tall, 42 without it, and the
-   specimen draws one line at 22. So the row states its own chrome. */
+/* A notice shares the row with the take and wins it. Each rule here is scoped
+   to `.comp` and states the row's own chrome, so the chrome depends on no
+   shared name - the chat's delivery notices are scoped to `.conv` for the same
+   reason. */
 .comp .notice { font-family: var(--mono); font-size: var(--fs-data);
   padding: 0; margin: 0; border-radius: 0; white-space: normal; }
 .comp .notice.q { color: var(--dim); }
 .comp .notice.bad { color: var(--bad); }
-/* The shared rule's warn variant paints a border and a fill; the drawing's warn
-   row is its colour and nothing else. */
-.comp .notice.warn { color: var(--warn); border: 0; background: none; }
+/* The drawing's warn row is its colour and nothing else. */
+.comp .notice.warn { color: var(--warn); }
 
 /* While the session cannot take input the box is replaced entirely, and the
    slot says why it is not accepting keys. */
