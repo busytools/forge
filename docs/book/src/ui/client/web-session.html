@@ -601,14 +601,14 @@
      five pixels of vertical padding, which under border-box left the 5px
      track with no content height for its fill at all. */
   .sb .tk { display: flex; align-items: flex-start; gap: 9px; padding: 5px 0; }
-  .tk .b { width: 3px; align-self: stretch; border-radius: 99px; background: var(--s3); flex: none; }
-  .tk.now .b { background: var(--accent); }
-  .tk.done .b { background: var(--ok); }
-  .tk.blocked .b { background: var(--warn); }
-  .tk .s { font-size: var(--fs-base); color: var(--muted); }
-  .tk.done .s { color: var(--dim); text-decoration: line-through; }
-  .tk .meta { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); margin-top: 1px; }
-  .tk .meta b { color: var(--muted); font-weight: 500; }
+  .sb .tk .b { width: 3px; align-self: stretch; border-radius: 99px; background: var(--s3); flex: none; }
+  .sb .tk.now .b { background: var(--accent); }
+  .sb .tk.done .b { background: var(--ok); }
+  .sb .tk.blocked .b { background: var(--warn); }
+  .sb .tk .s { font-size: var(--fs-base); color: var(--muted); }
+  .sb .tk.done .s { color: var(--dim); text-decoration: line-through; }
+  .sb .tk .meta { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); margin-top: 1px; }
+  .sb .tk .meta b { color: var(--muted); font-weight: 500; }
 
   .sa { border: 1px solid var(--line); border-radius: 10px; background: rgba(13,17,26,.5);
     margin: 6px 0; overflow: hidden; }
