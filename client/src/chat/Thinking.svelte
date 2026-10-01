@@ -1,5 +1,6 @@
 <script lang="ts">
   import Chevron from '../components/Chevron.svelte';
+  import Icon from '../components/Icon.svelte';
   import { firstLine, paragraphs } from './text';
 
   /**
@@ -20,6 +21,12 @@
 
 <details class="think">
   <summary>
+    <!-- The kind, ahead of the words. Every other row in the column says what
+         it IS - a tool row carries its tool, a notice its severity - and this
+         one opened on a sentence, so its kind had to be inferred from its
+         content. It is also the disclosure's accessible name: a screen reader
+         is given the summary's text and nothing else. -->
+    <span class="tkind"><Icon name="think" /><span class="word">thinking</span></span>
     <span class="tn">{firstLine(text)}</span>
     <Chevron />
   </summary>

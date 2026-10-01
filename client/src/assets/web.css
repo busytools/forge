@@ -780,6 +780,17 @@ details.think > summary { list-style: none; display: flex; align-items: center; 
 details.think > summary::-webkit-details-marker { display: none; }
 details.think > summary:hover { background: rgba(27,33,48,.45); }
 details.think > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The row's kind, ahead of its words: the mark is the same size as the small
+   mono labels a row carries rather than the 15px a tool row's glyph takes, so
+   the word stays the thing that reads.
+   Named `tkind` rather than `kind`, which the family-tree group disclosure
+   already owns - a bare `.kind` here would inherit its 3px margins and make
+   every thinking row taller, which is the trap this sheet's `.knd` was split
+   out of in the first place. */
+details.think > summary .tkind { display: flex; align-items: center; gap: 7px;
+  flex: none; color: var(--dim); }
+details.think > summary .tkind .ic { width: 12px; height: 12px; flex: 0 0 12px; }
+details.think > summary .tkind .word { color: var(--muted); }
 details.think > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
 details.think > summary:hover .arw { color: var(--muted); }
 details.think[open] > summary { color: var(--muted); }
