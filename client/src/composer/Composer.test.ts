@@ -1727,6 +1727,39 @@ describe('the dock', () => {
   });
 
   /**
+   * The same guarantee when the next prompt arrives in the same frame as the one
+   * before it, with no frame in between where nothing is asking.
+   *
+   * A page re-render is one assignment, so the harness reaches this shape even
+   * though driving the CLI into it is a different question - and a release keyed
+   * on the ask being absent cannot see it.
+   */
+  it("opens the next prompt's own-words box empty when the prompts change in one frame", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q') }) });
+
+    const ownWords = (): HTMLTextAreaElement => {
+      const row = options()[2];
+      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+      row.click();
+      flushSync();
+      const box = document.querySelector('.dock [data-editor="dock"]');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      return box;
+    };
+
+    const box = ownWords();
+    box.value = 'leftover words';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    // One frame, and the next prompt is already asking.
+    harness.page.record = record({ pending_ask: questionAsk('tu-q2') });
+    flushSync();
+
+    expect(ownWords().value, "the last prompt's words do not come back in this one").toBe('');
+  });
+
+  /**
    * The words come with the keyboard, and while a prompt has the slot the box
    * they land in is the dock's own. Opening that box puts the keyboard in it,
    * so this is the state left after the reader has clicked away from it.

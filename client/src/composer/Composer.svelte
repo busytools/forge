@@ -165,13 +165,22 @@
     if (composer.take !== null) sawTake = true;
   });
 
+  /** The prompt the dock's box belongs to, which is what its words go with. */
+  let ownPrompt: string | null = null;
+
   // The dock's box belongs to the prompt, so what was written in it goes when
   // the prompt does - which is what the dock's own mount used to do for it.
+  //
+  // Keyed on the prompt's identity rather than on its absence: the next prompt
+  // can arrive in the same frame as the last, and a release that only fires on
+  // `ask === null` never sees that, so the words would come back in the box
+  // that replaced them.
   $effect(() => {
-    if (ask === null) {
-      dockDraft = '';
-      dockLanded = null;
-    }
+    const id = askToolId(ask);
+    if (id === ownPrompt) return;
+    ownPrompt = id;
+    dockDraft = '';
+    dockLanded = null;
   });
 
   /**
