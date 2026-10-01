@@ -197,6 +197,13 @@ pub struct TurnSpan {
 pub struct Rendered {
     pub units: Vec<ChatUnit>,
     pub turns: Vec<TurnSpan>,
+    /// Every task ending the conversation holds, by the call each names.
+    ///
+    /// Read here because the fold is where it is read from at all - the
+    /// preamble's pass over the messages - and carried out so the turns built
+    /// from this answer do not walk the conversation again for it. A page is
+    /// the case that pays: it is built while a reader scrolls.
+    pub endings: HashMap<String, TaskEnding>,
 }
 
 /// Open a turn: the unit that opens it and the span a page is cut on are
@@ -225,6 +232,7 @@ pub fn render_units(messages: &[Message]) -> Vec<ChatUnit> {
 /// on the answer.
 pub fn render(messages: &[Message]) -> Rendered {
     let results = result_statuses(messages);
+    let endings = task_endings(messages);
     let answers = question_answers(messages);
     let mut units: Vec<ChatUnit> = Vec::new();
     let mut run: Vec<((KindRow, String), ToolLeaf)> = Vec::new();
@@ -312,6 +320,13 @@ pub fn render(messages: &[Message]) -> Rendered {
         };
         for block in content {
             match block {
+                // The harness's task ending in its other carrier: the same XML
+                // written into a user row, which the scan hands on as this
+                // plain text. A turn opened for it draws a task id and an
+                // output path attributed to the reader, so the row opens none -
+                // and the ending it carries was read in the pre-pass above,
+                // which is the only place that can see across turns.
+                ContentBlock::Text { text } if !assistant && is_task_notice(text) => {}
                 ContentBlock::Text { text } => match text_unit(assistant, text) {
                     TextUnit::Peer(card) => {
                         flush(&mut run, &mut units);
@@ -367,7 +382,8 @@ pub fn render(messages: &[Message]) -> Rendered {
                 ContentBlock::ToolUse { id, name, input }
                 | ContentBlock::ServerToolUse { id, name, input } => {
                     push_call(
-                        id, name, input, &results, &answers, &mut run, &mut peers, &mut units,
+                        id, name, input, &results, &endings, &answers, &mut run, &mut peers,
+                        &mut units,
                     );
                 }
                 // A result is not a unit of its own: it is what the call
@@ -405,7 +421,7 @@ pub fn render(messages: &[Message]) -> Rendered {
             span.key.clone_from(key);
         }
     }
-    Rendered { units, turns }
+    Rendered { units, turns, endings }
 }
 
 /// What a session-state frame says about a turn being in flight: `Some(true)`
@@ -606,6 +622,7 @@ fn push_call(
     name: &str,
     input: &serde_json::Value,
     results: &HashMap<String, Recorded>,
+    endings: &HashMap<String, TaskEnding>,
     answers: &HashMap<String, serde_json::Value>,
     run: &mut Vec<((KindRow, String), ToolLeaf)>,
     peers: &mut Vec<PeerCard>,
@@ -623,8 +640,31 @@ fn push_call(
         units.push(question_card(id, input, answers));
     } else {
         flush_peers(peers, units);
-        run.push((family_row(name), leaf(id, name, input, results)));
+        run.push((family_row(name), with_ending(leaf(id, name, input, results), id, endings)));
     }
+}
+
+/// The call's row with the persisted ending that names it applied.
+///
+/// A backgrounded call's own result says the command is running and is not an
+/// error, so the result alone draws a task that then failed as completed; the
+/// notice says how it actually ended. What the harness said joins the row
+/// rather than replacing it, because the result's own text is what names the
+/// task's output file - the terminal's card replaces its body with the same
+/// sentence, and the page's row keeps both, which is the drawing this follows.
+fn with_ending(mut call: ToolLeaf, id: &str, endings: &HashMap<String, TaskEnding>) -> ToolLeaf {
+    let Some(ending) = endings.get(id) else {
+        return call;
+    };
+    if let Some(status) = ending.status {
+        call.status = status;
+    }
+    if !ending.summary.is_empty() {
+        call.content.push(ToolCallContent::Content {
+            content: forge_primitives::ChunkContent::Text { text: ending.summary.clone() },
+        });
+    }
+    call
 }
 
 /// The row a call folds under. A mutation folds under one `edit` family
@@ -767,8 +807,115 @@ fn absorb_typed(units: &mut [ChatUnit], text: &str) -> bool {
 /// terminal reads the text's own prefix instead. Both are read here, because a
 /// fold keyed on one of them drifts from the other the first time either moves.
 fn is_completion_notice(command_mode: Option<&str>, prompt: &serde_json::Value) -> bool {
-    command_mode == Some("task-notification")
-        || queued_command_text(prompt).trim_start().starts_with("<task-notification>")
+    command_mode == Some("task-notification") || is_task_notice(&queued_command_text(prompt))
+}
+
+/// Whether a turn's text is the harness's own task notice rather than anything
+/// a person said: the marker the CLI writes at the head of the XML.
+///
+/// Two carriers hold it - the `attachment` row the scan hoists into a
+/// `queued_command` block, and a `user` row whose content string is the XML -
+/// and the fold reads the marker out of both, so a third shape would arrive
+/// here and not elsewhere.
+fn is_task_notice(text: &str) -> bool {
+    text.trim_start().starts_with("<task-notification>")
+}
+
+/// What a persisted task ending says, which is what the live wire's
+/// `task_notification` frame says: the CLI writes the frame's fields as XML
+/// into the transcript instead.
+///
+/// Public because [`Rendered`] carries them: a caller building turns needs the
+/// endings the fold already read, rather than a second walk to find them.
+pub struct TaskEnding {
+    /// The call it ends, from the notice's `<tool-use-id>`.
+    pub call: String,
+    /// How the task ended. `None` for a word this does not know.
+    pub status: Option<ToolCallStatus>,
+    /// The harness's own sentence about the outcome.
+    pub summary: String,
+    /// The notice as the CLI wrote it, which a carried copy repeats verbatim.
+    pub text: String,
+    /// Where the notice sits in the conversation it was read from, which is
+    /// what says whether a turn already holds it.
+    pub at: usize,
+}
+
+/// The notice as the block a view reads an ending from: the shape the scan
+/// hoists an `attachment` row into, so both carriers reach a client as one
+/// thing rather than as two the client has to know about.
+pub(crate) fn notice_block(text: &str) -> ContentBlock {
+    ContentBlock::QueuedCommand {
+        prompt: serde_json::Value::String(text.to_owned()),
+        command_mode: Some("task-notification".to_owned()),
+        source_uuid: None,
+    }
+}
+
+/// Every task notice the conversation holds as that one block, whichever
+/// carrier the CLI persisted it in.
+///
+/// The row itself is kept - it is the notice, and dropping it would be the
+/// silence rule 25 forbids - and only its shape changes, into the one a view
+/// already reads an ending from. What a view draws for it is nothing: the
+/// ending is drawn on the call's own row.
+pub(crate) fn notices_as_blocks(mut messages: Vec<Message>) -> Vec<Message> {
+    for message in &mut messages {
+        let Message::User { message: envelope, .. } = message else {
+            continue;
+        };
+        for block in &mut envelope.content {
+            if let ContentBlock::Text { text } = block
+                && is_task_notice(text)
+            {
+                *block = notice_block(text);
+            }
+        }
+    }
+    messages
+}
+
+/// The ending a persisted notice carries, or `None` when the text is not one
+/// or names no call to end.
+fn task_ending(text: &str) -> Option<TaskEnding> {
+    if !is_task_notice(text) {
+        return None;
+    }
+    Some(TaskEnding {
+        call: tag(text, "tool-use-id")?.to_owned(),
+        status: tag(text, "status").and_then(task_status),
+        summary: tag(text, "summary").unwrap_or_default().to_owned(),
+        text: text.to_owned(),
+        at: 0,
+    })
+}
+
+/// The text between `<name>` and `</name>`, trimmed.
+fn tag<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let (_, rest) = text.split_once(&format!("<{name}>"))?;
+    let (inside, _) = rest.split_once(&format!("</{name}>"))?;
+    Some(inside.trim())
+}
+
+/// A task's own status word, as the frame carrying it draws the call.
+///
+/// The same map the terminal applies to `task_updated.patch.status`: the wire
+/// says `running` where the row says in progress, and `stopped` is its word
+/// for a graceful cancel, which draws as the kill it is.
+///
+/// **An unrecognised word is `None`, where the terminal maps it to
+/// `Pending`.** The terminal applies that map to a frame arriving on a live
+/// call; here the word arrives after the call is finished, so an unreadable
+/// word means the task ended without saying how, and drawing the call as
+/// pending again would walk it back down.
+fn task_status(word: &str) -> Option<ToolCallStatus> {
+    match word {
+        "running" => Some(ToolCallStatus::InProgress),
+        "completed" => Some(ToolCallStatus::Completed),
+        "failed" => Some(ToolCallStatus::Failed),
+        "killed" | "stopped" => Some(ToolCallStatus::Killed),
+        _ => None,
+    }
 }
 
 /// The text a `queued_command` block carries: a plain string for a typed
@@ -992,6 +1139,49 @@ fn turn_report(
     })
 }
 
+/// Every task ending the conversation holds, by the call each names.
+///
+/// Both carriers, because the CLI writes the same notice two ways: an
+/// `attachment` row the scan hoists into a `queued_command` block, and a
+/// `user` row whose content string is the XML.
+///
+/// **A pre-pass, and that is the point of it.** The ending is frequently not
+/// in its call's turn: the notice row opens a turn of its own, and a delivery,
+/// a peer message or a person's next prompt can sit between the two, so a fold
+/// that read them in one pass could only see the endings that happened to
+/// follow their call closely. This is the same shape [`result_statuses`] takes
+/// for the same reason: the whole conversation is read once, keyed by call,
+/// and the walk reads the answer where it needs it.
+///
+/// **The last ending naming a call wins**, which is the rule the results
+/// pre-pass already keeps and the only one that reads a repeated ending as the
+/// newer word rather than the older. It is load-bearing rather than
+/// hypothetical: ten of this machine's calls carry two notices. Nine of those
+/// pairs are the restart case, completed first and stopped second - written
+/// once a restart found no completion record - and one runs the other way, so
+/// the rule is what decides between them rather than the order the CLI
+/// happens to write.
+pub(crate) fn task_endings(messages: &[Message]) -> HashMap<String, TaskEnding> {
+    let mut out: HashMap<String, TaskEnding> = HashMap::new();
+    for (at, message) in messages.iter().enumerate() {
+        let Message::User { message: envelope, .. } = message else {
+            continue;
+        };
+        for block in &envelope.content {
+            let text = match block {
+                ContentBlock::Text { text } => text.clone(),
+                ContentBlock::QueuedCommand { prompt, .. } => queued_command_text(prompt),
+                _ => continue,
+            };
+            if let Some(mut ending) = task_ending(&text) {
+                ending.at = at;
+                out.insert(ending.call.clone(), ending);
+            }
+        }
+    }
+    out
+}
+
 /// Every tool result the conversation holds, by the call it answers.
 ///
 /// Two shapes, and both have to be read: an ordinary call's result is a
@@ -1081,7 +1271,7 @@ mod tests {
     use crate::grouping::KindRow;
     use crate::model::ToolCallStatus;
 
-    use super::{ChatUnit, NoticeSeverity, render, render_units};
+    use super::{ChatUnit, NoticeSeverity, ToolLeaf, render, render_units, task_ending};
 
     /// An assistant message carrying `content`.
     fn assistant(content: Vec<ContentBlock>) -> Message {
@@ -1690,6 +1880,268 @@ mod tests {
             let rendered = render(&[notice]);
             assert!(rendered.turns.is_empty(), "a completion notice opens no turn: {signal}");
             assert!(rendered.units.is_empty(), "and draws no unit of its own: {signal}");
+        }
+    }
+
+    /// A persisted notice IS an ending, and it says the same three things the
+    /// live wire's `task_notification` frame says: which call it ends, how it
+    /// ended, and the harness's own sentence.
+    ///
+    /// Read off a real row rather than a typed one, because the parser is the
+    /// thing under test and a notice written to match a parser proves only
+    /// that it matches itself.
+    #[test]
+    fn a_persisted_notice_is_read_as_the_ending_it_carries() {
+        let row: serde_json::Value =
+            serde_json::from_str(crate::fixtures::SAME_TURN_USER_ROW[2]).expect("a real row");
+        let text = row["message"]["content"].as_str().expect("the notice's own text");
+
+        let ending = task_ending(text).expect("a task notice");
+        assert_eq!(ending.call, "call_da4c7ee117d14d48ba99e036", "the call it ends");
+        assert_eq!(ending.status, Some(ToolCallStatus::Failed), "how it ended");
+        assert_eq!(
+            ending.summary,
+            "Background command \"Watch the account-lifecycle CI run\" failed with exit code 1",
+            "and what the harness said about it",
+        );
+    }
+
+    /// Fold a transcript seeded from `rows`, through the read a view makes:
+    /// the scan, the replay synthesiser and the fold. The rows are the ones a
+    /// test names, and they are real ones - a fold driven from hand-built
+    /// frames would agree with itself about a shape the CLI does not write.
+    ///
+    /// The temp dir is leaked on purpose: the read walks it after this
+    /// function returns, and `keep` is the helper's own idiom for that.
+    fn folded_transcript(rows: &[&str]) -> Vec<ChatUnit> {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.seed_transcript("TestOrg", "proj", "lead", rows).expect("the transcript seeds");
+        fleet.install_agent("TestOrg", "proj", "lead");
+        let seat = forge_primitives::SessionSlot::lead("TestOrg", "proj");
+        let surface = fleet.surface();
+        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
+        render_units(&surface.conversation(&seat, &cwd).messages)
+    }
+
+    /// The call the fold drew under `id`.
+    fn call_in<'a>(units: &'a [ChatUnit], id: &str) -> &'a ToolLeaf {
+        units
+            .iter()
+            .find_map(|unit| match unit {
+                ChatUnit::ToolGroup { families, .. } => families
+                    .iter()
+                    .flat_map(|family| family.calls.iter())
+                    .find(|call| call.id == id),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the fold drew a call under {id}"))
+    }
+
+    /// The text a call's row carries, in order.
+    fn texts_of(call: &ToolLeaf) -> Vec<String> {
+        call.content
+            .iter()
+            .filter_map(|piece| match piece {
+                ToolCallContent::Content { content: ChunkContent::Text { text } } => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A transcript's own messages, as the read hands them to the fold BEFORE
+    /// a view's normalisation: `session_history` is the read the spawn and the
+    /// terminal perform, and the surface's rewrite of the carriers is one
+    /// caller's step rather than part of the read itself.
+    fn read_raw(rows: &[&str]) -> Vec<Message> {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let projects = dir.join("projects").join("any-project-key");
+        std::fs::create_dir_all(&projects).expect("the project dir");
+        // A uuid, because the read refuses a name that is not one; it walks
+        // every project dir for the file, so no key has to be derived.
+        let session = "b095cf6c-1be5-4337-9965-0dc6e46f6b57";
+        std::fs::write(projects.join(format!("{session}.jsonl")), rows.join("\n"))
+            .expect("the transcript writes");
+        forge_workspace::session_history(&dir, session, "").messages
+    }
+
+    /// The notice a task ending arrives as, carrying `status` and `summary`
+    /// for `call`.
+    ///
+    /// Written rather than read off disk, because the rules these pin are
+    /// about inputs the corpus does not hold: an ending whose status word
+    /// nothing knows, and one that disagrees with the result beside it.
+    fn notice(call: &str, status: &str, summary: &str) -> Message {
+        user(vec![ContentBlock::Text {
+            text: format!(
+                "<task-notification>\n<tool-use-id>{call}</tool-use-id>\n\
+                 <status>{status}</status>\n<summary>{summary}</summary>\n</task-notification>"
+            ),
+        }])
+    }
+
+    /// The second carrier opens no turn either.
+    ///
+    /// It is the same notice the attachment holds, and a fold that reads one
+    /// and not the other leaves the raw XML drawn as the reader's own words:
+    /// 1,200 rows of it across this machine's 2.1.280 transcripts, with the
+    /// task id and the output path in the text.
+    #[test]
+    fn the_user_rows_notice_opens_no_turn() {
+        let units = folded_transcript(crate::fixtures::SAME_TURN_USER_ROW);
+
+        assert!(
+            !units.iter().any(|unit| matches!(unit, ChatUnit::UserTurn { .. })),
+            "a notice the CLI persisted as a user row draws no turn of its own",
+        );
+    }
+
+    /// An ending ends the call it names, and what the harness said joins the
+    /// row rather than replacing it.
+    ///
+    /// Three slices, one property each time: the text carrier and the
+    /// attachment carrier, one where a turn of its own sits between the notice
+    /// and its call, and one where the call is a dispatched agent - 699 of
+    /// this machine's 2,194 paired endings name an `Agent` rather than a
+    /// backgrounded command.
+    ///
+    /// The launch's own result says the task is running and is not an error,
+    /// so a fold that settles the call on it draws a failed or killed task as
+    /// completed. That result's text must survive alongside the notice's
+    /// sentence: it is what names the task's output file.
+    #[test]
+    fn an_ending_ends_the_call_it_names() {
+        for (rows, call, status, said, result_says) in [
+            (
+                crate::fixtures::SAME_TURN_USER_ROW,
+                "call_da4c7ee117d14d48ba99e036",
+                ToolCallStatus::Failed,
+                "Background command \"Watch the account-lifecycle CI run\" failed with exit code 1",
+                "Command is running in background with ID: t00000001.",
+            ),
+            (
+                crate::fixtures::CROSS_TURN_ATTACHMENT,
+                "call_17c05f64497746b0ac450728",
+                ToolCallStatus::Failed,
+                "Background command \"Restart the harness with a long terminate window\" failed with exit code 100",
+                "Command is running in background with ID: t00000003.",
+            ),
+            (
+                crate::fixtures::KILLED_AGENT,
+                "toolu_013WM27Lt98mvnUq573pXxYD",
+                ToolCallStatus::Killed,
+                "Agent \"Run slow counting loop\" was stopped by user",
+                "Async agent launched successfully.",
+            ),
+        ] {
+            let units = folded_transcript(rows);
+            let call = call_in(&units, call);
+            let texts = texts_of(call);
+
+            assert_eq!(call.status, status, "the notice's own word ends the call: {texts:?}");
+            assert!(
+                texts.iter().any(|text| text == said),
+                "and what the harness said rides its row: {texts:?}",
+            );
+            assert!(
+                texts.iter().any(|text| text.starts_with(result_says)),
+                "beside the result's own text rather than in place of it: {texts:?}",
+            );
+        }
+    }
+
+    /// Two endings naming one call: the later word is the one that stands.
+    ///
+    /// The pair is a real one, twelve minutes apart: the first notice says the
+    /// command completed, and the second - written after a restart found no
+    /// completion record - says it stopped. Ten of this machine's calls carry
+    /// two notices, so the rule decides drawings rather than a hypothetical,
+    /// and a first-wins fold draws this call completed when it stopped. The
+    /// rule is the one the results pre-pass already keeps, where a second
+    /// result for a call replaces the first.
+    #[test]
+    fn the_later_ending_naming_one_call_wins() {
+        let units = folded_transcript(crate::fixtures::DUPLICATE_ENDINGS);
+        let call = call_in(&units, "call_370cb30e2834491daf5bb4e2");
+        let texts = texts_of(call);
+
+        assert_eq!(call.status, ToolCallStatus::Killed, "the second notice's word: {texts:?}");
+        assert!(
+            texts.iter().any(|text| text
+                == "Background shell command didn't finish before the previous session ended"),
+            "and the sentence it carried: {texts:?}",
+        );
+        assert!(
+            !texts.iter().any(|text| text.contains("completed (exit code 0)")),
+            "not the first notice's word: {texts:?}",
+        );
+    }
+
+    /// The fold reads the raw carrier too - a message list taken straight off
+    /// a transcript, before any view's normalisation.
+    ///
+    /// **A guard for the fold's own contract, not dead weight.** `render` and
+    /// `render_units` are public and take the CLI's own messages; the
+    /// surface's rewrite of the carriers into one block is one caller's step,
+    /// not part of the read. A fold that read only the normalised shape would
+    /// leave the second, quieter contract - a caller handing it a transcript -
+    /// drawing the raw XML as the reader's own turn.
+    #[test]
+    fn a_raw_transcripts_notice_is_read() {
+        let units = render_units(&read_raw(crate::fixtures::SAME_TURN_USER_ROW));
+
+        assert!(
+            !units.iter().any(|unit| matches!(unit, ChatUnit::UserTurn { .. })),
+            "the row the CLI wrote draws no turn of its own",
+        );
+        assert_eq!(
+            call_in(&units, "call_da4c7ee117d14d48ba99e036").status,
+            ToolCallStatus::Failed,
+            "and the ending it carries still ends the call",
+        );
+    }
+
+    /// How an ending's own word meets the status the call already had.
+    ///
+    /// **Two deliberate divergences from the terminal, and both are read by
+    /// whoever next aligns forge with it.**
+    ///
+    /// An unrecognised word keeps the status the call had, where the terminal
+    /// maps every unknown to `Pending`. A task whose ending forge cannot read
+    /// is one it does not know has ended, and pending is a claim that it did
+    /// not stop.
+    ///
+    /// And a recognised word stands even over a result that failed. The notice
+    /// is the CLI's last word about the task, and the page's own fold reads it
+    /// the same way - the two folds are one vocabulary. The terminal keeps a
+    /// `Failed` or `Killed` call when a notification arrives, because it
+    /// applies one to a live card a real failure has already settled, and no
+    /// read of a transcript holds that state.
+    #[test]
+    fn an_endings_word_meets_the_status_the_call_already_had() {
+        let launch = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_ending".to_owned(),
+            name: "Bash".to_owned(),
+            input: serde_json::json!({"command": "just check"}),
+        }]);
+        let failed = tool_result("toolu_ending", true);
+
+        for (status, expected) in
+            [("reticulating", ToolCallStatus::Failed), ("completed", ToolCallStatus::Completed)]
+        {
+            let units = render_units(&[
+                launch.clone(),
+                failed.clone(),
+                notice("toolu_ending", status, "what the harness said"),
+            ]);
+            assert_eq!(
+                call_in(&units, "toolu_ending").status,
+                expected,
+                "the ending's word is {status}",
+            );
         }
     }
 

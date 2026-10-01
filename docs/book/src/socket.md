@@ -107,6 +107,17 @@ transcript, as whole turns. Each turn carries `key` and `messages`, which is
 the same shape the session snapshot's `conversation` carries; the grouping
 inside a turn is the client's to decide.
 
+**A turn can carry a frame the CLI did not send.** A backgrounded task's
+ending reaches a transcript as a row of its own, and a row that opens no turn
+itself still lands in a later turn than the call it ends whenever something
+that does open one - a delivery, a peer message, a person's next prompt - sits
+between the two, which happens to about a third of them. A turn holding such a
+call carries the ending as a frame too, which is what lets a client that folds
+one turn at a time read it. The forged frame has no `uuid`, because the row
+keeps the id the CLI minted for it and a second one would disagree; the row
+stays where it is, and a fold draws nothing for it, the ending being drawn on
+the call's own row.
+
 **`key` is `null` on every turn of a transcript-derived conversation, and a
 client must not key by it.** The name comes from a `Result` frame, and a
 transcript holds none: its reader maps `user`, `assistant` and `system` rows
