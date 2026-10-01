@@ -442,12 +442,8 @@
   .hooks > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
   .hooks > summary::-webkit-details-marker { display: none; }
   .hooks:hover { color: var(--muted); }
-  /* The live panel draws the chip as a div, so this pair is written loose
-     enough to reach both it and the transcript's own `<details>` - and the
-     div's row is stated here, the details taking one from its summary. */
-  .hooks .arw { color: var(--dim); }
-  .hooks[open] .arw { color: var(--accent); }
-  div.hooks { display: flex; align-items: center; gap: 8px; }
+  details.hooks > summary .arw { color: var(--dim); }
+  details.hooks[open] > summary .arw { color: var(--accent); }
 
   .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -1448,7 +1444,10 @@ docs: Render the message body into rows.</div>
         </div>
 
         <div class="beat" data-beat="8">
-          <div class="hooks"><span>hook summary &#183; 2 actions</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
+          <details class="hooks">
+            <summary><span>hook summary &#183; 2 actions</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
         </div>
       </div>
 
