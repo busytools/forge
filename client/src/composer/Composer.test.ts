@@ -867,6 +867,25 @@ describe('the frame', () => {
   });
 
   /**
+   * One box, one left margin. The field, the notice, the dictation row and the
+   * blocking states all start where the field starts.
+   *
+   * Measured in a browser before this: the notice's and the dictation row's
+   * TEXT sat 25.00px right of the field's, at 1600 and at 430 - the terminal's
+   * gutter, carried through the drawing rather than chosen, and 13px more than
+   * the issue that found it believed. A sheet assertion cannot see that offset;
+   * what it can do is keep the inset from coming back, which is the change
+   * someone would plausibly make.
+   */
+  it('starts every row at the left edge of the field', () => {
+    for (const row of ['.dict', '.notice', '.blocked']) {
+      expect(sheetRule(row), `${row} carries a left inset the field does not`).not.toMatch(
+        /padding-left:\s*[1-9]/,
+      );
+    }
+  });
+
+  /**
    * The check above has to see every rule that names the box, including the
    * ones that paint no border: the device it guards against is an inset
    * SHADOW, so a rule re-adding it would carry no border colour and an
