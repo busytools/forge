@@ -558,9 +558,8 @@ mod tests {
     /// that news with no error anywhere.
     #[tokio::test]
     async fn escalating_hands_back_what_the_replaced_stream_had_queued() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
@@ -592,9 +591,8 @@ mod tests {
     /// it, and hands nothing back.
     #[tokio::test]
     async fn a_later_observing_subscribe_does_not_downgrade_the_stream() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),

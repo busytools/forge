@@ -1796,9 +1796,8 @@ mod tests {
     /// fold is walked the way a page walks it.
     #[tokio::test]
     async fn a_groups_leaves_carry_the_tools_name_beside_its_label() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet
             .seed_transcript(
                 "TestOrg",
@@ -1910,13 +1909,9 @@ mod tests {
     /// the scan, the replay synthesiser and the fold. The rows are the ones a
     /// test names, and they are real ones - a fold driven from hand-built
     /// frames would agree with itself about a shape the CLI does not write.
-    ///
-    /// The temp dir is leaked on purpose: the read walks it after this
-    /// function returns, and `keep` is the helper's own idiom for that.
     fn folded_transcript(rows: &[&str]) -> Vec<ChatUnit> {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.seed_transcript("TestOrg", "proj", "lead", rows).expect("the transcript seeds");
         fleet.install_agent("TestOrg", "proj", "lead");
         let seat = forge_primitives::SessionSlot::lead("TestOrg", "proj");
@@ -1957,15 +1952,15 @@ mod tests {
     /// terminal perform, and the surface's rewrite of the carriers is one
     /// caller's step rather than part of the read itself.
     fn read_raw(rows: &[&str]) -> Vec<Message> {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let projects = dir.join("projects").join("any-project-key");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let projects = dir.path().join("projects").join("any-project-key");
         std::fs::create_dir_all(&projects).expect("the project dir");
         // A uuid, because the read refuses a name that is not one; it walks
         // every project dir for the file, so no key has to be derived.
         let session = "b095cf6c-1be5-4337-9965-0dc6e46f6b57";
         std::fs::write(projects.join(format!("{session}.jsonl")), rows.join("\n"))
             .expect("the transcript writes");
-        forge_workspace::session_history(&dir, session, "").messages
+        forge_workspace::session_history(dir.path(), session, "").messages
     }
 
     /// The notice a task ending arrives as, carrying `status` and `summary`
