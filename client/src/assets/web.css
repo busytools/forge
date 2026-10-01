@@ -716,10 +716,14 @@ details.leaf.running > summary { color: var(--text); }
 .searchhit .ln { color: var(--accent); }
 .searchhit .fl { color: var(--muted); }
 .searchhit .hit { color: var(--warn); }
-.dif { border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
+/* One grid for the whole diff, with the rows as `display: contents`: the
+   scroller runs as wide as its longest line, and a grid per ROW would end each
+   tint at the container's edge, leaving the scrolled overflow bare. */
+.dif { display: grid; grid-template-columns: 22px 1fr;
+  border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
   font-family: var(--mono); font-size: var(--fs-data); }
-.dif .h { color: var(--teal); background: var(--s2); padding: 4px 12px; }
-.dif .ln { display: grid; grid-template-columns: 22px 1fr; }
+.dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2); padding: 4px 12px; }
+.dif .ln { display: contents; }
 .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
 .dif .ln .l { white-space: pre; padding-right: 12px; }
 .dif .ln.a .l { background: var(--add-bg); }
