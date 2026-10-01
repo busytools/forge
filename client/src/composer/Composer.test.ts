@@ -554,7 +554,15 @@ interface Ring {
  */
 function need(selector: string): Need | null {
   const rest = selector.replace(/^\.box/, '');
-  if (/[\s>+~]/.test(rest.replace(/\([^)]*\)/g, ''))) return null;
+  const bare = rest.replace(/\([^)]*\)/g, '');
+  // A selector list is a form this resolver does not expand, and it is tested
+  // BEFORE the combinator: a list whose selectors are separated by a space
+  // would otherwise read as something inside the box and be skipped, hiding
+  // every state it names.
+  if (/,/.test(bare)) {
+    throw new Error(`a rule for the box in a form this resolver cannot read: ${selector}`);
+  }
+  if (/[\s>+~]/.test(bare)) return null;
   const found: Need = { classes: [], focus: false, without: [] };
   let at = 0;
   while (at < rest.length) {
@@ -589,10 +597,12 @@ function painted(body: string): string | null {
   if (longhand?.[1] !== undefined) return longhand[1].trim();
   const shorthand = /border:\s*([^;]+)/.exec(body);
   if (shorthand?.[1] === undefined) return null;
-  // Width, style, colour: the colour is the third token, and no rule here
-  // writes anything else.
+  // Width, style, colour: the colour is the third token. Fewer than three
+  // names none at all, which is a reset and not a ring; more than three is not
+  // a border shorthand, so it is a form this resolver cannot read.
   const parts = shorthand[1].trim().split(/\s+/);
-  if (parts.length !== 3) {
+  if (parts.length < 3) return null;
+  if (parts.length > 3) {
     throw new Error(`a border on the box in a form this resolver cannot read: ${shorthand[0]}`);
   }
   return parts[2] ?? null;
@@ -718,6 +728,37 @@ describe('the frame', () => {
       () => ring(spliced, ['warn'], false),
       'a rule for the box this resolver cannot read is skipped',
     ).toThrow(/cannot read/);
+  });
+
+  /**
+   * The same silence in the spelling that survives it: a list separated by a
+   * space reads as something inside the box whether its selectors are on one
+   * line or two, while the unspaced form throws - two spellings of one selector
+   * disagreeing, and either way a rule naming states is invisible to both
+   * checks above.
+   */
+  it('fails on a selector list for the box, however its lines are broken', () => {
+    const lists = [
+      '.box.rec, .box.tr { border-color: var(--ok); }',
+      '.box.rec,\n.box.tr { border-color: var(--ok); }',
+    ];
+    for (const list of lists) {
+      const spliced = sheet.replace('.box:focus-within', `${list}\n.box:focus-within`);
+      expect(
+        () => ring(spliced, ['rec'], false),
+        `a selector list written as ${JSON.stringify(list)} is skipped`,
+      ).toThrow(/cannot read/);
+    }
+  });
+
+  /**
+   * The other failing direction, and the one that is valid CSS: a border that
+   * names no colour is a reset rather than a ring, so it paints nothing for the
+   * resolver to read and must not fail for saying so.
+   */
+  it('skips a border that names no colour rather than reading it as the ring', () => {
+    const spliced = sheet.replace('.box.rec', '.box.reset { border: 0; }\n.box.rec');
+    expect(ring(spliced, ['reset'], false), 'a reset is read as a ring colour').toBe('var(--ctl)');
   });
 
   it('draws no second device: no rule for the box paints an inset line', () => {
