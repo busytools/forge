@@ -240,7 +240,7 @@ Expanded:
 
 ## System notice
 
-Rate-limit warnings, mode changes, parse errors, retries, slash-command output, connection failures, and a user turn the CLI stamped as its own - the harness's injected reminder, and anything else it sends rather than receives. A stamped turn carries no reader: it draws here at Info, never as a [user turn](#user-message), live and on resume alike. Banner: the literal severity word in bold - "Info" dim, "Warning" warning-yellow, "Error" error-red - body lines tinted to match, hard-wrapped.
+Rate-limit warnings, mode changes, parse errors, retries, slash-command output, connection failures, and a user turn the CLI stamped as its own - the harness's injected reminder, a compaction summary, an image placeholder, anything it sends rather than receives. A stamped turn carries no reader: it draws here at Info, never as a [user turn](#user-message), live and on resume alike. The slash-command wrapper shapes stay suppressed on both paths, since their command already drew as the reader's own turn. Banner: the literal severity word in bold - "Info" dim, "Warning" warning-yellow, "Error" error-red - body lines tinted to match, hard-wrapped.
 
 <details>
 <summary>Notice placement</summary>
