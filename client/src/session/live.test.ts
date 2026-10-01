@@ -181,11 +181,11 @@ async function leave(): Promise<void> {
 }
 
 /** Come back to the seat over the connection the last visit left. */
-function revisit(): void {
+function revisit(extra: Record<string, unknown> = {}): void {
   if (connection === null) throw new Error('a revisit needs the connection its last visit made');
   app = mount(Session, {
     target: document.body,
-    props: { slot: LEAD, connection, wire: homeWire },
+    props: { slot: LEAD, connection, wire: homeWire, ...extra },
   });
 }
 
@@ -347,6 +347,30 @@ describe('the session page over a socket', () => {
     flushSync();
 
     expect(sections(), 'the return drew nothing until the server answered again').toContain('git');
+  });
+
+  /**
+   * **A seat's role only ever rises, and a page that gains its dock later has
+   * to say so.** Every seat the app makes is subscribed answering, so this is
+   * the path a seat subscribed as an observer takes when a page with a dock
+   * arrives at it - and without it that page keeps the observer's role, which
+   * cancels every prompt it shows rather than hanging a turn.
+   */
+  it('re-asks a seat under the answering role when a page arrives with a dock', async () => {
+    await open(sessionFixture);
+    expect(seatSubscribe()?.answering, 'precondition: the first visit had no dock').toBe(false);
+
+    await leave();
+    const composer = createRawSnippet(() => ({ render: () => '<span class="box"></span>' }));
+    revisit({ composer });
+    await settle();
+
+    expect(seatSubscribes(), 'the second visit did not re-ask under the stronger role').toBe(2);
+    expect(
+      server?.received[1]?.answering,
+      'the escalation did not declare the answering role',
+    ).toBe(true);
+    expect(server?.gone, 'the escalation gave a subscription back').toEqual([]);
   });
 });
 
