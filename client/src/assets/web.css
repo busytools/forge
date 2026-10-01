@@ -841,6 +841,8 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 .hooks:hover { color: var(--muted); }
 details.hooks > summary .arw { color: var(--dim); }
 details.hooks[open] > summary .arw { color: var(--accent); }
+/* A failed summary's mark takes the bad tone rather than the chip's DIM. */
+details.hooks > summary .st.err { color: var(--bad); }
 details.turninfo > summary .arw { color: var(--dim); }
 details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The body's two columns, each FACT a wrapper holding a label and its figure.

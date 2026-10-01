@@ -674,6 +674,45 @@ describe('one turn folded into the units a view draws', () => {
     expect(fold([hook(0)]), 'a frame reporting none draws nothing').toHaveLength(0);
   });
 
+  it('reads the errors a failed hook summary carries', () => {
+    // The captured row from a session transcript, where the ralph-wiggum
+    // plugin's directory was gone: one hook, one error. The errors do not pair
+    // with the hook rows in the corpus - most failing rows hold fewer errors
+    // than infos - so a fixture built to look paired would hide the fact that
+    // decides the shape. The em-dash is the captured string's own, escaped for
+    // the source gate.
+    const error =
+      'Failed to run: Plugin directory does not exist: /Users/vedhavyas/.claude/plugins/cache/claude-code-plugins/ralph-wiggum/1.0.0 (ralph-wiggum@claude-code-plugins \u{2014} run /plugin to reinstall)';
+    const failed: Record<string, unknown> = {
+      session_id: '3dc2afa8-fdd1-40ff-bc7d-ffaace19246a',
+      type: 'system',
+      subtype: 'stop_hook_summary',
+      hookCount: 1,
+      hookInfos: [{ command: '${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh', durationMs: 0 }],
+      hookErrors: [error],
+      hookAdditionalContext: [],
+      preventedContinuation: false,
+      stopReason: '',
+      hasOutput: true,
+      level: 'suggestion',
+      toolUseID: '8bdfbd8a-a578-441d-97ff-4d8a2923e1e7',
+      uuid: '225cae5c-f638-4b31-afb2-700b8303dc16',
+    };
+
+    const units = fold([failed]);
+    const chip = units[0];
+    expect(
+      chip?.kind === 'hooks' ? chip.errors : [],
+      'the error the captured row carries, as its own list beside the infos',
+    ).toEqual([error]);
+
+    const clean = fold([{ ...failed, hookErrors: [] }]);
+    expect(
+      clean[0]?.kind === 'hooks' ? clean[0].errors : null,
+      'and a summary that carries none reads as none',
+    ).toEqual([]);
+  });
+
   it('settles each call with the result that answers it, and rolls the run up', () => {
     const units = fold([
       call('read', 0),

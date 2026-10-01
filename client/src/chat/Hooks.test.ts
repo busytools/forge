@@ -8,8 +8,8 @@ import type { HookInfo } from './units';
 
 const ONE: HookInfo[] = [{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }];
 
-const draw = (actions: number, infos: HookInfo[] = ONE): string =>
-  render(Hooks, { props: { actions, infos } }).body;
+const draw = (actions: number, infos: HookInfo[] = ONE, errors: string[] = []): string =>
+  render(Hooks, { props: { actions, infos, errors } }).body;
 
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 const PAGE = readFileSync(
@@ -70,6 +70,54 @@ describe('the hook chip a turn carries', () => {
     expect(body, 'and not the verb spelled out in its place').not.toMatch(
       />\s*(expand|collapse)\s*</,
     );
+  });
+
+  /**
+   * A state visible only when the chip is open is where the chip's last defect
+   * lived, so the failure has to reach the closed chip: the mark every other
+   * failure on the page leads with, and the count of what the CLI reported.
+   */
+  it('marks the summary failed, and counts the errors, when the CLI reported any', () => {
+    const failed = draw(1, ONE, ['JSON validation failed']);
+
+    expect(failed, 'the failure mark a failed call, turn or run leads with').toContain('#i-x');
+    expect(failed, 'and it is drawn as the shared state mark').toContain('class="ic st err"');
+    expect(failed, 'with the count beside the action count').toContain('1 error<');
+    expect(draw(1, ONE, ['one', 'two']), 'plural when more than one came back').toContain(
+      '2 errors<',
+    );
+
+    const clean = draw(1);
+    expect(clean, 'a summary with no errors carries no mark').not.toContain('#i-x');
+    expect(clean, 'and says nothing about errors').not.toContain('error');
+  });
+
+  /**
+   * The corpus' most common failing shape is more hooks than errors - the
+   * errors name no hook - so the two draw as their own lists rather than an
+   * error against a command.
+   */
+  it('draws each error as its own row under the hooks, in the bad tone', () => {
+    const body = draw(
+      2,
+      [
+        { command: 'bash hooks/check.sh', durationMs: 6 },
+        { command: 'cargo fmt --check', durationMs: 412 },
+      ],
+      ['JSON validation failed'],
+    );
+
+    expect(body, 'the error as the row itself, in the tone the sheets give a failure').toContain(
+      '<div class="term"><span class="fail">JSON validation failed</span></div>',
+    );
+    expect(body, 'both hooks still drawn, so neither list replaces the other').toContain(
+      'cargo fmt --check',
+    );
+
+    expect(
+      draw(1, [], ['JSON validation failed']),
+      'and the errors draw even where the rows they came from carry none',
+    ).toContain('<span class="fail">JSON validation failed</span>');
   });
 
   it('draws the hooks behind the count, in the unit their durations are in', () => {
