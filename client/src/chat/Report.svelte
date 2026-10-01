@@ -20,6 +20,33 @@
   /** The record with an unattributed usage block dropped, which is the rule the terminal applies. */
   const held = $derived(attributed(info));
 
+  /**
+   * The tick a running row's clock moves on.
+   *
+   * The fold's span only grows when a frame lands, and a live turn can wait
+   * minutes on one call, so the row would otherwise freeze mid-turn - which is
+   * the very stretch a reader is watching the clock through.
+   */
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!held.running) return;
+    const id = setInterval(() => {
+      now = Date.now();
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
+  /**
+   * The elapsed the row leads with: the span its frames measure, plus the wait
+   * since the last one. Settled, it is the record's own clock.
+   */
+  const elapsed = $derived.by(() => {
+    if (!held.running) return duration(held.duration_ms);
+    const since = held.ended_at_utc === null ? 0 : now - Date.parse(held.ended_at_utc);
+    const waited = Number.isFinite(since) && since > 0 ? since : 0;
+    return duration((held.duration_ms ?? 0) + waited);
+  });
+
   /** The turn's own clock, read from the instant it ended in the reader's zone. */
   const ended = $derived(clock(held.ended_at_utc));
 
@@ -56,9 +83,11 @@
   const facts = $derived.by(() => {
     const dash = '-';
     const pairs: Array<{ label: string; value: string }> = [
-      { label: 'ended', value: ended ?? dash },
+      // A running turn's last stamp is the last frame it drew, not an end, so
+      // the row does not claim one.
+      { label: 'ended', value: held.running ? dash : (ended ?? dash) },
       { label: 'model', value: held.model ?? dash },
-      { label: 'elapsed', value: duration(held.duration_ms) },
+      { label: 'elapsed', value: elapsed },
       { label: 'api', value: held.api_ms === null ? dash : duration(held.api_ms) },
       { label: 'local', value: local === null ? dash : `${duration(local)} tools + hooks` },
       {
@@ -114,12 +143,18 @@
     <!-- The mark follows the turn: a turn that did not finish leads with the
          failure mark, and the line under this row carries its words. A check
          above "Turn failed" is two signals disagreeing on one row. -->
-    {#if held.failed}
+    {#if held.running}
+      <span class="st"><span class="ring"></span></span>
+    {:else if held.failed}
       <Icon name="x" class="st err" />
     {:else}
       <Icon name="check" class="st" />
     {/if}
-    <span>{duration(held.duration_ms)}</span>
+    <span>{elapsed}</span>
+    {#if held.running && held.thinking_tokens !== null}
+      <span class="sep">{'\u{b7}'}</span>
+      <span>thinking {tokens(held.thinking_tokens)}</span>
+    {/if}
     {#if held.input_tokens !== null}
       <span class="sep">{'\u{b7}'}</span>
       <span
@@ -138,6 +173,12 @@
     {#if held.session_cost_usd !== null}
       <span class="sep">{'\u{b7}'}</span>
       <span>{money(held.session_cost_usd)} cumulative</span>
+    {:else if held.running}
+      <!-- The cumulative cost is the one figure only the Result carries, and a
+           running row draws it absent rather than leaving the slot out: an
+           empty gap reads as a field this row does not have. -->
+      <span class="sep">{'\u{b7}'}</span>
+      <span>- cumulative</span>
     {/if}
     <!-- The label is a text node rather than a `::after` rule: the CSS form
          leaves the disclosure's accessible name to whatever the user agent

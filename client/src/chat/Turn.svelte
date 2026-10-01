@@ -32,7 +32,10 @@
     compacting = false,
   }: { turn: HeldTurn; cwd: string | null; slot?: Self | null; compacting?: boolean } = $props();
 
-  const units = $derived(fold(turn.messages, cwd, slot));
+  // `turn.live` is the caller's fact the fold cannot read off the frames: a
+  // saved page carries no result frame either. It is what a running row
+  // needs.
+  const units = $derived(fold(turn.messages, cwd, slot, turn.live));
 
   /** A reader's own words on their own, or a run of everything else in one block. */
   type Block =

@@ -6,6 +6,7 @@ import type { TurnInfo } from './units';
 
 /** A settled turn with everything the CLI can report. */
 const FULL: TurnInfo = {
+  running: false,
   failed: false,
   duration_ms: 161_000,
   api_ms: 64_000,
@@ -48,6 +49,7 @@ describe('a settled turn\u2019s row', () => {
 
   it('holds an absent field with a dash rather than a zero', () => {
     const nothing: TurnInfo = {
+      running: false,
       failed: false,
       duration_ms: null,
       api_ms: null,
@@ -85,6 +87,31 @@ describe('a settled turn\u2019s row', () => {
     expect(drawn, 'the counters vanish together').toContain('in=-');
     expect(drawn).toContain('out=-');
     expect(drawn.some((fact) => fact === 'in=0')).toBe(false);
+  });
+
+  it('draws the running row what the frames carry, and the settle-only cost absent', () => {
+    // While the turn runs the row leads with a ring, shows the figures the
+    // frames already carry, and draws the one settle-only figure as a dash
+    // rather than leaving the slot out - an empty gap reads as a field this
+    // row does not have.
+    const running: TurnInfo = {
+      ...FULL,
+      running: true,
+      ended_at_utc: null,
+      api_ms: null,
+      session_cost_usd: null,
+    };
+    const body = draw(running);
+    const summary = body.slice(body.indexOf('<summary'), body.indexOf('</summary>'));
+
+    expect(body, 'the ring rather than a settled check').toContain('class="ring"');
+    expect(summary, 'the thinking count, which only a running row leads with').toContain(
+      'thinking 434',
+    );
+    expect(summary, 'the token side the frames carry').toContain('4.2k\u{2191}');
+    expect(summary, 'and the cost drawn absent rather than dropped').toContain('- cumulative');
+    expect(summary, 'claiming no settled figure it has not been given').not.toContain('$');
+    expect(facts(body), 'nor an end it does not have').toContain('ended=-');
   });
 
   it('carries the toggle word as text rather than as a stylesheet rule', () => {
