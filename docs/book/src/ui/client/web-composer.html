@@ -96,8 +96,9 @@
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .foot .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
 
-  /* dictation row */
-  .dict { display: flex; align-items: center; gap: 11px; padding-left: 25px;
+  /* dictation row. One box, one left margin: every row inside starts where the
+     field starts, which is what the footer already took. */
+  .dict { display: flex; align-items: center; gap: 11px;
     font-family: var(--mono); font-size: var(--fs-data); }
   .dict .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
     animation: pulse 1.05s ease-in-out infinite; flex: none; }
@@ -123,17 +124,16 @@
   .wave.tr .wtr i.mid { background: #2f486d; }
   .wave.tr .wtr i.hot { background: #365582; }
   @keyframes flow { to { transform: translateX(-50%); } }
-  .notice { font-family: var(--mono); font-size: var(--fs-data); padding-left: 25px; }
+  .notice { font-family: var(--mono); font-size: var(--fs-data); }
   .notice.q { color: var(--dim); }
   .notice.bad { color: var(--bad); }
   .notice.warn { color: var(--warn); }
 
   /* blocking */
-  .blocked { display: flex; flex-direction: column; gap: 3px; padding-left: 25px; }
+  .blocked { display: flex; flex-direction: column; gap: 3px; }
   .blocked .b1 { display: flex; align-items: center; gap: 10px; font-family: var(--mono);
     font-size: var(--fs-base); color: var(--text); }
-  .blocked .b2 { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
-    padding-left: 25px; }
+  .blocked .b2 { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .ring { width: 13px; height: 13px; display: inline-block; border-radius: 50%;
     border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
     animation: spin 900ms linear infinite; flex: none; }

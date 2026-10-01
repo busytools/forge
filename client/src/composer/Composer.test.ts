@@ -842,6 +842,23 @@ function sheetRule(selector: string): string {
 }
 
 /**
+ * The FIRST rule body the sheet writes for this exact selector: the base rule,
+ * which a media block may override later.
+ *
+ * **The two helpers are not interchangeable, and reaching for the wrong one
+ * makes a test that cannot fail.** `.dict` is re-written inside the narrow
+ * media block for its wrap, so resolving the LAST match reads that rule and an
+ * inset put back on the base one passes the suite while the browser paints it.
+ */
+function baseRule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const found = [...sheet.matchAll(new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm'))];
+  const body = found[0]?.[1];
+  if (body === undefined) throw new Error(`the sheet writes no rule for ${selector}`);
+  return body;
+}
+
+/**
  * The ring the box draws, resolved the way a browser resolves it.
  *
  * The ring's colour is a precedence question rather than a text one: a rule
@@ -1118,6 +1135,48 @@ describe('the frame', () => {
 
   it('draws no second device: no rule for the box paints an inset line', () => {
     expect(insetRules(sheet), 'a rule for the box draws the inset line again').toEqual([]);
+  });
+
+  /**
+   * One box, one left margin. The field, the notice, the dictation row and the
+   * blocking states all start where the field starts.
+   *
+   * Measured in a browser before this: the notice's and the dictation row's
+   * TEXT sat 25.00px right of the field's, at 1600 and at 430 - the terminal's
+   * gutter, carried through the drawing rather than chosen, and 13px more than
+   * the issue that found it believed. A sheet assertion cannot see that offset;
+   * what it can do is keep the inset from coming back, which is the change
+   * someone would plausibly make.
+   *
+   * **What it reads: the base rules only.** A `padding-left` added to the
+   * media-scoped `.dict` rule inside the narrow block passes this, because the
+   * guard resolves the first rule each selector has. The shipped sheet is right
+   * either way; the limit is stated so a reader does not take this for wider
+   * than it is.
+   */
+  it('starts every row at the left edge of the field', () => {
+    for (const row of ['.dict', '.comp .notice', '.blocked', '.blocked .b2']) {
+      expect(baseRule(row), `${row} carries a left inset the field does not`).not.toMatch(
+        /padding-left:\s*[1-9]/,
+      );
+    }
+  });
+
+  /**
+   * The composer's notice row shares its class with the chat's delivery
+   * notices, so its rules are scoped to the composer: a bare rule sits later in
+   * the sheet than the chat's and wins for every delivery on the page, which
+   * measured as a delivery losing its padding, margin, radius and border.
+   */
+  it('resets the notice row without reaching the chat deliveries that share the class', () => {
+    // The bare rule first: it is the one a later reader would write, and the
+    // scoped rule below would throw before this ever ran.
+    expect(sheet, 'a bare notice rule strips chrome a delivery needs').not.toMatch(
+      /^\.notice\s*\{[^}]*padding:\s*0/m,
+    );
+    expect(sheetRule('.comp .notice'), 'the row does not state its own chrome').toMatch(
+      /padding:\s*0/,
+    );
   });
 
   /**
