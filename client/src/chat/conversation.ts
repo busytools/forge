@@ -176,6 +176,50 @@ function uuidOf(message: unknown): string | null {
 }
 
 /**
+ * What a person's own frames say, in order.
+ *
+ * A delivery row is a display-only user turn with no id at all, and the prose
+ * is the only thing its two copies agree on - the frame the stream drew and
+ * the page that hands the same row back.
+ */
+function said(messages: unknown[]): string[] {
+  const words: string[] = [];
+  for (const message of messages) {
+    if ((message as { type?: unknown } | null)?.type !== 'user') continue;
+    const content = (message as { message?: { content?: unknown } | null } | null)?.message
+      ?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      const text = (block as { text?: unknown } | null)?.text;
+      if (typeof text === 'string' && text !== '') words.push(text);
+    }
+  }
+  return words;
+}
+
+/** Whether two frames say the same words, in the same order. */
+function sameWords(one: string[], other: string[]): boolean {
+  return one.length === other.length && one.every((word, at) => word === other[at]);
+}
+
+/**
+ * Whether a copy already carries a frame.
+ *
+ * The frame's own id where it has one. **A frame with no id is found by what
+ * it says**, which is the only thing its two copies agree on: a delivery row
+ * is forged rather than read off the wire and carries no id on purpose, so an
+ * absent id read as "not carried" adds the same row a second time. A frame
+ * with neither an id nor words - a tool result, a thought - is never found
+ * this way, which repeats it rather than dropping it.
+ */
+function carries(messages: unknown[], message: unknown): boolean {
+  const id = uuidOf(message);
+  if (id !== null) return messages.some((held) => uuidOf(held) === id);
+  const words = said([message]);
+  return words.length > 0 && sameWords(words, said(messages));
+}
+
+/**
  * Whether a frame opens a turn of its own rather than joining the live one:
  * what a person said.
  *
@@ -400,16 +444,8 @@ export class Chat {
           // what each is missing, and the held object is kept only where the
           // page says nothing new: a row the reader is looking at is not drawn
           // again by an answer that says nothing.
-          const heldIds = new Set(repeated.messages.map(uuidOf));
-          const pageIds = new Set(row.messages.map(uuidOf));
-          const missed = repeated.messages.filter((message) => {
-            const id = uuidOf(message);
-            return id === null || !pageIds.has(id);
-          });
-          const adds = row.messages.filter((message) => {
-            const id = uuidOf(message);
-            return id === null || !heldIds.has(id);
-          });
+          const missed = repeated.messages.filter((message) => !carries(row.messages, message));
+          const adds = row.messages.filter((message) => !carries(repeated.messages, message));
           const messages =
             adds.length === 0
               ? repeated.messages
@@ -438,12 +474,25 @@ export class Chat {
         ) === true || index !== named.length - 1;
       // A live turn and a page row are the same exchange when they share a
       // frame: frames belong to one turn, so a shared id is that turn.
-      const shares = (messages: unknown[], turn: Turn): boolean => {
+      //
+      // **A row with no id at all reconciles on its prose**, which is the only
+      // thing its two copies agree on - a delivery row is forged rather than
+      // read off the wire, and an id invented for it would read as a match
+      // where there is none. That path is taken only against the page's LAST
+      // row - the one row a page can have been read while it was still being
+      // written - and only when the frame that opened the live turn carries no
+      // id either: a row repeating an older exchange's words is a different
+      // exchange that happens to say the same thing, and matching live against
+      // it would drop the row the reader just received.
+      const shares = (messages: unknown[], turn: Turn, tail: boolean): boolean => {
         const ids = new Set(messages.map(uuidOf).filter((id) => id !== null));
-        return turn.messages.some((message) => {
+        const shared = turn.messages.some((message) => {
           const id = uuidOf(message);
           return id !== null && ids.has(id);
         });
+        if (shared) return true;
+        if (!tail || uuidOf(turn.messages[0]) !== null) return false;
+        return turn.messages.some((message) => carries(messages, message));
       };
       const replaced = new Set<Turn>();
       const drawn = named.map((row, index) => {
@@ -453,7 +502,9 @@ export class Chat {
         // row taken before that reconciliation reads as not carrying what the
         // page plainly carries.
         const copy = copies[index] ?? [];
-        const live = held.turns.find((turn) => turn.live && shares(copy, turn));
+        const live = held.turns.find(
+          (turn) => turn.live && shares(copy, turn, index === named.length - 1),
+        );
         if (live === undefined) return row;
         // The page is the account of the turn it copies, so the live turn is
         // replaced either way - and where the copy is settled it is the whole
@@ -476,11 +527,7 @@ export class Chat {
         // did (the CLI never echoes a prompt) and the frames the page was read
         // too early to have - so the frames still to come join it rather than
         // opening a second row.
-        const ids = new Set(copy.map(uuidOf));
-        const grown = live.messages.filter((message) => {
-          const id = uuidOf(message);
-          return id === null || !ids.has(id);
-        });
+        const grown = live.messages.filter((message) => !carries(copy, message));
         return { key: name, messages: [...copy, ...grown], live: true, also };
       });
       // The page's own names count as being on the page: a turn it settled is
@@ -496,6 +543,10 @@ export class Chat {
       return {
         ...held,
         loaded: true,
+        // A page that lands is the ask the refusal spoke for, answered - the
+        // refusal is about THAT ask rather than about the conversation, and
+        // one that outlived its ask leaves every later page undrawable.
+        refused: null,
         // The newest page's own handle names a place just above itself, which
         // is no use to a reader who has walked further back: taking it would
         // send the walk to the top of the conversation and fetch every page

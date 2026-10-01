@@ -403,6 +403,120 @@ describe('the conversation the chat draws', () => {
     ).toBe(1);
   });
 
+  it('reconciles a forged row the page carries with no id on either copy', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The delivery row is forged ONCE and held in the core, and the same row
+    // still arrives as a frame - so the page carries what the stream has
+    // already drawn, with no id on either copy. Frames are what the
+    // reconciliation has by default, and an id-less row shares none, so the
+    // prose is the only thing left to match on.
+    server.update({ chat_appended: { key: LEAD, msg: forged('typed elsewhere') } });
+    server.send(
+      page([turn('t1', 'first'), { key: null, messages: [forged('typed elsewhere')] }], null),
+    );
+
+    const after = get(chat.value).turns;
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('typed elsewhere')).length,
+      'the forged row is drawn once, not once per copy',
+    ).toBe(1);
+    expect(
+      JSON.stringify(after).split('typed elsewhere').length - 1,
+      'and the words sit in that row once, not once per copy of the frame',
+    ).toBe(1);
+  });
+
+  it('does not add an id-less frame a repeated row already carries', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // The core holds the delivery row, so a page carries it - and the next
+    // page repeats that turn, because the server errs toward repeating a row
+    // rather than toward a gap. Nothing about a frame with no id says which
+    // copy it came from, so a repeat that reads an absent id as "not carried"
+    // adds the same words to the row a second time.
+    server.send(page([{ key: null, messages: [forged('check the build')] }], '2'));
+    server.send(page([{ key: null, messages: [forged('check the build')] }], '2'));
+
+    const after = get(chat.value).turns;
+    expect(after, 'the repeat is one row').toHaveLength(1);
+    expect(
+      JSON.stringify(after).split('check the build').length - 1,
+      'and its words are carried once, not once per page that repeats them',
+    ).toBe(1);
+  });
+
+  it('keeps a live forged row apart from an older one saying the same words', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // A delivery that fired before, which says exactly what the next one will:
+    // a repeating schedule is the ordinary case for identical prose.
+    server.send(
+      page(
+        [{ key: null, messages: [forged('check the build'), said('answered the old one')] }],
+        '2',
+      ),
+    );
+
+    server.update({ chat_appended: { key: LEAD, msg: forged('check the build') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answered the new one') } });
+    // The page hands back the OLDER exchange, which is not the row being
+    // written - so the live one has to survive as its own row. Prose alone
+    // cannot tell the two apart, which is why a match is only taken against
+    // the page's last row.
+    server.send(
+      page(
+        [
+          { key: null, messages: [forged('check the build'), said('answered the old one')] },
+          { key: null, messages: [forged('a later one')] },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('check the build')).length,
+      'the older exchange and the live one are two rows',
+    ).toBe(2);
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('answered the new one')).length,
+      'and the live row keeps the frames the page was read too early to have',
+    ).toBe(1);
+  });
+
+  it('takes a refusal as over when a page finally lands', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], '2'));
+
+    // The reader walks back while the seat's conversation is not held yet, so
+    // the ask is refused - and the refusal is about THAT ask, not about the
+    // conversation: its own words say asking again may find it. A refusal
+    // that outlives its ask makes every later page undrawable.
+    chat.older();
+    server.refuse('more', 'the conversation is not held yet; asking again may find it');
+    expect(get(chat.value).refused, 'the refusal is recorded').toBe(
+      'the conversation is not held yet; asking again may find it',
+    );
+
+    chat.older();
+    server.send(page([turn('t0', 'older')], null));
+
+    const after = get(chat.value);
+    expect(after.refused, 'and the ask it refused is over').toBeNull();
+    expect(
+      after.turns.map((row) => row.key),
+      'with the page it waited for',
+    ).toEqual(['t0', 't1']);
+  });
+
   it('drops the drawn conversation when the seat changes occupant', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
