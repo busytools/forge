@@ -389,14 +389,14 @@ describe('the box', () => {
 
   it('replaces the box entirely for each reason it cannot take keys, and says why', () => {
     const cases: [Partial<ComposerProps>, string, string | null][] = [
-      [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Connecting to Claude Code…', null],
+      [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Connecting to Claude Code...', null],
       [
         {
           record: record({
             composer: { take: null, notice: null, compacting: true, sign_in: null },
           }),
         },
-        'Compacting context…',
+        'Compacting context...',
         null,
       ],
       [

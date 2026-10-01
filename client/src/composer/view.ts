@@ -191,10 +191,10 @@ export function blocked(
     };
   }
   if (seat.lifecycle === 'Spawning') {
-    return { line: 'Connecting to Claude Code…', sub: null, bad: false, waiting: true };
+    return { line: 'Connecting to Claude Code...', sub: null, bad: false, waiting: true };
   }
   if (composer.compacting) {
-    return { line: 'Compacting context…', sub: null, bad: false, waiting: true };
+    return { line: 'Compacting context...', sub: null, bad: false, waiting: true };
   }
   if (command !== null) {
     return { line: `Running ${command}`, sub: null, bad: false, waiting: true };
