@@ -26,6 +26,7 @@ function untouched(): Connection {
     refresh: refuse,
     dispatch: refuse,
     more: refuse,
+    devices: refuse,
     onMessage: refuse,
     onStatus: refuse,
     store: refuse,

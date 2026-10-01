@@ -11,6 +11,7 @@
  */
 
 import type { Connection } from '../socket';
+import type { DictateOverrides } from '../session/wire';
 import type { DictateWire, Lifecycle } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { askFrom, composerFrom, type Ask, type ComposerState, type Notice } from './wire';
@@ -62,6 +63,8 @@ export interface ComposerRecord {
    * only this one acts on.
    */
   composer: unknown;
+  /** What this session has overridden on the dictation axes. */
+  dictate_overrides: DictateOverrides;
   /** The prompt this seat is parked on, or `null` when nothing waits. */
   pending_ask: unknown;
   header: { turn_in_flight: boolean };
@@ -84,8 +87,17 @@ export interface ComposerRecord {
 export interface ComposerProps {
   record: ComposerRecord;
   slot: SessionSlot;
-  connection: Pick<Connection, 'dispatch' | 'onMessage'>;
+  connection: Pick<Connection, 'dispatch' | 'onMessage' | 'devices'>;
   seat: SeatRead;
+  /**
+   * The input a pick has moved the process to, which only the home knows.
+   *
+   * Carried as it arrives and narrowed where the composer reads it: the home's
+   * own field is `unknown`, and the panel is its only reader. Without it the
+   * row draws the config's pin and says so, which is true and merely not
+   * current.
+   */
+  device?: unknown;
   /**
    * Whether this install can dictate at all.
    *

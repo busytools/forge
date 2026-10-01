@@ -4,6 +4,7 @@
   import Icon from '../components/Icon.svelte';
   import Autocomplete from './Autocomplete.svelte';
   import Dictation from './Dictation.svelte';
+  import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import {
@@ -15,6 +16,7 @@
     type Action,
     type Held,
   } from './dictate-key';
+  import { devicePick } from './dictation';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -30,7 +32,7 @@
   /** How long a landed take's border holds its green beat, which the book states. */
   const BEAT_MS = 450;
 
-  let { record, slot, connection, seat, dictation }: ComposerProps = $props();
+  let { record, slot, connection, seat, dictation, device = null }: ComposerProps = $props();
 
   /**
    * The reader's own words, held HERE rather than in the field.
@@ -85,6 +87,8 @@
   let marked = $state(0);
   /** The field, so focus can go back to it when the box returns. */
   let field = $state<HTMLTextAreaElement | null>(null);
+  /** Whether the dictation panel is showing, which the mic opens. */
+  let panel = $state(false);
   /** The bound key's press in flight, from its press to its release. */
   let pressed: Held | null = null;
   /** Whether this platform delivers Cmd, which is what a binding names. */
@@ -320,6 +324,13 @@
           event.preventDefault();
           event.stopPropagation();
           act('cancel');
+        } else if (panel) {
+          // The next Escape belongs to the panel, which is the surface that is
+          // open rather than a take that is not.
+          event.preventDefault();
+          event.stopPropagation();
+          panel = false;
+          field?.focus();
         }
         return;
       }
@@ -349,15 +360,13 @@
   });
 
   /**
-   * The way into a take, and the way to submit the one that is running: the key
-   * that opens a take is the key that closes it, which is the terminal's rule.
+   * The mic is the door, not the trigger: pressing it shows what dictation is
+   * set to, and nothing on the page starts a take. The push-to-talk key is the
+   * trigger, which is the terminal's own shape - it has no record button
+   * either.
    */
   function mic(): void {
-    if (composer.take === null) {
-      void connection.dispatch({ dictate_start: { key: slot } });
-      return;
-    }
-    void connection.dispatch({ dictate_stop: { key: slot, submit: true } });
+    panel = !panel;
   }
 
   /** Abandon a take without submitting it, which the dock's Escape does. */
@@ -452,7 +461,8 @@
           <button
             class="mic"
             type="button"
-            aria-label={composer.take === null ? 'start a take' : 'submit the take'}
+            aria-label="dictation settings"
+            aria-expanded={panel}
             onclick={mic}
           >
             <Icon name="mic" />
@@ -471,5 +481,15 @@
         </div>
       {/if}
     </div>
+    {#if panel}
+      <DictationPanel
+        overrides={record.dictate_overrides}
+        bind={composer.bind}
+        mode={composer.mode}
+        {slot}
+        {connection}
+        device={devicePick(device)}
+      />
+    {/if}
   </div>
 {/if}

@@ -538,6 +538,7 @@ function drivable(refused = false): Driveable {
       throw new Error('this page dispatched a command the case did not expect');
     },
     more: () => false,
+    devices: () => false,
     onMessage: (fn) => {
       listeners.add(fn);
       return () => listeners.delete(fn);

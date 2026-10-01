@@ -164,6 +164,9 @@ const DRAWN: readonly Pair[] = [
   ['--warn', '--s1', TEXT],
   ['--bad', '--bg', TEXT],
   ['--bad', '--s1', TEXT],
+  // The dictation panel's own mark: its device row is a raised control, and the
+  // tag on a pin the walk could not find draws in this tone on that ground.
+  ['--bad', '--s2', TEXT],
   ['--blue', '--bg', TEXT],
   ['--teal', '--bg', TEXT],
   ['--teal', '--s2', TEXT],

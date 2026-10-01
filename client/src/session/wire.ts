@@ -172,6 +172,8 @@ export interface SessionRecord {
   file_index: unknown;
   /** What this seat's composer is doing. */
   composer: ComposerState;
+  /** What this session has overridden on the dictation axes. */
+  dictate_overrides: DictateOverrides;
   /** The prompt this seat is waiting on, which the composer's dock draws. */
   pending_ask: unknown;
   conversation: Conversation;
@@ -181,6 +183,47 @@ export interface SessionRecord {
   pr: { number: number; url: string } | null;
   /** The issues that pull request closes. */
   closes: { number: number; url: string }[];
+}
+
+/**
+ * What a session has overridden on the dictation axes.
+ *
+ * `null` on an axis means the crate default, which is what the composer's
+ * panel draws as the value in force unless the session set one.
+ */
+export interface DictateOverrides {
+  styling: DictateStyling | null;
+  structure: DictateStructure | null;
+  context: DictateContext | null;
+}
+
+/** The axes' vocabularies, as `forge.toml` and the normalizer name them. */
+export type DictateStyling = 'casual' | 'semi_casual' | 'semi_formal' | 'formal';
+export type DictateStructure = 'prose' | 'lists';
+export type DictateContext = 'general' | 'email';
+
+const STYLINGS: DictateStyling[] = ['casual', 'semi_casual', 'semi_formal', 'formal'];
+const STRUCTURES: DictateStructure[] = ['prose', 'lists'];
+const CONTEXTS: DictateContext[] = ['general', 'email'];
+
+/**
+ * One axis, or `null` for a session that set none.
+ *
+ * A value this client is older than reads as `null` too, which is the same
+ * least-alarming reading `narrow` takes everywhere else: the panel then draws
+ * the crate's default rather than a value it cannot name.
+ */
+function axis<T extends string>(value: unknown, known: T[]): T | null {
+  return typeof value === 'string' && (known as string[]).includes(value) ? (value as T) : null;
+}
+
+function overridesFrom(value: unknown): DictateOverrides {
+  const held = record(value);
+  return {
+    styling: axis(held['styling'], STYLINGS),
+    structure: axis(held['structure'], STRUCTURES),
+    context: axis(held['context'], CONTEXTS),
+  };
 }
 
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -264,6 +307,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     // is the only thing that decides what a valid one looks like.
     slot: held['slot'] as SessionSlot,
     state: { scan_cwd: text(record(held['state'])['scan_cwd']) ?? '' },
+    dictate_overrides: overridesFrom(held['dictate_overrides']),
     header: {
       session_id: text(header['session_id']),
       model:

@@ -472,7 +472,7 @@ describe('the box', () => {
     ).not.toBeNull();
   });
 
-  it('offers the way into a take only when this install can dictate', () => {
+  it('offers the way in only when this install can dictate, and the way in is the door', () => {
     open();
     expect(
       document.querySelector('.mic'),
@@ -489,11 +489,8 @@ describe('the box', () => {
     mic.click();
     flushSync();
 
-    expect(harness.sent, 'the way in starts the take it offers').toEqual([
-      {
-        command: { dictate_start: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
-      },
-    ]);
+    expect(document.querySelector('.pop'), 'the mic is the door, not the trigger').not.toBeNull();
+    expect(harness.sent, 'and nothing on the page starts a take').toEqual([]);
   });
 });
 
@@ -1844,5 +1841,408 @@ describe('two clients on one seat', () => {
     flushSync();
 
     expect(drawn(), 'the refusal was swallowed').toContain('the prompt was already answered');
+  });
+});
+
+/**
+ * The dictation panel, which the mic opens.
+ *
+ * The form is the mockup's rather than the terminal's: each axis is a short
+ * exclusive set, so each is a row of chips. `dictation.test.ts` pins what the
+ * axes and the hint ARE; this pins what the panel DOES with them.
+ */
+describe('the dictation panel', () => {
+  /** The panel, opened by the mic, which is the only way in. */
+  function opened(over: Partial<ComposerProps> = {}, on?: Wire) {
+    const harness = open({ dictation: true, ...over }, on);
+    const mic = document.querySelector('.mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('the box drew no mic to open with');
+    mic.click();
+    flushSync();
+    return harness;
+  }
+
+  /** The words an element draws, with the markup's own whitespace collapsed. */
+  function words(el: Element | null | undefined): string {
+    return (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * Every chip a click can act on, with the axis it belongs to.
+   *
+   * Buttons only, and that is the assertion rather than an implementation
+   * detail: the mode's chips are spans, because nothing in the core can set
+   * one, and a mode drawn as a button would be a control nothing honours.
+   */
+  function chips(): { axis: string; label: string; on: boolean }[] {
+    return [...document.querySelectorAll('.pop .ax')].flatMap((group) => {
+      const axis = words(group.querySelector('.lbl'));
+      return [...group.querySelectorAll('button.chip')].map((chip) => ({
+        axis,
+        label: words(chip),
+        on: chip.classList.contains('on'),
+      }));
+    });
+  }
+
+  it('draws the in-force value on every axis, from the record rather than a default', () => {
+    opened({
+      record: record({
+        dictate_overrides: { styling: 'casual', structure: 'lists', context: null },
+      }),
+    });
+
+    const on = chips().filter((chip) => chip.on);
+    expect(on.map((chip) => `${chip.label}`)).toEqual([
+      'casual',
+      'may bullet a list',
+      'plain text',
+    ]);
+  });
+
+  it('marks an axis the session set, and only that one', () => {
+    opened({
+      record: record({
+        dictate_overrides: { styling: 'formal', structure: null, context: null },
+      }),
+    });
+
+    // The mode and the device carry a source tag of their own - they come from
+    // the config rather than from this session - so the tag is read by its
+    // words rather than by the class alone.
+    const marked = [...document.querySelectorAll('.pop .lbl .src')]
+      .filter((held) => held.textContent?.includes('this session') === true)
+      .map((held) => words(held.parentElement));
+    expect(marked, 'the source tag names the axes this session moved').toEqual([
+      'VOICE · this session',
+    ]);
+  });
+
+  it('asks the core for one axis when a chip is clicked', () => {
+    const harness = opened();
+
+    const chip = [...document.querySelectorAll('.pop .chip')].find(
+      (held) => held.textContent?.trim() === 'casual',
+    );
+    if (!(chip instanceof HTMLElement)) throw new Error('the voice axis drew no casual chip');
+    chip.click();
+    flushSync();
+
+    expect(harness.sent, 'one chip, one axis, in the core own vocabulary').toEqual([
+      {
+        command: {
+          set_dictate_override: {
+            key: { org: 'Busytools', project: 'forge', label: 'lead' },
+            update: { styling: 'casual' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('states the mode rather than offering it, because nothing can set it', () => {
+    opened({
+      record: record({
+        composer: { take: null, notice: null, compacting: false, sign_in: null, mode: 'hold' },
+      }),
+    });
+
+    const mode = [...document.querySelectorAll('.pop .ax')].find(
+      (group) => group.querySelector('.lbl')?.textContent?.includes('MODE') === true,
+    );
+    if (mode === undefined) throw new Error('the panel drew no mode row');
+
+    expect(
+      mode.querySelectorAll('button'),
+      'a mode chip would be a control nothing honours',
+    ).toHaveLength(0);
+    expect(mode.textContent, 'the value in force is stated').toContain('hold');
+    expect(mode.textContent, 'with its rule under it').toContain('release transcribes');
+    expect(mode.textContent, 'and where it comes from').toContain('forge.toml');
+  });
+
+  it('asks for the devices once, and picks one by its id', () => {
+    const shared = wire();
+    const harness = opened({ device: { device: 'mic-2' } }, shared);
+    expect(document.querySelector('.pop .dev')?.textContent, 'the pick the home carries').toContain(
+      'mic-2',
+    );
+
+    const door = document.querySelector('.pop .dev');
+    if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
+    door.click();
+    flushSync();
+    expect(shared.asked, 'one ask for one walk').toBe(1);
+
+    harness.say({
+      kind: 'devices',
+      devices: [
+        { id: 'mic-2', name: 'Shure SM7B', is_default: false },
+        { id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true },
+      ],
+      configured: 'mic-2',
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.pop .dev')?.textContent,
+      'the row names the device the walk found',
+    ).toContain('Shure SM7B');
+
+    const row = [...document.querySelectorAll('.pop .row')].find((held) =>
+      held.textContent?.includes('MacBook Pro Microphone'),
+    );
+    if (!(row instanceof HTMLElement)) throw new Error('the list drew no second device');
+    row.click();
+    flushSync();
+
+    expect(harness.sent.at(-1)?.command, 'a pick names the id, which is the identity').toEqual({
+      set_dictate_device: {
+        key: { org: 'Busytools', project: 'forge', label: 'lead' },
+        pick: { device: 'mic-9' },
+      },
+    });
+  });
+
+  it('resets every axis at once', () => {
+    const harness = opened();
+    const reset = document.querySelector('.pop .rst');
+    if (!(reset instanceof HTMLElement)) throw new Error('the panel drew no reset');
+    reset.click();
+    flushSync();
+
+    expect(harness.sent).toEqual([
+      {
+        command: {
+          reset_dictate_overrides: {
+            key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('advertises the bound key, and nothing when the binding is off', () => {
+    opened({
+      record: record({
+        composer: { take: null, notice: null, compacting: false, sign_in: null, bind: 'left_cmd' },
+      }),
+    });
+    expect(document.querySelector('.pop .hd')?.textContent).toContain('left to talk');
+
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+    opened({
+      record: record({
+        composer: { take: null, notice: null, compacting: false, sign_in: null, bind: 'off' },
+      }),
+    });
+    expect(
+      document.querySelector('.pop .hd')?.textContent,
+      'a hint naming a key that will never fire is worse than none',
+    ).not.toContain('to talk');
+  });
+
+  it('closes on Escape, and gives the keyboard back to the field', () => {
+    opened();
+    expect(document.querySelector('.pop')).not.toBeNull();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+
+    expect(document.querySelector('.pop'), 'the panel takes the Escape it is open for').toBeNull();
+    expect(document.activeElement, 'and the reader is typing again').toBe(field());
+  });
+
+  /**
+   * A walk that failed. The socket's own contract is explicit - the refusal is
+   * rendered where the list would have been - so an empty list region and a
+   * failed walk must not draw the same. This is the composer's own pattern for
+   * a refused dispatch, one file over.
+   */
+  it('draws a failed walk in the list region rather than as an empty list', () => {
+    const shared = wire();
+    const harness = opened({}, shared);
+
+    const door = document.querySelector('.pop .dev');
+    if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
+    door.click();
+    flushSync();
+
+    harness.say({ kind: 'error', what: 'devices', why: 'no permission to the microphone' });
+    flushSync();
+
+    const region = document.querySelector('.pop .list');
+    expect(region?.textContent, 'the refusal is drawn where the list would be').toContain(
+      'no permission to the microphone',
+    );
+    expect(
+      region?.textContent,
+      'and a failed walk does not read as a walk that found nothing',
+    ).not.toContain('No input devices found');
+  });
+
+  it('asks once however many times the row is clicked, and closes on the next', () => {
+    const shared = wire();
+    opened({}, shared);
+    const door = document.querySelector('.pop .dev');
+    if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
+
+    // Three clicks before any answer: each ask opens the microphone stack, so
+    // only the first may leave the panel.
+    door.click();
+    flushSync();
+    door.click();
+    door.click();
+    flushSync();
+    expect(shared.asked, 'the walk is the expensive part, so it is asked for once').toBe(1);
+
+    shared.say({
+      kind: 'devices',
+      devices: [{ id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true }],
+      configured: null,
+    });
+    flushSync();
+
+    const again = document.querySelector('.pop .dev');
+    if (!(again instanceof HTMLElement)) throw new Error('the row went with the list');
+    again.click();
+    flushSync();
+    expect(document.querySelector('.pop .list'), 'a click collapses it again').toBeNull();
+    expect(shared.asked, 'and collapsing asks for nothing').toBe(1);
+  });
+
+  it('marks an absent input, and words a pin differently from a pick', () => {
+    const devices = [{ id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true }];
+
+    const pinned = wire();
+    opened({}, pinned);
+    const door = document.querySelector('.pop .dev');
+    if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
+    door.click();
+    flushSync();
+    pinned.say({ kind: 'devices', devices, configured: 'unplugged-1' });
+    flushSync();
+
+    const row = document.querySelector('.pop .dev');
+    expect(row?.textContent, 'the absent pin says where it came from').toContain(
+      'not present · pinned in forge.toml',
+    );
+    expect(row?.classList.contains('missing'), 'and it is marked, not only worded').toBe(true);
+
+    // A pick that is gone is the reader's own, and the terminal words it
+    // without the pin's words: the two absences are not the same absence.
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+    const picked = wire();
+    opened({ device: { device: 'walked-off-2' } }, picked);
+    const second = document.querySelector('.pop .dev');
+    if (!(second instanceof HTMLElement)) throw new Error('the panel drew no device row');
+    second.click();
+    flushSync();
+    picked.say({ kind: 'devices', devices, configured: 'mic-9' });
+    flushSync();
+
+    const pickedRow = document.querySelector('.pop .dev');
+    expect(pickedRow?.textContent, 'the absent pick is named without the pin words').toContain(
+      'not present',
+    );
+    expect(pickedRow?.textContent, 'and does not claim the config set it').not.toContain(
+      'pinned in forge.toml',
+    );
+  });
+
+  /**
+   * The cap follows the COMPOSER, not just the window.
+   *
+   * A list opening above the field, or a take row landing above it, grows the
+   * composer and lifts the panel with it - and a cap measured on mount would
+   * stay where it was and cut the panel's own top off. jsdom has no
+   * `ResizeObserver` and performs no layout, so what this pins is that one is
+   * watching the composer; that the cap then tracks a growing box is a browser
+   * measurement, and the body carries its numbers.
+   */
+  it('watches the composer, so a box that grows under the panel re-measures it', () => {
+    const observed: Element[] = [];
+    const original: unknown = Reflect.get(globalThis, 'ResizeObserver');
+    class Watching {
+      run: () => void;
+      constructor(run: () => void) {
+        this.run = run;
+      }
+      observe(el: Element): void {
+        observed.push(el);
+        this.run();
+      }
+      disconnect(): void {}
+    }
+    Reflect.set(globalThis, 'ResizeObserver', Watching);
+    try {
+      opened();
+
+      expect(
+        observed.length,
+        'nothing watches the composer, so a box growing under the panel re-clips it',
+      ).toBeGreaterThan(0);
+      expect(observed[0]?.classList.contains('comp'), 'the composer is what is watched').toBe(true);
+    } finally {
+      Reflect.set(globalThis, 'ResizeObserver', original);
+    }
+  });
+
+  /**
+   * And the cap READS what the composer reports.
+   *
+   * The assertion above pins that something watches; this pins that the watch
+   * does something - the regression the whole cap exists for. jsdom performs no
+   * layout, but it does not have to: the rect is supplied as an own property on
+   * the panel, so the component's own call answers what a browser would have
+   * measured, and the callback a fake observer was handed is fired by hand.
+   */
+  it('caps the panel from the bottom the composer reports', () => {
+    const callbacks: (() => void)[] = [];
+    const original: unknown = Reflect.get(globalThis, 'ResizeObserver');
+    class Watching {
+      run: () => void;
+      constructor(run: () => void) {
+        this.run = run;
+      }
+      observe(): void {
+        callbacks.push(this.run);
+      }
+      disconnect(): void {}
+    }
+    Reflect.set(globalThis, 'ResizeObserver', Watching);
+    try {
+      opened();
+
+      const pop = document.querySelector('.pop');
+      if (!(pop instanceof HTMLElement)) throw new Error('the panel drew nothing to cap');
+      Object.defineProperty(pop, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          bottom: 500,
+          top: 0,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }),
+      });
+
+      const fire = callbacks.at(0);
+      if (fire === undefined) throw new Error('nothing watched the composer');
+      fire();
+      flushSync();
+
+      expect(pop.style.maxHeight, 'the cap reads the measured bottom').toBe('494px');
+    } finally {
+      Reflect.set(globalThis, 'ResizeObserver', original);
+    }
   });
 });

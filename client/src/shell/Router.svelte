@@ -83,7 +83,7 @@
         <Chat {...props} />
       {/snippet}
       {#snippet composer(props)}
-        <Composer {...props} dictation={dictate} />
+        <Composer {...props} dictation={dictate} device={home.wire?.dictate.device} />
       {/snippet}
     </Session>
   {:else if connected}

@@ -53,6 +53,7 @@ function fakeConnection() {
     },
     dispatch: () => null,
     more: () => false,
+    devices: () => false,
     store: () => undefined,
     settings: () => null,
     status: () => 'open',

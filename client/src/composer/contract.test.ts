@@ -10,8 +10,9 @@ import { dictationOffered, type ComposerProps } from './view';
 /** Nothing is dispatched here: the check is the assignment, not a render. */
 const idle = {
   dispatch: () => null,
+  devices: () => true,
   onMessage: () => () => {},
-} as unknown as Pick<Connection, 'dispatch' | 'onMessage'>;
+} as unknown as Pick<Connection, 'dispatch' | 'onMessage' | 'devices'>;
 
 /**
  * The seam the session page hands the composer across.

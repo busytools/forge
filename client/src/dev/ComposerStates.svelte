@@ -37,12 +37,14 @@
       (globalThis as { __composerSent?: unknown[] }).__composerSent = sent;
       return null;
     },
+    devices: () => true,
     onMessage: () => () => {},
-  } as unknown as Pick<Connection, 'dispatch' | 'onMessage'>;
+  } as unknown as Pick<Connection, 'dispatch' | 'onMessage' | 'devices'>;
 
   function blank(): ComposerRecord {
     return {
       composer: { take: null, notice: null, compacting: false, sign_in: null },
+      dictate_overrides: { styling: null, structure: null, context: null },
       pending_ask: null,
       header: { turn_in_flight: false },
       slash_commands: [

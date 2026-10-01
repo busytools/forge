@@ -827,3 +827,32 @@ describe('the account chip', () => {
     expect(accountChip(home, LEAD)?.balance).toBeNull();
   });
 });
+
+/**
+ * The dictation axes a session has overridden, which the composer's panel
+ * reads to know what is in force. The record carries them; before this nothing
+ * in the client read them at all, so a panel would have drawn the crate's
+ * defaults as though they were the reader's.
+ */
+describe('the dictation overrides', () => {
+  it('reads the axes in force, unset ones included', () => {
+    const held = sessionFrom({
+      ...session,
+      dictate_overrides: { styling: 'casual', structure: null, context: 'email' },
+    });
+    expect(held.dictate_overrides).toEqual({
+      styling: 'casual',
+      structure: null,
+      context: 'email',
+    });
+  });
+
+  it('reads an axis this client is older than as unset, not as the session choice', () => {
+    const held = sessionFrom({
+      ...session,
+      dictate_overrides: { styling: 'operatic', structure: 'lists', context: null },
+    });
+    expect(held.dictate_overrides.styling, 'a value nothing here knows').toBeNull();
+    expect(held.dictate_overrides.structure, 'and the ones it does').toBe('lists');
+  });
+});
