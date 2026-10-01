@@ -2051,25 +2051,82 @@ describe('the dictation panel', () => {
     expect(shared.asked, 'and collapsing asks for nothing').toBe(1);
   });
 
-  it('marks a pin the walk could not find, where the terminal tags it too', () => {
-    const shared = wire();
-    opened({}, shared);
+  it('marks an absent input, and words a pin differently from a pick', () => {
+    const devices = [{ id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true }];
+
+    const pinned = wire();
+    opened({}, pinned);
     const door = document.querySelector('.pop .dev');
     if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
     door.click();
     flushSync();
-
-    shared.say({
-      kind: 'devices',
-      devices: [{ id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true }],
-      configured: 'unplugged-1',
-    });
+    pinned.say({ kind: 'devices', devices, configured: 'unplugged-1' });
     flushSync();
 
     const row = document.querySelector('.pop .dev');
-    expect(row?.textContent, 'the pin is named rather than read off the list').toContain(
-      'not present',
+    expect(row?.textContent, 'the absent pin says where it came from').toContain(
+      'not present · pinned in forge.toml',
     );
     expect(row?.classList.contains('missing'), 'and it is marked, not only worded').toBe(true);
+
+    // A pick that is gone is the reader's own, and the terminal words it
+    // without the pin's words: the two absences are not the same absence.
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+    const picked = wire();
+    opened({ device: { device: 'walked-off-2' } }, picked);
+    const second = document.querySelector('.pop .dev');
+    if (!(second instanceof HTMLElement)) throw new Error('the panel drew no device row');
+    second.click();
+    flushSync();
+    picked.say({ kind: 'devices', devices, configured: 'mic-9' });
+    flushSync();
+
+    const pickedRow = document.querySelector('.pop .dev');
+    expect(pickedRow?.textContent, 'the absent pick is named without the pin words').toContain(
+      'not present',
+    );
+    expect(pickedRow?.textContent, 'and does not claim the config set it').not.toContain(
+      'pinned in forge.toml',
+    );
+  });
+
+  /**
+   * The cap follows the COMPOSER, not just the window.
+   *
+   * A list opening above the field, or a take row landing above it, grows the
+   * composer and lifts the panel with it - and a cap measured on mount would
+   * stay where it was and cut the panel's own top off. jsdom has no
+   * `ResizeObserver` and performs no layout, so what this pins is that one is
+   * watching the composer; that the cap then tracks a growing box is a browser
+   * measurement, and the body carries its numbers.
+   */
+  it('watches the composer, so a box that grows under the panel re-measures it', () => {
+    const observed: Element[] = [];
+    const original: unknown = Reflect.get(globalThis, 'ResizeObserver');
+    class Watching {
+      run: () => void;
+      constructor(run: () => void) {
+        this.run = run;
+      }
+      observe(el: Element): void {
+        observed.push(el);
+        this.run();
+      }
+      disconnect(): void {}
+    }
+    Reflect.set(globalThis, 'ResizeObserver', Watching);
+    try {
+      opened();
+
+      expect(
+        observed.length,
+        'nothing watches the composer, so a box growing under the panel re-clips it',
+      ).toBeGreaterThan(0);
+      expect(observed[0]?.classList.contains('comp'), 'the composer is what is watched').toBe(true);
+    } finally {
+      Reflect.set(globalThis, 'ResizeObserver', original);
+    }
   });
 });

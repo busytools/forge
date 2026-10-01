@@ -499,6 +499,38 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
       temporary.</p>
     </div>
   </div>
+  <div class="row">
+    <div class="col">
+      <div class="lab">a walk that failed</div>
+      <div class="pop">
+        <div class="ax" style="padding-bottom:14px">
+          <div class="lbl">INPUT DEVICE</div>
+          <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><span class="chev">&#9656;</span></div>
+          <div class="list">
+            <div class="note bad">no permission to the microphone</div>
+          </div>
+          <div class="note">from <span class="mono">forge.toml</span> &#183; a pick here reverts on restart, and the config's own device comes back</div>
+        </div>
+      </div>
+      <p class="note" style="margin:8px 0 0"><b>The refusal is drawn where the list would have
+      been</b>, which is the socket's own contract for that message: an empty region would read as
+      a walk that found nothing.</p>
+    </div>
+    <div class="col">
+      <div class="lab">a pin the walk could not find</div>
+      <div class="pop">
+        <div class="ax" style="padding-bottom:14px">
+          <div class="lbl">INPUT DEVICE</div>
+          <div class="dev missing"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">sm7b-unplugged</span><span class="tag">not present &#183; pinned in forge.toml</span><span class="chev">&#9656;</span></div>
+          <div class="note">from <span class="mono">forge.toml</span> &#183; a pick here reverts on restart, and the config's own device comes back</div>
+        </div>
+      </div>
+      <p class="note" style="margin:8px 0 0"><b>A pin that is absent is named and marked</b> rather
+      than drawn as an input that is there. A pick that is gone reads <b>not present</b> without
+      the pin's words, which is the terminal's own distinction between the reader's choice and the
+      config's.</p>
+    </div>
+  </div>
 </div>
 
 <h2>Blocking states</h2>

@@ -161,19 +161,28 @@
     return devices?.find((held) => held.id === wanted)?.name ?? wanted;
   });
 
+  /** The device a pick moved the process to, or `null` while the pin stands. */
+  const picked = $derived(typeof device === 'object' && device !== null ? device.device : null);
+  /** Whether the reader picked the system default, which overrides the pin. */
+  const onSystem = $derived(device === 'system');
+  /** Whether the walk found every id it was given. */
+  const found = (id: string | null): boolean =>
+    id === null || (devices ?? []).some((held) => held.id === id);
+
   /**
-   * Whether the input in force is one the walk could not find.
+   * Whether the input in force is one the walk could not find - a PICK or the
+   * config's own PIN, which the terminal words differently.
    *
    * A pin can name a device that is not plugged in, and the terminal tags that
    * row rather than only failing at record time - so the id is named and marked
-   * instead of reading as an input that is present.
+   * instead of reading as an input that is present. A pick that is gone is the
+   * reader's own doing and reads as `not present`; the pin is the config's, so
+   * it says where it came from.
    */
-  const missing = $derived.by(() => {
-    if (devices === null) return false;
-    const picked = typeof device === 'object' && device !== null ? device.device : null;
-    const wanted = picked ?? configured;
-    return wanted !== null && !devices.some((held) => held.id === wanted);
-  });
+  const missingPick = $derived(devices !== null && picked !== null && !found(picked));
+  const missingPin = $derived(
+    devices !== null && !onSystem && picked === null && configured !== null && !found(configured),
+  );
 
   function choose(pick: 'system' | { device: string }): void {
     listOpen = false;
@@ -208,7 +217,20 @@
     };
     measure();
     window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
+    // **The window is not the only thing that moves the box.** A list opening
+    // above the field, or a take row landing above it, grows the composer and
+    // lifts the panel with it - and a cap measured on mount would stay where it
+    // was and cut the panel's own top off, which is the failure this cap
+    // exists to prevent. So the composer's own geometry is watched too, and
+    // what a SIZE observer does not catch is a pure move: an ancestor shifting
+    // the box and the panel together without changing either one's size. The
+    // window listener is what covers that, and neither signal alone is enough.
+    const watching = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    watching?.observe(held.parentElement ?? held);
+    return () => {
+      window.removeEventListener('resize', measure);
+      watching?.disconnect();
+    };
   });
 </script>
 
@@ -263,10 +285,20 @@
 
   <div class="ax">
     <div class="lbl">INPUT DEVICE</div>
-    <button class="dev" class:missing type="button" aria-expanded={listOpen} onclick={openList}>
+    <button
+      class="dev"
+      class:missing={missingPick || missingPin}
+      type="button"
+      aria-expanded={listOpen}
+      onclick={openList}
+    >
       <Icon name="mic" />
       <span class="nm">{inForceDevice}</span>
-      {#if missing}<span class="tag">not present &#183; pinned in forge.toml</span>{/if}
+      {#if missingPin}
+        <span class="tag">not present &#183; pinned in forge.toml</span>
+      {:else if missingPick}
+        <span class="tag">not present</span>
+      {/if}
       <span class="chev">&#9656;</span>
     </button>
     {#if listOpen}
