@@ -57,8 +57,10 @@ const CALL = render(Call, {
 /** A source file a call read, as the panel draws it. */
 const PANEL = render(Code, { props: { path: 'src/lib.rs', text: 'let a = 1;' } }).body;
 
-/** A table in a message, as the markdown renderer draws one. */
-const TABLE = render(Prose, { props: { text: '| a | b |\n| - | - |\n| c | d |' } }).body;
+/** A message's prose, with a table in it, as the markdown renderer draws both. */
+const PROSE = render(Prose, {
+  props: { text: 'A paragraph with one_long_token_inside_it.\n\n| a | b |\n| - | - |\n| c | d |' },
+}).body;
 
 /**
  * Every declaration the sheet applies to the first `selector` in `html`,
@@ -167,7 +169,7 @@ describe('a long line in the conversation', () => {
   });
 
   it('breaks a token in a table cell so the table fits the column', () => {
-    const applied = declarationsFor(TABLE, '.prose td');
+    const applied = declarationsFor(PROSE, '.prose td');
 
     expect(applied, 'the cell has a rule at all').not.toBe('');
     expect(valuesOf(applied, 'overflow-wrap'), 'a cell with one long token still fits').toEqual([
@@ -175,17 +177,29 @@ describe('a long line in the conversation', () => {
     ]);
   });
 
+  it('breaks a long token in prose, which is what carries a paragraph', () => {
+    // A paragraph wraps at its spaces and not inside a word, so a path, a hash
+    // or a URL in a sentence would take the conversation sideways on its own.
+    // `overflow-wrap` inherits, so this one declaration is the paragraph's, a
+    // list item's and a quote's together.
+    const applied = declarationsFor(PROSE, '.prose');
+
+    expect(applied, 'the prose block has a rule at all').not.toBe('');
+    expect(valuesOf(applied, 'overflow-wrap'), 'a token with nowhere to break fits').toEqual([
+      'anywhere',
+    ]);
+  });
+
   it('leaves a table header its own word, so no column can slice one', () => {
     // A header that may break anywhere has a one-character minimum, and a
     // neighbouring column's demand for width then slices `Verb` into `Ve` /
-    // `rb`. Left to the browser's own default the column can never be narrower
-    // than the header's longest word - and `nowrap` is not the way to say that:
-    // a header of several words then cannot wrap, and the table is pushed past
-    // the column instead.
-    const applied = declarationsFor(TABLE, '.prose th');
+    // `rb`. So the header resets what it would otherwise inherit from the prose
+    // block - and `nowrap` is not the way to say that: a header of several
+    // words then cannot wrap, and the table is pushed past the column instead.
+    const applied = declarationsFor(PROSE, '.prose th');
 
     expect(applied, 'the header has a rule at all').not.toBe('');
-    expect(valuesOf(applied, 'overflow-wrap'), 'a header word is never sliced').toEqual([]);
+    expect(valuesOf(applied, 'overflow-wrap'), 'a header word is never sliced').toEqual(['normal']);
     expect(valuesOf(applied, 'white-space'), 'and the header may wrap at its spaces').toEqual([]);
   });
 

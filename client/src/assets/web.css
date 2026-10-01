@@ -644,6 +644,10 @@ details.sec[open] > summary .arw { color: var(--accent); }
 .work { padding: 4px 0 8px; }
 /* Prose draws in both blocks - the work a turn did, and what the reader typed,
    which the terminal folds as a document too - so these read `.prose` alone. */
+/* A paragraph wraps at its spaces and not inside a word, so a path, a hash or a
+   URL in a sentence would take the conversation sideways on its own. This
+   inherits, which is what reaches a list item, a quote and a heading too. */
+.prose { overflow-wrap: anywhere; }
 .prose p + p { margin-top: 10px; }
 /* The reset above zeroes the padding a list draws its markers in. */
 .prose ul, .prose ol { padding-left: 22px; margin: 8px 0; }
@@ -682,12 +686,12 @@ details.sec[open] > summary .arw { color: var(--accent); }
 .prose table { border-collapse: collapse; margin: 10px 0; }
 /* A cell breaks a long token rather than widening the table past the column:
    the terminal stacks a table its grid cannot hold, and wrapping keeps the
-   table the shape it is. Data cells only - a header left at the browser's own
-   default can never be narrower than its own longest word, so nothing slices
-   it, and a header of several words still wraps. */
+   table the shape it is. Data cells only - a header that may break anywhere has
+   a one-character minimum, and a neighbouring column then slices the word - so
+   the header resets what it would otherwise inherit from the prose block. */
 .prose th, .prose td { text-align: left; padding: 4px 12px 4px 0; }
 .prose td { overflow-wrap: anywhere; }
-.prose th { color: var(--muted); font-weight: 700;
+.prose th { color: var(--muted); font-weight: 700; overflow-wrap: normal;
   border-bottom: 1px solid var(--line); }
 .prose hr { border: 0; height: 1px; background: var(--line); margin: 12px 0; }
 
