@@ -588,6 +588,23 @@ function sheetRule(selector: string): string {
 }
 
 /**
+ * The FIRST rule body the sheet writes for this exact selector: the base rule,
+ * which a media block may override later.
+ *
+ * **The two helpers are not interchangeable, and reaching for the wrong one
+ * makes a test that cannot fail.** `.dict` is re-written inside the narrow
+ * media block for its wrap, so resolving the LAST match reads that rule and an
+ * inset put back on the base one passes the suite while the browser paints it.
+ */
+function baseRule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const found = [...sheet.matchAll(new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm'))];
+  const body = found[0]?.[1];
+  if (body === undefined) throw new Error(`the sheet writes no rule for ${selector}`);
+  return body;
+}
+
+/**
  * The ring the box draws, resolved the way a browser resolves it.
  *
  * The ring's colour is a precedence question rather than a text one: a rule
@@ -878,8 +895,8 @@ describe('the frame', () => {
    * someone would plausibly make.
    */
   it('starts every row at the left edge of the field', () => {
-    for (const row of ['.dict', '.comp .notice', '.blocked']) {
-      expect(sheetRule(row), `${row} carries a left inset the field does not`).not.toMatch(
+    for (const row of ['.dict', '.comp .notice', '.blocked', '.blocked .b2']) {
+      expect(baseRule(row), `${row} carries a left inset the field does not`).not.toMatch(
         /padding-left:\s*[1-9]/,
       );
     }
