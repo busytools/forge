@@ -862,8 +862,13 @@ mod tests {
             .join("../forge-test-harness/baselines/sdk");
         let mut captures = Vec::new();
         collect_captures(&dir, &mut captures);
+        // The floors sit just under the reading they were calibrated against
+        // (92 captures, 294 frames, 93 repeats), so a capture set that grows
+        // still passes and one that loses either corpus - the version
+        // directory's 48 or `legacy-surface`'s 44 - fails instead of reporting
+        // a clean sweep over half the wire.
         assert!(
-            captures.len() > 40,
+            captures.len() >= 90,
             "the sweep has the captures to read: found {} under {}",
             captures.len(),
             dir.display()
@@ -920,10 +925,10 @@ mod tests {
         }
 
         assert!(
-            frames > 100,
-            "the sweep read the captures: {frames} assistant frames carried usage"
+            frames >= 280,
+            "the sweep read both corpora: {frames} assistant frames carried usage"
         );
-        assert!(repeats > 10, "and met repeats: {repeats}");
+        assert!(repeats >= 88, "and met repeats: {repeats}");
         assert!(
             differing.is_empty(),
             "no shipped capture repeats a message id with different usage: {differing:?}"
