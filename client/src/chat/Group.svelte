@@ -31,7 +31,11 @@
       key: `${family.label}-${family.row.kind}`,
       glyph: iconOf(family.row),
       label: family.label,
-      rows: family.calls,
+      // A row carries its own key, which the shell's type requires: a run
+      // keyed by position is remade whenever anything above it is inserted, and
+      // a row is where a call's open state lives. The call's id is the identity
+      // here, and it is in hand at exactly this point.
+      rows: family.calls.map((call) => ({ key: call.id, call })),
     })),
   );
 
@@ -41,8 +45,8 @@
   }
 </script>
 
-{#snippet callLeaf(leaf: ToolLeaf)}
-  <Call call={leaf} open={opens(leaf)} />
+{#snippet callLeaf({ call }: { key: string; call: ToolLeaf })}
+  <Call {call} open={opens(call)} />
 {/snippet}
 
 <GroupShell name={key} count={calls} noun="tool call" {status} {lanes} leaf={callLeaf} />

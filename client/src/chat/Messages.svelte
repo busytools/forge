@@ -38,7 +38,9 @@
       key: lane.kind,
       glyph: glyphOf(lane.kind),
       label: lane.kind,
-      rows: lane.cards,
+      // The same rule as a run of calls: the row carries its key, and the
+      // card's id is the identity in hand where the lane is built.
+      rows: lane.cards.map((card) => ({ key: card.id, card })),
     })),
   );
 
@@ -48,7 +50,7 @@
   }
 </script>
 
-{#snippet messageLeaf(card: PeerCard)}
+{#snippet messageLeaf({ card }: { key: string; card: PeerCard })}
   <details class="leaf">
     <summary>
       <Icon name={card.here ? 'bot' : 'away'} class="mk" />

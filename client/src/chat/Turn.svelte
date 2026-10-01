@@ -40,7 +40,31 @@
   /** A reader's own words on their own, or a run of everything else in one block. */
   type Block =
     | { mine: true; unit: Extract<Unit, { kind: 'user' }> }
-    | { mine: false; units: Unit[]; footer: number; trailing: boolean };
+    | { mine: false; nth: number; units: Unit[]; footer: number; trailing: boolean };
+
+  /**
+   * What identifies a block: a reader's own words by their own key, a run of
+   * everything else by which run of that kind it is.
+   *
+   * **Keyed this way, a block inserted above content already drawn is MOVED
+   * rather than remade**, and a block is where a call's open state lives, so
+   * remaking it closes what the reader had open. Two insertions make that case,
+   * and they need different stability:
+   *
+   * - A page landing with its copy of a live turn beginning at the reader's own
+   *   words puts a `mine` block at the FRONT, so every position below shifts.
+   *   Counting the work runs among themselves is what survives that, and the
+   *   `mine` blocks carry their own keys either way.
+   * - A thought landing above a call inserts a unit at the HEAD of a run, so
+   *   the run's first unit is not a stable name for it. Which run of its kind
+   *   it is does not move.
+   *
+   * The units inside a block were already keyed by their own keys; the blocks
+   * themselves were keyed by position, which is neither of these.
+   */
+  function blockKey(block: Block): string {
+    return block.mine ? block.unit.key : `work-${block.nth}`;
+  }
 
   const layout = $derived.by(() => {
     const out: Block[] = [];
@@ -51,15 +75,18 @@
       }
       const last = out[out.length - 1];
       if (last !== undefined && !last.mine) last.units.push(unit);
-      else out.push({ mine: false, units: [unit], footer: 0, trailing: false });
+      else out.push({ mine: false, nth: 0, units: [unit], footer: 0, trailing: false });
     }
     // Where the turn's footer begins: the hooks chip and the report row, which
     // the compaction line sits ABOVE - the order the terminal settled, and the
     // one the book's page and the approved mockup both draw.
-    return out.map((block) => {
+    return out.map((block, nth) => {
       if (block.mine) return block;
       const footer = footerOf(block.units);
-      return { ...block, footer, trailing: footer === block.units.length };
+      // Which run of its kind this is, which is what it is keyed by: a run's
+      // own units can grow at either end, so neither end names it.
+      const runs = out.slice(0, nth).filter((before) => !before.mine).length;
+      return { ...block, nth: runs, footer, trailing: footer === block.units.length };
     });
   });
 
@@ -83,7 +110,7 @@
   const loose = $derived(compacting && layout.at(-1)?.mine !== false);
 </script>
 
-{#each layout as block, at (at)}
+{#each layout as block, at (blockKey(block))}
   {#if block.mine}
     <!-- No label: the orange rule is the attribution. -->
     <div class="mine">

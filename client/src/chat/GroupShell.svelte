@@ -1,4 +1,4 @@
-<script lang="ts" generics="Row">
+<script lang="ts" generics="Row extends { key: string }">
   import type { Snippet } from 'svelte';
 
   import Chevron from '../components/Chevron.svelte';
@@ -22,6 +22,12 @@
    * row draws. Sharing the shell is what keeps the mark honest in both - a
    * group that copies this markup is a group that can lose the status branch,
    * which is what a failed delivery drew as a green check from.
+   *
+   * **A row carries its own key, the way a lane does**, and the type says so:
+   * a run keyed by position is remade whenever anything above it is inserted,
+   * and a row is where a call's open state lives. The shell is generic over the
+   * row, so it cannot know what identifies one - the caller can, and does, at
+   * the point it builds the rows.
    */
   let {
     name,
@@ -58,7 +64,7 @@
         <Icon name={lane.glyph} class="gl" />
         <span class="nm">{lane.label}</span>
       </div>
-      {#each lane.rows as row, at (`${lane.key}-${at}`)}
+      {#each lane.rows as row (row.key)}
         {@render leaf(row)}
       {/each}
     {/each}

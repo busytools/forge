@@ -150,6 +150,43 @@ describe('the chat column as it draws', () => {
     );
   });
 
+  it('keeps a row the reader opened when a page prefixes the turn with their words', () => {
+    // The shape a dropped socket leaves: the turn ran while the client was
+    // away, so its call arrived as frames and the reader's own words never did.
+    // The page answering the reconnect carries the prompt as well, so the copy
+    // of that turn BEGINS with a `mine` block - every position below it shifts,
+    // and a list keyed by position remounts the call the reader had open.
+    const frame = (uuid: string, content: unknown[]): unknown => ({
+      type: 'assistant',
+      uuid,
+      message: { id: `m-${uuid}`, role: 'assistant', model: 'claude-opus-5', content },
+    });
+    const said = (text: string): unknown => ({
+      type: 'user',
+      uuid: `u-${text}`,
+      message: { role: 'user', content: [{ type: 'text', text }] },
+    });
+    const call = frame('a1', [
+      { type: 'tool_use', id: 'toolu_r1', name: 'Read', input: { file_path: 'src/lib.rs' } },
+    ]);
+
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg: call } } });
+
+    const row = document.querySelector<HTMLDetailsElement>('details.leaf');
+    expect(row, 'the call drew as a row that opens').not.toBeNull();
+    if (row !== null) row.open = true;
+
+    server.answer([{ key: null, messages: [said('go'), call] }]);
+    flushSync();
+
+    expect(row?.isConnected, 'the row the reader opened is the row still on the page').toBe(true);
+    expect(row?.open, 'and it is still open').toBe(true);
+    expect(drawn(), 'and the reader own words drew above it').toContain('go');
+  });
+
   it('draws the compaction line once, under the newest turn only', () => {
     // The prop is the conversation's, and the line is the newest turn's: a
     // column that handed it to every turn would draw a line per row, which is
