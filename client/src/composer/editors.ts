@@ -5,9 +5,10 @@
  * Derived, never stored: nothing registers here, so nothing can go stale and
  * there is no mount order to get wrong.
  *
- * It is not yet the whole of the keyboard's routing. The surfaces still move the
- * caret in their own effects, and the landing is the one caller this table has -
- * so a surface added here does not have its keyboard follow by itself.
+ * It is not yet the whole of the keyboard's routing. The composer and the dock
+ * still move the caret in their own effects - the connect screen has none - and
+ * the landing is the one caller this table has, so a surface added here does not
+ * have its keyboard follow by itself.
  *
  * Every box that can take text is one of these, and `editors.test.ts` sweeps the
  * tree for one that forgot to say so.
