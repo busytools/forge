@@ -724,6 +724,22 @@ details.leaf.running > summary { color: var(--text); }
 .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
 .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
 
+/* What the model thought. Collapsed, carrying the first of its own words: the
+   terminal's vocabulary for a block nothing else shows, where its own arm for
+   this block only sets a running status and counts the characters. Dim, because
+   it is not what the assistant said - and the words, not a label, because the
+   row's whole job is to show that there was something here. */
+details.think { margin: 3px 0; }
+details.think > summary { list-style: none; display: flex; align-items: center; gap: 9px;
+  padding: 4px 10px; border-radius: 9px; cursor: pointer; color: var(--dim);
+  font-size: var(--fs-base); }
+details.think > summary::-webkit-details-marker { display: none; }
+details.think > summary:hover { background: rgba(27,33,48,.45); }
+details.think > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.think > summary .tog { margin-left: auto; font-size: var(--fs-label); color: var(--dim);
+  flex: none; }
+details.think[open] > summary { color: var(--muted); }
+
 /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
 details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
 details.leaf > summary .k { color: var(--text); font-weight: 700; }

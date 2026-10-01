@@ -76,16 +76,6 @@ const result = (id: string): unknown => ({
   message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
 });
 
-/** An `assistant` frame carrying only thinking, which the fold draws nothing for. */
-const thought = (): unknown => ({
-  type: 'assistant',
-  message: {
-    role: 'assistant',
-    model: 'claude-opus-5',
-    content: [{ type: 'thinking', thinking: '...' }],
-  },
-});
-
 /** An `assistant` frame whose only call is a monitor, which the fold skips. */
 const monitoring = (): unknown => ({
   type: 'assistant',
@@ -303,16 +293,18 @@ describe('the conversation the chat draws', () => {
     chat.start();
     server.send(page([turn('t1', 'first'), turn('t2', 'second')], null));
 
-    // A tool result arrives as a `user` frame and a thinking block as an
-    // `assistant` one. Neither draws anything, and on a running seat both
-    // arrive between one turn and the next, so a row apiece is a blank row per
-    // tool call and per thinking block.
+    // A tool result arrives as a `user` frame and draws nothing, on a running
+    // seat it arrives between one turn and the next, so a row apiece is a blank
+    // row per tool call.
     //
     // The last two draw nothing for a reason that is NOT their type - the
     // fold's own monitor guard and its dispatch guard - so a rule keyed on
     // types would open a row for each of them.
+    //
+    // **A thinking block used to be one of these and is not any more**: it
+    // draws the row its words are carried on, which is why it is not in this
+    // set.
     server.update({ chat_appended: { key: LEAD, msg: result('call-1') } });
-    server.update({ chat_appended: { key: LEAD, msg: thought() } });
     server.update({ chat_appended: { key: LEAD, msg: monitoring() } });
     server.update({ chat_appended: { key: LEAD, msg: dispatched() } });
 
@@ -321,13 +313,7 @@ describe('the conversation the chat draws', () => {
     expect(
       after[after.length - 1]?.messages,
       'and all of them are held in the turn they arrived in',
-    ).toEqual([
-      ...turn('t2', 'second').messages,
-      result('call-1'),
-      thought(),
-      monitoring(),
-      dispatched(),
-    ]);
+    ).toEqual([...turn('t2', 'second').messages, result('call-1'), monitoring(), dispatched()]);
   });
 
   it('opens a row for the reader own words while a turn is live', () => {

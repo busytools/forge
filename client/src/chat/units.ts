@@ -162,6 +162,14 @@ export type Unit =
   | { kind: 'user'; text: string; files: AttachedFile[] }
   /** Prose the assistant wrote. */
   | { kind: 'text'; text: string }
+  /**
+   * What the model thought before it said anything.
+   *
+   * The wire carries it as its own block and nothing drew it, which is a frame
+   * dropped rather than a shape chosen: the row is drawn collapsed, carrying
+   * the thinking's own first words.
+   */
+  | { kind: 'thinking'; text: string }
   /** A maximal run of consecutive tool calls, drawn as one group. */
   | { kind: 'group'; families: FamilyLeaves[]; status: CallStatus }
   | { kind: 'question'; asked: AnsweredQuestion[] }
@@ -1026,6 +1034,15 @@ export function fold(
           tookFiles = true;
         } else {
           push({ kind: 'text', text: block.text });
+        }
+        continue;
+      }
+
+      if (block.type === 'thinking' && typeof block.thinking === 'string') {
+        // An empty one draws nothing, the way the terminal skips it: the row's
+        // whole point is the words it carries.
+        if (block.thinking.trim() !== '') {
+          push({ kind: 'thinking', text: block.thinking });
         }
         continue;
       }

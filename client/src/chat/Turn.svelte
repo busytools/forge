@@ -10,6 +10,7 @@
   import { bytes } from './numbers';
   import Prose from './Prose.svelte';
   import Report from './Report.svelte';
+  import Thinking from './Thinking.svelte';
   import { fold, type Self, type Unit } from './units';
 
   /**
@@ -100,6 +101,8 @@
         {/if}
         {#if unit.kind === 'text'}
           <Prose text={unit.text} />
+        {:else if unit.kind === 'thinking'}
+          <Thinking text={unit.text} />
         {:else if unit.kind === 'group'}
           <Group families={unit.families} status={unit.status} />
         {:else if unit.kind === 'question'}

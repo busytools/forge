@@ -87,6 +87,20 @@ describe('one turn folded into the units a view draws', () => {
     }
   });
 
+  it('draws what the model thought, which the wire carries and nothing drew', () => {
+    // The body is on the wire - `ContentBlock::Thinking { thinking, signature }`
+    // in primitives, and a real transcript holds one - and this fold had no arm
+    // for it, so the block fell through and the words were dropped. An empty
+    // thinking draws nothing, the way the terminal skips one.
+    const thought = said([{ type: 'thinking', thinking: 'the model wondered', signature: 'sig' }]);
+    const empty = said([{ type: 'thinking', thinking: '', signature: 'sig' }]);
+
+    const units = fold([thought]);
+    expect(kinds(units), 'the thinking is a row rather than a drop').toEqual(['thinking']);
+    expect(units[0]?.kind === 'thinking' ? units[0].text : '').toBe('the model wondered');
+    expect(kinds(fold([empty])), 'and an empty one is not a row').toEqual([]);
+  });
+
   it('breaks the run on anything that is not a call', () => {
     const units = fold([call('read', 0), said([text('here it is')]), call('bash', 1)]);
 
