@@ -568,15 +568,16 @@ describe('the record a page holds over an update stream', () => {
   });
 
   it('asks for a whole record for every name that replaces the seat', () => {
-    // The three are one property - a seat that wakes, connects or takes a new
-    // occupant cannot be answered by the record the last one left - and the
-    // branch that reads them is what a page's whole history hangs on.
+    // The four are one property - a seat that wakes, connects, takes a new
+    // occupant, or is handed a history cannot be answered by the record the
+    // last one left - and the branch that reads them is what a page's whole
+    // history hangs on.
     //
     // **The names are written out rather than read off `REPLACES`.** A loop
     // over the list under test cannot see the list change: a name dropped from
     // it takes its own coverage with it, and every test stays green while a
     // `/new` or a `/resume` stops being re-read.
-    const replacing = ['spawning', 'connected', 'session_replaced'];
+    const replacing = ['spawning', 'connected', 'history_replayed', 'session_replaced'];
     expect(
       [...REPLACES].sort(),
       'the list the page reads is not the list this test covers',

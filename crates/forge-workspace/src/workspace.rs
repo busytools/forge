@@ -2110,6 +2110,9 @@ impl Workspace {
                 // more, so there is no SessionReplaced case to seed.
                 connected_once: false,
                 workspace: Arc::downgrade(self),
+                // Filled by the first `Connected`, which is where this task
+                // is handed the history it can later replay.
+                conversation: None,
             };
             let span = tracing::info_span!(
                 "session_task",
@@ -10114,6 +10117,7 @@ provider = "anthropic"
             update_tx,
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
         task.run().await;
 

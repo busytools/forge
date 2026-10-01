@@ -258,6 +258,22 @@ pub enum Command {
     Cancel {
         key: SessionSlot,
     },
+    /// Ask the session task to emit the conversation it is carrying, as
+    /// [`SessionUpdate::HistoryReplayed`].
+    ///
+    /// **The task is asked rather than the transcript read**, because the task
+    /// is what PRODUCES the conversation: it is handed the history at connect
+    /// and it emits every frame after it, so a history it hands back is in its
+    /// own order with the frames around it. A reader that walked the file
+    /// instead would be a second producer of the same truth, and the two
+    /// cannot be reconciled - the read picks up rows written while it runs,
+    /// which the stream also delivers, and no identity ties them together.
+    ///
+    /// A no-op for a seat whose session is gone: nothing is emitted and the
+    /// asker's wait times out.
+    ReplayConversation {
+        key: SessionSlot,
+    },
     SetMode {
         key: SessionSlot,
         mode: PermissionMode,
@@ -587,6 +603,7 @@ impl Command {
         match self {
             Self::Prompt { key, .. }
             | Self::Cancel { key }
+            | Self::ReplayConversation { key }
             | Self::SetMode { key, .. }
             | Self::SetModel { key, .. }
             | Self::NewSession { key, .. }
@@ -633,6 +650,9 @@ impl std::fmt::Debug for Command {
                 f.debug_struct("Prompt").field("key", key).finish_non_exhaustive()
             }
             Self::Cancel { key } => f.debug_struct("Cancel").field("key", key).finish(),
+            Self::ReplayConversation { key } => {
+                f.debug_struct("ReplayConversation").field("key", key).finish()
+            }
             Self::SetMode { key, mode } => {
                 f.debug_struct("SetMode").field("key", key).field("mode", mode).finish()
             }
@@ -879,6 +899,25 @@ pub enum SessionUpdate {
         history: Vec<Message>,
         /// Compactions the resumed transcript records. Seeds the
         /// per-session count, which has no other durable source.
+        compaction_count: u32,
+    },
+    /// The conversation a seat is carrying, asked for by
+    /// `Command::ReplayConversation`.
+    ///
+    /// **It is not a `Connected`, and the difference is not bookkeeping.** A
+    /// view reads `Connected` as a session STARTING - it seeds the bucket,
+    /// adopts the id, resets the mode and re-tags - so a replay wearing that
+    /// shape would make every attached view re-seed the seat as though it had
+    /// just launched. This says only: here is the conversation you asked for.
+    ///
+    /// It exists so a consumer joining a session it did not watch begin can be
+    /// handed the history by the task that PRODUCES it, in that task's own
+    /// emission order, rather than reading the transcript alongside the
+    /// frames - two producers of one truth, which is a race no reconciliation
+    /// closes.
+    HistoryReplayed {
+        key: SessionSlot,
+        history: Vec<Message>,
         compaction_count: u32,
     },
     /// The slot's occupant changed under it - a `/new`, a `/resume`, a
@@ -1277,6 +1316,7 @@ impl SessionUpdate {
         match self {
             Self::Spawning { key, .. }
             | Self::Connected { key, .. }
+            | Self::HistoryReplayed { key, .. }
             | Self::SessionReplaced { key, .. }
             | Self::ConnectionFailed { key, .. }
             | Self::AuthRequired { key, .. }
@@ -1348,6 +1388,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .finish_non_exhaustive(),
             Self::Connected { key, .. } => {
                 f.debug_struct("Connected").field("key", key).finish_non_exhaustive()
+            }
+            Self::HistoryReplayed { key, .. } => {
+                f.debug_struct("HistoryReplayed").field("key", key).finish_non_exhaustive()
             }
             Self::SessionReplaced { key, .. } => {
                 f.debug_struct("SessionReplaced").field("key", key).finish_non_exhaustive()

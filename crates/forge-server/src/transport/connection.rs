@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::PROTOCOL_VERSION;
 use super::TransportState;
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
-use super::wire::{encode_subject, page, walk_processes_if_stale};
+use super::wire::{conversation_for, encode_subject, page, walk_processes_if_stale};
 use crate::delivery::delivery_turn;
 use crate::live::Live;
 use crate::{Command, SessionUpdate};
@@ -59,7 +59,7 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
 /// Every client message is answered: a client is never left waiting on a
 /// message this server chose to drop, which is the failure that reads as a
 /// hang rather than as an error.
-async fn drive(socket: &mut WebSocket, state: &TransportState) -> anyhow::Result<()> {
+async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::Result<()> {
     let mut watched: Vec<Subject> = Vec::new();
     // None until the client's first SUBSCRIBE, which is what decides whether
     // this connection answers - not its first message, so a client whose first
@@ -84,11 +84,11 @@ async fn drive(socket: &mut WebSocket, state: &TransportState) -> anyhow::Result
     outcome
 }
 
-/// The connection's own loop, so that every way out of it runs the release
+/// The connection's own loop, so that every way out of it runs the detach
 /// above rather than only the clean one.
 async fn run_connection(
     socket: &mut WebSocket,
-    state: &TransportState,
+    state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
 ) -> anyhow::Result<()> {
@@ -170,7 +170,7 @@ async fn next_update(
 /// Answer one client message.
 async fn handle_client(
     socket: &mut WebSocket,
-    state: &TransportState,
+    state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
     msg: Message,
@@ -280,7 +280,10 @@ async fn handle_client(
         }
         ClientMessage::More { conversation, before, turns } => {
             let roster = state.surface.roster();
-            let Some(cwd) = roster.cwd_for(&conversation) else {
+            // A seat forge holds no session for is an ANSWER rather than an
+            // empty page: a client drawing nothing would read the second as a
+            // broken conversation rather than as a seat nobody has started.
+            if roster.cwd_for(&conversation).is_none() {
                 return send(
                     socket,
                     ServerMessage::Error {
@@ -289,7 +292,7 @@ async fn handle_client(
                     },
                 )
                 .await;
-            };
+            }
             // Reading a seat is watching it, so paging refreshes the walk the
             // same way subscribing does. The window in the walk is what keeps
             // a client paging a long conversation from walking on every page.
@@ -299,42 +302,67 @@ async fn handle_client(
                 roster.claude_pid(&conversation),
             )
             .await;
-            // The read and the fold both run over the WHOLE conversation, and the
-            // window slices the boundaries between them, so a turn crosses
-            // whole. Slicing on a count of messages instead is what would hand
-            // a client half a turn.
+            // The window slices the boundaries the fold reported, so a turn
+            // crosses whole. Slicing on a count of messages instead is what
+            // would hand a client half a turn.
             //
-            // Off the task that serves every other client: the read walks a
-            // whole transcript off disk and the fold walks what it read, and
-            // the fold's own doc says a caller offloads it rather than running
-            // it in a handler.
-            let (messages, rendered) = {
-                let reader = Arc::clone(&state.surface);
-                let (seat, root) = (conversation.clone(), cwd.clone());
-                tokio::task::spawn_blocking(move || {
-                    let messages = reader.conversation(&seat, &root).messages;
-                    let rendered = crate::transcript::render(&messages);
-                    (messages, rendered)
-                })
-                .await
-                .unwrap_or_else(|error| {
+            // The fold runs in a blocking task and NOT under the lock: the
+            // socket folds the core's stream in one task for every seat, so a
+            // fold holding a seat's lock would stall update delivery for every
+            // client on every seat rather than for a second reader of this one.
+            let Some(held) = conversation_for(state, &conversation).await else {
+                // **A question that cannot be answered is REFUSED rather than
+                // answered with a value that looks like one.** An empty page
+                // carries `cursor: null`, and a client reads that as "nothing
+                // above" and stops asking - so a replay that did not arrive
+                // would make the seat's history unreachable rather than
+                // merely late, and a plausible `compaction_count: 0` would
+                // ride along with it.
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "more".to_owned(),
+                        why: format!(
+                            "the conversation for {conversation:?} is not held yet, so this page \
+                             cannot be answered; asking again may find it"
+                        ),
+                    },
+                )
+                .await;
+            };
+            let seat = conversation.clone();
+            let opening = before.clone();
+            let folded = tokio::task::spawn_blocking(move || {
+                held.read(|held| page(held.messages(), held.rendered(), opening.as_deref(), turns))
+            })
+            .await;
+            // **A fold that did not finish is refused for the reason the arm
+            // above refuses.** An empty page carries `cursor: null`, which a
+            // client reads as the end of the history - so answering one here
+            // would make the seat unreachable rather than merely unread this
+            // time.
+            let page = match folded {
+                Ok(page) => page,
+                Err(err) => {
                     tracing::warn!(
                         event_name = "transcript_fold_failed",
-                        %error,
-                        slot = %conversation.display(),
-                        "the fold did not finish; the page is answered empty",
+                        slot = %seat.display(),
+                        error = %err,
+                        "the fold did not finish; this page is refused rather than answered empty",
                     );
-                    (
-                        Vec::new(),
-                        crate::transcript::Rendered {
-                            units: Vec::new(),
-                            turns: Vec::new(),
-                            endings: std::collections::HashMap::new(),
+                    return send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "more".to_owned(),
+                            why: format!(
+                                "the fold over {seat:?} did not finish, so this page cannot be \
+                                 answered; asking again may find it"
+                            ),
                         },
                     )
-                })
+                    .await;
+                }
             };
-            let page = page(&messages, &rendered, before.as_deref(), turns);
             send(
                 socket,
                 ServerMessage::Page { conversation, turns: page.turns, cursor: page.cursor },
@@ -536,6 +564,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -569,6 +598,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };

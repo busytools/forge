@@ -35,20 +35,34 @@ fn lead_seat() -> SessionSlot {
 /// workspace's store lives under it, and a surface whose files vanished
 /// under it is not what a test means to exercise.
 async fn a_server() -> (String, Fleet) {
+    let (url, fleet, _state) = a_server_with_state().await;
+    (url, fleet)
+}
+
+/// [`a_server`], keeping the state a test needs to put a seat's conversation
+/// where a `Connected` would have left it.
+///
+/// **The transport does not read a transcript**, so a fixture that seeds one
+/// has to hand the conversation over itself - see
+/// [`Fleet::hold_conversation`]. A test that skipped that would ask for a page
+/// on a seat nothing has seeded and get the empty one.
+async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     let dir = tempfile::tempdir().expect("tempdir").keep();
     let fleet = Fleet::in_dir(&dir, &[("TestOrg", &["proj"])]).expect("the fleet builds");
     let state = Arc::new(TransportState {
         surface: fleet.surface(),
         work: Arc::new(WorkCache::new()),
+        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
         config: forge_primitives::WebConfig::default(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = serve(state, listener).await;
+        let _ = serve(served, listener).await;
     });
-    (format!("ws://{addr}/socket"), fleet)
+    (format!("ws://{addr}/socket"), fleet, state)
 }
 
 /// A client connected to a server this test started, with the greeting
@@ -563,10 +577,13 @@ fn a_turns_rows(turn: usize) -> String {
 /// the ones above it.
 #[tokio::test]
 async fn a_more_is_answered_with_a_page_of_whole_turns() {
-    let (url, fleet) = a_server().await;
+    let (url, fleet, state) = a_server_with_state().await;
     let rows: Vec<String> = (0..20).map(a_turns_rows).collect();
     let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
     fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
 
     let mut socket = connect(&url).await;
     send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
@@ -589,6 +606,33 @@ async fn a_more_is_answered_with_a_page_of_whole_turns() {
         "a page opens on a turn the user wrote rather than inside one: {turns:?}",
     );
     assert!(cursor.is_some(), "and it carries the handle that asks for the ones above");
+}
+
+/// A page that cannot be answered is REFUSED, because an empty one lies.
+///
+/// **An empty page carries `cursor: null`, and a client reads that as "nothing
+/// above" and stops asking** - so answering a question the server could not
+/// answer with a value that looks like the answer makes a seat's history
+/// unreachable rather than merely late.
+#[tokio::test]
+async fn a_more_that_cannot_be_answered_is_refused() {
+    let (url, fleet) = a_server().await;
+    // A seat with a session, so the refusal below is about the CONVERSATION
+    // and not about the seat being absent.
+    fleet.seed_transcript("TestOrg", "proj", "lead", &[]).expect("the transcript seeds");
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
+        .await;
+
+    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+        panic!("a page that cannot be answered is refused rather than answered empty")
+    };
+    assert_eq!(what, "more", "the refusal names what was asked for");
+    assert!(
+        why.contains("not held yet"),
+        "and says why, so a client can tell a delay from an end: {why}",
+    );
 }
 
 /// A subscription hears the updates its subject receives and no others.
@@ -700,7 +744,17 @@ async fn two_sockets_on_one_seat_both_hear_it() {
 /// seat it is still showing.
 #[tokio::test]
 async fn one_unsubscribe_leaves_the_seats_other_subscription() {
-    let (url, fleet) = a_server().await;
+    let (url, fleet, state) = a_server_with_state().await;
+    // The page below is the barrier, so the seat has to be able to answer
+    // one: a `more` on a seat with no held conversation is refused rather
+    // than answered with an empty page, because an empty page carries
+    // `cursor: null` and a client reads that as the end of the history.
+    let rows: Vec<String> = (0..2).map(a_turns_rows).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
     let mut socket = connect(&url).await;
 
     for _ in 0..2 {

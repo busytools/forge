@@ -42,6 +42,21 @@ pub(crate) struct SessionTask {
     /// reference cycle (Workspace holds Task's command_tx; Task
     /// holds Workspace).
     pub(crate) workspace: std::sync::Weak<crate::Workspace>,
+    /// The conversation this task is carrying, kept so
+    /// `Command::ReplayConversation` can hand it to a consumer that joined
+    /// after this session started.
+    ///
+    /// **Held here because here is where it is produced.** The task is handed
+    /// the history at connect and emits every frame after it, so what it keeps
+    /// is in one order with the frames around it. A consumer reading the
+    /// transcript instead would be a second producer, and a read and a stream
+    /// cannot be reconciled: the read picks up rows written while it runs,
+    /// which the stream also delivers.
+    ///
+    /// It is the same conversation a view holds, so the cost is proportional
+    /// to what is RUNNING rather than to what is being read - which is the
+    /// price of having one producer rather than two.
+    pub(crate) conversation: Option<(Vec<forge_primitives::Message>, u32)>,
 }
 
 impl SessionTask {
@@ -207,6 +222,9 @@ impl SessionTask {
                 compaction_count,
             } => {
                 let history = history_updates.unwrap_or_default();
+                // Kept before the update takes it, so a consumer that joins
+                // later can be handed what this task was handed.
+                self.conversation = Some((history.clone(), compaction_count));
                 // The slot the task was spawned under, which the CLI's
                 // own id never moves: it names the occupant, this names
                 // the seat.
@@ -667,6 +685,13 @@ impl SessionTask {
                     // each review's submit origin.
                     self.drain_review_activity_for(&caller);
                 }
+                // The frame joins the conversation this task is carrying,
+                // BEFORE it is emitted: the replay answers with that
+                // conversation, so a frame missing from it is a frame a
+                // consumer joining later never sees - and a compaction is the
+                // case that makes it plain, because the boundary drops the
+                // transport's copy and the replay is what rebuilds it.
+                self.retain(&msg);
                 // `None`: a frame off the wire is the CLI's own, and carries
                 // no prompt origin.
                 self.emit(SessionUpdate::ChatAppended { key: self.key.clone(), msg, origin: None });
@@ -778,6 +803,23 @@ impl SessionTask {
                     );
                 }
             }
+            // Answered by this task rather than the agent: the conversation
+            // is the task's own, so it never leaves this loop.
+            Command::ReplayConversation { key: _ } => {
+                let Some((history, compaction_count)) = self.conversation.as_ref() else {
+                    tracing::debug!(
+                        target: "forge_workspace::session_task",
+                        slot = %self.key.display(),
+                        "a replay was asked for before this session connected; nothing to hand back",
+                    );
+                    return;
+                };
+                self.emit(SessionUpdate::HistoryReplayed {
+                    key: self.key.clone(),
+                    history: history.clone(),
+                    compaction_count: *compaction_count,
+                });
+            }
             other => {
                 let sid = self.session_id_string();
                 // `/new` starts under an id minted here, so the row this
@@ -872,6 +914,29 @@ impl SessionTask {
                 "no SessionUpdate subscriber took the event"
             );
         }
+    }
+
+    /// Add one frame to the conversation this task is carrying.
+    ///
+    /// **The accumulator, and it is what makes a replay a conversation rather
+    /// than a photograph of the connect.** The history handed over at connect
+    /// is empty for a fresh session and stops at the connect for a resumed
+    /// one, so a replay answering with it alone would hand a consumer joining
+    /// late a seat that never spoke - worse than the read it replaced.
+    ///
+    /// A compaction boundary bumps the count rather than the frame list: the
+    /// CLI's boundary frame is a `ChatAppended` like any other and stays in
+    /// the conversation, and the count is what a view draws its marker from.
+    fn retain(&mut self, message: &forge_primitives::Message) {
+        let Some((history, compaction_count)) = self.conversation.as_mut() else {
+            // Before the first connect there is no conversation to add to,
+            // and no frame to add: the CLI says nothing until it connects.
+            return;
+        };
+        if matches!(message, forge_primitives::Message::CompactBoundary { .. }) {
+            *compaction_count = compaction_count.saturating_add(1);
+        }
+        history.push(message.clone());
     }
 
     /// Flush `caller`'s buffered review activity into its batched
@@ -1206,6 +1271,11 @@ pub(crate) fn execute_command_via_handle(
     cmd: Command,
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
+        // Answered by the task before it reaches here: the conversation is
+        // the task's own and never crosses to the agent. A caller reading
+        // this as dead code should note the arm in `SessionTask::execute_command`
+        // is what returns early - the match here is exhaustive, not a route.
+        Command::ReplayConversation { key: _ } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
@@ -2022,6 +2092,7 @@ mod tests {
             update_tx: workspace.update_sender(),
             connected_once,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -2174,6 +2245,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(workspace),
+            conversation: None,
         };
         (task, update_rx)
     }
@@ -2199,6 +2271,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(workspace),
+            conversation: None,
         };
         (task, cmds)
     }
@@ -2542,6 +2615,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -2599,6 +2673,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -2884,6 +2959,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -2938,6 +3014,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -2992,6 +3069,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -3029,6 +3107,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::PermissionRequest {
@@ -3090,6 +3169,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::PermissionRequest {
@@ -3135,6 +3215,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::QuestionRequest {
@@ -3179,6 +3260,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::QuestionRequest {
@@ -3557,6 +3639,7 @@ provider = "anthropic"
             update_tx,
             connected_once: true,
             workspace: std::sync::Weak::new(),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -3658,6 +3741,7 @@ provider = "anthropic"
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -3799,6 +3883,7 @@ provider = "anthropic"
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -3866,6 +3951,7 @@ provider = "anthropic"
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -3908,6 +3994,7 @@ provider = "anthropic"
                 update_tx: workspace.update_sender(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
+                conversation: None,
             };
 
             let mut event = connected_event(&session_key.display(), "/tmp/count");
@@ -3928,6 +4015,95 @@ provider = "anthropic"
             }
             assert_eq!(seen, Some(7), "{arm} must carry the count through unchanged");
         }
+    }
+
+    /// A replay answers with the conversation the task has CARRIED, not with
+    /// the history it was handed at connect.
+    ///
+    /// **This is the mechanism the transport's seed rests on and nothing else
+    /// observed it**: with `retain` mutated to a no-op the whole workspace
+    /// suite stays green, and a replay then hands back the connect alone -
+    /// which is empty for a fresh session and stops at the connect for a
+    /// resumed one, so a consumer joining late gets a seat that never spoke.
+    ///
+    /// The two halves are asserted apart so a change to either fails on its
+    /// own message: the frames the session emitted after its connect, and the
+    /// count the connect carried as the boundary moved it.
+    #[tokio::test]
+    async fn a_replay_answers_with_the_conversation_the_task_has_carried() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::from_str_for_test("replay-carries-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+
+        // A FRESH session, which is the case that makes this load-bearing: the
+        // CLI hands over an empty history, so a replay answering from the
+        // connect alone would hand back nothing at all.
+        // A resumed connect carries the count it has already compacted, so the
+        // STORE has to keep it and not only the emit: with it zeroed here the
+        // replay answers from a count that never saw those compactions.
+        let mut event = connected_event(&session_key.display(), "/tmp/replay");
+        if let AgentEvent::Connected { history_updates, compaction_count, .. } = &mut event {
+            *history_updates = Some(Vec::new());
+            *compaction_count = 4;
+        }
+        task.translate_event(event);
+
+        // One frame the session emitted after it, and one compaction boundary.
+        for msg in [
+            serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": "carried"},
+                "session_id": session_key.display(),
+            }))
+            .expect("a user frame"),
+            forge_primitives::Message::CompactBoundary {
+                trigger: "auto".to_owned(),
+                pre_tokens: 1,
+                uuid: "c1".to_owned(),
+                session_id: session_key.display(),
+            },
+        ] {
+            task.translate_event(AgentEvent::SdkMessage { session_id: session_key.display(), msg });
+        }
+        while update_rx.try_recv().is_ok() {}
+
+        task.execute_command(crate::protocol::Command::ReplayConversation {
+            key: session_key.clone(),
+        });
+
+        let mut replayed = None;
+        while let Ok(update) = update_rx.try_recv() {
+            if let SessionUpdate::HistoryReplayed { history, compaction_count, .. } = update {
+                replayed = Some((history, compaction_count));
+            }
+        }
+        let (history, compaction_count) =
+            replayed.expect("a replay is answered with the conversation");
+
+        assert_eq!(
+            history.len(),
+            2,
+            "the frames the session emitted after its connect are in the replay, not only the \
+             empty history the connect carried",
+        );
+        assert_eq!(
+            compaction_count, 5,
+            "the count the connect carried survives to the replay, moved by the boundary",
+        );
     }
 
     /// A re-spawn that replaces the session seeds `connected_once =
@@ -3957,6 +4133,7 @@ provider = "anthropic"
             // The seed a session-replacing re-spawn installs.
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         // A one-message resumed history (the --resume backfill).
@@ -4036,6 +4213,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -4946,6 +5124,7 @@ provider = "anthropic"
                 update_tx: workspace.update_sender(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
+                conversation: None,
             };
 
             task.translate_event(AgentEvent::ConnectionFailed {
@@ -5008,6 +5187,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         // The re-spawned agent fails to connect.
@@ -5097,6 +5277,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
+            conversation: None,
         };
 
         task.translate_event(AgentEvent::ConnectionFailed {

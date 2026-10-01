@@ -103,9 +103,15 @@ seat still being shown, and a single unsubscribe must not take the seat
 out of the set a view is watching.
 
 **`more {conversation, before, turns}`** - a page of a session's
-transcript, as whole turns. Each turn carries `key` and `messages`, which is
+conversation, as whole turns. Each turn carries `key` and `messages`, which is
 the same shape the session snapshot's `conversation` carries; the grouping
 inside a turn is the client's to decide.
+
+**A page that cannot be answered is REFUSED rather than answered empty.** An
+empty page carries `cursor: null`, which a client reads as "nothing above" and
+stops asking on - so an answer the server could not give would make the seat's
+history unreachable rather than merely late. An `error` naming `more` means
+ask again, not that the conversation is over.
 
 **A turn can carry a frame the CLI did not send.** A backgrounded task's
 ending reaches a transcript as a row of its own, and a row that opens no turn
@@ -214,7 +220,8 @@ conversation, and what the composer is doing.
 |---|---|
 | `slot` | The seat itself. |
 | `header` | The resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, and whether a turn is in flight. |
-| `conversation` | The transcript's whole turns, in order, with the compaction count. Each turn carries `key` and `messages` - the CLI's own frames - so this is the same shape `more` answers a page with. The live `update` stream carries those frames too, and one kind this cannot: a frame the server forged for words the CLI does not echo back. |
+| `conversation` | The NEWEST turns, in order, with the compaction count - the same twenty `more` answers a page with, so a client that wants more asks for it the way it already does. Each turn carries `key` and `messages`, the CLI's own frames. The live `update` stream carries those frames too, and one kind this cannot: a frame the server forged for words the CLI does not echo back. |
+| `has_dispatches` | Whether the conversation holds a sub-agent dispatch at all, anywhere in it - not only in the window `conversation` carries. A view deciding whether to draw a sub-agents section reads this rather than scanning the window, which would report a seat that dispatched an hour ago as one where nothing ran. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
 | `pr`, `closes` | The open pull request this seat's branch is on - its number and URL - and the issues it closes, which is the `PR #N -> closes #M` line the inspector draws. `null` and an empty list when there is none, or when the branch is not pushed. |
 | `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference. |

@@ -253,9 +253,9 @@ export class Chat {
    * settled - arrive on the connection either way.
    *
    * **And a subscription is not what fills the list.** The snapshot carries
-   * the conversation in full, which is the whole transcript; the page draws a
-   * window of it and asks `more` for what is above, so the ask is where its
-   * turns come from.
+   * the newest turns rather than the whole conversation; the page draws a
+   * window of those and asks `more` for what is above, so the ask is where
+   * its turns come from.
    */
   start(): () => void {
     if (this.running !== null) return this.running;

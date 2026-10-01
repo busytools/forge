@@ -22,15 +22,18 @@ use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord}
 use forge_primitives::slack::SlackSubscription;
 use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, UserEnvelope};
 use forge_workspace::env::processes::{ProcessSnapshot, SCAN_STALENESS, scan};
-use forge_workspace::{AccountLoadingRow, GatewayOrgView, McpServers, ProjectView, WorkerEntry};
+use forge_workspace::{
+    AccountLoadingRow, Command, GatewayOrgView, McpServers, ProjectView, WorkerEntry,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::composer::{NoticeWire, Phase, SignIn};
 use crate::file_index::FileIndex;
-use crate::surface::{AgentRow, ConversationHistory, PendingAsk, ViewSurface};
+use crate::surface::{AgentRow, PendingAsk, ViewSurface};
 use crate::transcript::{Rendered, TaskEnding, TurnSpan};
 use crate::transport::TransportState;
+use crate::transport::conversation::Held;
 use crate::transport::envelope::Subject;
 use crate::work::{WorkState, work_from_scan};
 
@@ -336,7 +339,15 @@ pub struct SessionWire {
     pub background_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<MonitorRecord>,
     pub pending_ask: Option<PendingAskWire>,
+    /// The newest turns, not the whole conversation. See [`SUBSCRIBE_TURNS`].
     pub conversation: ConversationWire,
+    /// Whether this seat's conversation holds a sub-agent dispatch at all.
+    ///
+    /// On the record rather than left to whoever draws: it is a fact about
+    /// the conversation, and `conversation` above carries a window of it, so
+    /// a reader scanning that window would report a seat that dispatched an
+    /// hour ago as one where nothing ever ran.
+    pub has_dispatches: bool,
     pub slash_commands: Vec<AvailableCommand>,
     pub subagents: Vec<AvailableAgent>,
     /// Shared with the cache that built it, rather than walked per subscriber:
@@ -696,6 +707,86 @@ pub fn page(messages: &[Message], rendered: &Rendered, before: Option<&str>, tur
     Page { turns: page_turns, cursor }
 }
 
+/// How long a request waits for the seat's conversation before answering
+/// without one.
+///
+/// The session task answers a replay on its own next loop iteration, so this
+/// is a failure case rather than a pacing mechanism. **What it decides is the
+/// same for both readers and they answer differently**: a snapshot carries an
+/// empty conversation, which a client draws as a seat with nothing to show,
+/// while a page is REFUSED - an empty page carries `cursor: null`, and a
+/// client reads that as the end of the history rather than as a delay.
+const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The seat's conversation, asking the session task for it when the stream
+/// has not seeded one.
+///
+/// **The seed comes from the task that produces the conversation, never from
+/// a second walk of the transcript.** The fold holds `Connected` for every
+/// seat that starts or resumes while this transport runs; for a seat whose
+/// connect it missed - a session already running when the transport started -
+/// it asks the task, which is handed the history at connect and emits every
+/// frame after it, so what it hands back is in one order with the frames
+/// around it.
+///
+/// No lock is held across the wait, and two callers on two cold seats do not
+/// serialise: each waits on its own seat's arrival, and the notice only says
+/// that some seat was seeded.
+pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Option<Arc<Held>> {
+    if let Some(held) = state.conversations.get(slot) {
+        return Some(held);
+    }
+    let deadline = std::time::Instant::now() + REPLAY_WAIT;
+    // Asked BEFORE the loop's first look, so a seat that resolves between
+    // the look and the wait is still seen on this pass rather than costing
+    // the caller its whole budget.
+    if state.surface.dispatch(Command::ReplayConversation { key: slot.clone() }).is_err() {
+        return None;
+    }
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let seeded = state.conversations.seeded_notice();
+        tokio::pin!(seeded);
+        seeded.as_mut().enable();
+        if let Some(held) = state.conversations.get(slot) {
+            return Some(held);
+        }
+        if tokio::time::timeout(left, seeded).await.is_err() {
+            break;
+        }
+    }
+    let held = state.conversations.get(slot);
+    if held.is_none() {
+        tracing::warn!(
+            event_name = "conversation_replay_timed_out",
+            slot = %slot.display(),
+            waited_ms = REPLAY_WAIT.as_millis(),
+            "no conversation for this seat within the wait; the request is answered \
+             without one, which a client draws the same way it draws a seat that is \
+             not running",
+        );
+    }
+    held
+}
+
+/// How many of a conversation's newest turns a subscribe carries.
+///
+/// **A subscribe is not a request for a whole transcript.** A client draws a
+/// window and asks `more` for what is above it, so handing it the whole
+/// conversation is a transcript's worth of bytes written per client per
+/// connect and per refresh - measured at 111.7 MB of socket for four
+/// refreshes of a 68.9 MB transcript, which is 99% of that connection's
+/// traffic - for turns it will not draw.
+///
+/// The window matches the client's own `MORE_TURNS` (20), so the newest page
+/// a subscribe carries and the newest page a client asks for are the same
+/// page: a client that asks anyway is handed what it already holds, which it
+/// drops by turn key.
+pub const SUBSCRIBE_TURNS: u32 = 20;
+
 /// A subject's wire form. The ONE place it is produced.
 ///
 /// Async because a session's git section is a filesystem read, so the
@@ -901,30 +992,34 @@ async fn session(
     cwd: &Path,
 ) -> Result<SessionWire> {
     let header = surface.header(slot);
-    // The read and the fold that finds its turns, in one blocking task: the
-    // fold walks the whole conversation, and running it on the reactor would
-    // put that walk in front of every other client's message.
-    let (conversation, rendered) = {
-        let reader = Arc::clone(&state.surface);
-        let (seat, root) = (slot.clone(), cwd.to_path_buf());
-        tokio::task::spawn_blocking(move || {
-            let read = reader.conversation(&seat, &root);
-            let rendered = crate::transcript::render(&read.messages);
-            (read, rendered)
-        })
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(
-                event_name = "transcript_fold_failed",
-                %error,
-                slot = %slot.display(),
-                "the transcript read did not finish; the record is answered without it",
-            );
-            (
-                ConversationHistory::default(),
-                Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
-            )
-        })
+    // The conversation's share of the record, taken through one blocking task
+    // so the fold never runs on the reactor or under the lock. A seat with no
+    // conversation is answered with the empty one.
+    let conversation = conversation_for(state, slot).await;
+    let (turns, compaction_count, has_dispatches) = match conversation {
+        Some(held) => {
+            let seat = slot.clone();
+            tokio::task::spawn_blocking(move || {
+                held.read(|held| {
+                    (
+                        page(held.messages(), held.rendered(), None, SUBSCRIBE_TURNS).turns,
+                        held.compaction_count(),
+                        held.has_dispatches(),
+                    )
+                })
+            })
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    event_name = "transcript_fold_failed",
+                    %error,
+                    slot = %seat.display(),
+                    "the fold did not finish; the record is answered without it",
+                );
+                (Vec::new(), 0, false)
+            })
+        }
+        None => (Vec::new(), 0, false),
     };
     // ONE scan for the working tree, its branch, its count and its PR: the four
     // are then the same instant, so a branch switch between two reads cannot
@@ -949,10 +1044,8 @@ async fn session(
         background_tasks: surface.background_tasks(slot),
         monitors: surface.monitors(slot),
         pending_ask: surface.pending_ask(slot).as_ref().map(PendingAskWire::from),
-        conversation: ConversationWire {
-            turns: all_turns(&conversation.messages, &rendered),
-            compaction_count: conversation.compaction_count,
-        },
+        conversation: ConversationWire { turns, compaction_count },
+        has_dispatches,
         header: SessionHeaderWire {
             model: header.model.as_ref().and_then(|model| serde_json::to_value(model).ok()),
             effort: serde_json::to_value(header.effort).unwrap_or(Value::Null),
@@ -1493,12 +1586,19 @@ mod tests {
         let cwd = surface.roster().cwd_for(&fixture_seat()).expect("the fixture seat's directory");
         work.seed_test_diff(&fixture_seat(), &cwd, &scanned());
 
-        TransportState {
+        let state = TransportState {
             surface,
             work,
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
-        }
+        };
+        // The transport does not read a transcript, so the seat's
+        // conversation is put where a `Connected` would have left it.
+        fleet
+            .hold_conversation(&state, "TestOrg", "proj", "lead")
+            .expect("the fixture's conversation is held");
+        state
     }
 
     /// The substrings a fixture must not pin: the directory the fleet
@@ -1608,6 +1708,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -1659,6 +1760,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -1737,6 +1839,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -1771,6 +1874,7 @@ mod tests {
         let state = TransportState {
             surface,
             work,
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -1840,6 +1944,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -2039,6 +2144,7 @@ mod tests {
         let state = TransportState {
             surface: Arc::clone(&surface),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -2075,6 +2181,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -2100,6 +2207,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -2141,6 +2249,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
@@ -2203,6 +2312,7 @@ mod tests {
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
         };
