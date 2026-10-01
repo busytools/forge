@@ -316,6 +316,37 @@ describe('the conversation the chat draws', () => {
     ).toEqual([...turn('t2', 'second').messages, result('call-1'), monitoring(), dispatched()]);
   });
 
+  it('opens a row for a thinking frame, which draws one now', () => {
+    // The converse of the rule above, and the reason the thinking came out of
+    // its list: a frame that draws something is a row of its own, and a
+    // thinking block carries words this page draws. Over a settled turn it
+    // opens one.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'assistant',
+          uuid: 'a-thought',
+          message: {
+            id: 'm-thought',
+            role: 'assistant',
+            model: 'claude-opus-5',
+            content: [{ type: 'thinking', thinking: 'the model wondered' }],
+          },
+        },
+      },
+    });
+
+    const after = get(chat.value).turns;
+    expect(after.length, 'the thinking opened a row of its own').toBe(2);
+    expect(after[1]?.live, 'and it is a live turn').toBe(true);
+  });
+
   it('opens a row for the reader own words while a turn is live', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
