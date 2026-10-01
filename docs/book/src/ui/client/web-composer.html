@@ -71,13 +71,15 @@
     backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
     padding: 10px 13px; display: flex; flex-direction: column; gap: 0;
     transition: border-color .3s ease; }
-  /* The accent arrives along the bottom edge rather than around the whole
-     frame, so the box does not compete with the conversation above it. */
-  .box:focus-within { box-shadow: inset 0 -2px 0 var(--accent), 0 14px 38px rgba(0,0,0,.42); }
+  /* The ring's colour is the box's state, and what it is DOING wins over focus:
+     recording, transcribing, the landed beat and an error each take it, and at
+     rest it answers whether the keyboard is here. The `:not` list is what states
+     that precedence rather than leaving it to source order. */
   .box.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
   .box.tr { border-color: var(--blue); }
   .box.done { border-color: var(--ok); }
   .box.err { border-color: var(--bad); }
+  .box:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
   .line { display: flex; align-items: flex-end; gap: 10px; }
   .line .txt { flex: 1; min-width: 0; font-size: var(--fs-prose); line-height: 1.5;
     white-space: pre-wrap; word-break: break-word; }

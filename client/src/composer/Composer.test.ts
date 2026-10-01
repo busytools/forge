@@ -513,25 +513,336 @@ function sheetRule(selector: string): string {
 }
 
 /**
- * How the box says it has the keyboard. The composer focuses its field on
- * mount, so the resting look IS the focused look, which is why the accent
- * moving off the frame is the change rather than a detail of it.
+ * The ring the box draws, resolved the way a browser resolves it.
+ *
+ * The ring's colour is a precedence question rather than a text one: a rule
+ * that relies on where it sits in the sheet reads exactly like one that states
+ * what it means, and the two part company only when a state arrives in the
+ * wrong place. So every rule the sheet writes for the box ITSELF is matched
+ * against the classes the component set and whether the keyboard is inside it,
+ * the most specific wins, and source order settles a tie.
+ */
+
+/** What a box rule asks of the element it paints. */
+interface Need {
+  /** Classes the box must carry. */
+  classes: string[];
+  /** Whether the keyboard must be inside it. */
+  focus: boolean;
+  /** Classes it must not carry, one per `:not(...)` argument. */
+  without: string[];
+}
+
+/** A rule the sheet writes that names the box itself. */
+interface BoxRule {
+  /** The part of the selector that names the box, as the sheet writes it. */
+  selector: string;
+  /** The rule's own text, which is where a second device on the box would be. */
+  body: string;
+  need: Need;
+  strength: number;
+}
+
+/** A rule that paints the box's ring, which is what a state is read from. */
+interface Ring extends BoxRule {
+  colour: string;
+}
+
+/**
+ * What a selector asks of a box.
+ *
+ * `null` is only for a rule that selects something INSIDE the box, which is
+ * not the box's own ring. Anything else the resolver cannot read throws: a
+ * rule it skipped is invisible to every check here, so the suite would read
+ * green about a state it never saw.
+ */
+function need(selector: string): Need | null {
+  const rest = selector.replace(/^\.box/, '');
+  if (/[\s>+~]/.test(rest.replace(/\([^)]*\)/g, ''))) return null;
+  const found: Need = { classes: [], focus: false, without: [] };
+  let at = 0;
+  while (at < rest.length) {
+    const tail = rest.slice(at);
+    const classy = /^\.([a-z0-9-]+)/.exec(tail);
+    const focused = /^:focus-within/.exec(tail);
+    const excluded = /^:not\(([^)]*)\)/.exec(tail);
+    if (classy?.[1] !== undefined) {
+      found.classes.push(classy[1]);
+      at += classy[0].length;
+    } else if (focused !== null) {
+      found.focus = true;
+      at += focused[0].length;
+    } else if (excluded?.[1] !== undefined) {
+      found.without.push(...excluded[1].split(',').map((name) => name.trim().replace(/^\./, '')));
+      at += excluded[0].length;
+    } else {
+      throw new Error(`a rule for the box in a form this resolver cannot read: ${selector}`);
+    }
+  }
+  return found;
+}
+
+/**
+ * The border colour a rule paints, written longhand or in the shorthand, or
+ * `null` when it paints no border at all - which is a rule about something
+ * other than the ring. A shorthand it cannot read throws, for the reason
+ * `need` does.
+ */
+function painted(body: string): string | null {
+  const longhand = /border-color:\s*([^;]+)/.exec(body);
+  if (longhand?.[1] !== undefined) return longhand[1].trim();
+  const shorthand = /border:\s*([^;]+)/.exec(body);
+  if (shorthand?.[1] === undefined) return null;
+  // Width, style, colour: the colour is the third token. Fewer than three
+  // names none at all, which is a reset and not a ring; more than three is not
+  // a border shorthand, so it is a form this resolver cannot read.
+  const parts = shorthand[1].trim().split(/\s+/);
+  if (parts.length < 3) return null;
+  if (parts.length > 3) {
+    throw new Error(`a border on the box in a form this resolver cannot read: ${shorthand[0]}`);
+  }
+  return parts[2] ?? null;
+}
+
+/** A selector naming the box itself: the class is bounded after its letters. */
+const BOX = /^\.box(?![a-z0-9-])/;
+
+/** The parts of a selector list, split outside any parentheses - a `:not(...)` carries its own commas. */
+function listed(selector: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let at = 0;
+  for (let i = 0; i < selector.length; i += 1) {
+    const ch = selector[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    else if (ch === ',' && depth === 0) {
+      parts.push(selector.slice(at, i));
+      at = i + 1;
+    }
+  }
+  parts.push(selector.slice(at));
+  return parts.map((part) => part.trim()).filter((part) => part !== '');
+}
+
+/**
+ * Every rule the sheet writes that names the box itself, in source order.
+ *
+ * The set is every flat rule rather than every line that starts with the
+ * class, because the sheet groups selectors and a rule naming the box paints
+ * the box wherever in the list it sits. A part selecting something inside the
+ * box is not the box's own rule; a selector the resolver cannot read throws,
+ * for the reason `need` gives.
+ */
+function boxRules(text: string): BoxRule[] {
+  const found: BoxRule[] = [];
+  // Comments go first: a comment sitting above a rule is otherwise read as part
+  // of that rule's selector, and a comment inside a body as part of the body -
+  // where a rule that is only talked about would read as a rule that is drawn.
+  const sheet = text.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [...sheet.matchAll(/^[ \t]*([^@{}][^{}]*?)\s*\{([^{}]*)\}/gm)];
+  for (const rule of rules) {
+    const body = rule[2] ?? '';
+    for (const selector of listed(rule[1] ?? '')) {
+      if (!BOX.test(selector)) continue;
+      const ask = need(selector);
+      if (ask === null) continue;
+      // A class and a pseudo-class are one of specificity each, and a
+      // `:not(...)` is its most specific argument rather than all of them.
+      const strength = ask.classes.length + (ask.focus ? 1 : 0) + (ask.without.length > 0 ? 1 : 0);
+      found.push({ selector, body, need: ask, strength });
+    }
+  }
+  return found;
+}
+
+/** The rules that paint the box's ring, which is what a state is read from. */
+function rings(text: string): Ring[] {
+  const found: Ring[] = [];
+  for (const rule of boxRules(text)) {
+    const colour = painted(rule.body);
+    if (colour === null) continue;
+    found.push({ ...rule, colour });
+  }
+  return found;
+}
+
+/** Every rule naming the box that draws the inset line, which is the device this change deletes. */
+function insetRules(text: string): string[] {
+  return boxRules(text)
+    .filter((rule) => /box-shadow:[^;]*inset/.test(rule.body))
+    .map((rule) => rule.selector);
+}
+
+/** The colour the sheet gives a box carrying `classes`, keyboard in or out. */
+function ring(text: string, classes: string[], focus: boolean): string {
+  const contenders = rings(text).filter((rule) => {
+    if (rule.need.focus && !focus) return false;
+    if (rule.need.classes.some((name) => !classes.includes(name))) return false;
+    return rule.need.without.every((name) => !classes.includes(name));
+  });
+  const winner = contenders.reduce<Ring | null>(
+    (best, rule) => (best === null || rule.strength >= best.strength ? rule : best),
+    null,
+  );
+  if (winner === null) throw new Error(`the sheet paints no ring for .box.${classes.join('.')}`);
+  return winner.colour;
+}
+
+/**
+ * The frame is one ring with one meaning: the composer focuses its field on
+ * mount, so the box a reader types into carries the accent, and what the box is
+ * DOING takes the ring from focus. An ordering that happens to pick the right
+ * colour reads the same as a stated precedence, so the colour is resolved here
+ * the way a browser resolves it.
  */
 describe('the frame', () => {
-  it('keeps the accent off the frame at rest and draws it along the bottom edge on focus', () => {
-    expect(
-      sheetRule('.box'),
-      'the resting frame is not the control border every other control rests at',
-    ).toContain('border: 1.5px solid var(--ctl)');
+  /** Every state the box draws, and the colour the ring takes for it. */
+  const STATES: readonly [state: string, colour: string][] = [
+    ['rec', 'color-mix(in srgb, var(--accent) 35%, var(--hot))'],
+    ['tr', 'var(--blue)'],
+    ['done', 'var(--ok)'],
+    ['err', 'var(--bad)'],
+  ];
 
-    const focus = sheetRule('.box:focus-within');
-    expect(focus, 'nothing on the box says where the keyboard is').toContain(
-      'inset 0 -2px 0 var(--accent)',
+  it('answers the keyboard at rest: the accent when it is here, the control border when it is not', () => {
+    expect(ring(sheet, [], false), 'a box at rest with the keyboard elsewhere').toBe('var(--ctl)');
+    expect(ring(sheet, [], true), 'a box at rest with the keyboard here').toBe('var(--accent)');
+  });
+
+  for (const [state, colour] of STATES) {
+    it(`draws ${state} in its own colour, whatever the keyboard is doing`, () => {
+      expect(ring(sheet, [state], false), `${state}, keyboard elsewhere`).toBe(colour);
+      expect(ring(sheet, [state], true), `${state}, keyboard here`).toBe(colour);
+    });
+  }
+
+  /**
+   * The precedence, resolved over the sheet rather than pattern-matched: the
+   * states come from the sheet itself, so one arriving in the wrong place is
+   * covered the moment it exists.
+   */
+  it('lets every state the sheet draws take the ring from focus', () => {
+    const states = new Set(rings(sheet).flatMap((rule) => rule.need.classes));
+    expect(states.size, 'the sheet draws no state of its own').toBeGreaterThan(0);
+    for (const state of states) {
+      expect(ring(sheet, [state], true), `focus repaints the ring while the box is ${state}`).toBe(
+        ring(sheet, [state], false),
+      );
+    }
+  });
+
+  /**
+   * The control for the check above: on a box doing nothing, focus DOES change
+   * the ring, so a resolver that could see no difference at all would be
+   * caught rather than read as precedence holding.
+   */
+  it('can tell focus apart where the box is doing nothing', () => {
+    expect(ring(sheet, [], true), 'the check sees no difference focus makes').not.toBe(
+      ring(sheet, [], false),
+    );
+  });
+
+  /**
+   * The negative control, and the failure the precedence check exists for: a
+   * state added ahead of the focus rule, where a cascade relying on source
+   * order silently repaints it. This is the sheet with one such state spliced
+   * in, and the check has to report it.
+   */
+  it('reports a state that arrived in front of the focus rule', () => {
+    const mutated = sheet.replace(
+      '.box:focus-within',
+      '.box.warn { border-color: var(--warn); }\n.box:focus-within',
     );
     expect(
-      focus,
-      'focus still paints the whole 1.5px frame, so the box shouts again',
-    ).not.toContain('border-color');
+      ring(mutated, ['warn'], true),
+      'a state the focus rule silently overpaints is not reported',
+    ).not.toBe(ring(mutated, ['warn'], false));
+  });
+
+  /**
+   * The denominator under the two checks above: a rule for the box that this
+   * resolver cannot read must fail rather than be skipped, because a skipped
+   * rule is invisible to both of them and the suite reads green about a state
+   * it never saw.
+   */
+  it('fails on a rule for the box it cannot read, rather than skipping it', () => {
+    const spliced = sheet.replace(
+      '.box:focus-within',
+      '.box[data-phase="warn"] { border-color: var(--warn); }\n.box:focus-within',
+    );
+    expect(
+      () => ring(spliced, ['warn'], false),
+      'a rule for the box this resolver cannot read is skipped',
+    ).toThrow(/cannot read/);
+  });
+
+  /**
+   * The other failing direction, and the one that is valid CSS: a border that
+   * names no colour is a reset rather than a ring, so it paints nothing for the
+   * resolver to read and must not fail for saying so.
+   */
+  it('skips a border that names no colour rather than reading it as the ring', () => {
+    const spliced = sheet.replace('.box.rec', '.box.reset { border: 0; }\n.box.rec');
+    expect(ring(spliced, ['reset'], false), 'a reset is read as a ring colour').toBe('var(--ctl)');
+  });
+
+  it('draws no second device: no rule for the box paints an inset line', () => {
+    expect(insetRules(sheet), 'a rule for the box draws the inset line again').toEqual([]);
+  });
+
+  /**
+   * The check above has to see every rule that names the box, including the
+   * ones that paint no border: the device it guards against is an inset
+   * SHADOW, so a rule re-adding it would carry no border colour and an
+   * iterator over the ring rules would walk straight past it.
+   */
+  it('sees an inset line on a rule for the box that paints no border', () => {
+    const spliced = sheet.replace(
+      '.box.rec',
+      '.box.shadow { box-shadow: inset 0 -2px 0 var(--accent); }\n.box.rec',
+    );
+    expect(insetRules(spliced), 'a borderless rule for the box draws the inset line').toEqual([
+      '.box.shadow',
+    ]);
+  });
+
+  /**
+   * The class name is bounded at both ends of a selector, so a neighbour's
+   * class beginning with the same letters is not read as the box - reading it
+   * would throw and take every test here with it.
+   */
+  it("does not read a neighbour's class as the box", () => {
+    const spliced = sheet.replace('.box.rec', '.boxrow { border-color: var(--warn); }\n.box.rec');
+    expect(ring(spliced, ['rec'], false), 'a class beginning with the same letters').toBe(
+      'color-mix(in srgb, var(--accent) 35%, var(--hot))',
+    );
+  });
+
+  /**
+   * A grouped selector naming the box paints the box, wherever in the list it
+   * sits: grouping is the sheet's own idiom, and a rule that named the box and
+   * was skipped would be invisible to both checks above.
+   */
+  it('reads a grouped selector that names the box, first or second', () => {
+    const colour = 'color-mix(in srgb, var(--accent) 35%, var(--hot))';
+    for (const grouped of ['.box.rec, .other {', '.other, .box.rec {']) {
+      const spliced = sheet.replace('.box.rec {', grouped);
+      expect(ring(spliced, ['rec'], false), `a rule grouped as ${JSON.stringify(grouped)}`).toBe(
+        colour,
+      );
+    }
+  });
+
+  it('fails on a border shorthand it cannot read, rather than skipping it', () => {
+    const spliced = sheet.replace(
+      '.box.rec',
+      '.box.odd { border: 1px solid var(--ok) inset; }\n.box.rec',
+    );
+    expect(
+      () => ring(spliced, ['rec'], false),
+      'a border shorthand this resolver cannot read is skipped',
+    ).toThrow(/cannot read/);
   });
 
   it('puts the controls on the last line, so they follow the caret down', () => {

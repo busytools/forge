@@ -61,11 +61,8 @@
     font-family: var(--mono); font-size: 22px; font-weight: 500;
     letter-spacing: -.01em;
   }
-  /* The input has no box, so the focus indicator is the rule beneath it -
-     the same mechanism the sheet uses for the composer's box
-     (`.box:focus-within`), where the frame holds and the accent arrives as
-     an inset band along the bottom edge, the inner input dropping its
-     outline because the container carries it. */
+  /* The input has no box, so the focus indicator is the rule beneath it, and
+     the inner input drops its outline because the rule carries it. */
   .addr input:focus { outline: none; }
   .addr:focus-within .rule { background: var(--accent); }
   .addr input::selection { background: rgba(244,118,0,.3); }

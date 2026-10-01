@@ -12,8 +12,8 @@
    sitting on it. `:focus-visible` rather than `:focus`, so a pointer press
    does not draw it while a Tab still does.
    A control that draws none owes a replacement: the composer's field is the
-   only one, and the box around it draws the accent along its own bottom edge
-   as the whole of that mark. */
+   only one, and the ring around it takes the accent while the keyboard is in
+   it and the box is at rest, as the whole of that mark. */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -901,14 +901,15 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
   backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
   padding: 10px 13px; display: flex; flex-direction: column; gap: 0;
   transition: border-color .3s ease; }
-/* The accent arrives along the bottom edge rather than around the whole frame,
-   so the box does not compete with the conversation above it. The resting
-   shadow is repeated because `box-shadow` replaces rather than adds. */
-.box:focus-within { box-shadow: inset 0 -2px 0 var(--accent), 0 14px 38px rgba(0,0,0,.42); }
+/* The ring's colour is the box's state, and what it is DOING wins over focus:
+   recording, transcribing, the landed beat and an error each take it, and at
+   rest it answers whether the keyboard is here. The `:not` list is what states
+   that precedence rather than leaving it to source order. */
 .box.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
 .box.tr { border-color: var(--blue); }
 .box.done { border-color: var(--ok); }
 .box.err { border-color: var(--bad); }
+.box:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
 /* The controls take the last line, so they follow the caret down as the draft
    grows rather than floating in the middle of a paragraph. */
 .line { display: flex; align-items: flex-end; gap: 10px; }
@@ -924,8 +925,8 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
   font-size: var(--fs-prose); line-height: 1.5; background: none; border: 0;
   padding: 0; resize: none; overflow-y: auto; max-height: 40vh;
   field-sizing: content; }
-/* The box's bottom edge is this field's focus indicator, so the field draws
-   none of its own. */
+/* The box's ring is this field's focus indicator, so the field draws none of
+   its own. */
 .line .txt:focus { outline: none; }
 .line .txt::placeholder { color: var(--dim); font-style: italic; }
 /* The way into a take, on the input line rather than on a strip of its own:
