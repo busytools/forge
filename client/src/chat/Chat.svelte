@@ -149,23 +149,32 @@
   });
 
   /**
-   * What the follow watches: the newest row, and the line that grows it.
+   * What the follow watches: the newest row ITSELF, and the line that grows it.
    *
-   * **The compaction line is part of the last row and arrives as a PROP**, not
-   * as a frame, so a flip alone grows that row by its height with no scroll
-   * behind it - and nothing else re-runs the follow until some later frame
-   * happens to land, which on a session with no hooks is never. The line then
-   * draws with its baseline below the fold for the whole compaction. Keyed
-   * here so the follow re-sticks when the line appears.
+   * **The row, not a count of rows.** Anything that changes what the end is
+   * has to re-pin the reader, and a count only moves when a row is ADDED - so
+   * a settled copy landing on the row already there, which replaces it with a
+   * shorter one, left the reader at a position computed for the row that is
+   * gone. The terminal recomputes its target from the content's own height
+   * every frame while it is pinned (`forge-tui/src/ui/chat.rs`), so this is
+   * the same rule at the resolution a keyed list has; the row's identity is
+   * the stand-in for its height.
+   *
+   * **And the compaction line arrives as a PROP**, not as a frame, so a flip
+   * alone grows that row with nothing else changing: reading `compacting`
+   * keeps the line's growth from drawing below the fold for the whole
+   * compaction.
    */
-  const follows = $derived(held.turns.length === 0 ? null : `${held.turns.length}:${compacting}`);
+  const follows = $derived(held.turns.length === 0 ? null : held.turns[held.turns.length - 1]);
 
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
   // conversation means, and a page that grew without the view moving would
   // lose the very thing it was opened on. A reader anywhere else is left
   // exactly where they are.
   $effect(() => {
-    if (follows === null || !held.loaded || !held.atEnd) return;
+    const newest = follows;
+    void compacting;
+    if (newest === null || !held.loaded || !held.atEnd) return;
     list?.scrollToIndex(held.turns.length - 1, { align: 'end' });
   });
 
