@@ -680,8 +680,14 @@ details.sec[open] > summary .arw { color: var(--accent); }
   padding: 2px 0 2px 12px; margin: 10px 0; }
 /* No rule between body rows: the terminal draws the one line under the header. */
 .prose table { border-collapse: collapse; margin: 10px 0; }
+/* A cell breaks a long token rather than widening the table past the column:
+   the terminal stacks a table its grid cannot hold, and wrapping keeps the
+   table the shape it is. A cell that can break anywhere has a one-character
+   minimum, so the header - a label, not data - declares its own width instead
+   of being sliced by a neighbouring column's demand for it. */
 .prose th, .prose td { text-align: left; padding: 4px 12px 4px 0; }
-.prose th { color: var(--muted); font-weight: 700;
+.prose td { overflow-wrap: anywhere; }
+.prose th { color: var(--muted); font-weight: 700; white-space: nowrap;
   border-bottom: 1px solid var(--line); }
 .prose hr { border: 0; height: 1px; background: var(--line); margin: 12px 0; }
 
@@ -729,7 +735,7 @@ details.leaf.running > summary { color: var(--text); }
 .body { margin: 3px 0 6px 27px; }
 .term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
   border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
-  white-space: pre-wrap; overflow-x: auto; }
+  white-space: pre-wrap; overflow-wrap: anywhere; }
 .term .pfx { color: var(--dim); }
 /* A line a command reported as its own result: the book's drawing has the
    summary half, and a task that ended badly is the same line in the bad tone. */
@@ -744,24 +750,30 @@ details.leaf.running > summary { color: var(--text); }
   background: var(--s2); overflow: hidden; }
 .code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   padding: 5px 12px; border-bottom: 1px solid var(--line); }
+/* A long line wraps inside the panel rather than scrolling it, and a token with
+   nowhere to break is split the way the terminal's own wrapper splits one. */
 .code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 8px 12px;
-  white-space: pre; overflow-x: auto; line-height: 1.55; }
+  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 /* A search result, one row per hit: where it is, then what matched. */
 .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
   margin: 4px 0; border-left: 1px solid var(--line); }
 .searchhit .ln { color: var(--accent); }
 .searchhit .fl { color: var(--muted); }
 .searchhit .hit { color: var(--warn); }
-/* One grid for the whole diff, with the rows as `display: contents`: the
-   scroller runs as wide as its longest line, and a grid per ROW would end each
-   tint at the container's edge, leaving the scrolled overflow bare. */
+/* One grid for the whole diff, with the rows as `display: contents`, so a
+   line's number and its text stay one row and the tint covers both. The grid
+   used to span the scroller's full width - a grid per ROW would have ended each
+   tint at the container's edge with the scrolled overflow left bare - and
+   wrapping retires that premise rather than working around it:
+   `overflow-wrap: anywhere` holds the column at the container's own width, so
+   nothing overflows and no tint can fall short of one. */
 .dif { display: grid; grid-template-columns: 22px 1fr;
   border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
   font-family: var(--mono); font-size: var(--fs-data); }
 .dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2); padding: 4px 12px; }
 .dif .ln { display: contents; }
 .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
-.dif .ln .l { white-space: pre; padding-right: 12px; }
+.dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
 .dif .ln.a .l { background: var(--add-bg); }
 .dif .ln.d .l { background: var(--del-bg); }
 .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
@@ -1367,15 +1379,7 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    tokens on purpose, and a page adding them back would be a second entry in a
    list another page is already changing. The values are `theme.rs`'s, so the
    diff draws the ground forge drew. */
-.dif { --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5);
-  overflow-x: auto; overflow-y: hidden; }
-/* The path above a diff is one unbroken token and often longer than a phone,
-   where it ran off the card and took the sideways scroll with it. It is a
-   location rather than code, so it wraps rather than scrolling. */
+.dif { --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5); }
+/* The path above a diff is one unbroken token and often longer than a phone. It
+   is a location rather than code, so it wraps rather than scrolling. */
 .dif .h { overflow-wrap: anywhere; }
-
-@media (max-width: 560px) {
-  /* A diff line is as long as the line it quotes and a phone is not, so at
-     this width the file wraps rather than scrolling a gutter off the screen. */
-  .dif .ln .l { white-space: pre-wrap; }
-}
