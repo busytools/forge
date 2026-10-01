@@ -798,6 +798,30 @@ mod tests {
         assert_eq!(totals.cache_written_tokens, 25, "and so does the cache-write counter");
     }
 
+    /// A turn opening discards what the one before it accumulated.
+    ///
+    /// `forge-web` calls `start` unguarded on every frame that reports a turn
+    /// in flight and then reads the totals back, so a turn that opened without
+    /// the clear would show the previous turn's figures as its own.
+    #[test]
+    fn starting_a_turn_discards_the_previous_turns_state() {
+        let mut turn = LiveTurn::default();
+        turn.start(std::time::Instant::now());
+        turn.record("msg-1".to_owned(), usage(100, 1_000, 10));
+        turn.thinking_tokens = Some(40);
+        assert!(turn.totals().is_some(), "the first turn accumulated usage to discard");
+
+        turn.start(std::time::Instant::now());
+        assert!(
+            turn.totals().is_none(),
+            "a turn's totals are its own: the previous turn's frames do not carry into it"
+        );
+        assert_eq!(
+            turn.thinking_tokens, None,
+            "and neither does the previous turn's thinking estimate"
+        );
+    }
+
     /// Every capture file under `dir`, at any depth: the version directory is
     /// named for the CLI, and a capture set can sit a level below it.
     fn collect_captures(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
