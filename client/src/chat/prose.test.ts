@@ -7,15 +7,72 @@ import { renderProse } from './prose';
 
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 
-/** Whether any rule the sheet writes for `unit` carries `said`. */
+/**
+ * Whether any rule the sheet writes for `unit` carries `said`.
+ *
+ * Scoped on `.prose` alone: prose draws in the work a turn did and in what the
+ * reader typed, which the terminal folds as a document too.
+ */
 function declares(unit: string, said: string): boolean {
-  const rules = SHEET.matchAll(
-    new RegExp(`\\.work \\.prose [^{}]*\\b${unit}\\b[^{}]*\\{([^}]*)\\}`, 'g'),
-  );
+  const rules = SHEET.matchAll(new RegExp(`\\.prose [^{}]*\\b${unit}\\b[^{}]*\\{([^}]*)\\}`, 'g'));
   return [...rules].some((rule) => rule[1]?.includes(said) ?? false);
 }
 
 describe('the markdown a message carries, as the sheet draws it', () => {
+  it('configures the two renderers as one, apart from soft breaks', () => {
+    // The two differ by their options and nothing else. A rule attached to one
+    // instance and not the other is the hand-kept mirror this shape exists to
+    // avoid - a fence drawn as the page's panel in prose and as the module's own
+    // `<pre><code>` in a prompt is what that costs - so the pair is compared by
+    // what they render rather than by how they were built: every markdown shape
+    // the page draws, through both, byte for byte.
+    const document = [
+      '# a heading',
+      '',
+      'a paragraph with `code` and a [link](https://example.test).',
+      '',
+      '- one',
+      '- two',
+      '',
+      '> a quote',
+      '',
+      '```sh',
+      'just check',
+      '```',
+      '',
+      '    an indented block',
+      '',
+      '| a | b |',
+      '| - | - |',
+      '| 1 | 2 |',
+      '',
+      '---',
+      '',
+      'first line',
+      'second line',
+    ].join('\n');
+
+    const prose = renderProse(document);
+    const prompt = renderProse(document, true);
+
+    expect(prompt).toContain('<br>');
+    // The tag alone is the difference: the newline it replaces is still there,
+    // so what is left of the prompt's render is the prose render verbatim.
+    expect(prompt.replace(/<br>/g, ''), 'the split is the only difference').toBe(prose);
+  });
+
+  it('keeps a prompt newline as a break, where the same text joins for prose', () => {
+    // The terminal's own split: its user path passes `preserve_newlines`,
+    // which routes through `force_markdown_line_breaks`, and its assistant
+    // path does not - so a prompt's newlines survive and an assistant's
+    // wrapped line joins back into one. A prompt is usually several lines, so
+    // this is the shape a person meets first.
+    const typed = 'first line\nsecond line';
+
+    expect(renderProse(typed), 'assistant prose joins its soft break').not.toContain('<br>');
+    expect(renderProse(typed, true), 'and a prompt keeps it').toContain('<br>');
+  });
+
   it('draws every heading level as one bold line at the prose size', () => {
     // A sheet edit that drops a level is silent: it keeps drawing, only as the
     // browser's default against a reset that zeroes margins, which is an h1 at

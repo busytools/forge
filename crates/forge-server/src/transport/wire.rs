@@ -12,6 +12,7 @@
 //! compared with the terminal, and a field missing here cannot be added
 //! later without a server change.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -19,7 +20,7 @@ use anyhow::Result;
 use forge_primitives::review::{ReviewSet, ReviewThread};
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
-use forge_primitives::{GotifySubscription, Message, SessionSlot};
+use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, UserEnvelope};
 use forge_workspace::env::processes::{ProcessSnapshot, SCAN_STALENESS, scan};
 use forge_workspace::{AccountLoadingRow, GatewayOrgView, McpServers, ProjectView, WorkerEntry};
 use serde::{Deserialize, Serialize};
@@ -28,7 +29,7 @@ use serde_json::Value;
 use crate::composer::{NoticeWire, Phase, SignIn};
 use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, ConversationHistory, PendingAsk, ViewSurface};
-use crate::transcript::TurnSpan;
+use crate::transcript::{Rendered, TaskEnding, TurnSpan};
 use crate::transport::TransportState;
 use crate::transport::envelope::Subject;
 use crate::work::{WorkState, work_from_scan};
@@ -518,13 +519,81 @@ fn opens_of(spans: &[TurnSpan]) -> Vec<(usize, Option<&str>)> {
 
 /// The messages `from..to` as one turn, which is the shape both the session
 /// record and a page carry.
-fn turn_wire(messages: &[Message], from: usize, to: usize, key: Option<&str>) -> TurnWire {
-    TurnWire {
-        key: key.map(str::to_owned),
-        messages: messages[from..to]
-            .iter()
-            .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
-            .collect(),
+///
+/// **A task ending a call in this turn is owed rides along.** A client folds
+/// one turn at a time, so an ending the CLI persisted in another turn is one
+/// it cannot reach - and the notice opens a turn of its own, which puts it in
+/// another turn whenever anything that does open one sits between. The row
+/// the CLI wrote stays where it is and draws nothing; what is added is a frame
+/// of its own, which is content of the wire's own type rather than a second
+/// copy of a drawing.
+fn turn_wire(
+    messages: &[Message],
+    from: usize,
+    to: usize,
+    key: Option<&str>,
+    endings: &HashMap<String, TaskEnding>,
+) -> TurnWire {
+    let mut frames: Vec<Value> = messages[from..to]
+        .iter()
+        .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
+        .collect();
+    for ending in owed_endings(messages, from, to, endings) {
+        frames.push(serde_json::to_value(forged_ending(ending)).unwrap_or(Value::Null));
+    }
+    TurnWire { key: key.map(str::to_owned), messages: frames }
+}
+
+/// The endings that name a call this turn holds and that the turn does not
+/// already carry.
+fn owed_endings<'a>(
+    messages: &[Message],
+    from: usize,
+    to: usize,
+    endings: &'a HashMap<String, TaskEnding>,
+) -> Vec<&'a TaskEnding> {
+    endings
+        .values()
+        .filter(|ending| !(from..to).contains(&ending.at))
+        .filter(|ending| turn_holds_call(&messages[from..to], &ending.call))
+        .collect()
+}
+
+/// Whether these frames make the call `id`.
+fn turn_holds_call(messages: &[Message], id: &str) -> bool {
+    messages.iter().any(|message| {
+        let Message::Assistant { message: envelope, .. } = message else {
+            return false;
+        };
+        envelope.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolUse { id: call, .. }
+                    | ContentBlock::ServerToolUse { id: call, .. }
+                    if call == id
+            )
+        })
+    })
+}
+
+/// The notice as a frame of its own, for the turn that holds the call it ends.
+///
+/// Forged rather than read off the wire, like the turn a delivery draws as:
+/// the CLI wrote this ending into a row of its own, and this is that ending
+/// delivered where a per-turn fold can see it. It carries no `uuid`, because
+/// the CLI mints the transcript's id for its own row and nothing here may
+/// invent one that disagrees with it.
+fn forged_ending(ending: &TaskEnding) -> Message {
+    Message::User {
+        message: UserEnvelope {
+            role: "user".to_owned(),
+            content: vec![crate::transcript::notice_block(&ending.text)],
+        },
+        session_id: String::new(),
+        parent_tool_use_id: None,
+        uuid: None,
+        tool_use_result: None,
+        timestamp: None,
     }
 }
 
@@ -562,11 +631,14 @@ fn turn_ranges<'a>(
         .collect()
 }
 
-/// `messages` as the whole turns `spans` names, in conversation order.
-pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
-    turn_ranges(messages, spans)
+/// `messages` as the whole turns `rendered` names, in conversation order.
+///
+/// The fold's own answer is what a caller passes, so the endings it read ride
+/// along rather than being searched for again here.
+pub fn all_turns(messages: &[Message], rendered: &Rendered) -> Vec<TurnWire> {
+    turn_ranges(messages, &rendered.turns)
         .into_iter()
-        .map(|(from, to, key)| turn_wire(messages, from, to, key))
+        .map(|(from, to, key)| turn_wire(messages, from, to, key, &rendered.endings))
         .collect()
 }
 
@@ -591,13 +663,13 @@ pub fn all_turns(messages: &[Message], spans: &[TurnSpan]) -> Vec<TurnWire> {
 /// conversation, and a client reading `None` as "nothing above" stops after
 /// the first page. The message the page's first turn opens at is the one thing
 /// that always names it.
-pub fn page(messages: &[Message], spans: &[TurnSpan], before: Option<&str>, turns: u32) -> Page {
+pub fn page(messages: &[Message], rendered: &Rendered, before: Option<&str>, turns: u32) -> Page {
     // A page of no turns ends where it began: its cursor would name the turn it
     // already opened at, so a client walking back would ask for the same page
     // forever.
     let turns = turns.max(1) as usize;
-    let ranges = turn_ranges(messages, spans);
-    let opens = opens_of(spans);
+    let ranges = turn_ranges(messages, &rendered.turns);
+    let opens = opens_of(&rendered.turns);
 
     // A cursor names the message the previous page BEGAN at, so the page above
     // ends where that one started: the two meet exactly.
@@ -612,7 +684,7 @@ pub fn page(messages: &[Message], spans: &[TurnSpan], before: Option<&str>, turn
     let first = ends_at.saturating_sub(turns);
     let page_turns: Vec<TurnWire> = ranges[first..ends_at]
         .iter()
-        .map(|&(from, to, key)| turn_wire(messages, from, to, key))
+        .map(|&(from, to, key)| turn_wire(messages, from, to, key, &rendered.endings))
         .collect();
 
     // `None` is the real "nothing above this page": a page already opening on
@@ -832,13 +904,13 @@ async fn session(
     // The read and the fold that finds its turns, in one blocking task: the
     // fold walks the whole conversation, and running it on the reactor would
     // put that walk in front of every other client's message.
-    let (conversation, spans) = {
+    let (conversation, rendered) = {
         let reader = Arc::clone(&state.surface);
         let (seat, root) = (slot.clone(), cwd.to_path_buf());
         tokio::task::spawn_blocking(move || {
             let read = reader.conversation(&seat, &root);
-            let spans = crate::transcript::render(&read.messages).turns;
-            (read, spans)
+            let rendered = crate::transcript::render(&read.messages);
+            (read, rendered)
         })
         .await
         .unwrap_or_else(|error| {
@@ -848,7 +920,10 @@ async fn session(
                 slot = %slot.display(),
                 "the transcript read did not finish; the record is answered without it",
             );
-            (ConversationHistory::default(), Vec::new())
+            (
+                ConversationHistory::default(),
+                Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
+            )
         })
     };
     // ONE scan for the working tree, its branch, its count and its PR: the four
@@ -875,7 +950,7 @@ async fn session(
         monitors: surface.monitors(slot),
         pending_ask: surface.pending_ask(slot).as_ref().map(PendingAskWire::from),
         conversation: ConversationWire {
-            turns: all_turns(&conversation.messages, &spans),
+            turns: all_turns(&conversation.messages, &rendered),
             compaction_count: conversation.compaction_count,
         },
         header: SessionHeaderWire {
@@ -939,9 +1014,9 @@ mod tests {
         )
     }
 
-    /// The messages and turn spans a page is cut on, over a transcript of `rows`,
-    /// read the way the transport reads them.
-    fn a_conversation(rows: &[&str]) -> (Vec<Message>, Vec<TurnSpan>) {
+    /// The messages and the fold's own answer for them, over a transcript of
+    /// `rows`, read the way the transport reads them.
+    fn a_conversation(rows: &[&str]) -> (Vec<Message>, Rendered) {
         let dir = tempfile::tempdir().expect("tempdir").keep();
         let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
             .expect("the fleet builds");
@@ -951,8 +1026,8 @@ mod tests {
         let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
 
         let messages = surface.conversation(&seat, &cwd).messages;
-        let spans = crate::transcript::render(&messages).turns;
-        (messages, spans)
+        let rendered = crate::transcript::render(&messages);
+        (messages, rendered)
     }
 
     /// `turns` finished turns, as the transcript rows they are.
@@ -973,8 +1048,164 @@ mod tests {
     }
 
     /// The words every turn of a conversation opened on, oldest first.
-    fn every_turn(messages: &[Message], spans: &[TurnSpan]) -> Vec<String> {
-        page(messages, spans, None, u32::MAX).turns.iter().map(opened_on).collect()
+    fn every_turn(messages: &[Message], rendered: &Rendered) -> Vec<String> {
+        page(messages, rendered, None, u32::MAX).turns.iter().map(opened_on).collect()
+    }
+
+    /// A turn's frames as the messages they are, so a test can fold one turn
+    /// the way a client folds it: alone.
+    fn turn_messages(turn: &TurnWire) -> Vec<Message> {
+        turn.messages
+            .iter()
+            .map(|frame| serde_json::from_value(frame.clone()).expect("a message"))
+            .collect()
+    }
+
+    /// How many task endings the frames name `call` in.
+    fn endings_in(turn: &TurnWire, call: &str) -> usize {
+        turn.messages
+            .iter()
+            .filter(|frame| {
+                frame["message"]["content"].as_array().is_some_and(|blocks| {
+                    blocks.iter().any(|block| {
+                        block["type"] == "queued_command"
+                            && block["commandMode"] == "task-notification"
+                            && block["prompt"].as_str().is_some_and(|text| text.contains(call))
+                    })
+                })
+            })
+            .count()
+    }
+
+    /// The calls the fold drew in one turn.
+    fn calls(units: &[ChatUnit]) -> Vec<&crate::transcript::ToolLeaf> {
+        units
+            .iter()
+            .filter_map(|unit| match unit {
+                ChatUnit::ToolGroup { families, .. } => {
+                    Some(families.iter().flat_map(|family| family.calls.iter()))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// What the frames of one turn say about a call's row, in words.
+    fn drawn_text(units: &[ChatUnit], call: &str) -> Vec<String> {
+        calls(units)
+            .into_iter()
+            .filter(|leaf| leaf.id == call)
+            .flat_map(|leaf| leaf.content.iter())
+            .filter_map(|piece| match piece {
+                forge_primitives::ToolCallContent::Content {
+                    content: forge_primitives::ChunkContent::Text { text },
+                } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A page's client folds one turn at a time, so an ending that sits in
+    /// another turn is an ending it cannot reach - and about three notices in
+    /// ten on this machine sit exactly there.
+    ///
+    /// Both carriers are carried into the call's turn, and the ending is drawn
+    /// exactly once: the copy is what the call's own turn holds, and the row
+    /// the CLI persisted draws nothing wherever it is.
+    #[test]
+    fn the_ending_is_carried_into_the_call_turn() {
+        for (rows, call, said) in [
+            (
+                crate::fixtures::SAME_TURN_USER_ROW,
+                "call_da4c7ee117d14d48ba99e036",
+                "Background command \"Watch the account-lifecycle CI run\" failed with exit code 1",
+            ),
+            (
+                crate::fixtures::CROSS_TURN_ATTACHMENT,
+                "call_17c05f64497746b0ac450728",
+                "Background command \"Restart the harness with a long terminate window\" failed with exit code 100",
+            ),
+        ] {
+            let (messages, rendered) = a_conversation(rows);
+            let turns = all_turns(&messages, &rendered);
+            // Folded the way a client folds a page: one turn at a time.
+            let folded: Vec<Vec<ChatUnit>> = turns
+                .iter()
+                .map(|turn| crate::transcript::render_units(&turn_messages(turn)))
+                .collect();
+
+            let holding = folded
+                .iter()
+                .position(|units| calls(units).iter().any(|leaf| leaf.id == call))
+                .unwrap_or_else(|| panic!("one turn holds {call}"));
+            let held = calls(&folded[holding]);
+            let held = held.iter().find(|leaf| leaf.id == call).expect("the call");
+
+            assert_eq!(
+                held.status,
+                crate::model::ToolCallStatus::Failed,
+                "the call's own turn carries the ending, so a per-turn fold reads it",
+            );
+            assert!(
+                drawn_text(&folded[holding], call).iter().any(|text| text == said),
+                "and what the harness said rides it",
+            );
+            // **The ending is drawn once.** A cross-turn notice is carried
+            // as well as kept, so the conversation holds the ending twice -
+            // the row the CLI wrote it in and the copy - and only one of them
+            // can end the call: the copy is inside the turn that draws it,
+            // and the row is in a turn whose fold finds no such call to end.
+            let drawn_in: Vec<usize> = folded
+                .iter()
+                .enumerate()
+                .filter(|(_, units)| {
+                    calls(units).iter().any(|leaf| {
+                        leaf.id == call && leaf.status == crate::model::ToolCallStatus::Failed
+                    })
+                })
+                .map(|(at, _)| at)
+                .collect();
+            assert_eq!(drawn_in, vec![holding], "and it is drawn in that turn alone");
+            assert!(
+                turns.iter().any(|turn| endings_in(turn, call) > 0),
+                "and it reaches the wire as the block a view reads, not as the row's own text",
+            );
+            assert!(
+                folded.iter().flatten().all(|unit| !matches!(
+                    unit,
+                    ChatUnit::UserTurn { text } if text.contains("<task-notification>")
+                )),
+                "and no turn draws the raw notice as the reader's own words",
+            );
+
+            // **And the carry survives a page, which is the path a client
+            // walking history actually reads.** `page` cuts its own window
+            // from the same fold, and a carry that only `all_turns` made would
+            // leave the ending unreachable where scrolling looks for it - a
+            // hole no test above this line would show.
+            let mut paged: Vec<Vec<ChatUnit>> = Vec::new();
+            let mut before: Option<String> = None;
+            loop {
+                let page = page(&messages, &rendered, before.as_deref(), 1);
+                for turn in &page.turns {
+                    paged.push(crate::transcript::render_units(&turn_messages(turn)));
+                }
+                match page.cursor {
+                    Some(cursor) if Some(&cursor) != before.as_ref() => before = Some(cursor),
+                    _ => break,
+                }
+            }
+            let paged_drawn: usize = paged
+                .iter()
+                .filter(|units| {
+                    calls(units).iter().any(|leaf| {
+                        leaf.id == call && leaf.status == crate::model::ToolCallStatus::Failed
+                    })
+                })
+                .count();
+            assert_eq!(paged_drawn, 1, "a page of one turn, folded alone, still ends the call");
+        }
     }
 
     /// A page of no turns ended where it began - an empty page whose cursor
@@ -984,13 +1215,13 @@ mod tests {
     fn a_page_of_no_turns_still_walks_backwards() {
         let rows = turns_of(6);
         let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
-        let (messages, spans) = a_conversation(&borrowed);
+        let (messages, rendered) = a_conversation(&borrowed);
 
         // Reached the way a client reaches one, from the cursor below it.
-        let lower = page(&messages, &spans, None, 2);
+        let lower = page(&messages, &rendered, None, 2);
         let cursor = lower.cursor.expect("there is a page above this one");
 
-        let above = page(&messages, &spans, Some(&cursor), 0);
+        let above = page(&messages, &rendered, Some(&cursor), 0);
 
         assert!(!above.turns.is_empty(), "a page carries turns rather than none at all");
         assert_ne!(
@@ -1005,13 +1236,13 @@ mod tests {
     /// reaches them.
     #[test]
     fn the_rows_before_the_first_turn_ride_the_first_page() {
-        let (messages, spans) = a_conversation(&[
+        let (messages, rendered) = a_conversation(&[
             r#"{"type":"assistant","uuid":"a0","message":{"id":"m0","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"a delivery arrived"}]}}"#,
             r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"},"session_id":"s"}"#,
             r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
         ]);
 
-        let first = page(&messages, &spans, None, 10);
+        let first = page(&messages, &rendered, None, 10);
 
         assert_eq!(first.turns.len(), 1, "precondition: this conversation is one turn");
         assert_eq!(
@@ -1032,16 +1263,19 @@ mod tests {
     /// would stop there, with the whole of it unreachable.
     #[test]
     fn a_conversation_with_no_turns_still_pages() {
-        let (messages, spans) = a_conversation(&[
+        let (messages, rendered) = a_conversation(&[
             r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"[Cron]\n\nstand-up"},"session_id":"s"}"#,
             r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"morning"}]}}"#,
             r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
         ]);
 
-        assert!(spans.is_empty(), "precondition: nothing in this conversation opens a turn");
+        assert!(
+            rendered.turns.is_empty(),
+            "precondition: nothing in this conversation opens a turn",
+        );
         assert!(!messages.is_empty(), "precondition: and it has content");
 
-        let page = page(&messages, &spans, None, 10);
+        let page = page(&messages, &rendered, None, 10);
 
         assert_eq!(page.turns.len(), 1, "the conversation rides one turn rather than none");
         assert_eq!(page.turns[0].messages.len(), messages.len(), "and that turn carries all of it");
@@ -1056,19 +1290,19 @@ mod tests {
     /// moved - an empty one, since the two boundaries are the same message.
     #[test]
     fn a_user_row_with_two_blocks_opens_one_turn() {
-        let (messages, spans) = a_conversation(&[
+        let (messages, rendered) = a_conversation(&[
             r#"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"text","text":"one"},{"type":"text","text":"two"}]},"session_id":"s"}"#,
             r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"reply"}]}}"#,
             r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
         ]);
 
-        assert_eq!(spans.len(), 2, "precondition: the fold opens a turn per block");
+        assert_eq!(rendered.turns.len(), 2, "precondition: the fold opens a turn per block");
         assert_eq!(
-            spans[0].opens_at, spans[1].opens_at,
+            rendered.turns[0].opens_at, rendered.turns[1].opens_at,
             "precondition: and both open at the one message that carried them",
         );
 
-        let page = page(&messages, &spans, None, 10);
+        let page = page(&messages, &rendered, None, 10);
 
         assert_eq!(page.turns.len(), 1, "one message is one turn on the page");
         assert_eq!(
@@ -1084,8 +1318,8 @@ mod tests {
     fn a_page_opens_on_a_turn_and_the_pages_meet_exactly() {
         let rows = turns_of(50);
         let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
-        let (messages, spans) = a_conversation(&borrowed);
-        let first = page(&messages, &spans, None, 10);
+        let (messages, rendered) = a_conversation(&borrowed);
+        let first = page(&messages, &rendered, None, 10);
 
         // A page is the turns it was asked for, each opening where a turn
         // does. A page beginning anywhere else hands a client the tail of one
@@ -1109,8 +1343,8 @@ mod tests {
         // repeat turns - the client keys them and drops the repeats - but it
         // may never skip one, because a skipped turn is history the reader has
         // no way to ask for again.
-        let all = every_turn(&messages, &spans);
-        let second = page(&messages, &spans, first.cursor.as_deref(), 10);
+        let all = every_turn(&messages, &rendered);
+        let second = page(&messages, &rendered, first.cursor.as_deref(), 10);
         let second_turns: Vec<String> = second.turns.iter().map(opened_on).collect();
 
         assert!(!second_turns.is_empty(), "asking for more turns returns some");
@@ -1139,14 +1373,14 @@ mod tests {
     fn walking_back_through_history_sees_every_turn_and_ends() {
         let rows = turns_of(25);
         let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
-        let (messages, spans) = a_conversation(&borrowed);
-        let every = every_turn(&messages, &spans);
+        let (messages, rendered) = a_conversation(&borrowed);
+        let every = every_turn(&messages, &rendered);
 
         let mut seen: Vec<String> = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pages = 0;
         loop {
-            let asked = page(&messages, &spans, cursor.as_deref(), 5);
+            let asked = page(&messages, &rendered, cursor.as_deref(), 5);
             pages += 1;
             assert!(pages < every.len() + 2, "the walk terminates rather than cycling");
             seen.extend(asked.turns.iter().map(opened_on));
@@ -1174,6 +1408,7 @@ mod tests {
     use super::*;
     use crate::surface::PendingKind;
     use crate::testing::ViewFacts;
+    use crate::transcript::ChatUnit;
     use crate::work::WorkCache;
     use forge_primitives::git_diff::GitDiffSnapshot;
 

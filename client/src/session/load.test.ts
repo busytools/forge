@@ -76,9 +76,10 @@ const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 const OTHER: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'worker' };
 const SUBJECT: Subject = { session: LEAD };
 
-/** The seat's record: the dev fixture's frame, the load capture's content. */
-function seats(turns: unknown[]): unknown {
-  return { ...session, conversation: { turns, compaction_count: 0 }, ...load };
+/** The seat's record: the dev fixture's frame, the load capture's content, and
+ * whatever a case wants the record itself to say. */
+function seats(turns: unknown[], fields: Record<string, unknown> = {}): unknown {
+  return { ...session, conversation: { turns, compaction_count: 0 }, ...load, ...fields };
 }
 
 /**
@@ -100,10 +101,10 @@ const MESSAGES = load.turns.reduce((total, turn) => total + turn.messages.length
  * denominator stays honest - a stub that replayed the same bytes without
  * counting them as a read would report the cost of a page that never re-read.
  */
-function seat(turns: unknown[] = load.turns) {
+function seat(turns: unknown[] = load.turns, fields: Record<string, unknown> = {}) {
   const listeners = new Set<(message: ServerMessage) => void>();
   const asked: Subject[] = [];
-  let held: unknown = seats(turns);
+  let held: unknown = seats(turns, fields);
 
   const emit = (message: ServerMessage): void => {
     for (const listener of listeners) listener(message);
@@ -128,7 +129,7 @@ function seat(turns: unknown[] = load.turns) {
       asked.push(what);
       // A re-answer is a whole new record, which is what a read costs a page:
       // every slice arrives as a fresh object, so every reader of one re-runs.
-      held = seats(turns);
+      held = seats(turns, fields);
       emit({ kind: 'snapshot', subject: what, data: held });
     },
     dispatch: () => null,
@@ -191,8 +192,11 @@ function dispatched(): Record<string, unknown> {
 let app: Record<string, unknown> | null = null;
 
 /** Mount the page against a seat, and settle the read it makes on the way up. */
-function open(turns: unknown[] = load.turns): ReturnType<typeof seat> {
-  const server = seat(turns);
+function open(
+  turns: unknown[] = load.turns,
+  fields: Record<string, unknown> = {},
+): ReturnType<typeof seat> {
+  const server = seat(turns, fields);
   app = mount(Session, {
     target: document.body,
     props: { slot: LEAD, connection: server.connection, wire: homeWire },
@@ -384,5 +388,36 @@ describe('what one arriving frame costs the inspector', () => {
     expect(after, `the seat's own frame did not reach the inspector: ${measured}`).toContain(
       'sec-subagents',
     );
+  });
+});
+
+/**
+ * **A usage nothing has reported is not a usage of zero.** The two draw the
+ * same the moment an empty track stands in for an unknown one: a bar at 0% with
+ * a dash beside it reads as a session that has used no context, where the truth
+ * is that nobody has asked, and only the track says which.
+ */
+describe("the header's context usage", () => {
+  /** The header's context cell, as the page drew it. */
+  const cell = (): Element | null => document.querySelector('.facts .cm');
+
+  it('draws no bar for a usage nothing has reported', () => {
+    open([], { header: { ...session.header, context: { percent: null, max_tokens: null } } });
+
+    expect(
+      cell()?.querySelector('.tk'),
+      'an unknown usage drew a track, which reads as a usage of zero',
+    ).toBeNull();
+    expect(cell()?.textContent, 'and it drew no marker of its own').toContain('\u{2014}');
+  });
+
+  it('draws the bar for a usage that is really zero', () => {
+    open([], { header: { ...session.header, context: { percent: 0, max_tokens: 1_048_576 } } });
+
+    expect(
+      cell()?.querySelector('.tk'),
+      'a real zero drew no track, which reads as a usage nobody has reported',
+    ).not.toBeNull();
+    expect(cell()?.textContent).toContain('0%');
   });
 });

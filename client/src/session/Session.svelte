@@ -192,7 +192,12 @@
           <span class="sep">{'\u{b7}'}</span>
           <span class="cm">
             <span class="fk">ctx</span>
-            <span class="tk"><span class="fl" style={`width:${facts.percent ?? 0}%`}></span></span>
+            <!-- The track is drawn only for a usage that was reported. An empty
+                 track stands for an unknown value as readily as for a real zero,
+                 and nothing in the record says which of the two this is. -->
+            {#if facts.percent !== null}
+              <span class="tk"><span class="fl" style={`width:${facts.percent}%`}></span></span>
+            {/if}
             <span class="v">{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span>
           </span>
         {/if}

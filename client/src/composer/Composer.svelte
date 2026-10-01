@@ -370,7 +370,7 @@
           aria-activedescendant={list === null ? undefined : rowId(list, marked)}
           autocomplete="off"
           spellcheck="false"
-          placeholder="Type a message…"
+          placeholder="Type a message..."
           bind:this={field}
           bind:value={draft}
           {oninput}
