@@ -618,7 +618,7 @@ async fn the_home_mockup_draws_the_mark_the_page_draws() {
 /// which is the opposite of what a mockup is for.
 #[test]
 fn the_mockups_draw_the_faces_the_view_ships() {
-    let built_in = forge_web::theme::font_variables(None).expect("the built-in pair");
+    let built_in = forge_web::theme::font_variables(None).expect("the built-in face");
     for (mockup, sheet) in [
         ("web-home.html", MOCK_HOME),
         ("web-session.html", MOCK),
@@ -3603,7 +3603,7 @@ async fn the_page_draws_with_the_built_in_pair() {
     let (_status, _content_type, page) = get(&config, "/").await;
     let (_status, _content_type, sheet) = get(&config, "/web.css").await;
 
-    assert!(page.contains("--ui:\"Inter\""), "the injected stack is the webfont: {page}");
+    assert!(page.contains("--ui:\"Fira Code\""), "the injected stack is the shipped face: {page}");
     assert!(page.contains("--mono:\"Fira Code\""), "for code as well: {page}");
     // Declarations rather than the file's text: the comment above the
     // block names both tokens, so a whole-file search would fire on a
@@ -3629,7 +3629,7 @@ async fn the_font_key_opts_out_to_the_system_stack() {
 
     assert!(page.contains("--ui:system-ui"), "the OS stack is what `system` draws: {page}");
     assert!(page.contains("--mono:ui-monospace"), "and its own mono face: {page}");
-    assert!(!page.contains("\"Inter\""), "with the webfont not asked for at all: {page}");
+    assert!(!page.contains("\"Fira Code\""), "with the shipped face not asked for at all: {page}");
 }
 
 /// The two faces are served, at the path the sheet names: the request is
@@ -3648,7 +3648,7 @@ async fn the_faces_the_sheet_asks_for_are_served() {
         .filter_map(|block| block.split_once("url(\""))
         .filter_map(|(_, rest)| rest.split('"').next())
         .collect();
-    assert_eq!(sources.len(), 3, "a source per face: {sources:?}");
+    assert_eq!(sources.len(), 2, "a source per face: {sources:?}");
 
     for src in sources {
         let response =

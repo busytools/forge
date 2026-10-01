@@ -26,8 +26,8 @@ pub struct WebConfig {
     /// The palette, by name from [`THEME_NAMES`].
     pub theme: Option<String>,
     /// The typefaces, by name from [`FONT_NAMES`]. `None` is the built-in
-    /// pair - Inter for prose, Fira Code for code - shipped beside the
-    /// view rather than left to whatever the OS has.
+    /// face - Fira Code for prose and code alike - shipped beside the view
+    /// rather than left to whatever the OS has.
     pub font: Option<String>,
 }
 
