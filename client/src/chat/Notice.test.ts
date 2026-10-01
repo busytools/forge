@@ -16,6 +16,22 @@ function rulesFor(selector: string): string[] {
   );
 }
 
+/**
+ * Every selector member the sheet writes that names `.notice` as its own
+ * first class - the unscoped form, however it is dressed: the bare rule, a
+ * variant, a sibling.
+ */
+function unscopedNotice(): string[] {
+  const found: string[] = [];
+  for (const rule of SHEET.matchAll(/([^{}]+)\{/g)) {
+    for (const member of (rule[1] ?? '').split(',')) {
+      const one = member.trim();
+      if (one.startsWith('.notice')) found.push(one);
+    }
+  }
+  return found;
+}
+
 describe('the chat notice chrome, as the sheet scopes it', () => {
   it('scopes every notice rule to the conversation, so no other surface picks the name up', () => {
     // The composer's notice row drew this chrome once, because the name was
@@ -32,6 +48,6 @@ describe('the chat notice chrome, as the sheet scopes it', () => {
     ]) {
       expect(rulesFor(selector).length, `${selector} is written`).toBeGreaterThan(0);
     }
-    expect(SHEET, 'and no rule writes a bare .notice').not.toMatch(/^\s*\.notice\s*\{/m);
+    expect(unscopedNotice(), 'and no selector names .notice without a scope').toEqual([]);
   });
 });

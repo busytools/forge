@@ -954,7 +954,7 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
    field and the footer together and left only that pair tight, so this stays
    per pair rather than a gap. */
 .dict + .line, .dict + .ac,
-.notice + .line, .notice + .ac,
+.comp .notice + .line, .comp .notice + .ac,
 .ac + .line { margin-top: 8px; }
 /* The draft. A field rather than a span, so it carries no chrome of the
    page's: the box's own border is the identity. */
@@ -1027,16 +1027,15 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .wave.tr .wtr i.hot { background: #365582; }
 
 /* A notice shares the row with the take and wins it. Each rule here is scoped
-   to `.comp` and states the row's own chrome, so the row depends on no shared
-   name - the chat's delivery notices are scoped to `.conv` for the same
+   to `.comp` and states the row's own chrome, so the chrome depends on no
+   shared name - the chat's delivery notices are scoped to `.conv` for the same
    reason. */
 .comp .notice { font-family: var(--mono); font-size: var(--fs-data);
   padding: 0; margin: 0; border-radius: 0; white-space: normal; }
 .comp .notice.q { color: var(--dim); }
 .comp .notice.bad { color: var(--bad); }
-/* The chat's warn variant paints a border and a fill; the drawing's warn row is
-   its colour and nothing else. */
-.comp .notice.warn { color: var(--warn); border: 0; background: none; }
+/* The drawing's warn row is its colour and nothing else. */
+.comp .notice.warn { color: var(--warn); }
 
 /* While the session cannot take input the box is replaced entirely, and the
    slot says why it is not accepting keys. */
