@@ -9,6 +9,8 @@ import type { AgentRow, HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import Session from './Session.svelte';
 import SessionId from './SessionId.svelte';
+import SleeperFold from './SleeperFold.svelte';
+import { railGroups } from './view';
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
@@ -286,6 +288,27 @@ describe('the active row', () => {
     });
     expect(body).toContain('class="wk on"');
     expect(body, 'the project lit its own row as well').not.toContain('class="pr on"');
+  });
+});
+
+describe("a project's sleeping seats", () => {
+  /** The fold as the rail hands it the rows, taken from the real grouping. */
+  const fold = (shown: string | null): string => {
+    const home: HomeWire = {
+      ...homeWire,
+      agents: [row('lead', 'Running'), row('slept-1', 'Sleeping'), row('slept-2', 'Sleeping')],
+    };
+    const project = railGroups(home, LEAD, 0).flatMap((group) => group.projects)[0];
+    return render(SleeperFold, {
+      props: { sleeping: project?.sleeping ?? [], shown },
+    }).body;
+  };
+
+  it('starts open when the seat the page is showing is behind it', () => {
+    expect(fold('slept-2'), 'the fold hid the seat the page is showing').toContain(
+      '<details class="sfold" open',
+    );
+    expect(fold('lead')).not.toContain('<details class="sfold" open');
   });
 });
 

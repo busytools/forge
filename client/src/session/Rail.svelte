@@ -5,6 +5,7 @@
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
+  import SleeperFold from './SleeperFold.svelte';
   import { fleetCount, railFooter, railGroups, railMark, type RailProject } from './view';
 
   /**
@@ -86,27 +87,7 @@
              them: they are rows a reader is not working in, and the count is
              what keeps the fold from reading as a project with no workers. -->
         {#if project.sleeping.length > 0}
-          <!-- Open when the seat the page is showing is one of them: a fold
-               that hid the row a reader is looking at would be the one thing
-               it must never do. The reader's toggle owns it after that. -->
-          <details
-            class="sfold"
-            open={project.shown !== null &&
-              project.sleeping.some((row) => row.slot.label === project.shown)}
-          >
-            <summary class="wk">
-              <span class="dot off"></span>
-              <span class="nm">{project.sleeping.length} asleep</span>
-              <Chevron />
-            </summary>
-            {#each project.sleeping as worker (worker.slot.label)}
-              <div class="wk" class:on={project.shown === worker.slot.label}>
-                <span class="dot {railMark(worker.state)}"></span>
-                <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
-                <CloseChip />
-              </div>
-            {/each}
-          </details>
+          <SleeperFold sleeping={project.sleeping} shown={project.shown} />
         {/if}
       </div>
     {/snippet}
