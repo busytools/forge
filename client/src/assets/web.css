@@ -567,7 +567,6 @@ details.sec[open] > summary .arw { color: var(--accent); }
 .bar { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
 .bar .lb { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); width: 26px; }
 .bar .tk { flex: 1; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
-.bar .fl { height: 100%; background: var(--accent); }
 .bar .pc { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); width: 34px;
   text-align: right; }
 .bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px;
@@ -1176,7 +1175,16 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 
 .cm { display: flex; align-items: center; gap: 7px; }
 .cm .tk { width: 76px; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
-.cm .fl { height: 100%; background: var(--accent); }
+
+/* The filled part of a bar, for every bar there is: the context cell's and the
+   window rows'. **A block, because a non-replaced INLINE box takes neither the
+   width a percentage asks for nor a height** - written as an inline span, the
+   fill paints nothing at all while its own figure sits beside it reading
+   correctly, which is exactly how both bars came to look empty. One rule
+   rather than one per surface: they were the same defect wearing two hats.
+   Scoped to the track, because `.fl` is a file name inside a chat search hit
+   as well. */
+.tk > .fl { display: block; height: 100%; background: var(--accent); }
 
 /* A section body's own note. The home's is a failure line and is scoped
    to its own list. */

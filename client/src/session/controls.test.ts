@@ -103,6 +103,34 @@ describe('the copy control', () => {
     ).toBe('copy');
   });
 
+  /**
+   * The other arm of the same guard. A refusal that lands after a swap is
+   * about the occupant the row has already left, so it must no more change the
+   * control's word than a resolve would.
+   */
+  it('ignores a refused write that settles after the occupant changed', async () => {
+    const gate: { refuse: (() => void) | null } = { refuse: null };
+    clipboard(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          gate.refuse = () => reject(new Error('refused'));
+        }),
+    );
+    const props = boxed<{ id: string }>({ id: 'd4f70669-1f2a' });
+    app = mount(SessionId, { target: document.body, props });
+
+    control().click();
+    props.id = 'aaaa1111-2222';
+    flushSync();
+
+    gate.refuse?.();
+    await settle();
+    expect(
+      control().textContent?.trim(),
+      'a refusal issued for the previous id spoke for the new one',
+    ).toBe('copy');
+  });
+
   it('says the write was refused rather than passing as a click that worked', async () => {
     clipboard(() => Promise.reject(new Error('refused')));
     app = mount(SessionId, { target: document.body, props: { id: 'd4f70669' } });

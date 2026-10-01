@@ -336,6 +336,24 @@ describe('the session id cell', () => {
   });
 });
 
+describe('the bar fills', () => {
+  /**
+   * **A fill is a box, or it paints nothing.** A non-replaced inline box takes
+   * neither the width a percentage asks for nor a height, so a fill written as
+   * an inline span draws an empty track with its own figure beside it - which
+   * is what both bars did, the context cell's and the window bars'.
+   *
+   * One rule for every bar rather than one per surface: the two were the same
+   * defect wearing two hats, and a fix that names one while carrying the other
+   * is how the second survives the next refactor.
+   */
+  it('gives every fill a box, from one rule', () => {
+    expect(body('.tk > .fl'), 'the fill has no box to paint in').toContain('display: block');
+    expect(body('.cm .fl'), 'a rule for one bar alone came back').toBe('');
+    expect(body('.bar .fl'), 'a rule for the other bar alone came back').toBe('');
+  });
+});
+
 describe('the rail footer as the sheet lays it out', () => {
   /**
    * The box and the tint wrapped a project AND its workers, so four rows
