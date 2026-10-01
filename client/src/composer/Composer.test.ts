@@ -497,6 +497,81 @@ describe('the box', () => {
   });
 });
 
+/**
+ * #1411: a message the reader has sent must not come back into the box.
+ *
+ * The draft is cleared on send, so the words arriving again are the second
+ * reading rather than the first: something wire-driven writes them back. The
+ * only wire-driven write is a take landing, and the guard on it is what these
+ * cases are about.
+ */
+describe('a sent message', () => {
+  /** A record whose composer holds what the case wants it to. */
+  const withNotice = (notice: unknown, held: Record<string, unknown> | null = null) =>
+    record({
+      composer: { take: held, notice, compacting: false, sign_in: null },
+    });
+
+  const LANDED = { kind: 'landed', text: 'push it once CI is green', truncated: false };
+
+  /** Send what is in the box, as the reader's Enter does. */
+  function sendBox(): void {
+    field().dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    flushSync();
+  }
+
+  /** A take the box has seen, which is what arms the landing. */
+  function seesTake(harness: { page: { record: ComposerRecord } }): void {
+    harness.page.record = withNotice(null, take());
+    flushSync();
+  }
+
+  /**
+   * The composer's own contract, and the one this file can speak for: a
+   * landing that is still the record's notice lands ONCE, however many times
+   * the record is handed over. `landed === held.text` is what holds it, and
+   * without that the words would be appended again on every re-render.
+   *
+   * **What this is not evidence for.** #1411's defect is a whole-record read
+   * published while it was older than the frames applied since, which
+   * re-delivers a landing the box has already taken - and the guard for that
+   * is the page's, in `session/live.ts`, because the composer cannot tell a
+   * re-delivered landing from a new take's: the words and the notice are the
+   * same. So a page that hands this component the stale record still gets the
+   * words landed twice, and this test passing says nothing about the page's.
+   * The two are separate rules and neither stands for the other.
+   */
+  it('lands the words once while the notice is held', () => {
+    const harness = open();
+    seesTake(harness);
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+    expect(field().value, 'the take lands in the box').toBe(LANDED.text);
+
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+
+    expect(field().value, 'the words land once, not once per record handed over').toBe(LANDED.text);
+  });
+
+  it('still takes a landing whose words are new', () => {
+    const harness = open();
+    seesTake(harness);
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+    sendBox();
+
+    harness.page.record = withNotice({ ...LANDED, text: 'and run the gate too' });
+    flushSync();
+
+    expect(field().value, "the next take's words land as they always did").toBe(
+      'and run the gate too',
+    );
+  });
+});
+
 // A path rather than a URL: this file runs under jsdom, where `import.meta.url`
 // is the dev server's and not a file the disk can be read at. It resolves
 // against the client directory, which is where every recipe runs this from.
