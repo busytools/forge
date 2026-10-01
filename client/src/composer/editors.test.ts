@@ -87,6 +87,10 @@ describe('which editor holds the keyboard', () => {
  * A sweep rather than a list, because the terminal's own census is why: its
  * canonical-type grep missed a third of its surfaces, the two hand-rolled ones
  * being plain strings in another subsystem.
+ *
+ * It pins the attribute's mention rather than its rendering - a box that wrote
+ * `data-editor={undefined}` still reads as found here - so the docking tests are
+ * what prove a box actually carries it.
  */
 describe('the census of boxes that can take text', () => {
   it('every element that can take text names its editor', () => {
