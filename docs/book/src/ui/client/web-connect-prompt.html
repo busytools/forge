@@ -13,7 +13,7 @@
 
   :root {
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
-    --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
     --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
     --ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Fira Code", ui-monospace, Menlo, monospace;
@@ -73,8 +73,9 @@
   @media (prefers-reduced-motion: reduce) { .caret { animation: none; opacity: .85; } }
 
   /* Output arrives under the line, where a shell puts it. */
-  /* `--dim` measures 3.51:1 on this ground, under AA's 4.5:1 for normal
-     text, so the output reads in `--muted` (7.01:1). */
+  /* The output reads in `--muted` (7.01:1 on `--bg`). `--dim` measures
+     5.26:1 here and clears AA's 4.5:1, where the value it used to carry
+     measured 3.51:1 and did not. */
   .out { padding-left: 31px; color: var(--muted); }
   .out .ok { color: var(--ok); }
   .out .no { color: var(--bad); }

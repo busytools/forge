@@ -42,7 +42,7 @@
     --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
     --syn-key:#c9a13b; --syn-str:#8fd07a; --syn-fn:#8fb4e0;
     --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5);
-    --ui: "Inter", system-ui, -apple-system, sans-serif;
+    --ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Fira Code", ui-monospace, Menlo, monospace;
     /* One type scale, anchored on the home: 15.5 is its body and 13.5 its
        mono, so nothing here goes below what that surface already uses.
@@ -518,7 +518,7 @@
     animation: pulse 1.05s ease-in-out infinite; flex: none; }
   .mdot.tr { background: var(--blue); animation: none; }
   .mt { color: var(--accent); }
-  .mdb { color: #ffb058; }
+  .mdb { color: var(--hot); }
   .mt.tr, .mdb.tr { color: var(--dim); }
   .mlbl, .mesc { color: var(--dim); }
   .mesc { margin-left: auto; }
@@ -529,7 +529,7 @@
     width: max-content; animation: flow 2.6s linear infinite; }
   .wtr i { flex: 0 0 4px; border-radius: 1px; background: var(--s3); }
   .wtr i.mid { background: #ab6100; }
-  .wtr i.hot { background: #ffb058; }
+  .wtr i.hot { background: var(--hot); }
   .mwave.tr .wtr { animation: none; }
   .mwave.tr .wtr i { background: #26354a; }
   .mwave.tr .wtr i.mid { background: #2f486d; }
