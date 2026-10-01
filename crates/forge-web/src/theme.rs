@@ -9,12 +9,10 @@
 /// The palette drawn when no name is set.
 pub const DEFAULT_THEME: &str = "dark";
 
-/// The built-in pair, shipped beside the view: Inter is a variable font
-/// over `wght 100-900`, so the scale interpolates rather than snapping to
-/// a static Bold, and Fira Code carries the two weights the mockups load,
-/// its ligatures riding `calt`.
+/// The built-in face, shipped beside the view: Fira Code for prose and code
+/// alike, in the two weights the mockups load, its ligatures riding `calt`.
 const BUILT_IN_FONT: &str = concat!(
-    r#"--ui:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;"#,
+    r#"--ui:"Fira Code",system-ui,-apple-system,"Segoe UI",sans-serif;"#,
     r#"--mono:"Fira Code",ui-monospace,Menlo,monospace;"#,
 );
 
@@ -111,7 +109,7 @@ pub fn root_variables(name: Option<&str>) -> String {
 /// The page's own font declarations for `name`, in the shape
 /// [`root_variables`] emits, so the server can put both in one block.
 /// `None` for a name outside the shipped set: the loader refuses one at
-/// boot, and a renderer that drew the built-in pair instead would make an
+/// boot, and a renderer that drew the built-in face instead would make an
 /// ignored name read as the key working.
 pub fn font_variables(name: Option<&str>) -> Option<&'static str> {
     match name {
@@ -170,7 +168,7 @@ mod tests {
             "--rail-l",
             "--rail-r",
         ];
-        let resolved = root_variables(None) + font_variables(None).expect("the built-in pair");
+        let resolved = root_variables(None) + font_variables(None).expect("the built-in face");
 
         let mut reads: Vec<&str> = sheet
             .split("var(")
@@ -214,9 +212,8 @@ mod tests {
 
     /// Every name `forge.toml` accepts draws a stack of its own, so a name
     /// added to the shipped list without one cannot quietly render as
-    /// nothing or as the built-in pair. The built-in pair has no name of
-    /// its own: an unset `font` is it, and the one name shipped is the
-    /// opt-out.
+    /// nothing or as the built-in face. That face has no name of its own:
+    /// an unset `font` is it, and the one name shipped is the opt-out.
     #[test]
     fn every_shipped_font_name_has_its_own_stack() {
         let built_in = font_variables(None);
@@ -233,14 +230,14 @@ mod tests {
     /// A name outside the shipped set draws no stack, rather than the
     /// built-in one. The loader refuses such a config at boot, so this is
     /// the renderer's backstop: it must not dress a name nobody ships as
-    /// the built-in pair, which is a silent fallback wearing the answer.
+    /// the built-in face, which is a silent fallback wearing the answer.
     #[test]
     fn a_font_name_outside_the_shipped_set_draws_no_stack() {
         assert!(!FONT_NAMES.contains(&"comic"), "the case is a name forge does not ship");
         assert_eq!(font_variables(Some("comic")), None);
     }
 
-    /// The stack the built-in pair draws with and the faces the sheet
+    /// The stacks the built-in face draws with and the faces the sheet
     /// declares name the same families: a family on one side only is
     /// either prose falling back to the OS face with nothing reporting it,
     /// or a file shipped and never asked for.
@@ -254,9 +251,9 @@ mod tests {
             .filter_map(|(_, rest)| rest.split(';').next())
             .map(|value| value.trim().trim_matches('"'))
             .collect();
-        assert_eq!(declared.len(), 3, "the sheet declares every vendored face: {declared:?}");
+        assert_eq!(declared.len(), 2, "the sheet declares every vendored face: {declared:?}");
 
-        let built_in = font_variables(None).expect("the built-in pair declares a stack");
+        let built_in = font_variables(None).expect("the built-in face declares a stack");
         let ui =
             built_in.split_once("--ui:").expect("the built-in stack declares the prose face").1;
         let first = ui.split(',').next().expect("a family").trim().trim_matches('"');

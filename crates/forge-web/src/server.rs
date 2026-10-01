@@ -37,7 +37,6 @@ const SCRIPTS: &[(&str, &[u8])] = &[
 /// the same record in `assets/VENDOR.md`. Bytes rather than `include_str!`,
 /// which needs valid UTF-8 and a woff2 is not text.
 const FONTS: &[(&str, &[u8])] = &[
-    ("InterVariable.woff2", include_bytes!("../assets/fonts/InterVariable.woff2")),
     ("FiraCode-Regular.woff2", include_bytes!("../assets/fonts/FiraCode-Regular.woff2")),
     ("FiraCode-Medium.woff2", include_bytes!("../assets/fonts/FiraCode-Medium.woff2")),
 ];

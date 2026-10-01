@@ -1201,7 +1201,7 @@ no_reset_cooldown_secs = 90
         let config = load_from_dir(dir.path()).expect("absent keys load");
         assert_eq!(config.web.mark, None, "an unset key is the built-in, not a pinned value");
         assert_eq!(config.web.theme, None);
-        assert_eq!(config.web.font, None, "and the built-in pair is what an unset font draws");
+        assert_eq!(config.web.font, None, "and the built-in face is what an unset font draws");
     }
 
     #[test]
