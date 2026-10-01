@@ -8,6 +8,7 @@ import type { Connection } from '../socket';
 import type { HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import Session from './Session.svelte';
+import SessionId from './SessionId.svelte';
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
@@ -224,6 +225,30 @@ function reaches(declared: string | undefined, rowCount: number): boolean {
   const end = tail === undefined ? start : Number(tail) < 0 ? rowCount : Number(tail);
   return start === 1 && end >= rowCount;
 }
+
+describe('the session id cell', () => {
+  const cell = (id: string): string => render(SessionId, { props: { id } }).body;
+
+  /**
+   * The terminal's own shape: eight characters on the row, the whole id on
+   * the control, because the short form is what a reader compares and the long
+   * one is what a person pastes into a resume.
+   */
+  it('draws the id short, with the whole one under it', () => {
+    const body = cell('d4f70669-1f2a-4b3c-9d0e');
+    expect(body).toContain('>d4f70669<');
+    expect(body, 'the short form is all a reader can reach').toContain(
+      'title="d4f70669-1f2a-4b3c-9d0e"',
+    );
+  });
+
+  it('carries a copy control with a name that says what it copies', () => {
+    const body = cell('d4f70669');
+    expect(body).toContain('aria-label="copy the whole session id"');
+    expect(body, 'the control is not a control').toContain('<button');
+    expect(body, 'the control promised a click it cannot do').not.toContain('disabled');
+  });
+});
 
 describe('the rail footer as the sheet lays it out', () => {
   /**

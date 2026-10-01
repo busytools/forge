@@ -6,6 +6,8 @@ import type { AgentRow, HomeWire, ProjectWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import {
   accountChip,
+  copyLabel,
+  copyReason,
   fleetCount,
   gitSection,
   gotifySection,
@@ -85,6 +87,34 @@ describe('the boundary', () => {
 });
 
 describe('the header facts', () => {
+  /**
+   * The occupant's id rides the header, and it is the reason the field exists:
+   * a page attached to a running seat hears no `Connected`, so nothing else on
+   * the wire names the session it is showing.
+   */
+  it("carries the occupant's id, and nothing where the seat has none", () => {
+    const named = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      header: { ...record.header, session_id: 'd4f70669-1f2a' },
+    });
+    expect(named.header.session_id).toBe('d4f70669-1f2a');
+    expect(headerFacts(named.header).sessionId).toBe('d4f70669-1f2a');
+
+    const unstarted = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      header: { ...record.header, session_id: null },
+    });
+    expect(unstarted.header.session_id).toBeNull();
+
+    // A value that is not a string is one this client cannot name, and a seat
+    // it cannot name draws no id rather than the word `undefined`.
+    const wrong = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      header: { ...record.header, session_id: 7 },
+    });
+    expect(wrong.header.session_id).toBeNull();
+  });
+
   it('names a model the CLI gave no long name for by its resolved id', () => {
     const facts = headerFacts({
       ...record.header,
@@ -107,6 +137,25 @@ describe('the header facts', () => {
   it('carries the mode the session runs in, with the class its colour reads', () => {
     const facts = headerFacts({ ...record.header, permission_mode: 'bypassPermissions' });
     expect(facts.mode).toEqual({ wire: 'bypassPermissions', klass: 'bypass' });
+  });
+});
+
+/**
+ * The copy control's two failure states, which must not read alike: a page
+ * with no clipboard is the page's origin to fix, and a refused write is a
+ * permission, so a label that said the same thing for both would send a reader
+ * after the wrong one.
+ */
+describe('the copy control', () => {
+  it('says what the click did, and which of the two failures stopped it', () => {
+    expect(copyLabel('ready')).toBe('copy');
+    expect(copyLabel('copied')).toBe('copied');
+    expect(copyLabel('failed')).toBe('copy failed');
+    expect(copyLabel('no-clipboard')).toBe('copy needs https');
+    expect(copyReason('failed'), 'the two failures read alike').not.toBe(
+      copyReason('no-clipboard'),
+    );
+    expect(copyReason('ready')).toContain('session id');
   });
 });
 

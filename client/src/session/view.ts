@@ -39,8 +39,10 @@ import type {
   SessionRecord,
 } from './wire';
 
-/** The four facts the header states, and the class the mode's chip carries. */
+/** The facts the header states, and the class the mode's chip carries. */
 export interface Facts {
+  /** The occupant's id, or `null` on a seat nothing has started. */
+  sessionId: string | null;
   model: string;
   effort: string;
   mode: { wire: string; klass: string } | null;
@@ -312,6 +314,7 @@ export interface MonitorView {
 export function headerFacts(header: SessionHeader): Facts {
   const model = header.model;
   return {
+    sessionId: header.session_id,
     model:
       model === null
         ? '\u{2014}'
@@ -325,6 +328,49 @@ export function headerFacts(header: SessionHeader): Facts {
         : { wire: header.permission_mode, klass: permClass(header.permission_mode) },
     percent: header.context.percent,
   };
+}
+
+/**
+ * What the copy control's click did, or what stands in the way of one.
+ *
+ * `no-clipboard` and `failed` are the two failures kept apart because they are
+ * different problems for the reader: the first is the page's origin, the
+ * second is a write the OS refused.
+ */
+export type CopyOutcome = 'ready' | 'copied' | 'failed' | 'no-clipboard';
+
+/** What the copy control says on the row. */
+export function copyLabel(outcome: CopyOutcome): string {
+  switch (outcome) {
+    case 'ready':
+      return 'copy';
+    case 'copied':
+      return 'copied';
+    case 'failed':
+      return 'copy failed';
+    case 'no-clipboard':
+      return 'copy needs https';
+  }
+}
+
+/**
+ * What the control is for: its accessible name, and the reason a state other
+ * than `copy` is showing.
+ *
+ * The name is spelt out rather than left as the visible word, so a reader who
+ * cannot see the id beside it still knows what the click does.
+ */
+export function copyReason(outcome: CopyOutcome): string {
+  switch (outcome) {
+    case 'ready':
+      return 'copy the whole session id';
+    case 'copied':
+      return 'the whole session id is on the clipboard';
+    case 'failed':
+      return 'the clipboard refused the write';
+    case 'no-clipboard':
+      return 'this page has no clipboard to write to: it needs a secure origin';
+  }
 }
 
 /**

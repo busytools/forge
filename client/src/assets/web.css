@@ -1106,6 +1106,18 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .sess .facts > span { white-space: nowrap; }
 .sess .facts .sep { color: var(--line); }
 
+/* The seat's own id, in the slot the account chip left. It is the one fact
+   here a reader COPIES rather than reads, so it is monospaced - its glyphs
+   line up with the ids printed elsewhere - and the control sits beside it.
+   The chip is drawn with the mockup's proportions but the padding is a step
+   larger, because this one is a click target on a page read at 430 too. */
+.sess .facts .sid { display: flex; align-items: center; gap: 7px; }
+.sess .facts .id { font-family: var(--mono); color: var(--muted); }
+.sess .facts .cp { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  background: none; border: 1px solid var(--line); border-radius: 5px;
+  padding: 3px 7px; cursor: pointer; }
+.sess .facts .cp:hover { color: var(--text); border-color: var(--ctl); }
+
 /* The palette carries no blue, so plan mode takes the accent: the chips
    have to stay apart from each other more than they have to match the
    TUI's own colours. */
