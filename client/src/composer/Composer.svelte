@@ -6,6 +6,7 @@
   import Dictation from './Dictation.svelte';
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
+  import Field from './Field.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import {
     boundCode,
@@ -86,7 +87,7 @@
   /** Which row a key would take, which is the first until one moves it. */
   let marked = $state(0);
   /** The field, so focus can go back to it when the box returns. */
-  let field = $state<HTMLTextAreaElement | null>(null);
+  let field = $state<HTMLElement | null>(null);
   /** Whether the dictation panel is showing, which the mic opens. */
   let panel = $state(false);
   /** The bound key's press in flight, from its press to its release. */
@@ -444,19 +445,23 @@
              combobox role is not available here - ARIA allows it on an input,
              not on a textarea - so this is the textbox-and-controlled-listbox
              shape, which is what a multi-line composer can validly be. -->
-        <textarea
+        <Field
+          editor="composer"
           class="txt"
           name="draft"
-          aria-autocomplete="list"
-          aria-controls={list === null ? undefined : LIST_ID}
-          aria-activedescendant={list === null ? undefined : rowId(list, marked)}
-          autocomplete="off"
-          spellcheck="false"
           placeholder="Type a message..."
-          bind:this={field}
+          aria={{
+            autocomplete: 'list',
+            controls: list === null ? undefined : LIST_ID,
+            activeDescendant: list === null ? undefined : rowId(list, marked),
+          }}
           bind:value={draft}
           {oninput}
-          onkeydown={onkey}></textarea>
+          onkeydown={onkey}
+          field={(el: HTMLElement | null) => {
+            field = el;
+          }}
+        />
         {#if dictation}
           <button
             class="mic"

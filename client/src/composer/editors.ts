@@ -4,6 +4,9 @@
  *
  * Focus is derived, never stored: nothing registers here, so nothing can go
  * stale and there is no mount order to get wrong.
+ *
+ * Every box that can take text is one of these, and `editors.test.ts` sweeps the
+ * tree for one that forgot to say so.
  */
 
 /** The boxes that can take text. A closed set, so a new one cannot be forgotten. */

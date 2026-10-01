@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
+  import Field from './Field.svelte';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import type { Ask, PermissionOption, Take } from './wire';
@@ -124,7 +125,7 @@
   /** What the reader has said in their own words, which the notes row carries. */
   let notes = $state('');
   /** The field, so marking the own-words row can put the caret in it. */
-  let field = $state<HTMLTextAreaElement | null>(null);
+  let field = $state<HTMLElement | null>(null);
   /** The listbox, which owns the keys while the dock has the slot. */
   let listbox = $state<HTMLDivElement | null>(null);
 
@@ -443,13 +444,17 @@
     {#if notesOpen}
       <!-- The reader's own words, which the answer carries as its annotation
            rather than as an option id. -->
-      <textarea
+      <Field
+        editor="dock"
         class="notes"
-        bind:this={field}
         bind:value={notes}
-        rows="1"
+        rows={1}
         placeholder="answer with your own words"
-        onkeydown={onkey}></textarea>
+        onkeydown={onkey}
+        field={(el: HTMLElement | null) => {
+          field = el;
+        }}
+      />
     {/if}
 
     <div class="keys">
