@@ -142,8 +142,9 @@ export function paragraphs(body: string): string[] {
  *
  * Read from the call's own input, in the order the kind of call makes sense:
  * a read names its file, a command names what it was for, a search names what
- * it looked for, a fetch names where. Anything else keeps the tool's own name,
- * which is honest about a row this page has no better word for.
+ * it looked for, a fetch names where, a skill names which skill it invoked.
+ * Anything else keeps the tool's own name, which is honest about a row this
+ * page has no better word for.
  *
  * The order matters because a call carries several of these keys: an edit has
  * both a path and a diff, and a command has both its own words and the
@@ -160,6 +161,15 @@ export function headline(name: string, input: unknown): string {
 
   if (name === 'Bash' || name === 'BashOutput') {
     return text('description') ?? text('command') ?? name;
+  }
+  if (name === 'Skill' || name === 'advisor') {
+    // The skill's own name, which is the argument the call carries and the
+    // thing the family label cannot say: `skill` names the class, and the
+    // tool's own name is `Skill`, so the row would otherwise repeat itself.
+    const skill = text('skill');
+    if (skill === null) return name;
+    const args = text('args');
+    return args === null ? skill : `${skill} ${args}`;
   }
   return (
     text('file_path') ??

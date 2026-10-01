@@ -101,6 +101,19 @@ describe('the text a command produced, as a page draws it', () => {
     expect(headline('mcp__forge__agents__list', {})).toBe('mcp__forge__agents__list');
   });
 
+  it('names a skill call by the skill it invoked, which is the argument it carries', () => {
+    // Without this arm the row reads `skill` then `Skill` - the family and the
+    // tool's own name twice, saying nothing - so two invocations in a row are
+    // indistinguishable from a rendering loop. The skill's name (+ its args,
+    // which the terminal nests under its own `skill` row) is the argument the
+    // call carries and the thing the row has to show.
+    expect(headline('Skill', { skill: 'unslop' })).toBe('unslop');
+    expect(headline('Skill', { skill: 'pr-review-loop', args: 'Retrospective gate' })).toBe(
+      'pr-review-loop Retrospective gate',
+    );
+    expect(headline('Skill', {})).toBe('Skill');
+  });
+
   it('drops the working directory a reader is already in', () => {
     expect(shortPath('/Users/ved/Projects/forge/crates/a.rs', '/Users/ved/Projects/forge')).toBe(
       'crates/a.rs',
