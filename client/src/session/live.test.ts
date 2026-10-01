@@ -600,6 +600,16 @@ function occupantAs(name: string): SessionUpdate {
   return { [name]: Object.values(occupant('new'))[0] };
 }
 
+/**
+ * A take's landed notice, as the record carries it.
+ *
+ * Opaque on purpose: it is the composer's own state and every reader leaves it
+ * as it came - which is exactly why a stale copy of it can reach the box.
+ */
+function landed(): Record<string, unknown> {
+  return { landed: true, text: 'the words', truncated: false };
+}
+
 /** A prompt as the CLI writes one: the frame shape the dev fixture carries. */
 function spoke(text: string, uuid = 'u1'): Record<string, unknown> {
   return {
@@ -966,6 +976,73 @@ describe('the slow read for what no update carries', () => {
       'an error for something else let the swap answer be merged',
     ).toHaveLength(0);
     page.stop();
+  });
+
+  it('does not put a landing back from an answer older than the take', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    // The seat's record carries a landed take: the words the reader sent are
+    // still its notice.
+    page.land(snapshotOf(LEAD, { composer: { notice: landed() } }));
+
+    // A frame that replaces the record asks for a whole one, which is what a
+    // reconnect or a swap does.
+    page.land(updateOf(occupant('new')));
+    const asked = page.reads();
+
+    // A take starts while that answer is in flight, which takes the notice off
+    // the record the page holds.
+    page.land(updateOf({ dictate_started: { key: LEAD, floor_db: -50, generation: 1 } }));
+
+    // The answer lands: the seat as it was BEFORE the take, notice and all.
+    // Adopted whole it puts the landing back, and the box takes words the
+    // reader already sent a second time.
+    page.land(snapshotOf(LEAD, { composer: { notice: landed() } }));
+
+    expect(
+      page.read().wire?.composer.notice,
+      'an answer from before the take put the landing back',
+    ).toBeNull();
+
+    // **The whole record is still WANTED.** Merging keeps the frame-fed
+    // composer, which is the fix above, but it also keeps the conversation and
+    // the header this answer was asked for - so the want is kept and asked
+    // again, the way a want raised while an ask was out is. Without this the
+    // old occupant stands until a later REPLACES frame with a clean window or a
+    // socket drop, which the five-second poll never does.
+    expect(page.reads(), 'the whole record was not asked for again').toBe(asked + 1);
+
+    // And the fresh ask converges: its clean answer is adopted whole.
+    page.land(snapshotOf(LEAD, { composer: { notice: landed() }, work: { branch: 'new' } }));
+    expect(page.read().wire?.composer.notice, 'the fresh answer was not taken').toEqual(landed());
+    page.stop();
+
+    // The control, and it is the guard's NARROWNESS it holds: the same answer
+    // with nothing outrunning it is adopted whole and does NOT ask again. An
+    // over-broad guard re-asks here and fails this.
+    const control = drivable();
+    const other = watch(control);
+    other.land(snapshotOf(LEAD, { composer: { notice: landed() } }));
+    other.land(updateOf(occupant('new')));
+    const askedOnce = other.reads();
+    other.land(snapshotOf(LEAD, { composer: { notice: landed() } }));
+
+    expect(other.read().wire?.composer.notice, 'the control took the record').toEqual(landed());
+    expect(other.reads(), 'a clean answer was asked for again').toBe(askedOnce);
+
+    // And the narrowness that keeps the re-ask from being over-broad: a POLL's
+    // answer outrun by a frame is a merge already, and its want was nothing, so
+    // it asks for nothing more.
+    const polling = drivable();
+    const timed = watch(polling);
+    timed.land(snapshotOf(LEAD));
+    vi.advanceTimersByTime(POLL_MS + 1);
+    const polled = timed.reads();
+    timed.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    timed.land(snapshotOf(LEAD));
+
+    expect(timed.reads(), "a poll's outrun answer asked again").toBe(polled);
+    timed.stop();
   });
 
   it('does not walk back a slice an update already advanced', () => {

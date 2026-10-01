@@ -94,6 +94,23 @@ interface Seat {
    */
   asking: 'replace' | 'merge' | null;
   replaceWanted: boolean;
+  /**
+   * How many of this seat's frames have been applied to the record.
+   *
+   * **An answer older than a frame cannot be adopted whole**, and this is how
+   * that is known: an ask records the count it was issued at, and an answer
+   * landing after the count moved is published the way `merged()` publishes a
+   * poll's - the slices only a read moves - rather than replacing a record the
+   * frames have already carried past it.
+   *
+   * The composer's notice is the case that made it. The seat's own record
+   * carries a landed take, a `dictate_started` frame takes that notice off, and
+   * an answer from before the frame puts it back - so the box takes words the
+   * reader has already sent a second time.
+   */
+  frames: number;
+  /** The frame count the ask in flight was issued at. */
+  askedAt: number;
   /** A poll's timer, armed while a page is showing the seat. */
   poll: ReturnType<typeof setInterval> | null;
   stopMessages: (() => void) | null;
@@ -222,6 +239,8 @@ function createSeat(
     answering,
     asking: null,
     replaceWanted: true,
+    frames: 0,
+    askedAt: 0,
     poll: null,
     stopMessages: null,
     stopStatus: null,
@@ -256,6 +275,7 @@ function createSeat(
     if (seat.asking !== null) return;
     seat.asking = seat.replaceWanted ? 'replace' : 'merge';
     seat.replaceWanted = false;
+    seat.askedAt = seat.frames;
     connection.refresh(subject);
   }
 
@@ -266,6 +286,7 @@ function createSeat(
     // ask this page made: the subscribe is what the server answers.
     seat.asking = 'replace';
     seat.replaceWanted = false;
+    seat.askedAt = seat.frames;
     seat.stopMessages = connection.onMessage((message) => {
       if (message.kind === 'error') {
         // **An error names the operation it is about, never a subject**, and
@@ -302,10 +323,26 @@ function createSeat(
         // was out cannot be answered by that ask's answer, whatever it was.
         const mode = seat.asking ?? (seat.replaceWanted ? 'replace' : 'merge');
         const stale = seat.asking !== null && seat.replaceWanted;
+        // And the other way an answer is older than what is held: a frame
+        // landed after the ask went out, so the record has been carried past
+        // where this answer was encoded.
+        const moved = seat.asking !== null && seat.frames !== seat.askedAt;
         seat.asking = null;
-        read(mode === 'replace' && !stale);
-        if (stale) reread();
-        else seat.replaceWanted = false;
+        read(mode === 'replace' && !stale && !moved);
+        // **A whole record an answer could not carry is still wanted.** Merging
+        // keeps the frame-fed state, which is what stops a take's notice coming
+        // back, but it also keeps the conversation and the header that answer
+        // was asked for - so the want is set and asked again rather than spent,
+        // and the fresh answer lands on the first clean window.
+        //
+        // Only a REPLACES answer that was outrun lands here: a poll's answer is
+        // a merge already, and its want was nothing.
+        if (stale || (moved && mode === 'replace')) {
+          seat.replaceWanted = true;
+          reread();
+        } else {
+          seat.replaceWanted = false;
+        }
         return;
       }
       if (message.kind !== 'update') return;
@@ -318,6 +355,10 @@ function createSeat(
       // page's record.
       const at = slotOf(message.update);
       if (at === null || subjectKey({ session: at }) !== key) return;
+      // A frame for this seat is the world moving under any answer in flight,
+      // counted before the ask such a frame may itself issue so that the ask's
+      // own baseline includes it.
+      seat.frames += 1;
 
       // The three variants that REPLACE the record rather than patching it: a
       // seat waking up, connecting, or taking a new occupant. What they carry
