@@ -523,6 +523,7 @@ pub(crate) fn load_history_messages(
                 "parent_tool_use_id": m.parent_tool_use_id,
                 "timestamp": m.timestamp,
                 "tool_use_result": m.tool_use_result,
+                "synthetic": m.synthetic,
             })
         })
         .collect();
@@ -2262,6 +2263,49 @@ mod tests {
 
         assert_eq!(resumed.compaction_count, 3, "three boundaries reach the Connected event");
         assert_eq!(resumed.messages.len(), 3, "and the three turns still replay");
+    }
+
+    /// The row the harness writes for a turn nobody typed carries
+    /// `isMeta`, and the mark has to survive the whole read the resume
+    /// uses - the scan, then the raw-row handoff into the replay
+    /// synthesizer - or a view draws the harness speaking as the
+    /// reader's own words (issue #1449).
+    #[test]
+    fn load_history_messages_carries_the_clis_synthetic_stamp() {
+        use std::fmt::Write as _;
+
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let session_id = "8f3b0c9d-6a2e-4d21-b7c8-1e5a90f4d7b3";
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let mut jsonl = String::new();
+        let _ = writeln!(
+            jsonl,
+            "{{\"type\":\"user\",\"uuid\":\"u-typed\",\"message\":{{\"role\":\"user\",\"content\":\"asked by hand\"}}}}"
+        );
+        let _ = writeln!(
+            jsonl,
+            "{{\"type\":\"user\",\"uuid\":\"u-harness\",\"isMeta\":true,\"turnCompanion\":true,\"message\":{{\"role\":\"user\",\"content\":\"Skill /unslop was loaded earlier (see the invoked-skills reminder above); this is a NEW invocation.\"}}}}"
+        );
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
+
+        let resumed = super::load_history_messages(config_dir.path(), session_id, "", session_id);
+
+        let stamps: Vec<(String, bool)> = resumed
+            .messages
+            .iter()
+            .filter_map(|msg| match msg {
+                forge_primitives::Message::User { uuid, synthetic, .. } => {
+                    Some((uuid.clone().unwrap_or_default(), *synthetic))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            stamps,
+            vec![("u-typed".to_owned(), false), ("u-harness".to_owned(), true)],
+            "the harness's row must arrive stamped and the reader's must not",
+        );
     }
 
     /// The on-demand read is the same route the spawn uses, for a

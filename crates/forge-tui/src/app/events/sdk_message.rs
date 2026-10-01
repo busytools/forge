@@ -2199,6 +2199,7 @@ mod stamp_turn_info_tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -3186,6 +3187,7 @@ mod thinking_tokens_clear_on_user_tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -3199,6 +3201,7 @@ mod thinking_tokens_clear_on_user_tests {
             // tool-result echo, NOT a genuine user prompt.
             tool_use_result: Some(serde_json::json!({})),
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -3480,6 +3483,7 @@ mod inbound_message_surfacing_tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 

@@ -65,6 +65,7 @@ pub fn user_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primi
         uuid: None,
         tool_use_result: None,
         timestamp: None,
+        synthetic: false,
     }
 }
 

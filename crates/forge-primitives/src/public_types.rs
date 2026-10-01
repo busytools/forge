@@ -138,6 +138,10 @@ pub struct SessionMessage {
     /// tool-result block beside it holds only as prose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_use_result: Option<Value>,
+    /// The CLI's own stamp that nobody typed this row (`isMeta` on the
+    /// transcript row, `isSynthetic` on the wire frame).
+    #[serde(default)]
+    pub synthetic: bool,
 }
 
 /// A session transcript's replayable rows plus the compaction count

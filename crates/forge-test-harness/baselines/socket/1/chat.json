@@ -26,6 +26,7 @@
     "hook_event",
     "hook_id",
     "hook_name",
+    "isSynthetic",
     "is_error",
     "key",
     "last_tool_name",

@@ -622,6 +622,7 @@ mod tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -656,6 +657,7 @@ mod tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -1558,6 +1560,7 @@ mod tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -1572,6 +1575,7 @@ mod tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 

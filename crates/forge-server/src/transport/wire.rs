@@ -632,6 +632,7 @@ fn forged_ending(ending: &TaskEnding) -> Message {
         uuid: None,
         tool_use_result: None,
         timestamp: None,
+        synthetic: false,
     }
 }
 

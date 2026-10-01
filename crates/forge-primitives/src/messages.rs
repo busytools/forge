@@ -61,6 +61,10 @@ pub enum Message {
         /// When the CLI wrote this frame, RFC 3339. The only record of when
         /// a turn ran that a transcript holds: no result frame reaches one.
         timestamp: Option<String>,
+        /// The CLI's own stamp that nobody typed this turn: `isSynthetic`
+        /// on the wire frame, `isMeta` on the transcript row. A view that
+        /// reads it draws the harness speaking rather than the reader.
+        synthetic: bool,
     },
 
     /// Out-of-band system event - `subtype` discriminates (e.g. `"init"`).
@@ -561,6 +565,7 @@ impl Message {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 }
@@ -620,6 +625,10 @@ pub struct UserEnvelope {
     /// list form.
     #[serde(deserialize_with = "deserialize_user_content")]
     pub content: Vec<ContentBlock>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn deserialize_user_content<'de, D>(de: D) -> Result<Vec<ContentBlock>, D::Error>
@@ -952,6 +961,11 @@ enum MessageRepr {
         tool_use_result: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timestamp: Option<String>,
+        // Skipped when false so unmarked frames keep the shape every
+        // existing fixture and relayed payload was written against.
+        #[serde(default, rename = "isSynthetic", skip_serializing_if = "is_false")]
+        synthetic: bool,
+
     },
     System(SystemRepr),
     RateLimitEvent {
@@ -1197,6 +1211,7 @@ impl From<MessageRepr> for Message {
                 uuid,
                 tool_use_result,
                 timestamp,
+                synthetic,
             } => Message::User {
                 message,
                 session_id,
@@ -1204,6 +1219,7 @@ impl From<MessageRepr> for Message {
                 uuid,
                 tool_use_result,
                 timestamp,
+                synthetic,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
                 task_id,
@@ -1489,6 +1505,7 @@ impl From<Message> for MessageRepr {
                 uuid,
                 tool_use_result,
                 timestamp,
+                synthetic,
             } => MessageRepr::User {
                 message,
                 session_id,
@@ -1496,6 +1513,7 @@ impl From<Message> for MessageRepr {
                 uuid,
                 tool_use_result,
                 timestamp,
+                synthetic,
             },
             Message::System { subtype, session_id, data } => {
                 // `data` now carries the full shape (including `type`,
@@ -2046,6 +2064,61 @@ mod tests_message_extras {
             }
             other => panic!("expected User, got {other:?}"),
         }
+    }
+
+    /// The CLI stamps a user frame whose words nobody typed, and the
+    /// view layer cannot tell the harness speaking from the reader
+    /// without it. The reminder the harness injects is built with
+    /// `isMeta` internally and the emitter writes that as `isSynthetic`
+    /// (measured shape: the one user frame carrying text in
+    /// `.claude/skills/claude-cli-upgrade/reference-captures/skill.jsonl`).
+    #[test]
+    fn user_frame_keeps_the_clis_synthetic_stamp() {
+        let raw = json!({
+            "type": "user",
+            "session_id": "sess-usr",
+            "uuid": "user-uuid-2",
+            "isSynthetic": true,
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Skill /unslop was loaded earlier (see the invoked-skills reminder above); this is a NEW invocation."
+                }]
+            }
+        });
+
+        let msg: Message = serde_json::from_value(raw).expect("parse");
+        let encoded = serde_json::to_value(&msg).expect("encode");
+
+        assert_eq!(
+            encoded.get("isSynthetic"),
+            Some(&json!(true)),
+            "the stamp must survive decode and re-encode, or every view reads these words as \
+             the reader's own: {encoded}",
+        );
+    }
+
+    /// The stamp is present or absent, never `false`: every user frame
+    /// forge has ever relayed is unmarked, so emitting the key on all of
+    /// them would reshape the socket payload and the fixtures written
+    /// against it.
+    #[test]
+    fn unmarked_user_frames_carry_no_synthetic_key() {
+        let raw = json!({
+            "type": "user",
+            "session_id": "sess-usr",
+            "message": {"role": "user", "content": "typed by hand"}
+        });
+
+        let decoded: Message = serde_json::from_value(raw).expect("parse");
+        let encoded = serde_json::to_value(&decoded).expect("encode");
+
+        assert_eq!(
+            encoded.get("isSynthetic"),
+            None,
+            "a frame nobody stamped must not grow the key: {encoded}",
+        );
     }
 
     #[test]

@@ -98,6 +98,10 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
                         .filter(|result| !result.is_null())
                         .cloned(),
                     timestamp,
+                    synthetic: entry_record
+                        .get("synthetic")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 });
             }
             // A system frame has no inner envelope: the scan hands the row
