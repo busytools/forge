@@ -44,6 +44,48 @@ function glyph(text, size, weight) {
   };
 }
 
+/** WCAG relative luminance of an `rgb()`/`rgba()` string. */
+function luminance(value) {
+  const parts = value.match(/[\d.]+/g);
+  if (parts === null) return null;
+  const channels = parts.slice(0, 3).map((part) => {
+    const channel = Number(part) / 255;
+    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+/**
+ * The contrast a mark is actually drawn at, from its computed colours.
+ *
+ * The theme tokens are injected by the server, so they are only real on a page
+ * that carries them - which this one does, from `client/src/theme.ts`.
+ */
+function contrast(sel) {
+  const element = document.querySelector(sel);
+  if (element === null) return null;
+  const style = getComputedStyle(element);
+  // A transparent background means the mark sits on whatever is behind it, so
+  // the reading is only true once that ground is found rather than assumed.
+  let ground = element;
+  let background = style.backgroundColor;
+  while (ground !== null && /rgba?\(0, 0, 0, 0\)|transparent/.test(background)) {
+    ground = ground.parentElement;
+    if (ground !== null) background = getComputedStyle(ground).backgroundColor;
+  }
+  const one = luminance(style.color);
+  const two = luminance(background);
+  if (one === null || two === null) return null;
+  const ratio = (Math.max(one, two) + 0.05) / (Math.min(one, two) + 0.05);
+  return {
+    color: style.color,
+    ground: background,
+    ratio: Number(ratio.toFixed(2)),
+    size: style.fontSize,
+    weight: style.fontWeight,
+  };
+}
+
 /** Every face the page actually has, which is what a weight must be cut at. */
 function declaredFaces() {
   const faces = [];
@@ -172,6 +214,12 @@ async function measure(targetChars) {
       prose: computed('.prose p', 'line-height'),
       code: computed('.code pre', 'line-height'),
       table: computed('.prose td', 'line-height'),
+    },
+    contrast: {
+      inlineCode: contrast('.prose code'),
+      tableHead: contrast('.prose th'),
+      tableCell: contrast('.prose td'),
+      blockquote: contrast('.prose blockquote'),
     },
     column: {
       targetChars,

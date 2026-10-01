@@ -465,6 +465,11 @@ async function main() {
     `faces declared     ${cuts.join(', ')} (Fira Code ships static cuts; a request for `
       + `${heaviest} has no cut and is ${heaviest > Math.max(...cuts) ? 'SYNTHESIZED' : 'real'})`,
     `canvas ink, 10x H  ${ink}`,
+    `contrast           ${Object.entries(client.contrast)
+      .map(([name, value]) =>
+        value === null ? `${name}: absent` : `${name} ${value.ratio}:1 (${value.color} on ${value.ground})`,
+      )
+      .join('  |  ')}`,
   ]);
 
   const rows = table(client, terminal);
