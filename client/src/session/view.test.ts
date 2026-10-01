@@ -22,6 +22,7 @@ import {
   railFooter,
   railGroups,
   railMark,
+  type RailProject,
   schedulesSection,
   seatState,
   slackSection,
@@ -228,13 +229,33 @@ describe('the rail', () => {
       project?.sleeping.map((row) => row.slot.label),
       'the sleeping workers were not folded, in the order the roster lists them',
     ).toEqual(['w2', 'w3']);
-    expect(project?.current, 'folding its workers moved the project out of working').toBe(true);
+    expect(project?.shown, 'folding its workers moved the project out of working').toBe('lead');
   });
 
-  it('marks the seat the page is showing', () => {
-    const groups = railGroups(homeWire, LEAD, 0);
-    const shown = groups.flatMap((group) => group.projects).find((entry) => entry.current);
-    expect(shown?.name).toBe('proj');
+  /**
+   * The mark is on the ROW the page is showing, not on the project around it:
+   * a project box lit its workers with it, so four rows looked selected and
+   * none of them said which one was open.
+   */
+  it('marks the row of the seat being shown, not the project around it', () => {
+    const leadRow: AgentRow = { ...lead(), lifecycle: 'Running', pending: null, reason: null };
+    const worker: AgentRow = {
+      ...leadRow,
+      slot: { ...leadRow.slot, label: 'w1' },
+      label: 'w1',
+    };
+    const home = withHome({ agents: [leadRow, worker] });
+    const project = (slot: SessionSlot): RailProject | undefined =>
+      railGroups(home, slot, 0)
+        .flatMap((group) => group.projects)
+        .find((entry) => entry.name === 'proj');
+
+    expect(project(LEAD)?.shown, 'the lead seat was not the row marked').toBe('lead');
+    expect(project({ ...LEAD, label: 'w1' })?.shown, 'the shown worker was not marked').toBe('w1');
+    expect(
+      project({ org: 'TestOrg', project: 'elsewhere', label: 'lead' })?.shown,
+      'a project the page is not showing marked a row',
+    ).toBeNull();
   });
 
   /**

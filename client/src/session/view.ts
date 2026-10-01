@@ -69,8 +69,15 @@ export interface RailGroup {
 export interface RailProject {
   name: string;
   org: string;
-  /** The project the page is showing. */
-  current: boolean;
+  /**
+   * The LABEL of the row the page is showing, or `null` when it is showing
+   * another project.
+   *
+   * A label rather than a flag, because the mark is on one row: a project's
+   * own row is its lead and a worker's row is its own label, so a row compares
+   * against this and exactly one of them matches.
+   */
+  shown: string | null;
   /** How long since it last wrote, drawn only when nothing is running. */
   age: string;
   asleep: boolean;
@@ -478,7 +485,10 @@ export function railGroups(home: HomeWire, current: SessionSlot, now: number): R
     group.projects.push({
       name: entry.project.name,
       org: entry.project.org,
-      current: entry.project.org === current.org && entry.project.name === current.project,
+      shown:
+        entry.project.org === current.org && entry.project.name === current.project
+          ? current.label
+          : null,
       age: whenOf(lead, now),
       asleep: rank === 2,
       row: lead,

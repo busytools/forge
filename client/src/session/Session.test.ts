@@ -274,6 +274,21 @@ describe('the rail folds', () => {
   });
 });
 
+describe('the active row', () => {
+  it('marks the seat the page is showing, on that row', () => {
+    expect(draw(), 'the seat the page is showing is not marked').toContain('class="pr on"');
+  });
+
+  it('marks a worker row when the page is showing a worker', () => {
+    const body = draw({
+      slot: { ...LEAD, label: 'w1' },
+      wire: { ...homeWire, agents: [...homeWire.agents, row('w1', 'Running')] },
+    });
+    expect(body).toContain('class="wk on"');
+    expect(body, 'the project lit its own row as well').not.toContain('class="pr on"');
+  });
+});
+
 describe('the session id cell', () => {
   const cell = (id: string): string => render(SessionId, { props: { id } }).body;
 
@@ -299,6 +314,18 @@ describe('the session id cell', () => {
 });
 
 describe('the rail footer as the sheet lays it out', () => {
+  /**
+   * The box and the tint wrapped a project AND its workers, so four rows
+   * looked selected and none of them said which one was open. The mark is on
+   * the active row itself instead.
+   */
+  it('leaves the project row unboxed and untinted, marking the row instead', () => {
+    expect(body('.pj.cur'), 'the project box and its tint are back').toBe('');
+    expect(body('.pr.on .dot, .wk.on .dot'), 'the active row carries no accent').toContain(
+      'var(--accent)',
+    );
+  });
+
   /**
    * The scrolling goes BEHIND the footer, not with it: the list is the rail's
    * one scroller, and the footer is the sibling that takes the height it needs

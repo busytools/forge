@@ -21,7 +21,7 @@
     onclose,
   }: {
     home: HomeWire;
-    /** The seat the page is showing, which its own project's row marks. */
+    /** The seat the page is showing, which is the one row the rail marks. */
     current: SessionSlot;
     now: number;
     /** Brings the header's handle back, which the collapsed rail has covered. */
@@ -61,8 +61,8 @@
     <!-- One project's block, drawn the same in a folded group and an open
          one: the asleep heading is the only thing a folded group changes. -->
     {#snippet projectBlock(project: RailProject)}
-      <div class="pj" class:cur={project.current}>
-        <div class="pr">
+      <div class="pj">
+        <div class="pr" class:on={project.shown === 'lead'}>
           <span class="dot {railMark(project.row.state)}"></span>
           <span class="nm"><a href={hrefForSlot(project.row.slot)}>{project.name}</a></span>
           <span class="org">{project.org}</span>
@@ -76,7 +76,7 @@
           <div class="why" class:bad={project.why.bad}>{project.why.line}</div>
         {/if}
         {#each project.workers as worker (worker.slot.label)}
-          <div class="wk">
+          <div class="wk" class:on={project.shown === worker.slot.label}>
             <span class="dot {railMark(worker.state)}"></span>
             <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
             <CloseChip />
@@ -86,14 +86,21 @@
              them: they are rows a reader is not working in, and the count is
              what keeps the fold from reading as a project with no workers. -->
         {#if project.sleeping.length > 0}
-          <details class="sfold">
+          <!-- Open when the seat the page is showing is one of them: a fold
+               that hid the row a reader is looking at would be the one thing
+               it must never do. The reader's toggle owns it after that. -->
+          <details
+            class="sfold"
+            open={project.shown !== null &&
+              project.sleeping.some((row) => row.slot.label === project.shown)}
+          >
             <summary class="wk">
               <span class="dot off"></span>
               <span class="nm">{project.sleeping.length} asleep</span>
               <Chevron />
             </summary>
             {#each project.sleeping as worker (worker.slot.label)}
-              <div class="wk">
+              <div class="wk" class:on={project.shown === worker.slot.label}>
                 <span class="dot {railMark(worker.state)}"></span>
                 <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
                 <CloseChip />
