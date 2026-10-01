@@ -535,18 +535,26 @@ interface Need {
 
 /** One rule the sheet writes for the box itself. */
 interface Ring {
+  /** The selector as the sheet writes it, so a failure can name the rule. */
+  selector: string;
+  /** The rule's own text, which is where a second device on the box would be. */
+  body: string;
   need: Need;
   colour: string;
   strength: number;
 }
 
 /**
- * What a selector asks of a box, or `null` when it is not the box's own rule:
- * a selector reaching something inside the box carries a combinator, and
- * nothing down there paints the ring.
+ * What a selector asks of a box.
+ *
+ * `null` is only for a rule that selects something INSIDE the box, which is
+ * not the box's own ring. Anything else the resolver cannot read throws: a
+ * rule it skipped is invisible to every check here, so the suite would read
+ * green about a state it never saw.
  */
 function need(selector: string): Need | null {
-  const rest = selector.replace(/^\.box/, '').trim();
+  const rest = selector.replace(/^\.box/, '');
+  if (/[\s>+~]/.test(rest.replace(/\([^)]*\)/g, ''))) return null;
   const found: Need = { classes: [], focus: false, without: [] };
   let at = 0;
   while (at < rest.length) {
@@ -564,13 +572,18 @@ function need(selector: string): Need | null {
       found.without.push(...excluded[1].split(',').map((name) => name.trim().replace(/^\./, '')));
       at += excluded[0].length;
     } else {
-      return null;
+      throw new Error(`a rule for the box in a form this resolver cannot read: ${selector}`);
     }
   }
   return found;
 }
 
-/** The border colour a rule paints, written longhand or in the shorthand. */
+/**
+ * The border colour a rule paints, written longhand or in the shorthand, or
+ * `null` when it paints no border at all - which is a rule about something
+ * other than the ring. A shorthand it cannot read throws, for the reason
+ * `need` does.
+ */
 function painted(body: string): string | null {
   const longhand = /border-color:\s*([^;]+)/.exec(body);
   if (longhand?.[1] !== undefined) return longhand[1].trim();
@@ -578,7 +591,11 @@ function painted(body: string): string | null {
   if (shorthand?.[1] === undefined) return null;
   // Width, style, colour: the colour is the third token, and no rule here
   // writes anything else.
-  return shorthand[1].trim().split(/\s+/)[2] ?? null;
+  const parts = shorthand[1].trim().split(/\s+/);
+  if (parts.length !== 3) {
+    throw new Error(`a border on the box in a form this resolver cannot read: ${shorthand[0]}`);
+  }
+  return parts[2] ?? null;
 }
 
 /** Every rule the sheet writes for the box itself, in source order. */
@@ -586,13 +603,16 @@ function rings(text: string): Ring[] {
   const found: Ring[] = [];
   const rules = [...text.matchAll(/^[ \t]*(\.box[^{]*?)\s*\{([^}]*)\}/gm)];
   for (const rule of rules) {
-    const ask = need((rule[1] ?? '').trim());
-    const colour = painted(rule[2] ?? '');
-    if (ask === null || colour === null) continue;
+    const selector = (rule[1] ?? '').trim();
+    const body = rule[2] ?? '';
+    const ask = need(selector);
+    if (ask === null) continue;
+    const colour = painted(body);
+    if (colour === null) continue;
     // A class and a pseudo-class are one of specificity each, and a `:not(...)`
     // is its most specific argument rather than all of them.
     const strength = ask.classes.length + (ask.focus ? 1 : 0) + (ask.without.length > 0 ? 1 : 0);
-    found.push({ need: ask, colour, strength });
+    found.push({ selector, body, need: ask, colour, strength });
   }
   return found;
 }
@@ -683,11 +703,30 @@ describe('the frame', () => {
     ).not.toBe(ring(mutated, ['warn'], false));
   });
 
-  it('draws no second device: the inset line along the bottom edge is gone', () => {
-    expect(sheet, 'the box still draws the inset orange line').not.toContain('inset 0 -2px');
-    expect(sheet, 'focus still paints something besides the ring').not.toMatch(
-      /\.box:focus-within[^{]*\{[^}]*box-shadow/,
+  /**
+   * The denominator under the two checks above: a rule for the box that this
+   * resolver cannot read must fail rather than be skipped, because a skipped
+   * rule is invisible to both of them and the suite reads green about a state
+   * it never saw.
+   */
+  it('fails on a rule for the box it cannot read, rather than skipping it', () => {
+    const spliced = sheet.replace(
+      '.box:focus-within',
+      '.box[data-phase="warn"] { border-color: var(--warn); }\n.box:focus-within',
     );
+    expect(
+      () => ring(spliced, ['warn'], false),
+      'a rule for the box this resolver cannot read is skipped',
+    ).toThrow(/cannot read/);
+  });
+
+  it('draws no second device: no rule for the box paints an inset line', () => {
+    for (const rule of rings(sheet)) {
+      expect(
+        rule.body,
+        `${rule.selector} draws an inset line where the ring carries the state`,
+      ).not.toMatch(/box-shadow:[^;]*inset/);
+    }
   });
 
   it('puts the controls on the last line, so they follow the caret down', () => {
