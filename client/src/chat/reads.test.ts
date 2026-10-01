@@ -38,6 +38,7 @@ function stub() {
       return () => listeners.delete(fn);
     },
     onStatus: () => () => undefined,
+    store: () => undefined,
   } as unknown as Connection;
 
   return {
