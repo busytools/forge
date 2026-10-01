@@ -6057,5 +6057,9 @@ mod lead_charter_tests {
             DEFAULT_LEAD_CHARTER.contains("Hold a slot back only when a guardrail above blocks"),
             "a slot held below the cap is held by a named guardrail: {DEFAULT_LEAD_CHARTER}",
         );
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("2-3"),
+            "no fixed worker figure in the prose - the cap is the config's: {DEFAULT_LEAD_CHARTER}",
+        );
     }
 }
