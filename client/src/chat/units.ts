@@ -1042,7 +1042,11 @@ export function fold(
         // An empty one draws nothing, the way the terminal skips it: the row's
         // whole point is the words it carries.
         if (block.thinking.trim() !== '') {
-          push({ kind: 'thinking', text: block.thinking });
+          // Not `push`: a thought is commentary ON the work rather than a
+          // separator between pieces of it, so the run stays whole across the
+          // row. The row draws above the group it interrupted.
+          flushPeers();
+          units.push({ kind: 'thinking', text: block.thinking });
         }
         continue;
       }

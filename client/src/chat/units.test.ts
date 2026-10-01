@@ -101,6 +101,27 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(fold([empty])), 'and an empty one is not a row').toEqual([]);
   });
 
+  it('keeps a run whole across a thinking row', () => {
+    // A thinking block is commentary ON the work rather than a separator
+    // between pieces of it: the terminal has no thinking variant at all, so its
+    // run cannot break on one. The regression was measured on a real turn:
+    // drawing each thought as its own unit split one run of 24 calls into
+    // twelve groups, where the same turn drew four.
+    const units = fold([
+      call('read', 0),
+      said([{ type: 'thinking', thinking: 'about the file', signature: 's' }]),
+      call('read', 1),
+    ]);
+
+    const groups = units.filter((unit) => unit.kind === 'group');
+    expect(
+      units.filter((u) => u.kind === 'thinking'),
+      'the words still draw',
+    ).toHaveLength(1);
+    expect(groups, 'one run, not two').toHaveLength(1);
+    expect(groups[0]?.kind === 'group' ? groups[0].families[0]?.calls.length : 0).toBe(2);
+  });
+
   it('breaks the run on anything that is not a call', () => {
     const units = fold([call('read', 0), said([text('here it is')]), call('bash', 1)]);
 
