@@ -23,9 +23,10 @@ pub use forge_workspace::{ContextUsage, McpServers};
 
 /// What a session header states about the session.
 pub struct SessionHeader {
-    /// The occupant's id, as the CLI named it: `None` until a session has
-    /// connected to the seat, which covers a seat nothing has started and one
-    /// whose CLI has not answered yet.
+    /// The occupant's id, as the CLI named it, or `None` when there is no
+    /// occupant to name: a seat nothing has started, one whose CLI has not
+    /// answered yet, and one whose id was dropped after a background sign-in
+    /// or connection failure all read the same.
     ///
     /// Carried here rather than read off the conversation's frames, because a
     /// client attaching to a running seat hears no `Connected` - a

@@ -23,8 +23,9 @@
     children,
   }: { heading: string; count: number; holds: boolean; children: Snippet } = $props();
 
-  // Read once, through a call: the first render's value is the whole of what
-  // the prop is for here, as the inspector's own sections take theirs.
+  // Read once, through a call, as the inspector's own sections take theirs:
+  // this is what the fold opens on first render, and the effect below is what
+  // keeps it open when the seat arrives later.
   const startsOpen = () => holds;
   let open = $state(startsOpen());
   $effect(() => {

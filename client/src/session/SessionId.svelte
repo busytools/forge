@@ -36,16 +36,21 @@
   });
 
   function copy(): void {
+    // The id the write was issued for. A write can settle after an occupant
+    // swap has put a new id on the row, and a resolve that does not match the
+    // id here now must change nothing: it is about a string this row no
+    // longer shows.
+    const issued = id;
     if (typeof navigator === 'undefined' || navigator.clipboard === undefined) {
       outcome = 'no-clipboard';
       return;
     }
-    navigator.clipboard.writeText(id).then(
+    navigator.clipboard.writeText(issued).then(
       () => {
-        outcome = 'copied';
+        if (issued === id) outcome = 'copied';
       },
       () => {
-        outcome = 'failed';
+        if (issued === id) outcome = 'failed';
       },
     );
   }

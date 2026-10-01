@@ -68,6 +68,41 @@ describe('the copy control', () => {
     ).toBe('copy');
   });
 
+  /**
+   * A write is issued for the id the row was showing, and it can settle after
+   * an occupant swap has already put a new one there. A resolve that does not
+   * match the id on the row must change nothing, or the control vouches for a
+   * string the clipboard holds and the row no longer shows.
+   */
+  it('ignores a write that settles after the occupant changed', async () => {
+    // In a box, because the assignment happens inside the promise's own
+    // executor and a plain `let` reads as `null` to the type checker here.
+    const gate: { land: (() => void) | null } = { land: null };
+    clipboard(
+      () =>
+        new Promise<void>((resolve) => {
+          gate.land = resolve;
+        }),
+    );
+    const props = boxed<{ id: string }>({ id: 'd4f70669-1f2a' });
+    app = mount(SessionId, { target: document.body, props });
+
+    control().click();
+
+    // The swap lands first, and the reset has already run.
+    props.id = 'aaaa1111-2222';
+    flushSync();
+    expect(control().textContent?.trim(), 'the reset did not run on the swap').toBe('copy');
+
+    // Now the write the FIRST occupant's row issued comes back.
+    gate.land?.();
+    await settle();
+    expect(
+      control().textContent?.trim(),
+      'a write issued for the previous id vouched for the new one',
+    ).toBe('copy');
+  });
+
   it('says the write was refused rather than passing as a click that worked', async () => {
     clipboard(() => Promise.reject(new Error('refused')));
     app = mount(SessionId, { target: document.body, props: { id: 'd4f70669' } });

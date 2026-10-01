@@ -41,7 +41,7 @@ import type {
 
 /** The facts the header states, and the class the mode's chip carries. */
 export interface Facts {
-  /** The occupant's id, or `null` until a session connects to the seat. */
+  /** The occupant's id, or `null` when there is no occupant to name. */
   sessionId: string | null;
   model: string;
   effort: string;

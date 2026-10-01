@@ -420,9 +420,8 @@ pub struct TakeWire {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SessionHeaderWire {
-    /// The occupant's id, `None` until a session has connected to the seat: a
-    /// seat nothing has started and one whose CLI has not answered yet both
-    /// read null.
+    /// The occupant's id, or `None` when there is no occupant to name:
+    /// nothing started, nothing connected yet, or an id dropped since.
     pub session_id: Option<forge_primitives::SessionId>,
     pub model: Option<Value>,
     pub effort: Value,
