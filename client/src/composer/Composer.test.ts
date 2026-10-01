@@ -257,6 +257,46 @@ describe('the box', () => {
   });
 
   /**
+   * The keyboard comes with the words.
+   *
+   * Ved's report: a take lands, he presses Enter straight away, and nothing
+   * sends - the key went to whatever still held the focus, so he had to click
+   * back into the box first.
+   */
+  it('moves the keyboard to the box a take landed in, so an immediate Enter sends', () => {
+    const harness = open({ dictation: true });
+    expect(document.activeElement, 'the field starts with the keyboard').toBe(field());
+
+    const mic = document.querySelector('.mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('the box drew no mic');
+    mic.focus();
+    flushSync();
+    expect(
+      document.activeElement,
+      'the mic took it, which is the state the take then lands into',
+    ).not.toBe(field());
+
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'push it once CI is green', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(
+      document.activeElement,
+      'and the take brings it back, so an immediate Enter submits',
+    ).toBe(field());
+  });
+
+  /**
    * The server holds a landed notice until the next take starts, so a client
    * that attaches - or reloads - finds words whose take it never saw. They are
    * the reader's own, already sent, and the box they come back in is not a

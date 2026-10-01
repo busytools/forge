@@ -201,6 +201,11 @@
       );
     }
     beat = true;
+    // The words come with the keyboard, so an immediate Enter sends what just
+    // landed. The guards above already make this the landing rather than every
+    // frame; this field is null while a prompt has the box, and the dock
+    // focuses its own.
+    field?.focus();
     const timer = setTimeout(() => {
       beat = false;
     }, BEAT_MS);
