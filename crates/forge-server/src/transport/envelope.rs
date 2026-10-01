@@ -138,6 +138,9 @@ pub enum ServerMessage {
     /// where the list would have been.
     Devices {
         devices: Vec<crate::transport::wire::DeviceWire>,
+        /// The `[dictate] device` pin, and ONLY that: a pick replaces it for
+        /// the rest of the run and rides the home snapshot's `dictate.device`,
+        /// so this is not what is in force once anything has picked.
         configured: Option<String>,
     },
     /// The answer to a `Command` that carried a `reply_to`, including a

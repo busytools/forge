@@ -295,12 +295,13 @@ pub struct SlackWire {
 
 /// Dictation's preflight state.
 ///
-/// **The device catalog is not here and nothing asks for it.** Enumerating
-/// devices is a blocking walk on the machine running forge, which trips a
-/// microphone check - and a client is usually another machine, whose own
-/// devices are the ones it would capture from. So the catalog stays with
-/// whoever does the capturing, and what crosses is the input a pick has
-/// already moved this process to, in `device` below.
+/// **The device catalog is not a field here, and asking for it is its own
+/// read.** Enumerating devices is a blocking walk on the machine running
+/// forge, which trips a microphone check, and a record is encoded per request
+/// and re-sent on every reconnect - so a field would be a permission check per
+/// frame and per connection. What crosses here is the input a pick has already
+/// moved this process to, in `device` below; the list to pick FROM is asked
+/// for on demand and answered by the socket's `devices` message.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DictateWire {
