@@ -19,6 +19,48 @@ function declares(unit: string, said: string): boolean {
 }
 
 describe('the markdown a message carries, as the sheet draws it', () => {
+  it('configures the two renderers as one, apart from soft breaks', () => {
+    // The two differ by their options and nothing else. A rule attached to one
+    // instance and not the other is the hand-kept mirror this shape exists to
+    // avoid - a fence drawn as the page's panel in prose and as the module's own
+    // `<pre><code>` in a prompt is what that costs - so the pair is compared by
+    // what they render rather than by how they were built: every markdown shape
+    // the page draws, through both, byte for byte.
+    const document = [
+      '# a heading',
+      '',
+      'a paragraph with `code` and a [link](https://example.test).',
+      '',
+      '- one',
+      '- two',
+      '',
+      '> a quote',
+      '',
+      '```sh',
+      'just check',
+      '```',
+      '',
+      '    an indented block',
+      '',
+      '| a | b |',
+      '| - | - |',
+      '| 1 | 2 |',
+      '',
+      '---',
+      '',
+      'first line',
+      'second line',
+    ].join('\n');
+
+    const prose = renderProse(document);
+    const prompt = renderProse(document, true);
+
+    expect(prompt).toContain('<br>');
+    // The tag alone is the difference: the newline it replaces is still there,
+    // so what is left of the prompt's render is the prose render verbatim.
+    expect(prompt.replace(/<br>/g, ''), 'the split is the only difference').toBe(prose);
+  });
+
   it('keeps a prompt newline as a break, where the same text joins for prose', () => {
     // The terminal's own split: its user path passes `preserve_newlines`,
     // which routes through `force_markdown_line_breaks`, and its assistant
