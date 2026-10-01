@@ -1760,6 +1760,37 @@ describe('the dock', () => {
   });
 
   /**
+   * The other half of that release: it is keyed on the prompt's identity, so a
+   * frame carrying the same question must leave the box alone. A key that moved
+   * on every render would clear the box under the reader, which is worse than
+   * the leak it fixes.
+   */
+  it('keeps what the reader wrote when the same prompt arrives again', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q') }) });
+
+    const ownWords = (): HTMLTextAreaElement => {
+      const row = options()[2];
+      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+      row.click();
+      flushSync();
+      const box = document.querySelector('.dock [data-editor="dock"]');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      return box;
+    };
+
+    const box = ownWords();
+    box.value = 'keep me';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    // The same question as a fresh frame carries it: a new object, one id.
+    harness.page.record = record({ pending_ask: questionAsk('tu-q') });
+    flushSync();
+
+    expect(ownWords().value, 'a re-render does not clear the box under the reader').toBe('keep me');
+  });
+
+  /**
    * The words come with the keyboard, and while a prompt has the slot the box
    * they land in is the dock's own. Opening that box puts the keyboard in it,
    * so this is the state left after the reader has clicked away from it.
