@@ -8,7 +8,8 @@
  * the check that sits there.
  *
  * **What this covers, and what it does not.** It compares palette tokens to
- * each other, at the WCAG ratio for what the sheet draws them as. A colour
+ * each other, at the WCAG ratio for what the sheet draws them as, plus the one
+ * ceiling this project sets for its own prose. A colour
  * written inline in a component rather than read from the token set is
  * invisible here, and nothing here renders, so this says nothing about what
  * a browser paints once a ground arrives from a gradient or an alpha layer
@@ -25,8 +26,26 @@ import { rootTokens } from './theme';
 const TEXT = 4.5;
 const MARK = 3;
 
-/** A foreground token, the ground it is drawn on, and the floor it takes. */
-type Pair = readonly [foreground: string, ground: string, floor: number];
+/**
+ * The ceiling the page's prose sits under.
+ *
+ * The floors are WCAG's; this is the other end of the same band and it is this
+ * project's own, because the standard has nothing to say about text drawn too
+ * bright. The reference is the terminal, which draws body text at 6.10:1
+ * (Ghostty `GitHub Dark`: fg #8b949e on #101216) and nothing near white. The
+ * page's ground is darker and its lower tiers are AA-floored, so it cannot
+ * follow the terminal down that far: prose has to stay clearly above `--muted`
+ * (7.01:1), which puts this tier's band between roughly 10 and 14. 14 is the
+ * top of it, named so that a later "the chat looks dim" cannot put `--text`
+ * back where it was, at 17.51:1.
+ */
+const PROSE_CEILING = 14;
+
+/**
+ * A foreground token, the ground it is drawn on, the floor it takes, and - on
+ * the token the page draws its prose in - the ceiling it stays under.
+ */
+type Pair = readonly [foreground: string, ground: string, floor: number, ceiling?: number];
 
 /** WCAG 2.1 relative luminance of a `#rrggbb` value. */
 function luminance(hex: string): number {
@@ -51,34 +70,41 @@ const OPAQUE = /^#[0-9a-f]{6}$/i;
 /**
  * What a failure should say: the two tokens and both ratios.
  *
- * A pair the arithmetic cannot be run on is reported rather than measured,
- * which is the whole of what keeps a `NaN` out: `NaN < floor` is false, so
- * anything reaching `contrast` unmeasured would read as fine. Both halves
- * are real - a token renamed in `theme.ts` leaves the table stale, and a
- * value `salvage.test.ts` accepts from `theme.rs` (`#abc`, an eight-digit
- * hex, `rgba(...)`) is not a `#rrggbb` pair.
+ * A pair outside its band is reported at whichever end it left: under the
+ * floor it is unreadable, over the ceiling it is the glare the palette was
+ * corrected for. A pair the arithmetic cannot be run on is reported rather
+ * than measured, which is the whole of what keeps a `NaN` out: `NaN < floor`
+ * is false, so anything reaching `contrast` unmeasured would read as fine.
+ * Both halves are real - a token renamed in `theme.ts` leaves the table
+ * stale, and a value `salvage.test.ts` accepts from `theme.rs` (`#abc`, an
+ * eight-digit hex, `rgba(...)`) is not a `#rrggbb` pair.
  */
-function unreadable(pairs: readonly Pair[], palette: Readonly<Record<string, string>>): string[] {
-  const below: string[] = [];
-  for (const [foreground, ground, floor] of pairs) {
+function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, string>>): string[] {
+  const outside: string[] = [];
+  for (const [foreground, ground, floor, ceiling] of pairs) {
     const fg = palette[foreground];
     const bg = palette[ground];
     if (fg === undefined || bg === undefined) {
-      below.push(`${foreground} on ${ground}: the palette resolves no such token`);
+      outside.push(`${foreground} on ${ground}: the palette resolves no such token`);
       continue;
     }
     if (!OPAQUE.test(fg) || !OPAQUE.test(bg)) {
-      below.push(`${foreground} on ${ground}: not a pair of #rrggbb values`);
+      outside.push(`${foreground} on ${ground}: not a pair of #rrggbb values`);
       continue;
     }
     const measured = contrast(fg, bg);
     if (measured < floor) {
-      below.push(
+      outside.push(
         `${foreground} on ${ground} measures ${measured.toFixed(2)}:1, below the ${floor}:1 floor`,
       );
     }
+    if (ceiling !== undefined && measured > ceiling) {
+      outside.push(
+        `${foreground} on ${ground} measures ${measured.toFixed(2)}:1, above the ${ceiling}:1 ceiling`,
+      );
+    }
   }
-  return below;
+  return outside;
 }
 
 /**
@@ -106,9 +132,13 @@ function unreadable(pairs: readonly Pair[], palette: Readonly<Record<string, str
  * `--violet` is drawn by nothing - no rule in the sheet reads it - and is
  * pinned against the page so the token cannot sit in the palette with no
  * answer for where a surface would put it.
+ *
+ * The one ceiling is on the row the prose is read from: every other row that
+ * draws `--text` is the same token on a raised ground, and always measures
+ * below it.
  */
 const DRAWN: readonly Pair[] = [
-  ['--text', '--bg', TEXT],
+  ['--text', '--bg', TEXT, PROSE_CEILING],
   ['--text', '--s1', TEXT],
   ['--text', '--s2', TEXT],
   ['--muted', '--bg', TEXT],
@@ -176,12 +206,25 @@ describe('the palette', () => {
    * below is not evidence of anything.
    */
   it('finds a pair too close to read', () => {
-    expect(unreadable([UNREADABLE], rootTokens(null)), 'a pair one ground apart').toHaveLength(1);
+    expect(outOfBand([UNREADABLE], rootTokens(null)), 'a pair one ground apart').toHaveLength(1);
+  });
+
+  /**
+   * The ceiling's own control, and it is separate from the floor's: the two
+   * are different ends of the band, so a check that can only report the low
+   * one would pass this file while never measuring the glare it was added
+   * for. A ceiling nothing can fail is a comment wearing an assertion.
+   */
+  it('finds a pair drawn past its ceiling', () => {
+    expect(
+      outOfBand([['--text', '--bg', TEXT, 10]], rootTokens(null)),
+      'prose against a ceiling under its own value',
+    ).toHaveLength(1);
   });
 
   /** A pair naming a token the palette does not resolve is a stale pair. */
   it('finds a pair naming a token the palette has lost', () => {
-    expect(unreadable([['--gone', '--bg', TEXT]], rootTokens(null)), 'a renamed token').toEqual([
+    expect(outOfBand([['--gone', '--bg', TEXT]], rootTokens(null)), 'a renamed token').toEqual([
       '--gone on --bg: the palette resolves no such token',
     ]);
   });
@@ -194,7 +237,7 @@ describe('the palette', () => {
    */
   it('finds a pair whose value it cannot measure', () => {
     expect(
-      unreadable([['--bg', '--bg', TEXT]], { '--bg': 'rgba(15,49,30,.5)' }),
+      outOfBand([['--bg', '--bg', TEXT]], { '--bg': 'rgba(15,49,30,.5)' }),
       'a value carrying an alpha channel',
     ).toEqual(['--bg on --bg: not a pair of #rrggbb values']);
   });
@@ -229,7 +272,7 @@ describe('the palette', () => {
     ).toEqual([...NO_TEXT_GROUND]);
   });
 
-  it('draws every pair it names at or above its floor', () => {
-    expect(unreadable(DRAWN, rootTokens(null))).toEqual([]);
+  it('draws every pair it names inside its band', () => {
+    expect(outOfBand(DRAWN, rootTokens(null))).toEqual([]);
   });
 });
