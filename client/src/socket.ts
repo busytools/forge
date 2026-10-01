@@ -312,9 +312,10 @@ export function connect(url: string): Connection {
         if (message.what === 'subscribe') refuse(message.why);
         else report(`the server refused a ${message.what}`, message.why);
         return;
-      // `page` is the conversation's, and a page that draws one reads it
-      // from `onMessage`.
+      // `page` is the conversation's, and `devices` is the picker's: a surface
+      // that draws one reads it from `onMessage`.
       case 'page':
+      case 'devices':
         return;
     }
   }
