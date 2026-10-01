@@ -328,6 +328,20 @@ function queuedText(prompt: unknown): string {
 }
 
 /**
+ * Whether a user frame is the CLI telling the MODEL that a skill was already
+ * loaded: `Skill /unslop was loaded earlier (see the invoked-skills reminder
+ * above); this is a NEW invocation...`.
+ *
+ * Nobody typed it, so it is a line the conversation carries rather than a turn
+ * the reader took. Matched on the CLI's own sentence because that is all the
+ * frame carries here - the `isMeta` flag that marks it on disk is not in the
+ * wire type, so it does not survive to this fold.
+ */
+function isSkillReminder(text: string): boolean {
+  return text.startsWith('Skill /') && text.includes('was loaded earlier');
+}
+
+/**
  * Whether a `queued_command` block is the harness's own background-completion
  * notice, which nobody typed and this page does not draw.
  *
@@ -1043,7 +1057,8 @@ export function fold(
     for (const [blockAt, block] of blocksOf(frame.message?.content).entries()) {
       if (block.type === 'text' && typeof block.text === 'string') {
         if (frame.type === 'user') {
-          const envelope = inbound(stripEscapes(block.text), self);
+          const stripped = stripEscapes(block.text);
+          const envelope = inbound(stripped, self);
           if (envelope !== null) {
             if (envelope.kind === 'peer') {
               // A peer message is a row the CLI answered as a turn of its own,
@@ -1059,6 +1074,17 @@ export function fold(
             } else {
               push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });
             }
+            continue;
+          }
+          // The harness talking to the model is not the reader talking: the
+          // reminder draws as a line of its own, so no turn claims words
+          // nobody typed.
+          if (isSkillReminder(stripped)) {
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: { severity: 'info', text: stripped },
+            });
             continue;
           }
         }
