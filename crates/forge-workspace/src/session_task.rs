@@ -605,11 +605,11 @@ impl SessionTask {
             AgentEvent::SetModelFailed { model, message, .. } => {
                 self.emit(SessionUpdate::SetModelFailed { key: self.key.clone(), model, message });
             }
-            AgentEvent::TurnError { message, .. } => {
+            AgentEvent::TurnError { message, class, .. } => {
                 self.emit(SessionUpdate::TurnError {
                     key: self.key.clone(),
                     message,
-                    class: None,
+                    class: Some(class),
                     terminal_reason: None,
                 });
             }
@@ -3353,6 +3353,7 @@ mod tests {
         task.translate_event(AgentEvent::TurnError {
             session_id: "m".to_owned(),
             message: "stdin write failed".to_owned(),
+            class: forge_primitives::TurnErrorClass::Other,
         });
         assert!(
             matches!(
@@ -3361,6 +3362,34 @@ mod tests {
             ),
             "TurnError carries the failure text so the spinner unwinds"
         );
+    }
+
+    /// The class an event was built with rides the update stream, so a
+    /// view that reads only `SessionUpdate` can tell an auth failure from
+    /// any other error instead of searching the message itself.
+    #[tokio::test]
+    async fn turn_error_carries_its_class_onto_the_update_stream() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
+        let (mut task, mut update_rx) =
+            review_task_for(&workspace, &SessionSlot::from_str_for_test("m"));
+
+        for class in [
+            forge_primitives::TurnErrorClass::AuthRequired,
+            forge_primitives::TurnErrorClass::Other,
+        ] {
+            task.translate_event(AgentEvent::TurnError {
+                session_id: "m".to_owned(),
+                message: "interrupt not acknowledged by the CLI".to_owned(),
+                class,
+            });
+            assert!(
+                matches!(
+                    update_rx.try_recv(),
+                    Ok(SessionUpdate::TurnError { class: Some(on_wire), .. }) if on_wire == class
+                ),
+                "the class has to reach the stream as {class:?}, not as None a reader must guess past",
+            );
+        }
     }
 
     /// The teardown drain must not double-notify a turn that already

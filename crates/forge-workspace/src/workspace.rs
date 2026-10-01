@@ -11084,11 +11084,13 @@ mod worker_activity_tests {
         // draws a calm idle for a session held on `/login`.
         let by_error = SessionSlot::from_str_for_test("s-login-error");
         let domain = ws.register_domain_session(by_error.clone(), None);
+        let auth_message = "authentication failed: please log in";
         crate::session_task::apply_event_to_domain(
             &mut domain.lock(),
             &forge_agent::client::AgentEvent::TurnError {
                 session_id: "uuid".to_owned(),
-                message: "authentication failed: please log in".to_owned(),
+                message: auth_message.to_owned(),
+                class: forge_agent::translate::error_handling::classify_turn_error(auth_message),
             },
         );
         assert_eq!(
