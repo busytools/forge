@@ -1760,6 +1760,39 @@ describe('the dock', () => {
   });
 
   /**
+   * One tool call carries every question of a batch - the core reuses the tool
+   * id and advances only the index - so two questions of one call are two
+   * prompts, and the box question one was written in is not question two's.
+   */
+  it("opens the next question's own-words box empty when one call carries two", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q', {}, 1) }) });
+
+    const ownWords = (): HTMLTextAreaElement => {
+      const row = options()[2];
+      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+      row.click();
+      flushSync();
+      const box = document.querySelector('.dock [data-editor="dock"]');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      return box;
+    };
+
+    const box = ownWords();
+    box.value = 'words meant for question one';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    // Answered, and the batch moves to its second question under the same call.
+    press('Enter');
+    harness.page.record = record({ pending_ask: questionAsk('tu-q', {}, 2) });
+    flushSync();
+
+    expect(ownWords().value, "question one's words do not come back in question two's box").toBe(
+      '',
+    );
+  });
+
+  /**
    * The other half of that release: it is keyed on the prompt's identity, so a
    * frame carrying the same question must leave the box alone. A key that moved
    * on every render would clear the box under the reader, which is worse than

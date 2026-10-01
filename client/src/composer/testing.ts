@@ -102,8 +102,19 @@ export function permissionAsk(toolId = 'tu-1'): unknown {
   };
 }
 
-/** A question as the core offers one, with whatever the test overrides in its prompt. */
-export function questionAsk(toolId = 'tu-q', prompt: Record<string, unknown> = {}): unknown {
+/**
+ * A question as the core offers one, with whatever the test overrides in its
+ * prompt.
+ *
+ * The index is a parameter because one tool call carries every question in a
+ * batch: the core reuses the tool id and advances this, so a test that needs two
+ * questions of one call needs two of these.
+ */
+export function questionAsk(
+  toolId = 'tu-q',
+  prompt: Record<string, unknown> = {},
+  index = 1,
+): unknown {
   return {
     kind: 'question',
     request: {
@@ -131,7 +142,7 @@ export function questionAsk(toolId = 'tu-q', prompt: Record<string, unknown> = {
         ],
         ...prompt,
       },
-      question_index: 1,
+      question_index: index,
       total_questions: 3,
     },
   };

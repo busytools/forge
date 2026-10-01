@@ -165,8 +165,8 @@
     if (composer.take !== null) sawTake = true;
   });
 
-  /** The prompt the dock's box belongs to, which is what its words go with. */
-  let ownPrompt: string | null = null;
+  /** What the dock's own box belongs to, which is what its words go with. */
+  let ownKey: string | null = null;
 
   // The dock's box belongs to the prompt, so what was written in it goes when
   // the prompt does - which is what the dock's own mount used to do for it.
@@ -176,9 +176,9 @@
   // `ask === null` never sees that, so the words would come back in the box
   // that replaced them.
   $effect(() => {
-    const id = askToolId(ask);
-    if (id === ownPrompt) return;
-    ownPrompt = id;
+    const key = ownKeyOf(ask);
+    if (key === ownKey) return;
+    ownKey = key;
     dockDraft = '';
     dockLanded = null;
   });
@@ -438,6 +438,24 @@
   /** Remember which prompt this reader answered, while the core still lists it. */
   function remember(toolId: string | null): void {
     answered = toolId;
+  }
+
+  /**
+   * What a prompt's own-words box belongs to: one prompt, not one tool call.
+   *
+   * A batch of questions rides one tool call - the core reuses its id and
+   * advances only the index - so the id alone would leave question one's words
+   * in the box question two opens. Not `askToolId`, which backs the comparison
+   * that tells an answered prompt from the next and names what the dock
+   * dispatches under.
+   */
+  function ownKeyOf(current: ReturnType<typeof pendingAsk>): string | null {
+    if (current === null) return null;
+    if (current.kind === 'permission') return `permission:${current.request.toolId}`;
+    if (current.kind === 'question') {
+      return `question:${current.request.toolId}:${String(current.request.index)}`;
+    }
+    return null;
   }
 
   /** The tool the prompt is waiting on, which is how an answer is told apart from the next one. */
