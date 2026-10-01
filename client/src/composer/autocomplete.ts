@@ -30,6 +30,18 @@ import type { Advisory, AgentType, FileEntry } from './wire';
  */
 export const CANDIDATES = 200;
 
+/** The two sources the `/` list draws from, which is also the order it offers them in. */
+const SOURCES = ['forge', 'cli'] as const;
+
+/** Which source a command came from, which is the heading it is drawn under. */
+type Source = 0 | 1;
+
+/** One command with the source it came from. */
+interface Sourced {
+  command: Advisory;
+  source: Source;
+}
+
 /** What a draft is matched against, which is the seat's own reads plus the bundle. */
 export interface Sources {
   /** forge's own table, which shadows the CLI's rows for the same name. */
@@ -52,6 +64,17 @@ export interface Row {
   detail: string;
   /** The glyph column, which only the emoji list fills. */
   glyph: string | null;
+  /** The heading this row opens, or `null` when it opens none. */
+  group: string | null;
+}
+
+/** A run of rows under one heading, which is how a listbox draws its groups. */
+export interface Group {
+  /** What the list draws above these rows, or `null` when it heads none. */
+  title: string | null;
+  /** The index of `rows[0]` in the offer's flat list, which is what a mark counts in. */
+  from: number;
+  rows: Row[];
 }
 
 /** Which list a draft opened, and what it holds. */
@@ -62,7 +85,10 @@ export interface Offer {
   query: string;
   /** How many rows matched, which is what the header states. */
   total: number;
+  /** Every row in the order it is offered, which is the list a mark indexes into. */
   rows: Row[];
+  /** The same rows cut where a heading goes. */
+  groups: Group[];
 }
 
 /** One list's own title and icon, which the header draws. */
@@ -126,9 +152,24 @@ function of(
   query: string,
   ranked: (query: string) => Row[],
 ): Offer | null {
-  const rows = ranked(query);
-  if (rows.length === 0) return null;
-  return { kind, from, query, total: rows.length, rows: rows.slice(0, CANDIDATES) };
+  const found = ranked(query);
+  if (found.length === 0) return null;
+  const rows = found.slice(0, CANDIDATES);
+  return { kind, from, query, total: found.length, rows, groups: grouped(rows) };
+}
+
+/** The rows cut where a heading goes, which is the shape a listbox carries its groups in. */
+function grouped(rows: Row[]): Group[] {
+  const found: Group[] = [];
+  for (const [at, row] of rows.entries()) {
+    const last = found[found.length - 1];
+    if (row.group !== null || last === undefined) {
+      found.push({ title: row.group, from: at, rows: [row] });
+      continue;
+    }
+    last.rows.push(row);
+  }
+  return found;
 }
 
 /** The emoji list, whose token rule is the shortcode one rather than a prefix. */
@@ -137,39 +178,43 @@ function emojiOffer(draft: string): Offer | null {
   if (query === null || query.length < MIN_QUERY_CHARS) return null;
   const found = emojiMatches(query);
   if (found.length === 0) return null;
+  const rows = found.slice(0, CANDIDATES).map((emoji) => ({
+    insert: emoji.glyph,
+    text: `:${emoji.name}:`,
+    detail: '',
+    glyph: emoji.glyph,
+    group: null,
+  }));
   return {
     kind: 'emoji',
     from: draft.length - query.length - 1,
     query,
     total: found.length,
-    rows: found.slice(0, CANDIDATES).map((emoji) => ({
-      insert: emoji.glyph,
-      text: `:${emoji.name}:`,
-      detail: '',
-      glyph: emoji.glyph,
-    })),
+    rows,
+    groups: grouped(rows),
   };
 }
 
-/** forge's commands first, then the CLI's, with a name in both counted once. */
+/**
+ * forge's commands first, then the CLI's, with a name in both counted once: the
+ * source settles a tie between two rows that matched equally well, and heads
+ * each group while the list is whole.
+ */
 function commands(sources: () => Sources): (query: string) => Row[] {
   const { forgeCommands, advertised } = sources();
-  const merged: Advisory[] = [
-    ...forgeCommands,
-    ...advertised.filter((command) => !isForgeCommand(command.name)),
+  const cli = advertised.filter((command) => !isForgeCommand(command.name));
+  const held: Sourced[] = [
+    ...forgeCommands.map((command): Sourced => ({ command, source: 0 })),
+    ...cli.map((command): Sourced => ({ command, source: 1 })),
   ];
-  // Ranked on the name WITHOUT its slash: the query is what came after the
-  // trigger, and a slash at the front of the name would make every command a
-  // substring match rather than a prefix one.
   return (query) =>
-    rank(merged, query, (command) => [command.name.slice(1), command.description]).map(
-      (command) => ({
-        insert: command.name,
-        text: command.name,
-        detail: command.description,
-        glyph: null,
-      }),
-    );
+    rank(held, query).map((row, at, all) => ({
+      insert: row.command.name,
+      text: row.command.name,
+      detail: row.command.description,
+      glyph: null,
+      group: query !== '' || all[at - 1]?.source === row.source ? null : SOURCES[row.source],
+    }));
 }
 
 /**
@@ -194,6 +239,7 @@ function files(sources: () => Sources): (query: string) => Row[] {
       text: entry.file.relPath,
       detail: '',
       glyph: null,
+      group: null,
     }));
   };
 }
@@ -224,6 +270,7 @@ function agents(sources: () => Sources): (query: string) => Row[] {
         text: agent.name,
         detail: agent.description,
         glyph: null,
+        group: null,
       }));
 }
 
@@ -234,17 +281,20 @@ function matches(fields: string[], query: string): boolean {
 }
 
 /**
- * The rows whose own text is what has been typed, best first: the exact name,
- * then the ones that start with it, then the rest that contain it.
- *
- * A list is filtered and never left whole, or a query would look like it did
- * nothing.
+ * The commands whose own text is what has been typed, best first: the exact
+ * name, then the ones that start with it, then the rest that contain it, and
+ * forge's own ahead of the CLI's wherever two matched equally well.
  */
-function rank<T>(held: T[], query: string, fields: (row: T) => string[]): T[] {
+function rank(held: Sourced[], query: string): Sourced[] {
   const folded = query.toLowerCase();
-  const scored: { rank: number; name: string; row: T }[] = [];
+  const scored: { rank: number; name: string; row: Sourced }[] = [];
   for (const row of held) {
-    const names = fields(row).map((field) => field.toLowerCase());
+    // Ranked on the name WITHOUT its slash: the query is what came after the
+    // trigger, and a slash at the front of the name would make every command a
+    // substring match rather than a prefix one.
+    const names = [row.command.name.slice(1), row.command.description].map((field) =>
+      field.toLowerCase(),
+    );
     const name = names[0] ?? '';
     const rank =
       name === folded
@@ -256,7 +306,9 @@ function rank<T>(held: T[], query: string, fields: (row: T) => string[]): T[] {
             : -1;
     if (rank >= 0) scored.push({ rank, name, row });
   }
-  scored.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
+  scored.sort(
+    (a, b) => a.rank - b.rank || a.row.source - b.row.source || a.name.localeCompare(b.name),
+  );
   return scored.map((entry) => entry.row);
 }
 
@@ -274,4 +326,22 @@ export function mark(text: string, query: string): { before: string; hit: string
   if (at < 0) return { before: text, hit: '', after: '' };
   const end = at + query.length;
   return { before: text.slice(0, at), hit: text.slice(at, end), after: text.slice(end) };
+}
+
+/**
+ * The offset that keeps a marked row inside its window and moves it no further:
+ * the terminal's own rule, whose picker windows the list around the mark
+ * (`DialogState::clamp` in `crates/forge-tui`).
+ *
+ * `row` is where the row sits in the window: the rectangle's own edges less the
+ * window's top.
+ */
+export function keptInView(
+  row: { top: number; bottom: number },
+  height: number,
+  scrollTop: number,
+): number {
+  if (row.top < 0) return scrollTop + row.top;
+  if (row.bottom > height) return scrollTop + row.bottom - height;
+  return scrollTop;
 }

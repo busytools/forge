@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { offer, type Sources } from './autocomplete';
+import { keptInView, offer, type Sources } from './autocomplete';
 import type { FileEntry } from './wire';
 
 /** A file index with the shapes the ranking turns on: a basename, a path, a depth. */
@@ -77,6 +77,61 @@ describe('which list a draft opens', () => {
     expect(offer('@tap', sources)?.rows[0]?.insert).toBe('@src/tap.rs');
     expect(offer('&cli', sources)?.rows[0]?.insert).toBe('&cli-version');
     expect(offer(':sm', sources)?.rows[0]?.insert).toBe('\u{1F604}');
+  });
+});
+
+/**
+ * The two sources the `/` list draws from, which is the one list with more
+ * than one. The terminal separates them with a group heading and orders
+ * forge's first; a query that matches both keeps forge's in front wherever the
+ * two matched equally well, and the heading goes with the filter - a header
+ * over a list that has collapsed to one source reads as a list that lost the
+ * other.
+ */
+describe("forge's commands and the CLI's", () => {
+  it("leads with forge's own wherever two rows matched equally well", () => {
+    expect(
+      offer('/c', sources)?.rows.map((row) => row.insert),
+      "the CLI's own name match leads a forge row that only matched its description",
+    ).toEqual(['/compact', '/clear', '/memory']);
+    expect(
+      offer('/', sources)?.rows.map((row) => row.insert),
+      "and a bare trigger is forge's whole group before the CLI's, which is the list Ved presses / on",
+    ).toEqual(['/compact', '/memory', '/model', '/clear']);
+  });
+
+  it('heads each source while the list is whole, and neither once a query narrows it', () => {
+    expect(
+      offer('/', sources)?.rows.map((row) => row.group),
+      'the heading sits on the first row of its group, and each group carries one',
+    ).toEqual(['forge', null, null, 'cli']);
+    expect(
+      offer('/m', sources)?.rows.map((row) => row.group),
+      'the terminal drops the dividers with the filter, and so does this',
+    ).toEqual([null, null, null]);
+  });
+});
+
+/**
+ * The offset a mark move leaves behind, which is the terminal's own clamp: the
+ * picker windows its list around the mark, so the mark is never off screen.
+ * The numbers are the ones the page measured at 800x620, where a key walked the
+ * mark 217px past the bottom of a 248px window and the window never moved.
+ */
+describe('the window a mark moves in', () => {
+  it('brings a row past an edge back onto it, and leaves one inside alone', () => {
+    expect(
+      keptInView({ top: 465.5, bottom: 498.8 }, 248, 0),
+      'a row below the window lands on its bottom edge',
+    ).toBeCloseTo(250.8, 1);
+    expect(
+      keptInView({ top: -150, bottom: -116.8 }, 248, 150),
+      'and a row above it - the wrap from the last row to the first - lands on the top',
+    ).toBe(0);
+    expect(
+      keptInView({ top: 100, bottom: 133.3 }, 248, 0),
+      'a row already in the window is not a reason to move it, so a wheel scroll stands',
+    ).toBe(0);
   });
 });
 

@@ -329,19 +329,37 @@ character-cell row. Slash commands keep their magenta, because that is a real di
 <h2>Autocomplete</h2>
 <p class="note">Four triggers, one popover shape. Each row carries the real icon for its kind
 rather than a character-cell prefix, the matched span is highlighted, and the cap is shown
-in the header so a truncated list never reads as the whole list.</p>
+in the header so a truncated list never reads as the whole list. The <code>/</code> list is the one
+with two sources: forge's own commands lead, the ones the CLI advertises follow under their own
+heading, and a query drops the headings and leaves the order.</p>
 <div class="stage">
   <div class="row">
     <div class="col">
-      <div class="lab">/ commands</div>
+      <div class="lab">/ commands &middot; a bare trigger, both sources</div>
       <div class="ac">
-        <div class="h"><svg class="ic"><use href="#i-cmd"/></svg> commands <span class="n">12</span></div>
+        <div class="h"><svg class="ic"><use href="#i-cmd"/></svg> commands <span class="n">15</span></div>
+        <div class="grp">forge</div>
+        <div class="it sel"><span class="cur">&#9656;</span><span class="p">/compact</span><span class="d">Compact session context</span></div>
+        <div class="it"><span class="cur"></span><span class="p">/dictate</span><span class="d">Set how dictation is cleaned up, for this session</span></div>
+        <div class="it"><span class="cur"></span><span class="p">/diff</span><span class="d">Review changes in a full-screen diff overlay</span></div>
+        <div class="grp">cli</div>
+        <div class="it"><span class="cur"></span><span class="p">/clear</span><span class="d">Clear chat history</span></div>
+        <div class="it"><span class="cur"></span><span class="p">/help</span><span class="d">Show help</span></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="lab">/ commands &middot; a query narrows it, and the headings go</div>
+      <div class="ac">
+        <div class="h"><svg class="ic"><use href="#i-cmd"/></svg> commands <span class="n">4</span></div>
         <div class="it sel"><span class="cur">&#9656;</span><span class="p">/<em>m</em>odel</span><span class="d">Switch model</span></div>
         <div class="it"><span class="cur"></span><span class="p">/<em>m</em>emory</span><span class="d">Edit project memory</span></div>
         <div class="it"><span class="cur"></span><span class="p">/co<em>m</em>pact</span><span class="d">Compact conversation context</span></div>
         <div class="it"><span class="cur"></span><span class="p">/co<em>m</em>poser</span><span class="d">Show composer states</span></div>
       </div>
     </div>
+  </div>
+
+  <div class="row">
     <div class="col">
       <div class="lab">@ files</div>
       <div class="ac">
@@ -352,9 +370,6 @@ in the header so a truncated list never reads as the whole list.</p>
         <div class="it"><span class="cur"></span><span class="p">docs/book/src/ui/client/web-<em>home</em>.html</span></div>
       </div>
     </div>
-  </div>
-
-  <div class="row">
     <div class="col">
       <div class="lab">&amp; subagents</div>
       <div class="ac">
@@ -363,6 +378,9 @@ in the header so a truncated list never reads as the whole list.</p>
         <div class="it"><span class="cur"></span><span class="p"><em>cli</em>-audit</span><span class="d">never run</span></div>
       </div>
     </div>
+  </div>
+
+  <div class="row">
     <div class="col">
       <div class="lab">: emoji</div>
       <div class="ac">
