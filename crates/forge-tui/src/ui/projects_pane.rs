@@ -1394,10 +1394,15 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let bar_cells = bar_cells_for(width);
     let session_usage = app.session_usage();
     let ctx_pct_opt = session_usage.and_then(|u| u.context_usage_percent);
-    let ctx_pct = ctx_pct_opt.map_or(0.0, f64::from);
-    let ctx_pct_str = format!("{:>3}%", ctx_pct_opt.unwrap_or(0));
+    // An unreported usage is not a usage of zero. The size row below draws a
+    // dash for its own unknown, and an empty track beside a `0%` is
+    // indistinguishable from a session that has used nothing.
+    let (ctx_bar, ctx_pct_str) = match ctx_pct_opt {
+        Some(pct) => (bar_spans(f64::from(pct), bar_cells), format!("{pct:>3}%")),
+        None => (vec![Span::raw(" ".repeat(bar_cells))], format!("{:>4}", '\u{2014}')),
+    };
     let mut ctx_line = vec![Span::raw(" "), label_span("Ctx", 3), Span::raw("  ")];
-    ctx_line.extend(bar_spans(ctx_pct, bar_cells));
+    ctx_line.extend(ctx_bar);
     ctx_line.push(Span::raw("  "));
     ctx_line.push(Span::raw(ctx_pct_str));
     lines.push(Line::from(ctx_line));
@@ -2221,6 +2226,38 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("54 compactions"), "got:\n{rendered}");
+    }
+
+    /// **An unreported context usage is not a usage of zero**, and this panel
+    /// already says so one row below: the size row draws a dash for its own
+    /// unknown. A bar at zero with `0%` beside it reads as a session that has
+    /// used no context, where the truth is that no probe has reported one.
+    ///
+    /// Both directions, because either alone is passed by a row that always
+    /// draws a dash or always draws a figure.
+    #[test]
+    fn the_ctx_row_draws_an_unreported_usage_as_a_dash_rather_than_as_zero() {
+        let ctx_row = |app: &App| {
+            let rows = build_account_panel_lines(app, 40).iter().map(line_text).collect::<Vec<_>>();
+            rows.into_iter().find(|row| row.starts_with(" Ctx")).expect("the Ctx row renders")
+        };
+
+        let unknown = ctx_row(&App::test_default());
+        assert!(
+            unknown.contains('\u{2014}'),
+            "an unreported usage draws the panel's own dash: {unknown:?}",
+        );
+        assert!(!unknown.contains('%'), "and no figure of its own: {unknown:?}");
+        assert!(
+            !unknown.contains('\u{2591}'),
+            "and no empty track, which reads as a bar at zero: {unknown:?}",
+        );
+
+        let mut app = App::test_default();
+        app.session_usage_mut().expect("active session").context_usage_percent = Some(0);
+        let zero = ctx_row(&app);
+        assert!(zero.contains("0%"), "a real zero keeps its figure: {zero:?}");
+        assert!(!zero.contains('\u{2014}'), "and does not draw the dash: {zero:?}");
     }
 
     #[test]
