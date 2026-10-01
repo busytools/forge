@@ -145,6 +145,9 @@ describe('one turn folded into the units a view draws', () => {
     const batches = units.filter((unit) => unit.kind === 'messages');
     expect(kinds(units), 'the row draws above the whole batch').toEqual(['thinking', 'messages']);
     expect(batches, 'one batch, not two').toHaveLength(1);
+    expect(batches[0]?.key, 'named by the first message, which is data the turn cannot move').toBe(
+      'p-toolu_tell_1',
+    );
     const cards =
       batches[0]?.kind === 'messages' ? batches[0].lanes.flatMap((lane) => lane.cards) : [];
     expect(cards, 'with both messages in it').toHaveLength(2);

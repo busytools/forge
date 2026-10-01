@@ -886,9 +886,13 @@ export function fold(
   let endedAt: string | null = null;
 
   const flushRun = (): void => {
-    if (run.length === 0) return;
     const calls = run;
     run = [];
+    // The first element is the guard and the group's name in one: a call always
+    // carries its own key, so no counter is invented here - one would move as
+    // the turn grows, which is the remount this keying exists to stop.
+    const first = calls[0];
+    if (first === undefined) return;
     const families: FamilyLeaves[] = [];
     for (const entry of calls) {
       const held = families.find(
@@ -900,7 +904,7 @@ export function fold(
     }
     units.push({
       kind: 'group',
-      key: calls[0]?.key ?? `g-${units.length}`,
+      key: first.key,
       families,
       status: aggregateStatus(calls.map((entry) => entry.leaf.status)),
     });
@@ -909,7 +913,8 @@ export function fold(
   const flushPeers = (): void => {
     const cards = peers;
     peers = [];
-    if (cards.length === 0) return;
+    const first = cards[0];
+    if (first === undefined) return;
     // One lane per KIND, first seen first - not one per run. The terminal's own
     // tally draws a lane per kind over the whole group, and a lane's word is
     // what a view opens its leaves by: two runs of the same kind would give two
@@ -928,7 +933,7 @@ export function fold(
     }
     units.push({
       kind: 'messages',
-      key: `p-${cards[0]?.id ?? `batch-${units.length}`}`,
+      key: `p-${first.id}`,
       lanes,
       status: aggregateStatus(cards.map((c) => c.status)),
     });
@@ -1044,7 +1049,13 @@ export function fold(
               // A peer message is a row the CLI answered as a turn of its own,
               // so the run above it belongs to the turn before: it closes here.
               flushRun();
-              peers.push(envelope.card);
+              // A header with no id leaves nothing in the data to name the
+              // batch by, so the frame and block stand in - position, but a
+              // stable one, where a counter would move as the turn grows.
+              peers.push({
+                ...envelope.card,
+                id: envelope.card.id !== '' ? envelope.card.id : keyOf(at, frame, blockAt),
+              });
             } else {
               push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });
             }
@@ -1092,7 +1103,10 @@ export function fold(
         if (envelope !== null) {
           if (envelope.kind === 'peer') {
             flushRun();
-            peers.push(envelope.card);
+            peers.push({
+              ...envelope.card,
+              id: envelope.card.id !== '' ? envelope.card.id : keyOf(at, frame, blockAt),
+            });
           } else {
             push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });
           }
@@ -1115,7 +1129,13 @@ export function fold(
         const id = typeof block.id === 'string' ? block.id : '';
         if (isMonitor(name)) continue;
 
-        const card = outbound(name, block.input, self, results.get(id), id);
+        const card = outbound(
+          name,
+          block.input,
+          self,
+          results.get(id),
+          id !== '' ? id : keyOf(at, frame, blockAt),
+        );
         if (card !== null) {
           flushRun();
           peers.push(card);
