@@ -47,8 +47,14 @@ jobs:
         with:
           shared-key: cargo-${{ runner.os }}
           key: clippy
-      - run: cargo clippy --all-targets --workspace -- -D warnings
-      - run: cargo clippy --all-targets --workspace --all-features -- -D warnings
+      # Every cargo command that is meant to check the tree runs through
+      # `require_compiled.sh`, here and in the jobs below: one that finds
+      # every unit fresh exits 0 having checked nothing, and that is
+      # indistinguishable from a clean tree. `cargo fmt --check` and the
+      # client's steps stay bare - they compile nothing by design and say
+      # so by their names.
+      - run: ./scripts/require_compiled.sh cargo clippy --all-targets --workspace -- -D warnings
+      - run: ./scripts/require_compiled.sh cargo clippy --all-targets --workspace --all-features -- -D warnings
 
   test:
     name: cargo nextest
@@ -65,7 +71,7 @@ jobs:
           shared-key: cargo-${{ runner.os }}
           key: test
       - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --workspace --all-features
+      - run: ./scripts/require_compiled.sh cargo nextest run --workspace --all-features
 
   release:
     name: cargo check --release
@@ -81,7 +87,7 @@ jobs:
         with:
           shared-key: cargo-${{ runner.os }}
           key: release
-      - run: cargo check --release --workspace --all-targets --all-features
+      - run: ./scripts/require_compiled.sh cargo check --release --workspace --all-targets --all-features
 
   # The two forge-tui configurations nothing else builds: the one
   # `scripts/install.sh` produces (release, `perf` on, the test-only
@@ -103,8 +109,8 @@ jobs:
         with:
           shared-key: cargo-${{ runner.os }}
           key: feature-configs
-      - run: cargo check --locked --release -p forge-tui --bin forge --features perf
-      - run: cargo check --locked -p forge-tui --features testing
+      - run: ./scripts/require_compiled.sh cargo check --locked --release -p forge-tui --bin forge --features perf
+      - run: ./scripts/require_compiled.sh cargo check --locked -p forge-tui --features testing
 
   docs:
     name: cargo doc
@@ -122,7 +128,7 @@ jobs:
         with:
           shared-key: cargo-${{ runner.os }}
           key: docs
-      - run: cargo doc --workspace --no-deps --all-features
+      - run: ./scripts/require_compiled.sh cargo doc --workspace --no-deps --all-features
 
   # The client is not a cargo workspace member, so no other job here reaches
   # it: without this the client's steps run only when a person types them,
