@@ -136,3 +136,146 @@ pub(super) fn find_text_block_split(text: &str) -> Option<TextSplitDecision> {
 pub(super) fn find_text_block_split_index(text: &str) -> Option<usize> {
     find_text_block_split(text).map(|decision| decision.split_at)
 }
+
+#[cfg(test)]
+mod tests {
+    use ratatui::style::Modifier;
+    use ratatui::text::{Line, Text};
+    use ratatui::widgets::{Paragraph, Wrap};
+    use unicode_width::UnicodeWidthStr;
+
+    use super::append_agent_stream_text;
+    use crate::app::{ChatMessage, MessageBlock, MessageRole};
+    use crate::ui::message::{
+        MessageRenderContext, MessageRenderOptions, SpinnerState, render_message,
+    };
+
+    fn row_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    /// What one logical row costs once the frame paints it.
+    ///
+    /// `chat::render` wraps every row through `Paragraph::wrap`, so a row
+    /// wider than the column is several drawn rows and `render_message`'s row
+    /// count is not the drawn height. Same `line_count` the frame's own height
+    /// arithmetic uses.
+    fn drawn_rows(line: &Line<'static>, width: u16) -> usize {
+        Paragraph::new(Text::from(vec![line.clone()]))
+            .wrap(Wrap { trim: false })
+            .line_count(width)
+            .max(1)
+    }
+
+    fn rows_are_bold(line: &Line<'static>) -> bool {
+        let carries = |style: ratatui::style::Style| style.add_modifier.contains(Modifier::BOLD);
+        carries(line.style) || line.spans.iter().any(|span| carries(span.style))
+    }
+
+    /// The terminal half of the density instrument.
+    ///
+    /// `#[ignore]`d on purpose: it asserts nothing and writes a file, and
+    /// `scripts/density/measure.mjs` is the only caller. The fixture, the
+    /// width and the output path arrive through the environment.
+    ///
+    /// It reports a band structure - each run of non-blank rows is one
+    /// markdown block, each run of blank rows the gap between two - because
+    /// "one blank row between blocks" is the terminal's entire spacing policy
+    /// and this is the only place it can be read off.
+    ///
+    /// The message is built by `append_agent_stream_text`, which is what a
+    /// live turn goes through: the reply arrives as one streamed chunk and the
+    /// splitter cuts it at paragraph boundaries, each completed block carrying
+    /// its own trailing break. Handing the text to a single `from_complete`
+    /// block instead draws the paragraphs with no gap between them, which is
+    /// not what the terminal shows.
+    #[test]
+    #[ignore = "measurement instrument; run by scripts/density/measure.mjs"]
+    fn density_probe_writes_rows_json() {
+        let fixture = std::env::var("FORGE_DENSITY_FIXTURE")
+            .expect("FORGE_DENSITY_FIXTURE names the markdown to render");
+        let out =
+            std::env::var("FORGE_DENSITY_OUT").expect("FORGE_DENSITY_OUT names the file to write");
+        let width: u16 = std::env::var("FORGE_DENSITY_WIDTH")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(100);
+        let text = std::fs::read_to_string(&fixture).expect("the fixture reads");
+
+        let mut blocks = Vec::new();
+        append_agent_stream_text(&mut blocks, None, &text);
+        let text_block_count =
+            blocks.iter().filter(|block| matches!(block, MessageBlock::Text(..))).count();
+        let mut message = ChatMessage::new(MessageRole::Assistant, blocks);
+
+        let spinner = SpinnerState {
+            glyph: '\u{280B}',
+            is_active_turn_assistant: false,
+            show_empty_thinking: false,
+            show_thinking: false,
+            show_compacting: false,
+            live_turn_running: false,
+        };
+        let options = MessageRenderOptions {
+            tools_collapsed: true,
+            include_trailing_separator: false,
+            ..MessageRenderOptions::default()
+        };
+        let mut lines = Vec::new();
+        render_message(
+            &mut message,
+            &spinner,
+            MessageRenderContext::new(None, width, 0, options),
+            &mut lines,
+        );
+
+        let heights: Vec<usize> = lines.iter().map(|line| drawn_rows(line, width)).collect();
+        let drawn_total: usize = heights.iter().sum();
+        // Coverage assertion: the per-row decomposition has to add up to what
+        // the frame measures for the whole block. If it does not, the band
+        // figures rest on a wrap model the frame does not use, and every
+        // number below is wrong in a way nothing else here would catch.
+        let whole =
+            Paragraph::new(Text::from(lines.clone())).wrap(Wrap { trim: false }).line_count(width);
+        assert_eq!(drawn_total, whole, "per-row drawn heights must sum to the whole-block height",);
+
+        let mut bands = Vec::new();
+        let mut gap = 0usize;
+        let mut index = 0usize;
+        while index < lines.len() {
+            if row_text(&lines[index]).trim().is_empty() {
+                gap += heights[index];
+                index += 1;
+                continue;
+            }
+            let start = index;
+            while index < lines.len() && !row_text(&lines[index]).trim().is_empty() {
+                index += 1;
+            }
+            let widest = (start..index)
+                .map(|at| row_text(&lines[at]).width().min(usize::from(width)))
+                .max()
+                .unwrap_or(0);
+            bands.push(serde_json::json!({
+                "label": row_text(&lines[start]).trim().chars().take(40).collect::<String>(),
+                "logical": index - start,
+                "drawn": heights[start..index].iter().sum::<usize>(),
+                "gap_before": std::mem::take(&mut gap),
+                "bold": (start..index).any(|at| rows_are_bold(&lines[at])),
+                "widest": widest,
+            }));
+        }
+
+        let report = serde_json::json!({
+            "width": width,
+            "text_blocks": text_block_count,
+            "logical_rows": lines.len(),
+            "drawn_rows": whole,
+            "trailing_gap": gap,
+            "bands": bands,
+            "rows": lines.iter().map(row_text).collect::<Vec<String>>(),
+        });
+        std::fs::write(&out, serde_json::to_string_pretty(&report).expect("the report serializes"))
+            .expect("the report writes");
+    }
+}
