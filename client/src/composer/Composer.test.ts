@@ -893,6 +893,12 @@ describe('the frame', () => {
    * the issue that found it believed. A sheet assertion cannot see that offset;
    * what it can do is keep the inset from coming back, which is the change
    * someone would plausibly make.
+   *
+   * **What it reads: the base rules only.** A `padding-left` added to the
+   * media-scoped `.dict` rule inside the narrow block passes this, because the
+   * guard resolves the first rule each selector has. The shipped sheet is right
+   * either way; the limit is stated so a reader does not take this for wider
+   * than it is.
    */
   it('starts every row at the left edge of the field', () => {
     for (const row of ['.dict', '.comp .notice', '.blocked', '.blocked .b2']) {
