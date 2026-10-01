@@ -272,12 +272,13 @@ fn push_queued_group(app: &mut App, prompts: &[String]) {
     );
 }
 
-/// True when a user-role turn's text is harness-injected scaffolding
-/// never meant for the chat buffer: `<task-notification>` completion
-/// notices and Claude Code's slash-command wrappers. Live sessions
-/// drop these as input echoes, so only resume re-renders them; both
-/// replay filter sites route through here to stay in sync.
-fn is_suppressed_user_scaffolding(text: &str) -> bool {
+/// True when a user-role turn's text is harness-injected scaffolding never
+/// meant for the chat buffer: `<task-notification>` completion notices and
+/// Claude Code's slash-command wrappers, whose command the reader's own turn
+/// already drew. Read at both draw sites - the live walk's stamped draw and
+/// the resume render - so neither path can start showing raw wrapper text on
+/// its own.
+pub(super) fn is_suppressed_user_scaffolding(text: &str) -> bool {
     let t = text.trim_start();
     t.starts_with("<task-notification>")
         || t.starts_with("<local-command-caveat>")
@@ -1743,6 +1744,52 @@ mod tests {
         assert!(
             system_row_texts(&resumed).iter().any(|text| text == REMINDER),
             "resume: and the words must still be drawn (rule 25), on a line of their own",
+        );
+    }
+
+    /// The suppression list keeps hiding the wrapper shapes a slash command
+    /// comes back in, stamped or not: the reader's own command already drew
+    /// as their turn, and the markup beside it would be the same command
+    /// twice. The live walk and the resume walk read the one filter, so
+    /// neither can start showing raw wrapper text on its own.
+    #[test]
+    fn a_stamped_wrapper_turn_stays_suppressed_on_both_paths() {
+        const CAVEAT: &str = "<local-command-caveat>Caveat: The messages below were generated \
+                              by the user while running local commands.</local-command-caveat>";
+
+        let frame: Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "session_id": "sess-live",
+            "uuid": "u-caveat-live",
+            "isSynthetic": true,
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": CAVEAT}],
+            },
+        }))
+        .expect("the CLI's frame decodes");
+        let mut live = App::test_default();
+        super::super::sdk_message::handle_sdk_message(&mut live, frame);
+
+        assert!(
+            !system_row_texts(&live).iter().any(|text| text == CAVEAT),
+            "live: wrapper markup must not reach the chat as a notice",
+        );
+        assert!(
+            !user_bubble_texts(&live).iter().any(|text| text == CAVEAT),
+            "live: nor as the reader's own turn",
+        );
+
+        let mut resumed = App::test_default();
+        load_resume_history(&mut resumed, &[harness_user_text(CAVEAT)]);
+
+        assert!(
+            !system_row_texts(&resumed).iter().any(|text| text == CAVEAT),
+            "resume: wrapper markup must not reach the chat as a notice",
+        );
+        assert!(
+            !user_bubble_texts(&resumed).iter().any(|text| text == CAVEAT),
+            "resume: nor as the reader's own turn",
         );
     }
 

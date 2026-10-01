@@ -367,7 +367,7 @@ fn walk_assistant_content(
 
 /// Whether a user turn is the harness speaking rather than the reader.
 ///
-/// The CLI's own stamp, carried through the wire decode and the transcript
+/// The CLI's own mark, carried through the wire decode and the transcript
 /// read: the harness's injected reminder arrives marked, and so does every
 /// other turn nobody typed. The mark says so, never a match on the words -
 /// the tag list is a set of content prefixes somebody has seen, and it can
@@ -377,7 +377,8 @@ pub(super) fn is_harness_user_turn(msg: &Message) -> bool {
 }
 
 fn handle_user(app: &mut App, msg: Message) {
-    let Message::User { message, parent_tool_use_id, tool_use_result, synthetic, .. } = msg else {
+    let harness_turn = is_harness_user_turn(&msg);
+    let Message::User { message, parent_tool_use_id, tool_use_result, .. } = msg else {
         return;
     };
     // A genuine new user turn invalidates the previous turn's
@@ -393,10 +394,10 @@ fn handle_user(app: &mut App, msg: Message) {
     // the clean turn-end case; this one is additive for the in-flight
     // case. A stamped turn is the harness injecting a line mid-turn, so
     // it is not a new reader turn either.
-    if tool_use_result.is_none() && !synthetic {
+    if tool_use_result.is_none() && !harness_turn {
         app.set_latest_thinking_tokens(None);
     }
-    if synthetic {
+    if harness_turn {
         draw_harness_user_turn(app, &message.content);
     }
     walk_user_tool_results(app, &message.content);
@@ -427,13 +428,14 @@ fn handle_user(app: &mut App, msg: Message) {
 
 /// Draw a stamped user turn's words as the line of their own they are, since
 /// nobody typed them and rule 25 draws what the CLI sends rather than
-/// dropping it.
+/// dropping it. The suppression list still hides the wrapper shapes a slash
+/// command echoes back, so the stamped draw and the resume render agree.
 fn draw_harness_user_turn(app: &mut App, content: &[forge_primitives::ContentBlock]) {
     for block in content {
         let forge_primitives::ContentBlock::Text { text } = block else {
             continue;
         };
-        if text.is_empty() {
+        if text.is_empty() || super::session_reset::is_suppressed_user_scaffolding(text) {
             continue;
         }
         super::push_system_message_with_severity(app, Some(crate::app::SystemSeverity::Info), text);
