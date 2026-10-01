@@ -84,7 +84,7 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     outcome
 }
 
-/// The connection's own loop, so that every way out of it runs the release
+/// The connection's own loop, so that every way out of it runs the detach
 /// above rather than only the clean one.
 async fn run_connection(
     socket: &mut WebSocket,

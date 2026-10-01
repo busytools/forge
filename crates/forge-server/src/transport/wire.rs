@@ -711,13 +711,11 @@ pub fn page(messages: &[Message], rendered: &Rendered, before: Option<&str>, tur
 /// without one.
 ///
 /// The session task answers a replay on its own next loop iteration, so this
-/// is a failure case rather than a pacing mechanism. **What a client sees
-/// when it fires is an answer with an empty conversation** - a snapshot whose
-/// `turns` are empty, or a page with none - which is the same thing it sees
-/// for a seat that is not running at all. The two are told apart in the log
-/// rather than on the wire, which is deliberate: a client drawing "nothing
-/// to show" is right either way, and inventing a wire error for a slow task
-/// would make a healthy client render a failure.
+/// is a failure case rather than a pacing mechanism. **What it decides is the
+/// same for both readers and they answer differently**: a snapshot carries an
+/// empty conversation, which a client draws as a seat with nothing to show,
+/// while a page is REFUSED - an empty page carries `cursor: null`, and a
+/// client reads that as the end of the history rather than as a delay.
 const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The seat's conversation, asking the session task for it when the stream

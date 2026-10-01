@@ -709,6 +709,63 @@ mod tests {
         }
     }
 
+    /// A delivery row the transport forges for a seat is part of the
+    /// conversation it is holding.
+    ///
+    /// **It is forged per CONNECTION at send time, so it never arrives here as
+    /// a `ChatAppended`** - and a held copy that ignored it would lose the row
+    /// while its answer stayed, which is a reply to nothing. Nothing observed
+    /// this: with the append removed the whole workspace suite stays green.
+    #[test]
+    fn a_forged_delivery_row_joins_the_conversation_it_is_held_for() {
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::new(vec![a_frame("asked")], 0));
+
+        held.apply(&SessionUpdate::CronPromptAppended {
+            key: a_seat(),
+            text: "the cron fired".to_owned(),
+        });
+
+        let conversation = held.get(&a_seat()).expect("the seat is held");
+        let conversation = conversation.lock();
+        let said: Vec<String> = conversation.messages().iter().map(said).collect();
+        assert_eq!(
+            said,
+            vec!["asked".to_owned(), "[Cron]\n\nthe cron fired".to_owned()],
+            "the delivery the connection forges is in the conversation a page is built from",
+        );
+    }
+
+    /// A read after a reseed answers a page over the reseeded conversation, and
+    /// never a slice past the end of it.
+    ///
+    /// **What this pins is the OUTCOME and not the retry that usually brings
+    /// it about.** A reseed landing between `read`'s fold and its read is a
+    /// race with no deterministic trigger, so the retry cannot be made to fire
+    /// on demand; what a test can hold is that the state a reseed leaves is one
+    /// a page can be cut on. A raced probe of 300 iterations saw no incoherent
+    /// page, and that is evidence rather than proof.
+    #[test]
+    fn a_read_after_a_reseed_is_a_page_and_not_a_panic() {
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::new(vec![a_frame("one"), a_frame("two")], 0));
+
+        // A reseed with no fold after it: the boundaries are cleared, so what
+        // a reader gets is the whole list as one turn rather than a slice past
+        // the end of it.
+        held.apply(&a_replay(vec![a_frame("replaced")]));
+
+        let conversation = held.get(&a_seat()).expect("the seat is held");
+        let page = conversation
+            .read(|held| crate::transport::wire::page(held.messages(), held.rendered(), None, 5));
+        assert_eq!(page.turns.len(), 1, "the reseeded conversation is one turn");
+        assert_eq!(
+            page.turns[0].messages.len(),
+            1,
+            "and the page carries what the reseed put there",
+        );
+    }
+
     /// A frame on a seat nothing has seeded is dropped rather than inventing
     /// a conversation: a seat whose connect this transport never saw is asked
     /// for a replay, and until that lands there is nothing to append to.

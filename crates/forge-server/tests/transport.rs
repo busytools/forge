@@ -608,6 +608,33 @@ async fn a_more_is_answered_with_a_page_of_whole_turns() {
     assert!(cursor.is_some(), "and it carries the handle that asks for the ones above");
 }
 
+/// A page that cannot be answered is REFUSED, because an empty one lies.
+///
+/// **An empty page carries `cursor: null`, and a client reads that as "nothing
+/// above" and stops asking** - so answering a question the server could not
+/// answer with a value that looks like the answer makes a seat's history
+/// unreachable rather than merely late.
+#[tokio::test]
+async fn a_more_that_cannot_be_answered_is_refused() {
+    let (url, fleet) = a_server().await;
+    // A seat with a session, so the refusal below is about the CONVERSATION
+    // and not about the seat being absent.
+    fleet.seed_transcript("TestOrg", "proj", "lead", &[]).expect("the transcript seeds");
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
+        .await;
+
+    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+        panic!("a page that cannot be answered is refused rather than answered empty")
+    };
+    assert_eq!(what, "more", "the refusal names what was asked for");
+    assert!(
+        why.contains("not held yet"),
+        "and says why, so a client can tell a delay from an end: {why}",
+    );
+}
+
 /// A subscription hears the updates its subject receives and no others.
 #[tokio::test]
 async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
