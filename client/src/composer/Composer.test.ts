@@ -2129,4 +2129,58 @@ describe('the dictation panel', () => {
       Reflect.set(globalThis, 'ResizeObserver', original);
     }
   });
+
+  /**
+   * And the cap READS what the composer reports.
+   *
+   * The assertion above pins that something watches; this pins that the watch
+   * does something - the regression the whole cap exists for. jsdom performs no
+   * layout, but it does not have to: the rect is supplied as an own property on
+   * the panel, so the component's own call answers what a browser would have
+   * measured, and the callback a fake observer was handed is fired by hand.
+   */
+  it('caps the panel from the bottom the composer reports', () => {
+    const callbacks: (() => void)[] = [];
+    const original: unknown = Reflect.get(globalThis, 'ResizeObserver');
+    class Watching {
+      run: () => void;
+      constructor(run: () => void) {
+        this.run = run;
+      }
+      observe(): void {
+        callbacks.push(this.run);
+      }
+      disconnect(): void {}
+    }
+    Reflect.set(globalThis, 'ResizeObserver', Watching);
+    try {
+      opened();
+
+      const pop = document.querySelector('.pop');
+      if (!(pop instanceof HTMLElement)) throw new Error('the panel drew nothing to cap');
+      Object.defineProperty(pop, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          bottom: 500,
+          top: 0,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }),
+      });
+
+      const fire = callbacks.at(0);
+      if (fire === undefined) throw new Error('nothing watched the composer');
+      fire();
+      flushSync();
+
+      expect(pop.style.maxHeight, 'the cap reads the measured bottom').toBe('494px');
+    } finally {
+      Reflect.set(globalThis, 'ResizeObserver', original);
+    }
+  });
 });

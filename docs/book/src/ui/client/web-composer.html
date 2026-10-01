@@ -165,6 +165,14 @@
   .pop .dev .tag { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--bad); white-space: nowrap; }
   .pop .dev.missing .nm { color: var(--bad); }
+  .pop .list { margin-top: 6px; border: 1px solid var(--line); border-radius: 11px;
+    overflow: hidden; }
+  .pop .row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
+    border: 0; border-bottom: 1px solid var(--line); background: none; text-align: left; }
+  .pop .row:last-child { border-bottom: 0; }
+  .pop .row .nm { font-size: var(--fs-base); color: var(--text); }
+  .pop .row .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
   .pop .dev { margin-top: 9px; width: 100%; display: flex; align-items: center; gap: 9px;
     padding: 8px 10px; border: 1px solid var(--line); border-radius: 11px;
     background: var(--s2); }
