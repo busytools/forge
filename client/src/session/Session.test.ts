@@ -5,9 +5,12 @@ import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import type { Connection } from '../socket';
-import type { HomeWire } from '../wire/home';
+import type { AgentRow, HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import Session from './Session.svelte';
+import SessionId from './SessionId.svelte';
+import SleeperFold from './SleeperFold.svelte';
+import { railGroups } from './view';
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
@@ -51,6 +54,40 @@ const draw = (props: { wire?: HomeWire; slot?: SessionSlot } = {}): string =>
  */
 function sections(body: string): string[] {
   return [...body.matchAll(/data-k="sec-([a-z ]+)"/g)].map((match) => match[1] ?? '');
+}
+
+/** The fixture's home with an account chipped for the seat's project. */
+function withAccount(): HomeWire {
+  const project = homeWire.projects[0];
+  const account = homeWire.accounts.loading[0];
+  if (project === undefined || account === undefined) {
+    throw new Error('the fixture holds no project or no account');
+  }
+  return {
+    ...homeWire,
+    accounts: {
+      ...homeWire.accounts,
+      loading: [{ ...account, state: 'ready' }],
+      usage: [
+        {
+          display_name: 'Acct',
+          snapshot: {
+            source: 'OpenRouterKey',
+            spend: { daily: 1.5, weekly: 10, monthly: 42, limit: 50 },
+            balance: 12.25,
+          },
+        },
+      ],
+    },
+    projects: [{ ...project, chip: { account_name: 'Acct', state: 'ready' } }],
+  };
+}
+
+/** The rail's footer alone, up to the column that follows it. */
+function footerOf(body: string): string {
+  const from = body.indexOf('class="rfoot"');
+  if (from < 0) throw new Error('the page drew no rail footer');
+  return body.slice(from, body.indexOf('<main', from));
 }
 
 describe('the session shell as it draws', () => {
@@ -119,25 +156,39 @@ describe('the session shell as it draws', () => {
     );
   });
 
-  it('draws the account chip for the account the project would bind to', () => {
-    const project = homeWire.projects[0];
-    const account = homeWire.accounts.loading[0];
-    if (project === undefined || account === undefined) {
-      throw new Error('the fixture holds no project or no account');
+  /**
+   * The footer is the rail's own, below the list rather than inside it: the
+   * account and the versions stay where they are while the projects scroll.
+   */
+  it('draws the account, its five figures and the versions in the rail footer', () => {
+    // The fixture's own version stands in a placeholder that renders escaped,
+    // so this reads the build the way the wire does.
+    const foot = footerOf(draw({ wire: { ...withAccount(), forge_version_short: '1.0.105' } }));
+    expect(foot).toContain('Acct');
+    for (const figure of ['day', 'week', 'month', 'balance', 'cap']) {
+      expect(foot, `the footer dropped the ${figure} row`).toContain(figure);
     }
-    const body = draw({
-      wire: {
-        ...homeWire,
-        accounts: {
-          ...homeWire.accounts,
-          loading: [{ ...account, state: 'ready' }],
-        },
-        projects: [{ ...project, chip: { account_name: 'Acct', state: 'ready' } }],
-      },
-    });
-    expect(body).toContain('class="acct"');
-    expect(body).toContain('Acct');
-    expect(body).toContain('class="st ok">ready');
+    expect(foot).toContain('$1.50');
+    expect(foot).toContain('$50.00');
+    expect(foot).toContain('forge v1.0.105');
+    expect(foot).toContain('claude v1.0.0');
+    expect(foot, 'a newer claude was not offered').toContain('\u{2191} v1.1.0');
+  });
+
+  /**
+   * The account reads by its NAME and nothing else: the billing word he cut,
+   * and the pool's repair word beside it, are both gone from the rail.
+   */
+  it('names the account with no billing word under it', () => {
+    const foot = footerOf(draw({ wire: withAccount() }));
+    expect(foot, 'a billing word reached the footer').not.toContain('token');
+    expect(foot, 'the account state word reached the footer').not.toContain('ready');
+  });
+
+  it('draws no header chip, whose slot the session id takes', () => {
+    expect(draw({ wire: withAccount() }), 'the account chip is still in the header').not.toContain(
+      'class="acct"',
+    );
   });
 
   it('draws the inspector banner with the project it is showing', () => {
@@ -176,6 +227,157 @@ function reaches(declared: string | undefined, rowCount: number): boolean {
   const end = tail === undefined ? start : Number(tail) < 0 ? rowCount : Number(tail);
   return start === 1 && end >= rowCount;
 }
+
+/** A row for the fixture's lead, in the state named. */
+function row(label: string, lifecycle: AgentRow['lifecycle']): AgentRow {
+  const first = homeWire.agents[0];
+  if (first === undefined) throw new Error('the fixture holds no agent');
+  return { ...first, slot: { ...first.slot, label }, label, lifecycle, pending: null };
+}
+
+describe('the rail folds', () => {
+  /**
+   * The asleep section folds, and the heading carries what it hides: a fold
+   * that read as an empty section would be worse than the rows it replaced.
+   */
+  it('folds the asleep heading, counting the rows behind it', () => {
+    const body = draw({ wire: { ...homeWire, agents: [row('lead', 'Sleeping')] } });
+    expect(body).toContain('class="gfold"');
+    expect(body).toContain('<span class="gh">asleep</span>');
+    expect(body, 'the fold does not say how much it hides').toContain('<span class="cn">1</span>');
+  });
+
+  /**
+   * A live project keeps its awake workers on the rows and folds the sleeping
+   * ones behind one of their own, which counts them.
+   */
+  it("folds a project's sleeping workers behind one counted row", () => {
+    const body = draw({
+      wire: {
+        ...homeWire,
+        agents: [
+          row('lead', 'Running'),
+          row('awake', 'Running'),
+          row('slept-1', 'Sleeping'),
+          row('slept-2', 'Sleeping'),
+        ],
+      },
+    });
+    expect(body).toContain('class="sfold"');
+    expect(body, 'the row hiding the sleeping seats does not count them').toContain('2 asleep');
+    expect(body, 'an awake worker was folded away').toContain('href="/session/TestOrg/proj/awake"');
+  });
+
+  it('draws no fold for a project whose workers are all awake', () => {
+    const body = draw({
+      wire: { ...homeWire, agents: [row('lead', 'Running'), row('awake', 'Running')] },
+    });
+    expect(body, 'a project with nothing asleep drew a fold').not.toContain('class="sfold"');
+  });
+});
+
+describe('the active row', () => {
+  it('marks the seat the page is showing, on that row', () => {
+    expect(draw(), 'the seat the page is showing is not marked').toContain('class="pr on"');
+  });
+
+  it('marks a worker row when the page is showing a worker', () => {
+    const body = draw({
+      slot: { ...LEAD, label: 'w1' },
+      wire: { ...homeWire, agents: [...homeWire.agents, row('w1', 'Running')] },
+    });
+    expect(body).toContain('class="wk on"');
+    expect(body, 'the project lit its own row as well').not.toContain('class="pr on"');
+  });
+});
+
+describe("a project's sleeping seats", () => {
+  /** The fold as the rail hands it the rows, taken from the real grouping. */
+  const fold = (shown: string | null): string => {
+    const home: HomeWire = {
+      ...homeWire,
+      agents: [row('lead', 'Running'), row('slept-1', 'Sleeping'), row('slept-2', 'Sleeping')],
+    };
+    const project = railGroups(home, LEAD, 0).flatMap((group) => group.projects)[0];
+    return render(SleeperFold, {
+      props: { sleeping: project?.sleeping ?? [], shown },
+    }).body;
+  };
+
+  it('starts open when the seat the page is showing is behind it', () => {
+    expect(fold('slept-2'), 'the fold hid the seat the page is showing').toContain(
+      '<details class="sfold" open',
+    );
+    expect(fold('lead')).not.toContain('<details class="sfold" open');
+  });
+});
+
+describe('the session id cell', () => {
+  const cell = (id: string): string => render(SessionId, { props: { id } }).body;
+
+  /**
+   * The terminal's own shape: eight characters on the row, the whole id on
+   * the control, because the short form is what a reader compares and the long
+   * one is what a person pastes into a resume.
+   */
+  it('draws the id short, with the whole one under it', () => {
+    const body = cell('d4f70669-1f2a-4b3c-9d0e');
+    expect(body).toContain('>d4f70669<');
+    expect(body, 'the short form is all a reader can reach').toContain(
+      'title="d4f70669-1f2a-4b3c-9d0e"',
+    );
+  });
+
+  it('carries a copy control with a name that says what it copies', () => {
+    const body = cell('d4f70669');
+    expect(body).toContain('aria-label="copy the whole session id"');
+    expect(body, 'the control is not a control').toContain('<button');
+    expect(body, 'the control promised a click it cannot do').not.toContain('disabled');
+  });
+});
+
+describe('the rail footer as the sheet lays it out', () => {
+  /**
+   * The box and the tint wrapped a project AND its workers, so four rows
+   * looked selected and none of them said which one was open. The mark is on
+   * the active row itself instead.
+   */
+  it('leaves the project row unboxed and untinted, marking the row instead', () => {
+    expect(body('.pj.cur'), 'the project box and its tint are back').toBe('');
+    expect(body('.pr.on .dot, .wk.on .dot'), 'the active row carries no accent').toContain(
+      'var(--accent)',
+    );
+  });
+
+  /**
+   * **The mark has to move something the state does not already occupy.** An
+   * idle dot IS the accent, so a mark that recoloured only the dot would paint
+   * nothing on the ordinary state of a shown seat - a seat's mark is cleared
+   * when a turn ends, so a seat at rest is idle. The terminal draws selection
+   * the same way: the glyph stays the session's state and the NAME takes the
+   * accent.
+   */
+  it('marks the row name, not only a dot the idle state already accents', () => {
+    expect(
+      body('.pr.on .nm, .wk.on .nm'),
+      'the mark recolours only the dot, which an idle seat already carries',
+    ).toContain('var(--accent)');
+  });
+
+  /**
+   * The scrolling goes BEHIND the footer, not with it: the list is the rail's
+   * one scroller, and the footer is the sibling that takes the height it needs
+   * rather than a share of what is left. A footer that could shrink is one a
+   * long list squashes.
+   */
+  it('keeps the footer out of the rail scroller and unsquashable', () => {
+    expect(body('.rail .scroll'), 'the list is no longer the scroller').toContain(
+      'overflow-y: auto',
+    );
+    expect(body('.rfoot'), 'the footer scrolls with the list').not.toContain('overflow-y');
+    expect(body('.rfoot'), 'a long list can squash the footer').toContain('flex: none');
+  });
+});
 
 describe('the app grid', () => {
   /**

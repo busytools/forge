@@ -24,6 +24,7 @@
     "sign_in": null
   },
   "header": {
+    "session_id": null,
     "model": null,
     "effort": "max",
     "permission_mode": null,

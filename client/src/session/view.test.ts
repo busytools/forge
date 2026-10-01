@@ -6,6 +6,8 @@ import type { AgentRow, HomeWire, ProjectWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import {
   accountChip,
+  copyLabel,
+  copyReason,
   fleetCount,
   gitSection,
   gotifySection,
@@ -17,8 +19,11 @@ import {
   processHeadline,
   processTree,
   type ProcessNode,
+  railFooter,
   railGroups,
   railMark,
+  type RailGroup,
+  type RailProject,
   schedulesSection,
   seatState,
   slackSection,
@@ -84,6 +89,34 @@ describe('the boundary', () => {
 });
 
 describe('the header facts', () => {
+  /**
+   * The occupant's id rides the header, and it is the reason the field exists:
+   * a page attached to a running seat hears no `Connected`, so nothing else on
+   * the wire names the session it is showing.
+   */
+  it("carries the occupant's id, and nothing where the seat has none", () => {
+    const named = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      header: { ...record.header, session_id: 'd4f70669-1f2a' },
+    });
+    expect(named.header.session_id).toBe('d4f70669-1f2a');
+    expect(headerFacts(named.header).sessionId).toBe('d4f70669-1f2a');
+
+    const unstarted = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      header: { ...record.header, session_id: null },
+    });
+    expect(unstarted.header.session_id).toBeNull();
+
+    // A value that is not a string is one this client cannot name, and a seat
+    // it cannot name draws no id rather than the word `undefined`.
+    const wrong = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      header: { ...record.header, session_id: 7 },
+    });
+    expect(wrong.header.session_id).toBeNull();
+  });
+
   it('names a model the CLI gave no long name for by its resolved id', () => {
     const facts = headerFacts({
       ...record.header,
@@ -109,6 +142,30 @@ describe('the header facts', () => {
   });
 });
 
+/**
+ * The copy control's two failure states, which must not read alike: a page
+ * with no clipboard is the page's origin to fix, and a refused write is a
+ * permission, so a label that said the same thing for both would send a reader
+ * after the wrong one.
+ */
+describe('the copy control', () => {
+  it('says what the click did, and which of the two failures stopped it', () => {
+    expect(copyLabel('ready')).toBe('copy');
+    expect(copyLabel('copied')).toBe('copied');
+    expect(copyLabel('failed')).toBe('copy failed');
+    expect(copyLabel('no-clipboard')).toBe('copy needs https');
+    expect(copyReason('failed'), 'the two failures read alike').not.toBe(
+      copyReason('no-clipboard'),
+    );
+    expect(copyReason('ready')).toContain('session id');
+    // A name that stopped matching the label it draws would leave someone
+    // speaking the word they can see with nothing to match.
+    for (const outcome of ['ready', 'copied', 'failed', 'no-clipboard'] as const) {
+      expect(copyReason(outcome), `${outcome}'s name lost its label`).toContain(copyLabel(outcome));
+    }
+  });
+});
+
 describe('the rail', () => {
   it('groups a project by its strongest row, not by its lead alone', () => {
     const worker: AgentRow = {
@@ -128,10 +185,106 @@ describe('the rail', () => {
     ).toBe('asked you a question');
   });
 
-  it('marks the seat the page is showing', () => {
-    const groups = railGroups(homeWire, LEAD, 0);
-    const shown = groups.flatMap((group) => group.projects).find((entry) => entry.current);
-    expect(shown?.name).toBe('proj');
+  /**
+   * A group that holds the seat the page is showing has to say so: arriving on
+   * an asleep seat - a deep link, a click from the roster - draws the marked
+   * row inside a closed fold otherwise, and the reader sees the count and no
+   * sign of where they are.
+   */
+  it('says whether the seat the page is showing is one of the rows behind it', () => {
+    const sleeping: AgentRow = { ...lead(), lifecycle: 'Sleeping', pending: null, reason: null };
+    const home = withHome({ agents: [sleeping] });
+    const asleep = (home: HomeWire, slot: SessionSlot): RailGroup | undefined =>
+      railGroups(home, slot, 0).find((group) => group.heading === 'asleep');
+
+    expect(asleep(home, LEAD)?.holds, 'the fold closed over the seat being shown').toBe(true);
+    expect(
+      asleep(home, { ...LEAD, project: 'elsewhere' })?.holds,
+      'a group claimed to hold a seat it does not carry',
+    ).toBe(false);
+    expect(
+      railGroups(homeWire, LEAD, 0).find((group) => group.heading === 'needs you')?.holds,
+      'a group the page is showing claimed nothing',
+    ).toBe(true);
+  });
+
+  /**
+   * The asleep section folds, and its heading carries what it hides: a folded
+   * section with no count reads as an empty one.
+   */
+  it('counts the rows the asleep heading hides', () => {
+    const sleeping: AgentRow = { ...lead(), lifecycle: 'Sleeping', pending: null, reason: null };
+    const worker: AgentRow = { ...sleeping, slot: { ...sleeping.slot, label: 'w1' }, label: 'w1' };
+    const home = withHome({
+      agents: [{ ...sleeping, slot: { ...sleeping.slot, label: 'lead' } }, worker],
+    });
+    const asleep = railGroups(home, LEAD, 0).find((group) => group.heading === 'asleep');
+
+    expect(asleep?.hidden, 'the asleep heading hides nothing it does not count').toBe(2);
+    expect(
+      railGroups(homeWire, LEAD, 0).find((group) => group.heading === 'needs you')?.hidden,
+      'a group that does not fold claimed a count',
+    ).toBeNull();
+  });
+
+  /**
+   * A project's sleeping workers fold behind one row of their own: a reader
+   * working in a live project is not working in them.
+   */
+  it("folds a project's sleeping workers behind one row, keeping the awake ones", () => {
+    const leadRow: AgentRow = { ...lead(), lifecycle: 'Running', pending: null, reason: null };
+    const worker = (label: string, lifecycle: AgentRow['lifecycle']): AgentRow => ({
+      ...leadRow,
+      slot: { ...leadRow.slot, label },
+      label,
+      lifecycle,
+    });
+    const home = withHome({
+      agents: [
+        leadRow,
+        worker('w1', 'Running'),
+        worker('w2', 'Sleeping'),
+        worker('w3', 'LoggedOut'),
+      ],
+    });
+    const project = railGroups(home, LEAD, 0).find((group) => group.heading === 'working')
+      ?.projects[0];
+
+    expect(
+      project?.workers.map((row) => row.slot.label),
+      'an awake worker was folded away',
+    ).toEqual(['w1']);
+    expect(
+      project?.sleeping.map((row) => row.slot.label),
+      'the sleeping workers were not folded, in the order the roster lists them',
+    ).toEqual(['w2', 'w3']);
+    expect(project?.shown, 'folding its workers moved the project out of working').toBe('lead');
+  });
+
+  /**
+   * The mark is on the ROW the page is showing, not on the project around it:
+   * a project box lit its workers with it, so four rows looked selected and
+   * none of them said which one was open.
+   */
+  it('marks the row of the seat being shown, not the project around it', () => {
+    const leadRow: AgentRow = { ...lead(), lifecycle: 'Running', pending: null, reason: null };
+    const worker: AgentRow = {
+      ...leadRow,
+      slot: { ...leadRow.slot, label: 'w1' },
+      label: 'w1',
+    };
+    const home = withHome({ agents: [leadRow, worker] });
+    const project = (slot: SessionSlot): RailProject | undefined =>
+      railGroups(home, slot, 0)
+        .flatMap((group) => group.projects)
+        .find((entry) => entry.name === 'proj');
+
+    expect(project(LEAD)?.shown, 'the lead seat was not the row marked').toBe('lead');
+    expect(project({ ...LEAD, label: 'w1' })?.shown, 'the shown worker was not marked').toBe('w1');
+    expect(
+      project({ org: 'TestOrg', project: 'elsewhere', label: 'lead' })?.shown,
+      'a project the page is not showing marked a row',
+    ).toBeNull();
   });
 
   /**
@@ -491,6 +644,116 @@ describe('the subagent gap', () => {
   });
 });
 
+/** The fixture's home with a chipped account and a usage snapshot behind it. */
+const withPool = (snapshot: unknown): HomeWire =>
+  withHome({
+    projects: [{ ...project(), chip: { account_name: 'Acct', state: 'ready' } }],
+    accounts: {
+      ...homeWire.accounts,
+      loading: [
+        {
+          display_name: 'Acct',
+          state: 'ready',
+          last_error: null,
+          retry_after: null,
+          auth: 'token',
+        },
+      ],
+      usage: [{ display_name: 'Acct', snapshot }],
+    },
+  });
+
+describe('the rail footer', () => {
+  it('states the five figures a spend-billed account reports', () => {
+    const footer = railFooter(
+      withPool({
+        source: 'OpenRouterKey',
+        spend: { daily: 1.5, weekly: 10, monthly: 42, limit: 50 },
+        balance: 12.25,
+      }),
+      LEAD,
+    );
+    expect(footer.figures).toEqual([
+      { label: 'day', value: '$1.50', dim: false },
+      { label: 'week', value: '$10.00', dim: false },
+      { label: 'month', value: '$42.00', dim: false },
+      { label: 'balance', value: '$12.25', dim: false },
+      { label: 'cap', value: '$50.00', dim: false },
+    ]);
+  });
+
+  /**
+   * The terminal's own three states for a figure nobody has reported: `$-` for
+   * a key that has not been probed, `not set` for one with no cap to fill, and
+   * a dash when there is no snapshot at all. A `$0.00` is a reading, and forge
+   * has none.
+   */
+  it('keeps the five rows a snapshot has not filled, rather than dropping any', () => {
+    const cold = railFooter(withPool({ source: 'OpenRouterKey' }), LEAD);
+    expect(cold.figures.map((figure) => figure.label)).toEqual([
+      'day',
+      'week',
+      'month',
+      'balance',
+      'cap',
+    ]);
+    expect(cold.figures.map((figure) => figure.value)).toEqual([
+      '$-',
+      '$-',
+      '$-',
+      '$-',
+      '\u{2014}',
+    ]);
+
+    const probed = railFooter(
+      withPool({ source: 'OpenRouterKey', spend: { daily: 1, weekly: 2, monthly: 3 } }),
+      LEAD,
+    );
+    expect(probed.figures.at(-1), 'an uncapped key claimed a cap').toEqual({
+      label: 'cap',
+      value: 'not set',
+      dim: true,
+    });
+  });
+
+  it('draws the windows rather than the figures for a window-billed account', () => {
+    const footer = railFooter(
+      withPool({
+        source: 'Oauth',
+        five_hour: { utilization: 68, reset_description: '1h 48m' },
+        seven_day: { utilization: 24, reset_description: '2d 6h' },
+      }),
+      LEAD,
+    );
+    expect(footer.figures, 'a window-billed account drew money figures').toEqual([]);
+    expect(footer.windows.map((window) => window.label)).toEqual(['5h', '7d']);
+  });
+
+  it('names the versions, and the newer CLI only when npm has one', () => {
+    const footer = railFooter(withPool(null), LEAD);
+    expect(footer.versions.forge).toBe(homeWire.forge_version_short);
+    expect(footer.versions.claude).toBe('1.0.0');
+    expect(footer.versions.update, 'a newer claude went unstated').toBe('1.1.0');
+
+    const level = withHome({ cli_version: { installed: '1.1.0', latest: '1.1.0' } });
+    expect(
+      railFooter(level, LEAD).versions.update,
+      'an equal version claimed an update',
+    ).toBeNull();
+  });
+
+  /** The account reads by its name, with the pool's own word for its health on
+   * the dot beside it and nothing else: the chip's billing word is gone. */
+  it('names the account and carries no billing word', () => {
+    const footer = railFooter(withPool(null), LEAD);
+    expect(footer.account).toEqual({ name: 'Acct', tone: 'ok' });
+  });
+
+  it('draws no footer account for a project that chips none', () => {
+    expect(railFooter(homeWire, LEAD).account).toBeNull();
+  });
+});
+
 describe('the account chip', () => {
   it('draws nothing for a project that chips no account', () => {
     expect(accountChip(homeWire, LEAD)).toBeNull();
@@ -500,10 +763,9 @@ describe('the account chip', () => {
   it('reads the pool own words for the account the project would bind to', () => {
     const home = withProject({ chip: { account_name: 'Acct', state: 'loading' } });
     const view = accountChip(home, LEAD);
-    expect(view?.state).toBe('probing');
-    expect(view?.tone).toBe('wait');
-    expect(view?.auth).toBe('token');
-    expect(view?.windows).toEqual([]);
+    expect(view?.name).toBe('Acct');
+    expect(view?.tone, 'a pool that has not settled does not read as ready').toBe('wait');
+    expect(view?.windows, 'a pool with no snapshot behind it drew windows').toEqual([]);
   });
 
   /**

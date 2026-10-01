@@ -400,6 +400,29 @@ details[open] > summary .arw { transform: rotate(90deg); }
   background: none; border: 0; display: flex; align-items: center; }
 .banner .close:hover { color: var(--text); }
 
+/* The rail's footer: the account, what it is costing and the two builds.
+   `flex: none` because the list is the thing that gives - a footer that
+   shrinks instead is one a long project list squashes. Named apart from
+   `.foot`, which the composer already owns. */
+.rfoot { flex: none; border-top: 1px solid rgba(34,42,60,.9); padding: 10px 12px 12px; }
+.rfoot .who { display: flex; align-items: center; gap: 8px; padding: 0 1px 4px; }
+.rfoot .led { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; background: var(--ok); }
+.rfoot .led.wait { background: var(--warn); }
+.rfoot .led.bad { background: var(--bad); }
+.rfoot .an { color: var(--text); font-size: var(--fs-base); }
+.rfoot .frs { display: flex; flex-direction: column; gap: 1px; }
+.rfoot .fr { display: flex; font-family: var(--mono); font-size: var(--fs-data); }
+.rfoot .fr .k { color: var(--dim); }
+/* The figures are right-aligned against the rail's edge the way a row's age
+   is, so a change in width moves them together rather than reflowing. */
+.rfoot .fr .v { margin-left: auto; color: var(--ok); }
+.rfoot .fr .v.none { color: var(--dim); }
+.rfoot .vers { margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px;
+  display: flex; flex-direction: column; gap: 2px;
+  font-family: var(--mono); font-size: var(--fs-data); }
+.rfoot .vers .v { color: var(--muted); }
+.rfoot .vers .up { color: var(--warn); }
+
 /* The chat column. min-height:0 or the column refuses to shrink below its
    content and the composer is pushed past the viewport, where
    overflow:hidden eats it. */
@@ -421,9 +444,20 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .state { padding: 12px 8px 4px; font-size: var(--fs-label); font-weight: 700;
   letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
 .state.needs { color: var(--warn); }
+/* The asleep heading, which folds what is under it. It carries the count of
+   the rows it hides, so a folded section does not read as an empty one. */
+details.gfold > summary { list-style: none; cursor: pointer; display: flex;
+  align-items: baseline; gap: 8px; padding: 12px 8px 4px; }
+details.gfold > summary::-webkit-details-marker { display: none; }
+details.gfold > summary .gh { font-size: var(--fs-label); font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+details.gfold > summary:hover .gh { color: var(--muted); }
+details.gfold > summary .cn { margin-left: auto; font-family: var(--mono);
+  font-size: var(--fs-data); letter-spacing: 0; color: var(--dim); }
+details.gfold > summary .arw { color: var(--dim); font-size: var(--fs-data); }
+details.gfold[open] > summary .arw { color: var(--accent); }
 .pj { border-radius: 10px; margin: 1px 0; }
 .pj:hover { background: rgba(27,33,48,.5); }
-.pj.cur { background: rgba(244,118,0,.1); box-shadow: inset 0 0 0 1px rgba(244,118,0,.35); }
 .pr { display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; }
 .pr .nm { font-size: var(--fs-base); font-weight: 600; flex: none; white-space: nowrap; }
 .pr .org { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
@@ -433,7 +467,15 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   background: none; border: 0; display: flex; align-items: center;
   border-radius: 5px; padding: 2px 5px; cursor: pointer; }
 .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
-.pj.cur .pr .nm { color: var(--accent); }
+/* The seat the page is showing, marked on its own row and nowhere else.
+   The accent goes on the row's NAME, and the mark is filled as well: an idle
+   seat already carries the accent on its dot, and a seat at rest is idle -
+   its mark is cleared when a turn ends - so a mark that recoloured only the
+   dot would paint nothing on the ordinary shown seat. The terminal draws
+   selection the same way, its glyph keeping the session's state while the
+   name takes the accent. */
+.pr.on .nm, .wk.on .nm { color: var(--accent); }
+.pr.on .dot, .wk.on .dot { background: var(--accent); border-color: var(--accent); }
 .wk { display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 34px; cursor: pointer; }
 .wk:hover { background: rgba(27,33,48,.4); border-radius: 0 8px 8px 0; }
 .wk .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
@@ -447,6 +489,14 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .why.bad { color: var(--bad); }
 .rail .nm a { color: inherit; text-decoration: none; }
 .rail .nm a:hover { text-decoration: underline; }
+/* A project's sleeping workers, behind one row that carries the count. The
+   summary is drawn as a worker row, so the fold stands where they were. */
+details.sfold > summary { list-style: none; cursor: pointer; }
+details.sfold > summary::-webkit-details-marker { display: none; }
+details.sfold > summary .nm { color: var(--dim); }
+details.sfold > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
+details.sfold[open] > summary .arw { color: var(--accent); }
+
 /* A chip that cannot be clicked yet says so rather than turning red under
    the pointer, which would promise the click. */
 .pj:hover .pr .x:disabled, .wk:hover .x:disabled { color: var(--muted); background: none; }
@@ -506,23 +556,6 @@ details.sec[open] > summary .arw { color: var(--accent); }
 .sb .tk .meta { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); margin-top: 1px; }
 .sb .tk .meta b { color: var(--muted); font-weight: 500; }
 
-/* the account chip, and the popover it opens on what the poller knows */
-details.acct { position: relative; }
-details.acct > summary { list-style: none; cursor: pointer; display: flex; align-items: center;
-  gap: 7px; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
-  border: 1px solid var(--ctl); border-radius: 99px; padding: 2px 11px; }
-details.acct > summary::-webkit-details-marker { display: none; }
-details.acct > summary:hover { color: var(--text); }
-details.acct[open] > summary { color: var(--accent); }
-.pop { position: absolute; right: 0; top: calc(100% + 10px); width: 320px; z-index: 20;
-  background: var(--s1); border: 1px solid rgba(34,42,60,.95); border-radius: 14px;
-  padding: 13px 15px; box-shadow: 0 24px 60px rgba(0,0,0,.6);
-  text-transform: none; letter-spacing: 0; }
-.pop .hd { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
-.pop .hd .nm { font-size: var(--fs-group); font-weight: 650; color: var(--accent); }
-.pop .hd .st { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--ok); }
-.pop .hd .st.wait { color: var(--warn); }
-.pop .hd .st.bad { color: var(--bad); }
 .kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
   font-family: var(--mono); font-size: var(--fs-data); }
 /* A key can be a task subject, a cron prompt or a process command, so it
@@ -531,7 +564,6 @@ details.acct[open] > summary { color: var(--accent); }
 .kv .k { color: var(--dim); min-width: 0; overflow-wrap: anywhere; }
 .kv .v { color: var(--muted); text-align: right; min-width: 0; overflow-wrap: anywhere; }
 .kv .v.a { color: var(--accent); }
-.pop hr { border: 0; height: 1px; background: var(--line); margin: 9px 0 7px; }
 .bar { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
 .bar .lb { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); width: 26px; }
 .bar .tk { flex: 1; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
@@ -1121,6 +1153,18 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .sess .facts .fk { color: var(--dim); font-size: var(--fs-data); }
 .sess .facts > span { white-space: nowrap; }
 .sess .facts .sep { color: var(--line); }
+
+/* The seat's own id, in the slot the account chip left. It is the one fact
+   here a reader COPIES rather than reads, so it is monospaced - its glyphs
+   line up with the ids printed elsewhere - and the control sits beside it.
+   That control carries more padding than a chip this size would otherwise
+   take, because it is a click target on a page read at 430 too. */
+.sess .facts .sid { display: flex; align-items: center; gap: 7px; }
+.sess .facts .id { font-family: var(--mono); color: var(--muted); }
+.sess .facts .cp { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  background: none; border: 1px solid var(--line); border-radius: 5px;
+  padding: 3px 7px; cursor: pointer; }
+.sess .facts .cp:hover { color: var(--text); border-color: var(--ctl); }
 
 /* The palette carries no blue, so plan mode takes the accent: the chips
    have to stay apart from each other more than they have to match the

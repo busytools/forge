@@ -17,6 +17,7 @@
 
 import {
   artifactLabel,
+  availableVersion,
   chipFor,
   elapsedLabel,
   gateLine,
@@ -38,8 +39,10 @@ import type {
   SessionRecord,
 } from './wire';
 
-/** The four facts the header states, and the class the mode's chip carries. */
+/** The facts the header states, and the class the mode's chip carries. */
 export interface Facts {
+  /** The occupant's id, or `null` when there is no occupant to name. */
+  sessionId: string | null;
   model: string;
   effort: string;
   mode: { wire: string; klass: string } | null;
@@ -51,6 +54,20 @@ export interface RailGroup {
   heading: string;
   /** `needs` carries the heading's own colour, which is the sheet's rule. */
   klass: string;
+  /**
+   * How many rows this heading folds away, or `null` when it folds nothing.
+   *
+   * One field rather than a flag beside a number, so a heading cannot claim to
+   * fold and hide nothing: a folded section with no count reads as an empty
+   * one, which is the whole reason the count is drawn on it.
+   */
+  hidden: number | null;
+  /**
+   * Whether the seat the page is showing is one of the rows behind this
+   * heading, which is what a fold opens itself on: arriving on a sleeping seat
+   * would otherwise draw the marked row inside a closed fold.
+   */
+  holds: boolean;
   projects: RailProject[];
 }
 
@@ -58,13 +75,28 @@ export interface RailGroup {
 export interface RailProject {
   name: string;
   org: string;
-  /** The project the page is showing. */
-  current: boolean;
+  /**
+   * The LABEL of the row the page is showing, or `null` when it is showing
+   * another project.
+   *
+   * A label rather than a flag, because the mark is on one row: a project's
+   * own row is its lead and a worker's row is its own label, so a row compares
+   * against this and exactly one of them matches.
+   */
+  shown: string | null;
   /** How long since it last wrote, drawn only when nothing is running. */
   age: string;
   asleep: boolean;
   row: Row;
+  /** The workers it draws, which are the ones awake. */
   workers: Row[];
+  /**
+   * The sleeping workers one row of theirs hides, empty when there are none:
+   * a reader working in a live project is not working in the seats beside it
+   * that have gone to sleep. Carried whole rather than as a count, because the
+   * row that hides them is the row that opens them.
+   */
+  sleeping: Row[];
   why: { line: string; bad: boolean } | null;
 }
 
@@ -311,6 +343,7 @@ export interface MonitorView {
 export function headerFacts(header: SessionHeader): Facts {
   const model = header.model;
   return {
+    sessionId: header.session_id,
     model:
       model === null
         ? '\u{2014}'
@@ -324,6 +357,52 @@ export function headerFacts(header: SessionHeader): Facts {
         : { wire: header.permission_mode, klass: permClass(header.permission_mode) },
     percent: header.context.percent,
   };
+}
+
+/**
+ * What the copy control's click did, or what stands in the way of one.
+ *
+ * `no-clipboard` and `failed` are the two failures kept apart because they are
+ * different problems for the reader: the first is the page's origin, the
+ * second is a write the OS refused.
+ */
+export type CopyOutcome = 'ready' | 'copied' | 'failed' | 'no-clipboard';
+
+/** What the copy control says on the row. */
+export function copyLabel(outcome: CopyOutcome): string {
+  switch (outcome) {
+    case 'ready':
+      return 'copy';
+    case 'copied':
+      return 'copied';
+    case 'failed':
+      return 'copy failed';
+    case 'no-clipboard':
+      return 'copy needs https';
+  }
+}
+
+/**
+ * What the control is for: its accessible name, and the reason a state other
+ * than `copy` is showing.
+ *
+ * The name is spelt out rather than left as the visible word, so a reader who
+ * cannot see the id beside it still knows what the click does - and it OPENS
+ * with the label it draws, because a name that stopped matching the visible
+ * text would leave someone speaking the label they can see with nothing to
+ * match.
+ */
+export function copyReason(outcome: CopyOutcome): string {
+  switch (outcome) {
+    case 'ready':
+      return 'copy the whole session id';
+    case 'copied':
+      return 'copied, the whole id is on the clipboard';
+    case 'failed':
+      return 'copy failed, the clipboard refused the write';
+    case 'no-clipboard':
+      return 'copy needs https, this page has no clipboard to write to';
+  }
 }
 
 /**
@@ -396,25 +475,41 @@ function whyOf(rows: Row[]): { line: string; bad: boolean } | null {
  */
 export function railGroups(home: HomeWire, current: SessionSlot, now: number): RailGroup[] {
   const groups: RailGroup[] = [
-    { heading: 'needs you', klass: 'state needs', projects: [] },
-    { heading: 'working', klass: 'state', projects: [] },
-    { heading: 'asleep', klass: 'state', projects: [] },
+    { heading: 'needs you', klass: 'state needs', hidden: null, holds: false, projects: [] },
+    { heading: 'working', klass: 'state', hidden: null, holds: false, projects: [] },
+    // The sleeping half of the fleet is the one nobody is working in, so it is
+    // the one heading that folds: everything under it is still counted on the
+    // heading, because a fold that reads as an empty section is worse than no
+    // fold at all.
+    { heading: 'asleep', klass: 'state', hidden: 0, holds: false, projects: [] },
   ];
 
   for (const entry of home.projects) {
     const { lead, workers } = projectRows(home, entry);
     const all = [lead, ...workers];
     const rank = all.reduce((best, row) => Math.min(best, rankOf(row.state, row.pending)), 2);
-    groups[rank]?.projects.push({
+    const group = groups[rank];
+    if (group === undefined) continue;
+    const sleeping = workers.filter((row) => rankOf(row.state, row.pending) === 2);
+    const shown =
+      entry.project.org === current.org && entry.project.name === current.project
+        ? current.label
+        : null;
+    if (shown !== null) group.holds = true;
+    group.projects.push({
       name: entry.project.name,
       org: entry.project.org,
-      current: entry.project.org === current.org && entry.project.name === current.project,
+      shown,
       age: whenOf(lead, now),
       asleep: rank === 2,
       row: lead,
-      workers,
+      workers: workers.filter((row) => rankOf(row.state, row.pending) !== 2),
+      sleeping,
       why: whyOf(all),
     });
+    // The rows the heading hides when it folds: the project's own row and
+    // every worker under it, drawn or folded.
+    if (group.hidden !== null) group.hidden += 1 + workers.length;
   }
   return groups.filter((group) => group.projects.length > 0);
 }
@@ -467,17 +562,22 @@ export interface AccountWindow {
   reset: string;
 }
 
-/** The account chip: who a spawn here would bind to, and what the poller knows. */
+/** The account this seat's project binds to, and what the poller knows of it. */
 export interface AccountView {
   name: string;
-  /** `probing` / `ready` / `bailed`, or `null` when the pool has no row for it. */
-  state: string | null;
+  /** The class the health dot carries: `ok` / `wait` / `bad`. */
   tone: string;
-  /** Which repair instruction the account earns. */
-  auth: string | null;
   windows: AccountWindow[];
   spend: { daily: string; weekly: string; monthly: string } | null;
   balance: string | null;
+  /** The key's spending cap, or `null` when it declares none. */
+  cap: string | null;
+  /**
+   * Whether the account bills per token, which is what decides whether its
+   * figures are money or windows: `UsageSourceKind::OpenRouterKey` is the one
+   * source that fills `spend`.
+   */
+  spendBilled: boolean;
 }
 
 /**
@@ -518,9 +618,7 @@ export function accountChip(home: HomeWire, slot: SessionSlot): AccountView | nu
   const balance = snapshot?.['balance'];
   return {
     name,
-    state: row === undefined ? null : stateWord(row.state),
     tone: row === undefined ? 'wait' : stateTone(row.state),
-    auth: row === undefined ? null : authWord(row.auth),
     windows,
     spend:
       spend === null
@@ -531,22 +629,91 @@ export function accountChip(home: HomeWire, slot: SessionSlot): AccountView | nu
             monthly: money(spend['monthly']),
           },
     balance: typeof balance === 'number' ? money(balance) : null,
+    cap: spend !== null && typeof spend['limit'] === 'number' ? money(spend['limit']) : null,
+    spendBilled: snapshot?.['source'] === 'OpenRouterKey',
   };
 }
 
-function stateWord(state: string): string {
-  if (state === 'ready') return 'ready';
-  return state === 'bailed' ? 'bailed' : 'probing';
+/** One figure on the rail's footer: what it is called and what it reads. */
+export interface FooterFigure {
+  label: string;
+  value: string;
+  /**
+   * Whether the value is a placeholder rather than a reading, which is what
+   * the cap row is whenever there is no amount to state.
+   */
+  dim: boolean;
+}
+
+/** The rail's footer: the account, what it is costing, and the two versions. */
+export interface RailFooter {
+  /** The account this project binds to, or `null` when none would serve it. */
+  account: { name: string; tone: string } | null;
+  /** The figures a spend-billed account reports; empty for a window-billed one. */
+  figures: FooterFigure[];
+  /** A window-billed account's windows, in the shape the chip already draws. */
+  windows: AccountWindow[];
+  versions: { forge: string; claude: string | null; update: string | null };
+}
+
+/**
+ * What a figure nobody has reported reads.
+ *
+ * `$-` rather than `$0.00`, because a zero is a reading and forge has none -
+ * the terminal's own placeholder, and the reason a cold account does not read
+ * as one that has spent nothing.
+ */
+const UNPROBED = '$-';
+
+/**
+ * The rail's footer: the account serving this seat's project, what it is
+ * costing, and the two builds behind the page.
+ *
+ * **The figures branch on the account's billing kind, which is the terminal's
+ * own rule**: a spend-billed key gets its periods, balance and cap, and a
+ * window-billed one gets its 5h and 7d windows in the same block. Drawn from
+ * one snapshot either way, so the footer states what the poller reported
+ * rather than a shape the account cannot fill.
+ *
+ * The account is read from the project's chip rather than from the seat's own
+ * binding, which the client has no read for: the chip is the roster's answer
+ * to which account serves this project, and the terminal names the seat's
+ * bound account instead.
+ */
+export function railFooter(home: HomeWire, slot: SessionSlot): RailFooter {
+  const versions = {
+    forge: home.forge_version_short,
+    claude: home.cli_version?.installed ?? null,
+    update: availableVersion(home.cli_version?.installed ?? null, home.cli_version?.latest ?? null),
+  };
+  const account = accountChip(home, slot);
+  if (account === null) return { account: null, figures: [], windows: [], versions };
+  const head = { name: account.name, tone: account.tone };
+  if (!account.spendBilled) {
+    return { account: head, figures: [], windows: account.windows, versions };
+  }
+  const spend = account.spend;
+  // Three states for the cap, as the terminal draws them: a cap to fill, a key
+  // with none, and a snapshot that has not landed. The two placeholders are
+  // dim, because a word saying there is no denominator is not a figure.
+  const cap = account.cap ?? (spend === null ? '\u{2014}' : 'not set');
+  return {
+    account: head,
+    figures: [
+      { label: 'day', value: spend?.daily ?? UNPROBED, dim: false },
+      { label: 'week', value: spend?.weekly ?? UNPROBED, dim: false },
+      { label: 'month', value: spend?.monthly ?? UNPROBED, dim: false },
+      { label: 'balance', value: account.balance ?? UNPROBED, dim: false },
+      { label: 'cap', value: cap, dim: account.cap === null },
+    ],
+    windows: [],
+    versions,
+  };
 }
 
 function stateTone(state: string): string {
   if (state === 'ready') return 'ok';
   return state === 'bailed' ? 'bad' : 'wait';
-}
-
-/** What a bailed account's repair instruction names. */
-function authWord(auth: string): string {
-  return auth === 'base_url' ? 'base url' : 'token';
 }
 
 function money(amount: unknown): string {

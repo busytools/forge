@@ -33,6 +33,7 @@ pub type FixtureError = Box<dyn std::error::Error + Send + Sync>;
 /// out is a session that has not reported it.
 #[derive(Default)]
 pub struct ViewFacts {
+    pub session_id: Option<forge_primitives::SessionId>,
     pub model: Option<forge_primitives::CurrentModel>,
     /// The effort a hook observed, which a session reports only once it
     /// has used a tool.
@@ -503,6 +504,7 @@ impl Fleet {
             .domain_session_for(slot)
             .unwrap_or_else(|| self.workspace.register_domain_session(slot.clone(), None));
         let mut held = domain.lock();
+        held.session_id = facts.session_id;
         held.current_model = facts.model;
         held.observed_effort = facts.observed_effort;
         if let Some(effort) = facts.configured_effort {

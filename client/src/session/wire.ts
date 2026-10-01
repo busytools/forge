@@ -35,6 +35,16 @@ export interface ContextUsage {
  * live turn are the chat's and the composer's.
  */
 export interface SessionHeader {
+  /**
+   * The occupant's id, or `null` when there is no occupant to name: nothing
+   * started, nothing connected yet, or an id dropped since.
+   *
+   * Read from the header rather than from the conversation's own frames: a
+   * page that attached after the seat connected never heard the `Connected`
+   * that named it, and a frame's `session_id` is the turn's fact rather than
+   * the seat's.
+   */
+  session_id: string | null;
   model: ModelFacts | null;
   effort: Effort;
   permission_mode: PermissionMode | null;
@@ -255,6 +265,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     slot: held['slot'] as SessionSlot,
     state: { scan_cwd: text(record(held['state'])['scan_cwd']) ?? '' },
     header: {
+      session_id: text(header['session_id']),
       model:
         typeof raw['resolved_id'] === 'string'
           ? {

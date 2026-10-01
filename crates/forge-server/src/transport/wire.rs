@@ -420,6 +420,9 @@ pub struct TakeWire {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SessionHeaderWire {
+    /// The occupant's id, or `None` when there is no occupant to name:
+    /// nothing started, nothing connected yet, or an id dropped since.
+    pub session_id: Option<forge_primitives::SessionId>,
     pub model: Option<Value>,
     pub effort: Value,
     pub permission_mode: Option<Value>,
@@ -1047,6 +1050,7 @@ async fn session(
         conversation: ConversationWire { turns, compaction_count },
         has_dispatches,
         header: SessionHeaderWire {
+            session_id: header.session_id.clone(),
             model: header.model.as_ref().and_then(|model| serde_json::to_value(model).ok()),
             effort: serde_json::to_value(header.effort).unwrap_or(Value::Null),
             permission_mode: header
@@ -1779,6 +1783,40 @@ mod tests {
         assert_eq!(
             encoded["background_tasks"][0]["command"], "gh run watch 123 --exit-status",
             "and the command the scan adopts by: {encoded}"
+        );
+    }
+
+    /// The occupant's id crosses on the header: the `Connected` that named it
+    /// reaches nobody who was not attached when it fired, so a page opened on
+    /// a running seat has this rather than the frame. The worker registry
+    /// carries the same id for a live dynamic worker, and nothing else does.
+    #[tokio::test]
+    async fn a_session_snapshot_carries_the_occupants_id() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let fleet = crate::testing::Fleet::in_dir(&dir, &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet.seed_view_facts(
+            &fixture_seat(),
+            ViewFacts {
+                session_id: Some(forge_primitives::SessionId::new("d4f70669-1f2a")),
+                ..ViewFacts::default()
+            },
+        );
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+
+        assert_eq!(
+            encoded["header"]["session_id"], "d4f70669-1f2a",
+            "the occupant the core named crosses on the header: {encoded}"
         );
     }
 

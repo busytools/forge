@@ -4,7 +4,9 @@
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
-  import { fleetCount, railGroups, railMark } from './view';
+  import GroupFold from './GroupFold.svelte';
+  import SleeperFold from './SleeperFold.svelte';
+  import { fleetCount, railFooter, railGroups, railMark, type RailProject } from './view';
 
   /**
    * The projects rail: every declared project, grouped by the strongest state
@@ -20,7 +22,7 @@
     onclose,
   }: {
     home: HomeWire;
-    /** The seat the page is showing, which its own project's row marks. */
+    /** The seat the page is showing, which is the one row the rail marks. */
     current: SessionSlot;
     now: number;
     /** Brings the header's handle back, which the collapsed rail has covered. */
@@ -28,6 +30,11 @@
   } = $props();
 
   const groups = $derived(railGroups(home, current, now));
+  /**
+   * The account and the two builds, which sit under the list rather than in it:
+   * the projects scroll behind them.
+   */
+  const foot = $derived(railFooter(home, current));
 </script>
 
 <!--
@@ -52,32 +59,97 @@
     </button>
   </div>
   <div class="scroll">
-    {#each groups as group (group.heading)}
-      <div class={group.klass}>{group.heading}</div>
-      {#each group.projects as project (project.org + '/' + project.name)}
-        <div class="pj" class:cur={project.current}>
-          <div class="pr">
-            <span class="dot {railMark(project.row.state)}"></span>
-            <span class="nm"><a href={hrefForSlot(project.row.slot)}>{project.name}</a></span>
-            <span class="org">{project.org}</span>
-            {#if project.asleep}
-              <span class="age">{project.age}</span>
-            {:else}
-              <CloseChip />
-            {/if}
-          </div>
-          {#if project.why !== null}
-            <div class="why" class:bad={project.why.bad}>{project.why.line}</div>
+    <!-- One project's block, drawn the same in a folded group and an open
+         one: the asleep heading is the only thing a folded group changes. -->
+    {#snippet projectBlock(project: RailProject)}
+      <div class="pj">
+        <div class="pr" class:on={project.shown === 'lead'}>
+          <span class="dot {railMark(project.row.state)}"></span>
+          <span class="nm"><a href={hrefForSlot(project.row.slot)}>{project.name}</a></span>
+          <span class="org">{project.org}</span>
+          {#if project.asleep}
+            <span class="age">{project.age}</span>
+          {:else}
+            <CloseChip />
           {/if}
-          {#each project.workers as worker (worker.slot.label)}
-            <div class="wk">
-              <span class="dot {railMark(worker.state)}"></span>
-              <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
-              <CloseChip />
-            </div>
-          {/each}
         </div>
-      {/each}
+        {#if project.why !== null}
+          <div class="why" class:bad={project.why.bad}>{project.why.line}</div>
+        {/if}
+        {#each project.workers as worker (worker.slot.label)}
+          <div class="wk" class:on={project.shown === worker.slot.label}>
+            <span class="dot {railMark(worker.state)}"></span>
+            <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
+            <CloseChip />
+          </div>
+        {/each}
+        <!-- The seats this project has asleep, behind one row that counts
+             them: they are rows a reader is not working in, and the count is
+             what keeps the fold from reading as a project with no workers. -->
+        {#if project.sleeping.length > 0}
+          <SleeperFold sleeping={project.sleeping} shown={project.shown} />
+        {/if}
+      </div>
+    {/snippet}
+
+    {#each groups as group (group.heading)}
+      {#if group.hidden === null}
+        <div class={group.klass}>{group.heading}</div>
+        {#each group.projects as project (project.org + '/' + project.name)}
+          {@render projectBlock(project)}
+        {/each}
+      {:else}
+        <GroupFold heading={group.heading} count={group.hidden} holds={group.holds}>
+          {#each group.projects as project (project.org + '/' + project.name)}
+            {@render projectBlock(project)}
+          {/each}
+        </GroupFold>
+      {/if}
     {/each}
+  </div>
+
+  <!-- The rail's own footer: below the list, so the projects scroll behind it
+       rather than with it. Its class is its own - `.foot` is the composer's
+       key-hint line, and a second `.foot` would take that rule's mono and its
+       size with it. -->
+  <div class="rfoot">
+    {#if foot.account !== null}
+      <div class="who">
+        <span class="led {foot.account.tone}"></span>
+        <span class="an">{foot.account.name}</span>
+      </div>
+    {/if}
+    {#if foot.figures.length > 0}
+      <div class="frs">
+        {#each foot.figures as figure (figure.label)}
+          <div class="fr">
+            <span class="k">{figure.label}</span>
+            <span class="v" class:none={figure.dim}>{figure.value}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    {#if foot.windows.length > 0}
+      <div class="frs">
+        {#each foot.windows as window (window.label)}
+          <div class="bar">
+            <span class="lb">{window.label}</span>
+            <span class="tk"><span class="fl" style={`width:${window.percent}%`}></span></span>
+            <span class="pc">{window.text}</span>
+            {#if window.reset !== ''}<span class="eta">{window.reset}</span>{/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+    <div class="vers">
+      <div class="v">forge v{foot.versions.forge}</div>
+      {#if foot.versions.claude !== null}
+        <div class="v">
+          claude v{foot.versions.claude}{#if foot.versions.update !== null}<span class="up"
+              >{'\u{2191}'} v{foot.versions.update}</span
+            >{/if}
+        </div>
+      {/if}
+    </div>
   </div>
 </aside>

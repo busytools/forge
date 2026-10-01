@@ -7,7 +7,9 @@
 //! folding the update stream a second time.
 
 use forge_primitives::runtime::AvailableModel;
-use forge_primitives::{CurrentModel, EffortLevel, MonitorRecord, PermissionMode, SessionSlot};
+use forge_primitives::{
+    CurrentModel, EffortLevel, MonitorRecord, PermissionMode, SessionId, SessionSlot,
+};
 
 use crate::surface::ViewSurface;
 
@@ -21,6 +23,17 @@ pub use forge_workspace::{ContextUsage, McpServers};
 
 /// What a session header states about the session.
 pub struct SessionHeader {
+    /// The occupant's id, as the CLI named it, or `None` when there is no
+    /// occupant to name: a seat nothing has started, one whose CLI has not
+    /// answered yet, and one whose id was dropped after a background sign-in
+    /// or connection failure all read the same.
+    ///
+    /// Carried here rather than read off the conversation's frames, because a
+    /// client attaching to a running seat hears no `Connected` - a
+    /// subscription carries no backlog - and a frame's id is the turn's fact
+    /// rather than the seat's. The worker registry carries the id for a live
+    /// dynamic worker, and nothing carries it for any other seat.
+    pub session_id: Option<SessionId>,
     /// The model the CLI resolved for this session, from its connect and
     /// from every later frame that names a different one.
     pub model: Option<CurrentModel>,
@@ -57,6 +70,7 @@ impl ViewSurface {
     pub fn header(&self, slot: &SessionSlot) -> SessionHeader {
         let Some(domain) = self.workspace.domain_session_for(slot) else {
             return SessionHeader {
+                session_id: None,
                 model: None,
                 effort: EffortLevel::Max,
                 permission_mode: None,
@@ -67,6 +81,7 @@ impl ViewSurface {
         };
         let held = domain.lock();
         SessionHeader {
+            session_id: held.session_id.clone(),
             model: held.current_model.clone(),
             effort: held.observed_effort.unwrap_or(held.configured_effort),
             permission_mode: held.observed_permission_mode.or(held.configured_permission_mode),
@@ -306,6 +321,25 @@ mod tests {
         );
     }
 
+    /// The occupant's own id, which a view has no other way to read: a client
+    /// attaching to a running seat hears no `Connected` (a subscription
+    /// carries no backlog) and the conversation's frames are not the seat's
+    /// fact.
+    #[test]
+    fn the_header_carries_the_occupants_session_id() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let lead = seat("forge");
+        let domain = workspace.register_domain_session(lead.clone(), None);
+        domain.lock().session_id = Some(forge_primitives::SessionId::new("d4f70669-1f2a"));
+
+        assert_eq!(
+            surface.header(&lead).session_id,
+            Some(forge_primitives::SessionId::new("d4f70669-1f2a")),
+            "the id the core holds for the occupant is the id the header states",
+        );
+    }
+
     /// A seat nobody has started reads as blank rather than borrowing
     /// another session's header.
     #[test]
@@ -319,6 +353,7 @@ mod tests {
         assert_eq!(header.permission_mode, None, "and no mode observed");
         assert_eq!(header.context, ContextUsage::default(), "and no context to report");
         assert_eq!(header.effort, EffortLevel::Max, "and forge's default level, not a blank");
+        assert_eq!(header.session_id, None, "and no occupant to name");
     }
 
     /// The MCP set is the session's own, and a failure replaces the set

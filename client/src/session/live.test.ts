@@ -205,7 +205,7 @@ describe('the session page over a socket', () => {
    */
   it('draws the rail from the home the connection also carries', async () => {
     await open(sessionFixture);
-    expect(drawn()).toContain('class="pj cur"');
+    expect(drawn()).toContain('class="pr on"');
     expect(drawn()).toContain('1 live / 1');
   });
 

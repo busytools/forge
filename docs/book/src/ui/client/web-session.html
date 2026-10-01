@@ -15,7 +15,11 @@
   /* One theme, the home's tokens, from [web] theme in forge.toml.
      Shared with the home, so these lift into the one stylesheet as-is:
      the --tokens, .dot (all nine state marks), .ring (the work mark),
-     .kv, .bar (a usage bar), .pop (a popover).
+     .kv, .bar (a usage bar).
+     The rail's own footer (.rfoot) and the two folds in it (details.gfold
+     for the asleep heading, details.sfold for a project's sleeping workers)
+     are the session page's, and so is the seat's id cell (.sid) that took
+     the slot the account chip left.
      New here, and the shape the pages after this should take:
      .rail + .pane-tog (a collapsible pane and its handle), details.kind
      (a tool family with its calls as leaves), details.leaf (one call that
@@ -132,6 +136,22 @@
      that opened it is underneath. */
   .banner .close { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px; }
   .banner .close:hover { color: var(--text); }
+  /* The rail's footer: the account, what it is costing and the two builds.
+     `flex: none` because the list is the thing that gives. */
+  .rfoot { flex: none; border-top: 1px solid rgba(34,42,60,.9); padding: 10px 12px 12px; }
+  .rfoot .who { display: flex; align-items: center; gap: 8px; padding: 0 1px 4px; }
+  .rfoot .led { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; background: var(--ok); }
+  .rfoot .an { color: var(--text); font-size: var(--fs-base); }
+  .rfoot .frs { display: flex; flex-direction: column; gap: 1px; }
+  .rfoot .fr { display: flex; font-family: var(--mono); font-size: var(--fs-data); }
+  .rfoot .fr .k { color: var(--dim); }
+  .rfoot .fr .v { margin-left: auto; color: var(--ok); }
+  .rfoot .fr .v.none { color: var(--dim); }
+  .rfoot .vers { margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px;
+    display: flex; flex-direction: column; gap: 2px;
+    font-family: var(--mono); font-size: var(--fs-data); }
+  .rfoot .vers .v { color: var(--muted); }
+  .rfoot .vers .up { color: var(--warn); }
 
   /* ---------- projects ---------- */
   .state { padding: 12px 8px 4px; font-size: var(--fs-label); font-weight: 700;
@@ -139,7 +159,16 @@
   .state.needs { color: var(--warn); }
   .pj { border-radius: 10px; margin: 1px 0; }
   .pj:hover { background: rgba(27,33,48,.5); }
-  .pj.cur { background: rgba(244,118,0,.1); box-shadow: inset 0 0 0 1px rgba(244,118,0,.35); }
+  /* The asleep heading folds, and the count on it is what it hides. */
+  details.gfold > summary { list-style: none; cursor: pointer; display: flex;
+    align-items: baseline; gap: 8px; padding: 12px 8px 4px; }
+  details.gfold > summary::-webkit-details-marker { display: none; }
+  details.gfold > summary .gh { font-size: var(--fs-label); font-weight: 700;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+  details.gfold > summary .cn { margin-left: auto; font-family: var(--mono);
+    font-size: var(--fs-data); letter-spacing: 0; color: var(--dim); }
+  details.gfold > summary .arw { color: var(--dim); font-size: var(--fs-data); }
+  details.gfold[open] > summary .arw { color: var(--accent); }
   .pr { display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; }
   .pr .nm { font-size: var(--fs-base); font-weight: 600; flex: none; white-space: nowrap; }
   .pr .org { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
@@ -149,11 +178,22 @@
     font-family: var(--mono); font-size: var(--fs-data); line-height: 1.5;
     border-radius: 5px; padding: 0 5px; cursor: pointer; }
   .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
-  .pj.cur .pr .nm { color: var(--accent); }
+  /* The seat the page is showing, marked on its own row. The accent goes on
+     the row's NAME as well as its mark: an idle seat already carries the accent
+     on its dot, and a seat at rest is idle. No box and no tint around the
+     project, which lit its workers with it. */
+  .pr.on .nm, .wk.on .nm { color: var(--accent); }
+  .pr.on .dot, .wk.on .dot { background: var(--accent); border-color: var(--accent); }
   .wk { display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 34px; cursor: pointer; }
   .wk:hover { background: rgba(27,33,48,.4); border-radius: 0 8px 8px 0; }
   .wk .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
     flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* A project's sleeping workers, behind one row that counts them. */
+  details.sfold > summary { list-style: none; cursor: pointer; }
+  details.sfold > summary::-webkit-details-marker { display: none; }
+  details.sfold > summary .nm { color: var(--dim); }
+  details.sfold > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
+  details.sfold[open] > summary .arw { color: var(--accent); }
   /* The reason a row is in this group, on every row that has one. */
   .why { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
     padding: 0 10px 6px 34px; display: flex; align-items: center; gap: 7px; }
@@ -185,25 +225,17 @@
      nothing reported yet, which a single example cannot show. */
   .annot { display: flex; align-items: center; gap: 10px; padding: 5px 0 0; font-size: var(--fs-data); }
 
-  details.acct { position: relative; }
-  details.acct > summary { list-style: none; cursor: pointer; display: flex; align-items: center;
-    gap: 7px; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
-    border: 1px solid var(--ctl); border-radius: 99px; padding: 2px 11px; }
-  details.acct > summary::-webkit-details-marker { display: none; }
-  details.acct > summary:hover { color: var(--text); }
-  details.acct[open] > summary { color: var(--accent); }
-  .pop { position: absolute; right: 0; top: calc(100% + 10px); width: 320px; z-index: 20;
-    background: var(--s1); border: 1px solid rgba(34,42,60,.95); border-radius: 14px;
-    padding: 13px 15px; box-shadow: 0 24px 60px rgba(0,0,0,.6); }
-  .pop .hd { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
-  .pop .hd .nm { font-size: var(--fs-group); font-weight: 650; color: var(--accent); }
-  .pop .hd .st { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--ok); }
+  /* The seat's id, with the control that copies it. */
+  .sess .facts .sid { display: flex; align-items: center; gap: 7px; }
+  .sess .facts .id { font-family: var(--mono); color: var(--muted); }
+  .sess .facts .cp { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    background: none; border: 1px solid var(--line); border-radius: 5px;
+    padding: 3px 7px; cursor: pointer; }
   .kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
     font-family: var(--mono); font-size: var(--fs-data); }
   .kv .k { color: var(--dim); }
   .kv .v { color: var(--muted); text-align: right; }
   .kv .v.a { color: var(--accent); }
-  .pop hr { border: 0; height: 1px; background: var(--line); margin: 9px 0 7px; }
   .bar { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
   .bar .lb { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); width: 26px; }
   .bar .tk { flex: 1; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
@@ -737,10 +769,23 @@
       </div>
 
       <div class="state">working</div>
-      <div class="pj cur">
+      <div class="pj">
         <div class="pr"><span class="dot live"></span><span class="nm">forge</span>
           <span class="org">Busytools</span>
           <span class="x">&#10005;</span></div>
+        <!-- The seat the page is showing, marked on its own row. -->
+        <div class="wk on"><span class="dot live" style="width:8px;height:8px;flex:0 0 8px"></span>
+          <span class="nm">live-updates</span><span class="x">&#10005;</span></div>
+        <!-- The seats this project has asleep, behind one row that counts
+             them. Open it to see the rows it hides. -->
+        <details class="sfold">
+          <summary class="wk"><span class="dot off"></span>
+            <span class="nm">2 asleep</span><span class="arw">&#9656;</span></summary>
+          <div class="wk"><span class="dot off"></span>
+            <span class="nm">chat-kinds</span><span class="x">&#10005;</span></div>
+          <div class="wk"><span class="dot off"></span>
+            <span class="nm">rail-footer</span><span class="x">&#10005;</span></div>
+        </details>
       </div>
       <div class="pj">
         <div class="pr"><span class="dot unseen"></span><span class="nm">hub-modules</span>
@@ -773,18 +818,40 @@
           <span class="nm">inbox-triage</span><span class="x">&#10005;</span></div>
       </div>
 
-      <div class="state">asleep</div>
-      <div class="pj">
-        <div class="pr"><span class="dot off"></span><span class="nm">playground</span>
-          <span class="org">Personal</span><span class="age">6h</span></div>
+      <!-- The asleep half of the fleet folds, and its heading counts the rows
+           it hides: open it to see them. -->
+      <details class="gfold">
+        <summary><span class="gh">asleep</span><span class="cn">3</span>
+          <span class="arw">&#9656;</span></summary>
+        <div class="pj">
+          <div class="pr"><span class="dot off"></span><span class="nm">playground</span>
+            <span class="org">Personal</span><span class="age">6h</span></div>
+        </div>
+        <div class="pj">
+          <div class="pr"><span class="dot off"></span><span class="nm">busyblocks</span>
+            <span class="org">Busytools</span><span class="age">16h</span></div>
+        </div>
+        <div class="pj">
+          <div class="pr"><span class="dot off"></span><span class="nm">subspace</span>
+            <span class="org">Subspace</span><span class="age">1d</span></div>
+        </div>
+      </details>
+    </div>
+
+    <!-- The rail's own footer: the account, what it is costing and the two
+         builds. Below the list, so the projects scroll behind it. -->
+    <div class="rfoot">
+      <div class="who"><span class="led"></span><span class="an">OpenRouter</span></div>
+      <div class="frs">
+        <div class="fr"><span class="k">day</span><span class="v">$69.43</span></div>
+        <div class="fr"><span class="k">week</span><span class="v">$584.42</span></div>
+        <div class="fr"><span class="k">month</span><span class="v">$69.43</span></div>
+        <div class="fr"><span class="k">balance</span><span class="v">$202.29</span></div>
+        <div class="fr"><span class="k">cap</span><span class="v none">not set</span></div>
       </div>
-      <div class="pj">
-        <div class="pr"><span class="dot off"></span><span class="nm">busyblocks</span>
-          <span class="org">Busytools</span><span class="age">16h</span></div>
-      </div>
-      <div class="pj">
-        <div class="pr"><span class="dot off"></span><span class="nm">subspace</span>
-          <span class="org">Subspace</span><span class="age">1d</span></div>
+      <div class="vers">
+        <div class="v">forge v1.0.105</div>
+        <div class="v">claude v2.1.280 <span class="up">&#8593; v2.1.286</span></div>
       </div>
     </div>
   </aside>
@@ -803,6 +870,13 @@
       <span class="dot live"></span>
       <span class="nm">forge</span><span class="mono dim">Busytools</span>
       <span class="facts">
+        <!-- The seat's own id, in the slot the account chip left: eight
+             characters on the row, the whole id on the control. The account
+             moved to the rail's footer. -->
+        <span class="sid"><span class="fk">session</span>
+          <span class="id" title="d4f70669-1f2a-4b3c-9d0e">d4f70669</span>
+          <button class="cp" type="button">copy</button></span>
+        <span class="sep">&#183;</span>
         <span><span class="fk">model</span> <span class="v">claude-opus-5-5</span></span>
         <span class="sep">&#183;</span>
         <span><span class="fk">effort</span> <span class="v">high</span></span>
@@ -812,26 +886,6 @@
         <span class="cm"><span class="fk">ctx</span>
           <span class="tk"><span class="fl" style="width:41%"></span></span>
           <span class="v">41%</span></span>
-        <details class="acct">
-          <summary><span class="dot idle"></span>Zai</summary>
-          <div class="pop">
-            <div class="hd"><span class="nm">Zai</span><span class="st">ready</span></div>
-            <div class="kv"><span class="k">type</span><span class="v">subscription &#183; monthly</span></div>
-            <div class="kv"><span class="k">model</span><span class="v">glm-5.3-flash</span></div>
-            <hr>
-            <div class="bar"><span class="lb">5h</span>
-              <span class="tk"><span class="fl" style="width:68%"></span></span>
-              <span class="pc">68%</span><span class="eta">1h 48m</span></div>
-            <div class="bar"><span class="lb">7d</span>
-              <span class="tk"><span class="fl" style="width:24%"></span></span>
-              <span class="pc">24%</span><span class="eta">2d 6h</span></div>
-            <hr>
-            <div class="kv"><span class="k">day</span><span class="v">$12.40</span></div>
-            <div class="kv"><span class="k">week</span><span class="v">$61.18</span></div>
-            <div class="kv"><span class="k">month</span><span class="v">$214.06</span></div>
-            <div class="kv"><span class="k">balance</span><span class="v">$41.02 left &#183; monthly</span></div>
-          </div>
-        </details>
       </span>
     </div>
 
