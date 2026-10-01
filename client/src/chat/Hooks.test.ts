@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
@@ -8,6 +10,44 @@ const ONE: HookInfo[] = [{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }
 
 const draw = (actions: number, infos: HookInfo[] = ONE): string =>
   render(Hooks, { props: { actions, infos } }).body;
+
+const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
+const PAGE = readFileSync(
+  new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
+  'utf8',
+);
+
+/** The book page's own copy of the rules it draws with. */
+const BOOK = /<style>([\s\S]*?)<\/style>/.exec(PAGE)?.[1] ?? '';
+
+/** Every `selector { declarations }` rule in a sheet, its selector list kept whole. */
+const rules = (sheet: string): { selectors: string[]; body: string }[] =>
+  [...sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selectors = '', body = '']) => ({
+    selectors: selectors.split(','),
+    body,
+  }));
+
+/**
+ * Whether a selector's last compound is the chip's own `<details>` box - bare
+ * `.hooks` or `details.hooks` - rather than something inside it, or a chip
+ * drawn as some other element.
+ */
+function chipBox(selector: string): boolean {
+  const bare = selector
+    .trim()
+    .replace(/::?[\w-]+(?:\([^)]*\))?/g, '')
+    .replace(/\[[^\]]*\]/g, '');
+  return /(^|[\s>+~])(?:details)?\.hooks$/.test(bare);
+}
+
+/** The values of `display` that lay a box's own children out in one row. */
+const ROW_DISPLAYS = ['flex', 'inline-flex', 'grid', 'inline-grid'];
+
+/** Both sheets that draw the chip: the app's own, and the book's copy of it. */
+const SHEETS: [string, string][] = [
+  ['web.css', SHEET],
+  ['the book drawing', BOOK],
+];
 
 describe('the hook chip a turn carries', () => {
   it('counts one hook in the singular', () => {
@@ -36,5 +76,77 @@ describe('the hook chip a turn carries', () => {
     expect(draw(1)).toContain('echo fixture-stop-hook-ok');
     expect(draw(1), 'the duration the captured row records').toContain('3ms');
     expect(draw(1, [{ command: 'cargo fmt --check', durationMs: 1180 }])).toContain('1.2s');
+  });
+
+  /**
+   * The chip is a summary with its rows under it: a row-laying display on the
+   * `<details>` itself makes the summary and the body two items of ONE row, so
+   * the rows draw beside the summary. jsdom performs no layout and cannot see
+   * that, so the sheets' own rules are what there is to read.
+   */
+  it('draws the hook rows under the summary rather than beside it', () => {
+    expect(draw(1), 'the chip the sheets style').toContain('<details class="hooks"');
+    // The scan's own denominator: an extraction that reads nothing makes the
+    // chip look clean while no rule was read at all, and this half is a
+    // regex over a page rather than a file read.
+    expect(BOOK, "the book page's own sheet, extracted rather than empty").toContain('.hooks');
+
+    const laying = SHEETS.flatMap(([where, sheet]) => {
+      const boxes = rules(sheet).filter((rule) => rule.selectors.some(chipBox));
+      // The classifier's own denominator: a predicate that matches none of the
+      // spellings it claims reports every sheet clean, so each sheet has to
+      // name the chip's box before its silence means anything.
+      expect(boxes.length, `${where} spells the chip's own rule`).toBeGreaterThan(0);
+      return boxes.flatMap((rule) =>
+        [...rule.body.matchAll(/display\s*:\s*([^;]+)/g)]
+          .map(([, value = '']) => value.trim())
+          .filter((value) => ROW_DISPLAYS.includes(value))
+          .map((value) => `${where}: display: ${value}`),
+      );
+    });
+
+    expect(laying, `the chip's own box lays its children in a row: ${laying.join(', ')}`).toEqual(
+      [],
+    );
+  });
+
+  /**
+   * The classifier's spellings, named directly. Both sheets write the chip's
+   * box rule as bare `.hooks` today, so a predicate that lost the
+   * `details.hooks` spelling would classify them identically and the scan above
+   * would never tell the two apart.
+   */
+  it('names both spellings of the chip box and nothing wider', () => {
+    expect(chipBox('.hooks'), 'the bare box').toBe(true);
+    expect(chipBox('details.hooks'), 'the box with its element named').toBe(true);
+    expect(chipBox('.conv .hooks'), 'the box reached through an ancestor').toBe(true);
+    expect(chipBox('.hooks .term'), 'a rule for something inside it').toBe(false);
+    expect(chipBox('div.hooks'), 'a chip drawn as another element').toBe(false);
+    expect(chipBox('.hooksy'), 'a name that merely starts the same').toBe(false);
+  });
+
+  /**
+   * The book's page is the drawing the surface is judged by, and it drew the
+   * chip only closed - which is a blind spot for this defect, whose rows are
+   * not on the page in that state at all.
+   */
+  it('draws the chip open in the book, where its rows can be seen', () => {
+    const open = /<details class="hooks" open>[\s\S]*?<\/details>/.exec(PAGE)?.[0] ?? '';
+    expect(open, 'the book draws the chip open').not.toBe('');
+    expect(open, 'with the rows it holds in the shared body').toContain('class="body"');
+
+    // The sample rows are the drawing's own to re-word; what holds is the
+    // SHAPE - one row per action the chip counted, each a command with the
+    // duration it took.
+    // The chip spells one action in the singular, so a one-action drawing is a
+    // real rendering the page may hold.
+    const counted = /hook summary &#183; (\d+) actions?/.exec(open)?.[1] ?? '';
+    expect(counted, 'the chip says how many actions it took').not.toBe('');
+    const rows = open.match(/<div class="term">[^<]+<\/div>/g) ?? [];
+    expect(rows.length, 'a row drawn per action the chip counted').toBe(Number(counted));
+    expect(
+      rows.filter((row) => !/<div class="term">[^<]+ &#183; .*\d+(\.\d+)?(ms|s)/.test(row)),
+      'every row a command with the duration it took',
+    ).toEqual([]);
   });
 });

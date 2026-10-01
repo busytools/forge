@@ -436,15 +436,14 @@
 
   .compacting { display: flex; align-items: center; gap: 9px; color: var(--accent);
     font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
-  .hooks { display: flex; align-items: center; gap: 8px; margin: 4px 0;
+  /* Stacked: a flex here draws the hook rows beside the summary, not under it. */
+  .hooks { margin: 4px 0;
     font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
   .hooks > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
   .hooks > summary::-webkit-details-marker { display: none; }
   .hooks:hover { color: var(--muted); }
-  /* The live panel draws the chip as a div, so this pair is written loose
-     enough to reach both it and the transcript's own `<details>`. */
-  .hooks .arw { color: var(--dim); }
-  .hooks[open] .arw { color: var(--accent); }
+  details.hooks > summary .arw { color: var(--dim); }
+  details.hooks[open] > summary .arw { color: var(--accent); }
 
   .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -1323,6 +1322,24 @@ docs: Render the message body into rows.</div>
 
       <div class="mine">
         <div class="prose">
+          <p>And the hooks chip open, since the rows it holds are a view of their own.</p>
+        </div>
+      </div>
+
+      <div class="work">
+        <details class="hooks" open>
+          <summary><span>hook summary &#183; 3 actions</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="term">cargo fmt --check &#183; 412ms</div>
+            <div class="term">cargo clippy --all-targets &#183; 890ms</div>
+            <div class="term">git status --short &#183; 6ms</div>
+          </div>
+        </details>
+      </div>
+
+      <div class="mine">
+        <div class="prose">
           <p>Here is the mock I am working from - the rail covers the composer in it.</p>
           <p>A prompt is a document too: run <code>just client-preview</code> and read the rail.</p>
           <div class="code">
@@ -1427,7 +1444,10 @@ docs: Render the message body into rows.</div>
         </div>
 
         <div class="beat" data-beat="8">
-          <div class="hooks"><span>hook summary &#183; 2 actions</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
+          <details class="hooks">
+            <summary><span>hook summary &#183; 2 actions</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
         </div>
       </div>
 

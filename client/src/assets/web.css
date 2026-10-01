@@ -833,7 +833,8 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 /* A compaction in flight, and the chip a turn's hooks collapse to. */
 .compacting { display: flex; align-items: center; gap: 9px; color: var(--accent);
   font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
-.hooks { display: flex; align-items: center; gap: 8px; margin: 4px 0;
+/* Stacked: a flex here draws the hook rows beside the summary, not under it. */
+.hooks { margin: 4px 0;
   font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
 .hooks > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
 .hooks > summary::-webkit-details-marker { display: none; }
