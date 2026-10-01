@@ -341,23 +341,27 @@ async fn handle_client(
             // client reads as the end of the history - so answering one here
             // would make the seat unreachable rather than merely unread this
             // time.
-            let Ok(page) = folded else {
-                tracing::warn!(
-                    event_name = "transcript_fold_failed",
-                    slot = %seat.display(),
-                    "the fold did not finish; this page is refused rather than answered empty",
-                );
-                return send(
-                    socket,
-                    ServerMessage::Error {
-                        what: "more".to_owned(),
-                        why: format!(
-                            "the fold over {seat:?} did not finish, so this page cannot be \
-                             answered; asking again may find it"
-                        ),
-                    },
-                )
-                .await;
+            let page = match folded {
+                Ok(page) => page,
+                Err(err) => {
+                    tracing::warn!(
+                        event_name = "transcript_fold_failed",
+                        slot = %seat.display(),
+                        error = %err,
+                        "the fold did not finish; this page is refused rather than answered empty",
+                    );
+                    return send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "more".to_owned(),
+                            why: format!(
+                                "the fold over {seat:?} did not finish, so this page cannot be \
+                                 answered; asking again may find it"
+                            ),
+                        },
+                    )
+                    .await;
+                }
             };
             send(
                 socket,
