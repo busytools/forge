@@ -878,11 +878,28 @@ describe('the frame', () => {
    * someone would plausibly make.
    */
   it('starts every row at the left edge of the field', () => {
-    for (const row of ['.dict', '.notice', '.blocked']) {
+    for (const row of ['.dict', '.comp .notice', '.blocked']) {
       expect(sheetRule(row), `${row} carries a left inset the field does not`).not.toMatch(
         /padding-left:\s*[1-9]/,
       );
     }
+  });
+
+  /**
+   * The composer's notice row shares its class with the chat's delivery
+   * notices, so its rules are scoped to the composer: a bare rule sits later in
+   * the sheet than the chat's and wins for every delivery on the page, which
+   * measured as a delivery losing its padding, margin, radius and border.
+   */
+  it('resets the notice row without reaching the chat deliveries that share the class', () => {
+    // The bare rule first: it is the one a later reader would write, and the
+    // scoped rule below would throw before this ever ran.
+    expect(sheet, 'a bare notice rule strips chrome a delivery needs').not.toMatch(
+      /^\.notice\s*\{[^}]*padding:\s*0/m,
+    );
+    expect(sheetRule('.comp .notice'), 'the row does not state its own chrome').toMatch(
+      /padding:\s*0/,
+    );
   });
 
   /**
