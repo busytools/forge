@@ -156,16 +156,21 @@ impl Conversation {
     }
 
     /// Put a fold back, with whatever arrived while it ran appended.
-    fn merge_fold(&mut self, mut folded: Vec<Message>, rendered: Rendered) {
+    ///
+    /// `complete` is false when the render did not reach its end, which is the
+    /// guard's path: the messages are back but the boundaries installed with
+    /// them describe nothing.
+    fn merge_fold(&mut self, mut folded: Vec<Message>, rendered: Rendered, complete: bool) {
         let folded_len = folded.len();
         folded.append(&mut self.messages);
         self.messages = folded;
         self.rendered = rendered;
         self.folding = false;
-        // The tail arrived while the fold ran and is not in those spans, so
-        // the next reader folds again rather than cutting a turn on a list
-        // that has moved.
-        if self.messages.len() != folded_len {
+        // The tail arrived while the fold ran and is not in those spans, and a
+        // fold that did not finish has no spans at all - either way the next
+        // reader folds again rather than cutting a turn on a list that has
+        // moved.
+        if !complete || self.messages.len() != folded_len {
             self.dirty = true;
         }
     }
@@ -257,9 +262,9 @@ impl Held {
     }
 
     /// Put a fold's result back and wake every reader waiting on it.
-    fn install(&self, messages: Vec<Message>, rendered: Rendered) {
+    fn install(&self, messages: Vec<Message>, rendered: Rendered, complete: bool) {
         let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
-        conversation.merge_fold(messages, rendered);
+        conversation.merge_fold(messages, rendered, complete);
         self.folded.notify_all();
     }
 
@@ -343,12 +348,13 @@ impl<'a> Folding<'a> {
     /// Put the fold back and wake the readers.
     fn finish(mut self, rendered: Rendered) {
         let messages = self.messages.take().unwrap_or_default();
-        self.held.install(messages, rendered);
+        self.held.install(messages, rendered, true);
     }
 }
 
 impl Drop for Folding<'_> {
-    /// Unwinding out of the render: the messages go back as they were.
+    /// Unwinding out of the render: the messages go back, and the seat stays
+    /// due a fold so the next read rebuilds the boundaries.
     fn drop(&mut self) {
         let Some(messages) = self.messages.take() else {
             return;
@@ -358,6 +364,7 @@ impl Drop for Folding<'_> {
             // No boundaries: the fold did not reach its end, so the next one
             // rebuilds them rather than this leaving half of one behind.
             Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
+            false,
         );
     }
 }
@@ -702,7 +709,8 @@ mod tests {
         );
     }
 
-    /// A fold that does not reach its end gives the messages back.
+    /// A fold that does not reach its end gives the messages back, and is
+    /// folded again by the next read.
     ///
     /// **The guard's whole job, and the failure it prevents is a wedge rather
     /// than a bad page**: the messages are out of the seat while the render
@@ -710,25 +718,33 @@ mod tests {
     /// leave `folding` set, and never wake the readers - parking every page
     /// request on the seat, and through `apply` the socket's single stream
     /// folder, for the process's life.
+    ///
+    /// **And the boundaries a guard installs describe nothing**, so the seat
+    /// has to stay due a fold: a read that took it as folded would cut its
+    /// page on no turns and hand the whole conversation back as one - the
+    /// unbounded response this change exists to bound.
     #[test]
     fn a_fold_that_does_not_finish_gives_the_messages_back() {
         let conversation = Conversation::new(vec![a_frame("kept")], 0);
 
+        let held = Held::new(conversation);
+        let taken = Folding::begin(&held).expect("a fold is due");
+        // Read through the raw mutex rather than `lock`: `lock` WAITS for
+        // a fold in progress, which is the state this test is standing in.
+        let out = held.conversation.lock().expect("the mutex").messages().len();
+        assert_eq!(out, 0, "precondition: the messages are out of the seat");
+
+        // Dropped rather than finished, which is what unwinding does.
+        drop(taken);
+
         {
-            let held = Held::new(conversation);
-            let taken = Folding::begin(&held).expect("a fold is due");
-            // Read through the raw mutex rather than `lock`: `lock` WAITS for
-            // a fold in progress, which is the state this test is standing in.
-            let out = held.conversation.lock().expect("the mutex").messages().len();
-            assert_eq!(out, 0, "precondition: the messages are out of the seat");
-
-            // Dropped rather than finished, which is what unwinding does.
-            drop(taken);
-
             let held = held.lock();
             assert!(!held.folding, "the seat is not left waiting for a fold that will never end");
             assert_eq!(held.messages().len(), 1, "and the messages it took are back in it");
         }
+
+        let turns = held.read(|conversation| conversation.rendered().turns.len());
+        assert_eq!(turns, 1, "the next read folds them, rather than serving no boundaries");
     }
 
     /// A delivery row the transport forges for a seat is part of the
