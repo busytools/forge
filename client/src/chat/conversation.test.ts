@@ -393,7 +393,10 @@ describe('the conversation the chat draws', () => {
     );
 
     const after = get(chat.value).turns;
-    expect(after.map((row) => row.key).includes(built), 'the frame-built row is gone').toBe(false);
+    expect(
+      after.map((row) => row.key).includes(built),
+      'the row the frames built is the one the page settled, not a second one',
+    ).toBe(true);
     expect(
       after.filter((row) => JSON.stringify(row.messages).includes('typed elsewhere')).length,
       'and the turn is held once, as the page has it',
@@ -567,7 +570,10 @@ describe('the conversation the chat draws', () => {
     );
 
     const after = get(chat.value).turns;
-    expect(after.map((row) => row.key).includes(built), 'the frame-built row is gone').toBe(false);
+    expect(
+      after.map((row) => row.key).includes(built),
+      'the row the frames built is the one the page settled, not a second one',
+    ).toBe(true);
     expect(
       after.filter((row) => JSON.stringify(row.messages).includes('answer-1')).length,
       'and the turn is held once, as the page has it',

@@ -48,6 +48,15 @@ export interface Turn {
    * turn twice, once as the frames had it and once as the fold settled it.
    */
   live: boolean;
+  /**
+   * The names a page knows this turn by, when it settled one the frames built.
+   *
+   * A live turn keeps the name its row already had - a list keys its rows by
+   * that name, so handing it the page's own closes every disclosure the reader
+   * had open - and the page's name is kept here so the next page, which repeats
+   * the turn under it, finds this row rather than drawing a second.
+   */
+  also?: string[];
 }
 
 /** What the chat draws from. */
@@ -367,6 +376,11 @@ export class Chat {
     this.inFlight = null;
     this.inner.update((held) => {
       const known = new Map(held.turns.map((turn) => [turn.key, turn]));
+      // A turn a page has settled is also known by the page's own name for it,
+      // which is what the next page repeats it under.
+      for (const turn of held.turns) {
+        for (const alias of turn.also ?? []) known.set(alias, turn);
+      }
       const taken = new Set(known.keys());
       const named: Turn[] = [];
       /** Each row's messages after the reconciliation, which hold the page's own. */
@@ -445,7 +459,18 @@ export class Chat {
         // replaced either way - and where the copy is settled it is the whole
         // account, so the row stands as it is.
         replaced.add(live);
-        if (settledRow(index)) return row;
+        // **The row keeps the name it already had.** A page that settles a live
+        // turn is an account of the SAME exchange, and a list keys its rows by
+        // that name - so handing it the page's own unmounts the row and draws a
+        // fresh one, which closes every disclosure the reader had open and
+        // reopens every one they had closed.
+        const name = live.key;
+        // The page's own name for it is kept beside: the next page repeats the
+        // turn under that name, and a turn that cannot be found by the name the
+        // page uses is drawn again beside the row already held.
+        const also =
+          live.also?.includes(row.key) === true ? live.also : [...(live.also ?? []), row.key];
+        if (settledRow(index)) return { ...row, key: name, also };
         // A copy read while the turn was still being written is not: the row
         // stands in its place, marked live, and carries both the words no frame
         // did (the CLI never echoes a prompt) and the frames the page was read
@@ -456,9 +481,12 @@ export class Chat {
           const id = uuidOf(message);
           return id === null || !ids.has(id);
         });
-        return { key: row.key, messages: [...copy, ...grown], live: true };
+        return { key: name, messages: [...copy, ...grown], live: true, also };
       });
-      const inPage = new Set(drawn.map((turn) => turn.key));
+      // The page's own names count as being on the page: a turn it settled is
+      // held under the name its row already had, and the copy the page carried
+      // is the same turn rather than another row to keep beside it.
+      const inPage = new Set(drawn.flatMap((turn) => [turn.key, ...(turn.also ?? [])]));
       const rest = held.turns.filter((turn) => !turn.live && !inPage.has(turn.key));
       // A live turn no row of this page shares a frame with is one the page
       // cannot be an account of - a page of OLDER turns, or one serialized
