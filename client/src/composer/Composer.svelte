@@ -103,6 +103,8 @@
   let dockDraft = $state('');
   /** Whether the dock has its own box open, which is what makes it a destination. */
   let dockOpen = $state(false);
+  /** A take's words that landed in the dock, which is what brings its box the keyboard. */
+  let dockLanded = $state<string | null>(null);
 
   /**
    * What the table needs to say which box holds the keyboard.
@@ -166,7 +168,10 @@
   // The dock's box belongs to the prompt, so what was written in it goes when
   // the prompt does - which is what the dock's own mount used to do for it.
   $effect(() => {
-    if (ask === null) dockDraft = '';
+    if (ask === null) {
+      dockDraft = '';
+      dockLanded = null;
+    }
   });
 
   /**
@@ -194,6 +199,7 @@
         untrack(() => dockDraft),
         held.text,
       );
+      dockLanded = held.text;
     } else {
       draft = joined(
         untrack(() => draft),
@@ -456,6 +462,7 @@
       take={composer.take}
       bind:notes={dockDraft}
       bind:ownOpen={dockOpen}
+      land={dockLanded}
       onanswer={remember}
       onabandon={abandon}
     />

@@ -1726,6 +1726,50 @@ describe('the dock', () => {
     expect(ownWords().value, "the last prompt's words do not come back in this one").toBe('');
   });
 
+  /**
+   * The words come with the keyboard, and while a prompt has the slot the box
+   * they land in is the dock's own. Opening that box puts the keyboard in it,
+   * so this is the state left after the reader has clicked away from it.
+   */
+  it("brings the keyboard back to the dock's box when a take lands in it", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+
+    const box = (): HTMLTextAreaElement | null => {
+      const found = document.querySelector('.dock [data-editor="dock"]');
+      return found instanceof HTMLTextAreaElement ? found : null;
+    };
+    expect(document.activeElement, 'opening the box puts the keyboard in it').toBe(box());
+
+    // The reader clicks somewhere else, which is the state the take finds them in.
+    box()?.blur();
+    flushSync();
+    expect(document.activeElement, 'and the keyboard is elsewhere now').not.toBe(box());
+
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(box()?.value, 'the words land in the box that was open').toBe('the words');
+    expect(document.activeElement, 'and they bring the keyboard with them').toBe(box());
+  });
+
   it('moves the mark from the keyboard once the dock has the slot', () => {
     const harness = open({ record: record({ pending_ask: permissionAsk() }) });
     const list = document.querySelector('.dock [role="listbox"]');

@@ -14,6 +14,7 @@
     take = null,
     notes = $bindable(''),
     ownOpen = $bindable(false),
+    land = null,
     onanswer = () => {},
     onabandon = () => {},
   }: {
@@ -35,6 +36,8 @@
     notes?: string;
     /** Whether that box is open, which is what makes this dock a destination. */
     ownOpen?: boolean;
+    /** A take's words that landed in this box, which come with the keyboard. */
+    land?: string | null;
     onanswer?: (toolId: string | null) => void;
     onabandon?: () => void;
   } = $props();
@@ -166,6 +169,12 @@
   $effect(() => {
     const wanted = notesOpen ? field : listbox;
     if (wanted !== null) wanted.focus();
+  });
+
+  // A take's words come with the keyboard, and this is the box they landed in.
+  $effect(() => {
+    if (land === null) return;
+    if (field !== null) field.focus();
   });
 
   /** The tool the prompt is waiting on, which an answer is addressed by. */
