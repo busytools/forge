@@ -179,12 +179,14 @@
     font-family: var(--mono); font-size: var(--fs-data); line-height: 1.5;
     border-radius: 5px; padding: 0 5px; cursor: pointer; }
   .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
-  /* The seat the page is showing, marked on its own row. The accent goes on
-     the row's NAME as well as its mark: an idle seat already carries the accent
-     on its dot, and a seat at rest is idle. No box and no tint around the
-     project, which lit its workers with it. */
+  /* The seat the page is showing, marked on its own row and nowhere else: the
+     name takes the accent and the mark is recoloured rather than reshaped. Only
+     the two marks drawn in a border take it, and the running ring's ARC is left
+     at the accent - the arc is what tells a running seat from an asleep one, and
+     colouring all four sides made the two draw the same. */
   .pr.on .nm, .wk.on .nm { color: var(--accent); }
-  .pr.on .dot, .wk.on .dot { background: var(--accent); border-color: var(--accent); }
+  .pr.on .dot, .wk.on .dot { border-color: rgba(244,118,0,.65); }
+  .pr.on .dot.live, .wk.on .dot.live { border-top-color: var(--accent); }
   .wk { display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 34px; cursor: pointer; }
   .wk:hover { background: rgba(27,33,48,.4); border-radius: 0 8px 8px 0; }
   .wk .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
