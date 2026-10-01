@@ -15,6 +15,7 @@
  */
 
 import MarkdownIt from 'markdown-it';
+import type { MarkdownIt as Module, RendererRule } from 'markdown-it';
 
 import { codePanel, fenceLanguage } from './code';
 
@@ -22,6 +23,24 @@ const READER = new MarkdownIt({
   html: false,
   linkify: false,
   typographer: false,
+});
+
+/**
+ * The same renderer with soft breaks kept, for what the reader typed.
+ *
+ * The terminal's own split: its user path passes `preserve_newlines`, which
+ * routes through `force_markdown_line_breaks`, and its assistant path does not
+ * - so a prompt's newlines survive as breaks where a wrapped assistant line
+ * joins back into one. A prompt is usually several lines, so this is the shape
+ * a person meets first. It is a second instance rather than a flag on the
+ * shared one, because turning it on there would change assistant prose, which
+ * the terminal does not do.
+ */
+const PROMPT = new MarkdownIt({
+  html: false,
+  linkify: false,
+  typographer: false,
+  breaks: true,
 });
 
 /**
@@ -33,24 +52,36 @@ const READER = new MarkdownIt({
  * rule boxes it and the fence's language only reaches the page as a class
  * nothing reads.
  */
-READER.renderer.rules.fence = (tokens, index) => {
-  const token = tokens[index];
-  if (token === undefined) return '';
-  const info = token.info.trim();
-  return codePanel(info === '' ? null : info, fenceLanguage(info), token.content);
-};
+function withPanels(module: Module): Module {
+  const fence: RendererRule = (tokens, index) => {
+    const token = tokens[index];
+    if (token === undefined) return '';
+    const info = token.info.trim();
+    return codePanel(info === '' ? null : info, fenceLanguage(info), token.content);
+  };
+  /**
+   * An indented block, which is a code block with no fence and so no info
+   * string to label it. Without this it keeps the module's own `<pre><code>`
+   * and is drawn as the thing this rule exists to delete.
+   */
+  const indented: RendererRule = (tokens, index) => {
+    const token = tokens[index];
+    return token === undefined ? '' : codePanel(null, null, token.content);
+  };
+  module.renderer.rules.fence = fence;
+  module.renderer.rules.code_block = indented;
+  return module;
+}
+
+withPanels(READER);
+withPanels(PROMPT);
 
 /**
- * An indented block, which is a code block with no fence and so no info string
- * to label it. Without this it keeps the module's own `<pre><code>` and is
- * drawn as the thing this rule exists to delete.
+ * `text` as HTML, with everything that is not markdown left as text.
+ *
+ * `preserveLines` is for the reader's own block, where a newline someone typed
+ * is a break they meant.
  */
-READER.renderer.rules.code_block = (tokens, index) => {
-  const token = tokens[index];
-  return token === undefined ? '' : codePanel(null, null, token.content);
-};
-
-/** `text` as HTML, with everything that is not markdown left as text. */
-export function renderProse(text: string): string {
-  return READER.render(text);
+export function renderProse(text: string, preserveLines = false): string {
+  return (preserveLines ? PROMPT : READER).render(text);
 }

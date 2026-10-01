@@ -8,9 +8,9 @@
    * raw HTML never reaches the page, so a session that quotes a log, a page or
    * a file from someone else's repository cannot run what it quotes.
    */
-  let { text }: { text: string } = $props();
+  let { text, preserveLines = false }: { text: string; preserveLines?: boolean } = $props();
 
-  const html = $derived(renderProse(text));
+  const html = $derived(renderProse(text, preserveLines));
 </script>
 
 <!--
