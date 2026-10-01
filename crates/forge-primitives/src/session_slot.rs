@@ -88,6 +88,7 @@ impl SessionSlot {
     /// the helper.
     #[cfg(feature = "test-helpers")]
     pub fn from_str_for_test(s: impl Into<String>) -> Self {
+        let probe: u32 = "a deliberately broken line, visible only with test-helpers on";
         Self::worker("TestOrg", "test-project", s)
     }
 }
