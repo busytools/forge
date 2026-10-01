@@ -615,6 +615,38 @@ mod tests {
         assert_eq!(said, vec!["from the replay".to_owned(), "after".to_owned()]);
     }
 
+    /// A compaction the session reports MOVES the seat's count, which is what
+    /// a view draws its marker from.
+    ///
+    /// **The boundary arrives as a frame rather than in a seed**, so a record
+    /// that took only the count its last connect carried would report the
+    /// number from before every compaction since.
+    #[test]
+    fn a_compact_boundary_frame_moves_the_seats_count() {
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::empty());
+        held.apply(&a_replay(vec![a_frame("before the compaction")]));
+
+        held.apply(&SessionUpdate::ChatAppended {
+            key: a_seat(),
+            msg: Message::CompactBoundary {
+                trigger: "auto".to_owned(),
+                pre_tokens: 100_000,
+                uuid: "b1c2d3e4-0000-4000-8000-000000000001".to_owned(),
+                session_id: "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45".to_owned(),
+            },
+            origin: None,
+        });
+
+        let conversation = held.get(&a_seat()).expect("the seat is held");
+        let conversation = conversation.lock();
+        assert_eq!(
+            conversation.compaction_count(),
+            1,
+            "the count follows the frames the session emits, not only the seed",
+        );
+    }
+
     /// A connect holds the seat's conversation whether or not anyone is
     /// watching it, because nothing can rebuild one that was let go: the
     /// conversation has no read behind it, so a seat dropped is a seat whose
@@ -816,20 +848,29 @@ mod tests {
     fn a_task_notice_in_a_seeded_history_is_a_block_and_not_text() {
         let notice = "<task-notification><tool-use-id>tu1</tool-use-id>\
                       <status>completed</status><summary>done</summary></task-notification>";
-        let conversation = Conversation::new(vec![a_frame(notice)], 0);
 
-        let Message::User { message, .. } = &conversation.messages()[0] else {
-            panic!("a user frame is what the history carried");
-        };
-        assert!(
-            matches!(
-                &message.content[0],
-                ContentBlock::QueuedCommand { command_mode: Some(mode), .. }
-                    if mode == "task-notification"
-            ),
-            "the notice is served as the block a view reads an ending from, not as text: {:?}",
-            message.content[0],
-        );
+        // Both routes a history takes in - a connect that materialises the
+        // seat and a reseed that replaces one - because each converts it
+        // itself, and either could be the one that forgot.
+        let fresh = Conversation::new(vec![a_frame(notice)], 0);
+        let mut reseeded = Conversation::new(vec![a_frame("stale")], 0);
+        reseeded.seed(vec![a_frame(notice)], 0);
+
+        for (conversation, route) in [(&fresh, "a connect"), (&reseeded, "a reseed")] {
+            let Message::User { message, .. } = &conversation.messages()[0] else {
+                panic!("a user frame is what the history carried ({route})");
+            };
+            assert!(
+                matches!(
+                    &message.content[0],
+                    ContentBlock::QueuedCommand { command_mode: Some(mode), .. }
+                        if mode == "task-notification"
+                ),
+                "the notice is served as the block a view reads an ending from, not as text \
+                 ({route}): {:?}",
+                message.content[0],
+            );
+        }
     }
 
     /// A frame on a seat nothing has seeded is dropped rather than inventing
