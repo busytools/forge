@@ -55,8 +55,9 @@ pub struct Fleet {
     /// Where the workspace's store and the CLI's transcripts live, which a
     /// transcript fixture has to write into.
     config_dir: std::path::PathBuf,
-    /// Declared last so it drops after the store under it has closed, and
-    /// only set when the fleet made its own directory.
+    /// Declared last, so the directory goes after the store this fixture opened
+    /// under it has closed - unless a surface is cloned into something that
+    /// outlives the fleet, which unlinks the file while it is still open.
     owned_dir: Option<tempfile::TempDir>,
 }
 
