@@ -1394,9 +1394,8 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let bar_cells = bar_cells_for(width);
     let session_usage = app.session_usage();
     let ctx_pct_opt = session_usage.and_then(|u| u.context_usage_percent);
-    // An unreported usage is not a usage of zero. The size row below draws a
-    // dash for its own unknown, and an empty track beside a `0%` is
-    // indistinguishable from a session that has used nothing.
+    // An unreported usage is not a usage of zero: an empty track beside a `0%`
+    // reads as a session that has used nothing.
     let (ctx_bar, ctx_pct_str) = match ctx_pct_opt {
         Some(pct) => (bar_spans(f64::from(pct), bar_cells), format!("{pct:>3}%")),
         None => (vec![Span::raw(" ".repeat(bar_cells))], format!("{:>4}", '\u{2014}')),
@@ -1603,15 +1602,19 @@ fn push_usage_window_lines(
     auth: forge_workspace::AccountAuth,
 ) {
     let bar_cells = bar_cells_for(width);
-    let pct_value = window.map_or(0.0, |w| w.utilization);
     // A 0..=100 utilisation rounded for a 3-cell display field.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let pct_text = window.map_or_else(
         || "  \u{2014}%".to_owned(),
         |w| format!("{:>3}%", w.utilization.round() as i64),
     );
+    // A window nobody has reported draws no track: an empty one reads as zero.
+    let bar = match window {
+        Some(w) => bar_spans(w.utilization, bar_cells),
+        None => vec![Span::raw(" ".repeat(bar_cells))],
+    };
     let mut row = vec![Span::raw(" "), label_span(label, 3), Span::raw("  ")];
-    row.extend(bar_spans(pct_value, bar_cells));
+    row.extend(bar);
     row.push(Span::raw("  "));
     row.push(Span::raw(pct_text));
     lines.push(Line::from(row));
@@ -2252,12 +2255,101 @@ mod tests {
             !unknown.contains('\u{2591}'),
             "and no empty track, which reads as a bar at zero: {unknown:?}",
         );
+        // Blank, not merely "not an empty track": a FULL bar under the dash
+        // reads as a session at the top of its window and passes the line above.
+        let bar_cells = bar_cells_for(40);
+        assert!(
+            unknown.contains(&" ".repeat(bar_cells)),
+            "the bar is left blank where a reading would be: {unknown:?}",
+        );
 
         let mut app = App::test_default();
         app.session_usage_mut().expect("active session").context_usage_percent = Some(0);
         let zero = ctx_row(&app);
         assert!(zero.contains("0%"), "a real zero keeps its figure: {zero:?}");
         assert!(!zero.contains('\u{2014}'), "and does not draw the dash: {zero:?}");
+        // The two states draw one row, so the panel's right edge cannot move
+        // with the value - a figure format change that moved it would pass
+        // everything above.
+        assert_eq!(
+            unknown.chars().count(),
+            zero.chars().count(),
+            "the row is one width in both states: {unknown:?} against {zero:?}",
+        );
+    }
+
+    /// **A window nobody has reported is not a window at zero.** Its figure is
+    /// already a dash; the track was painted from a zero default, so the row
+    /// read as a window that has gone unused. The cap row states the rule the
+    /// other way round and the context row above follows it, which is what
+    /// makes this an oversight rather than a convention of its own.
+    #[test]
+    fn an_unreported_window_leaves_its_bar_blank() {
+        let row = window_row(&App::test_default(), "5h");
+
+        assert!(
+            row.contains("\u{2014}%"),
+            "an unreported window draws the dash in place of its figure, keeping the unit: {row:?}",
+        );
+        assert!(!row.contains("0%"), "and no zero: {row:?}");
+        assert!(
+            !row.contains('\u{2591}'),
+            "and no track, which reads as a window at zero: {row:?}",
+        );
+        assert!(
+            row.contains(&" ".repeat(bar_cells_for(40))),
+            "the bar is left blank where a reading would be: {row:?}",
+        );
+    }
+
+    #[test]
+    fn a_reported_window_keeps_its_bar_and_its_figure() {
+        let mut app = App::test_default();
+        app.usage_mut().expect("active session").snapshot =
+            Some(window_snapshot(Some(15.0), Some(89.0)));
+        let row = window_row(&app, "5h");
+
+        assert!(row.contains('\u{2593}'), "a reported window draws its bar: {row:?}");
+        assert!(row.contains("15%"), "and its figure: {row:?}");
+        assert!(!row.contains('\u{2014}'), "and no dash: {row:?}");
+    }
+
+    /// A window-billed snapshot, with the two windows a case asks for and
+    /// nothing else - the shape the gateway hands the panel.
+    fn window_snapshot(
+        five_hour: Option<f64>,
+        seven_day: Option<f64>,
+    ) -> crate::app::UsageSnapshot {
+        let window = |utilization: f64| crate::app::UsageWindow {
+            utilization,
+            resets_at: None,
+            reset_description: None,
+        };
+        crate::app::UsageSnapshot {
+            source: crate::app::UsageSourceKind::Oauth,
+            fetched_at: std::time::SystemTime::now(),
+            five_hour: five_hour.map(window),
+            seven_day: seven_day.map(window),
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            balance: None,
+            spend: None,
+        }
+    }
+
+    /** The panel's rows, at the width these cases render at. */
+    fn rows_at_width(app: &App) -> Vec<String> {
+        build_account_panel_lines(app, 40).iter().map(line_text).collect()
+    }
+
+    /** One window row - `" 5h"` or `" 7d"` - as the panel drew it. */
+    fn window_row(app: &App, label: &str) -> String {
+        let prefix = format!(" {label}");
+        rows_at_width(app)
+            .into_iter()
+            .find(|row| row.starts_with(&prefix))
+            .expect("the row renders")
     }
 
     #[test]
