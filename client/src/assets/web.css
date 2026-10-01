@@ -12,8 +12,8 @@
    sitting on it. `:focus-visible` rather than `:focus`, so a pointer press
    does not draw it while a Tab still does.
    A control that draws none owes a replacement: the composer's field is the
-   only one, and the box around it draws the accent along its own bottom edge
-   as the whole of that mark. */
+   only one, and the ring around it takes the accent while the keyboard is in
+   it, as the whole of that mark. */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
