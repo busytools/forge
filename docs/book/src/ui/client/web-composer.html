@@ -309,15 +309,10 @@
     padding: 7px 11px; font-family: var(--mono); font-size: var(--fs-data);
     color: var(--muted); white-space: pre-wrap; }
 
-  /* The held draft's own fields, which the panel draws because they are what the
-     approval is about. A key is a label on a value rather than a row of its own,
-     so it sits a step down from the value it names. */
-  .dock .body { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
-  .dock .body .r { display: flex; align-items: baseline; gap: 10px; padding: 6px 12px;
-    font-family: var(--mono); }
-  .dock .body .r .k { color: var(--dim); font-size: var(--fs-label); width: 104px; flex: none; }
-  .dock .body .r .v { color: var(--muted); font-size: var(--fs-data); overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; }
+  /* The held draft needs no component of its own: its head IS the terminal's own
+     line - Post or Reply, the workspace, the conversation and the thread - and the
+     panel line under it says where the decision lives. */
+
 </style>
 </head>
 <body>
@@ -890,19 +885,16 @@ whole thing.</p>
   <div class="lab">a held slack draft &middot; drawn here, approved in the terminal</div>
   <div class="dock">
     <div class="head"><span class="t">Reply in Slack</span>
-      <span class="q">Trust Machines &#183; #granite-staging-alerts</span></div>
-    <div class="body">
-      <div class="r"><span class="k">workspace</span><span class="v">Trust Machines</span></div>
-      <div class="r"><span class="k">conversation</span><span class="v">#granite-staging-alerts</span></div>
-      <div class="r"><span class="k">thread</span><span class="v">1758901234.482910</span></div>
-    </div>
+      <span class="q">Trust Machines &#183; granite-staging-alerts &#183; thread 1758901234.482910</span></div>
     <div class="sub">slack__post is waiting to send: approve it from the terminal, and the words
       land in your draft either way.</div>
   </div>
   <p class="note" style="margin:8px 0 0">The client draws the draft and <b>cannot answer it</b>.
-  The head names Post or Reply, the rows are the draft's own fields off the wire, and the panel
-  says where the decision lives - which is why there are no buttons here rather than buttons
-  nothing could honour.</p>
+  The head names Post or Reply and carries the thread, so nothing the draft sends is dropped, and
+  the panel says where the decision lives - which is why there are no buttons here rather than
+  buttons nothing could honour. <b>The label is Slack's own name for the conversation</b>, which
+  for a DM is the partner's user id; the terminal adds a <span class="mono">#</span> only when it
+  is not one, so that an id is never dressed as a channel.</p>
 </div>
 
 <script>
