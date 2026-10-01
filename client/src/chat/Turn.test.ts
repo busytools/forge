@@ -22,6 +22,31 @@ const compacting = (...messages: unknown[]): string =>
     props: { turn: { key: 't1', messages, live: false } as HeldTurn, cwd: null, compacting: true },
   }).body;
 
+/** The same turn as a page carried it, while the seat says a turn is running. */
+const seatRunning = (...messages: unknown[]): string =>
+  render(Turn, {
+    props: { turn: { key: 't1', messages, live: false, running: true } as HeldTurn, cwd: null },
+  }).body;
+
+/** One assistant message carrying prose and the counters of its own call. */
+const working = {
+  type: 'assistant',
+  uuid: 'a1',
+  timestamp: '2026-10-01T06:00:00Z',
+  message: {
+    id: 'm1',
+    role: 'assistant',
+    model: 'claude-opus-5',
+    content: [{ type: 'text', text: 'working' }],
+    usage: {
+      input_tokens: 100,
+      output_tokens: 20,
+      cache_read_input_tokens: 1000,
+      cache_creation_input_tokens: 0,
+    },
+  },
+};
+
 const prompt = (text: string): unknown => ({
   type: 'user',
   message: { role: 'user', content: [{ type: 'text', text }] },
@@ -139,24 +164,6 @@ describe('one turn, as the page draws it', () => {
     // cannot be inferred from the frames - a saved page carries no result
     // frame either - so the caller's fact is the only carrier, and this pins
     // that it is passed.
-    const working = {
-      type: 'assistant',
-      uuid: 'a1',
-      timestamp: '2026-10-01T06:00:00Z',
-      message: {
-        id: 'm1',
-        role: 'assistant',
-        model: 'claude-opus-5',
-        content: [{ type: 'text', text: 'working' }],
-        usage: {
-          input_tokens: 100,
-          output_tokens: 20,
-          cache_read_input_tokens: 1000,
-          cache_creation_input_tokens: 0,
-        },
-      },
-    };
-
     const running = between(live(working), '<details class="turninfo"', '</details>');
     expect(running, 'a ring, not a settled check').toContain('class="ring"');
     expect(running, 'the figures the frames carry').toContain('100\u{2191}');
@@ -168,6 +175,17 @@ describe('one turn, as the page draws it', () => {
     expect(draw(working), 'the same frames read as a page draw no row at all').not.toContain(
       'turninfo',
     );
+  });
+
+  it('draws the running row for a turn the seat says is running', () => {
+    // The other carrier of the same fact, and it is a different one: a turn the
+    // client reached mid-flight has its row from a page, so `running` is what
+    // reaches the fold - and a live turn written over it would be one turn in
+    // two. The row draws the bar from it exactly as it does for `live`.
+    const running = between(seatRunning(working), '<details class="turninfo"', '</details>');
+    expect(running, 'a ring, not a settled check').toContain('class="ring"');
+    expect(running, 'the figures the frames carry').toContain('100\u{2191}');
+    expect(running, 'the thinking count beside them').toContain('thinking');
   });
 
   it('draws the runs the fold cut, rather than regrouping what it holds', () => {

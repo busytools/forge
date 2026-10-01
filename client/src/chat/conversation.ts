@@ -23,7 +23,7 @@
 
 import { get, writable, type Readable } from 'svelte/store';
 
-import { MORE_TURNS, slotOf } from '../protocol';
+import { MORE_TURNS, slotOf, subjectKey } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
@@ -49,6 +49,16 @@ export interface Turn {
    */
   live: boolean;
   /**
+   * The newest row of a conversation whose seat has a turn in flight.
+   *
+   * A second fact beside `live`, and it is kept current rather than
+   * stamped: the core says whether a turn is running and a page read while one
+   * is carries no `result` frame to say it, so a newer answer has to be able to
+   * take this back. `live` cannot carry it, since a turn the frames built stays
+   * live for good.
+   */
+  running?: boolean;
+  /**
    * The names a page knows this turn by, when it settled one the frames built.
    *
    * A live turn keeps the name its row already had - a list keys its rows by
@@ -57,6 +67,36 @@ export interface Turn {
    * the turn under it, finds this row rather than drawing a second.
    */
   also?: string[];
+}
+
+/** Whether a turn's own frames carry the frame it ends on - a result, or the CLI giving up. */
+function carriesResult(messages: unknown[]): boolean {
+  return messages.some((message) => {
+    const type = (message as { type?: unknown } | null)?.type;
+    return type === 'result' || type === 'error';
+  });
+}
+
+/** Whether a seat's own record says a turn is in flight. */
+function runningOf(data: unknown): boolean {
+  const header = (data as { header?: { turn_in_flight?: unknown } } | null)?.header;
+  return header?.turn_in_flight === true;
+}
+
+/**
+ * The seat's in-flight answer after one frame.
+ *
+ * The same rule the record folds (`apply.ts`'s `inFlightOf`), with one frame
+ * more: the `error` the CLI gives up with ends a turn, and the record's copy
+ * has no arm for it, so a turn that died would stay in flight there. Which copy
+ * governs is settled by that frame being a real end; the record's is the stale
+ * one.
+ */
+function movedRunning(held: boolean, message: unknown): boolean {
+  const type = (message as { type?: unknown } | null)?.type;
+  if (type === 'result' || type === 'error') return false;
+  if (type === 'system' && (message as { subtype?: unknown }).subtype === 'init') return true;
+  return held;
 }
 
 /** What the chat draws from. */
@@ -285,10 +325,71 @@ export class Chat {
   private abandoned = 0;
   /** What `start` has to undo, and `null` while the chat is stopped. */
   private running: (() => void) | null = null;
+  /** This seat's subject key, which is how a snapshot is known to be its own. */
+  private readonly key: string;
+  /**
+   * Whether the core says a turn is running on this seat, kept current from the
+   * seat's own snapshots and the frames: `header.turn_in_flight` is the core's
+   * answer, and a page read while one runs carries no `result` frame to say so.
+   */
+  private turnRunning = false;
 
   constructor(connection: Connection, slot: SessionSlot) {
     this.connection = connection;
     this.slot = slot;
+    this.key = subjectKey({ session: slot });
+  }
+
+  /**
+   * The core's answer moved, so the newest row may have.
+   *
+   * **Re-answered rather than stamped.** A page read while a turn runs ends on
+   * the turn being written and carries no `result` frame for it, so the row
+   * cannot say it alone - and an answer only ever attached at ingest could
+   * never be taken back, leaving a running bar on a turn that ended.
+   */
+  private heard(running: boolean): void {
+    if (running === this.turnRunning) return;
+    this.turnRunning = running;
+    this.inner.update((held) => this.answered(held));
+  }
+
+  /**
+   * The seat's own store, which is how a seat already visited answers.
+   *
+   * A return subscribes nothing - the subscription is the client's, kept for
+   * the life of the connection - so no fresh answer is on its way, and what the
+   * store holds is its last snapshot stepped by every frame since.
+   */
+  private heldRunning(): boolean {
+    const store = this.connection.store({ session: this.slot });
+    if (store === undefined) return this.turnRunning;
+    const snapshot = store.snapshot();
+    let held = snapshot === null ? this.turnRunning : runningOf(snapshot);
+    // **A dropped tail is not replayed.** The store caps its updates and takes
+    // the OLDEST off the front, and the `init` that opens a turn is the front of
+    // it - so replaying an incomplete tail can miss the frame that opened the
+    // turn and answer from a snapshot the frames since have left behind. The
+    // snapshot's own answer is the honest one there.
+    if (store.dropped() > 0) return held;
+    for (const update of store.updates()) {
+      const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
+      if (message !== undefined) held = movedRunning(held, message);
+    }
+    return held;
+  }
+
+  /** The newest row carries the running row while the core says a turn is running. */
+  private answered(held: Conversation): Conversation {
+    const last = held.turns.length - 1;
+    let changed = false;
+    const turns = held.turns.map((turn, at) => {
+      const wanted = at === last && this.turnRunning && !carriesResult(turn.messages);
+      if ((turn.running === true) === wanted) return turn;
+      changed = true;
+      return { ...turn, running: wanted };
+    });
+    return changed ? { ...held, turns } : held;
   }
 
   /** The conversation, for a component to draw. */
@@ -312,6 +413,9 @@ export class Chat {
    */
   start(): () => void {
     if (this.running !== null) return this.running;
+    // Where the seat already is, for a seat a visit has answered before: a
+    // return subscribes nothing, so nothing else would say.
+    this.heard(this.heldRunning());
     const stopMessages = this.connection.onMessage((message: ServerMessage) =>
       this.receive(message),
     );
@@ -409,6 +513,12 @@ export class Chat {
         this.inFlight = null;
         this.abandoned = 0;
         this.inner.update((held) => ({ ...held, refused: message.why, loaded: true }));
+        return;
+      case 'snapshot':
+        // The seat's own record, which is where the core's answer for a turn in
+        // flight crosses: a page can be taken before this lands - `more` is
+        // asked first - so it is read here rather than at the page.
+        if (subjectKey(message.subject) === this.key) this.heard(runningOf(message.data));
         return;
       case 'update':
         this.takeUpdate(message.update);
@@ -556,13 +666,25 @@ export class Chat {
       // held under the name its row already had, and the copy the page carried
       // is the same turn rather than another row to keep beside it.
       const inPage = new Set(drawn.flatMap((turn) => [turn.key, ...(turn.also ?? [])]));
-      const rest = held.turns.filter((turn) => !turn.live && !inPage.has(turn.key));
-      // A live turn no row of this page shares a frame with is one the page
-      // cannot be an account of - a page of OLDER turns, or one serialized
-      // before those frames landed - and it is kept: dropping it there leaves
-      // the reader's own words nowhere, with nothing asking for them again.
-      const loose = held.turns.filter((turn) => turn.live && !replaced.has(turn));
-      return {
+      // A row being written is not the page's to drop either way: `live` is a
+      // turn the frames built, and `running` is the newest row of a seat the
+      // core says has a turn in flight.
+      const rest = held.turns.filter(
+        (turn) => !(turn.live || turn.running === true) && !inPage.has(turn.key),
+      );
+      // A turn being written that no row of this page accounts for is kept - a
+      // page of OLDER turns, or one serialized before those frames landed -
+      // because dropping it leaves the reader's own words nowhere, with nothing
+      // asking for them again.
+      //
+      // **A row the page DID account for goes with it, by key**, which is what
+      // the page's own names cover: a row the core says is running but the
+      // frames did not build would otherwise be drawn beside its own repeat,
+      // under one key - which a keyed list throws on.
+      const loose = held.turns.filter(
+        (turn) => (turn.live || turn.running === true) && !inPage.has(turn.key),
+      );
+      return this.answered({
         ...held,
         loaded: true,
         // A page that lands is the ask the refusal spoke for, answered - the
@@ -578,7 +700,7 @@ export class Chat {
         prepends: held.prepends + (direction === 'older' ? 1 : 0),
         turns:
           direction === 'older' ? [...drawn, ...rest, ...loose] : [...rest, ...drawn, ...loose],
-      };
+      });
     });
   }
 
@@ -593,6 +715,9 @@ export class Chat {
   private replaced(): void {
     if (this.inFlight !== null) this.abandoned += 1;
     this.inFlight = null;
+    // The occupant that left took its answer with it, and nothing about the new
+    // one is known until its own record or frames say.
+    this.turnRunning = false;
     this.inner.set(NOTHING);
     this.ask(null);
   }
@@ -604,6 +729,9 @@ export class Chat {
     if (variant === 'chat_appended') {
       const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
       if (message === undefined) return;
+      // Stepped BEFORE the row is written, so a row that opens or grows answers
+      // from the new state rather than the one before the frame.
+      this.turnRunning = movedRunning(this.turnRunning, message);
       this.append(message);
       return;
     }
@@ -616,6 +744,7 @@ export class Chat {
     // A turn that has settled is the server's fold's to draw, and the frames
     // that drew it were only ever a stand-in for it.
     if (variant === 'turn_complete' || variant === 'turn_cancelled' || variant === 'turn_error') {
+      this.heard(false);
       this.refresh();
     }
   }
@@ -667,22 +796,32 @@ export class Chat {
       // server's own rule, so everything else joins the turn it arrived in,
       // settled or not. A frame arriving with no turn at all is held nowhere,
       // which loses nothing - a page carries a turn's messages from its first.
+      //
+      // A row the core says is running is that turn too, whichever way the
+      // client learned it: a seat reached mid-turn has its row from a page, and
+      // a frame that opened a second row beside it would be one turn in two.
       const opens =
-        draws && !isSystem(message) && (last === undefined || opensATurn(message) || !last.live);
+        draws &&
+        !isSystem(message) &&
+        (last === undefined || opensATurn(message) || !(last.live || last.running === true));
       if (!opens) {
         if (last === undefined) return held;
         const grown: Turn = { ...last, messages: [...last.messages, message] };
-        return { ...held, following: follow, turns: [...held.turns.slice(0, -1), grown] };
+        return this.answered({
+          ...held,
+          following: follow,
+          turns: [...held.turns.slice(0, -1), grown],
+        });
       }
       const taken = new Set(held.turns.map((turn) => turn.key));
       const key = nameIn({ key: liveName(message, held.turns.length), messages: [message] }, taken);
       // Every turn above it is the object it was: only the row that grew is
       // rebuilt, so growing one turn does not re-render the conversation.
-      return {
+      return this.answered({
         ...held,
         following: follow,
         turns: [...held.turns, { key, messages: [message], live: true }],
-      };
+      });
     });
   }
 }

@@ -1010,6 +1010,221 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
     );
 }
 
+/// The frame name a view reads a seat's stream by: its type, and for a
+/// `system` frame the subtype that says which one it is.
+fn frame_name(msg: &forge_primitives::Message) -> String {
+    match msg {
+        forge_primitives::Message::System { subtype, .. } => format!("system/{subtype}"),
+        forge_primitives::Message::ThinkingTokens { .. } => "system/thinking_tokens".to_owned(),
+        forge_primitives::Message::Assistant { .. } => "assistant".to_owned(),
+        forge_primitives::Message::User { .. } => "user".to_owned(),
+        forge_primitives::Message::Result { .. } => "result".to_owned(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// One turn that thinks, frame by frame, as the CLI sends it.
+///
+/// The shapes, the order and the deltas are the 2.1.280 baseline's
+/// (`permission_deny`): a thinking block's four counters land before the
+/// message that carries the thought.
+fn a_thinking_turn() -> Vec<(&'static str, serde_json::Value)> {
+    vec![
+        (
+            "system/init",
+            serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s",
+                "model": "claude-opus-5",
+            }),
+        ),
+        (
+            "system/thinking_tokens",
+            serde_json::json!({
+                "type": "system",
+                "subtype": "thinking_tokens",
+                "estimated_tokens": 50,
+                "estimated_tokens_delta": 50,
+                "uuid": "t1",
+                "session_id": "s",
+            }),
+        ),
+        (
+            "system/thinking_tokens",
+            serde_json::json!({
+                "type": "system",
+                "subtype": "thinking_tokens",
+                "estimated_tokens": 100,
+                "estimated_tokens_delta": 50,
+                "uuid": "t2",
+                "session_id": "s",
+            }),
+        ),
+        (
+            "system/thinking_tokens",
+            serde_json::json!({
+                "type": "system",
+                "subtype": "thinking_tokens",
+                "estimated_tokens": 150,
+                "estimated_tokens_delta": 50,
+                "uuid": "t3",
+                "session_id": "s",
+            }),
+        ),
+        (
+            "system/thinking_tokens",
+            serde_json::json!({
+                "type": "system",
+                "subtype": "thinking_tokens",
+                "estimated_tokens": 243,
+                "estimated_tokens_delta": 93,
+                "uuid": "t4",
+                "session_id": "s",
+            }),
+        ),
+        (
+            "assistant",
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "a1",
+                "session_id": "s",
+                "message": {
+                    "id": "m1",
+                    "role": "assistant",
+                    "model": "claude-opus-5",
+                    "content": [{ "type": "thinking", "thinking": "weighing the two paths" }],
+                },
+            }),
+        ),
+        (
+            "assistant",
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "a2",
+                "session_id": "s",
+                "message": {
+                    "id": "m2",
+                    "role": "assistant",
+                    "model": "claude-opus-5",
+                    "content": [{ "type": "text", "text": "here is the answer" }],
+                },
+            }),
+        ),
+        (
+            "result",
+            serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "uuid": "r1",
+                "session_id": "s",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "num_turns": 1,
+            }),
+        ),
+    ]
+}
+
+/// A turn that thinks reaches a client watching its seat, frame for frame.
+///
+/// **The instrument is the socket, and the answer is the pair of counts.**
+/// The terminal draws its thinking bar - a running row carrying the spinner,
+/// the elapsed clock and `thinking N` - from the frames the CLI sends, and a
+/// client watching the same seat has to be sent the same set: the terminal
+/// and the client read one stream up to the connection's own filter, so the
+/// only way the terminal can hold a frame the client does not is that filter,
+/// and the only way the client can hold it and draw nothing is the client.
+/// `seen` against `sent` is the denominator, and the second socket is the
+/// control that says the count can come back short: it hears the barrier
+/// every subscriber hears and none of the turn.
+#[tokio::test]
+async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
+    let (url, fleet) = a_server().await;
+
+    let mut watched = connect(&url).await;
+    // The subjects a session page's own connection watches: the shell holds
+    // the home for its whole life, and the page holds the seat it draws.
+    send(&mut watched, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
+    snapshot_answering(&mut watched).await;
+    send(
+        &mut watched,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    snapshot_answering(&mut watched).await;
+
+    // The control: a connection that watches the home and no seat. The
+    // fleet's classification is what keeps the conversation off this
+    // subscription, so the same reads that count `watched`'s frames must
+    // count none here - a check that could not come back empty would prove
+    // nothing about the count it makes.
+    let mut home_only = connect(&url).await;
+    send(&mut home_only, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
+    snapshot_answering(&mut home_only).await;
+
+    let turn = a_thinking_turn();
+    let sent: Vec<&str> = turn.iter().map(|(name, _)| *name).collect();
+    for (_, value) in turn {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: lead_seat(),
+            msg: serde_json::from_value(value).expect("parse a frame of the turn"),
+            origin: None,
+        });
+    }
+    // A barrier: every subscriber hears this one, so a read that stops on it
+    // has read everything the turn put ahead of it. The evidence is ORDER,
+    // never a timeout - waiting for a frame NOT to arrive would hang on the
+    // correct behaviour, and would read a dropped frame as a pass.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+
+    let mut seen: Vec<String> = Vec::new();
+    loop {
+        match next_server(&mut watched).await {
+            ServerMessage::Update { update } => match *update {
+                SessionUpdate::ChatAppended { key, msg, .. } => {
+                    assert_eq!(key, lead_seat(), "another seat's frame reached this one");
+                    seen.push(frame_name(&msg));
+                }
+                SessionUpdate::TurnCancelled { .. } => break,
+                _ => {}
+            },
+            other => panic!("a seat's subscription carries updates, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        seen,
+        sent,
+        "frames seen ({}) against frames sent ({}): the socket is the instrument, and \
+         a short read here is the server dropping a frame the terminal draws",
+        seen.len(),
+        sent.len(),
+    );
+
+    let mut leaked: Vec<String> = Vec::new();
+    loop {
+        match next_server(&mut home_only).await {
+            ServerMessage::Update { update } => match *update {
+                SessionUpdate::ChatAppended { msg, .. } => leaked.push(frame_name(&msg)),
+                SessionUpdate::TurnCancelled { .. } => break,
+                _ => {}
+            },
+            other => panic!("a home subscription carries updates, got {other:?}"),
+        }
+    }
+    // The turn's own words never reach a home: its rows state a seat's
+    // lifecycle and no row shows a word of its conversation. The result is
+    // the one frame that does, and it is a row's news - the completion a
+    // page not showing the seat draws a diamond for - so the control is that
+    // it arrives ALONE, with every frame that carries the bar not behind it.
+    assert_eq!(
+        leaked,
+        vec!["result"],
+        "a home-only subscription hears the completion and none of the turn: {leaked:?}",
+    );
+}
+
 /// A send the core refuses draws nothing, in any view.
 ///
 /// It never reached a model, so there is no turn to draw. Drawing it anyway

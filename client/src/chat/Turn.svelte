@@ -32,10 +32,11 @@
     compacting = false,
   }: { turn: HeldTurn; cwd: string | null; slot?: Self | null; compacting?: boolean } = $props();
 
-  // `turn.live` is the caller's fact the fold cannot read off the frames: a
-  // saved page carries no result frame either. It is what a running row
-  // needs.
-  const units = $derived(fold(turn.messages, cwd, slot, turn.live));
+  // Whether the turn is still being written, which the fold cannot read off the
+  // frames: a page carries no result frame for a turn that has not ended.
+  // `live` is a turn the frames built and `running` is the seat's own answer,
+  // which the turn's end or a later page can take back.
+  const units = $derived(fold(turn.messages, cwd, slot, turn.live || turn.running === true));
 
   /** A reader's own words on their own, or a run of everything else in one block. */
   type Block =
