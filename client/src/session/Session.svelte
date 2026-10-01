@@ -8,7 +8,13 @@
   import Rail from './Rail.svelte';
   import SessionId from './SessionId.svelte';
   import { watchSession, type SessionRead } from './live';
-  import { headerFacts, seatState, type ComposerProps, type ConversationProps } from './view';
+  import {
+    compactionFigure,
+    headerFacts,
+    seatState,
+    type ComposerProps,
+    type ConversationProps,
+  } from './view';
   import type { SessionRecord } from './wire';
 
   /**
@@ -56,6 +62,12 @@
   const record: SessionRecord | null = $derived(read.wire);
   const seat = $derived(seatState(wire, slot));
   const facts = $derived(record === null ? null : headerFacts(record.header));
+  // Beside the context figure, which is the row the terminal draws it on: the
+  // count belongs to the conversation and not to the header, and the row is
+  // where a reader looks for it.
+  const compactions = $derived(
+    record === null ? null : compactionFigure(record.conversation.compaction_count),
+  );
 
   /**
    * Whether each rail is shown, and the two widths a rail stops being a
@@ -197,6 +209,10 @@
             {/if}
             <span class="v">{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span>
           </span>
+          {#if compactions !== null}
+            <span class="sep">{'\u{b7}'}</span>
+            <span>{compactions}</span>
+          {/if}
         {/if}
       </span>
     </div>

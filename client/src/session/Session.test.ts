@@ -209,6 +209,26 @@ function body(selector: string): string {
 }
 
 /**
+ * Every rule the sheet writes whose selector marks a shown row's mark.
+ *
+ * **The whole set, not one selector's text.** The mark is a declaration
+ * somewhere in this set, so a guard pinned to a single rule stays green while a
+ * second rule reintroduces the defect - which is exactly what a new selection
+ * rule is. Read from selectors written on one line, which is how this sheet
+ * writes every one of them; a rule wrapped across lines would escape the scan,
+ * so wrap none.
+ */
+function shownMarkRules(): { selector: string; declares: string }[] {
+  const rules: { selector: string; declares: string }[] = [];
+  for (const match of sheet.matchAll(/^([^\n{}]*\.on[^\n{}]*)\{([^}]*)\}/gm)) {
+    const selector = (match[1] ?? '').trim();
+    if (!selector.includes('.dot')) continue;
+    rules.push({ selector, declares: match[2] ?? '' });
+  }
+  return rules;
+}
+
+/**
  * The rows a `grid-template-rows` value declares: `minmax(0, 1fr) auto` is two.
  * A `repeat()` counts as the single value it is written as, which reads one
  * row short - enough to miss a defect, never enough to fail a sound sheet.
@@ -363,9 +383,52 @@ describe('the rail footer as the sheet lays it out', () => {
    */
   it('leaves the project row unboxed and untinted, marking the row instead', () => {
     expect(body('.pj.cur'), 'the project box and its tint are back').toBe('');
-    expect(body('.pr.on .dot, .wk.on .dot'), 'the active row carries no accent').toContain(
-      'var(--accent)',
-    );
+    const marked = shownMarkRules()
+      .map((rule) => rule.declares)
+      .join(' ');
+    expect(marked, 'the active row carries no accent').toContain('var(--accent)');
+  });
+
+  /**
+   * **A mark's shape is the state; selection may only recolour it.** A running
+   * seat draws the loader and an idle one draws a solid disc, so a fill on the
+   * shown row's mark makes a working seat read as one at rest. The plausible
+   * change this catches is the one that wrote such a fill in the first place:
+   * reaching for more prominence on the shown row.
+   */
+  it('reshapes no mark on the shown row', () => {
+    const rules = shownMarkRules();
+    expect(rules.length, 'no rule marks the shown row at all').toBeGreaterThan(0);
+    for (const { selector, declares } of rules) {
+      expect(
+        declares,
+        `${selector} reshapes the mark, which erases the state the mark carries`,
+      ).not.toMatch(
+        /(^|[;\s])(background(-color)?|clip-path|border-radius|border-width|width|height|flex):/,
+      );
+    }
+  });
+
+  /**
+   * **The arc is the running state, so selection may not flatten it.** A
+   * running mark's ring carries one bright side and a faint track, and an
+   * asleep one is a plain ring; colouring all four sides alike drew a shown
+   * running seat exactly as a shown asleep one, identical under reduced motion
+   * where the spin is not there to separate them either. So the shown row
+   * brightens the track and states the arc at the accent.
+   */
+  it("keeps the shown row's arc above the track it raises", () => {
+    const rules = shownMarkRules();
+    const arcs = rules.filter((rule) => /(^|[;\s])border-top-color:/.test(rule.declares));
+    expect(
+      arcs.length,
+      'the shown row colours every side alike, so a running mark draws as an asleep one',
+    ).toBeGreaterThan(0);
+    for (const { selector, declares } of arcs) {
+      expect(declares, `${selector} darkens the running mark's arc`).toContain(
+        'border-top-color: var(--accent)',
+      );
+    }
   });
 
   /**

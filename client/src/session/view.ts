@@ -360,6 +360,20 @@ export function headerFacts(header: SessionHeader): Facts {
 }
 
 /**
+ * The compaction figure the header draws beside the context bar, or `null` when
+ * the session has nothing to say.
+ *
+ * **The count is the conversation's, not the header's**: a boundary is a
+ * `compact_boundary` row in the transcript, so it rides `conversation` on the
+ * record. `null` at zero is the terminal's rule - a `0 compactions` on every
+ * fresh session is noise on a row that already carries five facts.
+ */
+export function compactionFigure(count: number): string | null {
+  if (count === 0) return null;
+  return count === 1 ? '1 compaction' : `${count} compactions`;
+}
+
+/**
  * What the copy control's click did, or what stands in the way of one.
  *
  * `no-clipboard` and `failed` are the two failures kept apart because they are
