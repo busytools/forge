@@ -220,7 +220,7 @@ describe('the palette', () => {
    */
   it('finds a pair drawn past its ceiling', () => {
     expect(
-      outOfBand([['--text', '--bg', TEXT, 12]], rootTokens(null)),
+      outOfBand([['--text', '--bg', TEXT, 12]], { '--text': '#eaeef6', '--bg': '#04050a' }),
       'prose against a ceiling under its own value',
     ).toHaveLength(1);
   });
