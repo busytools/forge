@@ -518,8 +518,10 @@ describe('the key', () => {
    * jsdom reports no platform, so the box takes the non-mac substitution: the
    * right Control key is what Cmd's equivalent is where there is no Cmd.
    */
-  function key(code: string, kind: 'keydown' | 'keyup'): void {
-    window.dispatchEvent(new KeyboardEvent(kind, { code, bubbles: true, cancelable: true }));
+  function key(code: string, kind: 'keydown' | 'keyup', repeat = false): void {
+    window.dispatchEvent(
+      new KeyboardEvent(kind, { code, repeat, bubbles: true, cancelable: true }),
+    );
     flushSync();
   }
 
@@ -702,6 +704,25 @@ describe('the key', () => {
       },
     ]);
     expect(document.querySelector('.ac'), 'and the list stands').not.toBeNull();
+  });
+
+  /**
+   * A held key repeats, and the terminal treats every repeat as carrying no
+   * instruction. Without the same here a toggle take stops once per repeat:
+   * one stopping press and two repeats gave three stops for one keypress.
+   */
+  it('ignores a key repeat rather than stopping once per repeat', () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'toggle', take());
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    key('ControlRight', 'keydown', true);
+    key('ControlRight', 'keydown', true);
+
+    expect(harness.sent, 'one press asks for one stop, however long the key is held').toHaveLength(
+      1,
+    );
   });
 
   it('abandons once when the dock holds both the take and the keyboard', () => {

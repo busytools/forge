@@ -309,6 +309,9 @@
   $effect(() => {
     if (!dictation) return;
     const onDown = (event: KeyboardEvent): void => {
+      // A held key repeats, and a repeat carries no instruction - which is the
+      // terminal's own rule, and without it a toggle take stops once per repeat.
+      if (event.repeat) return;
       if (event.key === 'Escape') {
         // A live take consumes Esc, which is the terminal's rule: the surfaces
         // under it never see the key, so one press is one command and the list
