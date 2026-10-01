@@ -34,9 +34,19 @@ import type { ToolLeaf } from './leaves';
  */
 const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 
-/** Where the page puts a conversation fragment: the containers it hangs in. */
-const inPage = (fragment: string): string =>
-  `<div class="conv"><div class="turn"><div class="work">${fragment}</div></div></div>`;
+/**
+ * Where the page puts a conversation fragment: the containers it hangs in, as
+ * `Session.svelte`, `Chat.svelte` and `Turn.svelte` mount them.
+ *
+ * **The two unclassed wrappers between `.conv` and `.turn` are `virtua`'s**, so
+ * a fixture without them matches a child combinator the page cannot:
+ * `.conv > .turn .dif .ln.a .l` would red a rule that changes nothing real.
+ * `turn` is the block the fragment sits in - the work a turn did, or the
+ * reader's own message, which mounts its prose under `.mine`.
+ */
+const inPage = (fragment: string, turn: 'work' | 'mine' = 'work'): string =>
+  `<div class="app"><main class="chat"><div class="conv"><div><div class="turn">` +
+  `<div class="${turn}">${fragment}</div></div></div></div></main></div>`;
 
 /** A call carrying a diff and a command's own output, as the fold hands it over. */
 const CALL = inPage(
@@ -71,6 +81,12 @@ const PROSE = inPage(
       text: 'A paragraph with one_long_token_inside_it.\n\n| a | b |\n| - | - |\n| c | d |',
     },
   }).body,
+);
+
+/** The same, in the reader's own message, which `Turn.svelte` mounts `.mine`. */
+const MINE = inPage(
+  render(Prose, { props: { text: 'A paragraph with one_long_token_inside_it.' } }).body,
+  'mine',
 );
 
 /**
@@ -199,17 +215,25 @@ describe('a long line in the conversation', () => {
     // or a URL in a sentence would take the conversation sideways on its own.
     // The paragraph declares nothing: `overflow-wrap` inherits, so the block is
     // the element that has to carry it, and the paragraph is the element that
-    // has to leave it alone.
-    const paragraph = declarationsFor(PROSE, '.prose p');
-    const block = declarationsFor(PROSE, '.prose');
+    // has to leave it alone. Both of a turn's prose blocks, because they hang
+    // in different containers - the work under `.work`, the reader's own under
+    // `.mine` - and a rule scoped to either one is a rule about one of them.
+    for (const [where, html] of [
+      ['the work a turn did', PROSE],
+      ["the reader's own message", MINE],
+    ] as const) {
+      const paragraph = declarationsFor(html, '.prose p');
+      const block = declarationsFor(html, '.prose');
 
-    expect(
-      valuesOf(paragraph, 'overflow-wrap'),
-      'the paragraph declares nothing of its own',
-    ).toEqual([]);
-    expect(valuesOf(block, 'overflow-wrap'), 'and inherits the break from the block').toEqual([
-      'anywhere',
-    ]);
+      expect(
+        valuesOf(paragraph, 'overflow-wrap'),
+        `${where}: the paragraph declares nothing of its own`,
+      ).toEqual([]);
+      expect(
+        valuesOf(block, 'overflow-wrap'),
+        `${where}: and inherits the break from the block`,
+      ).toEqual(['anywhere']);
+    }
   });
 
   it('leaves a table header its own word, so no column can slice one', () => {
