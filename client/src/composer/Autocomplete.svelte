@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Icon from '../components/Icon.svelte';
-  import { HEADINGS, LIST_ID, mark, rowId, type Offer } from './autocomplete';
+  import { HEADINGS, LIST_ID, keptInView, mark, rowId, type Offer } from './autocomplete';
 
   let {
     offer,
@@ -14,6 +16,38 @@
   } = $props();
 
   const heading = $derived(HEADINGS[offer.kind]);
+  /** The window the rows scroll in, which a key move has to follow. */
+  let rows = $state<HTMLDivElement | null>(null);
+  /**
+   * Which list is open: its kind, its query and how many rows matched, since a
+   * frame can carry a fresh offer object with none of the three moved. A
+   * rebuild that changes none of them - a reorder that keeps the count - is
+   * left where the reader scrolled it.
+   */
+  const list = $derived(`${offer.kind} ${offer.query} ${offer.total}`);
+
+  /**
+   * Bring the marked row onto the edge it crossed, which a key move or a query
+   * that rebuilds the list under it can do.
+   */
+  $effect(() => {
+    const at = marked;
+    // Read for the dependency alone: rows are rebuilt under a mark whose own
+    // index never moved, which leaves it off screen with nothing to notice it.
+    void list;
+    untrack(() => {
+      if (rows === null) return;
+      const row = rows.querySelector(`#${rowId(offer, at)}`);
+      if (!(row instanceof HTMLElement)) return;
+      const frame = rows.getBoundingClientRect();
+      const placed = row.getBoundingClientRect();
+      rows.scrollTop = keptInView(
+        { top: placed.top - frame.top, bottom: placed.bottom - frame.top },
+        rows.clientHeight,
+        rows.scrollTop,
+      );
+    });
+  });
 </script>
 
 <div class="ac">
@@ -31,6 +65,7 @@
     aria-label={heading.title}
     tabindex="-1"
     aria-activedescendant={rowId(offer, marked)}
+    bind:this={rows}
   >
     <!-- One group per heading, which is the shape a listbox's groups take: an
          unlabelled one when the list heads nothing, which is every list but

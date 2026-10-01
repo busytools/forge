@@ -327,3 +327,21 @@ export function mark(text: string, query: string): { before: string; hit: string
   const end = at + query.length;
   return { before: text.slice(0, at), hit: text.slice(at, end), after: text.slice(end) };
 }
+
+/**
+ * The offset that keeps a marked row inside its window and moves it no further:
+ * the terminal's own rule, whose picker windows the list around the mark
+ * (`DialogState::clamp` in `crates/forge-tui`).
+ *
+ * `row` is where the row sits in the window: the rectangle's own edges less the
+ * window's top.
+ */
+export function keptInView(
+  row: { top: number; bottom: number },
+  height: number,
+  scrollTop: number,
+): number {
+  if (row.top < 0) return scrollTop + row.top;
+  if (row.bottom > height) return scrollTop + row.bottom - height;
+  return scrollTop;
+}
