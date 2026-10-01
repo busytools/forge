@@ -776,8 +776,9 @@ mod tests {
     ///
     /// No shipped capture repeats a message id with differing usage (0 of the
     /// 93 repeat frames), so nothing in the data says which frame should win
-    /// when one does. Pinned because the client's fold copies this rule: a
-    /// tiebreak only one side changes is a divergence no capture would show.
+    /// when one does. The client's fold copies this rule and keys by message
+    /// id the same way, so the tiebreak has to be a decision both sides share
+    /// rather than one this file makes alone.
     #[test]
     fn a_repeated_id_overwrites_rather_than_adding() {
         let mut turn = LiveTurn::default();
