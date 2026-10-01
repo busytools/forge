@@ -22,12 +22,13 @@
 //! is applied to what the replay left. Two producers is what made the earlier
 //! design race with itself; there is one here.
 //!
-//! Nothing drops messages from the front. A page cursor is a message index,
-//! so a prefix dropped under a client holding one would answer the wrong
-//! window silently - and a conversation is not a cache, so it cannot be let
-//! go and rebuilt: the seat's copy here is released when nobody is showing
-//! it, and the next ask takes a replay from the session task, which is the
-//! one producer and holds its own copy for the seat's life.
+//! **Nothing is released, and nothing drops messages from the front.** A page
+//! cursor is a message index, so a prefix dropped under a client holding one
+//! would answer the wrong window silently; and a held copy let go is rebuilt
+//! from a replay, which the session task answers out of its own stream - so a
+//! frame forge itself forged, which never passes through that stream, would
+//! be discarded with it. The seat's copy is therefore kept for the seat's
+//! life, and the memory is one conversation per seat that has ever connected.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -110,6 +111,12 @@ impl Conversation {
     /// a render there stalls every seat rather than this one.
     pub fn seed(&mut self, messages: Vec<Message>, compaction_count: u32) {
         self.messages = messages;
+        // **The spans go with the messages they describe.** `messages` and
+        // `spans` are one value in two fields - the spans name a prefix of
+        // the messages - and a reader that saw the new list under the old
+        // boundaries would slice off the end of it. Clearing them makes the
+        // pair consistent at every instant; the fold rebuilds them.
+        self.spans.clear();
         self.compaction_count = compaction_count;
         self.has_dispatches = self.messages.iter().any(is_dispatch);
         self.dirty = true;
@@ -219,28 +226,101 @@ impl Held {
         conversation
     }
 
+    /// Put a fold's result back and wake every reader waiting on it.
+    fn install(&self, messages: Vec<Message>, spans: Vec<TurnSpan>) {
+        let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
+        conversation.merge_fold(messages, spans);
+        self.folded.notify_all();
+    }
+
+    /// Fold if needed, then read, retrying once if a reseed landed in between.
+    ///
+    /// **Two acquisitions, and the gap between them is why this retries.** A
+    /// `Connected`, a `/resume` or a replay can replace the conversation
+    /// between the fold and the read, and what a reader then holds is the new
+    /// messages against boundaries the fold cleared - one turn covering the
+    /// whole conversation rather than a window of them. The retry closes the
+    /// common case; a second reseed inside the second window still gets
+    /// through, which is stated in the PR rather than claimed away.
+    pub fn read<T>(&self, read: impl FnOnce(&Conversation) -> T) -> T {
+        for _ in 0..2 {
+            self.fold();
+            let conversation = self.lock();
+            if conversation.dirty {
+                drop(conversation);
+                continue;
+            }
+            return read(&conversation);
+        }
+        read(&self.lock())
+    }
+
     /// Fold if the messages moved, outside the lock and off the reactor.
     ///
     /// The caller is a blocking task that has nothing else to do with the
     /// conversation until this returns.
     pub fn fold(&self) {
-        let folded = {
-            let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
-            // A fold already running owns the messages; this caller has
-            // nothing to do, and waiting here would be waiting on a peer
-            // rather than on work it can start.
-            if conversation.folding {
-                return;
-            }
-            conversation.take_dirty()
-        };
-        let Some(messages) = folded else {
+        let Some(taken) = Folding::begin(self) else {
             return;
         };
-        let spans = crate::transcript::render(&messages).turns;
-        let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
-        conversation.merge_fold(messages, spans);
-        self.folded.notify_all();
+        let spans = crate::transcript::render(taken.messages()).turns;
+        taken.finish(spans);
+    }
+}
+
+/// The messages a fold has taken out, and the promise that they go back.
+///
+/// **This is a guard rather than a straight-line take-and-restore because
+/// the render between them is a place a panic can land**, and a panic there
+/// with no guard is out of all proportion to its trigger: the messages are
+/// dropped, `folding` stays set, and `notify_all` is never reached - so every
+/// reader of the seat parks in [`Held::lock`] on a notification that never
+/// comes, and the seat is wedged for the process's life. Through
+/// [`Conversations::apply`] the same lock is the socket's single stream
+/// folder, so it is every client on every seat that stops being delivered to
+/// rather than one page.
+///
+/// With the guard, a panic costs one bad fold: the messages go back, the
+/// boundaries are left for the next fold to rebuild, and the readers wake.
+struct Folding<'a> {
+    held: &'a Held,
+    messages: Option<Vec<Message>>,
+}
+
+impl<'a> Folding<'a> {
+    /// Take the messages if a fold is due, or `None` when there is nothing to
+    /// do - a fold already running, or nothing moved.
+    fn begin(held: &'a Held) -> Option<Self> {
+        let mut conversation = held.conversation.lock().unwrap_or_else(PoisonError::into_inner);
+        // A fold already running owns the messages; this caller has nothing
+        // to do, and waiting here would be waiting on a peer rather than on
+        // work it can start.
+        if conversation.folding {
+            return None;
+        }
+        let messages = conversation.take_dirty()?;
+        Some(Self { held, messages: Some(messages) })
+    }
+
+    /// The messages this fold took.
+    fn messages(&self) -> &[Message] {
+        self.messages.as_deref().unwrap_or(&[])
+    }
+
+    /// Put the fold back and wake the readers.
+    fn finish(mut self, spans: Vec<TurnSpan>) {
+        let messages = self.messages.take().unwrap_or_default();
+        self.held.install(messages, spans);
+    }
+}
+
+impl Drop for Folding<'_> {
+    /// Unwinding out of the render: the messages go back as they were.
+    fn drop(&mut self) {
+        let Some(messages) = self.messages.take() else {
+            return;
+        };
+        self.held.install(messages, Vec::new());
     }
 }
 
@@ -333,18 +413,6 @@ impl Conversations {
             }
             _ => {}
         }
-    }
-
-    /// Let the seat's conversation go.
-    ///
-    /// **Safe here and not in the design this replaced**, where the read was
-    /// the only other source and a released seat had nothing to rebuild from.
-    /// The session task holds the conversation for the seat's life, so the
-    /// next ask takes a replay. What the release buys is the PEAK - a seat
-    /// nobody is showing costs the task's copy alone - rather than the floor,
-    /// which is one conversation per ever-connected seat either way.
-    pub fn release(&self, slot: &SessionSlot) {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).remove(slot);
     }
 
     /// How many seats are held.
@@ -557,6 +625,62 @@ mod tests {
         });
 
         assert!(read(), "a dispatch appended after the seed is seen");
+    }
+
+    /// A reseed leaves the boundaries consistent with the messages they
+    /// describe, so a page over a just-reseeded seat cannot slice past the end
+    /// of the list it is reading.
+    ///
+    /// **`messages` and `spans` are one value in two fields**, and a reader
+    /// sees both or neither: the spans name a prefix of the messages, and a
+    /// list that shrank under boundaries that did not is how a page walks off
+    /// the end of an empty one.
+    #[test]
+    fn a_reseed_leaves_the_boundaries_describing_the_messages() {
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::new(vec![a_frame("one"), a_frame("two")], 0));
+        let conversation = held.get(&a_seat()).expect("the seat is held");
+        conversation.fold();
+        assert_eq!(conversation.lock().spans().len(), 2, "precondition: two turns folded");
+
+        held.apply(&a_replay(Vec::new()));
+
+        let conversation = held.get(&a_seat()).expect("the seat is held");
+        let held = conversation.lock();
+        assert!(held.messages().is_empty(), "the reseed replaced the messages");
+        assert!(
+            held.spans().is_empty(),
+            "and the boundaries went with them, rather than describing a list that is gone",
+        );
+    }
+
+    /// A fold that does not reach its end gives the messages back.
+    ///
+    /// **The guard's whole job, and the failure it prevents is a wedge rather
+    /// than a bad page**: the messages are out of the seat while the render
+    /// runs, so a panic that unwound past them would drop the conversation,
+    /// leave `folding` set, and never wake the readers - parking every page
+    /// request on the seat, and through `apply` the socket's single stream
+    /// folder, for the process's life.
+    #[test]
+    fn a_fold_that_does_not_finish_gives_the_messages_back() {
+        let conversation = Conversation::new(vec![a_frame("kept")], 0);
+
+        {
+            let held = Held::new(conversation);
+            let taken = Folding::begin(&held).expect("a fold is due");
+            // Read through the raw mutex rather than `lock`: `lock` WAITS for
+            // a fold in progress, which is the state this test is standing in.
+            let out = held.conversation.lock().expect("the mutex").messages().len();
+            assert_eq!(out, 0, "precondition: the messages are out of the seat");
+
+            // Dropped rather than finished, which is what unwinding does.
+            drop(taken);
+
+            let held = held.lock();
+            assert!(!held.folding, "the seat is not left waiting for a fold that will never end");
+            assert_eq!(held.messages().len(), 1, "and the messages it took are back in it");
+        }
     }
 
     /// A frame on a seat nothing has seeded is dropped rather than inventing

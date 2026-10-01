@@ -930,13 +930,13 @@ async fn session(
         Some(held) => {
             let seat = slot.clone();
             tokio::task::spawn_blocking(move || {
-                held.fold();
-                let held = held.lock();
-                (
-                    page(held.messages(), held.spans(), None, SUBSCRIBE_TURNS).turns,
-                    held.compaction_count(),
-                    held.has_dispatches(),
-                )
+                held.read(|held| {
+                    (
+                        page(held.messages(), held.spans(), None, SUBSCRIBE_TURNS).turns,
+                        held.compaction_count(),
+                        held.has_dispatches(),
+                    )
+                })
             })
             .await
             .unwrap_or_else(|error| {

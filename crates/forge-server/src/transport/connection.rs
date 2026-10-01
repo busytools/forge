@@ -3,8 +3,6 @@
 
 use std::sync::Arc;
 
-use forge_primitives::SessionSlot;
-
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
@@ -81,40 +79,9 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     for what in &watched {
         if let Subject::Session(slot) = what {
             Live::lock(&state.live).detach(slot);
-            release_when_unwatched(state, slot);
         }
     }
     outcome
-}
-
-/// How long a seat's conversation outlives the last client showing it.
-///
-/// **A refresh is an `unsubscribe` and a `subscribe`**, which is what the
-/// client sends on every update for the open seat, coalesced at 50 ms - so a
-/// release that fired on the unsubscribe would drop the seat on the path the
-/// client takes most. The grace is the smallest thing that lets a refresh's
-/// own gap pass.
-const RELEASE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// Let the seat's conversation go once nobody has shown it for
-/// [`RELEASE_GRACE`].
-///
-/// The timer re-reads the attachment count rather than trusting the state it
-/// was scheduled from: a refresh re-subscribes within the grace, and a
-/// release that fired anyway would drop the seat the client is looking at.
-fn release_when_unwatched(state: &Arc<TransportState>, slot: &SessionSlot) {
-    // Still held by another connection: nothing to schedule.
-    if Live::lock(&state.live).holds(slot) {
-        return;
-    }
-    let state = Arc::clone(state);
-    let slot = slot.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(RELEASE_GRACE).await;
-        if !Live::lock(&state.live).holds(&slot) {
-            state.conversations.release(&slot);
-        }
-    });
 }
 
 /// The connection's own loop, so that every way out of it runs the release
@@ -349,9 +316,9 @@ async fn handle_client(
                     let seat = conversation.clone();
                     let opening = before.clone();
                     tokio::task::spawn_blocking(move || {
-                        held.fold();
-                        let held = held.lock();
-                        page(held.messages(), held.spans(), opening.as_deref(), turns)
+                        held.read(|held| {
+                            page(held.messages(), held.spans(), opening.as_deref(), turns)
+                        })
                     })
                     .await
                     .unwrap_or_else(|error| {
@@ -387,7 +354,6 @@ async fn handle_client(
                 watched.remove(at);
                 if let Subject::Session(slot) = &what {
                     Live::lock(&state.live).detach(slot);
-                    release_when_unwatched(state, slot);
                 }
             }
             Ok(())
