@@ -345,7 +345,8 @@
   /* One grid for the whole diff, rows as `display: contents`, so every line's
      ground spans the scroller's widest line rather than the container's edge. */
   .dif { display: grid; grid-template-columns: 22px 1fr;
-    border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
+    border: 1px solid var(--line); border-radius: 9px;
+    overflow-x: auto; overflow-y: hidden;
     font-family: var(--mono); font-size: var(--fs-data); }
   .dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2); padding: 4px 12px; }
   .dif .ln { display: contents; }

@@ -8,14 +8,18 @@
  * moved. A client that restated them would draw the same turn two ways the
  * first time either changed.
  *
- * Four places it deliberately differs from the terminal, and each is the
- * mockup's own drawing rather than a liberty:
+ * Five places it deliberately differs from the terminal, and each is a
+ * decision rather than an accident:
  *
  * - a mutation folds as an `edit` family inside the run instead of breaking
  *   it;
  * - a question the assistant asked is a card rather than a call;
  * - an envelope that is not agent traffic is a notice rather than the reader's
  *   own turn;
+ * - the harness's own reminder that a skill was already loaded draws as a
+ *   notice rather than the reader's turn, where the terminal drops every wire
+ *   user text live as an input echo and draws this one as a user turn on
+ *   resume;
  * - a monitor is not in the conversation at all, because the inspector is its
  *   surface.
  *
