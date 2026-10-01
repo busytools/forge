@@ -98,6 +98,12 @@ pub enum ClientMessage {
         before: Option<String>,
         turns: u32,
     },
+    /// The inputs forge can record from, and the `[dictate] device` pin.
+    ///
+    /// Asked on demand rather than subscribed: the walk opens the microphone
+    /// stack, and a subscription is re-read on every reconnect, so watching it
+    /// would be a permission check per connection instead of one per picker.
+    Devices,
 }
 
 /// What the server sends.
@@ -125,6 +131,14 @@ pub enum ServerMessage {
         conversation: SessionSlot,
         turns: Vec<crate::transport::wire::TurnWire>,
         cursor: Option<String>,
+    },
+    /// The answer to `devices`: every input forge can record from, and the pin
+    /// the config sets. A walk that could not enumerate comes back as an
+    /// `error` naming `devices` instead, because a client renders the refusal
+    /// where the list would have been.
+    Devices {
+        devices: Vec<crate::transport::wire::DeviceWire>,
+        configured: Option<String>,
     },
     /// The answer to a `Command` that carried a `reply_to`, including a
     /// refusal, so a client awaiting one is never left watching a channel
@@ -162,6 +176,37 @@ impl From<&WebConfig> for ClientSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The on-demand read a picker makes, and the answer it gets.
+    ///
+    /// Asked rather than subscribed: the walk opens the microphone stack, and
+    /// a subscription is re-read on every reconnect, so watching it would be a
+    /// permission check per connection rather than one per picker.
+    #[test]
+    fn a_devices_request_and_its_answer_round_trip_through_json() {
+        let json = serde_json::to_string(&ClientMessage::Devices).expect("encode");
+        assert!(json.contains("\"kind\":\"devices\""), "{json}");
+        let back: ClientMessage = serde_json::from_str(&json).expect("decode");
+        assert!(matches!(back, ClientMessage::Devices), "{json} decoded into another message");
+
+        let answer = ServerMessage::Devices {
+            devices: vec![crate::transport::wire::DeviceWire {
+                id: "a-mic".to_owned(),
+                name: "Studio Mic".to_owned(),
+                is_default: true,
+            }],
+            configured: Some("a-mic".to_owned()),
+        };
+        let json = serde_json::to_string(&answer).expect("encode");
+        assert!(json.contains("\"kind\":\"devices\""), "{json}");
+        assert!(json.contains("\"is_default\":true"), "a row carries what a picker marks: {json}");
+        let back: ServerMessage = serde_json::from_str(&json).expect("decode");
+        let ServerMessage::Devices { devices, configured } = back else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(devices.len(), 1, "the list crosses with its rows");
+        assert_eq!(configured.as_deref(), Some("a-mic"), "and so does the configured pin");
+    }
 
     #[test]
     fn a_subscribe_round_trips_through_json() {

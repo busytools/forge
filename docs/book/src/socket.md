@@ -143,6 +143,12 @@ and what it is made of is the server's business. `null` means there is
 nothing above the page it came with, and that is where a walk backwards
 ends.
 
+**`devices`** - the inputs forge can record from, and the `[dictate] device`
+pin, for a picker that offers them. **Asked on demand rather than
+subscribed**: the walk opens the microphone stack, and a subscription is
+re-read on every reconnect, so watching this would be a permission check per
+connection instead of one per picker.
+
 **`command {command, reply_to?}`** - any of the core's own commands, as
 the core's own enum. `reply_to` is absent or `null` on most of them, and
 the two mean the same thing - a `null` is what the field is if a client
@@ -185,6 +191,12 @@ was asked for.
   state rather than as an event: a card left at `0 ready, probing` looks
   like a slow probe rather than like a page that stopped listening.
 - **`page {conversation, turns, cursor}`** - in answer to `more`.
+- **`devices {devices, configured}`** - in answer to `devices`: every input
+  forge can record from, each with the id a pick sends back, the label a
+  picker draws, and whether the system would pick it. A walk that could not
+  enumerate comes back as an `error` naming `devices` instead, and that is
+  what a view renders where the list would have been - the two are the
+  request's only outcomes.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own
   words.

@@ -133,6 +133,7 @@ fn parse_line(line: &str, reply_to: &mut u64) -> anyhow::Result<ClientMessage> {
             let turns = parts.next().map_or(Ok(10), str::parse)?;
             Ok(ClientMessage::More { conversation, before: None, turns })
         }
+        "devices" => Ok(ClientMessage::Devices),
         "command" | "ask" => {
             let command: Command = serde_json::from_str(rest)?;
             let asked = if verb == "ask" {

@@ -635,6 +635,37 @@ async fn a_more_that_cannot_be_answered_is_refused() {
     );
 }
 
+/// The inputs forge can record from, asked for on demand.
+///
+/// The walk opens the microphone stack, so the request is answered with the
+/// list - or, on a machine with no stack to enumerate, with an error naming
+/// `devices`, which is what the terminal renders in place of a list. Either
+/// way the request is ANSWERED: a client that heard nothing would draw a
+/// picker that never fills.
+#[tokio::test]
+async fn a_devices_request_is_answered_with_the_list_or_its_refusal() {
+    let (url, _fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+
+    send(&mut socket, ClientMessage::Devices).await;
+
+    match next_server(&mut socket).await {
+        ServerMessage::Devices { configured, .. } => {
+            assert!(
+                configured.is_none(),
+                "the fixture's config pins no device, so nothing is configured",
+            );
+        }
+        ServerMessage::Error { what, why } => {
+            assert_eq!(what, "devices", "a refusal names what was asked for");
+            assert!(!why.is_empty(), "and carries the walk's own reason");
+        }
+        other => {
+            panic!("a devices request is answered with the list or its refusal, got {other:?}")
+        }
+    }
+}
+
 /// A subscription hears the updates its subject receives and no others.
 #[tokio::test]
 async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {

@@ -317,6 +317,20 @@ pub struct DictateWire {
     pub device: Option<forge_workspace::DictateDeviceChoice>,
 }
 
+/// One input forge can record from, as a picker draws it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DeviceWire {
+    /// The stable identity, which is what a pick sends back: names collide
+    /// between two identical interfaces and change when a user renames one.
+    pub id: String,
+    /// Human label for a picker. Not an identity.
+    pub name: String,
+    /// Whether the system would pick this one when asked for no particular
+    /// device.
+    pub is_default: bool,
+}
+
 /// One session, as a client sees it: every read a session-scoped view makes.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

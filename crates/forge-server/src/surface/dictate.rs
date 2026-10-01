@@ -53,6 +53,15 @@ impl ViewSurface {
     pub fn dictate_mode(&self) -> forge_workspace::DictateMode {
         self.workspace.dictate_mode()
     }
+
+    /// Every input forge can record from, and the configured pin.
+    ///
+    /// A blocking walk that opens the microphone stack, so a caller runs it
+    /// off its own thread: the socket answers an on-demand request with it,
+    /// and the terminal reaches it from a spawned task.
+    pub fn dictate_device_catalog(&self) -> Result<forge_workspace::DictateDeviceCatalog, String> {
+        self.workspace.dictate_device_catalog()
+    }
 }
 
 #[cfg(test)]
