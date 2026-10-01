@@ -1692,6 +1692,40 @@ describe('the dock', () => {
     ).toBe('the words');
   });
 
+  /**
+   * What was written in a prompt's own-words box goes with that prompt.
+   *
+   * The box's draft is the composer's state now rather than the dock's, so the
+   * prompt unmounting no longer takes it - which makes this the one leg of that
+   * hoist with nothing under it.
+   */
+  it("opens the next prompt's own-words box empty, whatever was written in the last one", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q') }) });
+
+    /** The own-words row of whatever dock is up, and the box it opens. */
+    const ownWords = (): HTMLTextAreaElement => {
+      const row = options()[2];
+      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+      row.click();
+      flushSync();
+      const box = document.querySelector('.dock [data-editor="dock"]');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      return box;
+    };
+
+    const box = ownWords();
+    box.value = 'leftover words';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    harness.page.record = record();
+    flushSync();
+    harness.page.record = record({ pending_ask: questionAsk('tu-q2') });
+    flushSync();
+
+    expect(ownWords().value, "the last prompt's words do not come back in this one").toBe('');
+  });
+
   it('moves the mark from the keyboard once the dock has the slot', () => {
     const harness = open({ record: record({ pending_ask: permissionAsk() }) });
     const list = document.querySelector('.dock [role="listbox"]');
