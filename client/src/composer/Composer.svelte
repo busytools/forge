@@ -450,8 +450,10 @@
    * dispatches under.
    *
    * A held Slack post carries no id of its own and keys as null, so two in a row
-   * share one. That is safe only because its rows are the same two whatever the
-   * post is.
+   * share one. Nothing stateful rides on that dock - it draws a head and a
+   * description and no rows at all - so a shared key has nothing to carry. Give
+   * it rows and this key needs a field for it, the way a question's has one for
+   * its index.
    */
   function ownKeyOf(current: ReturnType<typeof pendingAsk>): string | null {
     if (current === null) return null;

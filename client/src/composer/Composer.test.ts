@@ -1999,9 +1999,9 @@ describe('the dock', () => {
    * question one carries an id question two's own row also carries - the reader
    * sees it still on for a question they have not answered.
    */
-  it('draws the next question with nothing turned on, when a row shares the last one id', () => {
+  it("draws the next question with nothing turned on, when a row shares the last one's id", () => {
     const harness = open({
-      record: record({ pending_ask: oneOf(['question_1', 'question_2'], 0) }),
+      record: record({ pending_ask: oneOf(['question_0', 'question_1'], 0) }),
     });
 
     options()[0]?.click();
