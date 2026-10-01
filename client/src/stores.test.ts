@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SessionUpdate } from './protocol';
+import { REPLACES } from './session/apply';
 import { Stores } from './stores';
 
 const LEAD = { org: 'TestOrg', project: 'proj', label: 'lead' } as const;
@@ -81,6 +82,10 @@ describe('the stores one connection holds', () => {
     // Written out rather than read off `REPLACES`, following `live.test.ts`:
     // a loop over the list under test cannot see the list change.
     const replacing = ['spawning', 'connected', 'history_replayed', 'session_replaced'];
+    expect(
+      [...REPLACES].sort(),
+      'the list the store reads is not the list this test covers',
+    ).toEqual([...replacing].sort());
     for (const name of replacing) {
       const stores = new Stores();
       const seat = { session: LEAD };
@@ -99,12 +104,24 @@ describe('the stores one connection holds', () => {
       expect(store.updates(), `${name}: the last occupant's frames were there to replay`).toEqual(
         [],
       );
+      expect(store.state(), `${name}: the seat's store was not put back to loading`).toEqual({
+        kind: 'loading',
+      });
 
       // And the seat's store is empty rather than dead: the next occupant's
       // own frames land in it.
       store.push(opening('the-one-that-arrived'));
       expect(store.updates(), `${name}: the store took no frames after the swap`).toHaveLength(1);
     }
+
+    // The fleet's own store holds a different subject: a seat's swap is news
+    // for the home rather than a replacement of what the home holds, so the
+    // rule stops at seats.
+    const fleet = new Stores();
+    const home = fleet.open('home');
+    home.set({ projects: [] });
+    home.push(occupantAs('connected'));
+    expect(home.snapshot(), 'a seat swap emptied the home store').toEqual({ projects: [] });
   });
 });
 

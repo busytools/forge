@@ -114,8 +114,6 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
     set: (snapshot) => inner.set({ snapshot, updates: [], state: { kind: 'ready' }, dropped: 0 }),
     push: (update) =>
       inner.update((held) => {
-        // The seat keeps its key and drops its content: the next reader seeds
-        // from nothing rather than from the occupant that left.
         if (isSeat(subject) && replaces(update)) {
           return { snapshot: null, updates: [], state: { kind: 'loading' }, dropped: 0 };
         }
