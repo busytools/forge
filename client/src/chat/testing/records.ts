@@ -64,21 +64,45 @@ export interface ListHandle {
 }
 
 /**
- * The geometry the stub list reports, held here rather than in the component.
+ * What the list itself REPORTS: its model, which lags the element below.
  *
- * **A list has measured its rows before any column asks it anything**, and a
- * test that could only hand it a size once it was mounted could not say what
- * the column does with the first page: the landing's own pin would read a list
- * of no height. Set it before the mount and the landing sees what a real one
- * would.
+ * Nothing reads it today, and nothing is meant to: it is kept, with the
+ * handle's size getters, because that is the surface a real `virtua` list
+ * exposes and a stub that shed it would stop standing in for one. `element` is
+ * the half the column decides from.
  */
-export const geometry = { offset: 0, size: 0, viewport: 0 };
+export const reported = { size: 0, viewport: 0 };
 
-/** The size and viewport a list reports, with the reader at its start. */
-export function setGeometry(total: number, height: number): void {
-  geometry.size = total;
-  geometry.viewport = height;
-  geometry.offset = 0;
+/**
+ * What the ELEMENT reports: where the reader is, and its own size.
+ *
+ * The browser clamps the scroll on the element, so this is the only side the
+ * column may decide the foot from.
+ */
+export const element = { offset: 0, height: 0, viewport: 0 };
+
+/**
+ * A list that has MEASURED, with the reader at its start.
+ *
+ * A list has measured its rows before a column asks it anything, and a test
+ * that could only hand it a size once it was mounted could not say what the
+ * column does with the first page: the landing's own pin would read a list of
+ * no height. Set it before the mount and the landing sees what a real one
+ * would. The report and the element agree here; the divergence is a test's own
+ * to introduce with `setElement`.
+ */
+export function setMeasured(total: number, height: number): void {
+  reported.size = total;
+  reported.viewport = height;
+  element.height = total;
+  element.viewport = height;
+  element.offset = 0;
+}
+
+/** What the element reports, when the list's model is to read differently. */
+export function setElement(height: number, viewport: number): void {
+  element.height = height;
+  element.viewport = viewport;
 }
 
 let mounted: ListHandle | null = null;

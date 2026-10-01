@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
-  import { geometry, pins, records, register } from './records';
+  import { element, pins, records, register, reported } from './records';
 
   /**
    * A stand-in for `virtua`'s list, for tests that have to see what the column
@@ -48,16 +48,26 @@
   });
 
   export function getScrollOffset(): number {
-    return geometry.offset;
+    return element.offset;
   }
 
   export function getScrollSize(): number {
-    return geometry.size;
+    return reported.size;
   }
 
   export function getViewportSize(): number {
-    return geometry.viewport;
+    return reported.viewport;
   }
+
+  /**
+   * Whole pixels, as a browser reports both of the element's sizes.
+   *
+   * Floored here, which agrees with both engines on whole values; their
+   * reported sizes round to NEAREST on fractional ones, so `Math.round` is
+   * the faithful pair - nothing rests on the difference today.
+   */
+  const elementHeight = (): number => Math.floor(element.height);
+  const elementViewport = (): number => Math.floor(element.viewport);
 
   /**
    * The element the column scrolls, made to behave like a scroll container.
@@ -68,19 +78,21 @@
    * asking for `scrollHeight`, and what it LANDS on is the foot.
    */
   function container(node: HTMLElement): () => void {
-    // Whole pixels, as a browser reports them, from a size the list measured
-    // as a fraction - which is the mismatch the follow has to survive.
     Object.defineProperty(node, 'scrollHeight', {
       configurable: true,
-      get: () => Math.floor(geometry.size),
+      get: elementHeight,
+    });
+    Object.defineProperty(node, 'clientHeight', {
+      configurable: true,
+      get: elementViewport,
     });
     Object.defineProperty(node, 'scrollTop', {
       configurable: true,
-      get: () => geometry.offset,
+      get: () => element.offset,
       set: (asked: number) => {
-        const landed = Math.max(0, Math.min(asked, Math.floor(geometry.size) - geometry.viewport));
+        const landed = Math.max(0, Math.min(asked, elementHeight() - elementViewport()));
         pins.push({ asked, landed });
-        geometry.offset = landed;
+        element.offset = landed;
       },
     });
     return () => undefined;
@@ -88,9 +100,9 @@
 
   /** Where the list is scrolled to, which a test drives the reader with. */
   export function scrolledTo(at: number, total: number, height: number): void {
-    geometry.offset = at;
-    geometry.size = total;
-    geometry.viewport = height;
+    element.offset = at;
+    reported.size = total;
+    reported.viewport = height;
     onscroll?.(at);
   }
 
@@ -102,14 +114,20 @@
    * clamp re-arm exists for.
    */
   export function settled(at: number, total: number, height: number): void {
-    geometry.offset = at;
-    geometry.size = total;
-    geometry.viewport = height;
+    element.offset = at;
+    reported.size = total;
+    reported.viewport = height;
   }
 
   // The column binds this component to a handle of its own, which a test
   // cannot reach; the module is the seam instead.
   register({ scrolledTo, settled });
+
+  // **And the handle goes with the component.** A real list removes its scroll
+  // listener when it is destroyed, in the same flush that removes the node, so
+  // nothing may drive a column through a list that is gone - a seam left
+  // registered would let a test call a callback the browser cannot deliver.
+  $effect(() => () => register(null));
 </script>
 
 <div class="conv" {@attach container} {...rest}>

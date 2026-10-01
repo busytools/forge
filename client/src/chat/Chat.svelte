@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { VList, type VListHandle } from 'virtua/svelte';
+  import { VList } from 'virtua/svelte';
 
   import { subjectKey } from '../protocol';
   import type { Connection } from '../socket';
@@ -47,7 +47,6 @@
   const REACH = 400;
 
   let held = $state<Conversation>(NOTHING);
-  let list = $state<VListHandle | null>(null);
   /**
    * The element that scrolls, which is the list's own viewport.
    *
@@ -56,6 +55,8 @@
    * this update, and the element's own `scrollHeight` does not.
    */
   let viewport: HTMLElement | null = $state(null);
+  /** Where the column last left the reader, which its own pin's echo cannot disarm. */
+  let placed: number | null = null;
   let working: Chat | null = null;
   /**
    * The conversation built for one seat over one connection.
@@ -124,11 +125,16 @@
     };
   }
 
-  /** Whether the reader sits at the very end of what the list holds. */
+  /**
+   * Whether the reader sits at the very end of what the list holds.
+   *
+   * **The element's own clamp, not the list's reported size**: that is a model
+   * - estimates for rows never drawn, a viewport unmeasured in the flush a pin
+   * runs in - under which a reader the browser has clamped to the foot still
+   * reads as short of it.
+   */
   function atFoot(): boolean {
-    const total = list?.getScrollSize() ?? 0;
-    const height = list?.getViewportSize() ?? 0;
-    return (list?.getScrollOffset() ?? 0) + height >= Math.floor(total);
+    return viewport !== null && viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight;
   }
 
   $effect(() => {
@@ -136,6 +142,8 @@
     const open = connection;
     if (opened !== null && opened.seat === which && opened.connection === open) return;
     opened?.stop();
+    // The placement belonged to the conversation that is going.
+    placed = null;
     const chat = new Chat(open, slot);
     working = chat;
     const unsubscribe = chat.value.subscribe((value) => {
@@ -222,6 +230,9 @@
   function land(): void {
     if (viewport === null) return;
     viewport.scrollTop = viewport.scrollHeight;
+    // Where the column last left the reader, which is the foot the browser
+    // clamped the pin to. A scroll event at this offset is the pin's own echo.
+    placed = viewport.scrollTop;
   }
 
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
@@ -249,14 +260,19 @@
     // - the terminal's clamp re-engages its follow only at `scroll_offset >=
     // max_scroll` for exactly this reason.
     //
-    // Floored, and that is arithmetic rather than tolerance: the list reports
-    // its size as a fraction of a pixel and the browser clamps the scroll to a
-    // whole one, so the two are never equal at the foot and comparing them
-    // straight would read the very end as short of itself - the flag would
-    // switch itself off exactly where it has to hold.
-    const height = list?.getViewportSize() ?? 0;
-    const total = list?.getScrollSize() ?? 0;
-    working?.following(offset + height >= Math.floor(total));
+    // Nothing is owed to arithmetic either: both sides are the element's own
+    // numbers, and the clamp makes them meet at the foot - swept over whole
+    // and fractional heights at device pixel ratios 1 to 3, the gap is 0 in
+    // WebKit and Chromium alike (CSS `zoom` past 1 is the one divergence
+    // found, and nothing here zooms the column) - so a tolerance could only
+    // re-arm the follow for a reader who has moved off it.
+    //
+    // **And only a reader who has moved may switch it off.** A pin fires a
+    // scroll event of its own, and the foot can settle past the height one
+    // asked for: both read as the reader back above the foot with nothing
+    // moving them, and disarming there is a column stuck where it opened.
+    if (atFoot()) working?.following(true);
+    else if (placed !== null && offset < placed) working?.following(false);
     if (offset < REACH) loadOlder();
   }
 
@@ -334,7 +350,6 @@
        padding, its scrollbar gutter and its scrollbar, and a wrapper would put
        them outside the thing that scrolls. -->
   <VList
-    bind:this={list}
     class="conv"
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
