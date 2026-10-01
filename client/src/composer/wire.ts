@@ -97,6 +97,8 @@ export interface QuestionRequest {
 
 /** A held Slack post: what is waiting, and what it would send. */
 export interface SlackDraft {
+  /** The draft's own id, which is what an answer is addressed by. */
+  id: string;
   workspace: string;
   conversationLabel: string;
   /** `null` posts a root message; a timestamp replies into that thread. */
@@ -261,6 +263,7 @@ function slackFrom(value: unknown): Ask {
   return {
     kind: 'slack_draft',
     request: {
+      id: text(held['id']) ?? '',
       workspace: text(held['workspace']) ?? '',
       conversationLabel: text(held['conversation_label']) ?? '',
       threadTs: text(held['thread_ts']),
