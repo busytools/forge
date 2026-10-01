@@ -682,12 +682,12 @@ details.sec[open] > summary .arw { color: var(--accent); }
 .prose table { border-collapse: collapse; margin: 10px 0; }
 /* A cell breaks a long token rather than widening the table past the column:
    the terminal stacks a table its grid cannot hold, and wrapping keeps the
-   table the shape it is. A cell that can break anywhere has a one-character
-   minimum, so the header - a label, not data - declares its own width instead
-   of being sliced by a neighbouring column's demand for it. */
+   table the shape it is. Data cells only - a header left at the browser's own
+   default can never be narrower than its own longest word, so nothing slices
+   it, and a header of several words still wraps. */
 .prose th, .prose td { text-align: left; padding: 4px 12px 4px 0; }
 .prose td { overflow-wrap: anywhere; }
-.prose th { color: var(--muted); font-weight: 700; white-space: nowrap;
+.prose th { color: var(--muted); font-weight: 700;
   border-bottom: 1px solid var(--line); }
 .prose hr { border: 0; height: 1px; background: var(--line); margin: 12px 0; }
 
