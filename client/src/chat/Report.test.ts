@@ -182,10 +182,20 @@ describe('a settled turn\u2019s row', () => {
     );
   });
 
-  it('carries the toggle word as text rather than as a stylesheet rule', () => {
-    // A `::after` label is generated content, so the disclosure's accessible
-    // name is whatever the user agent makes of it.
-    expect(draw(FULL)).toContain('>expand<');
+  it('carries the disclosure chevron the rest of the column draws, and no spelled-out verb', () => {
+    // Every other `<details>` here leads its toggle with the shared chevron,
+    // so this row spelling `expand` instead is a second convention for one
+    // job. The summary keeps its own text either way, which is what a reader
+    // who cannot see the glyph is told the disclosure is.
+    const body = draw(FULL);
+
+    // One chevron, and the one the stylesheet's open/closed rules reach: a
+    // second glyph on the row would be a second answer to the same question.
+    expect(body.match(/#i-chev/g), 'exactly one disclosure chevron').toHaveLength(1);
+    expect(body, 'and it is the shared one the stylesheet turns').toContain('class="ic arw"');
+    expect(body, 'and not the verb spelled out in its place').not.toMatch(
+      />\s*(expand|collapse)\s*</,
+    );
   });
 
   it('marks the row from the sprite, not from a character cell', () => {

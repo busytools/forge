@@ -3,11 +3,9 @@
 
   /**
    * The disclosure arrow every `<details>` on the page carries. One chevron,
-   * turned by the open state rather than swapped for a second glyph.
+   * turned by the open state rather than swapped for a second glyph, and the
+   * class every surface's own rules colour it by.
    */
-  let { class: klass = '' }: { class?: string } = $props();
-
-  const css = $derived(klass === '' ? 'arw' : `arw ${klass}`);
 </script>
 
-<Icon name="chev" class={css} />
+<Icon name="chev" class="arw" />

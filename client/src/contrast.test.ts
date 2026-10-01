@@ -181,11 +181,11 @@ const DRAWN: readonly Pair[] = [
  * rule that inks it, `.sess .facts .sep`, is a middot at 1.42:1.
  *
  * A border that identifies a control is a different job, and the sheet's own
- * controls have left this token: the dock's checkbox and notes field, the two
- * `.tog` chips and the account pill all draw `--ctl`, carried above at the
- * 3:1 of 1.4.11. The connect screen's address field and its button still draw
- * `--line`, over fills of 1.08:1 and 1.16:1 against the page, so neither fill
- * separates from it and the field's boundary is drawn by its border alone.
+ * controls have left this token: the dock's box, its checkbox and its notes
+ * field all draw `--ctl` at rest, carried above at the 3:1 of 1.4.11. The
+ * connect screen's address field and its button still draw `--line`, over
+ * fills of 1.08:1 and 1.16:1 against the page, so neither fill separates from
+ * it and the field's boundary is drawn by its border alone.
  * That screen is #1320 and owes its own drawing rather than a mirror here.
  * Named rather than left out, so a token arriving without a pair still fails.
  */
