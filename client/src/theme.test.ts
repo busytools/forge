@@ -98,7 +98,7 @@ describe('the typefaces', () => {
   /** By value: two distinct objects satisfy any "not equal" shape. */
   it('draws each name as its own stack', () => {
     expect(fontStack(null)).toEqual({
-      ui: '"Inter",system-ui,-apple-system,"Segoe UI",sans-serif',
+      ui: '"Fira Code",system-ui,-apple-system,"Segoe UI",sans-serif',
       mono: '"Fira Code",ui-monospace,Menlo,monospace',
     });
     expect(fontStack(FONT_NAMES[0])).toEqual({
@@ -115,7 +115,7 @@ describe('the typefaces', () => {
   /** The stack asks for the families the sheet declares faces for. */
   it('asks for the faces the sheet ships', () => {
     const declared = captures(sheet, /@font-face\s*{[^}]*font-family:\s*"([^"]+)"/g);
-    expect(declared).toHaveLength(3);
+    expect(declared).toHaveLength(2);
     const builtIn = fontStack(null);
     for (const face of declared) {
       const asked =

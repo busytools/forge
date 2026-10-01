@@ -15,9 +15,9 @@
 
 import type { ClientSettings } from './wire/types';
 
-/** The built-in pair, drawn with the faces shipped in `public/fonts/`. */
+/** The built-in face, drawn with the faces shipped in `public/fonts/`. */
 const BUILT_IN_FONT = {
-  ui: '"Inter",system-ui,-apple-system,"Segoe UI",sans-serif',
+  ui: '"Fira Code",system-ui,-apple-system,"Segoe UI",sans-serif',
   mono: '"Fira Code",ui-monospace,Menlo,monospace',
 };
 
