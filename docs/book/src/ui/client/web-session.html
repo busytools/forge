@@ -913,6 +913,11 @@
         <span class="cm"><span class="fk">ctx</span>
           <span class="tk"><span class="fl" style="width:41%"></span></span>
           <span class="v">41%</span></span>
+        <!-- The conversation's own count, on the row that carries the context
+             figure: a compaction is a boundary row in the transcript, so the
+             header reads it off the conversation and not off itself. -->
+        <span class="sep">&#183;</span>
+        <span>3 compactions</span>
       </span>
     </div>
 
@@ -921,6 +926,13 @@
     <div class="annot">
       <span class="cm"><span class="fk">ctx</span><span class="v">&#8212;</span></span>
       <span class="dim">nothing has reported a usage &#183; an empty track would read as 0%</span>
+    </div>
+
+    <!-- The compaction figure's other state: a transcript with no boundary
+         draws nothing rather than a zero, which on a row that already carries
+         five facts says nothing a fresh session has not said by being new. -->
+    <div class="annot">
+      <span class="dim">no compaction yet &#183; a fresh session draws no figure at all</span>
     </div>
 
     <div class="conv">

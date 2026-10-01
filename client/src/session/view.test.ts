@@ -6,6 +6,7 @@ import type { AgentRow, HomeWire, ProjectWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import {
   accountChip,
+  compactionFigure,
   copyLabel,
   copyReason,
   fleetCount,
@@ -139,6 +140,28 @@ describe('the header facts', () => {
   it('carries the mode the session runs in, with the class its colour reads', () => {
     const facts = headerFacts({ ...record.header, permission_mode: 'bypassPermissions' });
     expect(facts.mode).toEqual({ wire: 'bypassPermissions', klass: 'bypass' });
+  });
+});
+
+/**
+ * The compaction figure the header draws beside the context bar, from the
+ * conversation's own count rather than the header's - a boundary frame is a
+ * `compact_boundary` row in the transcript and the count is what it adds up to.
+ */
+describe('the compaction figure', () => {
+  /**
+   * **Nothing at zero, which is the terminal's rule for the same reason**: the
+   * row already carries five facts, and a `0 compactions` on every fresh
+   * session is noise that says nothing a session without a boundary has not
+   * already said by being new.
+   */
+  it('says nothing for a session that has never compacted', () => {
+    expect(compactionFigure(0), 'a session with no boundary claimed a count').toBeNull();
+  });
+
+  it('agrees its noun with the count', () => {
+    expect(compactionFigure(1), 'one compaction read as plural').toBe('1 compaction');
+    expect(compactionFigure(54)).toBe('54 compactions');
   });
 });
 

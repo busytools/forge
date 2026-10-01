@@ -199,6 +199,36 @@ describe('the session page over a socket', () => {
   });
 
   /**
+   * **The count is the conversation's, so the header reads it off
+   * `conversation` and not off `header`** - and the terminal draws it on the
+   * row that carries the context figure, which is this one. A page that stops
+   * at the context figure leaves a reader no way to see a session has been
+   * compacted at all.
+   */
+  it('draws the compactions the conversation has taken, beside the context', async () => {
+    await open({
+      ...sessionFixture,
+      conversation: { ...sessionFixture.conversation, compaction_count: 54 },
+    });
+
+    const facts = document.querySelector('.sess .facts');
+    expect(facts?.textContent, 'the header drew no compaction count from the record').toContain(
+      '54 compactions',
+    );
+  });
+
+  /** A session with no boundary in its transcript draws no figure, not a zero. */
+  it('draws no compaction figure for a session that has never compacted', async () => {
+    await open(sessionFixture);
+
+    const facts = document.querySelector('.sess .facts');
+    expect(
+      facts?.textContent ?? '',
+      'a session that never compacted claimed a count',
+    ).not.toContain('compaction');
+  });
+
+  /**
    * The rail comes from the home subject, which the shell holds for its whole
    * life - so this is also the assertion that the page reads two subjects and
    * not one.
