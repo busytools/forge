@@ -97,11 +97,12 @@ describe('which editor holds the keyboard', () => {
  * `data-editor={undefined}` still reads as found here - so the docking tests are
  * what prove a box actually carries it.
  *
- * Membership is pinned only for a name written as a literal: on a raw box, or as
- * the prop the shared field is handed. A name written as an expression is pinned
- * to be mentioned and no further, which is what lets the shared field's own
- * dynamic box pass - the docking tests are what hold those to the name they were
- * given.
+ * Membership is pinned only where the name is written as a literal: on a raw box
+ * inline, on the shared field as its prop. An expression is where the two paths
+ * part - a raw box's `data-editor={...}` passes on its mention alone, which is
+ * what lets the shared field's own dynamic box through, while a `Field` handed an
+ * expression is an offender, its prop being the only place the name is written.
+ * The docking tests are what hold each to the name it was given.
  */
 describe('the census of boxes that can take text', () => {
   it('every element that can take text names an editor from the closed set', () => {
