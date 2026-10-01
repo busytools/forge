@@ -2287,14 +2287,6 @@ impl Workspace {
         self.config.dictate.models_dir()
     }
 
-    /// The inputs a `/dictate` device pick can offer, plus the
-    /// configured pin. Blocking (the cpal device walk), so the TUI
-    /// calls it from a spawned task, never the render thread.
-    ///
-    /// # Errors
-    ///
-    /// When the audio stack cannot be enumerated at all; the overlay
-    /// renders the message in place of a list.
     /// The device this process records from, once a `/dictate` pick moved it.
     ///
     /// Volatile and process-wide rather than per session: a pick overrides the
@@ -2304,6 +2296,15 @@ impl Workspace {
         self.dictate_device_pick.lock().clone()
     }
 
+    /// The inputs a `/dictate` device pick can offer, plus the configured
+    /// pin. Blocking (the cpal device walk), so the TUI calls it from a
+    /// spawned task, never the render thread, and the socket answers its
+    /// `devices` request with it off the connection's task.
+    ///
+    /// # Errors
+    ///
+    /// When the audio stack cannot be enumerated at all; the overlay
+    /// renders the message in place of a list.
     pub fn dictate_device_catalog(&self) -> Result<crate::dictate::DictateDeviceCatalog, String> {
         let devices = forge_dictate::devices().map_err(|error| error.to_string())?;
         Ok(crate::dictate::DictateDeviceCatalog {

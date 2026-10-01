@@ -60,10 +60,10 @@ variant's own name rather than on `kind`:
 {"kind": "command", "command": {"cancel": {"key": {"org": "Acme", "project": "proj", "label": "lead"}}}, "reply_to": null}
 ```
 
-A command's variant is its name around its field bag - `Command` has 33
+A command's variant is its name around its field bag - `Command` has 34
 variants and every one is a struct variant. An update is the same shape one
 level in, `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 51 of `SessionUpdate`'s 56 variants are struct variants too. The other
+and 52 of `SessionUpdate`'s 57 variants are struct variants too. The other
 five are why the payload is not one shape: four are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"` - and one is a newtype,
@@ -143,6 +143,12 @@ and what it is made of is the server's business. `null` means there is
 nothing above the page it came with, and that is where a walk backwards
 ends.
 
+**`devices`** - the inputs forge can record from, and the `[dictate] device`
+pin, for a picker that offers them. **Asked on demand rather than
+subscribed**: the walk opens the microphone stack, and a subscription is
+re-read on every reconnect, so watching this would be a permission check per
+connection instead of one per picker.
+
 **`command {command, reply_to?}`** - any of the core's own commands, as
 the core's own enum. `reply_to` is absent or `null` on most of them, and
 the two mean the same thing - a `null` is what the field is if a client
@@ -185,6 +191,16 @@ was asked for.
   state rather than as an event: a card left at `0 ready, probing` looks
   like a slow probe rather than like a page that stopped listening.
 - **`page {conversation, turns, cursor}`** - in answer to `more`.
+- **`devices {devices, configured}`** - in answer to `devices`: every input
+  forge can record from, each with the id a pick sends back, the label a
+  picker draws, and whether the system would pick it. **`configured` is the
+  `forge.toml` pin only, not what is in force**: a pick moves the process's
+  input for the rest of the run and rides the home snapshot's
+  `dictate.device`, so a picker drawing `configured` as the current input is
+  wrong from its first pick onward. A walk that could not enumerate comes
+  back as an `error` naming `devices` instead, and that is what a view
+  renders where the list would have been - the two are the request's only
+  outcomes.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own
   words.
@@ -318,12 +334,13 @@ than facts about a session.
   advertises, `/config` among them. Some of those names open a dialog the
   CLI draws in a terminal; the name crosses and the surface does not, so a
   client that offers one is offering a command whose UI it cannot show.
-- **The dictation device catalog.** What crosses is the input a pick has
-  already moved this process to. The list of devices to pick FROM does
-  not: enumerating them is a blocking walk that trips a microphone check,
-  and what it names is the machine it ran on rather than the session, so
-  it stays with whoever captures. A client enumerates its own; forge's own
-  list stays with the terminal it captures in.
+- **The dictation device catalog as carried state.** What a record carries
+  is the input a pick has already moved this process to. The list of devices
+  to pick FROM is asked for on demand, one request for one answer
+  (`devices`), because enumerating them is a blocking walk that trips a
+  microphone check - and a record is encoded per request and re-sent on
+  every reconnect, so a field would be a permission check per frame and per
+  connection.
 - **Any rendering.** Glyphs, colours, weights, spacing, the order of a
   list and the label a row is spelled with are the client's. The test is
   whether removing a thing changes what the data IS or only how it is

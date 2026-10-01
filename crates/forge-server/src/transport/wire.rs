@@ -295,12 +295,13 @@ pub struct SlackWire {
 
 /// Dictation's preflight state.
 ///
-/// **The device catalog is not here and nothing asks for it.** Enumerating
-/// devices is a blocking walk on the machine running forge, which trips a
-/// microphone check - and a client is usually another machine, whose own
-/// devices are the ones it would capture from. So the catalog stays with
-/// whoever does the capturing, and what crosses is the input a pick has
-/// already moved this process to, in `device` below.
+/// **The device catalog is not a field here, and asking for it is its own
+/// read.** Enumerating devices is a blocking walk on the machine running
+/// forge, which trips a microphone check, and a record is encoded per request
+/// and re-sent on every reconnect - so a field would be a permission check per
+/// frame and per connection. What crosses here is the input a pick has already
+/// moved this process to, in `device` below; the list to pick FROM is asked
+/// for on demand and answered by the socket's `devices` message.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DictateWire {
@@ -315,6 +316,20 @@ pub struct DictateWire {
     /// The input a pick has moved this process to, over the configured pin.
     /// `None` means the pin stands.
     pub device: Option<forge_workspace::DictateDeviceChoice>,
+}
+
+/// One input forge can record from, as a picker draws it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DeviceWire {
+    /// The stable identity, which is what a pick sends back: names collide
+    /// between two identical interfaces and change when a user renames one.
+    pub id: String,
+    /// Human label for a picker. Not an identity.
+    pub name: String,
+    /// Whether the system would pick this one when asked for no particular
+    /// device.
+    pub is_default: bool,
 }
 
 /// One session, as a client sees it: every read a session-scoped view makes.

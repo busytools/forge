@@ -369,6 +369,19 @@ async fn handle_client(
             )
             .await
         }
+        ClientMessage::Devices => {
+            // The walk opens the microphone stack and takes as long as it
+            // takes, so it runs in a blocking task rather than inline. This
+            // connection is serialized behind it for that duration - the same
+            // way `more`'s fold holds its caller - and what it does NOT do is
+            // hold the runtime, so other connections and the rest of the
+            // server carry on.
+            let surface = Arc::clone(&state.surface);
+            let outcome = tokio::task::spawn_blocking(move || surface.dictate_device_catalog())
+                .await
+                .unwrap_or_else(|join| Err(join.to_string()));
+            send(socket, devices_answer(outcome)).await
+        }
         ClientMessage::Unsubscribe { what } => {
             // No answer: the client asked to stop hearing, and there is
             // nothing to say back.
@@ -508,6 +521,26 @@ async fn dispatch_answering(
     }
 }
 
+/// What a `devices` request is answered with: the walked list, or the walk's
+/// own refusal - which a client renders where the list would have been.
+fn devices_answer(outcome: Result<forge_workspace::DictateDeviceCatalog, String>) -> ServerMessage {
+    match outcome {
+        Ok(catalog) => ServerMessage::Devices {
+            devices: catalog
+                .devices
+                .iter()
+                .map(|device| crate::transport::wire::DeviceWire {
+                    id: device.id.clone(),
+                    name: device.name.clone(),
+                    is_default: device.is_default,
+                })
+                .collect(),
+            configured: catalog.configured,
+        },
+        Err(why) => ServerMessage::Error { what: "devices".to_owned(), why },
+    }
+}
+
 /// Dispatch a reply-carrying command, and answer the client that asked.
 ///
 /// A client that asked for an answer always hears one - INCLUDING a refusal,
@@ -611,5 +644,41 @@ mod tests {
             matches!(updates, Some((_, true))),
             "and the client is still counted as one that can answer",
         );
+    }
+
+    /// The walk's two outcomes as a client sees them: the list with its
+    /// configured pin, or the error a client renders where the list would
+    /// have been.
+    #[test]
+    fn a_devices_answer_carries_the_list_or_the_walks_refusal() {
+        let catalog = forge_workspace::DictateDeviceCatalog {
+            devices: vec![
+                forge_dictate::Device {
+                    id: "a-mic".to_owned(),
+                    name: "Studio Mic".to_owned(),
+                    is_default: true,
+                },
+                forge_dictate::Device {
+                    id: "b-mic".to_owned(),
+                    name: "Built-in".to_owned(),
+                    is_default: false,
+                },
+            ],
+            configured: Some("b-mic".to_owned()),
+        };
+        let ServerMessage::Devices { devices, configured } = devices_answer(Ok(catalog)) else {
+            panic!("a walked catalogue is answered with the list")
+        };
+        assert_eq!(devices.len(), 2, "every input the walk found crosses");
+        assert_eq!(devices[0].name, "Studio Mic", "with the label a picker draws");
+        assert!(devices[0].is_default, "and the mark the system would pick");
+        assert_eq!(configured.as_deref(), Some("b-mic"), "and the configured pin beside them");
+
+        let refused = devices_answer(Err("no audio host".to_owned()));
+        let ServerMessage::Error { what, why } = refused else {
+            panic!("a failed walk is refused rather than answered with an empty list")
+        };
+        assert_eq!(what, "devices", "the refusal names what was asked for");
+        assert_eq!(why, "no audio host", "and carries the walk's own reason");
     }
 }

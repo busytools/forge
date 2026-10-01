@@ -52,7 +52,7 @@ use forge_primitives::{Message, SessionSlot};
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_server::transport::PROTOCOL_VERSION;
 use forge_server::transport::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
-use forge_server::transport::wire::TurnWire;
+use forge_server::transport::wire::{DeviceWire, TurnWire};
 use forge_server::{Command, SessionUpdate};
 use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir, load_baseline_from};
 use serde_json::{Value, json};
@@ -229,7 +229,10 @@ macro_rules! assert_serde_names {
 }
 
 census!(ServerMessage,
-    [Greeting struct, Snapshot struct, Update struct, Page struct, Reply struct, Error struct],
+    [
+        Greeting struct, Snapshot struct, Update struct, Page struct,
+        Devices struct, Reply struct, Error struct,
+    ],
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
 census!(Subject,
@@ -282,7 +285,7 @@ census!(Command,
 // client writes these tags by hand, so a rename here fails nothing until the
 // command does nothing when it is pressed.
 census!(ClientMessage,
-    [Subscribe struct, Unsubscribe struct, Command struct, More struct],
+    [Subscribe struct, Unsubscribe struct, Command struct, More struct, Devices struct],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
 /// Where the records live, named by the protocol the server speaks rather
@@ -483,7 +486,7 @@ fn frames_record() -> Value {
         "a command's wire name moved"
     );
 
-    // All four, because they are cheap and the client writes these tags by
+    // All five, because they are cheap and the client writes these tags by
     // hand: nothing else in the tree would notice one moving.
     let client_messages = [
         ClientMessage::Subscribe { what: Subject::Home, answering: false },
@@ -493,6 +496,7 @@ fn frames_record() -> Value {
             reply_to: None,
         },
         ClientMessage::More { conversation: seat.clone(), before: None, turns: 1 },
+        ClientMessage::Devices,
     ];
     for sample in &client_messages {
         let encoded = serde_json::to_value(sample).expect("a client message encodes");
@@ -534,6 +538,17 @@ fn frames_record() -> Value {
                 messages: vec![json!({ "type": "user" })],
             }],
             cursor: Some("message-1".to_owned()),
+        }),
+    );
+    payload_sampled.insert(
+        "Devices".to_owned(),
+        shape_of(&ServerMessage::Devices {
+            devices: vec![DeviceWire {
+                id: "a-mic".to_owned(),
+                name: "Studio Mic".to_owned(),
+                is_default: true,
+            }],
+            configured: Some("a-mic".to_owned()),
         }),
     );
 
