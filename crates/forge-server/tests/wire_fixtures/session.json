@@ -21,7 +21,9 @@
     "take": null,
     "notice": null,
     "compacting": false,
-    "sign_in": null
+    "sign_in": null,
+    "bind": "right_cmd",
+    "mode": "auto"
   },
   "header": {
     "session_id": null,

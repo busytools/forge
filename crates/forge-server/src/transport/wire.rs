@@ -396,6 +396,15 @@ pub struct ComposerWire {
     pub notice: Option<NoticeWire>,
     pub compacting: bool,
     pub sign_in: Option<SignIn>,
+    /// The push-to-talk key and how a press maps onto a take, in the
+    /// vocabulary `forge.toml` accepts.
+    ///
+    /// **Carried rather than left to each client's default.** What a
+    /// keyboard press means is the user's own configuration, and a client
+    /// that drew the affordance from a hardcoded key would honour a
+    /// different chord on every install that moved it.
+    pub bind: String,
+    pub mode: String,
 }
 
 /// A take in flight, as its meter draws it.
@@ -1089,6 +1098,8 @@ async fn session(
                 notice: composer.notice(slot).map(NoticeWire::from),
                 compacting: composer.compacting(slot),
                 sign_in: composer.sign_in(slot).cloned(),
+                bind: surface.dictate_bind().label().to_owned(),
+                mode: surface.dictate_mode().label().to_owned(),
             }
         },
         work,
@@ -2199,6 +2210,68 @@ mod tests {
             "and the device it moved to is on the dictate read: {home}",
         );
         let _ = cwd;
+    }
+
+    /// The push-to-talk key and its press mapping reach the composer's record.
+    ///
+    /// A client draws the affordance the keyboard drives, and this is its only
+    /// read of what `forge.toml` configured: without it the key is whatever
+    /// the client hardcodes, which is the same for every install.
+    #[tokio::test]
+    async fn the_composer_carries_the_configured_bind_and_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).expect("the project's directory");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "\
+[[orgs]]
+name = \"TestOrg\"
+accounts = [\"Acct\"]
+
+[[orgs.projects]]
+name = \"proj\"
+path = \"{}\"
+
+[[accounts]]
+display_name = \"Acct\"
+token = \"t\"
+models = [\"claude-sonnet-5\"]
+provider = \"anthropic\"
+
+[dictate]
+enabled = true
+bind = \"left_cmd\"
+mode = \"toggle\"
+",
+                project.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace = Arc::new(
+            forge_workspace::Workspace::new_for_test(dir.path().to_owned()).expect("workspace"),
+        );
+        let state = TransportState {
+            surface: Arc::new(ViewSurface::new(workspace)),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let session =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+        assert_eq!(
+            session["composer"]["bind"], "left_cmd",
+            "the composer carries the configured push-to-talk key, not a default: {session}",
+        );
+        assert_eq!(
+            session["composer"]["mode"], "toggle",
+            "and how a press maps onto a take, not a default either: {session}",
+        );
     }
 
     /// The account a project's row chips, and its state.
