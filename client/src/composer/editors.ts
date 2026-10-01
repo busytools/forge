@@ -13,8 +13,14 @@
  * tree for one that forgot to say so.
  */
 
-/** The boxes that can take text. A closed set, so a new one cannot be forgotten. */
-export type Editor = 'composer' | 'dock' | 'connect' | 'nowhere';
+/**
+ * The boxes that can take text. A closed set, so a new one cannot be forgotten -
+ * and a value rather than a bare type, so the census can assert membership in it
+ * rather than a box's word for itself.
+ */
+export const EDITORS = ['composer', 'dock', 'connect', 'nowhere'] as const;
+
+export type Editor = (typeof EDITORS)[number];
 
 /** What the page knows that decides the keyboard, and nothing else. */
 export type Where = {

@@ -4,7 +4,12 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { focusOf, type Where } from './editors';
+import { EDITORS, focusOf, type Editor, type Where } from './editors';
+
+/** Whether a name a box gave itself is one of the editors, which is what makes it routable. */
+function isEditor(name: string): name is Editor {
+  return (EDITORS as readonly string[]).includes(name);
+}
 
 /** The client's source root, so the sweep does not depend on the process cwd. */
 const SRC = fileURLToPath(new URL('..', import.meta.url));
@@ -93,7 +98,7 @@ describe('which editor holds the keyboard', () => {
  * what prove a box actually carries it.
  */
 describe('the census of boxes that can take text', () => {
-  it('every element that can take text names its editor', () => {
+  it('every element that can take text names an editor from the closed set', () => {
     // The dev harness drives a box rather than owning one.
     const files = svelteUnder(SRC).filter((file) => !file.includes(`${path.sep}dev${path.sep}`));
     // A sweep that read nothing passes everything below it, which is the one
@@ -102,12 +107,32 @@ describe('the census of boxes that can take text', () => {
 
     const offenders: string[] = [];
     for (const file of files) {
-      for (const found of readFileSync(file, 'utf8').matchAll(/<(textarea|input)\b[^>]*>/g)) {
+      const where = path.relative(SRC, file);
+      const text = readFileSync(file, 'utf8');
+
+      // A raw box names its editor inline, so the name can be read here - and a
+      // name outside the set is one `focusOf` can never return.
+      for (const found of text.matchAll(/<(textarea|input)\b[^>]*>/g)) {
         if (!found[0].includes('data-editor')) {
-          offenders.push(`${path.relative(SRC, file)}: ${found[0]}`);
+          offenders.push(`${where}: ${found[0]} names no editor`);
+          continue;
+        }
+        const named = /data-editor="([^"]*)"/.exec(found[0])?.[1];
+        if (named !== undefined && !isEditor(named)) {
+          offenders.push(`${where}: ${named} is not an editor`);
         }
       }
+
+      // The shared field takes the name as a prop, which is where a surface
+      // declares it - and the arrow in a `field` callback puts a `>` inside the
+      // tag, so the tag is read to its own close rather than to the first one.
+      for (const found of text.matchAll(/<Field\b[\s\S]*?\/>/g)) {
+        const named = /editor="([^"]*)"/.exec(found[0])?.[1];
+        if (named === undefined) offenders.push(`${where}: ${found[0]} names no editor`);
+        else if (!isEditor(named)) offenders.push(`${where}: ${named} is not an editor`);
+      }
     }
+
     expect(offenders, 'a box that cannot name its editor cannot be routed to').toEqual([]);
   });
 });
