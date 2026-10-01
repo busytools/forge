@@ -156,12 +156,19 @@ export interface AttachedFile {
   bytes: number | null;
 }
 
-/** One thing a view draws, in the order the conversation produced it. */
+/**
+ * One thing a view draws, in the order the conversation produced it.
+ *
+ * `key` is the unit's identity in that list, and it exists because a live turn
+ * is re-folded whole on every frame: a thinking row can land ABOVE units
+ * already drawn, and a list keyed by position remounts everything below it,
+ * closing whatever the reader had open. Keyed by this, the row is moved.
+ */
 export type Unit =
   /** A turn the user wrote, with whatever they attached to it. */
-  | { kind: 'user'; text: string; files: AttachedFile[] }
+  | { kind: 'user'; key: string; text: string; files: AttachedFile[] }
   /** Prose the assistant wrote. */
-  | { kind: 'text'; text: string }
+  | { kind: 'text'; key: string; text: string }
   /**
    * What the model thought before it said anything.
    *
@@ -169,10 +176,10 @@ export type Unit =
    * dropped rather than a shape chosen: the row is drawn collapsed, carrying
    * the thinking's own first words.
    */
-  | { kind: 'thinking'; text: string }
+  | { kind: 'thinking'; key: string; text: string }
   /** A maximal run of consecutive tool calls, drawn as one group. */
-  | { kind: 'group'; families: FamilyLeaves[]; status: CallStatus }
-  | { kind: 'question'; asked: AnsweredQuestion[] }
+  | { kind: 'group'; key: string; families: FamilyLeaves[]; status: CallStatus }
+  | { kind: 'question'; key: string; asked: AnsweredQuestion[] }
   /**
    * A run of peer messages, drawn as one group with a lane per kind.
    *
@@ -180,11 +187,11 @@ export type Unit =
    * departs from the terminal: its own fold holds a messaging group back until
    * it holds two.
    */
-  | { kind: 'messages'; lanes: MessageLane[]; status: CallStatus }
-  | { kind: 'notice'; notice: Notice }
+  | { kind: 'messages'; key: string; lanes: MessageLane[]; status: CallStatus }
+  | { kind: 'notice'; key: string; notice: Notice }
   | { kind: 'hooks'; key: string; actions: number; infos: HookInfo[] }
   /** What a settled turn did, under the work it did it with. */
-  | { kind: 'report'; info: TurnInfo; key: string | null };
+  | { kind: 'report'; key: string; info: TurnInfo };
 
 /**
  * The tool a lifecycle block is drawn for, which the chat does not draw at all.
@@ -594,7 +601,7 @@ function address(fields: Record<string, unknown>): string | null {
 }
 
 /** The card a question call draws, with whatever the person answered. */
-function questionCard(input: unknown, answer: unknown): Unit {
+function questionCard(input: unknown, answer: unknown, key: string): Unit {
   const questions = obj(input)['questions'];
   const answers = obj(obj(answer)['answers']);
   const annotations = obj(obj(answer)['annotations']);
@@ -621,7 +628,7 @@ function questionCard(input: unknown, answer: unknown): Unit {
 
     asked.push({ question: text, picked_labels: picked, typed_note: typed === '' ? null : typed });
   }
-  return { kind: 'question', asked };
+  return { kind: 'question', key, asked };
 }
 
 /** One settled turn's report, from the frame that recorded it. */
@@ -857,8 +864,14 @@ export function fold(
     }
   }
 
+  /** What names a unit for the list: the frame it came from, and the part in it. */
+  const keyOf = (at: number, frame: Frame, part: string | number): string => {
+    const id = typeof frame.uuid === 'string' ? frame.uuid : `f${at}`;
+    return `${id}#${part}`;
+  };
+
   const units: Unit[] = [];
-  let run: Array<{ row: KindRow; label: string; leaf: ToolLeaf }> = [];
+  let run: Array<{ row: KindRow; label: string; leaf: ToolLeaf; key: string }> = [];
   let peers: PeerCard[] = [];
   let model: string | null = null;
   let thinking: number | null = null;
@@ -887,6 +900,7 @@ export function fold(
     }
     units.push({
       kind: 'group',
+      key: calls[0]?.key ?? `g-${units.length}`,
       families,
       status: aggregateStatus(calls.map((entry) => entry.leaf.status)),
     });
@@ -912,7 +926,12 @@ export function fold(
       seen.set(card.kind, lane);
       lanes.push(lane);
     }
-    units.push({ kind: 'messages', lanes, status: aggregateStatus(cards.map((c) => c.status)) });
+    units.push({
+      kind: 'messages',
+      key: `p-${cards[0]?.id ?? `batch-${units.length}`}`,
+      lanes,
+      status: aggregateStatus(cards.map((c) => c.status)),
+    });
   };
 
   const push = (unit: Unit): void => {
@@ -954,7 +973,7 @@ export function fold(
         if (actions > 0) {
           push({
             kind: 'hooks',
-            key: typeof frame.uuid === 'string' ? frame.uuid : 'hooks',
+            key: typeof frame.uuid === 'string' ? frame.uuid : `hooks-${at}`,
             actions,
             infos: (Array.isArray(frame.hookInfos) ? frame.hookInfos : []).map((info) => ({
               command: str(info, 'command') ?? '',
@@ -979,13 +998,15 @@ export function fold(
       units.push({
         kind: 'report',
         info: reportOf(frame, model, thinking, endedAt),
-        key: typeof frame.uuid === 'string' ? frame.uuid : null,
+        key: typeof frame.uuid === 'string' ? frame.uuid : `result-${at}`,
       });
       // The failure is a row of its own rather than a mark on the report: the
       // terminal states it the same way, as a line under the turn it belongs
       // to, and the report row is left saying only what the turn spent.
       const failure = turnFailure(frame);
-      if (failure !== null) units.push({ kind: 'notice', notice: failure });
+      if (failure !== null) {
+        units.push({ kind: 'notice', key: keyOf(at, frame, 'failure'), notice: failure });
+      }
       thinking = null;
       continue;
     }
@@ -996,7 +1017,11 @@ export function fold(
       // on the same frame, for the same reason.
       const said = str(frame, 'error');
       if (said !== null && said.trim() !== '') {
-        push({ kind: 'notice', notice: { severity: 'error', text: said } });
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'error'),
+          notice: { severity: 'error', text: said },
+        });
       }
       continue;
     }
@@ -1010,7 +1035,7 @@ export function fold(
     const files = frame.type === 'user' ? attachmentsOf(blocksOf(frame.message?.content)) : [];
     let tookFiles = false;
 
-    for (const block of blocksOf(frame.message?.content)) {
+    for (const [blockAt, block] of blocksOf(frame.message?.content).entries()) {
       if (block.type === 'text' && typeof block.text === 'string') {
         if (frame.type === 'user') {
           const envelope = inbound(stripEscapes(block.text), self);
@@ -1021,7 +1046,7 @@ export function fold(
               flushRun();
               peers.push(envelope.card);
             } else {
-              push(envelope);
+              push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });
             }
             continue;
           }
@@ -1030,10 +1055,15 @@ export function fold(
           // The attachments ride the frame's first turn of words: a second
           // text block in the same frame is the same reader saying more, not
           // the same file sent twice.
-          push({ kind: 'user', text: block.text, files: tookFiles ? [] : files });
+          push({
+            kind: 'user',
+            key: keyOf(at, frame, blockAt),
+            text: block.text,
+            files: tookFiles ? [] : files,
+          });
           tookFiles = true;
         } else {
-          push({ kind: 'text', text: block.text });
+          push({ kind: 'text', key: keyOf(at, frame, blockAt), text: block.text });
         }
         continue;
       }
@@ -1043,10 +1073,10 @@ export function fold(
         // whole point is the words it carries.
         if (block.thinking.trim() !== '') {
           // Not `push`: a thought is commentary ON the work rather than a
-          // separator between pieces of it, so the run stays whole across the
-          // row. The row draws above the group it interrupted.
-          flushPeers();
-          units.push({ kind: 'thinking', text: block.thinking });
+          // separator between pieces of it, so nothing is flushed here. The run
+          // stays whole across the row, and so does a batch of peer traffic -
+          // the row draws above both.
+          units.push({ kind: 'thinking', key: keyOf(at, frame, blockAt), text: block.thinking });
         }
         continue;
       }
@@ -1064,13 +1094,18 @@ export function fold(
             flushRun();
             peers.push(envelope.card);
           } else {
-            push(envelope);
+            push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });
           }
           continue;
         }
         // Otherwise it is a turn the reader took, so what the frame attached
         // rides it exactly as it rides one they typed.
-        push({ kind: 'user', text: words, files: tookFiles ? [] : files });
+        push({
+          kind: 'user',
+          key: keyOf(at, frame, blockAt),
+          text: words,
+          files: tookFiles ? [] : files,
+        });
         tookFiles = true;
         continue;
       }
@@ -1087,13 +1122,20 @@ export function fold(
           continue;
         }
         if (isQuestion(name)) {
-          push(questionCard(block.input, answers.get(id)));
+          push(
+            questionCard(
+              block.input,
+              answers.get(id),
+              id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
+            ),
+          );
           continue;
         }
         flushPeers();
         run.push({
           row: rowOf(name),
           label: labelOf(name),
+          key: id !== '' ? `c-${id}` : keyOf(at, frame, blockAt),
           leaf: leafOf(id, name, block.input, results.get(id), cwd, tasks.get(id), abandoned),
         });
         continue;
@@ -1109,7 +1151,7 @@ export function fold(
     // A frame that attached something and said nothing is still a turn the
     // reader took, and the row draws what they sent rather than nothing.
     if (frame.type === 'user' && !tookFiles && files.length > 0) {
-      push({ kind: 'user', text: '', files });
+      push({ kind: 'user', key: keyOf(at, frame, 'files'), text: '', files });
     }
   }
 

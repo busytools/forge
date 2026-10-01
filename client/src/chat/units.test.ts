@@ -114,12 +114,44 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const groups = units.filter((unit) => unit.kind === 'group');
+    expect(kinds(units), 'the row draws above the run it interrupted').toEqual([
+      'thinking',
+      'group',
+    ]);
     expect(
       units.filter((u) => u.kind === 'thinking'),
       'the words still draw',
     ).toHaveLength(1);
     expect(groups, 'one run, not two').toHaveLength(1);
     expect(groups[0]?.kind === 'group' ? groups[0].families[0]?.calls.length : 0).toBe(2);
+  });
+
+  it('keeps a message batch whole across a thinking row', () => {
+    // The class list calls a run of peer messages a tool run, so the same rule
+    // holds: a thought between two messages is commentary, not a separator. The
+    // round measured thirteen of ninety-four real turns changing by exactly
+    // this unit when the batch split.
+    const tell = (n: number): unknown =>
+      said([
+        use(`toolu_tell_${n}`, 'mcp__forge__agents__tell', { project: 'x', message: `m${n}` }),
+      ]);
+
+    const units = fold([
+      tell(1),
+      said([{ type: 'thinking', thinking: 'between the messages', signature: 's' }]),
+      tell(2),
+    ]);
+
+    const batches = units.filter((unit) => unit.kind === 'messages');
+    expect(kinds(units), 'the row draws above the whole batch').toEqual(['thinking', 'messages']);
+    expect(batches, 'one batch, not two').toHaveLength(1);
+    const cards =
+      batches[0]?.kind === 'messages' ? batches[0].lanes.flatMap((lane) => lane.cards) : [];
+    expect(cards, 'with both messages in it').toHaveLength(2);
+    expect(
+      units.filter((u) => u.kind === 'thinking'),
+      'the words still draw',
+    ).toHaveLength(1);
   });
 
   it('breaks the run on anything that is not a call', () => {

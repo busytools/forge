@@ -95,7 +95,7 @@
     </div>
   {:else}
     <div class="work">
-      {#each block.units as unit, index (`${at}-${index}`)}
+      {#each block.units as unit, index (unit.key)}
         {#if compacting && at === layout.length - 1 && index === block.footer}
           <Compacting />
         {/if}

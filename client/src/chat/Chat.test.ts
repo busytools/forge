@@ -413,4 +413,54 @@ describe('the chat column as it draws', () => {
     expect(html, 'marked by the counterparty class').toContain('i-bot');
     expect(html, 'and labelled by its sender').toContain('forge/steward');
   });
+
+  it('keeps a row the reader opened mounted when a thinking row lands above it', () => {
+    // A thinking unit lands ABOVE the run it interrupted, so every unit below
+    // it shifts position - and a list keyed by position remounts that whole
+    // subtree, closing whatever the reader had open, again for every thought on
+    // a turn that keeps running. The units carry an identity of their own so
+    // the row is moved rather than rebuilt, and this pins the DOM element -
+    // the element itself surviving is the observable, because a remount is a
+    // new element where the reader had an open one.
+    const frame = (uuid: string, content: unknown[]): unknown => ({
+      type: 'assistant',
+      uuid,
+      message: { id: `m-${uuid}`, role: 'assistant', model: 'claude-opus-5', content },
+    });
+    const appended = (msg: unknown): ServerMessage => ({
+      kind: 'update',
+      update: { chat_appended: { key: LEAD, msg } },
+    });
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    server.send(
+      appended({
+        type: 'user',
+        uuid: 'u-live',
+        message: { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      }),
+    );
+    server.send(
+      appended(
+        frame('a1', [
+          { type: 'tool_use', id: 'toolu_r1', name: 'Read', input: { file_path: 'src/lib.rs' } },
+        ]),
+      ),
+    );
+
+    // The call drew as a row that opens, and the reader opens it.
+    const row = document.querySelector<HTMLDetailsElement>('details.leaf');
+    expect(row, 'the call drew as a row that opens').not.toBeNull();
+    if (row !== null) row.open = true;
+
+    // Now a thought lands between that call and whatever comes next.
+    server.send(
+      appended(frame('a2', [{ type: 'thinking', thinking: 'about the file', signature: 's' }])),
+    );
+
+    expect(row?.isConnected, 'the row the reader opened is the row still on the page').toBe(true);
+    expect(row?.open, 'and it is still open').toBe(true);
+    expect(drawn(), 'the thought drew beside it').toContain('about the file');
+  });
 });
