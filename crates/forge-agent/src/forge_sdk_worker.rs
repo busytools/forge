@@ -2269,7 +2269,7 @@ mod tests {
     /// `isMeta`, and the mark has to survive the whole read the resume
     /// uses - the scan, then the raw-row handoff into the replay
     /// synthesizer - or a view draws the harness speaking as the
-    /// reader's own words (issue #1449).
+    /// reader's own words.
     #[test]
     fn load_history_messages_carries_the_clis_synthetic_stamp() {
         use std::fmt::Write as _;

@@ -474,27 +474,17 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
         }
 
         let msg = &history_messages[i];
-        // The raw walker (`handle_sdk_message`) processes user
-        // messages by walking tool_results only - live wire user
-        // text content blocks are echoes of the user's input that
-        // the input handler already rendered, so the walker
-        // correctly drops them. Replay has no input handler
-        // contribution, so render the user text content blocks here
-        // before dispatch.
-        // A stamped turn is the harness speaking: the walker below draws it on
-        // a line of its own, and drawing it here as well would show the same
-        // words twice - once of them as the reader's, which is #1449's
-        // misattribution.
+        // A stamped turn is the harness speaking, and the walker below draws
+        // it on a line of its own - drawing it here too would show the same
+        // words twice, the second time as the reader's. Replay has no input
+        // handler contribution, so the unmarked turns, which are the reader's
+        // own words, render here before dispatch.
         if let forge_primitives::Message::User { message: envelope, .. } = msg
             && !super::sdk_message::is_harness_user_turn(msg)
         {
-            // Render replay-time user text content blocks. The live raw
-            // walker drops user text (those are echoes of input the input
-            // handler already rendered); replay has no input handler
-            // contribution, so render here. Only clear the active-turn
-            // assistant pointer when we're about to actually render - an
-            // empty Text block isn't a render and shouldn't move the
-            // pointer.
+            // Only clear the active-turn assistant pointer when we're about
+            // to actually render - an empty Text block isn't a render and
+            // shouldn't move the pointer.
             let mut rendered_user_text = false;
             for block in &envelope.content {
                 if let forge_primitives::ContentBlock::Text { text } = block {
@@ -1701,9 +1691,9 @@ mod tests {
         );
     }
 
-    /// Issue #1449, both halves on one rule: a user turn the CLI stamped as
-    /// synthetic is the harness speaking, so a view draws it, and never as
-    /// the reader's own words.
+    /// Both halves on one rule: a user turn the CLI stamped as synthetic is
+    /// the harness speaking, so a view draws it, and never as the reader's
+    /// own words.
     ///
     /// Live, the walker dropped every wire user text as an input echo the
     /// input handler had already drawn. On resume the replay drew this same
