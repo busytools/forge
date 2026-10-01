@@ -12,19 +12,18 @@ For ANY substantial task the user hands you, your first move is to spin up a wor
 4. **Merge** on green (per the project's push/merge policy) - never work around a confirmation prompt.
 5. **Despawn** it cleanly, via the graceful handshake below, once it has handed over what you spawned it to produce - a merged PR, but equally a written report, an answered question, a finished sweep. A worker whose output is not a PR has no merge to wait for, and still needs closing.
 
-When a task splits into genuinely independent pieces, run 2-3 workers in PARALLEL on disjoint subsystems (Selective parallelism, below). Spinning up ad-hoc workers and despawning them IS the job; reach for this loop by default, not only when prompted.
+When a task splits into genuinely independent pieces, run workers in PARALLEL on disjoint subsystems, up to the project's capacity (Selective parallelism, below). Spinning up ad-hoc workers and despawning them IS the job; reach for this loop by default, not only when prompted.
 
 ### Spawning + kicking (the footgun)
 A `agents__spawn` with an inline charter does NOT auto-start the worker - the charter lands in its system prompt but it sits idle until its first user-turn message. ALWAYS pass `kick` (or immediately follow with an `agents__tell`) that kicks off the task; a "begin now" line in the charter does NOT run on its own. A silently-idle worker reads as progress when there is none.
 
 ### Selective parallelism
-Default is NOT strictly one-at-a-time: run 2-3 ad-hoc workers CONCURRENTLY on DISJOINT work, reviewing + merging each PR individually. Reach for it when the work has genuinely independent pieces; don't serialize what needn't be serial. SELECTIVE, not blanket fan-out - the guardrails are why:
+Default is NOT strictly one-at-a-time: run ad-hoc workers CONCURRENTLY on DISJOINT work, up to the project's capacity, reviewing + merging each PR individually. Reach for it when the work has genuinely independent pieces; don't serialize what needn't be serial. The guardrails below are the only things that hold you under the project's cap:
 1. DB migrations are a linear numbered sequence - at most ONE in-flight migration branch at a time (parallel branches grabbing "the next number" collide).
-2. Never run parallel branches that edit the SAME files - conflicts/rebases erode the win. Split by disjoint subsystem.
+2. Never run parallel branches that edit the SAME files - conflicts/rebases erode the win. Split by disjoint subsystem: this is the binding constraint in practice, and how many workers run is what it leaves, not a figure written into the prose.
 3. One main, one version line - you still SERIALIZE merges, version bumps, releases (one PR merged at a time).
-4. Review is the quality gate - too many concurrent PRs invites rubber-stamping. If you can't review each properly, you've spawned too many.
-5. Cost scales ~linearly with live worker count.
-Sweet spot: 2-3 workers on disjoint subsystems, <=1 migration among them, merged one PR at a time.
+4. Review is the quality gate - every PR you merge you read properly, never a rubber-stamp; if review throughput is what is holding you under the cap, name it as the guardrail.
+Fill the capacity: run up to the project's `max_workers` in `forge.toml`, which `agents__capacity` reports alongside the live count and the free slots. Hold a slot back only when a guardrail above blocks the next piece, and say plainly which one - a slot standing free beside a non-empty queue with no stated reason is the failure this rule exists to prevent. Most of a piece's wall-clock cost is waiting, CI above all, and waits overlap completely across pieces, so serialising on anything short of a real file conflict buys nothing.
 
 ### Despawning an ad-hoc worker (the clean close)
 `agents__despawn(label, force?)` is LEAD-ONLY - workers never despawn themselves (same fragile "am I done?" trap as auto-close). Always run the graceful handshake:

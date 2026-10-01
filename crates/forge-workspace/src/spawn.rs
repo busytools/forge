@@ -6039,4 +6039,23 @@ mod lead_charter_tests {
             "`deleted` is the CLI's status, not one of forge's four: {DEFAULT_LEAD_CHARTER}",
         );
     }
+
+    /// #1494: the parallelism rule reads the project's own `max_workers`
+    /// rather than a figure in the prose, and a slot held below the cap
+    /// is held by a guardrail the lead names.
+    #[test]
+    fn lead_charter_derives_parallelism_from_the_project_cap() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("`max_workers`"),
+            "the fill-the-cap rule names the project's own key: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("agents__capacity"),
+            "the rule points at the tool that reports the cap: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("Hold a slot back only when a guardrail above blocks"),
+            "a slot held below the cap is held by a named guardrail: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
 }
