@@ -627,10 +627,6 @@ pub struct UserEnvelope {
     pub content: Vec<ContentBlock>,
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
 fn deserialize_user_content<'de, D>(de: D) -> Result<Vec<ContentBlock>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -961,11 +957,11 @@ enum MessageRepr {
         tool_use_result: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timestamp: Option<String>,
-        // Skipped when false so unmarked frames keep the shape every
-        // existing fixture and relayed payload was written against.
-        #[serde(default, rename = "isSynthetic", skip_serializing_if = "is_false")]
+        // The predicate is `not`, so only a set stamp is written: an unmarked
+        // frame keeps the shape every existing fixture and relayed payload was
+        // written against.
+        #[serde(default, rename = "isSynthetic", skip_serializing_if = "std::ops::Not::not")]
         synthetic: bool,
-
     },
     System(SystemRepr),
     RateLimitEvent {
