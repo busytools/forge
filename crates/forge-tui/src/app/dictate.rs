@@ -1273,17 +1273,27 @@ mod tests {
 
     #[test]
     fn a_new_take_carries_the_analytic_in_flight_colour() {
+        // Float slack for the two `powf` evaluations the bracket compares,
+        // not clock slack: the bracket absorbs whatever instant the reducer
+        // sampled.
+        const ROUNDING: f32 = 1e-3;
         let mut app = App::test_default();
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         let started = Instant::now()
             .checked_sub(Duration::from_millis(200))
             .expect("a 200 ms backdate is safe");
+        let afterglow = DictateBorder::Afterglow { started, rgb: BLUE, beat: true };
         {
             let bucket = app.session_mut(&key).expect("bucket");
-            bucket.dictate_border =
-                Some(DictateBorder::Afterglow { started, rgb: BLUE, beat: true });
+            bucket.dictate_border = Some(afterglow.clone());
         }
 
+        // The reducer samples the clock itself, so the test cannot hold the
+        // instant the carry reads. It brackets that instant instead: every
+        // instant between these two reads eases along the same BLUE -> GREEN
+        // arc, so the carried colour must lie between the two analytic
+        // colours the test can compute for them.
+        let before = Instant::now();
         apply_session_update(
             &mut app,
             SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
@@ -1293,16 +1303,17 @@ mod tests {
             let border = bucket.dictate_border.as_ref().expect("the new take holds a border");
             border.rgb()
         };
-        let in_flight = afterglow_colour(
-            &DictateBorder::Afterglow { started, rgb: BLUE, beat: true },
-            Instant::now(),
-        )
-        .expect("the afterglow is still inside its window");
-        assert!(
-            colour_distance(carried, in_flight) < 0.5,
-            "a re-dictate mid-afterglow carries the eased colour, not the frozen rgb: \
-             carried {carried:?} against in-flight {in_flight:?}"
-        );
+        let after = Instant::now();
+        let lo = afterglow_colour(&afterglow, before).expect("the bracket opens inside the beat");
+        let hi = afterglow_colour(&afterglow, after).expect("the bracket closes inside the beat");
+        for (channel, &value) in carried.iter().enumerate() {
+            let (low, high) = (lo[channel].min(hi[channel]), lo[channel].max(hi[channel]));
+            assert!(
+                value >= low - ROUNDING && value <= high + ROUNDING,
+                "a re-dictate mid-afterglow carries the eased colour, so channel {channel} \
+                 at {value} must lie between the bracket's {low} and {high}"
+            );
+        }
         assert!(
             colour_distance(carried, BLUE) > 1.0,
             "the frozen rgb would be a snap, got {carried:?}"
