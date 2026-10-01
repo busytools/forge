@@ -27,18 +27,21 @@ const TEXT = 4.5;
 const MARK = 3;
 
 /**
- * The ceiling the page's prose sits under.
+ * The band the page's prose sits in, above WCAG's own floor for the pair.
  *
- * The floors are WCAG's; this is the other end of the same band and it is this
- * project's own, because the standard has nothing to say about text drawn too
- * bright. The reference is the terminal, which draws body text at 6.10:1
- * (Ghostty `GitHub Dark`: fg #8b949e on #101216) and nothing near white. The
- * page's ground is darker and its lower tiers are AA-floored, so it cannot
- * follow the terminal down that far: prose has to stay clearly above `--muted`
- * (7.01:1), which puts this tier's band between roughly 10 and 14. 14 is the
- * top of it, named so that a later "the chat looks dim" cannot put `--text`
- * back where it was, at 17.51:1.
+ * Both ends are this project's, because the standard has nothing to say about
+ * text drawn too bright. The reference is the terminal, which draws body text
+ * at 6.10:1 (Ghostty `GitHub Dark`: fg #8b949e on #101216) and nothing near
+ * white. The page's ground is darker and its lower tiers are AA-floored, so it
+ * cannot follow the terminal down that far: prose has to stay clearly above
+ * `--muted` (7.01:1), which puts this tier between roughly 10 and 14.
+ *
+ * Both ends are enforced rather than described: 14 is where a later "the chat
+ * looks dim" cannot put `--text` back to, since it measured 17.51:1, and 10 is
+ * where a softer step stops reading as the brightest tier and starts
+ * flattening into the one below it.
  */
+const PROSE_FLOOR = 10;
 const PROSE_CEILING = 14;
 
 /**
@@ -138,7 +141,7 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  * below it.
  */
 const DRAWN: readonly Pair[] = [
-  ['--text', '--bg', TEXT, PROSE_CEILING],
+  ['--text', '--bg', PROSE_FLOOR, PROSE_CEILING],
   ['--text', '--s1', TEXT],
   ['--text', '--s2', TEXT],
   ['--muted', '--bg', TEXT],
@@ -217,8 +220,24 @@ describe('the palette', () => {
    */
   it('finds a pair drawn past its ceiling', () => {
     expect(
-      outOfBand([['--text', '--bg', TEXT, 10]], rootTokens(null)),
+      outOfBand([['--text', '--bg', TEXT, 12]], rootTokens(null)),
       'prose against a ceiling under its own value',
+    ).toHaveLength(1);
+  });
+
+  /**
+   * The floor's control, on the prose row's own numbers: the branch is already
+   * covered by the pair one ground apart, but a floor weakened to 0 would
+   * leave every other test here green. This grey clears AA and still sits
+   * under the floor, which is the flattening the band exists to stop.
+   */
+  it('finds prose drawn under its floor', () => {
+    expect(
+      outOfBand([['--text', '--bg', PROSE_FLOOR, PROSE_CEILING]], {
+        '--text': '#a4afbd',
+        '--bg': '#04050a',
+      }),
+      'a grey above AA and under the prose floor',
     ).toHaveLength(1);
   });
 
