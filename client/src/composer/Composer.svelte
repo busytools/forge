@@ -209,8 +209,9 @@
     beat = true;
     // The words come with the keyboard, so an immediate Enter sends what just
     // landed. The guards above already make this the landing rather than every
-    // frame; this field is null while a prompt has the box, and the dock
-    // focuses its own.
+    // frame. When the words went to the dock this handle still holds the element
+    // the prompt replaced - destroyed with the box, so detached, and taking no
+    // focus - and the dock brings its own box back from its `land`.
     field?.focus();
     const timer = setTimeout(() => {
       beat = false;
