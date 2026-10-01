@@ -38,6 +38,7 @@ describe('the handle a list registers at the seam', () => {
     app = mount(Swapped, { target: document.body, props: { swapped } });
     await settle();
     expect(list(), 'the first list registered itself as it mounted').not.toBeNull();
+    const first = list();
 
     swapped.set(true);
     flushSync();
@@ -46,9 +47,10 @@ describe('the handle a list registers at the seam', () => {
       document.querySelectorAll('.conv'),
       'the swap left exactly the replacement list on screen',
     ).toHaveLength(1);
+    expect(list(), 'the seam still holds a handle with a list on screen').not.toBeNull();
     expect(
       list(),
-      'a list that leaves in the same flush as its replacement must not clear the seam',
-    ).not.toBeNull();
+      'the handle belongs to the replacement list, not to the one that departed',
+    ).not.toBe(first);
   });
 });
