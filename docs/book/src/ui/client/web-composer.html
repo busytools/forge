@@ -74,12 +74,19 @@
   /* The ring's colour is the box's state, and what it is DOING wins over focus:
      recording, transcribing, the landed beat and an error each take it, and at
      rest it answers whether the keyboard is here. The `:not` list is what states
-     that precedence rather than leaving it to source order. */
-  .box.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
-  .box.tr { border-color: var(--blue); }
-  .box.done { border-color: var(--ok); }
-  .box.err { border-color: var(--bad); }
-  .box:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
+     that precedence rather than leaving it to source order.
+
+     The dock is the box morphed into a panel, so it carries THIS ring rather than
+     a second copy of it, and the swatches in the dock's section read the same
+     rules - one declaration per state, so a swatch cannot drift from the panel it
+     stands for. */
+  .box.rec, .dock.rec, .swatch.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
+  .box.tr, .dock.tr, .swatch.tr { border-color: var(--blue); }
+  .box.done, .dock.done, .swatch.done { border-color: var(--ok); }
+  .box.err, .dock.err, .swatch.err { border-color: var(--bad); }
+  .box:focus-within:not(.rec, .tr, .done, .err),
+  .dock:focus-within:not(.rec, .tr, .done, .err),
+  .swatch.foc { border-color: var(--accent); }
   .line { display: flex; align-items: flex-end; gap: 10px; }
   .line .txt { flex: 1; min-width: 0; font-size: var(--fs-prose); line-height: 1.5;
     white-space: pre-wrap; word-break: break-word; }
@@ -201,54 +208,112 @@
   .ac .grp { padding: 7px 13px 2px; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
 
-  /* ---------- the dock: the box morphed into a prompt ---------- */
-  .dock { border: 1.5px solid rgba(244,118,0,.75); border-radius: 16px;
+  /* ---------- the dock: the box morphed into a prompt ----------
+     The panel IS the box, so it carries the box's own ring - the rules above,
+     not a second copy of them - and everything inside stays quiet. One narrow
+     gutter for the mark, one text column, and two sizes doing two jobs: the
+     panel's own line under the header, and an option's description a step below
+     it so it supports its name instead of competing with the question. */
+  .dock { border: 1.5px solid var(--ctl); border-radius: 16px;
     background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86));
     box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 15px 17px;
-    display: flex; flex-direction: column; gap: 11px; }
-  .dock .queue { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+    display: flex; flex-direction: column; gap: 11px;
+    transition: border-color .3s ease; }
+
+  /* the ring, drawn from the same declarations the box and the panel read */
+  .strip { display: flex; gap: 9px; flex-wrap: wrap; }
+  .strip .cell { width: 174px; }
+  .strip .swatch { height: 34px; border: 1.5px solid var(--ctl); border-radius: 11px;
+    background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86)); }
+  .strip .cap { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    margin-top: 3px; }
+
+  .dock .queue { display: flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+  .dock .queue .more { transform: rotate(90deg); }
   .dock .head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
   .dock .head .qm { color: var(--accent); font-weight: 700; flex: none; }
   .dock .head .t { font-weight: 650; color: var(--text); }
-  .dock .head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data); }
-  .dock .reason { color: var(--warn); font-size: var(--fs-base); }
-  .dock .desc { color: var(--dim); font-size: var(--fs-base); }
+  .dock .head .t.mono { font-family: var(--mono); font-weight: 500; }
+  .dock .head .q { margin-left: auto; color: var(--dim); font-family: var(--mono);
+    font-size: var(--fs-data); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  /* "Q1 of 1" tells you nothing, so the counter is drawn only when it does. */
+  .dock .head .q.one { visibility: hidden; }
+  /* The panel's own line, which is the question or the reason a permission was
+     asked. It belongs to the panel rather than to a row, so it outranks an
+     option's own description rather than matching it. */
+  .dock .sub { color: var(--muted); font-size: var(--fs-data); }
+  .dock .sub.warn { color: var(--warn); }
+  /* The panel's line belongs to the head it explains, so it sits closer to it
+     than the dock's own rhythm would put it. */
+  .dock .head + .sub { margin-top: -5px; }
+
+  /* ---- the options: one gutter, one text column, compact rows ---- */
   .dock .opts { display: flex; flex-direction: column; gap: 1px; }
-  .opt { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
-    border-radius: 9px; font-size: var(--fs-base); cursor: pointer; }
-  .opt .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
+  .opt { display: grid; grid-template-columns: 18px minmax(0, 1fr); column-gap: 10px;
+    align-items: baseline; padding: 5px 9px; border-radius: 8px; cursor: pointer;
+    border: 1px solid transparent; font-size: var(--fs-base); }
+  .opt:hover { background: rgba(27,33,48,.5); }
+  .opt.sel { background: var(--sel); }
+  .opt:focus-within { border-color: var(--accent); }
+  .opt .mk { display: flex; align-items: center; justify-content: center;
+    height: 18px; align-self: center; }
+  /* The control is the platform's own, tinted rather than drawn: real focus and
+     a real tab order, and the whole row is the target because the row is a
+     label. */
+  .opt input { appearance: none; -webkit-appearance: none; margin: 0; width: 16px;
+    height: 16px; border: 1.5px solid var(--ctl); background: transparent;
+    display: grid; place-items: center; cursor: pointer;
+    transition: border-color .12s, background-color .12s; }
+  .opt input[type=radio] { border-radius: 50%; }
+  .opt input[type=checkbox] { border-radius: 4px; }
+  .opt:hover input { border-color: var(--muted); }
+  .opt input:checked { border-color: var(--ok); }
+  .opt input[type=checkbox]:checked { background: var(--ok); }
+  .opt input[type=checkbox]:checked::after { content: ""; width: 8px; height: 4px;
+    border: 2px solid var(--bg); border-top: 0; border-right: 0;
+    transform: rotate(-45deg) translateY(-1px); }
+  .opt input[type=radio]:checked::after { content: ""; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--ok); }
+  /* A permission has nothing to check - the choices are the kinds themselves -
+     so the mark in the gutter IS the choice, in the control's own column. */
   .opt .ic { color: var(--dim); }
   .opt .ic.ok { color: var(--ok); }
   .opt .ic.no { color: var(--bad); }
   .opt .ic.ed { color: var(--blue); }
-  .opt .lbl { color: var(--dim); }
-  .opt.sel { background: var(--sel); }
-  .opt.sel .lbl { color: var(--text); font-weight: 600; }
-  .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
-    border: 1.5px solid var(--ctl); display: grid; place-items: center; }
-  .opt .box2.on { border-color: var(--ok); color: var(--ok); }
-  .opt .box2 svg { width: 11px; height: 11px; }
-  .dock .notes { margin-left: 31px; border: 1px solid var(--ctl); border-radius: 9px;
-    padding: 7px 11px; font-size: var(--fs-base); color: var(--text);
-    background: rgba(13,17,26,.6); }
-  .dock .keys { display: flex; gap: 14px; font-family: var(--mono);
-    font-size: var(--fs-label); color: var(--dim); padding-left: 31px; }
+  .opt .tx { min-width: 0; }
+  .opt .nm { color: var(--muted); display: block; }
+  .opt.sel .nm { color: var(--text); font-weight: 600; }
+  /* The description supports the name rather than competing with it: one step
+     down, and on a line of its own so the name is never pushed around by it. */
+  .opt .why { display: block; color: var(--dim); font-size: var(--fs-label);
+    font-weight: 400; margin-top: 1px; max-width: 72ch; }
+  .opt.sel .why { color: var(--muted); }
+  /* The own-words row's editor, inline under the row that opened it. Detached to
+     the foot of the panel it would be a second place to look. */
+  .opt .ed { margin-top: 7px; border: 1px solid var(--ctl); border-radius: 8px;
+    padding: 7px 10px; font-size: var(--fs-data); color: var(--text);
+    background: rgba(4,5,10,.55); }
+
+  /* The keys sit in the text column, under the names they act on. The 38px is the
+     option's own arithmetic - 1px border, 9px padding, the 18px gutter, the 10px
+     column gap - so the keys and the descriptions share one left edge. */
+  .dock .keys { display: flex; gap: 14px; flex-wrap: wrap; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); padding-left: 38px; }
   .dock .keys .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
-  .dock .body { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-  .dock .body .r { display: flex; gap: 10px; padding: 6px 12px; font-family: var(--mono);
-    font-size: var(--fs-data); }
-  .dock .body .r .k { color: var(--dim); width: 108px; flex: none; }
-  .dock .body .r .v { color: var(--muted); overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; }
+
+  /* What the marked option would do, which belongs to the panel rather than to a
+     row: it sits under the options, so the list never moves as the mark does. */
+  .dock .preview { margin-left: 38px; border: 1px solid var(--line); border-radius: 9px;
+    padding: 7px 11px; font-family: var(--mono); font-size: var(--fs-data);
+    color: var(--muted); white-space: pre-wrap; }
+
   /* The message itself, set apart because it is the thing being approved. */
   .dock .sent { font-size: var(--fs-base); color: var(--text); white-space: pre-wrap;
     font-family: var(--mono); border: 1px solid var(--line); border-left: 2px solid var(--accent);
     border-radius: 0 10px 10px 0; padding: 9px 13px;
     background: linear-gradient(90deg, rgba(244,118,0,.07), transparent); }
-  .blip { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
-    font-size: var(--fs-label); color: var(--dim); padding-left: 31px; }
-  .blip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
-    animation: pulse 1.05s ease-in-out infinite; }
 </style>
 </head>
 <body>
@@ -265,6 +330,7 @@
   <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 6 2 7 2 7H4s2-1 2-7"/><path d="M10.5 20a2 2 0 0 0 3 0"/></symbol>
   <symbol id="i-smile" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/></symbol>
   <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
 </svg>
 
 <header>
@@ -574,12 +640,29 @@ way the TUI does it &#8212; the slot always says why it is not accepting keys.</
 
 <h2>The prompt dock</h2>
 <p class="note">The part that matters most, and the part the web can do better than a
-character grid. The box morphs into the prompt: your eye is already in that slot, so a
-permission request arrives where you were about to type rather than somewhere else on the
-screen. Options are clickable rows with the real icon for their meaning, the keyboard still
-works, and your in-flight draft is held and restored around the whole thing.</p>
+character grid. The box morphs into the prompt: <b>the panel IS the box</b>, so it carries
+the same ring, and your eye is already in that slot - a permission request arrives where
+you were about to type rather than somewhere else on the screen. Everything inside stays
+quiet. <b>One narrow gutter for the mark, one text column</b>: the name is the row's own
+line at full size, and an option's description supports it a step down at the label size,
+so four options still read as a list. Your in-flight draft is held and restored around the
+whole thing.</p>
 
 <div class="stage">
+  <div class="lab">the ring &middot; the composer's own five states, and the rest state</div>
+  <div class="strip">
+    <div class="cell"><div class="swatch"></div><div class="cap">at rest</div></div>
+    <div class="cell"><div class="swatch foc"></div><div class="cap">focused</div></div>
+    <div class="cell"><div class="swatch rec"></div><div class="cap">recording</div></div>
+    <div class="cell"><div class="swatch tr"></div><div class="cap">transcribing</div></div>
+    <div class="cell"><div class="swatch done"></div><div class="cap">the landed beat</div></div>
+    <div class="cell"><div class="swatch err"></div><div class="cap">an error</div></div>
+  </div>
+  <p class="note" style="margin:0">The swatches above carry the same declarations the box
+  and the panel read rather than a copy of them, so a state cannot drift from its own
+  drawing. What the panel is DOING wins over focus, and at rest the ring answers whether
+  the keyboard is here - which is why the state is on the ring rather than on a label.</p>
+
   <div class="row">
     <div class="col">
       <div class="lab">permission &middot; common case</div>
@@ -587,77 +670,103 @@ works, and your in-flight draft is held and restored around the whole thing.</p>
         <div class="head"><span class="t mono">Bash</span>
           <span class="q">git push origin polish/rate-limit-chip-softer-34</span></div>
         <div class="opts">
-          <div class="opt sel"><span class="cur">&#9656;</span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow once</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow always for Bash &#183; git push *</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic ed"><use href="#i-edit"/></svg><span class="lbl">Allow with edits</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic"><use href="#i-dots"/></svg><span class="lbl">Tell Claude something else</span></div>
+          <div class="opt sel"><span class="mk">
+            <svg class="ic ok"><use href="#i-check"/></svg></span>
+            <span class="tx"><span class="nm">Allow once</span></span></div>
+          <div class="opt"><span class="mk">
+            <svg class="ic ok"><use href="#i-check"/></svg></span>
+            <span class="tx"><span class="nm">Allow always for Bash &#183; git push *</span></span></div>
+          <div class="opt"><span class="mk">
+            <svg class="ic ed"><use href="#i-edit"/></svg></span>
+            <span class="tx"><span class="nm">Allow with edits</span></span></div>
+          <div class="opt"><span class="mk">
+            <svg class="ic no"><use href="#i-x"/></svg></span>
+            <span class="tx"><span class="nm">Deny</span></span></div>
+          <div class="opt"><span class="mk">
+            <svg class="ic"><use href="#i-dots"/></svg></span>
+            <span class="tx"><span class="nm">Tell Claude something else</span></span></div>
         </div>
         <div class="keys"><span><span class="k">&#8593;&#8595;</span> select</span>
           <span><span class="k">&#9166;</span> confirm</span>
           <span><span class="k">esc</span> reject</span></div>
       </div>
+      <p class="note" style="margin:8px 0 0">A permission has nothing to check - the choices
+      are the kinds themselves - so <b>the mark in the gutter IS the choice</b>, at the
+      control's own size and in the control's own column.</p>
     </div>
     <div class="col">
       <div class="lab">permission &middot; with the CLI's own reason</div>
       <div class="dock">
         <div class="head"><span class="t mono">Read</span>
           <span class="q">/tmp/forge-deny-scenario.txt</span></div>
-        <div class="reason">Path is outside allowed working directories</div>
-        <div class="desc">Reads the contents of a file outside this project.</div>
+        <div class="sub warn">Path is outside allowed working directories</div>
+        <div class="sub">Reads the contents of a file outside this project.</div>
         <div class="opts">
-          <div class="opt sel"><span class="cur">&#9656;</span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow once</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow always for Read &#183; paths matching //tmp/**</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic"><use href="#i-dots"/></svg><span class="lbl">Tell Claude something else</span></div>
+          <div class="opt sel"><span class="mk">
+            <svg class="ic ok"><use href="#i-check"/></svg></span>
+            <span class="tx"><span class="nm">Allow once</span></span></div>
+          <div class="opt"><span class="mk">
+            <svg class="ic ok"><use href="#i-check"/></svg></span>
+            <span class="tx"><span class="nm">Allow always for Read &#183; paths matching //tmp/**</span></span></div>
+          <div class="opt"><span class="mk">
+            <svg class="ic no"><use href="#i-x"/></svg></span>
+            <span class="tx"><span class="nm">Deny</span></span></div>
+          <div class="opt"><span class="mk">
+            <svg class="ic"><use href="#i-dots"/></svg></span>
+            <span class="tx"><span class="nm">Tell Claude something else</span></span></div>
         </div>
         <div class="keys"><span><span class="k">&#8593;&#8595;</span> select</span>
           <span><span class="k">&#9166;</span> confirm</span>
           <span><span class="k">esc</span> reject</span></div>
       </div>
+      <p class="note" style="margin:8px 0 0">Both lines above the options are the panel's
+      own: the warning is the CLI's reason for asking and the second is what the tool
+      does. Neither is a row's, so neither sits at an option's size.</p>
     </div>
   </div>
 
   <div class="row">
     <div class="col">
-      <div class="lab">question &middot; multi-select with a notes option</div>
+      <div class="lab">question &middot; one answer</div>
       <div class="dock">
-        <div class="head"><span class="qm">?</span><span class="t">Environments</span>
-          <span class="q">Q2 of 3</span></div>
-        <div class="desc">Pick the environments to deploy to.</div>
+        <div class="head"><span class="qm">?</span><span class="t">The table</span>
+          <span class="q one">Q1 of 1</span></div>
+        <div class="sub">Is the table a thing surfaces register with, or something the page
+          derives?</div>
         <div class="opts">
-          <div class="opt"><span class="cur"></span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="lbl">Staging</span></div>
-          <div class="opt"><span class="cur"></span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="lbl">Production</span></div>
-          <div class="opt"><span class="cur"></span><span class="box2"></span><span class="lbl">Development</span></div>
-          <div class="opt sel"><span class="cur">&#9656;</span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="lbl">Tell Claude something else:</span></div>
+          <label class="opt sel"><span class="mk"><input type="radio" name="wq1" checked></span>
+            <span class="tx"><span class="nm">Derived from what is showing</span>
+              <span class="why">Written as a total function over the client's surfaces, so a
+              surface added without a line for it fails the build rather than silently
+              receiving nothing.</span></span></label>
+          <label class="opt"><span class="mk"><input type="radio" name="wq1"></span>
+            <span class="tx"><span class="nm">Surfaces register themselves</span>
+              <span class="why">Each box announces itself on mount and withdraws on
+              teardown.</span></span></label>
+          <label class="opt"><span class="mk"><input type="radio" name="wq1"></span>
+            <span class="tx"><span class="nm">Derive now, register later if needed</span></span></label>
         </div>
-        <div class="notes">Also bump the queue worker concurrency<span class="caret"></span></div>
-        <div class="keys"><span><span class="k">space</span> toggle</span>
-          <span><span class="k">&#8593;&#8595;</span> move</span>
+        <div class="keys"><span><span class="k">&#8593;&#8595;</span> move</span>
           <span><span class="k">&#9166;</span> submit</span></div>
       </div>
+      <p class="note" style="margin:8px 0 0">The counter stays hidden when there is only one
+      question - <b>"Q1 of 1" tells you nothing.</b></p>
     </div>
     <div class="col">
-      <div class="lab">question &middot; queued behind another prompt</div>
+      <div class="lab">permission &middot; queued behind another prompt</div>
       <div class="dock">
-        <div class="queue">&#9660; 2 more pending after this</div>
+        <div class="queue"><svg class="ic more"><use href="#i-chev"/></svg> 2 more pending after this</div>
         <div class="head"><span class="t mono">Edit</span><span class="q">src/foo.rs</span></div>
         <div class="opts">
-          <div class="opt sel"><span class="cur">&#9656;</span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow once</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow always for Edit &#183; src/**</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
+          <div class="opt sel"><span class="mk">
+            <svg class="ic ok"><use href="#i-check"/></svg></span>
+            <span class="tx"><span class="nm">Allow once</span></span></div>
+          <div class="opt"><span class="mk">
+            <svg class="ic ok"><use href="#i-check"/></svg></span>
+            <span class="tx"><span class="nm">Allow always for Edit &#183; src/**</span></span></div>
+          <div class="opt"><span class="mk">
+            <svg class="ic no"><use href="#i-x"/></svg></span>
+            <span class="tx"><span class="nm">Deny</span></span></div>
         </div>
         <div class="keys"><span><span class="k">&#8593;&#8595;</span> select</span>
           <span><span class="k">&#9166;</span> confirm</span>
@@ -668,27 +777,132 @@ works, and your in-flight draft is held and restored around the whole thing.</p>
     </div>
   </div>
 
+  <div class="row">
+    <div class="col">
+      <div class="lab">question &middot; several answers, with the notes row</div>
+      <div class="dock">
+        <div class="head"><span class="qm">?</span><span class="t">Environments</span>
+          <span class="q">Q2 of 3</span></div>
+        <div class="sub">Pick the environments to deploy to.</div>
+        <div class="opts">
+          <label class="opt sel"><span class="mk"><input type="checkbox" checked></span>
+            <span class="tx"><span class="nm">Staging</span></span></label>
+          <label class="opt"><span class="mk"><input type="checkbox" checked></span>
+            <span class="tx"><span class="nm">Production</span>
+              <span class="why">Behind the maintenance window, so a bad deploy is not seen
+              by users.</span></span></label>
+          <label class="opt"><span class="mk"><input type="checkbox"></span>
+            <span class="tx"><span class="nm">Development</span></span></label>
+          <label class="opt"><span class="mk"><input type="checkbox" checked></span>
+            <span class="tx"><span class="nm">Tell Claude something else</span></span></label>
+        </div>
+        <div class="keys"><span><span class="k">space</span> toggle</span>
+          <span><span class="k">&#8593;&#8595;</span> move</span>
+          <span><span class="k">&#9166;</span> submit</span></div>
+      </div>
+      <p class="note" style="margin:8px 0 0">Same column and the same rhythm as a single
+      answer - only the control and the keys change. The notes row is <b>an option like any
+      other</b>, so it lines up with the rest instead of sitting apart.</p>
+    </div>
+    <div class="col">
+      <div class="lab">with a preview</div>
+      <div class="dock">
+        <div class="head"><span class="qm">?</span><span class="t">The table</span>
+          <span class="q">Q1 of 2</span></div>
+        <div class="opts">
+          <label class="opt sel"><span class="mk"><input type="radio" name="wq2" checked></span>
+            <span class="tx"><span class="nm">Derived from what is showing</span>
+              <span class="why">A total function over the client's surfaces.</span></span></label>
+          <label class="opt"><span class="mk"><input type="radio" name="wq2"></span>
+            <span class="tx"><span class="nm">Surfaces register themselves</span></span></label>
+        </div>
+        <div class="preview">focus() = a prompt is pending   &#8594; the dock
+           | the connect route is up &#8594; the connect field
+           | otherwise               &#8594; the composer</div>
+        <div class="keys"><span><span class="k">&#8593;&#8595;</span> move</span>
+          <span><span class="k">&#9166;</span> submit</span></div>
+      </div>
+      <p class="note" style="margin:8px 0 0">The preview belongs to the panel rather than to
+      a row, and it sits under the options so it never moves the list around as you move
+      the mark.</p>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col">
+      <div class="lab">dictating, with the notes editor open</div>
+      <div class="dock rec">
+        <div class="head"><span class="qm">?</span><span class="t">Environments</span>
+          <span class="q">Q2 of 3</span></div>
+        <div class="opts">
+          <label class="opt"><span class="mk"><input type="checkbox" checked></span>
+            <span class="tx"><span class="nm">Staging</span></span></label>
+          <label class="opt sel"><span class="mk"><input type="checkbox" checked></span>
+            <span class="tx"><span class="nm">Tell Claude something else</span>
+              <span class="ed">Also bump the queue worker concurrency<span class="caret"></span></span></span></label>
+        </div>
+        <div class="dict">
+          <span class="dot"></span><span class="t">0:12</span><span class="db">&minus;38 dB</span>
+          <span class="wave"></span>
+          <span class="lbl">listening</span>
+          <span class="esc"><kbd>Esc</kbd> cancel</span>
+        </div>
+        <div class="keys"><span><span class="k">&#9166;</span> submit</span>
+          <span><span class="k">esc</span> back to options</span></div>
+      </div>
+      <p class="note" style="margin:8px 0 0">This is where the design spends its boldness:
+      the ring is amber and the meter is live. The editor sits <b>under the row that opened
+      it</b>, at the name's own column - not detached to the foot of the panel, where it
+      would be a second place to look. The dictation line is the composer's own row rather
+      than a summary of it.</p>
+    </div>
+    <div class="col">
+      <div class="lab">transcribing</div>
+      <div class="dock tr">
+        <div class="head"><span class="qm">?</span><span class="t">The table</span>
+          <span class="q one">Q1 of 1</span></div>
+        <div class="opts">
+          <label class="opt sel"><span class="mk"><input type="radio" name="wq3" checked></span>
+            <span class="tx"><span class="nm">Derived from what is showing</span>
+              <span class="why">A total function over the client's surfaces.</span></span></label>
+          <label class="opt"><span class="mk"><input type="radio" name="wq3"></span>
+            <span class="tx"><span class="nm">Surfaces register themselves</span></span></label>
+        </div>
+        <div class="dict tr">
+          <span class="dot tr"></span><span class="t tr">0:34</span><span class="db tr">&minus;41 dB</span>
+          <span class="wave tr"></span>
+          <span class="lbl">transcribing 2/5</span>
+          <span class="esc"><kbd>Esc</kbd> cancel</span>
+        </div>
+        <div class="keys"><span><span class="k">&#8593;&#8595;</span> move</span>
+          <span><span class="k">&#9166;</span> submit</span></div>
+      </div>
+      <p class="note" style="margin:8px 0 0">Nothing about the panel changes but the colour,
+      which is the point of putting the state on the ring rather than on a label. The meter
+      stops moving because the audio has stopped.</p>
+    </div>
+  </div>
+
   <div class="lab">held slack post &middot; the approval is the message</div>
   <div class="dock">
-    <div class="head"><span class="t">Post a message</span>
+    <div class="head"><span class="t">Post to Slack</span>
       <span class="q">Trust Machines &#183; #granite-staging-alerts</span></div>
-    <div class="body">
-      <div class="r"><span class="k">workspace</span><span class="v">Trust Machines</span></div>
-      <div class="r"><span class="k">conversation</span><span class="v">#granite-staging-alerts</span></div>
-      <div class="r"><span class="k">thread</span><span class="v">1758901234.482910</span></div>
-    </div>
-    <div class="sent">Deploy finished on staging. 148 of 148 checks green, rollback not needed.</div>
+    <div class="sent">Deploy of granite-staging finished: 3 services updated, no errors. Rolling the same revision to usdcx now.</div>
     <div class="opts">
-      <div class="opt sel"><span class="cur">&#9656;</span>
-        <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Post</span></div>
-      <div class="opt"><span class="cur"></span>
-        <svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Discard</span></div>
+      <div class="opt sel"><span class="mk">
+        <svg class="ic ok"><use href="#i-check"/></svg></span>
+        <span class="tx"><span class="nm">Send it</span></span></div>
+      <div class="opt"><span class="mk">
+        <svg class="ic no"><use href="#i-x"/></svg></span>
+        <span class="tx"><span class="nm">Don't send</span></span></div>
     </div>
-    <div class="blip"><span class="dot"></span>dictating &#183; the words land in your draft either way</div>
     <div class="keys"><span><span class="k">&#8593;&#8595;</span> select</span>
       <span><span class="k">&#9166;</span> confirm</span>
       <span><span class="k">esc</span> reject</span></div>
   </div>
+  <p class="note" style="margin:8px 0 0">The words being approved are shown in full, because
+  a summary is not what goes out. The head names the workspace and the conversation, and
+  whether this posts or replies.</p>
 </div>
 
 <script>
