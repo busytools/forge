@@ -221,14 +221,20 @@ describe('the hook chip a turn carries', () => {
 
     const summary = failed.slice(failed.indexOf('<summary'), failed.indexOf('</summary>'));
     expect(summary, 'the mark on the closed chip').toContain('#i-x');
+    expect(summary, 'in the class the sheets colour as a failure').toContain('class="ic st err"');
     expect(summary, 'and the count beside the action count').toContain(
       'hook summary &#183; 1 action &#183; 1 error',
     );
     expect(failed, 'the error as its own row, in the tone the sheets give a failure').toContain(
       '<div class="term"><span class="fail">',
     );
-    expect(BOOK, "the page's own sheet colours the failed summary's mark").toContain(
-      'details.hooks > summary .st.err',
+
+    // The selector alone proves nothing - it matches whatever declaration the
+    // rule carries, and other rules on this page carry the same token - so
+    // both halves are pinned together: dropping the mark's class or swapping
+    // the token is what turns a failure green.
+    expect(BOOK, "the page's own sheet colours the failed summary's mark").toMatch(
+      /details\.hooks > summary \.st\.err \{[^}]*color: var\(--bad\)/,
     );
   });
 });
