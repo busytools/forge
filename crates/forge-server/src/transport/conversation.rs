@@ -544,7 +544,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn a_connect(history: Vec<Message>) -> SessionUpdate {
+    fn a_connect(history: Vec<Message>, compaction_count: u32) -> SessionUpdate {
         SessionUpdate::Connected {
             key: a_seat(),
             session_id: SessionId::new("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"),
@@ -553,12 +553,12 @@ mod tests {
             available_models: Vec::new(),
             mode: None,
             history,
-            compaction_count: 0,
+            compaction_count,
         }
     }
 
-    fn a_replay(history: Vec<Message>) -> SessionUpdate {
-        SessionUpdate::HistoryReplayed { key: a_seat(), history, compaction_count: 0 }
+    fn a_replay(history: Vec<Message>, compaction_count: u32) -> SessionUpdate {
+        SessionUpdate::HistoryReplayed { key: a_seat(), history, compaction_count }
     }
 
     /// **The property the whole seed rests on: both routes are a reseed, not
@@ -575,11 +575,11 @@ mod tests {
 
         let by_connect = Conversations::new();
         by_connect.insert(&a_seat(), Conversation::new(vec![a_frame("stale")], 0));
-        by_connect.apply(&a_connect(history.clone()));
+        by_connect.apply(&a_connect(history.clone(), 0));
 
         let by_replay = Conversations::new();
         by_replay.insert(&a_seat(), Conversation::new(vec![a_frame("stale")], 0));
-        by_replay.apply(&a_replay(history.clone()));
+        by_replay.apply(&a_replay(history.clone(), 0));
 
         let read = |held: &Conversations| {
             let held = held.get(&a_seat()).expect("the seat is held");
@@ -601,7 +601,7 @@ mod tests {
     fn a_frame_after_a_seed_joins_the_conversation() {
         let held = Conversations::new();
         held.insert(&a_seat(), Conversation::empty());
-        held.apply(&a_replay(vec![a_frame("from the replay")]));
+        held.apply(&a_replay(vec![a_frame("from the replay")], 0));
 
         held.apply(&SessionUpdate::ChatAppended {
             key: a_seat(),
@@ -625,7 +625,7 @@ mod tests {
     fn a_compact_boundary_frame_moves_the_seats_count() {
         let held = Conversations::new();
         held.insert(&a_seat(), Conversation::empty());
-        held.apply(&a_replay(vec![a_frame("before the compaction")]));
+        held.apply(&a_replay(vec![a_frame("before the compaction")], 0));
 
         held.apply(&SessionUpdate::ChatAppended {
             key: a_seat(),
@@ -647,6 +647,29 @@ mod tests {
         );
     }
 
+    /// A seed carries the count it brings, on both routes in.
+    ///
+    /// **The frame test above pins the half that moves; this is the half that
+    /// arrives WITH a history**, and forcing it to zero at either constructor
+    /// would report "no compactions" on a resumed seat with nothing failing.
+    #[test]
+    fn a_seed_carries_the_count_it_brings() {
+        let fresh = Conversations::new();
+        fresh.apply(&a_connect(vec![a_frame("resumed")], 3));
+        let conversation = fresh.get(&a_seat()).expect("the seat is held");
+        assert_eq!(conversation.lock().compaction_count(), 3, "a connect's count is kept");
+
+        let reseeded = Conversations::new();
+        reseeded.insert(&a_seat(), Conversation::new(vec![a_frame("stale")], 0));
+        reseeded.apply(&a_replay(vec![a_frame("replayed")], 2));
+        let conversation = reseeded.get(&a_seat()).expect("the seat is held");
+        assert_eq!(
+            conversation.lock().compaction_count(),
+            2,
+            "and a reseed replaces it rather than zeroing it",
+        );
+    }
+
     /// A connect holds the seat's conversation whether or not anyone is
     /// watching it, because nothing can rebuild one that was let go: the
     /// conversation has no read behind it, so a seat dropped is a seat whose
@@ -655,7 +678,7 @@ mod tests {
     fn a_connect_holds_the_seat_without_anyone_watching() {
         let held = Conversations::new();
 
-        held.apply(&a_connect(vec![a_frame("running, unwatched")]));
+        held.apply(&a_connect(vec![a_frame("running, unwatched")], 0));
 
         assert_eq!(held.len(), 1, "the seat is held from its connect");
         let conversation = held.get(&a_seat()).expect("the seat is held");
@@ -696,7 +719,7 @@ mod tests {
     fn a_dispatch_appended_after_a_seed_is_seen() {
         let held = Conversations::new();
         held.insert(&a_seat(), Conversation::empty());
-        held.apply(&a_replay(vec![a_frame("nothing dispatched here")]));
+        held.apply(&a_replay(vec![a_frame("nothing dispatched here")], 0));
 
         let read = || {
             let conversation = held.get(&a_seat()).expect("the seat is held");
@@ -730,7 +753,7 @@ mod tests {
         conversation.fold();
         assert_eq!(conversation.lock().rendered().turns.len(), 2, "precondition: two turns folded");
 
-        held.apply(&a_replay(Vec::new()));
+        held.apply(&a_replay(Vec::new(), 0));
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let held = conversation.lock();
@@ -823,7 +846,7 @@ mod tests {
         // A reseed with no fold after it: the boundaries are cleared, so what
         // a reader gets is the whole list as one turn rather than a slice past
         // the end of it.
-        held.apply(&a_replay(vec![a_frame("replaced")]));
+        held.apply(&a_replay(vec![a_frame("replaced")], 0));
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let page = conversation

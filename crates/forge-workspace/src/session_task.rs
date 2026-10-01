@@ -4028,7 +4028,7 @@ provider = "anthropic"
     ///
     /// The two halves are asserted apart so a change to either fails on its
     /// own message: the frames the session emitted after its connect, and the
-    /// count a boundary moved.
+    /// count the connect carried as the boundary moved it.
     #[tokio::test]
     async fn a_replay_answers_with_the_conversation_the_task_has_carried() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
@@ -4052,9 +4052,13 @@ provider = "anthropic"
         // A FRESH session, which is the case that makes this load-bearing: the
         // CLI hands over an empty history, so a replay answering from the
         // connect alone would hand back nothing at all.
+        // A resumed connect carries the count it has already compacted, so the
+        // STORE has to keep it and not only the emit: with it zeroed here the
+        // replay answers from a count that never saw those compactions.
         let mut event = connected_event(&session_key.display(), "/tmp/replay");
-        if let AgentEvent::Connected { history_updates, .. } = &mut event {
+        if let AgentEvent::Connected { history_updates, compaction_count, .. } = &mut event {
             *history_updates = Some(Vec::new());
+            *compaction_count = 4;
         }
         task.translate_event(event);
 
@@ -4096,7 +4100,10 @@ provider = "anthropic"
             "the frames the session emitted after its connect are in the replay, not only the \
              empty history the connect carried",
         );
-        assert_eq!(compaction_count, 1, "and the boundary it crossed moved the count");
+        assert_eq!(
+            compaction_count, 5,
+            "the count the connect carried survives to the replay, moved by the boundary",
+        );
     }
 
     /// A re-spawn that replaces the session seeds `connected_once =
