@@ -145,7 +145,12 @@
       <div class="v">forge v{foot.versions.forge}</div>
       {#if foot.versions.claude !== null}
         <div class="v">
-          claude v{foot.versions.claude}{#if foot.versions.update !== null}<span class="up"
+          <!-- The space between the version and the arrow is part of the row,
+               not something the two nodes happen to be laid out with: written
+               as a space at all it survives, and omitted it is the run-together
+               pair the row drew before. -->
+          claude v{foot.versions.claude}
+          {#if foot.versions.update !== null}<span class="up"
               >{'\u{2191}'} v{foot.versions.update}</span
             >{/if}
         </div>
