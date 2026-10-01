@@ -464,12 +464,15 @@ details.gfold[open] > summary .arw { color: var(--accent); }
   background: none; border: 0; display: flex; align-items: center;
   border-radius: 5px; padding: 2px 5px; cursor: pointer; }
 .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
-/* The seat the page is showing, marked on its own row and nowhere else: the
-   accent fills its mark, and a worker's name comes up out of the dim it sits
-   in. A project row needs no more than the mark, because its name is already
-   drawn at full weight. */
+/* The seat the page is showing, marked on its own row and nowhere else.
+   The accent goes on the row's NAME, and the mark is filled as well: an idle
+   seat already carries the accent on its dot, and a seat at rest is idle -
+   its mark is cleared when a turn ends - so a mark that recoloured only the
+   dot would paint nothing on the ordinary shown seat. The terminal draws
+   selection the same way, its glyph keeping the session's state while the
+   name takes the accent. */
+.pr.on .nm, .wk.on .nm { color: var(--accent); }
 .pr.on .dot, .wk.on .dot { background: var(--accent); border-color: var(--accent); }
-.wk.on .nm { color: var(--text); }
 .wk { display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 34px; cursor: pointer; }
 .wk:hover { background: rgba(27,33,48,.4); border-radius: 0 8px 8px 0; }
 .wk .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
@@ -1133,8 +1136,8 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 /* The seat's own id, in the slot the account chip left. It is the one fact
    here a reader COPIES rather than reads, so it is monospaced - its glyphs
    line up with the ids printed elsewhere - and the control sits beside it.
-   The chip is drawn with the mockup's proportions but the padding is a step
-   larger, because this one is a click target on a page read at 430 too. */
+   That control carries more padding than a chip this size would otherwise
+   take, because it is a click target on a page read at 430 too. */
 .sess .facts .sid { display: flex; align-items: center; gap: 7px; }
 .sess .facts .id { font-family: var(--mono); color: var(--muted); }
 .sess .facts .cp { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);

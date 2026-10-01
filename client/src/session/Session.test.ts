@@ -350,6 +350,21 @@ describe('the rail footer as the sheet lays it out', () => {
   });
 
   /**
+   * **The mark has to move something the state does not already occupy.** An
+   * idle dot IS the accent, so a mark that recoloured only the dot would paint
+   * nothing on the ordinary state of a shown seat - a seat's mark is cleared
+   * when a turn ends, so a seat at rest is idle. The terminal draws selection
+   * the same way: the glyph stays the session's state and the NAME takes the
+   * accent.
+   */
+  it('marks the row name, not only a dot the idle state already accents', () => {
+    expect(
+      body('.pr.on .nm, .wk.on .nm'),
+      'the mark recolours only the dot, which an idle seat already carries',
+    ).toContain('var(--accent)');
+  });
+
+  /**
    * The scrolling goes BEHIND the footer, not with it: the list is the rail's
    * one scroller, and the footer is the sibling that takes the height it needs
    * rather than a share of what is left. A footer that could shrink is one a

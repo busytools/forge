@@ -22,6 +22,7 @@ import {
   railFooter,
   railGroups,
   railMark,
+  type RailGroup,
   type RailProject,
   schedulesSection,
   seatState,
@@ -182,6 +183,29 @@ describe('the rail', () => {
       needs?.projects[0]?.why?.line,
       'a held worker did not lift its project out of working',
     ).toBe('asked you a question');
+  });
+
+  /**
+   * A group that holds the seat the page is showing has to say so: arriving on
+   * an asleep seat - a deep link, a click from the roster - draws the marked
+   * row inside a closed fold otherwise, and the reader sees the count and no
+   * sign of where they are.
+   */
+  it('says whether the seat the page is showing is one of the rows behind it', () => {
+    const sleeping: AgentRow = { ...lead(), lifecycle: 'Sleeping', pending: null, reason: null };
+    const home = withHome({ agents: [sleeping] });
+    const asleep = (home: HomeWire, slot: SessionSlot): RailGroup | undefined =>
+      railGroups(home, slot, 0).find((group) => group.heading === 'asleep');
+
+    expect(asleep(home, LEAD)?.holds, 'the fold closed over the seat being shown').toBe(true);
+    expect(
+      asleep(home, { ...LEAD, project: 'elsewhere' })?.holds,
+      'a group claimed to hold a seat it does not carry',
+    ).toBe(false);
+    expect(
+      railGroups(homeWire, LEAD, 0).find((group) => group.heading === 'needs you')?.holds,
+      'a group the page is showing claimed nothing',
+    ).toBe(true);
   });
 
   /**
@@ -739,10 +763,9 @@ describe('the account chip', () => {
   it('reads the pool own words for the account the project would bind to', () => {
     const home = withProject({ chip: { account_name: 'Acct', state: 'loading' } });
     const view = accountChip(home, LEAD);
-    expect(view?.state).toBe('probing');
-    expect(view?.tone).toBe('wait');
-    expect(view?.auth).toBe('token');
-    expect(view?.windows).toEqual([]);
+    expect(view?.name).toBe('Acct');
+    expect(view?.tone, 'a pool that has not settled does not read as ready').toBe('wait');
+    expect(view?.windows, 'a pool with no snapshot behind it drew windows').toEqual([]);
   });
 
   /**

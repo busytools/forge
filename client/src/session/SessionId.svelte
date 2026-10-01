@@ -23,6 +23,18 @@
 
   let outcome = $state<CopyOutcome>('ready');
 
+  // A new occupant is a new id, and `copied` was about the old one: the
+  // clipboard then holds a string this row no longer shows, so the control
+  // goes back to saying what it is rather than vouching for the other id.
+  const initial = () => id;
+  let drawn = $state(initial());
+  $effect(() => {
+    if (drawn !== id) {
+      drawn = id;
+      outcome = 'ready';
+    }
+  });
+
   function copy(): void {
     if (typeof navigator === 'undefined' || navigator.clipboard === undefined) {
       outcome = 'no-clipboard';

@@ -420,7 +420,9 @@ pub struct TakeWire {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SessionHeaderWire {
-    /// The occupant's id, `None` on a seat nothing has started.
+    /// The occupant's id, `None` until a session has connected to the seat: a
+    /// seat nothing has started and one whose CLI has not answered yet both
+    /// read null.
     pub session_id: Option<forge_primitives::SessionId>,
     pub model: Option<Value>,
     pub effort: Value,
@@ -1785,10 +1787,10 @@ mod tests {
         );
     }
 
-    /// The occupant's id crosses on the header, which is the only read that
-    /// carries it: the `Connected` that named it reaches nobody who was not
-    /// attached when it fired, so a page opened on a running seat has this
-    /// and nothing else.
+    /// The occupant's id crosses on the header: the `Connected` that named it
+    /// reaches nobody who was not attached when it fired, so a page opened on
+    /// a running seat has this rather than the frame. The worker registry
+    /// carries the same id for a live dynamic worker, and nothing else does.
     #[tokio::test]
     async fn a_session_snapshot_carries_the_occupants_id() {
         let dir = tempfile::tempdir().expect("tempdir").keep();

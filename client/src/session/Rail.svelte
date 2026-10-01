@@ -1,10 +1,10 @@
 <script lang="ts">
-  import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import { hrefForSlot } from '../routes';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
+  import GroupFold from './GroupFold.svelte';
   import SleeperFold from './SleeperFold.svelte';
   import { fleetCount, railFooter, railGroups, railMark, type RailProject } from './view';
 
@@ -99,16 +99,11 @@
           {@render projectBlock(project)}
         {/each}
       {:else}
-        <details class="gfold">
-          <summary>
-            <span class="gh">{group.heading}</span>
-            <span class="cn">{group.hidden}</span>
-            <Chevron />
-          </summary>
+        <GroupFold heading={group.heading} count={group.hidden} holds={group.holds}>
           {#each group.projects as project (project.org + '/' + project.name)}
             {@render projectBlock(project)}
           {/each}
-        </details>
+        </GroupFold>
       {/if}
     {/each}
   </div>

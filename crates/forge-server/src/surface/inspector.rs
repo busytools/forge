@@ -23,12 +23,15 @@ pub use forge_workspace::{ContextUsage, McpServers};
 
 /// What a session header states about the session.
 pub struct SessionHeader {
-    /// The occupant's id, as the CLI named it.
+    /// The occupant's id, as the CLI named it: `None` until a session has
+    /// connected to the seat, which covers a seat nothing has started and one
+    /// whose CLI has not answered yet.
     ///
     /// Carried here rather than read off the conversation's frames, because a
     /// client attaching to a running seat hears no `Connected` - a
-    /// subscription carries no backlog - leaving the frames as its only
-    /// source, and they are the turn's fact rather than the seat's.
+    /// subscription carries no backlog - and a frame's id is the turn's fact
+    /// rather than the seat's. The worker registry carries the id for a live
+    /// dynamic worker, and nothing carries it for any other seat.
     pub session_id: Option<SessionId>,
     /// The model the CLI resolved for this session, from its connect and
     /// from every later frame that names a different one.

@@ -41,7 +41,7 @@ import type {
 
 /** The facts the header states, and the class the mode's chip carries. */
 export interface Facts {
-  /** The occupant's id, or `null` on a seat nothing has started. */
+  /** The occupant's id, or `null` until a session connects to the seat. */
   sessionId: string | null;
   model: string;
   effort: string;
@@ -62,6 +62,12 @@ export interface RailGroup {
    * one, which is the whole reason the count is drawn on it.
    */
   hidden: number | null;
+  /**
+   * Whether the seat the page is showing is one of the rows behind this
+   * heading, which is what a fold opens itself on: arriving on a sleeping seat
+   * would otherwise draw the marked row inside a closed fold.
+   */
+  holds: boolean;
   projects: RailProject[];
 }
 
@@ -469,13 +475,13 @@ function whyOf(rows: Row[]): { line: string; bad: boolean } | null {
  */
 export function railGroups(home: HomeWire, current: SessionSlot, now: number): RailGroup[] {
   const groups: RailGroup[] = [
-    { heading: 'needs you', klass: 'state needs', hidden: null, projects: [] },
-    { heading: 'working', klass: 'state', hidden: null, projects: [] },
+    { heading: 'needs you', klass: 'state needs', hidden: null, holds: false, projects: [] },
+    { heading: 'working', klass: 'state', hidden: null, holds: false, projects: [] },
     // The sleeping half of the fleet is the one nobody is working in, so it is
     // the one heading that folds: everything under it is still counted on the
     // heading, because a fold that reads as an empty section is worse than no
     // fold at all.
-    { heading: 'asleep', klass: 'state', hidden: 0, projects: [] },
+    { heading: 'asleep', klass: 'state', hidden: 0, holds: false, projects: [] },
   ];
 
   for (const entry of home.projects) {
@@ -485,13 +491,15 @@ export function railGroups(home: HomeWire, current: SessionSlot, now: number): R
     const group = groups[rank];
     if (group === undefined) continue;
     const sleeping = workers.filter((row) => rankOf(row.state, row.pending) === 2);
+    const shown =
+      entry.project.org === current.org && entry.project.name === current.project
+        ? current.label
+        : null;
+    if (shown !== null) group.holds = true;
     group.projects.push({
       name: entry.project.name,
       org: entry.project.org,
-      shown:
-        entry.project.org === current.org && entry.project.name === current.project
-          ? current.label
-          : null,
+      shown,
       age: whenOf(lead, now),
       asleep: rank === 2,
       row: lead,
@@ -554,14 +562,11 @@ export interface AccountWindow {
   reset: string;
 }
 
-/** The account chip: who a spawn here would bind to, and what the poller knows. */
+/** The account this seat's project binds to, and what the poller knows of it. */
 export interface AccountView {
   name: string;
-  /** `probing` / `ready` / `bailed`, or `null` when the pool has no row for it. */
-  state: string | null;
+  /** The class the health dot carries: `ok` / `wait` / `bad`. */
   tone: string;
-  /** Which repair instruction the account earns. */
-  auth: string | null;
   windows: AccountWindow[];
   spend: { daily: string; weekly: string; monthly: string } | null;
   balance: string | null;
@@ -613,9 +618,7 @@ export function accountChip(home: HomeWire, slot: SessionSlot): AccountView | nu
   const balance = snapshot?.['balance'];
   return {
     name,
-    state: row === undefined ? null : stateWord(row.state),
     tone: row === undefined ? 'wait' : stateTone(row.state),
-    auth: row === undefined ? null : authWord(row.auth),
     windows,
     spend:
       spend === null
@@ -708,19 +711,9 @@ export function railFooter(home: HomeWire, slot: SessionSlot): RailFooter {
   };
 }
 
-function stateWord(state: string): string {
-  if (state === 'ready') return 'ready';
-  return state === 'bailed' ? 'bailed' : 'probing';
-}
-
 function stateTone(state: string): string {
   if (state === 'ready') return 'ok';
   return state === 'bailed' ? 'bad' : 'wait';
-}
-
-/** What a bailed account's repair instruction names. */
-function authWord(auth: string): string {
-  return auth === 'base_url' ? 'base url' : 'token';
 }
 
 function money(amount: unknown): string {

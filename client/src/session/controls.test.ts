@@ -1,0 +1,159 @@
+// @vitest-environment jsdom
+import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import type { AgentRow, HomeWire } from '../wire/home';
+import { homeWire } from '../dev/fixture.data';
+import GroupFold from './GroupFold.svelte';
+import SessionId from './SessionId.svelte';
+import SleeperFold from './SleeperFold.svelte';
+import { boxed } from './testing/props.svelte';
+import { railGroups } from './view';
+
+/**
+ * The two controls whose behaviour lives in a HANDLER or an EFFECT, which the
+ * server renderer cannot reach: it runs neither, so a suite built on it alone
+ * stays green with the click path deleted.
+ */
+
+let app: Record<string, unknown> | null = null;
+
+afterEach(async () => {
+  if (app !== null) await unmount(app);
+  app = null;
+  document.body.innerHTML = '';
+  vi.unstubAllGlobals();
+});
+
+/** The clipboard jsdom does not carry, where the test wants one. */
+function clipboard(write: (text: string) => Promise<void>): void {
+  vi.stubGlobal('navigator', { clipboard: { writeText: write } });
+}
+
+/** What the control is owed before it can say anything: a settled write. */
+async function settle(): Promise<void> {
+  await Promise.resolve();
+  flushSync();
+}
+
+/** The cell's control, as the reader meets it. */
+function control(): HTMLButtonElement {
+  const button = document.querySelector<HTMLButtonElement>('.cp');
+  if (button === null) throw new Error('the page drew no copy control');
+  return button;
+}
+
+describe('the copy control', () => {
+  it('says what the click did, and forgets it when the occupant changes', async () => {
+    const written: string[] = [];
+    clipboard((text: string) => {
+      written.push(text);
+      return Promise.resolve();
+    });
+    const props = boxed<{ id: string }>({ id: 'd4f70669-1f2a' });
+    app = mount(SessionId, { target: document.body, props });
+
+    control().click();
+    await settle();
+    expect(control().textContent?.trim(), 'a write that resolved did not say so').toBe('copied');
+    expect(written, 'the whole id is not what was copied').toEqual(['d4f70669-1f2a']);
+
+    // The occupant swap: the same cell, a new id underneath it.
+    props.id = 'aaaa1111-2222';
+    flushSync();
+    expect(document.body.textContent, 'the new occupant is not drawn').toContain('aaaa1111');
+    expect(
+      control().textContent?.trim(),
+      'the control vouched for an id the row no longer shows',
+    ).toBe('copy');
+  });
+
+  it('says the write was refused rather than passing as a click that worked', async () => {
+    clipboard(() => Promise.reject(new Error('refused')));
+    app = mount(SessionId, { target: document.body, props: { id: 'd4f70669' } });
+
+    control().click();
+    await settle();
+    expect(control().textContent?.trim()).toBe('copy failed');
+  });
+
+  it('names the missing clipboard when the page has none', () => {
+    vi.stubGlobal('navigator', {});
+    app = mount(SessionId, { target: document.body, props: { id: 'd4f70669' } });
+
+    control().click();
+    flushSync();
+    expect(control().textContent?.trim()).toBe('copy needs https');
+    expect(
+      control().getAttribute('aria-label'),
+      'the name says nothing about the reason',
+    ).toContain('no clipboard');
+  });
+});
+
+/** A row for the fixture's lead, in the state named. */
+function row(label: string, lifecycle: AgentRow['lifecycle']): AgentRow {
+  const first = homeWire.agents[0];
+  if (first === undefined) throw new Error('the fixture holds no agent');
+  return { ...first, slot: { ...first.slot, label }, label, lifecycle, pending: null };
+}
+
+const sleepingRows = () => {
+  const home: HomeWire = {
+    ...homeWire,
+    agents: [row('lead', 'Running'), row('slept-1', 'Sleeping'), row('slept-2', 'Sleeping')],
+  };
+  const project = railGroups(home, { org: 'TestOrg', project: 'proj', label: 'lead' }, 0).flatMap(
+    (group) => group.projects,
+  )[0];
+  return project?.sleeping ?? [];
+};
+
+/** Whether the fold drawn under the sheet is open. */
+function foldOpen(): boolean {
+  const fold = document.querySelector<HTMLDetailsElement>('details');
+  if (fold === null) throw new Error('the test drew no fold');
+  return fold.open;
+}
+
+describe('a fold that holds the seat being shown', () => {
+  /**
+   * An occupant swap and a deep link both reach a fold that is already on
+   * screen, so a fold that read its prop once would stay shut over the row a
+   * reader arrived on. It opens when the seat moves in, and nothing but the
+   * reader's own toggle closes it.
+   */
+  it("opens when the shown seat moves into a project's sleeping seats", () => {
+    const props = boxed<{ sleeping: ReturnType<typeof sleepingRows>; shown: string | null }>({
+      sleeping: sleepingRows(),
+      shown: null,
+    });
+    app = mount(SleeperFold, { target: document.body, props });
+    expect(foldOpen(), 'the fold opened over a seat it does not hold').toBe(false);
+
+    props.shown = 'slept-2';
+    flushSync();
+    expect(foldOpen(), 'the fold stayed shut over the seat being shown').toBe(true);
+  });
+
+  it('opens when the shown seat moves into a folded group', () => {
+    const props = boxed<{
+      heading: string;
+      count: number;
+      holds: boolean;
+      children: ReturnType<typeof createRawSnippet>;
+    }>({
+      heading: 'asleep',
+      count: 3,
+      holds: false,
+      // The rows the group holds are the rail's; this test is about the fold.
+      children: createRawSnippet(() => ({ render: () => '<span></span>' })),
+    });
+    app = mount(GroupFold, { target: document.body, props });
+    expect(foldOpen()).toBe(false);
+
+    props.holds = true;
+    flushSync();
+    expect(foldOpen(), 'the group fold stayed shut over the seat being shown').toBe(true);
+  });
+});

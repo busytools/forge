@@ -10,17 +10,20 @@
    *
    * **The open state is held here rather than taken from the rail**, because
    * the rail redraws on every fleet update and a fold whose state came from
-   * outside would close under the reader the moment one arrived. It STARTS
-   * open when the seat the page is showing is one of the seats behind it: a
-   * fold that hid the row a reader is looking at is the one thing it must
-   * never do.
+   * outside would close under the reader the moment one arrived. And it is
+   * one-way: the fold OPENS when the seat the page is showing moves in behind
+   * it - an occupant swap onto a sleeping seat reaches this without a fresh
+   * mount - and never closes on its own.
    */
   let { sleeping, shown }: { sleeping: Row[]; shown: string | null } = $props();
 
+  const holds = () => sleeping.some((row) => row.slot.label === shown);
   // Read once, through a call: the initial value is the whole of what the
-  // prop is for, as the inspector's own sections do it.
-  const initially = () => sleeping.some((row) => row.slot.label === shown);
-  let open = $state(initially());
+  // first render is owed, as the inspector's own sections do it.
+  let open = $state(holds());
+  $effect(() => {
+    if (holds()) open = true;
+  });
 </script>
 
 <details class="sfold" bind:open>

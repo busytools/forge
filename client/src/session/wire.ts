@@ -36,7 +36,8 @@ export interface ContextUsage {
  */
 export interface SessionHeader {
   /**
-   * The occupant's id, or `null` on a seat nothing has started.
+   * The occupant's id, or `null` until a session connects to the seat - which
+   * covers a seat nothing has started and one whose CLI has not answered yet.
    *
    * Read from the header rather than from the conversation's own frames: a
    * page that attached after the seat connected never heard the `Connected`

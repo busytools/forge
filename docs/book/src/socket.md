@@ -219,7 +219,7 @@ conversation, and what the composer is doing.
 | Field | What it is |
 |---|---|
 | `slot` | The seat itself. |
-| `header` | The resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, and whether a turn is in flight. |
+| `header` | The occupant's session id - the one a copy control hands out, and `null` until a session connects to the seat - the resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, and whether a turn is in flight. |
 | `conversation` | The NEWEST turns, in order, with the compaction count - the same twenty `more` answers a page with, so a client that wants more asks for it the way it already does. Each turn carries `key` and `messages`, the CLI's own frames. The live `update` stream carries those frames too, and one kind this cannot: a frame the server forged for words the CLI does not echo back. |
 | `has_dispatches` | Whether the conversation holds a sub-agent dispatch at all, anywhere in it - not only in the window `conversation` carries. A view deciding whether to draw a sub-agents section reads this rather than scanning the window, which would report a seat that dispatched an hour ago as one where nothing ran. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
