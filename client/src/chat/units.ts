@@ -8,14 +8,18 @@
  * moved. A client that restated them would draw the same turn two ways the
  * first time either changed.
  *
- * Four places it deliberately differs from the terminal, and each is the
- * mockup's own drawing rather than a liberty:
+ * Five places it deliberately differs from the terminal, and each is a
+ * decision rather than an accident:
  *
  * - a mutation folds as an `edit` family inside the run instead of breaking
  *   it;
  * - a question the assistant asked is a card rather than a call;
  * - an envelope that is not agent traffic is a notice rather than the reader's
  *   own turn;
+ * - the harness's own reminder that a skill was already loaded draws as a
+ *   notice rather than the reader's turn, where the terminal drops every wire
+ *   user text live as an input echo and draws this one as a user turn on
+ *   resume;
  * - a monitor is not in the conversation at all, because the inspector is its
  *   surface.
  *
@@ -325,6 +329,20 @@ function queuedText(prompt: unknown): string {
     })
     .filter((part): part is string => part !== null)
     .join('\n');
+}
+
+/**
+ * Whether a user frame is the CLI telling the MODEL that a skill was already
+ * loaded: `Skill /unslop was loaded earlier (see the invoked-skills reminder
+ * above); this is a NEW invocation...`.
+ *
+ * Nobody typed it, so it is a line the conversation carries rather than a turn
+ * the reader took. Matched on the CLI's own sentence because that is all the
+ * frame carries here - the `isMeta` flag that marks it on disk is not in the
+ * wire type, so it does not survive to this fold.
+ */
+function isSkillReminder(text: string): boolean {
+  return text.startsWith('Skill /') && text.includes('was loaded earlier');
 }
 
 /**
@@ -1043,7 +1061,8 @@ export function fold(
     for (const [blockAt, block] of blocksOf(frame.message?.content).entries()) {
       if (block.type === 'text' && typeof block.text === 'string') {
         if (frame.type === 'user') {
-          const envelope = inbound(stripEscapes(block.text), self);
+          const stripped = stripEscapes(block.text);
+          const envelope = inbound(stripped, self);
           if (envelope !== null) {
             if (envelope.kind === 'peer') {
               // A peer message is a row the CLI answered as a turn of its own,
@@ -1059,6 +1078,17 @@ export function fold(
             } else {
               push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });
             }
+            continue;
+          }
+          // The harness talking to the model is not the reader talking: the
+          // reminder draws as a line of its own, so no turn claims words
+          // nobody typed.
+          if (isSkillReminder(stripped)) {
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: { severity: 'info', text: stripped },
+            });
             continue;
           }
         }

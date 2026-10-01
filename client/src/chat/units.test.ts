@@ -182,6 +182,30 @@ describe('one turn folded into the units a view draws', () => {
     expect(fromQueued[0]?.key, 'and so does a queued prompt carrying one').toBe('p-u1#0');
   });
 
+  it("draws the harness skill reminder as a line of its own, not the reader's turn", () => {
+    // The CLI tells the MODEL that a skill was already loaded; nobody typed it.
+    // The terminal drops it live (every wire user text is treated as an input
+    // echo there) and renders it as a user turn on resume, so this is the
+    // client's own shape rather than parity - a notice, because rule 25 says
+    // it still has to be drawn.
+    const reminder = heard([
+      text(
+        'Skill /unslop was loaded earlier (see the invoked-skills reminder above); this is a NEW invocation - follow those instructions now, including any setup steps.',
+      ),
+    ]);
+    const units = fold([reminder]);
+
+    expect(kinds(units), 'not a turn the reader took').toEqual(['notice']);
+    expect(
+      units[0]?.kind === 'notice' ? units[0].notice.severity : '',
+      'informational, not a warning',
+    ).toBe('info');
+    expect(
+      units[0]?.kind === 'notice' ? units[0].notice.text : '',
+      'and the words survive',
+    ).toContain('was loaded earlier');
+  });
+
   it('breaks the run on anything that is not a call', () => {
     const units = fold([call('read', 0), said([text('here it is')]), call('bash', 1)]);
 
