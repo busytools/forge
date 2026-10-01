@@ -226,6 +226,10 @@ pub enum Message {
         /// Per-hook breakdown. Wire field is `hookInfos`. Each entry
         /// carries the command string + its duration in ms.
         hook_infos: Vec<StopHookInfo>,
+        /// Errors the hook batch reported, empty when nothing failed.
+        /// Wire field is `hookErrors`; the client's hooks chip draws
+        /// these against the batch rather than against one entry.
+        hook_errors: Vec<String>,
         /// Whether any hook produced output. Wire field is
         /// `hasOutput`. Forwarded to the renderer so a zero-actions
         /// + has-output edge case can be surfaced if needed.
@@ -1077,6 +1081,8 @@ enum TypedSystemRepr {
         actions: u32,
         #[serde(default, rename = "hookInfos")]
         hook_infos: Vec<StopHookInfo>,
+        #[serde(default, rename = "hookErrors")]
+        hook_errors: Vec<String>,
         #[serde(rename = "hasOutput")]
         has_output: bool,
         level: String,
@@ -1287,6 +1293,7 @@ impl From<MessageRepr> for Message {
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
                 actions,
                 hook_infos,
+                hook_errors,
                 has_output,
                 level,
                 prevented_continuation,
@@ -1298,6 +1305,7 @@ impl From<MessageRepr> for Message {
             })) => Message::StopHookSummary {
                 actions,
                 hook_infos,
+                hook_errors,
                 has_output,
                 level,
                 prevented_continuation,
@@ -1599,6 +1607,7 @@ impl From<Message> for MessageRepr {
             Message::StopHookSummary {
                 actions,
                 hook_infos,
+                hook_errors,
                 has_output,
                 level,
                 prevented_continuation,
@@ -1610,6 +1619,7 @@ impl From<Message> for MessageRepr {
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
                 actions,
                 hook_infos,
+                hook_errors,
                 has_output,
                 level,
                 prevented_continuation,
@@ -2350,6 +2360,67 @@ mod tests_message_extras {
         assert_eq!(hook_infos[0].duration_ms, Some(980));
         assert_eq!(parent_tool_use_id.as_deref(), Some("uuid_2"));
         assert_eq!(session_id, "session_0");
+    }
+
+    #[test]
+    fn stop_hook_summary_errors_cross_the_crate() {
+        // The CLI sends `hookErrors` on every stop_hook_summary row, empty
+        // when nothing failed, and the client's hooks chip draws them - so the
+        // key has to survive decode and re-encode. This row is a real failing
+        // one, the ralph-wiggum plugin's directory gone.
+        let raw = json!({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "hookCount": 1,
+            "hookInfos": [{"command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh", "durationMs": 0}],
+            "hookErrors": [
+                "Failed to run: Plugin directory does not exist: /Users/vedhavyas/.claude/plugins/cache/claude-code-plugins/ralph-wiggum/1.0.0 (ralph-wiggum@claude-code-plugins \u{2014} run /plugin to reinstall)"
+            ],
+            "hookAdditionalContext": [],
+            "preventedContinuation": false,
+            "stopReason": "",
+            "hasOutput": true,
+            "level": "suggestion",
+            "toolUseID": "8bdfbd8a-a578-441d-97ff-4d8a2923e1e7",
+            "session_id": "3dc2afa8-fdd1-40ff-bc7d-ffaace19246a",
+            "uuid": "225cae5c-f638-4b31-afb2-700b8303dc16",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::StopHookSummary { .. } = &msg else {
+            panic!("expected the typed variant, got {msg:?}");
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(
+            encoded["hookErrors"],
+            json!([
+                "Failed to run: Plugin directory does not exist: /Users/vedhavyas/.claude/plugins/cache/claude-code-plugins/ralph-wiggum/1.0.0 (ralph-wiggum@claude-code-plugins \u{2014} run /plugin to reinstall)"
+            ]),
+            "the key a client reads is on the wire, not only on the CLI's bytes"
+        );
+
+        // Empty is the shape most rows carry, and the key is present rather
+        // than omitted: the socket contract records the key set, and a skipped
+        // empty would leave it absent there.
+        let quiet = json!({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "hookCount": 2,
+            "hookInfos": [{"command": "bash hook.sh", "durationMs": 980}],
+            "hookErrors": [],
+            "level": "suggestion",
+            "preventedContinuation": false,
+            "stopReason": "",
+            "hasOutput": true,
+            "toolUseID": "5e586a7f",
+            "session_id": "session_0",
+            "uuid": "uuid_3",
+        });
+        let msg: Message = serde_json::from_value(quiet).expect("decode");
+        let Message::StopHookSummary { .. } = &msg else {
+            panic!("expected the typed variant, got {msg:?}");
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["hookErrors"], json!([]), "and empty crosses as empty");
     }
 
     #[test]

@@ -2673,6 +2673,7 @@ mod stamp_turn_info_tests {
         let hook = |parent: Option<&str>| forge_primitives::Message::StopHookSummary {
             actions: 2,
             hook_infos: Vec::new(),
+            hook_errors: Vec::new(),
             has_output: true,
             level: "suggestion".to_owned(),
             prevented_continuation: false,

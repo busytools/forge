@@ -1334,6 +1334,7 @@ mod tests {
         Message::StopHookSummary {
             actions,
             hook_infos: Vec::new(),
+            hook_errors: Vec::new(),
             has_output: true,
             level: "suggestion".to_owned(),
             prevented_continuation: false,

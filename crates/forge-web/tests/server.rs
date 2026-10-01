@@ -2307,6 +2307,7 @@ async fn a_turns_hooks_are_drawn_as_the_chip() {
                     duration_ms: Some(62000),
                 },
             ],
+            hook_errors: Vec::new(),
             has_output: true,
             level: "suggestion".to_owned(),
             prevented_continuation: false,

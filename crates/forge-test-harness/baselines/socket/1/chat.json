@@ -22,6 +22,7 @@
     "fast_mode_state",
     "hasOutput",
     "hookCount",
+    "hookErrors",
     "hookInfos",
     "hook_event",
     "hook_id",
