@@ -134,8 +134,8 @@ than in a drawing, so both are fixed there and every surface gets them.
 and the one rule that touched focus removed it outright, so a keyboard
 user could not see where they were. It now carries one accent ring with an
 offset on every control it can reach. The composer's field is the one
-control that draws none of its own: the box around it carries the accent
-along its bottom edge, and that band is the whole of the mark, so a
+control that draws none of its own: focus takes the box's own ring, which
+is the accent while the keyboard is in it and the box is at rest, so a
 keyboard user still sees where they are. Checked by tabbing through a real
 page rather than by reading the rule: a row's link draws a 2px accent
 outline at a 2px offset.

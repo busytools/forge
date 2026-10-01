@@ -513,25 +513,181 @@ function sheetRule(selector: string): string {
 }
 
 /**
+ * The ring the box draws, resolved the way a browser resolves it.
+ *
+ * The ring's colour is a precedence question rather than a text one: a rule
+ * that relies on where it sits in the sheet reads exactly like one that states
+ * what it means, and the two part company only when a state arrives in the
+ * wrong place. So every rule the sheet writes for the box ITSELF is matched
+ * against the classes the component set and whether the keyboard is inside it,
+ * the most specific wins, and source order settles a tie.
+ */
+
+/** What a box rule asks of the element it paints. */
+interface Need {
+  /** Classes the box must carry. */
+  classes: string[];
+  /** Whether the keyboard must be inside it. */
+  focus: boolean;
+  /** Classes it must not carry, one per `:not(...)` argument. */
+  without: string[];
+}
+
+/** One rule the sheet writes for the box itself. */
+interface Ring {
+  need: Need;
+  colour: string;
+  order: number;
+  strength: number;
+}
+
+/**
+ * What a selector asks of a box, or `null` when it is not the box's own rule:
+ * a selector reaching something inside the box carries a combinator, and
+ * nothing down there paints the ring.
+ */
+function need(selector: string): Need | null {
+  const rest = selector.replace(/^\.box/, '').trim();
+  const found: Need = { classes: [], focus: false, without: [] };
+  let at = 0;
+  while (at < rest.length) {
+    const tail = rest.slice(at);
+    const classy = /^\.([a-z0-9-]+)/.exec(tail);
+    const focused = /^:focus-within/.exec(tail);
+    const excluded = /^:not\(([^)]*)\)/.exec(tail);
+    if (classy?.[1] !== undefined) {
+      found.classes.push(classy[1]);
+      at += classy[0].length;
+    } else if (focused !== null) {
+      found.focus = true;
+      at += focused[0].length;
+    } else if (excluded?.[1] !== undefined) {
+      found.without.push(...excluded[1].split(',').map((name) => name.trim().replace(/^\./, '')));
+      at += excluded[0].length;
+    } else {
+      return null;
+    }
+  }
+  return found;
+}
+
+/** The border colour a rule paints, written longhand or in the shorthand. */
+function painted(body: string): string | null {
+  const longhand = /border-color:\s*([^;]+)/.exec(body);
+  if (longhand?.[1] !== undefined) return longhand[1].trim();
+  const shorthand = /border:\s*([^;]+)/.exec(body);
+  if (shorthand?.[1] === undefined) return null;
+  // Width, style, colour: the colour is the third token, and no rule here
+  // writes anything else.
+  return shorthand[1].trim().split(/\s+/)[2] ?? null;
+}
+
+/** Every rule the sheet writes for the box itself, in source order. */
+function rings(text: string): Ring[] {
+  const found: Ring[] = [];
+  const rules = [...text.matchAll(/^[ \t]*(\.box[^{]*?)\s*\{([^}]*)\}/gm)];
+  rules.forEach((rule, order) => {
+    const ask = need((rule[1] ?? '').trim());
+    const colour = painted(rule[2] ?? '');
+    if (ask === null || colour === null) return;
+    // A class and a pseudo-class are one of specificity each, and a `:not(...)`
+    // is its most specific argument rather than all of them.
+    const strength = ask.classes.length + (ask.focus ? 1 : 0) + (ask.without.length > 0 ? 1 : 0);
+    found.push({ need: ask, colour, order, strength });
+  });
+  return found;
+}
+
+/** The colour the sheet gives a box carrying `classes`, keyboard in or out. */
+function ring(text: string, classes: string[], focus: boolean): string {
+  const contenders = rings(text).filter((rule) => {
+    if (rule.need.focus && !focus) return false;
+    if (rule.need.classes.some((name) => !classes.includes(name))) return false;
+    return rule.need.without.every((name) => !classes.includes(name));
+  });
+  const winner = contenders.reduce<Ring | null>(
+    (best, rule) => (best === null || rule.strength >= best.strength ? rule : best),
+    null,
+  );
+  if (winner === null) throw new Error(`the sheet paints no ring for .box.${classes.join('.')}`);
+  return winner.colour;
+}
+
+/**
  * How the box says it has the keyboard. The composer focuses its field on
  * mount, so the resting look IS the focused look, which is why the accent
- * moving off the frame is the change rather than a detail of it.
+ * arriving on the frame is the change rather than a detail of it: the box
+ * shows one colour at a time, and focus is one of the states it answers.
  */
 describe('the frame', () => {
-  it('keeps the accent off the frame at rest and draws it along the bottom edge on focus', () => {
-    expect(
-      sheetRule('.box'),
-      'the resting frame is not the control border every other control rests at',
-    ).toContain('border: 1.5px solid var(--ctl)');
+  /** Every state the box draws, and the colour the ring takes for it. */
+  const STATES: readonly [state: string, colour: string][] = [
+    ['rec', 'color-mix(in srgb, var(--accent) 35%, var(--hot))'],
+    ['tr', 'var(--blue)'],
+    ['done', 'var(--ok)'],
+    ['err', 'var(--bad)'],
+  ];
 
-    const focus = sheetRule('.box:focus-within');
-    expect(focus, 'nothing on the box says where the keyboard is').toContain(
-      'inset 0 -2px 0 var(--accent)',
+  it('answers the keyboard at rest: the accent when it is here, the control border when it is not', () => {
+    expect(ring(sheet, [], false), 'a box at rest with the keyboard elsewhere').toBe('var(--ctl)');
+    expect(ring(sheet, [], true), 'a box at rest with the keyboard here').toBe('var(--accent)');
+  });
+
+  for (const [state, colour] of STATES) {
+    it(`draws ${state} in its own colour, whatever the keyboard is doing`, () => {
+      expect(ring(sheet, [state], false), `${state}, keyboard elsewhere`).toBe(colour);
+      expect(ring(sheet, [state], true), `${state}, keyboard here`).toBe(colour);
+    });
+  }
+
+  /**
+   * The precedence, resolved over the sheet rather than pattern-matched: the
+   * states come from the sheet itself, so one arriving in the wrong place is
+   * covered the moment it exists.
+   */
+  it('lets every state the sheet draws take the ring from focus', () => {
+    const states = new Set(rings(sheet).flatMap((rule) => rule.need.classes));
+    expect(states.size, 'the sheet draws no state of its own').toBeGreaterThan(0);
+    for (const state of states) {
+      expect(ring(sheet, [state], true), `focus repaints the ring while the box is ${state}`).toBe(
+        ring(sheet, [state], false),
+      );
+    }
+  });
+
+  /**
+   * The control for the check above: on a box doing nothing, focus DOES change
+   * the ring, so a resolver that could see no difference at all would be
+   * caught rather than read as precedence holding.
+   */
+  it('can tell focus apart where the box is doing nothing', () => {
+    expect(ring(sheet, [], true), 'the check sees no difference focus makes').not.toBe(
+      ring(sheet, [], false),
+    );
+  });
+
+  /**
+   * The negative control, and the failure the precedence check exists for: a
+   * state added ahead of the focus rule, where a cascade relying on source
+   * order silently repaints it. This is the sheet with one such state spliced
+   * in, and the check has to report it.
+   */
+  it('reports a state that arrived in front of the focus rule', () => {
+    const mutated = sheet.replace(
+      '.box:focus-within',
+      '.box.warn { border-color: var(--warn); }\n.box:focus-within',
     );
     expect(
-      focus,
-      'focus still paints the whole 1.5px frame, so the box shouts again',
-    ).not.toContain('border-color');
+      ring(mutated, ['warn'], true),
+      'a state the focus rule silently overpaints is not reported',
+    ).not.toBe(ring(mutated, ['warn'], false));
+  });
+
+  it('draws no second device: the inset line along the bottom edge is gone', () => {
+    expect(sheet, 'the box still draws the inset orange line').not.toContain('inset 0 -2px');
+    expect(sheet, 'focus still paints something besides the ring').not.toMatch(
+      /\.box:focus-within[^{]*\{[^}]*box-shadow/,
+    );
   });
 
   it('puts the controls on the last line, so they follow the caret down', () => {
