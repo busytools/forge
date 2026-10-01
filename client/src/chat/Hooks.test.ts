@@ -15,11 +15,21 @@ describe('the hook chip a turn carries', () => {
     expect(draw(2)).toContain('2 actions<');
   });
 
-  it('carries the toggle word as text rather than as a stylesheet rule', () => {
-    // A `::after` label is generated content, so the disclosure's accessible
-    // name is whatever the user agent makes of it - and this row is the whole
-    // of what a reader who cannot see the chip is told.
-    expect(draw(1)).toContain('>expand<');
+  it('carries the disclosure chevron the rest of the column draws, and no spelled-out verb', () => {
+    // Every other `<details>` here leads its toggle with the shared chevron,
+    // so this chip spelling `expand` instead is a second convention for one
+    // job. The chip keeps its own words either way, which is what a reader
+    // who cannot see the glyph is told the disclosure is.
+    const body = draw(1);
+
+    // One chevron, and the one the stylesheet's open/closed rules reach. The
+    // chip used to lead with a chevron that meant nothing by its state, so a
+    // second one beside it would be two answers to the same question.
+    expect(body.match(/#i-chev/g), 'exactly one disclosure chevron').toHaveLength(1);
+    expect(body, 'and it is the shared one the stylesheet turns').toContain('class="ic arw"');
+    expect(body, 'and not the verb spelled out in its place').not.toMatch(
+      />\s*(expand|collapse)\s*</,
+    );
   });
 
   it('draws the hooks behind the count, in the unit their durations are in', () => {

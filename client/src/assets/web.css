@@ -822,10 +822,10 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 .hooks > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
 .hooks > summary::-webkit-details-marker { display: none; }
 .hooks:hover { color: var(--muted); }
-.hooks .tog { border: 1px solid var(--ctl); border-radius: 5px; padding: 0 6px;
-  font-size: var(--fs-label); }
-.turninfo .tog { color: var(--muted); border: 1px solid var(--ctl);
-  border-radius: 6px; padding: 0 8px; font-size: var(--fs-data); }
+details.hooks > summary .arw { color: var(--dim); }
+details.hooks[open] > summary .arw { color: var(--accent); }
+details.turninfo > summary .arw { color: var(--dim); }
+details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The body's two columns, each FACT a wrapper holding a label and its figure.
    A fact with no partner used to keep a cell in column with an empty span
    beside it, which is a grid auto-flowing rather than a body saying what it

@@ -430,8 +430,13 @@
     font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
   .hooks { display: flex; align-items: center; gap: 8px; margin: 4px 0;
     font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
+  .hooks > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
+  .hooks > summary::-webkit-details-marker { display: none; }
   .hooks:hover { color: var(--muted); }
-  .hooks .tog { border: 1px solid var(--ctl); border-radius: 5px; padding: 0 6px; font-size: var(--fs-label); }
+  /* The live panel draws the chip as a div, so this pair is written loose
+     enough to reach both it and the transcript's own `<details>`. */
+  .hooks .arw { color: var(--dim); }
+  .hooks[open] .arw { color: var(--accent); }
 
   .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -443,8 +448,8 @@
   .turninfo .sep { opacity: .5; }
   /* The row's verdict, when it has one: the mark follows the turn. */
   .turninfo > summary .st.err { color: var(--bad); }
-  .turninfo .tog { color: var(--muted); border: 1px solid var(--ctl);
-    border-radius: 6px; padding: 0 8px; font-size: var(--fs-data); }
+  .turninfo > summary .arw { color: var(--dim); }
+  .turninfo[open] > summary .arw { color: var(--accent); }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
     font-family: var(--mono); font-size: var(--fs-data); }
@@ -1243,8 +1248,8 @@ docs: Render the message body into rows.</div>
         <div class="compacting"><span class="ring"></span>Compacting context...</div>
 
         <details class="hooks">
-          <summary><span>&#8627; hook summary &#183; 3 actions</span>
-            <span class="tog">expand</span></summary>
+          <summary><span>hook summary &#183; 3 actions</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         </details>
 
         <details class="turninfo">
@@ -1252,7 +1257,8 @@ docs: Render the message body into rows.</div>
             <svg class="ic st err"><use href="#i-x"/></svg><span>2m 41s</span><span class="sep">&#183;</span>
             <span>18.4k&#8593; 3.1k&#8595;</span><span class="sep">&#183;</span>
             <span>94% cached</span><span class="sep">&#183;</span>
-            <span>12.6k written</span><span class="tog">expand</span>
+            <span>12.6k written</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg>
           </summary>
         </details>
 
@@ -1277,7 +1283,8 @@ docs: Render the message body into rows.</div>
             <span>4.2k&#8593; 1.1k&#8595;</span><span class="sep">&#183;</span>
             <span>93% cached</span><span class="sep">&#183;</span>
             <span>3.1k written</span><span class="sep">&#183;</span>
-            <span>$4.82 cumulative</span><span class="tog">collapse</span>
+            <span>$4.82 cumulative</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg>
           </summary>
           <div class="tibody">
             <span class="l"><b>ended</b>15:48:31</span><span class="n"><b>model</b>claude-opus-5</span>
@@ -1385,21 +1392,20 @@ docs: Render the message body into rows.</div>
               <span id="lv-mark"><span class="ring"></span></span>
               <span id="lv-time">0.4s</span><span class="sep">&#183;</span>
               <span id="lv-think">thinking 434</span><span class="sep">&#183;</span>
-              <span id="lv-tok">4.2k&#8593;</span><span class="sep">&#183;</span>
+              <span id="lv-tok">1.1k&#8593; 62&#8595;</span><span class="sep">&#183;</span>
               <span>93% cached</span><span class="sep">&#183;</span>
-              <span>3.1k written</span><span class="sep" id="lv-cost-sep">&#183;</span>
-              <!-- The cumulative cost is the one figure only the Result carries:
-                   a running row draws it absent rather than leaving the slot
-                   out, because an empty gap reads as a field it does not have.
-                   The settle step in the script drops the segment with it. -->
-              <span id="lv-cost">- cumulative</span>
-              <span class="tog">expand</span>
+              <span>3.1k written</span>
+              <!-- The cumulative cost is the one figure only the Result carries,
+                   so a running row has no segment for it at all: a slot with no
+                   value is not drawn, rather than held empty for a figure that
+                   has not arrived. -->
+              <svg class="ic arw"><use href="#i-chev"/></svg>
             </summary>
           </details>
         </div>
 
         <div class="beat" data-beat="8">
-          <div class="hooks"><span>&#8627; hook summary &#183; 2 actions</span><span class="tog">expand</span></div>
+          <div class="hooks"><span>hook summary &#183; 2 actions</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
         </div>
       </div>
 
@@ -1771,9 +1777,7 @@ docs: Render the message body into rows.</div>
     $('lv-mark').innerHTML = TICK;
     $('lv-time').textContent = '0.4s';
     $('lv-think').style.display = '';
-    $('lv-tok').textContent = '4.2k↑';
-    $('lv-cost-sep').style.display = '';
-    $('lv-cost').style.display = '';
+    $('lv-tok').textContent = '1.1k↑ 62↓';
 
     at(200, () => { reveal(1); stream($('lv-t1'), $('lv-c1'), T1, 1300); });
     at(1500, () => { reveal(2); t0 = performance.now();
@@ -1793,10 +1797,6 @@ docs: Render the message body into rows.</div>
       $('lv-time').textContent = elapsed((performance.now() - t0) / 1000);
       $('lv-think').style.display = 'none';
       $('lv-tok').textContent = '4.2k↑ 1.1k↓';
-      // A settled row with no cost drops the segment entirely, so the
-      // drawing must not keep a dash no settled state ever shows.
-      $('lv-cost-sep').style.display = 'none';
-      $('lv-cost').style.display = 'none';
       reveal(8);
     });
   }

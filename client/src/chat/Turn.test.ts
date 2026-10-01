@@ -159,7 +159,9 @@ describe('one turn, as the page draws it', () => {
     expect(running, 'a ring, not a settled check').toContain('class="ring"');
     expect(running, 'the figures the frames carry').toContain('100\u{2191}');
     expect(running, 'the thinking count beside them').toContain('thinking');
-    expect(running, 'and the settle-only cost drawn absent').toContain('- cumulative');
+    expect(running, 'and no cost segment for a figure no frame has carried yet').not.toContain(
+      'cumulative',
+    );
 
     expect(draw(working), 'the same frames read as a page draw no row at all').not.toContain(
       'turninfo',

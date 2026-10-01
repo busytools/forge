@@ -263,7 +263,13 @@ interface Frame {
   tool_use_result?: unknown;
   state?: unknown;
   timestamp?: unknown;
-  message?: { content?: unknown; model?: unknown; stop_reason?: unknown; usage?: unknown };
+  message?: {
+    id?: unknown;
+    content?: unknown;
+    model?: unknown;
+    stop_reason?: unknown;
+    usage?: unknown;
+  };
 }
 
 /** Whether a frame came from a dispatched agent rather than the session's own. */
@@ -920,12 +926,32 @@ export function fold(
   let startedAt: string | null = null;
   /** Whether a result frame has landed, which is what ends a live turn. */
   let sawResult = false;
-  /** The input-side usage summed across the turn's assistant frames, while it runs. */
-  let seenUsage = false;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheRead = 0;
-  let cacheWritten = 0;
+  /**
+   * The usage the turn's frames carry, keyed by the message each belongs to.
+   *
+   * The CLI draws one assistant message as several frames, one per content
+   * block, and every one of them repeats the whole call's usage block - so a
+   * repeat overwrites rather than adds. Summing the frames instead counts a
+   * two-block message twice, which is the rule the terminal's `LiveTurn::record`
+   * exists to apply.
+   */
+  const usageByMessage = new Map<
+    string,
+    { input: number; output: number; read: number; written: number }
+  >();
+
+  /** The running totals across the distinct messages seen so far, or null before any. */
+  const liveUsage = (): { input: number; output: number; read: number; written: number } | null => {
+    if (usageByMessage.size === 0) return null;
+    const totals = { input: 0, output: 0, read: 0, written: 0 };
+    for (const held of usageByMessage.values()) {
+      totals.input += held.input;
+      totals.output += held.output;
+      totals.read += held.read;
+      totals.written += held.written;
+    }
+    return totals;
+  };
 
   const flushRun = (): void => {
     const calls = run;
@@ -1041,18 +1067,26 @@ export function fold(
     }
     // Every assistant message carries the counters of its own call, which is
     // what the running row counts up from. A frame with no usage block adds
-    // nothing; a block that is there contributes its counters, zero or not.
+    // nothing; a block that is there lands as its message's own counters,
+    // zero or not, and a later frame for the same message replaces them.
     if (frame.type === 'assistant' && frame.message?.usage !== undefined) {
       const usage = obj(frame.message.usage);
-      seenUsage = true;
-      inputTokens += typeof usage['input_tokens'] === 'number' ? usage['input_tokens'] : 0;
-      outputTokens += typeof usage['output_tokens'] === 'number' ? usage['output_tokens'] : 0;
-      cacheRead +=
-        typeof usage['cache_read_input_tokens'] === 'number' ? usage['cache_read_input_tokens'] : 0;
-      cacheWritten +=
-        typeof usage['cache_creation_input_tokens'] === 'number'
-          ? usage['cache_creation_input_tokens']
-          : 0;
+      const figure = (key: string): number => (typeof usage[key] === 'number' ? usage[key] : 0);
+      // A frame with no id cannot be matched to its repeats, so it keys on
+      // itself; every captured frame carries one.
+      usageByMessage.set(
+        typeof frame.message.id === 'string'
+          ? frame.message.id
+          : typeof frame.uuid === 'string'
+            ? frame.uuid
+            : `f${at}`,
+        {
+          input: figure('input_tokens'),
+          output: figure('output_tokens'),
+          read: figure('cache_read_input_tokens'),
+          written: figure('cache_creation_input_tokens'),
+        },
+      );
     }
 
     if (frame.type === 'result') {
@@ -1251,8 +1285,10 @@ export function fold(
   // A live turn that has not settled draws its own row from what its frames
   // already carry: the stamps give the span so far, the assistant messages'
   // usage gives the token side, the counter frames give thinking. The
-  // cumulative cost is settle-only, and the row draws that as absent.
+  // cumulative cost is settle-only, so the row has no segment for it until
+  // the Result lands.
   if (live && !sawResult) {
+    const held = liveUsage();
     units.push({
       kind: 'report',
       key: 'live-report',
@@ -1264,10 +1300,10 @@ export function fold(
         ended_at_utc: endedAt,
         model,
         thinking_tokens: thinking,
-        input_tokens: seenUsage ? inputTokens : null,
-        output_tokens: seenUsage ? outputTokens : null,
-        cache_read_tokens: seenUsage ? cacheRead : null,
-        cache_written_tokens: seenUsage ? cacheWritten : null,
+        input_tokens: held === null ? null : held.input,
+        output_tokens: held === null ? null : held.output,
+        cache_read_tokens: held === null ? null : held.read,
+        cache_written_tokens: held === null ? null : held.written,
         session_cost_usd: null,
       },
     });
