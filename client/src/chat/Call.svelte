@@ -10,11 +10,11 @@
   /**
    * One call: what it was, whether it came back, and what it came back with.
    *
-   * The group above keys this row by its lane and its place in that lane, so a
-   * call APPENDED to the lane leaves the rows above it alone. A lane that
-   * shifted in place would hand this row's state to another call; the lane is
-   * a run of one family and only ever grows, which is what makes the place a
-   * usable key.
+   * The group above keys this row by the row's own key, which for a call is
+   * the id the wire gave it. A place in a lane is not a key: a page landing
+   * with its copy of the turn can put a block above this row, and every place
+   * below it shifts - which remounts the row and closes what the reader had
+   * open in it.
    *
    * `open` is what the row's own kind decides - a mutation's diff is drawn
    * without being asked - and the reader's own toggling takes it from there.
