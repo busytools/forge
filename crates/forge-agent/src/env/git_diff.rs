@@ -185,6 +185,43 @@ const PUSHED_SHA_WALK_CAP: usize = 500;
 /// pattern in `cloud::oauth_credentials`.
 static LAST_FETCH: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
 
+/// Handles for the fetches kicked so far, so a test can settle an in-flight
+/// fetch before its fixture directory is removed. `scan` never awaits the
+/// fetch it kicks, so a fixture whose guard drops while `git fetch` is still
+/// writing into the tree aborts the removal part-way and leaves the rest of
+/// the directory behind.
+///
+/// Per process and never pruned, so under libtest's threaded runner one
+/// test's settle drains another's handle. nextest, which this repo runs, gives
+/// each test a process of its own.
+#[cfg(test)]
+static FETCH_TASKS: OnceLock<Mutex<Vec<tokio::task::JoinHandle<()>>>> = OnceLock::new();
+
+/// Await every background fetch kicked so far, and report how many that was.
+/// The count is the caller's guard against a silent no-op: a fixture that
+/// stops resolving a remote-tracking default, or a throttle that swallows the
+/// kick, would leave nothing to settle and the teardown racing an unseen
+/// child again.
+#[cfg(test)]
+async fn settle_background_fetches() -> usize {
+    let tasks = std::mem::take(&mut *FETCH_TASKS.get_or_init(|| Mutex::new(Vec::new())).lock());
+    let settled = tasks.len();
+    for task in tasks {
+        let _ = task.await;
+    }
+    settled
+}
+
+/// Hand a kicked fetch's handle to the test-only registry above. A
+/// production build discards it: the fetch is fire-and-forget, which is what
+/// [`scan`] promises its caller.
+fn track_background_fetch(fetch: tokio::task::JoinHandle<()>) {
+    #[cfg(test)]
+    FETCH_TASKS.get_or_init(|| Mutex::new(Vec::new())).lock().push(fetch);
+    #[cfg(not(test))]
+    drop(fetch);
+}
+
 /// Whether a background fetch is due: no prior fetch, or the last one is
 /// at least `window` old. Pure so the throttle is unit-testable.
 fn should_fetch(last: Option<Instant>, now: Instant, window: Duration) -> bool {
@@ -223,7 +260,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
     }
     let cwd = cwd.to_path_buf();
     let remote_branch = remote_branch.to_owned();
-    tokio::spawn(async move {
+    track_background_fetch(tokio::spawn(async move {
         let fetch = git_command::tokio_command("git")
             .arg("-C")
             .arg(&cwd)
@@ -268,7 +305,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
                 );
             }
         }
-    });
+    }));
 }
 
 /// Run the full scan sequence against `cwd` and return a snapshot.
@@ -2090,6 +2127,10 @@ mod tests {
             ahead.stats.files[0].path, "z.txt",
             "merged.txt (already on origin/main) is excluded from the branch-ahead diff",
         );
+        assert!(
+            settle_background_fetches().await >= 1,
+            "an origin-tracking scan kicks a fetch, so settling must have one to await",
+        );
     }
 
     /// On `main` with the default resolved to the remote-tracking ref
@@ -2119,6 +2160,10 @@ mod tests {
         assert!(
             matches!(snap.branch_ahead, LayerState::Clean),
             "on `main` the branch-ahead layer stays empty even when ahead of origin/main",
+        );
+        assert!(
+            settle_background_fetches().await >= 1,
+            "an origin-tracking scan kicks a fetch, so settling must have one to await",
         );
     }
 
@@ -2171,5 +2216,9 @@ mod tests {
         let _ = scan(dir.path(), None).await;
         let kicked = LAST_FETCH.get().is_some_and(|m| m.lock().contains_key(dir.path()));
         assert!(kicked, "a due scan on an origin-tracking repo claims (kicks) a background fetch");
+        assert!(
+            settle_background_fetches().await >= 1,
+            "an origin-tracking scan kicks a fetch, so settling must have one to await",
+        );
     }
 }
