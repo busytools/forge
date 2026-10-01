@@ -273,6 +273,111 @@ describe('the chat column as it draws', () => {
     expect((document.body.innerHTML.match(/<p>same<\/p>/g) ?? []).length, 'both are drawn').toBe(2);
   });
 
+  it('keeps a call the reader opened open when the turn is sent again', () => {
+    // The page landing replaces the turn with the server's copy and the row is
+    // updated IN PLACE - the DOM node survives - so a row that draws its open
+    // state from a prop closes the moment anything lands. The state has to be
+    // the element's own.
+    const call = {
+      type: 'assistant',
+      uuid: 'a-1',
+      message: {
+        id: 'm1',
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [
+          { type: 'text', text: 'reading it' },
+          { type: 'tool_use', id: 'c1', name: 'Read', input: { file_path: 'a.rs' } },
+        ],
+      },
+    };
+    const answered = {
+      type: 'user',
+      uuid: 'u-r1',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'the file' }],
+      },
+    };
+
+    const server = stub();
+    draw({}, server);
+    server.answer([], null);
+    server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg: call } } });
+
+    const leaf = document.querySelector('details.leaf');
+    if (!(leaf instanceof HTMLDetailsElement)) throw new Error('the call did not draw');
+    leaf.open = true;
+    leaf.dispatchEvent(new Event('toggle'));
+
+    // The page read lands with the same turn, grown by its result.
+    server.answer([{ key: null, messages: [call, answered] }], '1');
+
+    const after = document.querySelector('details.leaf');
+    expect(after, 'the row the reader opened').toBe(leaf);
+    expect((after as HTMLDetailsElement).open, 'is still open after the turn is re-sent').toBe(
+      true,
+    );
+  });
+
+  it('keeps a call the reader closed closed when the turn is sent again', () => {
+    // The other direction, and it needs the mutation to see it: a mutation's
+    // diff is drawn open, so a row the reader CLOSES used to be opened again by
+    // the next update. A test that only opens things cannot tell the two
+    // behaviours apart. (A run's `open` is a constant in the template, which is
+    // written once at creation and never re-applied - measured, not assumed.)
+    const edit = {
+      type: 'assistant',
+      uuid: 'a-1',
+      message: {
+        id: 'm1',
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [
+          { type: 'text', text: 'fixing it' },
+          {
+            type: 'tool_use',
+            id: 'c1',
+            name: 'Edit',
+            input: { file_path: 'a.rs', old_string: 'a', new_string: 'b' },
+          },
+        ],
+      },
+    };
+    const answered = {
+      type: 'user',
+      uuid: 'u-r1',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'edited' }],
+      },
+    };
+
+    const server = stub();
+    draw({}, server);
+    server.answer([], null);
+    server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg: edit } } });
+
+    const run = document.querySelector('details.kind');
+    const leaf = document.querySelector('details.leaf');
+    if (!(run instanceof HTMLDetailsElement) || !(leaf instanceof HTMLDetailsElement)) {
+      throw new Error('the run did not draw');
+    }
+    expect(leaf.open, 'a mutation draws open without being asked').toBe(true);
+    for (const row of [run, leaf]) {
+      row.open = false;
+      row.dispatchEvent(new Event('toggle'));
+    }
+
+    // The page lands with the turn grown, which is what re-renders the row.
+    server.answer([{ key: null, messages: [edit, answered] }], '1');
+
+    expect(
+      (document.querySelector('details.leaf') as HTMLDetailsElement).open,
+      'the call the reader closed',
+    ).toBe(false);
+  });
+
   it('draws a peer message the socket sends live, through the frame the server forges', () => {
     // #1376: the server forges the frame a delivery needs and sends it beside
     // the typed update, so a peer message draws live through the `chat_appended`
