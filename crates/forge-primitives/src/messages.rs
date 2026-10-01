@@ -62,8 +62,9 @@ pub enum Message {
         /// a turn ran that a transcript holds: no result frame reaches one.
         timestamp: Option<String>,
         /// The CLI's own mark that nobody typed this turn, folded from every
-        /// spelling the CLI gives it: the wire's `isSynthetic` or
-        /// `turnCompanion`, and the transcript row's `isMeta`,
+        /// spelling the CLI gives it: the wire's `isSynthetic` (itself the
+        /// union of `isMeta`, `isVisibleInTranscriptOnly` and
+        /// `isCompactSummary`), and the transcript row's `isMeta`,
         /// `isCompactSummary`, `isVisibleInTranscriptOnly` or
         /// `turnCompanion`. A view that reads it draws the harness speaking
         /// rather than the reader.
@@ -965,12 +966,6 @@ enum MessageRepr {
         // written against.
         #[serde(default, rename = "isSynthetic", skip_serializing_if = "std::ops::Not::not")]
         synthetic: bool,
-        // The other spelling of the same mark: a companion line the CLI
-        // writes for a turn carries `turnCompanion` and no `isSynthetic`.
-        // Read beside it rather than aliased, because a frame carrying both
-        // keys must still decode.
-        #[serde(default, rename = "turnCompanion", skip_serializing_if = "std::ops::Not::not")]
-        turn_companion: bool,
     },
     System(SystemRepr),
     RateLimitEvent {
@@ -1217,7 +1212,6 @@ impl From<MessageRepr> for Message {
                 tool_use_result,
                 timestamp,
                 synthetic,
-                turn_companion,
             } => Message::User {
                 message,
                 session_id,
@@ -1225,7 +1219,7 @@ impl From<MessageRepr> for Message {
                 uuid,
                 tool_use_result,
                 timestamp,
-                synthetic: synthetic || turn_companion,
+                synthetic,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
                 task_id,
@@ -1520,7 +1514,6 @@ impl From<Message> for MessageRepr {
                 tool_use_result,
                 timestamp,
                 synthetic,
-                turn_companion: false,
             },
             Message::System { subtype, session_id, data } => {
                 // `data` now carries the full shape (including `type`,
@@ -2105,31 +2098,53 @@ mod tests_message_extras {
              the reader's own: {encoded}",
         );
 
-        // A companion line the CLI writes for a turn - an image placeholder,
-        // a skill's "Base directory" note - carries `turnCompanion` and no
-        // `isSynthetic`, and nobody typed it either.
-        let companion = json!({
+        // The carrier that is not the reminder: the compaction summary, whose
+        // frame the CLI emits with the mark computed from `isCompactSummary`.
+        // Shape taken from `baselines/sdk/2.1.280/compact.jsonl`.
+        let summary = json!({
             "type": "user",
-            "session_id": "sess-usr",
+            "session_id": "sess-summary",
             "uuid": "user-uuid-3",
-            "turnCompanion": true,
+            "isSynthetic": true,
+            "isReplay": true,
             "message": {
                 "role": "user",
-                "content": [{
-                    "type": "text",
-                    "text": "[Image: original 3260x1058, displayed at 2000x649. Multiply coordinates by 1.63 to map to original image.]"
-                }]
+                "content": "This session is being continued from a previous conversation that ran out of context."
             }
         });
 
-        let msg: Message = serde_json::from_value(companion).expect("parse");
+        let msg: Message = serde_json::from_value(summary).expect("parse");
         let encoded = serde_json::to_value(&msg).expect("encode");
 
         assert_eq!(
             encoded.get("isSynthetic"),
             Some(&json!(true)),
-            "a companion frame is nobody's typed words either, and the mark is one field on \
-             the way out: {encoded}",
+            "a summary frame is nobody's typed words either: {encoded}",
+        );
+    }
+
+    /// Only the CLI's own wire spelling stamps a frame. A companion row's
+    /// `turnCompanion` is a disk field: `VFe` folds `isMeta`,
+    /// `isVisibleInTranscriptOnly` and `isCompactSummary` into the wire's
+    /// `isSynthetic`, and no outbound constructor writes anything else, so a
+    /// frame stamped by `turnCompanion` alone is a disk-shaped capture rather
+    /// than the CLI's bytes.
+    #[test]
+    fn the_wire_stamps_only_with_its_own_spelling() {
+        let raw = json!({
+            "type": "user",
+            "session_id": "sess-usr",
+            "turnCompanion": true,
+            "message": {"role": "user", "content": "companion text"}
+        });
+
+        let decoded: Message = serde_json::from_value(raw).expect("parse");
+        let encoded = serde_json::to_value(&decoded).expect("encode");
+
+        assert_eq!(
+            encoded.get("isSynthetic"),
+            None,
+            "a disk field must not stamp a frame: {encoded}",
         );
     }
 
