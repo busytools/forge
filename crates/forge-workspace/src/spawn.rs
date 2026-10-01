@@ -6054,7 +6054,8 @@ mod lead_charter_tests {
             "the rule points at the tool that reports the cap: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
-            DEFAULT_LEAD_CHARTER.contains("Hold a slot back only when a guardrail above blocks"),
+            DEFAULT_LEAD_CHARTER
+                .contains("Hold a slot back only when a guardrail above blocks the next piece, and say plainly which one"),
             "a slot held below the cap is held by a named guardrail: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
