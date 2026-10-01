@@ -147,10 +147,10 @@ export interface McpView {
  *
  * **The conversation is not here, and that is deliberate.** The chat pages for
  * its own history with `more` and follows the live tail off `chat_appended`, so
- * handing it the record's whole transcript would re-cross the conversation on
- * every re-read - which is the cost a virtualised list exists to avoid, and it
- * would take the reader's place with it. The rest is the shell's own read, and
- * the chat has no other way to get it.
+ * handing it the record's turns would re-cross the conversation on every
+ * re-read - which is the cost a virtualised list exists to avoid, and it would
+ * take the reader's place with it. The rest is the shell's own read, and the
+ * chat has no other way to get it.
  */
 export interface ConversationProps {
   /** The directory the seat's calls are named against. */

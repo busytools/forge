@@ -717,7 +717,17 @@ async fn two_sockets_on_one_seat_both_hear_it() {
 /// seat it is still showing.
 #[tokio::test]
 async fn one_unsubscribe_leaves_the_seats_other_subscription() {
-    let (url, fleet) = a_server().await;
+    let (url, fleet, state) = a_server_with_state().await;
+    // The page below is the barrier, so the seat has to be able to answer
+    // one: a `more` on a seat with no held conversation is refused rather
+    // than answered with an empty page, because an empty page carries
+    // `cursor: null` and a client reads that as the end of the history.
+    let rows: Vec<String> = (0..2).map(a_turns_rows).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
     let mut socket = connect(&url).await;
 
     for _ in 0..2 {

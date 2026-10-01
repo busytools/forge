@@ -42,9 +42,13 @@ pub use client::{AgentEvent, SessionLaunchSettings};
 pub use forge_primitives::permission::PermissionMode;
 
 /// The messages a session's transcript holds and the compactions it
-/// records. The same read the spawn performs, available for a session
-/// that is already running, so a view arriving late loads the
-/// conversation without the core retaining a copy of it.
+/// records. The same read the spawn performs, available for a session that
+/// is already running.
+///
+/// **A view is not the only way to a running session's conversation any
+/// more.** The socket's transport holds one it is seeded with by the session
+/// task, so this read is for a consumer that has no such copy - a view
+/// attaching late, or a fixture.
 pub fn session_history(
     config_dir: &std::path::Path,
     session_id: &str,

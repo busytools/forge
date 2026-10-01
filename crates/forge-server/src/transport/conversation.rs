@@ -411,7 +411,19 @@ impl Conversations {
                 }
                 held.lock().append(msg.clone());
             }
-            _ => {}
+            // A delivery is a row a CONNECTION forges per client at send
+            // time, so it never arrives here as a `ChatAppended` - and a held
+            // copy that ignored it would lose the row while its ANSWER
+            // stayed, which is a reply to nothing. Forged once here, where
+            // the update arrives, rather than in each connection that sends
+            // it.
+            _ => {
+                if let Some(msg) = crate::delivery::delivery_turn(update, slot)
+                    && let Some(held) = self.get(slot)
+                {
+                    held.lock().append(msg);
+                }
+            }
         }
     }
 

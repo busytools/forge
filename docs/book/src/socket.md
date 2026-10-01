@@ -103,17 +103,24 @@ seat still being shown, and a single unsubscribe must not take the seat
 out of the set a view is watching.
 
 **`more {conversation, before, turns}`** - a page of a session's
-transcript, as whole turns. Each turn carries `key` and `messages`, which is
+conversation, as whole turns. Each turn carries `key` and `messages`, which is
 the same shape the session snapshot's `conversation` carries; the grouping
 inside a turn is the client's to decide.
 
-**`key` is `null` on every turn of a transcript-derived conversation, and a
-client must not key by it.** The name comes from a `Result` frame, and a
-transcript holds none: its reader maps `user`, `assistant` and `system` rows
-and nothing else. A client that keys its rows by `key` collapses the whole
-conversation into one. It is carried because a live session does name its
-turns, and what a client does with it is its own business - the cursor is a
-position and is the one handle that always names a turn.
+**A page that cannot be answered is REFUSED rather than answered empty.** An
+empty page carries `cursor: null`, which a client reads as "nothing above" and
+stops asking on - so an answer the server could not give would make the seat's
+history unreachable rather than merely late. An `error` naming `more` means
+ask again, not that the conversation is over.
+
+**`key` is `null` on every turn of a conversation the server was handed as
+history, and a client must not key by it.** The name comes from a `Result`
+frame, and a replayed history holds none: the reader that built it maps
+`user`, `assistant` and `system` rows and nothing else. A client that keys its
+rows by `key` collapses the whole conversation into one. It is carried because
+a live session does name its turns, and what a client does with it is its own
+business - the cursor is a position and is the one handle that always names a
+turn.
 
 **The boundary between turns is the server's, and it is the only part of
 the fold that crosses.** How a run of tool calls groups within a turn is a

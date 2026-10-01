@@ -310,29 +310,41 @@ async fn handle_client(
             // socket folds the core's stream in one task for every seat, so a
             // fold holding a seat's lock would stall update delivery for every
             // client on every seat rather than for a second reader of this one.
-            let held = conversation_for(state, &conversation).await;
-            let page = match held {
-                Some(held) => {
-                    let seat = conversation.clone();
-                    let opening = before.clone();
-                    tokio::task::spawn_blocking(move || {
-                        held.read(|held| {
-                            page(held.messages(), held.spans(), opening.as_deref(), turns)
-                        })
-                    })
-                    .await
-                    .unwrap_or_else(|error| {
-                        tracing::warn!(
-                            event_name = "transcript_fold_failed",
-                            %error,
-                            slot = %seat.display(),
-                            "the fold did not finish; the page is answered empty",
-                        );
-                        page(&[], &[], before.as_deref(), turns)
-                    })
-                }
-                None => page(&[], &[], before.as_deref(), turns),
+            let Some(held) = conversation_for(state, &conversation).await else {
+                // **A question that cannot be answered is REFUSED rather than
+                // answered with a value that looks like one.** An empty page
+                // carries `cursor: null`, and a client reads that as "nothing
+                // above" and stops asking - so a replay that did not arrive
+                // would make the seat's history unreachable rather than
+                // merely late, and a plausible `compaction_count: 0` would
+                // ride along with it.
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "more".to_owned(),
+                        why: format!(
+                            "the conversation for {conversation:?} is not held yet, so this page \
+                             cannot be answered; asking again may find it"
+                        ),
+                    },
+                )
+                .await;
             };
+            let seat = conversation.clone();
+            let opening = before.clone();
+            let page = tokio::task::spawn_blocking(move || {
+                held.read(|held| page(held.messages(), held.spans(), opening.as_deref(), turns))
+            })
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    event_name = "transcript_fold_failed",
+                    %error,
+                    slot = %seat.display(),
+                    "the fold did not finish; the page is answered empty",
+                );
+                page(&[], &[], before.as_deref(), turns)
+            });
             send(
                 socket,
                 ServerMessage::Page { conversation, turns: page.turns, cursor: page.cursor },
