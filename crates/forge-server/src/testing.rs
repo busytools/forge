@@ -284,10 +284,13 @@ impl Fleet {
     /// fixture just seeded.
     ///
     /// **The transport no longer reads a transcript**, so a fixture that wants
-    /// a seat to answer with one has to put it there. It does that by reading
-    /// through the surface - which is what a fixture may do and a server may
-    /// not - and inserting it, which is the state a `Connected` would have
-    /// left.
+    /// a seat to answer with one has to put it there: it reads the transcript
+    /// RAW - the shape a `Connected` carries and a replay answers with - and
+    /// lets the conversation convert it, which is the state a `Connected`
+    /// would have left. Not through `ViewSurface::conversation`, which
+    /// converts the task notices on the way out: a fixture built on the
+    /// converted shape would exercise something production never seeds from,
+    /// so a defect in the seed's own conversion could not be seen here.
     ///
     /// `has_dispatches` is left to the conversation's own rule rather than
     /// passed in: a fixture that set it by hand would pin a value the fold
@@ -308,11 +311,6 @@ impl Fleet {
             .workspace
             .cwd_for_session(&slot)
             .ok_or_else(|| format!("{project} holds no session for {label}"))?;
-        // The RAW read, which is what a connect carries and what a replay
-        // answers with - NOT `ViewSurface::conversation`, which converts the
-        // task notices on the way out. A fixture built on the converted one
-        // would exercise a shape production never seeds from, and a defect in
-        // the conversion at the seed could not be seen by any test here.
         let read = forge_workspace::session_history(
             self.workspace.config_dir(),
             &self
