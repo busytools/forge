@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
+import { writable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ServerMessage } from '../protocol';
@@ -21,14 +22,17 @@ vi.mock('virtua/svelte', async () => {
   return { VList: List };
 });
 
-const { clear, list, pinned, setElement, setGeometry } = await import('./testing/records');
+const { clear, list, pinned, setElement, setMeasured } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
+const { default: Seats } = await import('./testing/Seats.svelte');
 
 const { clearObservers, installResizeObserver, resized } = await import('./testing/viewport');
 
 installResizeObserver();
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
+/** The seat the column is moved to, for the test that changes it under a reader. */
+const OTHER: SessionSlot = { org: 'Busytools', project: 'forge', label: 'other' };
 
 /** One turn as a page carries it. */
 const turn = (key: string): unknown => ({
@@ -79,8 +83,8 @@ function stub() {
 
   return {
     connection,
-    page(turns: unknown[]): void {
-      send({ kind: 'page', conversation: LEAD, turns, cursor: null });
+    page(turns: unknown[], seat: SessionSlot = LEAD): void {
+      send({ kind: 'page', conversation: seat, turns, cursor: null });
     },
     /** One frame arriving on the seat, the way a running turn's do. */
     frame(): void {
@@ -148,7 +152,7 @@ async function draw(server: ReturnType<typeof stub>): Promise<void> {
   clearObservers();
   // A list has measured its rows before a column asks it anything, so the
   // landing's own pin reads a list of a real height rather than of none.
-  setGeometry(TOTAL, VIEWPORT);
+  setMeasured(TOTAL, VIEWPORT);
   app = mount(Chat, {
     target: document.body,
     props: { slot: LEAD, connection: server.connection, cwd: null },
@@ -242,6 +246,37 @@ describe('whether the column follows the newest end', () => {
     server.frame();
 
     expect(pinned(), 'the very end is the rule, not a threshold near it').toEqual([]);
+  });
+
+  it('opens at the foot after the seat changes under a scrolled-up reader', async () => {
+    const seat = writable(LEAD);
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([turn('t1'), turn('t2')]);
+    await settle();
+
+    // The reader scrolls up on the seat they are on, so the column's own last
+    // placement is in that seat's offsets.
+    readerAt(0);
+    await settle();
+    clear();
+
+    // The seat changes under the same column, and the page of the new one
+    // lands: the follow owes that seat an opening at its own foot.
+    seat.set(OTHER);
+    flushSync();
+    expect(list(), 'the handle goes with the list the column left').toBeNull();
+    server.page([turn('o1'), turn('o2')], OTHER);
+    await settle();
+
+    expect(pinned(), 'the new conversation opens at its foot').toEqual([PIN, PIN]);
   });
 
   it('re-arms at the foot the element clamps to while the model reads long', async () => {

@@ -260,6 +260,13 @@
     // - the terminal's clamp re-engages its follow only at `scroll_offset >=
     // max_scroll` for exactly this reason.
     //
+    // Nothing is owed to arithmetic either: both sides are the element's own
+    // numbers, and the clamp makes them meet at the foot - swept over whole
+    // and fractional heights at device pixel ratios 1 to 3, the gap is 0 in
+    // WebKit and Chromium alike (CSS `zoom` past 1 is the one divergence
+    // found, and nothing here zooms the column) - so a tolerance could only
+    // re-arm the follow for a reader who has moved off it.
+    //
     // **And only a reader who has moved may switch it off.** A pin fires a
     // scroll event of its own, and the foot can settle past the height one
     // asked for: both read as the reader back above the foot with nothing
