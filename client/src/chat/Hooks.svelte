@@ -1,15 +1,26 @@
 <script lang="ts">
   import Chevron from '../components/Chevron.svelte';
+  import Icon from '../components/Icon.svelte';
   import { duration } from './numbers';
   import type { HookInfo } from './units';
 
   /**
-   * What a turn's hooks did: the count, and one row per hook behind it.
+   * What a turn's hooks did: the count, one row per hook behind it, and the
+   * errors the CLI reported against the batch.
    *
    * The frame sends none of these when no hook fired, so a chip on the page
    * always has something behind it.
    */
-  let { actions, infos }: { actions: number; infos: HookInfo[] } = $props();
+  let { actions, infos, errors }: { actions: number; infos: HookInfo[]; errors: string[] } =
+    $props();
+
+  /** The summary's own words, errors counted on the closed chip too. */
+  const label = $derived(
+    `hook summary \u{b7} ${actions} ${actions === 1 ? 'action' : 'actions'}` +
+      (errors.length > 0
+        ? ` \u{b7} ${errors.length} ${errors.length === 1 ? 'error' : 'errors'}`
+        : ''),
+  );
 
   /**
    * How long one hook took, which is milliseconds where the row has them.
@@ -25,15 +36,21 @@
 
 <details class="hooks">
   <summary>
-    <span>hook summary {'\u{b7}'} {actions} {actions === 1 ? 'action' : 'actions'}</span>
+    {#if errors.length > 0}
+      <Icon name="x" class="st err" />
+    {/if}
+    <span>{label}</span>
     <Chevron />
   </summary>
-  {#if infos.length > 0}
+  {#if infos.length > 0 || errors.length > 0}
     <div class="body">
       {#each infos as info, at (at)}
         <div class="term">
           {info.command}{#if info.durationMs !== undefined}{' \u{b7} '}{took(info.durationMs)}{/if}
         </div>
+      {/each}
+      {#each errors as error, at (at)}
+        <div class="term"><span class="fail">{error}</span></div>
       {/each}
     </div>
   {/if}
