@@ -438,7 +438,7 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
    fit a descender under a line of monospace. Scoped here rather than on `body`
    so the rails, the home and the composer keep the leading they were drawn
    with. */
-.conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable;
+.conv { overflow-y: auto; flex: 1; padding: 2px 8px 0 0; scrollbar-gutter: stable;
   line-height: 1.35; }
 /* The refusal above a conversation already drawn: the server's words for the
    ask that failed, at the column's own padding, with the rows left alone. */
@@ -973,14 +973,16 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 
 /* ---------- the strip pinned above the box ---------- */
 
-/* The running turn's metadata row, pinned above the composer for exactly as
-   long as the turn is incomplete. It shares the box's edges and sits outside
-   its ring, so the row's height is the only thing it ever costs the column.
+/* The running turn's metadata row, pinned above the composer for as long as
+   the turn is incomplete and through the beat that follows it. It shares the
+   box's edges and sits outside its ring, so the row's height is the only thing
+   it ever costs the column.
    Its fields are the settled row's own, under `.turninfo`, and its element is
    the flex row the fields wrap in - the strip renders no box of its own.
-   No margin of its own: it lands in the space the grid already leaves between
-   the column and the composer's slot, which is what puts it nearer the box
-   than the turn above it. */
+   No margin of its own: the composer cancels the grid's row gap for its own
+   row, so the column's foot is this row's bottom edge with only the composer's
+   padding under it - which is what puts it nearer the box than the turn above
+   it. */
 .strip { flex: none; padding: 8px 13px 9px;
   border: 1px solid var(--line); border-radius: var(--r); background: var(--s1); }
 .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
@@ -1002,8 +1004,10 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    animate. */
 
 /* The composer's own slot at the foot of the chat column. Its padding is
-   the only thing keeping the box off the column's bottom edge. */
-.composer { padding: 4px 0 2px; }
+   the only thing keeping the box off the column's bottom edge, and its margin
+   cancels the app grid's row gap for this row alone: `row-gap: 0` on the app
+   draws the same today and would leave any row added later unspaced too. */
+.composer { padding: 4px 0 2px; margin-top: calc(-1 * var(--ins)); }
 .comp { position: relative; display: flex; flex-direction: column; gap: 2px; }
 .hint { font-size: var(--fs-base); padding-left: 4px; }
 .hint.login { color: var(--warn); }

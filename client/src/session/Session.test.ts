@@ -476,4 +476,26 @@ describe('the app grid', () => {
       ).toBe(true);
     }
   });
+
+  /**
+   * **The end of a conversation reads like the middle of one.** The last row's
+   * own trailing space and the composer's own edge are the whole of the space
+   * between them: the column draws no bottom padding, and this row cancels the
+   * grid's row gap for itself - `row-gap: 0` on the app measures the same
+   * today and would leave any row added later unspaced too.
+   */
+  it("ends the conversation at the composer, with no gap of the grid's", () => {
+    // Every rule the sheet writes for `.composer`, not the last one: the
+    // mobile query's comes after the base rule and would answer for it.
+    const composer = [...sheet.matchAll(/^\s*\.composer\s*\{([^}]*)\}/gm)].map(
+      (hit) => hit[1] ?? '',
+    );
+    expect(
+      composer.some((rule) => rule.includes('margin-top: calc(-1 * var(--ins))')),
+      'the grid row gap is back above the composer',
+    ).toBe(true);
+    expect(body('.conv'), 'the column reserves bottom padding again').toContain(
+      'padding: 2px 8px 0 0',
+    );
+  });
 });
