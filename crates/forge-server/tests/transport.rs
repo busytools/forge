@@ -308,9 +308,9 @@ async fn next_agent_command(
 /// header draws a bar rather than the dash an unasked seat carries for its
 /// whole life.
 ///
-/// The terminal asks for the seat it is showing; a client subscribing to a seat
-/// is that same act, and the socket takes the ask on the read that encodes the
-/// subject.
+/// The terminal asks for the seat it is addressing; a client subscribing to a
+/// seat is that same act, and the socket takes the ask on the read that encodes
+/// the subject.
 #[tokio::test]
 async fn a_seat_a_client_opens_with_no_usage_asks_the_core_for_one() {
     let (url, fleet) = a_server().await;

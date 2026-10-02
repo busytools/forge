@@ -117,7 +117,7 @@ impl ViewSurface {
 
     /// Store a walk's answer, which is the write half of [`Self::processes`].
     ///
-    /// One store for both walkers: the terminal walks the seat it is showing
+    /// One store for both walkers: the terminal walks the seat it is addressing
     /// and the socket walks the seat a client reads. A second store would let
     /// the two answers drift, and two writers through one store of one shape
     /// is the whole of the sharing.
@@ -129,9 +129,9 @@ impl ViewSurface {
     /// answers with [`SessionUpdate::ContextUsageSnapshot`](crate::SessionUpdate::ContextUsageSnapshot).
     ///
     /// The ask rather than the read, because the reading only exists once the
-    /// CLI has computed it: the terminal asks for its focused seat, and the
-    /// socket asks for the seat a client reads, so both reach the one probe
-    /// rather than each holding a way to reach the CLI.
+    /// CLI has computed it: the terminal asks for the seat it is addressing,
+    /// and the socket asks for the seat a client reads, so both reach the one
+    /// probe rather than each holding a way to reach the CLI.
     ///
     /// # Errors
     ///

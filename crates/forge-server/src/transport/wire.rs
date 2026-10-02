@@ -847,8 +847,8 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
 /// Ask the core for a context reading on `slot` when the seat reports none.
 ///
 /// The reading exists only once the CLI has computed it, and the terminal asks
-/// for the seat it is showing. A client subscribing to a seat is that same act,
-/// so the ask belongs on the read that encodes the subject: a seat only a
+/// for the seat it is addressing. A client subscribing to a seat is that same
+/// act, so the ask belongs on the read that encodes the subject: a seat only a
 /// client watches would otherwise report nothing for the life of its session,
 /// and the header would draw the dash an unasked seat draws rather than a bar.
 ///
