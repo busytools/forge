@@ -311,11 +311,23 @@ client-release version:
     # and not the copy.
     refuse_if_in_use
 
+    # With both bundles present (an earlier run died before the cleanup below)
+    # this rename nests the old one at $app.old/forge.app; the cleanup takes it
+    # either way, so only a crash inside this run leaves it a level below the
+    # warning above points - and with that nested path already there it fails
+    # outright instead of nesting, which is #1609.
     if [ -e "$app" ]; then
         mv "$app" "$app.old"
     fi
+    # A failed copy never reaches here - `set -e` stops the recipe at the
+    # ditto above. This branch is the rename, and it names what is on disk
+    # rather than assuming a previous client exists.
     if ! mv "$app.new" "$app"; then
-        echo "[ERROR] the swap failed; the previous client is at $app.old" >&2
+        if [ -e "$app.old" ]; then
+            echo "[ERROR] the swap failed; the previous client is at $app.old" >&2
+        else
+            echo "[ERROR] the swap failed; nothing is installed at $app" >&2
+        fi
         exit 1
     fi
     rm -rf "$app.old"
