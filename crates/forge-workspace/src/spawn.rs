@@ -1385,6 +1385,38 @@ pub(crate) fn handle_spawn_worker(
         }
         return;
     }
+    // The worker's directory is not optional, and claude's `--worktree
+    // <label>` creation is not a check: when it does nothing (measured:
+    // the derived branch is already checked out in another worktree),
+    // the session starts anyway and the worker reads live with nowhere to
+    // work. Ask git what creation would be refused for, and refuse the
+    // spawn here instead - before the row is written and before any
+    // subprocess exists - leaving claude to create the worktree as it
+    // always has.
+    if is_git
+        && !is_resume
+        && let Some(obstacle) = forge_agent::env::worktree::worktree_creation_obstacle(
+            &view.path,
+            label,
+            &crate::mcp::workers::types::worker_tag_dir(&view.path, label, true),
+        )
+    {
+        let _ = workspace.remove_latest_worker(&project_key, label);
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            event_name = "worker_spawn_refused_no_worktree",
+            project = %project_key.as_str(),
+            label = %label,
+            %obstacle,
+            "a worktree cannot be created for this worker where it would have to run, so the \
+             spawn is refused rather than started with nowhere to work",
+        );
+        // The obstacle text reads as one sentence, so the MCP tool's
+        // "worktree creation failed:" label lands on top of it as one
+        // statement rather than two.
+        let _ = return_to.send(Err(obstacle));
+        return;
+    }
     // The row is the whole registry entry a boot re-spawns from, so it
     // carries the spawn args alongside the id rather than leaving them in
     // memory. One path writes it for both spawns and re-spawns; what a
@@ -3507,6 +3539,159 @@ provider = "anthropic"
             row.charter.as_deref(),
             Some("mind the queues"),
             "and keeps the args it was admitted with, not the refused attempt's",
+        );
+    }
+
+    /// A one-commit git repo as the project, the workspace over it, and
+    /// the label's derived worktree path. The project declares no model,
+    /// so a spawn that gets past the worktree step dies at the account
+    /// walk with no subprocess behind it - which is what makes the real
+    /// spawn path callable from a test at all.
+    fn git_spawn_fixture(
+        label: &str,
+    ) -> (Arc<Workspace>, ProjectKey, std::path::PathBuf, tempfile::TempDir, tempfile::TempDir)
+    {
+        let repo = tempdir().expect("repo tempdir");
+        run_git(repo.path(), &["init", "-q"]);
+        run_git(repo.path(), &["config", "user.email", "t@example.com"]);
+        run_git(repo.path(), &["config", "user.name", "Test"]);
+        std::fs::write(repo.path().join("README.md"), "seed").expect("write seed");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-q", "-m", "init"]);
+
+        let config = tempdir().expect("config tempdir");
+        let repo_path_str = repo.path().to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            forge_toml_path(config.path()),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge\"\npath = \"{repo_path_str}\"\n\n[[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+
+        let workspace =
+            Arc::new(Workspace::new_for_test(config.path().to_owned()).expect("workspace new"));
+        let view = workspace.list_projects().into_iter().next().expect("one project");
+        let project_key = view.key.clone();
+        let derived = view.path.join(".claude").join("worktrees").join(label);
+        (workspace, project_key, derived, repo, config)
+    }
+
+    /// Spawn `label` in the fixture workspace and hand back the reply.
+    fn spawn_reply(
+        workspace: &Arc<Workspace>,
+        key: &ProjectKey,
+        label: &str,
+    ) -> tokio::sync::oneshot::Receiver<Result<WorkerSpawnReply, String>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            workspace,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: label.to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        rx
+    }
+
+    /// A fresh spawn that cannot get its worktree must be refused rather
+    /// than started. The measured case: the derived branch
+    /// `worktree-<label>` is already checked out in another worktree, so
+    /// nothing can be created at the path the worker is to run in - and
+    /// unchecked, the session starts anyway and the worker reads live while
+    /// having nowhere to work.
+    #[tokio::test]
+    async fn a_fresh_spawn_whose_branch_is_held_elsewhere_is_refused() {
+        let (workspace, key, derived, repo, _config) = git_spawn_fixture("reviewer");
+        let elsewhere = tempdir().expect("elsewhere tempdir");
+        run_git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "worktree-reviewer",
+                elsewhere.path().to_str().expect("utf8 path"),
+            ],
+        );
+
+        let err = spawn_reply(&workspace, &key, "reviewer")
+            .await
+            .expect("reply channel")
+            .expect_err("a spawn whose worktree cannot be created is refused");
+
+        assert!(err.contains("already checked out"), "the refusal names the obstacle: {err}");
+        assert!(err.contains("worktree-reviewer"), "and the branch it is about: {err}");
+        assert!(!derived.exists(), "nothing was created at the path the worker would run in");
+        assert!(
+            workspace.list_live_workers(&key).is_empty(),
+            "and no worker reads live off the refused spawn"
+        );
+        assert!(
+            workspace.worker_rows_for_project(&key).is_empty(),
+            "and nothing durable survives to re-spawn it on the next boot"
+        );
+    }
+
+    /// The other direction: a worktree that can be created where the worker
+    /// runs is not this check's business. The spawn still fails, at the
+    /// account walk, which the fixture names no model for.
+    #[tokio::test]
+    async fn a_fresh_spawn_whose_worktree_can_be_created_gets_past_the_step() {
+        let (workspace, key, _derived, _repo, _config) = git_spawn_fixture("reviewer");
+
+        let err = spawn_reply(&workspace, &key, "reviewer")
+            .await
+            .expect("reply channel")
+            .expect_err("the spawn still fails, at the account walk");
+
+        assert!(
+            err.contains("declares no model"),
+            "the spawn got past the worktree step and died where the fixture says it must: {err}"
+        );
+        assert!(
+            workspace.list_live_workers(&key).is_empty(),
+            "and the failed spawn leaves no live worker behind"
+        );
+    }
+
+    /// A `--new` re-spawn lands on the worktree the worker already has:
+    /// registered at the derived path, holding its own branch, there to be
+    /// reused. Refusing that would take out every fresh re-spawn, so the
+    /// path comparison has to read a symlinked repo root as one directory.
+    #[tokio::test]
+    async fn a_fresh_spawn_onto_the_workers_own_worktree_gets_past_the_step() {
+        let (workspace, key, derived, repo, _config) = git_spawn_fixture("reviewer");
+        std::fs::create_dir_all(derived.parent().expect("worktrees dir")).expect("mkdir worktrees");
+        run_git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "worktree-reviewer",
+                derived.to_str().expect("utf8 path"),
+            ],
+        );
+
+        let err = spawn_reply(&workspace, &key, "reviewer")
+            .await
+            .expect("reply channel")
+            .expect_err("the spawn still fails, at the account walk");
+
+        assert!(
+            err.contains("declares no model"),
+            "the spawn is admitted onto the worktree it already has: {err}"
         );
     }
 

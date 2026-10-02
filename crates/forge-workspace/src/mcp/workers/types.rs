@@ -38,9 +38,9 @@ pub fn worker_tag_dir(project_root: &Path, label: &str, is_git_repo_at_spawn: bo
 /// from the project's filesystem instead would put the two on different
 /// directories: a `.git` entry git itself refuses, or a repo initialised
 /// after the worker was spawned, is enough to separate them. A fresh
-/// spawn (`resuming` false) starts in the project root and passes
-/// `--worktree`, so claude creates the worktree itself and nothing is
-/// missing yet.
+/// spawn (`resuming` false) answers `true` unconditionally: it passes
+/// `--worktree` and refuses the spawn outright when git reports the
+/// worktree cannot be created there, so there is nothing here to pre-empt.
 ///
 /// Under `--new` the wave passes `resuming` false for every row and
 /// re-spawns them all fresh, which is why the flag is a parameter rather

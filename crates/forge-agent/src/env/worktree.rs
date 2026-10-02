@@ -220,6 +220,100 @@ pub fn discard_worker_worktree(
     }
 }
 
+/// What git refuses to create a worker's worktree for at `path`, when there
+/// is something: the `worktree-<label>` branch already checked out in
+/// another worktree, a path taken by something that is not this worktree,
+/// or a registration whose directory is gone.
+///
+/// The worktree is claude's to create - it is handed `--worktree <label>` -
+/// and a creation that does nothing still leaves the session started, so a
+/// worker can read live with nowhere to work. Asking git the question that
+/// creation asks lets the caller refuse that spawn instead, and leaves who
+/// creates the worktree unchanged.
+///
+/// `None` when git cannot be asked: this exists to catch a silent failure,
+/// not to block a spawn on a probe that never answered.
+pub fn worktree_creation_obstacle(repo: &Path, label: &str, path: &Path) -> Option<String> {
+    let branch = format!("worktree-{label}");
+    let mut command = git_command::command("git");
+    command.arg("-C").arg(repo).args(["worktree", "list", "--porcelain"]);
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    // One block per worktree: a `worktree <path>` header, then the
+    // `branch` and `prunable` lines when that entry carries them.
+    let listing = String::from_utf8_lossy(&output.stdout);
+    let mut entries: Vec<(String, Option<String>, bool)> = Vec::new();
+    for line in listing.lines() {
+        if let Some(at) = line.strip_prefix("worktree ") {
+            entries.push((at.to_owned(), None, false));
+        } else if let Some(found) = line.strip_prefix("branch ") {
+            if let Some(entry) = entries.last_mut() {
+                entry.1 = Some(found.to_owned());
+            }
+        } else if line.starts_with("prunable")
+            && let Some(entry) = entries.last_mut()
+        {
+            entry.2 = true;
+        }
+    }
+
+    let wanted = format!("refs/heads/{branch}");
+    if let Some((at, _, _)) = entries.iter().find(|(_, held, _)| held.as_deref() == Some(&wanted))
+        && !same_path(at, path)
+    {
+        return Some(format!(
+            "the branch '{branch}' is already checked out in the worktree at {at}, so this \
+             worker's worktree cannot be created; remove that worktree, or spawn under a \
+             different label"
+        ));
+    }
+    match entries.iter().find(|(at, _, _)| same_path(at, path)) {
+        // Registered where the worker runs: the worktree is there to reuse.
+        Some((_, _, false)) if path.exists() => None,
+        Some((_, _, prunable)) => Some(format!(
+            "the worktree at {} is a {}registration whose directory is gone, so this worker's \
+             worktree cannot be created there; run `git worktree prune` in {} and spawn again",
+            path.display(),
+            if *prunable { "stale " } else { "" },
+            repo.display(),
+        )),
+        None if path.exists() => Some(format!(
+            "{} already exists and is not a worktree of this repository, so this worker's \
+             worktree cannot be created there; remove it, or spawn under a different label",
+            path.display()
+        )),
+        None => None,
+    }
+}
+
+/// Whether a path git printed and a path forge composed name the same
+/// directory. Both sides canonicalize, so a symlinked spelling of a repo
+/// root (a macOS tempdir under `/private`, a linked checkout) cannot read
+/// as a different worktree - and for a path that is gone, which a stranded
+/// registration is, the parent canonicalizes and the name is re-attached.
+fn same_path(listed: &str, composed: &Path) -> bool {
+    let listed = Path::new(listed);
+    if let (Ok(listed), Ok(composed)) =
+        (std::fs::canonicalize(listed), std::fs::canonicalize(composed))
+    {
+        return listed == composed;
+    }
+    match (spelled_from_parent(listed), spelled_from_parent(composed)) {
+        (Some(listed), Some(composed)) => listed == composed,
+        _ => listed == composed,
+    }
+}
+
+/// `path` with its parent canonicalized and its own name re-attached: the
+/// spelling a path keeps once it exists, for one that does not.
+fn spelled_from_parent(path: &Path) -> Option<std::path::PathBuf> {
+    let parent = std::fs::canonicalize(path.parent()?).ok()?;
+    Some(parent.join(path.file_name()?))
+}
+
 /// Outcome of [`reap_worktree_branch`]. `Kept`, `KeptOnError` and
 /// `DeleteFailed` each leave a branch behind and the caller warns
 /// differently for each; `NotPresent` warns about nothing.
@@ -1409,6 +1503,87 @@ mod tests {
             "the error carries git's stderr naming the branch: {err:?}"
         );
         assert!(!wt.exists(), "the failed add leaves no worktree behind");
+    }
+
+    /// The measured silent case: claude is handed `--worktree lbl`, the
+    /// branch is checked out elsewhere, the creation does nothing - and the
+    /// session starts anyway. The obstacle is what lets the spawn refuse it.
+    #[test]
+    fn obstacle_names_a_branch_checked_out_elsewhere() {
+        let repo = init_repo_with_commit();
+        let elsewhere = repo.path().join("elsewhere");
+        run_git(
+            repo.path(),
+            &["worktree", "add", "-q", "-b", "worktree-lbl", elsewhere.to_str().expect("utf8")],
+        );
+        let wt = repo.path().join(".claude").join("worktrees").join("lbl");
+
+        let obstacle = worktree_creation_obstacle(repo.path(), "lbl", &wt).expect("an obstacle");
+
+        assert!(
+            obstacle.contains("worktree-lbl") && obstacle.contains("already checked out"),
+            "the obstacle names the branch and what holds it: {obstacle}"
+        );
+    }
+
+    /// The worker's own worktree is where a fresh re-spawn lands, and the
+    /// worktree there is reused as it stands.
+    #[test]
+    fn obstacle_is_none_for_the_workers_own_worktree() {
+        let repo = init_repo_with_commit();
+        let wt = repo.path().join(".claude").join("worktrees").join("lbl");
+        fs::create_dir_all(wt.parent().expect("worktrees dir")).expect("mkdir worktrees");
+        run_git(
+            repo.path(),
+            &["worktree", "add", "-q", "-b", "worktree-lbl", wt.to_str().expect("utf8")],
+        );
+
+        assert_eq!(
+            worktree_creation_obstacle(repo.path(), "lbl", &wt),
+            None,
+            "a worktree registered at the worker's own path is not an obstacle",
+        );
+    }
+
+    #[test]
+    fn obstacle_is_none_where_the_worktree_can_be_created() {
+        let repo = init_repo_with_commit();
+        let wt = repo.path().join(".claude").join("worktrees").join("lbl");
+
+        assert_eq!(worktree_creation_obstacle(repo.path(), "lbl", &wt), None);
+    }
+
+    #[test]
+    fn obstacle_names_a_path_taken_by_something_else() {
+        let repo = init_repo_with_commit();
+        let wt = repo.path().join(".claude").join("worktrees").join("lbl");
+        fs::create_dir_all(&wt).expect("stray dir");
+        fs::write(wt.join("notes.txt"), "hand-made").expect("stray file");
+
+        let obstacle = worktree_creation_obstacle(repo.path(), "lbl", &wt).expect("an obstacle");
+
+        assert!(
+            obstacle.contains("is not a worktree"),
+            "the obstacle names what is in the way: {obstacle}"
+        );
+    }
+
+    /// A directory deleted out from under its registration leaves git
+    /// refusing to add a worktree there, so the spawn must refuse too.
+    /// `drop_worktree` would not do: `worktree remove` deregisters as it
+    /// removes, and deleting only the directory is what strands the
+    /// registration.
+    #[test]
+    fn obstacle_names_a_registration_whose_directory_is_gone() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        fs::remove_dir_all(&wt).expect("delete the worktree directory");
+
+        let obstacle = worktree_creation_obstacle(dir.path(), "lbl", &wt).expect("an obstacle");
+
+        assert!(
+            obstacle.contains("registration whose directory is gone"),
+            "the obstacle names the stale registration: {obstacle}"
+        );
     }
 
     #[test]
