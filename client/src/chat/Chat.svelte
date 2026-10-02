@@ -55,7 +55,12 @@
   /** How near the top the reader has to be before the turns above are asked for. */
   const REACH = 400;
 
-  let held = $state<Conversation>(NOTHING);
+  /**
+   * The conversation, held as a VALUE: a frame replaces the record rather than
+   * changing it, so nothing in it needs tracking - deep state made every read
+   * of every message a proxy call on each frame's re-derivation.
+   */
+  let held = $state.raw<Conversation>(NOTHING);
   /**
    * The element that scrolls, which is the list's own viewport.
    *

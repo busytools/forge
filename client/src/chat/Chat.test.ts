@@ -2,6 +2,8 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { Chat as HandedChat, type Conversation } from './conversation';
+import { freeze } from './testing/frozen';
 import type { ClientMessage, ServerMessage } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
@@ -18,6 +20,11 @@ installResizeObserver();
 vi.mock('virtua/svelte', async () => {
   const { default: List } = await import('./testing/List.svelte');
   return { VList: List };
+});
+
+vi.mock('./conversation', async (importOriginal) => {
+  const { frozenConversation } = await import('./testing/frozen');
+  return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -769,5 +776,52 @@ describe('the chat column as it draws', () => {
     expect(row?.isConnected, 'the row the reader opened is the row still on the page').toBe(true);
     expect(row?.open, 'and it is still open').toBe(true);
     expect(drawn(), 'the thought drew beside it').toContain('about the file');
+  });
+
+  it('draws a record it is handed frozen, because the column writes into nothing it is given', () => {
+    // Both halves are frozen here: the rows as they arrive off the wire, and -
+    // by the module mock above - the conversation the class composes and hands
+    // the column. A write into either throws in strict mode, so this failing
+    // is what a write in place would look like.
+    const frame = (uuid: string, text: string): unknown => ({
+      type: 'assistant',
+      uuid,
+      message: {
+        id: `m-${uuid}`,
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [{ type: 'text', text }],
+      },
+    });
+    const server = stub();
+    draw({}, server);
+
+    server.answer(freeze([{ key: 't1', messages: [frame('a1', 'first words')] }]));
+    server.send(appended(freeze(frame('a2', 'second words'))));
+
+    expect(drawn(), 'the frozen page drew').toContain('first words');
+    expect(drawn(), 'and the frozen frame drew with it').toContain('second words');
+  });
+
+  it('hands its readers a frozen record, which is what the guard above rests on', () => {
+    // **The freeze is asserted rather than assumed.** What this pins is that
+    // the `Chat` THIS FILE resolves publishes a frozen record - the import the
+    // mounted column shares - so a mock that stopped matching would show up
+    // here rather than silently leaving the guard above unarmed.
+    const server = stub();
+    const chat = new HandedChat(server.connection, LEAD);
+    const seen: Conversation[] = [];
+    chat.value.subscribe((value) => seen.push(value));
+    chat.start();
+    server.answer([
+      {
+        key: 't1',
+        messages: [{ type: 'user', uuid: 'u-1', message: { role: 'user', content: [] } }],
+      },
+    ]);
+
+    const handed = seen.at(-1);
+    expect(handed, 'a conversation was published').toBeDefined();
+    expect(() => handed?.turns.at(-1)?.messages.push({}), 'and it is frozen').toThrow(TypeError);
   });
 });

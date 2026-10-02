@@ -1,11 +1,18 @@
 import { get } from 'svelte/store';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { MORE_TURNS } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { Chat, type PageTurn } from './conversation';
+
+// Every record the class publishes is frozen, so an in-place edit where a
+// record should have been replaced throws here as well as in a mounted column.
+vi.mock('./conversation', async (importOriginal) => {
+  const { frozenConversation } = await import('./testing/frozen');
+  return frozenConversation(await importOriginal<typeof import('./conversation')>());
+});
 import { fold } from './units';
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };

@@ -9,6 +9,7 @@ import load from '../dev/fixtures/session-load.json';
 import type { ServerMessage, Subject } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
+import { freeze } from '../chat/testing/frozen';
 import { POLL_MS } from './live';
 
 /**
@@ -36,23 +37,6 @@ vi.mock('./view', async (importOriginal) => {
   };
 });
 
-/**
- * Every record the reader produces, frozen to its leaves.
- *
- * **This is the assertion the raw read rests on.** A record held in `$state.raw`
- * cannot be mutated in place: a write would be invisible to the page, where a
- * proxied record would have redrawn. No path may write to one, and this turns
- * that from a sentence in a commit message into something the suite runs - ESM
- * is strict mode, so the first write to a frozen record throws.
- */
-function frozen<T>(value: T): T {
-  if (value !== null && typeof value === 'object') {
-    for (const inner of Object.values(value)) frozen(inner);
-    Object.freeze(value);
-  }
-  return value;
-}
-
 vi.mock('./wire', async (importOriginal) => {
   const real = await importOriginal<typeof import('./wire')>();
   const { counting } = await import('./testing/counts');
@@ -62,7 +46,7 @@ vi.mock('./wire', async (importOriginal) => {
     // whole suite carries the assertion the raw read rests on: a record held in
     // `$state.raw` cannot be mutated in place, and ESM's strict mode turns the
     // first write into a thrown TypeError rather than a silent no-op.
-    sessionFrom: counting('sessionFrom', (data: unknown) => frozen(real.sessionFrom(data))),
+    sessionFrom: counting('sessionFrom', (data: unknown) => freeze(real.sessionFrom(data))),
   };
 });
 
