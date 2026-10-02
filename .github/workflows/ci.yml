@@ -70,6 +70,12 @@ jobs:
           key: test
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace --all-features
+      # nextest executes no doctest and `--all-targets` builds none, so
+      # without this step the Rust fences under `crates/*/src/` are compiled
+      # by no job. Here rather than in the docs job: the dev-profile build
+      # it needs is already warm from nextest, where beside `cargo check` it
+      # would rebuild every dependency.
+      - run: cargo test --doc --workspace --all-features
 
   release:
     name: cargo check --release

@@ -55,6 +55,19 @@ test:
 test-all:
     RUSTFLAGS="-D warnings" cargo nextest run --workspace --all-features
 
+# `cargo nextest run` executes no doctest and `cargo check --all-targets`
+# builds none, so without this step the Rust fences under `crates/*/src/`
+# are compiled by nothing. `forge-sdk`'s minimal example is the only one
+# today, and it is what that crate's published rustdoc opens with.
+# `--workspace` rather than `-p forge-sdk` so the next crate to grow one is
+# covered too. Mirrors CI's step, which sits in the nextest job so the
+# dev-profile build it needs is warm; `RUSTFLAGS=-D warnings` mirrors CI's
+# workflow-level env (#257).
+#
+# Compile the workspace's doctests (`no_run` fences compile without running).
+doctest:
+    RUSTFLAGS="-D warnings" cargo test --doc --workspace --all-features
+
 # `RUSTFLAGS=-D warnings` mirrors CI's workflow-level env (#257).
 #
 # Run wire-conformance replays against every committed baseline.
@@ -351,7 +364,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    steps=(fmt-check unicode-punct-check client-format client-lint client-typecheck client-test clippy test-all doc)
+    steps=(fmt-check unicode-punct-check client-format client-lint client-typecheck client-test clippy test-all doctest doc)
     verdict=""
 
     on_exit() {

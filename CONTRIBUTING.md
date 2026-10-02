@@ -21,9 +21,10 @@ That is `cargo fmt --check`, the Unicode punctuation gate, the client's
 Prettier check, ESLint, `svelte-check` and `tsc --noEmit` and then its
 vitest run, `cargo clippy --all-targets --workspace -- -D warnings` once
 per feature set (with and without `--all-features`),
-`cargo nextest run --workspace --all-features`, and
+`cargo nextest run --workspace --all-features`,
+`cargo test --doc --workspace --all-features`, and
 `cargo doc --workspace --no-deps --all-features`, all with
-`RUSTFLAGS=-D warnings` on the clippy, test and doc steps. Get it
+`RUSTFLAGS=-D warnings` on the clippy, test, doctest and doc steps. Get it
 green before you open a pull request. It is CI's set minus two jobs:
 CI also runs `cargo check --release` and `just check-feature-configs`.
 One command decides both stacks, so its verdict line names the first
