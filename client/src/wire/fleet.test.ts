@@ -27,16 +27,17 @@ import { coversHome, fleetNews } from './fleet';
  * reads as nothing, which the emptiness control below catches. A reshuffle
  * that still matches reads as a wrong answer, which nothing catches.
  *
- * Neither this nor the control can see a variant the server MOVES between
- * arms, or one it adds inside the `chat_appended` arm, where the decision is
- * a frame's own fields rather than a variant's name.
+ * Neither this nor the control can see a variant the server DROPS from the
+ * redraw arm back to the wildcard. A move between the two arms is caught,
+ * because the occupant count the test below asserts is exact; only the drop
+ * is not. Nor can either see one the server adds inside the `chat_appended`
+ * arm, where the decision is a frame's own fields rather than a variant's
+ * name. The census at the foot of this file is what closes the drop.
  *
  * Called with no answer it returns every name in any arm, which is the
- * server's half of the census at the foot of this file. A name spelled in a
- * comment between two arms would be read as an arm's, which is the same
- * assumption the paragraph above declares and the census does not depend on:
- * it answers whether each variant is classified, and a comment cannot answer
- * that for a variant the wildcard reaches.
+ * server's half of that census. A name spelled in a comment between two arms
+ * is read as an arm's here, so the census inherits the assumption above: a
+ * comment naming a variant the wildcard reaches would satisfy it wrongly.
  */
 function serverArms(arm?: 'Redraw' | 'Occupant'): string[] {
   const source = readFileSync(
@@ -125,8 +126,10 @@ function serverSlots(): { keyed: string[]; seatless: string[]; declared: number 
  * SessionUpdate {` at column zero and closes with `}` at column zero, and
  * every variant is still spelled at the top level of that body. The
  * derivation implements `rename_all` and not an explicit `#[serde(rename)]`,
- * which no variant of this enum carries; one added later reads as a name the
- * census fails on rather than one it mis-states.
+ * which no variant of this enum carries. A rename on a variant no bucket
+ * names reads as a name the census fails on; one on an already classified
+ * variant leaves `NOT_NEWS` holding a name that is no longer the wire name,
+ * which nothing here checks.
  */
 function serverVariantNames(): { names: string[]; closed: boolean } {
   const source = readFileSync(
@@ -408,13 +411,21 @@ describe('the variant census', () => {
     const news = new Set(serverArms().map((name) => snake(name)));
 
     // The denominators, because an emptiness assertion below that has stopped
-    // reading anything looks exactly like a clean one.
+    // reading anything looks exactly like a clean one. `closed` is the parse
+    // reaching the enum's own closing brace, and the count is the enum's own:
+    // a parse that read fewer names than the enum declares is one that cannot
+    // pass as a clean run.
     expect(
       closed,
       'the parse never reached the end of `SessionUpdate`, so it is the parse that moved and not ' +
         'the classification',
     ).toBe(true);
-    expect(names.length, 'the enum was not read out of protocol.rs at all').toBeGreaterThan(40);
+    expect(
+      names.length,
+      '`SessionUpdate` declares 57 variants: raise this count in the same edit that adds one, and ' +
+        'the census below names the bucket it belongs in; a count below 57 means the parse read ' +
+        'fewer names than the enum holds',
+    ).toBe(57);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );
