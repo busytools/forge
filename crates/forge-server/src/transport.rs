@@ -123,7 +123,7 @@ fn settles_a_compaction(update: &SessionUpdate) -> bool {
     else {
         return false;
     };
-    subtype == "status" && data.get("compact_result").is_some()
+    subtype == "status" && data.get("compact_result").is_some_and(|result| !result.is_null())
 }
 
 /// What this update asks of the core about a seat's context reading.
@@ -152,10 +152,12 @@ fn context_ask(update: &SessionUpdate) -> Option<(&SessionSlot, Ask)> {
 /// post-compaction ask, which may not be refused by the reading it exists to
 /// replace.
 ///
-/// Both records below are `debug` lines and nothing else, so no test sees them:
-/// the read path's own ask in `transport::wire` has the same hole, and no test
-/// here reaches the failed arm at all, the fixture's stub accepting every
-/// command it is handed.
+/// Both records below are `debug` lines and nothing else. The refusal is what a
+/// seat with no agent leaves behind, and no test reads it back: it is emitted
+/// from the spawned fold rather than from anything a test drives, so the capture
+/// helper's thread-local subscriber does not reach it. What a test can see is
+/// that the refusal draws nothing on the wire, which the transport's tests
+/// assert; the read path's own ask in `transport::wire` has the same hole.
 fn request_context_usage(
     state: &TransportState,
     probes: &mut probe::ContextProbe,
@@ -172,8 +174,8 @@ fn request_context_usage(
     // and every view reads that one, so a seat nobody is holding keeps a
     // number that is wrong rather than merely old - and a page opened on it
     // afterwards reads that number and is never asked, the read path guarding
-    // on a reading being present. The terminal recovers from a pane switch;
-    // this is the socket's own way to.
+    // on a reading being present. Nothing else asks for it either: a turn's
+    // ask is refused by the reading the settle has yet to replace.
     if why == Ask::AfterATurn && !Live::lock(&state.live).is_attached(key) {
         return;
     }

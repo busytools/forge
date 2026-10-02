@@ -729,11 +729,21 @@ async fn a_compaction_settling_inside_the_interval_still_asks() {
     );
 }
 
-/// A seat with no agent is asked for nothing and answers the client with
-/// nothing: the ask is refused before it reaches any CLI, and a refusal is a
-/// `debug` record rather than a message a page has to render.
+/// A seat with no agent draws nothing on the wire for the ask: no error a page
+/// would have to render, and no reading, since no probe can have reached a CLI
+/// to answer with one.
+///
+/// **What this does NOT pin is that the ask was issued**, and nothing in this
+/// harness can: the refusal's only product is a `debug` record, emitted from the
+/// spawned fold task rather than from anything the test drives, so a capture
+/// that has to hold a thread-local subscriber across awaits is not the shape
+/// `test_support::logged` gives. The frame this reads back proves nothing on its
+/// own - the emit queues it synchronously, before the fold has run at all - so
+/// the assertion is the silence after it, and the reachable mutations are the
+/// ones that would break that silence rather than the ones that would drop the
+/// ask.
 #[tokio::test]
-async fn a_seat_with_no_agent_is_asked_and_answers_the_client_with_nothing() {
+async fn a_seat_with_no_agent_draws_nothing_for_the_ask() {
     let (url, fleet) = a_server().await;
     // A reading, so the ask is admitted and the refusal is the missing agent
     // rather than one of the bounds.
@@ -749,12 +759,25 @@ async fn a_seat_with_no_agent_is_asked_and_answers_the_client_with_nothing() {
         origin: None,
     });
 
-    let heard = next_server_within(&mut socket, 5_000).await;
-    assert!(
-        matches!(heard, Some(ServerMessage::Update { .. })),
-        "the frame reaches the page it belongs to, and the refused ask is not an error it has to \
-         draw: {heard:?}",
-    );
+    // Whatever else the core says, none of it is news about this ask: an error
+    // would be the refusal rendered, and a reading would be a probe that got out
+    // with no agent behind the seat. Anything else is passed over and the window
+    // is the bound, so a busy core is not read as a failure.
+    for _ in 0..8 {
+        match next_server_within(&mut socket, 250).await {
+            Some(ServerMessage::Error { what, why }) => {
+                panic!("a refused ask is not drawn as an error: {what} {why}")
+            }
+            Some(ServerMessage::Update { update }) => {
+                assert!(
+                    !matches!(*update, SessionUpdate::ContextUsageSnapshot { .. }),
+                    "no agent means no probe, so no reading can arrive: {update:?}",
+                );
+            }
+            Some(_) => {}
+            None => return,
+        }
+    }
 }
 
 /// What bounds that trigger, and the half of the seat-opened rule it must not
