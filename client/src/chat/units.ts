@@ -481,6 +481,28 @@ export function skillBody(text: string): { name: string; body: string } | null {
   return { name, body: rest.join('\n').trim() };
 }
 
+/**
+ * Whether a frame is one of the local-command family, which the chat draws
+ * nothing for.
+ *
+ * The four heads are the CLI's own: the caveat announcing what follows, the
+ * echo of a command, and a local command's output. They are the reader's
+ * typing in the LAUNCH terminal arriving as plumbing, and the terminal's own
+ * chat filters the same set - so this is a decided ignore rather than an
+ * accidental drop. Ved's ruling, 2026-10-03, after the audit measured the
+ * family across every transcript: caveat 31, command echo 75, output 30, and
+ * nothing else in the family.
+ */
+function isLocalCommand(text: string): boolean {
+  const held = text.trimStart();
+  return (
+    held.startsWith('<local-command-caveat>') ||
+    held.startsWith('<local-command-stdout>') ||
+    held.startsWith('<command-name>') ||
+    held.startsWith('<command-message>')
+  );
+}
+
 /** The harness's own line about an image, or null for every other text. */
 function imageNoteOf(text: string): string | null {
   const held = text.trim();
@@ -1530,6 +1552,10 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
       if (block.type === 'text' && typeof block.text === 'string') {
         if (frame.type === 'user') {
           const stripped = stripEscapes(block.text);
+          // The local-command family draws nothing at all: it is the reader's
+          // typing in the launch terminal, and the terminal's own chat filters
+          // the same heads. A decided ignore, not a dropped frame.
+          if (isLocalCommand(stripped)) continue;
           const envelope = inbound(stripped, self);
           if (envelope !== null) {
             if (envelope.kind === 'peer') {
