@@ -158,11 +158,14 @@ pub enum WorktreeEnsure {
 /// transcript lives under the worktree's storage key, so `claude
 /// --resume` cannot find it from any other directory. Anchored on the
 /// branch: attach the surviving `worktree-<label>` when despawn kept
-/// it, otherwise recreate the branch at the repo's current HEAD, the
-/// base a fresh `--worktree <label>` would use. An existing `path` is a
-/// no-op; an out-of-band `rm -rf` defeats this (git's stale
-/// registration makes `worktree add` fail with git's message, surfaced
-/// here).
+/// it, otherwise recreate the branch at the repo's current HEAD. Under
+/// claude's default `worktree.baseRef` of `fresh` that is not the base
+/// a fresh `--worktree <label>` would use, which cuts from
+/// `origin/<default-branch>`; local HEAD is that base only with
+/// `baseRef` set to `head`, or a repo with no origin ref to resolve. An
+/// existing `path` is a no-op; an out-of-band `rm -rf` defeats this
+/// (git's stale registration makes `worktree add` fail with git's
+/// message, surfaced here).
 pub fn ensure_worker_worktree(
     repo: &Path,
     label: &str,
