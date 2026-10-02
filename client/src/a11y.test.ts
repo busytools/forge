@@ -196,6 +196,30 @@ describe('axe over the rendered pages', () => {
               },
               uuid: 'p1',
             },
+            // A hook's own run is a disclosure as well - a summary that opens
+            // onto the whole of what the hook printed - so the check runs over
+            // it too.
+            {
+              type: 'system',
+              subtype: 'hook_started',
+              hook_id: 'h1',
+              hook_name: 'SessionStart:startup',
+              hook_event: 'SessionStart',
+              uuid: 'h1',
+            },
+            {
+              type: 'system',
+              subtype: 'hook_response',
+              hook_id: 'h1',
+              hook_name: 'SessionStart:startup',
+              hook_event: 'SessionStart',
+              output: 'memory index loaded',
+              stdout: 'memory index loaded',
+              stderr: '',
+              exit_code: 0,
+              outcome: 'success',
+              uuid: 'h2',
+            },
           ],
         },
         cwd: null,
@@ -204,6 +228,12 @@ describe('axe over the rendered pages', () => {
     // The peer mark is the one glyph no other row on this turn draws, so it is
     // what says the message row was really there for the check.
     expect(html, 'the peer message drew, so axe saw it').toContain('i-bot');
+    // **What axe audits here is the row CLOSED.** Everything inside a closed
+    // `<details>` is out of the tree axe walks, which is the state the row is
+    // drawn in until a reader opens it and so the state worth checking - the
+    // body is a `<div class="term">` of text today, and an element axe cares
+    // about put in there would be checked by nothing until it is opened.
+    expect(html, 'and the hook run drew, so axe saw that too').toContain('class="hookrun"');
     // Inside the landmark the session page puts it in: the column is a region
     // of that page rather than a page, and axe reports content outside one.
     expect(await idsOf(`<main>${html}</main>`)).toEqual([]);

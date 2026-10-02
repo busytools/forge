@@ -506,6 +506,29 @@
   /* A failed summary's mark takes the bad tone rather than the chip's DIM. */
   details.hooks > summary .st.err { color: var(--bad); }
 
+  /* A hook's own run: the lifecycle frames the CLI sends while one hook runs,
+     folded to a row per run rather than a row per frame. Collapsed on the hook it
+     matched and the state it reached, with what it printed in the body - a
+     session-start hook prints the boilerplate it injects into the session, so a
+     run drawn whole beneath its turn would bury it. A run opens no turn of its
+     own and belongs to at most one.
+     Named `hookrun` rather than `hook`, which is one letter from the chip's own
+     `.hooks` above: either of those two would read as a typo for the other. */
+  .hookrun { margin: 3px 0;
+    font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
+  .hookrun > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
+  .hookrun > summary::-webkit-details-marker { display: none; }
+  .hookrun:hover { color: var(--muted); }
+  /* The row's kind, ahead of the name: the chip above leads with the same word,
+     so a run reads as that family rather than as an unlabelled line. */
+  .hookrun > summary .hk { flex: none; }
+  .hookrun > summary .nm { color: var(--text); font-weight: 700; white-space: nowrap; }
+  .hookrun > summary .ev { color: var(--muted); }
+  /* A failed run's mark takes the bad tone rather than the row's DIM. */
+  details.hookrun > summary .st.err { color: var(--bad); }
+  details.hookrun > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
+  details.hookrun[open] > summary .arw { color: var(--accent); }
+
   .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
    numbers rather than as in and out. */
@@ -1474,6 +1497,58 @@ docs: Render the message body into rows.</div>
           <span class="rule"></span>
         </summary>
       </details>
+
+      <div class="mine">
+        <div class="prose">
+          <p>And a hook's own run, closed on the hook and the state it reached. A failed one's mark rides the closed row the way the failed chip's does, a run that has not answered says so, and a name that carries no event draws its event beside it.</p>
+        </div>
+      </div>
+
+      <div class="work">
+        <details class="hookrun">
+          <summary>
+            <span class="hk">hook</span>
+            <span class="nm">SessionStart:startup</span>
+            <span class="ev">success &#183; exit 0</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+        </details>
+        <details class="hookrun">
+          <summary>
+            <svg class="ic st err"><use href="#i-x"/></svg>
+            <span class="hk">hook</span>
+            <span class="nm">PostToolUse:Edit</span>
+            <span class="ev">error &#183; exit 2</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+        </details>
+        <details class="hookrun">
+          <summary>
+            <span class="hk">hook</span>
+            <span class="nm">notify.sh</span>
+            <span class="ev">(SessionStart)</span>
+            <span class="ev">running</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+        </details>
+      </div>
+
+      <div class="mine">
+        <div class="prose">
+          <p>Opened, it carries the whole of what the hook printed: a summary standing in for the output would be the drop rule 25 forbids, so the row collapses it instead of clipping it.</p>
+        </div>
+      </div>
+
+      <div class="work">
+        <details class="hookrun" open>
+          <summary>
+            <span class="hk">hook</span>
+            <span class="nm">SessionStart:startup</span>
+            <span class="ev">success &#183; exit 0</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="term">repository is clean
+branch main, nothing to commit</div>
+          </div>
+        </details>
+      </div>
 
       <div class="mine">
         <div class="prose">
