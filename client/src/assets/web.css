@@ -815,7 +815,7 @@ details.leaf.running > summary { color: var(--text); }
    wrapping retires that premise rather than working around it:
    `overflow-wrap: anywhere` holds the column at the container's own width, so
    nothing overflows and no tint can fall short of one. */
-.dif { display: grid; grid-template-columns: 22px 1fr;
+.dif { display: grid; grid-template-columns: 38px 38px 22px 1fr;
   border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
   font-family: var(--mono); font-size: var(--fs-prose); }
 .dif .ln { display: contents; }
@@ -834,6 +834,11 @@ details.leaf.running > summary { color: var(--text); }
    mark. Bare for the same reason `.patchmark` is. */
 .patchsize { margin-right: 8px; }
 .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
+/* The number each side holds the line at, which is what makes two hunks in one
+   file readable: the old file's on the left, the new file's beside it, and a
+   blank where that side does not have the line at all. */
+.dif .ln .on, .dif .ln .nn { color: var(--dim); text-align: right; padding-right: 8px;
+  user-select: none; }
 .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
 .dif .ln.a .l { background: var(--add-bg); }
 .dif .ln.d .l { background: var(--del-bg); }
@@ -881,10 +886,10 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 
 /* an answered question survives the dock clearing */
 .card { margin: 8px 0; padding: 2px 0; }
-.card .q { display: flex; align-items: baseline; gap: 9px; padding-left: 19px;
+.card .q { display: flex; align-items: baseline; gap: 9px; padding-left: 12px;
   font-size: var(--fs-base); color: var(--muted); }
 .card .q .qm { color: var(--accent); flex: none; }
-.card .a { display: flex; align-items: baseline; gap: 8px; padding-left: 9px;
+.card .a { display: flex; align-items: baseline; gap: 8px; padding-left: 27px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
 .card .a .am { color: var(--dim); }
 .card .a .picked { color: var(--ok); }

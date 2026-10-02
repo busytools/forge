@@ -1517,6 +1517,24 @@ describe('the dock', () => {
   const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
     harness.sent.map((entry) => entry.command);
 
+  it('stands down once its answer is on its way, and says so', () => {
+    // The terminal pops its prompt at submit; this dock stands instead, with
+    // the mark the reader's own words carry while they are out - so a second
+    // Enter is not read as a second answer to a prompt already answered.
+    const harness = open({
+      record: record({ pending_ask: questionAsk('tu-q', { multi_select: false }) }),
+    });
+
+    options()[1]?.click();
+    flushSync();
+    expect(commands(harness), 'the answer went').toHaveLength(1);
+    expect(drawn(), 'and the dock says it is on its way').toContain('sending');
+
+    options()[1]?.click();
+    flushSync();
+    expect(commands(harness), 'and nothing else can be sent from it').toHaveLength(1);
+  });
+
   it('answers a question with the row that was clicked, and only that row', () => {
     const harness = open({
       record: record({ pending_ask: questionAsk('tu-q', { multi_select: false }) }),

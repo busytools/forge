@@ -100,9 +100,15 @@ describe('what a call body draws', () => {
     );
     expect(wrote.mutation, 'a create adds, and removes nothing').toMatchObject({
       hunks: 1,
-      added: 3,
+      added: 2,
       removed: 0,
     });
+    const [made] = wrote.body;
+    expect(made?.kind, 'and it draws as the file it made').toBe('hunk');
+    if (made?.kind !== 'hunk') throw new Error('a create drew no hunk');
+    expect(made.header, 'from line zero, which is what git writes for a new file').toBe(
+      '@@ -0,0 +1,2 @@',
+    );
 
     const bash = leafOf('t2', 'Bash', { command: 'ls' }, answered('a.rs\nb.rs'));
     expect(

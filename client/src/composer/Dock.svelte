@@ -17,6 +17,7 @@
     land = null,
     onanswer = () => {},
     onabandon = () => {},
+    answered = false,
   }: {
     ask: Ask;
     slot: SessionSlot;
@@ -40,6 +41,16 @@
     land?: string | null;
     onanswer?: (toolId: string | null) => void;
     onabandon?: () => void;
+    /**
+     * Whether this is the prompt the reader has answered and the core has not
+     * taken yet.
+     *
+     * **The dock stands where the terminal pops it**, and the mark says so:
+     * the pick is drawn at once and everything else on the dock stands down,
+     * so a second Enter is not read as a second answer to a prompt the reader
+     * has already answered. A refusal brings it back live, with the reason.
+     */
+    answered?: boolean;
   } = $props();
 
   /** Which sprite carries an option's meaning, and the colour the sheet gives it. */
@@ -211,6 +222,7 @@
 
   /** Clicking a row: an option answers, the own-words row opens the field. */
   function choose(at: number): void {
+    if (answered) return;
     const row = rows[at];
     if (row === undefined) return;
     marked = at;
@@ -569,18 +581,29 @@
       />
     {/if}
 
-    <div class="keys">
-      <span><kbd>↑</kbd><kbd>↓</kbd> {question ? 'move' : 'select'}</span>
-      {#if multi}
-        <span><kbd>space</kbd> toggle</span>
-      {/if}
-      <span><kbd>Enter</kbd> {question ? 'submit' : 'confirm'}</span>
-      {#if take !== null}
-        <span><kbd>Esc</kbd> cancel the take</span>
-      {:else}
-        <span><kbd>Esc</kbd> reject</span>
-      {/if}
-    </div>
+    {#if answered}
+      <!-- The same mark the reader's own words carry while they are on their
+           way, because it is the same wait: a pick that has left the reader and
+           has not been taken yet. -->
+      <div class="keys">
+        <span class="answering"
+          ><span class="ring"></span>sending · it holds until the core takes it</span
+        >
+      </div>
+    {:else}
+      <div class="keys">
+        <span><kbd>↑</kbd><kbd>↓</kbd> {question ? 'move' : 'select'}</span>
+        {#if multi}
+          <span><kbd>space</kbd> toggle</span>
+        {/if}
+        <span><kbd>Enter</kbd> {question ? 'submit' : 'confirm'}</span>
+        {#if take !== null}
+          <span><kbd>Esc</kbd> cancel the take</span>
+        {:else}
+          <span><kbd>Esc</kbd> reject</span>
+        {/if}
+      </div>
+    {/if}
 
     {#if take !== null}
       <div class="blip">

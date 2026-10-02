@@ -291,6 +291,7 @@
     if (box.answered === null) return;
     if (current !== null && askToolId(current) === box.answered) return;
     box.answered = null;
+    box.answeredKey = null;
     box.refusal = null;
   });
 
@@ -480,6 +481,7 @@
    */
   function remember(toolId: string | null): void {
     box.answered = toolId;
+    box.answeredKey = ownKeyOf(ask);
     box.refusal = null;
   }
 
@@ -552,6 +554,9 @@
         land={dockLanded}
         onanswer={remember}
         onabandon={abandon}
+        answered={box.answeredKey !== null &&
+          box.answeredKey === ownKeyOf(dockAsk) &&
+          box.refusal === null}
       />
     {/key}
   </div>

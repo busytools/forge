@@ -19,8 +19,8 @@ const edited = (): ToolLeaf => ({
       kind: 'hunk',
       header: '@@ -1,2 +1,2 @@',
       lines: [
-        { kind: 'del', text: 'a = 1;' },
-        { kind: 'add', text: 'a = 2;' },
+        { kind: 'del', text: 'a = 1;', old: 1, new: null },
+        { kind: 'add', text: 'a = 2;', old: null, new: 1 },
       ],
     },
   ],
@@ -35,7 +35,7 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('the lines a call’s row draws', () => {
+describe("the lines a call's row draws", () => {
   it('keeps the mutation size line on one line, in the renderer that runs', () => {
     // **Mounted rather than rendered to a string**, because the two paths
     // disagree about whitespace and the client's is the one on screen: this box

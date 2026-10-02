@@ -21,10 +21,14 @@ export type CallBody =
   | { kind: 'hunk'; header: string; lines: HunkLine[] }
   | { kind: 'image'; mime: string | null; uri: string | null };
 
-/** One line of a hunk: context, removed, or added. */
+/** One line of a hunk: context, removed, or added, with the number it holds on each side. */
 export interface HunkLine {
   kind: 'ctx' | 'del' | 'add';
   text: string;
+  /** Its number in the file as it was, or `null` for a line the change added. */
+  old: number | null;
+  /** And in the file as it is now, or `null` for a line the change removed. */
+  new: number | null;
 }
 
 /** What a mutation's result says about itself, drawn as one line under its diff. */
@@ -199,8 +203,8 @@ export function diffsOf(name: string, input: unknown): CallBody[] {
   const path = field(input, 'file_path') ?? field(input, 'notebook_path');
   if (path === null) return [];
 
-  if (name === 'Write') return hunk('', field(input, 'content') ?? '');
-  if (name === 'NotebookEdit') return hunk('', field(input, 'new_source') ?? '');
+  if (name === 'Write') return created(field(input, 'content') ?? '');
+  if (name === 'NotebookEdit') return created(field(input, 'new_source') ?? '');
   if (name === 'MultiEdit') {
     const edits = (input as { edits?: unknown } | null)?.edits;
     if (!Array.isArray(edits)) return [];
@@ -237,22 +241,41 @@ export function hunksOf(record: unknown): CallBody[] {
       newLines?: unknown;
       lines?: unknown;
     };
-    const lines = hunkLines(hunk.lines);
+    const lines = hunkLines(hunk.lines, Number(hunk.oldStart ?? 1), Number(hunk.newStart ?? 1));
     if (lines.length === 0) continue;
     out.push({ kind: 'hunk', header: headerOf(hunk), lines });
   }
   return out;
 }
 
-/** The lines of one hunk, each read by the character the wire prefixes it with. */
-function hunkLines(raw: unknown): HunkLine[] {
+/**
+ * The lines of one hunk, each read by the character the wire prefixes it with
+ * and numbered on both sides.
+ *
+ * **The numbers are counted from the hunk's own ranges**, which is what makes
+ * two hunks in one file readable: without them each block is a change with no
+ * way to see how far it sits from the one above it, and the header's range is
+ * the only thing saying where either is. A removed line holds its number in
+ * the file as it was and none in the file as it is; an added line the other way
+ * round; a context line holds both, which is what holds the two sides in step.
+ */
+function hunkLines(raw: unknown, oldStart: number, newStart: number): HunkLine[] {
   if (!Array.isArray(raw)) return [];
   const out: HunkLine[] = [];
+  let old = oldStart;
+  let next = newStart;
   for (const line of raw) {
     if (typeof line !== 'string' || line === '') continue;
     const [mark = ' ', ...rest] = line;
     const kind = mark === '-' ? 'del' : mark === '+' ? 'add' : 'ctx';
-    out.push({ kind, text: kind === 'ctx' ? line : rest.join('') });
+    out.push({
+      kind,
+      text: kind === 'ctx' ? line : rest.join(''),
+      old: kind === 'add' ? null : old,
+      new: kind === 'del' ? null : next,
+    });
+    if (kind !== 'add') old += 1;
+    if (kind !== 'del') next += 1;
   }
   return out;
 }
@@ -312,6 +335,29 @@ function marksOf(
   const all = (input as { replace_all?: unknown } | null)?.replace_all === true;
   const outside = (record as { userModified?: unknown } | null)?.userModified === true;
   return { hunks, added, removed, all, outside };
+}
+
+/**
+ * A file the call created, as git and GitHub draw one.
+ *
+ * **The range is knowable even though the wire sends no patch for it**: a
+ * create goes from line zero to however many lines it wrote, which is the one
+ * first hunk `@@ -0,0 +1,N @@`, and every line of it is an addition. The
+ * alternative is what the row drew before - the whole file as a bare run of
+ * plus lines with nothing saying what it was or where it started.
+ */
+function created(content: string): CallBody[] {
+  if (content.trim() === '') return [];
+  const lines = content.split('\n');
+  // A trailing newline ends the last line rather than starting an empty one.
+  if (lines[lines.length - 1] === '') lines.pop();
+  return [
+    {
+      kind: 'hunk',
+      header: `@@ -0,0 +1,${lines.length} @@`,
+      lines: lines.map((text, at) => ({ kind: 'add' as const, text, old: null, new: at + 1 })),
+    },
+  ];
 }
 
 /**

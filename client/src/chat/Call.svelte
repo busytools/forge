@@ -111,13 +111,19 @@
               {#each piece.old.split('\n') as line, n (`old-${n}`)}
                 {#if piece.old !== ''}
                   <div class="ln d">
-                    <span class="n">{'\u{2212}'}</span><span class="l">{line}</span>
+                    <span class="on"></span><span class="nn"></span><span class="n"
+                      >{'\u{2212}'}</span
+                    ><span class="l">{line}</span>
                   </div>
                 {/if}
               {/each}
               {#each piece.new.split('\n') as line, n (`new-${n}`)}
                 {#if piece.new !== ''}
-                  <div class="ln a"><span class="n">+</span><span class="l">{line}</span></div>
+                  <div class="ln a">
+                    <span class="on"></span><span class="nn"></span><span class="n">+</span><span
+                      class="l">{line}</span
+                    >
+                  </div>
                 {/if}
               {/each}
             </div>
@@ -134,6 +140,8 @@
                   class:a={line.kind === 'add'}
                   class:ctx={line.kind === 'ctx'}
                 >
+                  <span class="on">{line.old ?? ''}</span>
+                  <span class="nn">{line.new ?? ''}</span>
                   <span class="n"
                     >{line.kind === 'del' ? '\u{2212}' : line.kind === 'add' ? '+' : ''}</span
                   >
