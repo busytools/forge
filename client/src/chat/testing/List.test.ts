@@ -3,7 +3,8 @@ import { flushSync, mount, unmount } from 'svelte';
 import { writable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { clear, list } from './records';
+import { clear, list, register } from './records';
+import List from './List.svelte';
 import Swapped from './Swapped.svelte';
 
 /** Let the list mount and every deferred pass land, the way `follow.test.ts` does. */
@@ -52,5 +53,19 @@ describe('the handle a list registers at the seam', () => {
       list(),
       'the handle belongs to the replacement list, not to the one that departed',
     ).not.toBe(first);
+  });
+
+  it('holds nothing for a list that was unmounted before it ever flushed', () => {
+    // Where a departed list leaves the seam, which is the state this starts at.
+    register(null);
+    app = mount(List, { target: document.body });
+    // No flush between the two, so the effect never ran.
+    void unmount(app);
+    app = null;
+
+    expect(
+      list(),
+      'a list unmounted before its effect ran leaves no handle at the seam',
+    ).toBeNull();
   });
 });

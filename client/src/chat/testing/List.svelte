@@ -122,17 +122,20 @@
   // The column binds this component to a handle of its own, which a test
   // cannot reach; the module is the seam instead.
   const mine = { scrolledTo, settled };
-  register(mine);
 
-  // **And the handle goes with the component.** A real list removes its scroll
-  // listener when it is destroyed, in the same flush that removes the node, so
-  // nothing may drive a column through a list that is gone - a seam left
-  // registered would let a test call a callback the browser cannot deliver.
-  // Cleared only while the seam still holds THIS list: Svelte creates the
-  // incoming branch before running the outgoing branch's destroy, so a swap
-  // between two lists would otherwise clear the replacement's handle.
-  $effect(() => () => {
-    if (list() === mine) register(null);
+  // **And the handle lives exactly as long as the effect does.** A real list
+  // removes its scroll listener when it is destroyed, in the same flush that
+  // removes the node, so nothing may drive a column through a list that is
+  // gone - a seam left registered would let a test call a callback the browser
+  // cannot deliver. Registering inside the effect pairs it with that teardown:
+  // a list unmounted before its first flush never registers at all. Cleared
+  // only while the seam still holds THIS list, because Svelte creates the
+  // incoming branch before running the outgoing branch's destroy.
+  $effect(() => {
+    register(mine);
+    return () => {
+      if (list() === mine) register(null);
+    };
   });
 </script>
 
