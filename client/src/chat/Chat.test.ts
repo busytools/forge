@@ -79,6 +79,39 @@ function draw(props: Record<string, unknown>, server: ReturnType<typeof stub>): 
 /** What the column reads as, which is what a reader has to go on. */
 const drawn = (): string => document.body.textContent ?? '';
 
+/** One assistant frame, whose usage the running row draws. */
+const frame = (uuid: string, input: number): unknown => ({
+  type: 'assistant',
+  uuid,
+  timestamp: '2026-10-01T06:00:00Z',
+  message: {
+    id: `m-${uuid}`,
+    role: 'assistant',
+    model: 'claude-opus-5',
+    content: [{ type: 'text', text: 'working' }],
+    usage: { input_tokens: input, output_tokens: 20 },
+  },
+});
+
+/** The frame a turn ends on, which is the only carrier of a session cost. */
+const settledFrame = (): unknown => ({
+  type: 'result',
+  uuid: 'r1',
+  duration_ms: 42_000,
+  duration_api_ms: 20_000,
+  total_cost_usd: 12.5,
+  usage: {},
+});
+
+/** A frame arriving on the seat, which is how a turn opens. */
+const appended = (msg: unknown): ServerMessage => ({
+  kind: 'update',
+  update: { chat_appended: { key: LEAD, msg } },
+});
+
+/** The core saying the turn is over, which is what asks for the page that settles it. */
+const ended = (): ServerMessage => ({ kind: 'update', update: { turn_complete: { key: LEAD } } });
+
 afterEach(async () => {
   // One page per test: the column is read off the document, so a mount left
   // behind is read as part of the next test's page.
@@ -483,34 +516,14 @@ describe('the chat column as it draws', () => {
   });
 
   it('pins the running row above the box, and out of the turn it belongs to', () => {
-    // **The wiring, which is one prop and one mount.** The row moves out of the
-    // newest turn while it is being written, so a column that keeps drawing it
-    // in the turn draws it twice - and a column that keeps it only in the turn
-    // loses the pin. Both halves are asserted here because either one alone
-    // reads as a working page.
+    // **The wiring, and both halves of it.** The row moves out of the newest
+    // turn while it is being written, so a column that goes on drawing it in
+    // the turn draws it twice, and a column that keeps it only in the turn
+    // loses the pin. Either one alone reads as a working page.
     const server = stub();
     draw({}, server);
     server.answer([]);
-    server.send({
-      kind: 'update',
-      update: {
-        chat_appended: {
-          key: LEAD,
-          msg: {
-            type: 'assistant',
-            uuid: 'a-run',
-            timestamp: '2026-10-01T06:00:00Z',
-            message: {
-              id: 'm-run',
-              role: 'assistant',
-              model: 'claude-opus-5',
-              content: [{ type: 'text', text: 'working' }],
-              usage: { input_tokens: 100, output_tokens: 20 },
-            },
-          },
-        },
-      },
-    });
+    server.send(appended(frame('a-run', 100)));
 
     expect(document.querySelectorAll('.strip'), 'one pinned row').toHaveLength(1);
     expect(document.querySelectorAll('.strip .ring'), 'carrying the running mark').toHaveLength(1);
@@ -518,6 +531,135 @@ describe('the chat column as it draws', () => {
       document.querySelectorAll('details.turninfo'),
       'and the turn draws no second copy of it',
     ).toHaveLength(0);
+  });
+
+  it('pins the row for a turn the seat says is running, not only one the frames built', () => {
+    // A turn the client reached mid-flight has its row from a page, so `live`
+    // is false there and the core's own answer is the only carrier - the state
+    // a pin reading one of the two draws nothing at all for.
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 'turn-mid', messages: [frame('a-mid', 100)] }]);
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+
+    expect(document.querySelectorAll('.strip'), 'the row is pinned').toHaveLength(1);
+    expect(document.querySelectorAll('.strip .ring'), 'with the running mark').toHaveLength(1);
+    expect(document.querySelectorAll('details.turninfo'), 'and out of the turn').toHaveLength(0);
+  });
+
+  it('moves the finished row into the pin for its beat, and into the turn when the beat ends', () => {
+    // **The beat is a move, not a copy.** The turn's own row stands aside for
+    // exactly as long as the pin holds it: without that the same figures draw
+    // twice on one page for the 450ms the beat lasts, which is the one moment
+    // it exists to serve.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([]);
+      server.send(appended(frame('a-run', 100)));
+      expect(document.querySelectorAll('.strip'), 'the running row is pinned').toHaveLength(1);
+
+      server.send(ended());
+      server.answer([{ key: 'turn-a-run', messages: [frame('a-run', 100), settledFrame()] }]);
+
+      expect(
+        document.querySelector('.strip')?.textContent,
+        'the pin holds the finished row',
+      ).toContain('cumulative');
+      expect(
+        document.querySelectorAll('details.turninfo'),
+        'and the turn draws none of it while the pin has it',
+      ).toHaveLength(0);
+
+      vi.advanceTimersByTime(450);
+      flushSync();
+
+      expect(document.querySelector('.strip'), 'the pin lets go').toBeNull();
+      expect(
+        document.querySelectorAll('details.turninfo'),
+        'and the turn has its row',
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes the pin back for the next turn, and beats that turn’s own finish', () => {
+    // A beat left armed by the turn before shows up here: it fires mid-flight,
+    // clears the turn the pin is carrying, and the next turn's own finish then
+    // never beats.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([]);
+      server.send(appended(frame('a-one', 100)));
+      server.send(ended());
+      server.answer([{ key: 'turn-a-one', messages: [frame('a-one', 100), settledFrame()] }]);
+      expect(
+        document.querySelector('.strip')?.textContent,
+        'the first finish is beating',
+      ).toContain('cumulative');
+
+      server.send(appended(frame('a-two', 700)));
+      expect(
+        document.querySelector('.strip')?.textContent,
+        'the next turn draws its own figures',
+      ).toContain('700\u{2191}');
+
+      vi.advanceTimersByTime(450);
+      flushSync();
+
+      expect(
+        document.querySelector('.strip'),
+        'and stays pinned through the beat that belonged to the turn before',
+      ).not.toBeNull();
+
+      server.send(ended());
+      server.answer([{ key: 'turn-a-two', messages: [frame('a-two', 700), settledFrame()] }]);
+
+      expect(
+        document.querySelector('.strip')?.textContent,
+        'and its own finish beats',
+      ).toContain('cumulative');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pins nothing for a conversation whose newest turn has settled', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 'turn-done', messages: [frame('a-done', 100), settledFrame()] }]);
+
+    expect(document.querySelectorAll('.strip'), 'no row is pinned').toHaveLength(0);
+    expect(document.querySelectorAll('details.turninfo'), 'and the turn draws its own').toHaveLength(
+      1,
+    );
+  });
+
+  it('pins the newest turn’s row, not the first one the column holds', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([
+      { key: 't1', messages: [frame('a-one', 100), settledFrame()] },
+      { key: 't2', messages: [frame('a-two', 200), settledFrame()] },
+    ]);
+    server.send(appended(frame('a-three', 700)));
+
+    expect(document.querySelectorAll('.strip'), 'one pinned row').toHaveLength(1);
+    expect(document.querySelector('.strip')?.textContent, 'carrying the newest turn').toContain(
+      '700\u{2191}',
+    );
+    expect(
+      document.querySelectorAll('details.turninfo'),
+      'and the settled turns draw their own',
+    ).toHaveLength(2);
   });
 
   it('keeps a row the reader opened mounted when a thinking row lands above it', () => {

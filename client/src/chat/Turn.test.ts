@@ -177,33 +177,37 @@ describe('one turn, as the page draws it', () => {
     );
   });
 
-  it('draws no running row for a turn whose row is pinned above the box', () => {
-    // While this turn is the one being written its running row is drawn in the
-    // strip above the composer, outside the scroll - so the turn does not draw
-    // a second copy of it: one strip, never two. The settled row is untouched,
-    // which is the half that makes this a move rather than a loss.
-    const at = (turn: HeldTurn): string =>
-      render(Turn, { props: { turn, cwd: null, pinned: true } }).body;
+  it('draws no report row for a turn the pin is holding, and takes it back when the pin lets go', () => {
+    // The pin holds this turn's row - the running one while the turn is written
+    // and the finished one for the beat after it ends - so the turn draws none
+    // of it: the same figures twice on one page is the defect. The settled row
+    // comes back here the moment the pin lets go, which is the half that makes
+    // this a move rather than a loss.
+    const at = (turn: HeldTurn, pinned: boolean): string =>
+      render(Turn, { props: { turn, cwd: null, pinned } }).body;
+    const settled: HeldTurn = {
+      key: 't1',
+      live: false,
+      messages: [
+        working,
+        { type: 'result', uuid: 'r1', duration_ms: 1000, duration_api_ms: 500, usage: {} },
+      ],
+    };
 
     expect(
-      at({ key: 't1', messages: [working], live: true }),
+      at({ key: 't1', messages: [working], live: true }, true),
       'a running turn the frames built',
     ).not.toContain('turninfo');
     expect(
-      at({ key: 't1', messages: [working], live: false, running: true }),
+      at({ key: 't1', messages: [working], live: false, running: true }, true),
       'and one whose turn the seat says is running',
     ).not.toContain('turninfo');
-    expect(
-      at({
-        key: 't1',
-        live: false,
-        messages: [
-          working,
-          { type: 'result', uuid: 'r1', duration_ms: 1000, duration_api_ms: 500, usage: {} },
-        ],
-      }),
-      'while the settled row still draws where it always did',
-    ).toContain('turninfo');
+    expect(at(settled, true), 'nor the finished row while the pin holds it').not.toContain(
+      'turninfo',
+    );
+    expect(at(settled, false), 'and the turn takes it back when the pin lets go').toContain(
+      'turninfo',
+    );
   });
 
   it('draws the running row for a turn the seat says is running', () => {

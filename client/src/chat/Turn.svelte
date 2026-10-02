@@ -37,12 +37,14 @@
     slot?: Self | null;
     compacting?: boolean;
     /**
-     * Whether this turn's running row is drawn pinned above the box.
+     * Whether this turn's report row is drawn in the pin above the box.
      *
-     * Set for the newest turn, which is the only one a running row is ever
-     * folded for: the row moves out of the turn and sits above the composer
-     * while the turn is written, and comes back here when it settles. Two
-     * strips on one turn is the defect this prop exists to prevent.
+     * Set for the newest turn while the pin is carrying it, which is the whole
+     * of the turn being written and the beat after it ends: the row moves out
+     * of the turn and sits above the composer, and comes back here the moment
+     * the pin lets it go. Two rows of one turn on one page - the running one
+     * drawn twice, or the finished one drawn in the pin and here at once - is
+     * the defect this prop exists to prevent.
      */
     pinned?: boolean;
   } = $props();
@@ -50,15 +52,16 @@
   const folded = $derived(fold(turn.messages, cwd, slot, beingWritten(turn)));
 
   /**
-   * The fold's units, less the running row where the pin is carrying it.
+   * The fold's units, less the report row where the pin is carrying it.
    *
-   * The running row moves out of the turn and above the composer while this is
-   * the turn being written, so it is not drawn here as well - two strips on one
-   * turn. Nothing is lost by it: the same row is on the page, in the pin, and
-   * the settled row comes back here the moment the turn ends.
+   * The row moves out of the turn and above the composer while the pin holds
+   * it, so it is not drawn here as well - the running row while the turn is
+   * written, and the finished row for the beat after it ends. Nothing is lost
+   * by that: the same row is on the page, in the pin, and the turn takes it
+   * back the moment the pin lets go.
    */
   const units = $derived(
-    pinned ? folded.filter((unit) => !(unit.kind === 'report' && unit.info.running)) : folded,
+    pinned ? folded.filter((unit) => unit.kind !== 'report') : folded,
   );
 
   /** A reader's own words on their own, or a run of everything else in one block. */
