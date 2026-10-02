@@ -142,14 +142,32 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
                 }
                 _ => continue,
             },
-            // Not a replayable message, but the only durable record of
-            // how often this session has compacted - nothing else
-            // survives a resume.
+            // The only durable record of how often this session has compacted
+            // and of where each cut fell - nothing else survives a resume.
+            // Counted here, and the row is kept so a resumed conversation
+            // draws its boundaries the way a live one does.
             Some("system")
                 if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
             {
                 compaction_count = compaction_count.saturating_add(1);
-                continue;
+                // Keyed on what the row yielded rather than on the metadata
+                // object being there: the plausible drift is a rename inside it
+                // (`preTokens`, per the primitives test), which leaves the
+                // object present and one field unread - a row drawn without
+                // that fact, and nothing else saying why. The live arm warns on
+                // the same degradation.
+                if !carries_boundary_metadata(&value) {
+                    let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default();
+                    let session = session_in_row(&value);
+                    tracing::warn!(
+                        target: "forge_agent::userdata::catalog",
+                        event_name = "compact_boundary_without_metadata",
+                        uuid,
+                        session,
+                        "compact_boundary row yielded no trigger or pre_tokens; counted, but the kept row draws without them",
+                    );
+                }
+                (SessionMessageKind::System, Some(compact_boundary_frame(&value)))
             }
             // What the turn's hooks did. A system row is the frame the wire
             // sends, so it is kept whole; the one field the frame's decoder
@@ -211,6 +229,37 @@ fn session_in_row(value: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+/// Whether the row yields both facts the kept boundary frame reads - the
+/// trigger, and the count before the cut.
+///
+/// Read off the same two fields `compact_boundary_frame` builds from, so a row
+/// this calls readable is a row whose frame decodes typed.
+fn carries_boundary_metadata(value: &Value) -> bool {
+    let metadata = value.get("compactMetadata");
+    let read = |key: &str| metadata.and_then(|metadata| metadata.get(key));
+    read("trigger").and_then(Value::as_str).is_some()
+        && read("preTokens").and_then(Value::as_u64).is_some()
+}
+
+/// The boundary row in the shape the wire sends.
+///
+/// A transcript spells its metadata flat and camelCase (`compactMetadata`,
+/// `preTokens`), while the decoder keys on the wire's nesting - so a row handed
+/// on as read decodes as a generic system frame, and draws bare where a live
+/// boundary draws its count. `postTokens` is dropped on both paths (#1581).
+fn compact_boundary_frame(value: &Value) -> Value {
+    let metadata = value.get("compactMetadata");
+    let field =
+        |key: &str| metadata.and_then(|metadata| metadata.get(key)).cloned().unwrap_or(Value::Null);
+    serde_json::json!({
+        "type": "system",
+        "subtype": "compact_boundary",
+        "session_id": session_in_row(value),
+        "uuid": value.get("uuid").and_then(Value::as_str).unwrap_or_default(),
+        "compact_metadata": {"trigger": field("trigger"), "pre_tokens": field("preTokens")},
+    })
 }
 
 /// Build a `{"role":"user","content":[{queued_command}]}` envelope from
@@ -980,6 +1029,87 @@ mod tests {
 
     use super::*;
 
+    /// Buffer tracing output so an emitted record can be read back.
+    #[derive(Clone, Default)]
+    struct LogCapture(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_logs(f: impl FnOnce()) -> String {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = capture.0.lock().clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// A renamed disk field is the one drift this scan cannot otherwise see:
+    /// the count stays right and the row still draws, bare or half-filled. The
+    /// live arm warns on the same degradation, so the read path has to as well
+    /// or the only trace of it is a row with no count and nothing saying why.
+    ///
+    /// **The four shapes are the same failure and are keyed together**: the
+    /// outer key renamed, either field inside it renamed - the count's is the
+    /// one the primitives test calls plausible, and the trigger's is the
+    /// symmetric case - and no metadata at all.
+    #[test]
+    fn a_boundary_row_whose_facts_did_not_survive_is_logged() {
+        for (shape, row) in [
+            (
+                "outer key renamed",
+                r#"{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadataMoved":{"trigger":"auto","preTokens":41207}}"#,
+            ),
+            (
+                "count renamed inside it",
+                r#"{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"trigger":"auto","pre_tokens":41207}}"#,
+            ),
+            (
+                "trigger renamed inside it",
+                r#"{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"triggers":"auto","preTokens":41207}}"#,
+            ),
+            (
+                "no metadata at all",
+                r#"{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1"}"#,
+            ),
+        ] {
+            let log = capture_logs(|| {
+                parse_session_messages(row.as_bytes());
+            });
+
+            assert!(log.contains("cb1"), "the record for a {shape} names its row: {log}");
+            assert!(log.contains("s1"), "and the session it was read for: {log}");
+        }
+    }
+
+    /// The negative control: a row carrying its metadata warns about nothing,
+    /// so the record above is about the drift and not about every boundary.
+    #[test]
+    fn a_boundary_row_with_its_metadata_logs_nothing() {
+        let log = capture_logs(|| {
+            parse_session_messages(
+                br#"{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"trigger":"auto","preTokens":41207}}"#
+                    .as_slice(),
+            );
+        });
+
+        assert!(log.is_empty(), "a row the scan can read warns about nothing: {log}");
+    }
+
     #[test]
     fn sanitize_ascii_only_passthrough() {
         assert_eq!(sanitize_path("alphanum123"), "alphanum123");
@@ -1187,10 +1317,15 @@ mod tests {
     }
 
     /// The count has to come out of the same streamed pass that builds
-    /// the messages. Transcripts that have compacted are the 100 MB+ ones
-    /// (a session compacts because it is huge), so a second read of the
-    /// file to count them would land squarely on the resume path for
+    /// the messages. A transcript that has compacted is usually a large
+    /// one (a session compacts because it is huge), so a second read of
+    /// the file to count them would land squarely on the resume path for
     /// exactly the sessions this number is about.
+    ///
+    /// **And the row rides the list, not only the count.** A resumed
+    /// conversation draws its boundaries the way a live one does, which needs
+    /// the frame the fold reads: the count alone leaves a page saying
+    /// "3 compactions" over a conversation with no boundary anywhere in it.
     #[test]
     fn parse_session_messages_counts_compaction_boundaries() {
         let jsonl = r#"{"type":"user","message":{"role":"user","content":"one"},"uuid":"u1","session_id":"s1"}
@@ -1204,7 +1339,38 @@ mod tests {
             history.compaction_count, 2,
             "both boundaries counted, the other system row not"
         );
-        assert_eq!(history.messages.len(), 2, "system rows still stay out of the message list");
+        assert_eq!(
+            history.messages.len(),
+            4,
+            "both boundary rows ride the message list, and the unread system row does not"
+        );
+
+        // The disk row spells its metadata the CLI's way (`compactMetadata`,
+        // `preTokens`) and the decoder keys on the wire's snake_case nesting,
+        // so a row handed on un-normalised falls to the generic bucket and
+        // draws bare where a live boundary draws its count.
+        let boundary = history
+            .messages
+            .iter()
+            .find(|message| message.uuid == "cb1")
+            .expect("the first boundary is carried");
+        assert_eq!(boundary.session_id, "s1");
+        assert_eq!(
+            boundary.message.get("compact_metadata"),
+            Some(&serde_json::json!({"trigger": "auto", "pre_tokens": 1_002_459})),
+            "normalised to the shape the wire sends",
+        );
+        assert_eq!(
+            serde_json::from_value::<forge_primitives::Message>(boundary.message.clone())
+                .expect("the kept row decodes"),
+            forge_primitives::Message::CompactBoundary {
+                trigger: "auto".to_owned(),
+                pre_tokens: 1_002_459,
+                uuid: "cb1".to_owned(),
+                session_id: "s1".to_owned(),
+            },
+            "and decodes typed, which is what the fold reads",
+        );
     }
 
     #[test]

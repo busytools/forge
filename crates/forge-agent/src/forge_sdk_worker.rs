@@ -534,7 +534,8 @@ pub(crate) fn load_history_messages(
         match msg {
             forge_primitives::Message::Assistant { session_id: s, .. }
             | forge_primitives::Message::User { session_id: s, .. }
-            | forge_primitives::Message::StopHookSummary { session_id: s, .. } => {
+            | forge_primitives::Message::StopHookSummary { session_id: s, .. }
+            | forge_primitives::Message::CompactBoundary { session_id: s, .. } => {
                 session_id.clone_into(s);
             }
             _ => {}
@@ -2237,6 +2238,11 @@ mod tests {
     /// counts and the TUI seeds, but nothing checked that
     /// `load_history_messages` carries the number across unchanged. An
     /// off-by-one here ships green against both of those.
+    ///
+    /// **And the boundary frames ride with it, typed.** A page a resumed seat
+    /// serves draws its boundaries the way a live one does, which needs the
+    /// frame in the history and in the shape the fold reads - a row that
+    /// decodes as a generic system frame draws bare.
     #[test]
     fn load_history_messages_carries_the_transcript_count_across_verbatim() {
         use std::fmt::Write as _;
@@ -2262,7 +2268,30 @@ mod tests {
         let resumed = super::load_history_messages(config_dir.path(), session_id, "", session_id);
 
         assert_eq!(resumed.compaction_count, 3, "three boundaries reach the Connected event");
-        assert_eq!(resumed.messages.len(), 3, "and the three turns still replay");
+        let boundaries: Vec<forge_primitives::Message> = resumed
+            .messages
+            .iter()
+            .filter(|message| matches!(message, forge_primitives::Message::CompactBoundary { .. }))
+            .cloned()
+            .collect();
+        assert_eq!(boundaries.len(), 3, "and the three boundaries ride the history");
+        assert_eq!(resumed.messages.len(), 6, "beside the three turns");
+
+        let forge_primitives::Message::CompactBoundary {
+            trigger,
+            pre_tokens,
+            session_id: stamped,
+            ..
+        } = &boundaries[0]
+        else {
+            unreachable!("filtered to boundaries");
+        };
+        assert_eq!(trigger, "auto", "the trigger survives the disk spelling");
+        assert_eq!(*pre_tokens, 1_002_459, "and the count before the cut");
+        assert_eq!(
+            stamped, session_id,
+            "stamped with the session the reader is in, as every frame this reassembles is",
+        );
     }
 
     /// The rows the harness writes for a turn nobody typed carry one of its

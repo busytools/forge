@@ -996,13 +996,19 @@ fn handle_system(app: &mut App, msg: Message) {
         // variant, so the metadata is gone but the compaction still
         // happened. `EXPECTED_GENERIC_SYSTEM_SUBTYPES` omits the subtype,
         // which is what makes the next live capture report the drift.
+        //
+        // A replayed row is the one arrival this records nothing for: the
+        // seed already counted it, and the record below would claim a count
+        // this path does not take - the scan warns for the read side instead.
         "compact_boundary" => {
-            count_compaction(app);
-            tracing::warn!(
-                target: crate::logging::targets::APP_SESSION,
-                ?data,
-                "compact_boundary arrived untyped: counted the compaction but trigger and pre_tokens stay unset",
-            );
+            if !app.replay_in_progress {
+                count_compaction(app);
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    ?data,
+                    "compact_boundary arrived untyped: counted the compaction but trigger and pre_tokens stay unset",
+                );
+            }
         }
         "local_command_output" => {
             apply_local_command_output(app, &data);
@@ -1024,6 +1030,13 @@ fn count_compaction(app: &mut App) {
 /// Count a `Message::CompactBoundary` and apply its metadata. An
 /// unrecognised trigger still counts; only the boundary update needs it.
 fn handle_compact_boundary(app: &mut App, trigger: &str, pre_tokens: u64) {
+    // Everything here describes an arrival: a compaction happening now. A
+    // replayed row records one that finished before this view attached, so it
+    // arms nothing - the in-flight line and the manual clear both draw a
+    // present tense the record does not have.
+    if app.replay_in_progress {
+        return;
+    }
     count_compaction(app);
     let model_trigger = match trigger {
         "manual" => crate::agent::model::CompactionTrigger::Manual,

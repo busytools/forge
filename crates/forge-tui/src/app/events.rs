@@ -3987,6 +3987,122 @@ mod tests {
         assert_eq!(app.session_usage().expect("active session").compaction_count, 6);
     }
 
+    /// **A resumed conversation now carries its own boundary frames**, and the
+    /// seed already counts them, so the replay must not count them a second
+    /// time. Nor may it arm anything the arrival arms: the in-flight line and
+    /// the manual "Session successfully compacted." clear both describe a
+    /// compaction happening NOW, and a replayed row records one that finished
+    /// before this view attached.
+    #[test]
+    fn a_replayed_boundary_counts_once_and_arms_nothing() {
+        let mut app = make_test_app();
+        let key = active_session_key(&app);
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SessionReplaced {
+                key,
+                session_id: forge_primitives::SessionId::new("resumed-1"),
+                cwd: "/resumed".into(),
+                current_model: test_current_model_primitives("model"),
+                available_models: Vec::new(),
+                mode: None,
+                history: vec![
+                    user_text_message("one"),
+                    compact_boundary_message("auto", 1_002_459),
+                    user_text_message("two"),
+                    compact_boundary_message("manual", 41_207),
+                    // And the drifted shape, which reaches the reducer as a
+                    // generic system frame rather than the typed variant.
+                    system_message("compact_boundary", serde_json::json!({"nonsense": true})),
+                ],
+                compaction_count: 2,
+            },
+        );
+
+        assert_eq!(
+            app.session_usage().expect("active session").compaction_count,
+            2,
+            "the seed is the whole count, and the replayed rows are those same three boundaries",
+        );
+        assert!(
+            !app.is_compacting(),
+            "a boundary that already happened does not put the in-flight line up",
+        );
+        assert!(
+            !app.pending_compact_clear(),
+            "and a manual one leaves no pending clear for the next turn to spend",
+        );
+    }
+
+    /// **The replay's own record is the one arrival it must not write.** Its
+    /// text claims the compaction was counted, and on this path nothing is -
+    /// the seed carries that row's count already - and the scan has written its
+    /// own record for the same drift while reading the file.
+    #[test]
+    fn a_replayed_undecodable_boundary_is_not_recorded_again() {
+        let live = capture_logs(|| {
+            let mut app = make_test_app();
+            send_msg(
+                &mut app,
+                system_message("compact_boundary", serde_json::json!({"nonsense": true})),
+            );
+        });
+        assert!(
+            live.contains("arrived untyped"),
+            "a live drifted arrival is recorded, which is the arm's whole point: {live}",
+        );
+
+        let replayed = capture_logs(|| {
+            let mut app = make_test_app();
+            let key = active_session_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::SessionReplaced {
+                    key,
+                    session_id: forge_primitives::SessionId::new("resumed-2"),
+                    cwd: "/resumed".into(),
+                    current_model: test_current_model_primitives("model"),
+                    available_models: Vec::new(),
+                    mode: None,
+                    history: vec![system_message(
+                        "compact_boundary",
+                        serde_json::json!({"nonsense": true}),
+                    )],
+                    compaction_count: 1,
+                },
+            );
+        });
+        assert!(
+            !replayed.contains("arrived untyped"),
+            "and the same row replayed is recorded nowhere: {replayed}",
+        );
+    }
+
+    /// Log capture mirroring `forge_agent`'s test helper - the tracing
+    /// line is the artifact under test.
+    fn capture_logs(f: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Writer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("capture lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let capture: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let writer = Writer(Arc::clone(&capture));
+        let subscriber =
+            tracing_subscriber::fmt().with_ansi(false).with_writer(move || writer.clone()).finish();
+        tracing::subscriber::with_default(subscriber, f);
+        String::from_utf8_lossy(&capture.lock().expect("capture lock")).into_owned()
+    }
+
     #[test]
     fn session_replaced_seeds_the_count_on_the_foreground_arm() {
         let mut app = make_test_app();

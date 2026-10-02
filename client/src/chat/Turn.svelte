@@ -2,6 +2,7 @@
   import Icon from '../components/Icon.svelte';
   import Card from './Card.svelte';
   import Compacting from './Compacting.svelte';
+  import CompactionPoint from './CompactionPoint.svelte';
   import { beingWritten, type Turn as HeldTurn } from './conversation';
   import Group from './Group.svelte';
   import Hooks from './Hooks.svelte';
@@ -168,6 +169,8 @@
           <Notice notice={unit.notice} />
         {:else if unit.kind === 'hooks'}
           <Hooks actions={unit.actions} infos={unit.infos} errors={unit.errors} />
+        {:else if unit.kind === 'compaction'}
+          <CompactionPoint trigger={unit.trigger} preTokens={unit.preTokens} />
         {:else if unit.kind === 'report'}
           <Report info={unit.info} />
         {/if}

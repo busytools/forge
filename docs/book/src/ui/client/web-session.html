@@ -29,7 +29,9 @@
      .attrow (what a turn attached), details.think (the model's own reasoning,
      collapsed on its first words - drawn from the live frames, gone when the
      next page lands, which strips thinking),
-     .code, .dif, .notice, .card (an answered question), .mon.
+     .code, .dif, .notice, .card (an answered question), .mon,
+     details.cpoint (the compaction point: the settled form of the in-flight
+     line, a hairline carrying the word and the count read before the cut).
      A run of peer messages is a tool run: it takes details.kind, .knd and
      details.leaf with .mk, .k and .org for the counterparty, so traffic and
      work read as one system rather than two. */
@@ -479,6 +481,20 @@
 
   .compacting { display: flex; align-items: center; gap: 9px; color: var(--accent);
     font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
+
+  /* The compaction point: the SETTLED form of the line above. A hint you open
+     rather than a block that is already open. */
+  details.cpoint { margin: 12px 0; font-family: var(--mono); font-size: var(--fs-base); }
+  details.cpoint > summary { list-style: none; display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  details.cpoint > summary::-webkit-details-marker { display: none; }
+  .cpoint .rule { flex: 1; height: 1px; background: var(--line); }
+  .cpoint .word { color: var(--muted); }
+  .cpoint .n { color: var(--dim); }
+  .cpoint:hover .word { color: var(--text); }
+  details.cpoint[open] > summary .word { color: var(--accent); }
+  details.cpoint[open] > summary .arw { color: var(--accent); }
+  .cpoint .cpbody { margin: 6px 0 2px; color: var(--muted); }
+  .cpoint .cpbody b { color: var(--text); font-weight: 500; }
   /* Stacked: a flex here draws the hook rows beside the summary, not under it. */
   .hooks { margin: 4px 0;
     font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
@@ -1349,6 +1365,20 @@ docs: Render the message body into rows.</div>
 [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null</div>
       </div>
 
+      <!-- The compaction point: drawn in the conversation at the boundary,
+           collapsed, which is the state a reader mostly meets. The header's
+           count says how many; this says where. -->
+      <details class="cpoint">
+        <summary>
+          <span class="rule"></span>
+          <span class="word">compaction</span>
+          <span class="n">154.0k before</span>
+          <svg class="ic arw"><use href="#i-chev"/></svg>
+          <span class="rule"></span>
+        </summary>
+        <div class="cpbody">trigger <b>auto</b> &#183; <b>154,013</b> tokens read before the cut</div>
+      </details>
+
       <div class="mine">
         <div class="prose">
           <p>And show the expanded turn row, since that is a view of its own.</p>
@@ -1414,6 +1444,36 @@ docs: Render the message body into rows.</div>
           </div>
         </details>
       </div>
+
+      <!-- The same row opened, since the body is the half a reader has to
+           judge: the trigger, and the count read before the cut. What the CLI
+           also sends - the count carried after it - does not survive forge's
+           decode, so the body states the two facts it is given and stops. -->
+      <details class="cpoint" open>
+        <summary>
+          <span class="rule"></span>
+          <span class="word">compaction</span>
+          <span class="n">88.4k before</span>
+          <svg class="ic arw"><use href="#i-chev"/></svg>
+          <span class="rule"></span>
+        </summary>
+        <div class="cpbody">trigger <b>manual</b> &#183; <b>88,412</b> tokens read before the cut</div>
+      </details>
+
+      <!-- And the third state: a boundary whose frame carried no metadata at
+           all - the outer key renamed drops it to the CLI's generic bucket -
+           keeps the hairline and draws neither a count nor a handle onto a
+           body that does not exist. A rename INSIDE the metadata keeps one of
+           the two facts and draws a handle onto a body holding that one: the
+           count's own clause and the trigger's are independent, and the two
+           mixed bodies are the count alone and the trigger alone. -->
+      <details class="cpoint">
+        <summary>
+          <span class="rule"></span>
+          <span class="word">compaction</span>
+          <span class="rule"></span>
+        </summary>
+      </details>
 
       <div class="mine">
         <div class="prose">
