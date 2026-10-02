@@ -26,8 +26,8 @@
  *   the count is the terminal's marker, the cut is unmarked there, and this
  *   fold's `push` ends a run of calls at it.
  * - a hook's own lifecycle draws as one row per run, where the terminal's arm
- *   for those three frames is a no-op. Its summary chip is matched, not
- *   dropped: the chip is a different frame about a different hook batch.
+ *   for those three frames is a no-op. Its summary chip is matched rather than
+ *   dropped, and no capture holds the chip and a run's own frames together.
  *
  * **And a dispatched agent's frames are not the conversation either.** A
  * sub-agent's prose and calls belong to the SUBAGENTS surface, and drawn here
@@ -796,9 +796,9 @@ function taskLine(summary: string | null, wire: string | null): BackgroundTask['
 
 /** What the hook a frame reports has printed, as the frame spells it. */
 function hookOutput(frame: Frame): string | null {
-  // The combined output is the one the session saw, and the two raw streams are
-  // read only when it is empty: a hook that wrote to one of them and not the
-  // other would otherwise draw as a hook that said nothing.
+  // The two raw streams are read only where the combined output is empty: a
+  // hook that wrote to one of them and not the other would otherwise draw as a
+  // hook that said nothing.
   for (const key of ['output', 'stdout', 'stderr']) {
     const held = str(frame, key);
     if (held !== null && held !== '') return held;
@@ -818,7 +818,14 @@ function hookFailed(frame: Frame): boolean {
  * **The three subtypes are one run rather than three events**: a start names
  * the hook, a progress carries what it has printed so far, and a response
  * settles it with the outcome and the code it exited on. All three fields are
- * the same run's, which is why they read as one line.
+ * the same run's, which is why they read as one line - the last frame the run
+ * sent holding the whole of what it printed.
+ *
+ * **That the response repeats its progress rather than extending it is
+ * inferred, not measured.** The progress frames' output is cumulative across
+ * every captured run and the field is documented as the combined output the
+ * session saw, but the capture redactor stubs every hook body value-blind, so
+ * no fixture can show the response half.
  *
  * The event rides beside the name only where the name does not already carry
  * it, the rule the frames' own sentences are read by (`beside`).

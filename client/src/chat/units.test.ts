@@ -829,6 +829,10 @@ describe('one turn folded into the units a view draws', () => {
     expect(said, 'what the response reported of the outcome').toContain('success');
     expect(said, 'and the code it exited on').toContain('exit 0');
     expect(said, 'with the output it settled on').toContain('<redacted-hook-body>');
+    // The response SUPERSEDES what the progress frames had printed rather than
+    // being appended to it: the frames' output is cumulative, so a fold that
+    // joined them would draw the same lines twice.
+    expect(said, 'and not the interim output the response repeats').not.toContain('capture-line-2');
     expect(said, 'and the event said once, not twice').not.toContain('(SessionStart)');
   });
 
