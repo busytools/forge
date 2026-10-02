@@ -89,7 +89,24 @@
   );
   /** The newest turn's key: the row a compaction in flight belongs under. */
   const newest = $derived(newestTurn?.key ?? null);
-  let opened: { seat: string; connection: Connection; stop: () => void } | null = null;
+  /**
+   * Every seat's conversation, kept after the reader leaves it.
+   *
+   * A switch used to throw the current one away and ask the server again, so a
+   * seat already drawn came back as a blank column and a round trip. The record
+   * for every seat this client has visited is kept for the same reason
+   * (`session/live.ts`); this is the half that was missing.
+   *
+   * Deliberately not `$state`: the seat on screen is `held` above, and making
+   * these reactive would put a proxy back on the conversations the raw state
+   * exists to keep off it.
+   */
+  const kept = new Map<string, Conversation>();
+  /** The seats whose conversation is still open here, so a switch back does not open a second. */
+  const live = new Map<
+    string,
+    { connection: Connection; chat: Chat; stop: () => void }
+  >();
   /**
    * Pages of older turns asked for and not yet answered.
    *
@@ -158,32 +175,48 @@
   $effect(() => {
     const which = seat;
     const open = connection;
-    if (opened !== null && opened.seat === which && opened.connection === open) return;
-    opened?.stop();
+    let entry = live.get(which);
+    // A seat reopened on another connection is a different conversation, so the
+    // one held goes with the socket that carried it.
+    if (entry !== undefined && entry.connection !== open) {
+      entry.stop();
+      live.delete(which);
+      kept.delete(which);
+      entry = undefined;
+    }
+    if (entry === undefined) {
+      const chat = new Chat(open, slot);
+      // Written to the seat's own entry rather than straight to `held`: a
+      // conversation kept for a seat the reader has left must not draw.
+      const unsubscribe = chat.value.subscribe((value) => {
+        kept.set(which, value);
+        if (untrack(() => seat) === which) held = value;
+      });
+      const stop = chat.start();
+      entry = {
+        connection: open,
+        chat,
+        stop: () => {
+          unsubscribe();
+          stop();
+        },
+      };
+      live.set(which, entry);
+    }
+    working = entry.chat;
     // The placement belonged to the conversation that is going.
     placed = null;
-    const chat = new Chat(open, slot);
-    working = chat;
-    const unsubscribe = chat.value.subscribe((value) => {
-      held = value;
-    });
-    const stop = chat.start();
-    opened = {
-      seat: which,
-      connection: open,
-      stop: () => {
-        unsubscribe();
-        stop();
-        working = null;
-      },
-    };
+    // The seat coming on screen is put there from what was kept, not from a
+    // read, which is the whole point of holding it.
+    held = kept.get(which) ?? NOTHING;
   });
 
-  // The column's own teardown, which the effect above cannot do: it stops a
-  // conversation only to put the next one in its place.
+  // The column's own teardown, which the effect above cannot do: it closes one
+  // conversation only to open the next in its place.
   $effect(() => () => {
-    opened?.stop();
-    opened = null;
+    for (const entry of live.values()) entry.stop();
+    live.clear();
+    kept.clear();
   });
 
   // The first page is drawn at the end rather than the start, and that is not
