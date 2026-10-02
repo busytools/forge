@@ -213,31 +213,81 @@ describe('the hook run row', () => {
   });
 
   /**
-   * What the body is actually given, with a sheet applied.
+   * What the elements the body draws through are actually given, with a sheet
+   * applied.
    *
    * **Decidable rather than textual.** Three rounds of this check were each
    * closed by narrowing a matcher - the property list, the class matcher, the
    * rule selection - and each narrowing exposed the next spelling, because a
    * selector's reach is not readable off its text. So this one renders the row
-   * and asks the body what it got, against a control sheet holding every rule
-   * EXCEPT the ones that reach the row without answering to one of its classes.
+   * and asks those elements what they got, against a control holding every rule
+   * EXCEPT the ones whose SUBJECT answers for neither the row nor what wraps it.
    *
-   * Anything the body is given that the control does not give it is a rule that
-   * reached it sideways, which is the whole of what the lists above cannot see.
-   * jsdom computes the cascade without layout, which is enough for every
-   * property that can hide or shorten text.
+   * Anything they are given that the control does not give them came in
+   * sideways, which is the whole of what the lists above cannot see - including
+   * a rule aimed one element deeper than the body div, and one hidden inside an
+   * at-rule, both of which the render now reaches.
+   *
+   * **The inheritance axis is read through `INHERITED` alone.** A wrapper's own
+   * declarations do reach these elements - that is why the wrappers are kept in
+   * the control - but jsdom enumerates none of them on a child, so what a rule
+   * on an ancestor hides is only read where it hides by inheriting or
+   * compositing. A rule that hides the whole turn is the turn's defect and not
+   * this row's; this check is for what reaches the row's own output.
    */
   it('gives the body nothing the row does not', () => {
     for (const [what, sheet] of sheets()) {
-      const real = bodyStyle(sheet);
-      // The denominator: a body the render never reached compares equal to
-      // anything, and a sheet that gave it nothing is the same empty answer.
+      const rules = rulesIn(sheet);
+      const real = bodyStyle(renderable(rules));
+      const control = bodyStyle(renderable(rules.filter((rule) => answersFor(rule.selector))));
+      // The denominators, both sides: an element the render never reached
+      // compares equal to anything, and a control that kept nothing would make
+      // every sheet look like it gave the body everything.
       expect(Object.keys(real).length, `${what} gives the body something to read`).toBeGreaterThan(
         0,
       );
-      expect(real, `${what} gives the body only what the row answers for`).toEqual(
-        bodyStyle(controlOf(sheet)),
-      );
+      expect(
+        Object.keys(control).length,
+        `${what} gives the control something to compare against`,
+      ).toBeGreaterThan(0);
+      expect(real, `${what} gives the body only what the row answers for`).toEqual(control);
+    }
+  });
+
+  /**
+   * The control's own filter, pinned in both directions.
+   *
+   * **The one matcher in this file that decides another check's input**, so it
+   * is the one that most needs saying what it reads: the subject, never the
+   * reach. A rule that reaches the row without answering for it must stay OUT
+   * of the control, and a rule for the row or its surroundings must stay in, or
+   * the comparison either hides a hole or reds a good sheet.
+   */
+  it('keeps the control to what answers for the row', () => {
+    for (const kept of [
+      '.hookrun',
+      'details.hookrun',
+      '.hookrun:hover',
+      '.body',
+      '.term',
+      '.conv',
+      ':root',
+    ]) {
+      expect(answersFor(kept), `${kept} answers for the row or what wraps it`).toBe(true);
+    }
+    // The subject is what decides, not the ancestor: a rule written FOR the
+    // summary or for a div is kept out even when the row is in its selector,
+    // because what it styles is not what this comparison reads.
+    for (const dropped of [
+      'details > div',
+      'details.hookrun > div',
+      'details.hookrun > summary',
+      'div',
+      '.nm',
+      '.ev',
+      '.term .pfx',
+    ]) {
+      expect(answersFor(dropped), `${dropped} answers for neither`).toBe(false);
     }
   });
 
@@ -478,11 +528,35 @@ function allowedIn(rule: PlainRule, declaration: string): boolean {
 
 /**
  * The elements this test itself puts around the row, and the root the sheets'
- * own tokens hang off. Rules for these are kept in the control because they
- * enclose the body rather than reaching into it, so taking them out would
- * change what it inherits and make the comparison fail on a good sheet.
+ * own tokens hang off. Rules for these are kept in the control so the row's own
+ * rules are compared in the context they render in.
  */
 const SURROUNDINGS = ['conv', 'work', ':root', 'html', 'body'];
+
+/**
+ * The properties a subtree can be hidden by WITHOUT being set on it: one
+ * inherits, one composites everything under it. jsdom's enumeration names
+ * neither on a child, so the read below asks for them by name.
+ */
+const INHERITED = ['visibility', 'opacity'];
+
+/**
+ * A rule's subject - the element it styles - with any pseudo taken off.
+ *
+ * **`::` and a trailing pseudo-class come off; a lone `:root` does not.** A
+ * strip that removed every leading `:` turned `:root` into an empty string, so
+ * the one rule the sheets' tokens hang off read as answering for nothing and
+ * was dropped from the control.
+ */
+function subjectOf(member: string): string {
+  const raw =
+    member
+      .trim()
+      .split(/[\s>+~]+/)
+      .pop() ?? '';
+  const stripped = raw.replace(/::?[\w-]*(\([^)]*\))?$/, '');
+  return stripped === '' ? raw : stripped;
+}
 
 /**
  * Whether a rule is written for the row, or for what this test wraps it in.
@@ -493,35 +567,25 @@ const SURROUNDINGS = ['conv', 'work', ':root', 'html', 'body'];
  * asked the same matcher the guard asks would keep it and hide it.
  */
 function answersFor(selector: string): boolean {
-  const subject = (member: string): string =>
-    (
-      member
-        .trim()
-        .split(/[\s>+~]+/)
-        .pop() ?? ''
-    ).replace(/::?[\w-]*(\([^)]*\))?$/, '');
+  const own = [ROW_CLASS, ...BODY_CLASSES, ...SURROUNDINGS];
   return selector.split(',').every((member) => {
-    const own = subject(member);
-    return (
-      classesIn(own).some((name) => [ROW_CLASS, ...BODY_CLASSES, ...SURROUNDINGS].includes(name)) ||
-      SURROUNDINGS.includes(own)
-    );
+    const subject = subjectOf(member);
+    return classesIn(subject).some((name) => own.includes(name)) || own.includes(subject);
   });
 }
 
 /**
- * The sheet without the rules that answer for neither the row nor what wraps
- * it: what the row's own rules give the body, and nothing else.
+ * Rules as a stylesheet, every one at the top level.
+ *
+ * **The at-rules are unwrapped on purpose.** jsdom reads a media query's type
+ * and evaluates none of its features - measured: `@media (min-width: 1px)`
+ * does not apply and `@media screen` does - so a rule inside a feature query
+ * would never enter the comparison at all, and a clamp hidden in one would
+ * read as clean. Hoisted, it applies, and the check answers the question the
+ * guard claims to: what would this rule do to the body.
  */
-function controlOf(sheet: string): string {
-  const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
-  const spans = rulesIn(sheet)
-    .filter((rule) => !answersFor(rule.selector))
-    .map((rule) => [rule.from, rule.to] as const)
-    .sort(([one], [other]) => other - one);
-  let out = code;
-  for (const [from, to] of spans) out = `${out.slice(0, from)}${out.slice(to)}`;
-  return out;
+function renderable(rules: readonly PlainRule[]): string {
+  return rules.map((rule) => `${rule.selector} { ${rule.declarations.join('; ')} }`).join('\n');
 }
 
 /** The row as the page wraps it, which is what a sheet's ancestors match against. */
@@ -530,11 +594,19 @@ const ROW_MARKUP = `<div class="conv"><div class="work">${
 }</div></div>`;
 
 /**
- * Every property the cascade actually sets on the row's body, and its value.
+ * What the cascade sets on every element the row's body draws through, by
+ * element and property.
  *
- * Read off the render rather than reasoned about, which is the point: it is the
- * only one of the checks here that cannot be argued with by spelling a selector
- * another way.
+ * **Every element, not only the body div.** The hook's words sit in `div.term`
+ * inside it, so a rule aimed one element deeper - `details > div > div` - lands
+ * on the element holding the text and matches nothing a `.body`-only query
+ * looks at. The set read is the classes this file already declares the body
+ * draws through, which is also the set the allowlist guards.
+ *
+ * **What jsdom does not do, stated because the check rests on it**: it
+ * evaluates no media features (hence `renderable`), and it enumerates no
+ * inherited property on a child (hence `INHERITED`). Both are 30.1.1's
+ * behaviour rather than a contract, and the lockfile is what holds it still.
  */
 function bodyStyle(sheet: string): Record<string, string> {
   const dom = new JSDOM(
@@ -542,13 +614,18 @@ function bodyStyle(sheet: string): Record<string, string> {
     { pretendToBeVisual: true },
   );
   const win = dom.window;
-  const body = win.document.querySelector('.hookrun .body');
-  if (body === null) throw new Error('the row drew no body for the sheet to reach');
-  const computed = win.getComputedStyle(body);
+  const row = win.document.querySelector('.hookrun');
+  if (row === null) throw new Error('the row did not render for the sheet to reach');
   const out: Record<string, string> = {};
-  for (let at = 0; at < computed.length; at += 1) {
-    const name = computed.item(at);
-    out[name] = computed.getPropertyValue(name);
+  for (const element of row.querySelectorAll('[class]')) {
+    const names = [...element.classList].filter((name) => BODY_CLASSES.includes(name));
+    if (names.length === 0) continue;
+    const computed = win.getComputedStyle(element);
+    const read = (name: string): void => {
+      out[`${names.join('.')}:${name}`] = computed.getPropertyValue(name);
+    };
+    for (let at = 0; at < computed.length; at += 1) read(computed.item(at));
+    for (const name of INHERITED) read(name);
   }
   return out;
 }
@@ -582,9 +659,6 @@ interface PlainRule {
   prelude: string;
   selector: string;
   declarations: string[];
-  /** Where the rule's own text sits in the sheet, so it can be taken out again. */
-  from: number;
-  to: number;
 }
 
 /**
@@ -601,7 +675,6 @@ function rulesIn(sheet: string): PlainRule[] {
   const out: PlainRule[] = [];
   const open: string[] = [];
   let held = '';
-  let began = 0;
   let at = 0;
   while (at < code.length) {
     const ch = code[at] ?? '';
@@ -611,12 +684,10 @@ function rulesIn(sheet: string): PlainRule[] {
       // read as something it is not.
       held = '';
       at += 1;
-      began = at;
       continue;
     }
     if (ch === '{') {
       const prelude = held.trim();
-      const opened = began;
       held = '';
       at += 1;
       if (prelude.startsWith('@')) {
@@ -638,17 +709,13 @@ function rulesIn(sheet: string): PlainRule[] {
           .split(';')
           .map((declaration) => declaration.trim())
           .filter((declaration) => declaration !== ''),
-        from: opened,
-        to: at,
       });
-      began = at;
       continue;
     }
     if (ch === '}') {
       open.pop();
       held = '';
       at += 1;
-      began = at;
       continue;
     }
     held += ch;
@@ -662,9 +729,14 @@ function rulesIn(sheet: string): PlainRule[] {
  * written.
  *
  * **A rule is not always at the top level and not always alone in its
- * selector.** `@media (min-width: 1px) { .hk { ... } }` reaches the row exactly
- * as a top-level rule does, and `.hk, .other { ... }` is a member of a list a
- * name-only scan walks past.
+ * selector.** `@media (min-width: 1px) { .hk { ... } }` is READ here as the
+ * rule it is, with its prelude kept, and `.hk, .other { ... }` is a member of a
+ * list a name-only scan walks past.
+ *
+ * **Whether a query-wrapped rule APPLIES is a different question and not this
+ * one**: jsdom evaluates no media feature, so `renderable` hoists every at-rule
+ * body to the top level before the render, which is what makes the comparison
+ * see them.
  */
 function bareRules(sheet: string, name: string): string[] {
   const found: string[] = [];

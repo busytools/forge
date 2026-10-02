@@ -181,6 +181,48 @@ describe('one turn, as the page draws it', () => {
     expect(body, 'with the whole of it inside').toContain('and then it kept going');
   });
 
+  it("draws a hook's own run as the row the fold made, closed on its state", () => {
+    // The wiring is one line in this component's arm list, and nothing else
+    // here covers it: the row's own tests render it directly, and axe sees it
+    // through the page rather than through this turn.
+    const body = draw(
+      {
+        type: 'system',
+        subtype: 'hook_started',
+        hook_id: 'h1',
+        hook_name: 'SessionStart:startup',
+        hook_event: 'SessionStart',
+        uuid: 'h1',
+      },
+      {
+        type: 'system',
+        subtype: 'hook_response',
+        hook_id: 'h1',
+        hook_name: 'SessionStart:startup',
+        hook_event: 'SessionStart',
+        output: 'repository is clean',
+        stdout: 'repository is clean',
+        stderr: '',
+        exit_code: 0,
+        outcome: 'success',
+        uuid: 'h2',
+      },
+    );
+
+    expect(body, 'the run is a row of the turn rather than a drop').toContain('class="hookrun"');
+    // The summary alone, because the output is in the body too: an assertion on
+    // the whole render passes whether or not the state reached the closed row.
+    const at = body.indexOf('<summary');
+    const summary = body.slice(at, body.indexOf('</summary>', at));
+    expect(summary, 'the hook it matched and how it ended, without opening it').toContain(
+      'SessionStart:startup',
+    );
+    expect(summary, 'with the state on the closed row').toContain('success');
+    expect(body, 'and the whole of what it printed behind the row').toContain(
+      'repository is clean',
+    );
+  });
+
   it('draws a running row for a turn the frames built and no result has settled', () => {
     // The wiring this rides on is one line: `turn.live` reaching the fold. It
     // cannot be inferred from the frames - a saved page carries no result
