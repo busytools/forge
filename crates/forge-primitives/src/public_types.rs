@@ -148,9 +148,11 @@ pub struct SessionMessage {
 /// A session transcript's replayable rows plus the compaction count
 /// recovered from the same pass over the file.
 ///
-/// The count cannot be derived from `messages`: a `compact_boundary` row
-/// is counted on the way past and never becomes a `SessionMessage`.
-/// `system` rows generally do not: a turn's hook summary is the exception.
+/// The count rides this pass rather than a second read of the file: a
+/// transcript that has compacted is usually a large one, so re-reading it
+/// for the number would land on the resume path for exactly the sessions
+/// it is about. It is also taken before the dispatch filter, so it can
+/// exceed what the rows in `messages` add up to.
 #[derive(Debug, Default)]
 pub struct SessionHistory {
     /// The rows that replay, in file order.
@@ -162,8 +164,8 @@ pub struct SessionHistory {
 /// A session transcript's rows synthesized into wire shape, plus the
 /// compaction count recovered from the same pass over the file.
 ///
-/// The count cannot be derived from `messages`: a `compact_boundary` row
-/// is `type: "system"` and is never synthesized.
+/// The count rides the same pass rather than a second read, for the
+/// reason [`SessionHistory`] gives.
 #[derive(Debug, Default)]
 pub struct ConversationHistory {
     /// The frames that replay, in file order, each stamped with the
@@ -183,9 +185,9 @@ pub enum SessionMessageKind {
     User,
     /// Assistant turn.
     Assistant,
-    /// A `system` frame with something to replay: a turn's hook summary is
-    /// the one the scan keeps. Its `message` is the frame itself, because a
-    /// system row has no inner envelope.
+    /// A `system` frame with something to replay: a turn's hook summary and
+    /// a compaction boundary are the two the scan keeps. Its `message` is the
+    /// frame itself, because a system row has no inner envelope.
     System,
 }
 
