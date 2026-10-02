@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
+  import Field from './Field.svelte';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import type { Ask, PermissionOption, Take } from './wire';
@@ -11,6 +12,9 @@
     depth = 1,
     notice = null,
     take = null,
+    notes = $bindable(''),
+    ownOpen = $bindable(false),
+    land = null,
     onanswer = () => {},
     onabandon = () => {},
   }: {
@@ -23,6 +27,17 @@
     notice?: string | null;
     /** A take still running behind the dock, which the blip names. */
     take?: Take | null;
+    /**
+     * What the reader has said in their own words.
+     *
+     * Held by the composer rather than here, because a landed take has to reach
+     * whichever box the table names and this one has no other way in.
+     */
+    notes?: string;
+    /** Whether that box is open, which is what makes this dock a destination. */
+    ownOpen?: boolean;
+    /** A take's words that landed in this box, which come with the keyboard. */
+    land?: string | null;
     onanswer?: (toolId: string | null) => void;
     onabandon?: () => void;
   } = $props();
@@ -121,15 +136,27 @@
   let marked = $state(0);
   /** The options a multi-select question has toggled, in the order they were. */
   let toggled = $state<string[]>([]);
-  /** What the reader has said in their own words, which the notes row carries. */
-  let notes = $state('');
   /** The field, so marking the own-words row can put the caret in it. */
-  let field = $state<HTMLTextAreaElement | null>(null);
+  let field = $state<HTMLElement | null>(null);
   /** The listbox, which owns the keys while the dock has the slot. */
   let listbox = $state<HTMLDivElement | null>(null);
 
   const markedRow = $derived(rows[marked]);
   const notesOpen = $derived(markedRow !== undefined && markedRow.own);
+
+  // The composer decides where a take's words land, and this dock is only a
+  // destination while its box is open - so it has to say whether it is.
+  //
+  // The cleanup is load-bearing: a seat can fail with a prompt still waiting,
+  // which puts the blocker in the slot and takes this dock off screen while the
+  // prompt stays, and a `true` left standing here would route a take's words to
+  // a box that is no longer there.
+  $effect(() => {
+    ownOpen = notesOpen;
+    return () => {
+      ownOpen = false;
+    };
+  });
 
   /**
    * Focus follows the marked row.
@@ -142,6 +169,12 @@
   $effect(() => {
     const wanted = notesOpen ? field : listbox;
     if (wanted !== null) wanted.focus();
+  });
+
+  // A take's words come with the keyboard, and this is the box they landed in.
+  $effect(() => {
+    if (land === null) return;
+    if (field !== null) field.focus();
   });
 
   /** The tool the prompt is waiting on, which an answer is addressed by. */
@@ -258,9 +291,14 @@
       : [...toggled, row.optionId];
   }
 
-  /** Whether a key landed in the field the own-words row opened. */
+  /**
+   * Whether a key landed in the field the own-words row opened.
+   *
+   * By the editor it names rather than by its class: the class is the sheet's
+   * styling hook, and a restyle that renamed it would silently reroute keys.
+   */
   const inField = (event: KeyboardEvent): boolean =>
-    event.target instanceof HTMLElement && event.target.classList.contains('notes');
+    event.target instanceof HTMLElement && event.target.closest('[data-editor="dock"]') !== null;
 
   /** The keys a dock answers to, which are the ones that can do what they say. */
   function onkey(event: KeyboardEvent): void {
@@ -443,13 +481,17 @@
     {#if notesOpen}
       <!-- The reader's own words, which the answer carries as its annotation
            rather than as an option id. -->
-      <textarea
+      <Field
+        editor="dock"
         class="notes"
-        bind:this={field}
         bind:value={notes}
-        rows="1"
+        rows={1}
         placeholder="answer with your own words"
-        onkeydown={onkey}></textarea>
+        onkeydown={onkey}
+        field={(el: HTMLElement | null) => {
+          field = el;
+        }}
+      />
     {/if}
 
     <div class="keys">
