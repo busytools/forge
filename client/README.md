@@ -26,8 +26,9 @@ bundle built.
 ## The desktop shell
 
 `src-tauri/` is a Tauri 2 app that wraps the built bundle. The crate is
-its own cargo workspace root, so none of the repo's gates and neither the
-Rust nor the JavaScript job in CI reaches it.
+its own cargo workspace root, so the repo's cargo gates and CI's cargo jobs
+do not reach it; the Unicode punctuation gate and the client's Prettier
+step do.
 
 ```sh
 npm run tauri dev     # dev server plus the app window
@@ -39,17 +40,19 @@ because it never resolves `frontendDist` at all. The CLI build does, and
 runs `npm run build` first to produce it. The dev window loads the dev
 server instead and needs none.
 
-Two recipes, and the difference is the bundle. `just client-tauri-check`
+Three recipes, and the difference is the bundle. `just client-tauri-check`
 is the routine gate before handing a change here over: it compiles the
 shipping configuration, which resolves `dist/` and validates the
 identifier, without producing a bundle, so it is quiet.
 `just client-tauri-bundle` adds `forge.app` and the dmg, and is the only
-one that covers the icons and the window config. It is also the only one
-that opens a Finder window, because the dmg step mounts the image and lays
-the mounted volume out with AppleScript.
+one that produces the dmg. It is also the only one that opens a Finder
+window, because the dmg step mounts the image and lays the mounted volume
+out with AppleScript. `just client-release` builds the app bundle alone
+and installs it over `/Applications/forge.app`; it is the client half of
+`just release`, and `--bundles app` is what keeps the dmg step out of it.
 
-Two traps sit between a hand-typed command and a working one, and both
-recipes carry the working form. The CLI reads `CI` from the environment
+Two traps sit between a hand-typed command and a working one, and the
+recipes here carry the working form. The CLI reads `CI` from the environment
 as its own boolean `--ci` flag, so a `CI` holding anything but `true` or
 `false` - `0` is what forge's sessions set - stops the build before it
 starts; passing `--ci` explicitly overrides it. And `npm` swallows a bare
@@ -71,8 +74,10 @@ five files `bundle.icon` names are, and the first `.png` in that list is
 the one the codegen embeds, so deleting `icons/32x32.png` is a hard
 compile failure rather than a smaller bundle.
 
-The version is this crate's own rather than the workspace's. The client is
-a different program from the server, so `just release` does not bump it.
+The version is this crate's own rather than the workspace's: it sits in this
+crate's `Cargo.toml`, because the shell is its own workspace root and the
+workspace bump cannot reach it. `just release` bumps it to the release
+version, so the tag and the installed app carry the same number.
 
 ## What is here
 
