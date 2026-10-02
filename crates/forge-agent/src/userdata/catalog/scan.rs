@@ -155,7 +155,8 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
                 // (`preTokens`, per the primitives test), which leaves the
                 // object present and one field unread - a row drawn without
                 // that fact, and nothing else saying why. The live arm warns on
-                // the same degradation.
+                // the same degradation. Every modelled field is read here, so a
+                // rename of any one of them lands in this record.
                 if !carries_boundary_metadata(&value) {
                     let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default();
                     let session = session_in_row(&value);
@@ -164,7 +165,7 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
                         event_name = "compact_boundary_without_metadata",
                         uuid,
                         session,
-                        "compact_boundary row yielded no trigger or pre_tokens; counted, but the kept row draws without them",
+                        "compact_boundary row yielded no trigger or counts; counted, but the kept frame arrives untyped",
                     );
                 }
                 (SessionMessageKind::System, Some(compact_boundary_frame(&value)))
@@ -231,24 +232,25 @@ fn session_in_row(value: &Value) -> String {
         .to_owned()
 }
 
-/// Whether the row yields both facts the kept boundary frame reads - the
-/// trigger, and the count before the cut.
+/// Whether the row yields every fact the kept boundary frame reads - the
+/// trigger, and the counts either side of the cut.
 ///
-/// Read off the same two fields `compact_boundary_frame` builds from, so a row
-/// this calls readable is a row whose frame decodes typed.
+/// Read off the same three fields `compact_boundary_frame` builds from, so a
+/// row this calls readable is a row whose frame decodes typed.
 fn carries_boundary_metadata(value: &Value) -> bool {
     let metadata = value.get("compactMetadata");
     let read = |key: &str| metadata.and_then(|metadata| metadata.get(key));
     read("trigger").and_then(Value::as_str).is_some()
         && read("preTokens").and_then(Value::as_u64).is_some()
+        && read("postTokens").and_then(Value::as_u64).is_some()
 }
 
 /// The boundary row in the shape the wire sends.
 ///
 /// A transcript spells its metadata flat and camelCase (`compactMetadata`,
 /// `preTokens`), while the decoder keys on the wire's nesting - so a row handed
-/// on as read decodes as a generic system frame, and draws bare where a live
-/// boundary draws its count. `postTokens` is dropped on both paths (#1581).
+/// on as read decodes as a generic system frame, and draws bare or half-filled
+/// where a live boundary draws its counts.
 fn compact_boundary_frame(value: &Value) -> Value {
     let metadata = value.get("compactMetadata");
     let field =
@@ -258,7 +260,11 @@ fn compact_boundary_frame(value: &Value) -> Value {
         "subtype": "compact_boundary",
         "session_id": session_in_row(value),
         "uuid": value.get("uuid").and_then(Value::as_str).unwrap_or_default(),
-        "compact_metadata": {"trigger": field("trigger"), "pre_tokens": field("preTokens")},
+        "compact_metadata": {
+            "trigger": field("trigger"),
+            "pre_tokens": field("preTokens"),
+            "post_tokens": field("postTokens"),
+        },
     })
 }
 
@@ -1063,10 +1069,11 @@ mod tests {
     /// live arm warns on the same degradation, so the read path has to as well
     /// or the only trace of it is a row with no count and nothing saying why.
     ///
-    /// **The four shapes are the same failure and are keyed together**: the
-    /// outer key renamed, either field inside it renamed - the count's is the
-    /// one the primitives test calls plausible, and the trigger's is the
-    /// symmetric case - and no metadata at all.
+    /// **The shapes are the same failure and are keyed together**: the outer
+    /// key renamed, any one of the three fields inside it renamed - the
+    /// pre-count's is the one the primitives test calls plausible, and the
+    /// trigger's and the post-count's are the symmetric cases - and no metadata
+    /// at all.
     #[test]
     fn a_boundary_row_whose_facts_did_not_survive_is_logged() {
         for (shape, row) in [
@@ -1081,6 +1088,10 @@ mod tests {
             (
                 "trigger renamed inside it",
                 r#"{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"triggers":"auto","preTokens":41207}}"#,
+            ),
+            (
+                "post count renamed inside it",
+                r#"{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"trigger":"auto","preTokens":41207,"post_tokens":1265}}"#,
             ),
             (
                 "no metadata at all",
@@ -1102,7 +1113,7 @@ mod tests {
     fn a_boundary_row_with_its_metadata_logs_nothing() {
         let log = capture_logs(|| {
             parse_session_messages(
-                br#"{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"trigger":"auto","preTokens":41207}}"#
+                br#"{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"trigger":"auto","preTokens":41207,"postTokens":1265}}"#
                     .as_slice(),
             );
         });
@@ -1329,9 +1340,9 @@ mod tests {
     #[test]
     fn parse_session_messages_counts_compaction_boundaries() {
         let jsonl = r#"{"type":"user","message":{"role":"user","content":"one"},"uuid":"u1","session_id":"s1"}
-{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"trigger":"auto","preTokens":1002459}}
+{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"trigger":"auto","preTokens":1002459,"postTokens":31253}}
 {"type":"assistant","message":{"role":"assistant","content":[]},"uuid":"as1","session_id":"s1"}
-{"type":"system","subtype":"compact_boundary","uuid":"cb2","session_id":"s1","compactMetadata":{"trigger":"manual","preTokens":53903}}
+{"type":"system","subtype":"compact_boundary","uuid":"cb2","session_id":"s1","compactMetadata":{"trigger":"manual","preTokens":53903,"postTokens":9149}}
 {"type":"system","subtype":"other_thing","uuid":"x1","session_id":"s1"}
 "#;
         let history = parse_session_messages(jsonl.as_bytes());
@@ -1348,7 +1359,7 @@ mod tests {
         // The disk row spells its metadata the CLI's way (`compactMetadata`,
         // `preTokens`) and the decoder keys on the wire's snake_case nesting,
         // so a row handed on un-normalised falls to the generic bucket and
-        // draws bare where a live boundary draws its count.
+        // draws bare where a live boundary draws its counts.
         let boundary = history
             .messages
             .iter()
@@ -1357,7 +1368,11 @@ mod tests {
         assert_eq!(boundary.session_id, "s1");
         assert_eq!(
             boundary.message.get("compact_metadata"),
-            Some(&serde_json::json!({"trigger": "auto", "pre_tokens": 1_002_459})),
+            Some(&serde_json::json!({
+                "trigger": "auto",
+                "pre_tokens": 1_002_459,
+                "post_tokens": 31_253,
+            })),
             "normalised to the shape the wire sends",
         );
         assert_eq!(
@@ -1366,6 +1381,7 @@ mod tests {
             forge_primitives::Message::CompactBoundary {
                 trigger: "auto".to_owned(),
                 pre_tokens: 1_002_459,
+                post_tokens: 31_253,
                 uuid: "cb1".to_owned(),
                 session_id: "s1".to_owned(),
             },

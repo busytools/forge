@@ -1151,6 +1151,7 @@ mod tests {
         forge_primitives::Message::CompactBoundary {
             trigger: trigger.to_owned(),
             pre_tokens,
+            post_tokens: 9_149,
             uuid: "cb-uuid".to_owned(),
             session_id: "test-session".to_owned(),
         }

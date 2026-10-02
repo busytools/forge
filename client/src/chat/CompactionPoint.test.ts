@@ -7,8 +7,11 @@ import CompactionPoint from './CompactionPoint.svelte';
 import { tokens } from './numbers';
 
 /** The row, as a boundary's own frame fills it. */
-const draw = (trigger: string | null, preTokens: number | null): string =>
-  render(CompactionPoint, { props: { trigger, preTokens } }).body;
+const draw = (
+  trigger: string | null,
+  preTokens: number | null,
+  postTokens: number | null,
+): string => render(CompactionPoint, { props: { trigger, preTokens, postTokens } }).body;
 
 const PAGE = readFileSync(
   new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
@@ -20,17 +23,22 @@ const PAGE = readFileSync(
  * between blocks taken out. A sentence is read as a sentence: the markup's
  * `{#if}` blocks are pieces of one line, and asserting on the pieces would pin
  * where the template's branches sit rather than what the reader is told.
+ *
+ * A tag stands in for a space, which is right between two words and wrong
+ * before punctuation a tag closed over - the body keeps its comma tight against
+ * the word it follows, and the reader sees it that way.
  */
 const words = (html: string): string =>
   html
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+([,.])/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
 
 describe('the compaction point a boundary leaves in the conversation', () => {
   it('draws a hairline across the column, carrying the word and closed by default', () => {
-    const body = draw('auto', 68_031);
+    const body = draw('auto', 68_031, 9_149);
 
     expect(body, 'the row the approved shape draws').toContain('<details class="cpoint">');
     expect(body, 'collapsed, so the boundary is a hint rather than a block').not.toContain(
@@ -44,7 +52,7 @@ describe('the compaction point a boundary leaves in the conversation', () => {
   });
 
   it('carries the count before the cut short, and the whole figure behind it', () => {
-    const body = draw('auto', 68_031);
+    const body = draw('auto', 68_031, 9_149);
 
     expect(body, 'a short count on the row itself').toContain('class="n">68.0k before<');
     expect(words(body), 'the trigger and the figure beside it, as one sentence').toContain(
@@ -64,7 +72,7 @@ describe('the compaction point a boundary leaves in the conversation', () => {
    * second token format on one page.
    */
   it('draws the wide figure a 1M-context boundary headlines', () => {
-    const body = draw('auto', 1_016_576);
+    const body = draw('auto', 1_016_576, 31_253);
 
     expect(body, 'short on the row, as every other figure on the page draws it').toContain(
       'class="n">1016.6k before<',
@@ -74,11 +82,23 @@ describe('the compaction point a boundary leaves in the conversation', () => {
     );
   });
 
-  it('says nothing about what was carried after the cut', () => {
-    // The CLI's frame carries a post-compaction count and forge's decode drops
-    // it, so no client frame has ever held one. A body carrying that sentence
-    // is the row reading a fact nothing can fill.
-    const body = draw('auto', 68_031);
+  it('says what the cut carried after it, when the frame held it', () => {
+    // The CLI sends the post-compaction count in the same frame as the two
+    // facts the row already stated, and forge's decode used to drop it.
+    const body = draw('auto', 68_031, 9_149);
+
+    expect(words(body), 'the sentence the body reads as').toContain(
+      'trigger auto \u{b7} 68,031 tokens read before the cut, 9,149 carried after it',
+    );
+    expect(body, 'with the figure lifted out of the words, as its neighbours are').toContain(
+      '<b>9,149</b> carried after it',
+    );
+  });
+
+  it('says only what it was given when a boundary carried no post count', () => {
+    // The state an older transcript or a rename inside the metadata leaves:
+    // two of the three facts survive, and the row draws the ones it has.
+    const body = draw('auto', 68_031, null);
 
     expect(words(body), 'the body ends at the count it was given').toContain(
       'tokens read before the cut',
@@ -91,7 +111,7 @@ describe('the compaction point a boundary leaves in the conversation', () => {
     // The bare shape is drift: the outer key renamed leaves the frame in the
     // CLI's generic bucket with no metadata anywhere in it. The row is the
     // compaction, and a chevron promising a body would open onto nothing.
-    const body = draw(null, null);
+    const body = draw(null, null, null);
 
     expect(body, 'the row still draws').toContain('<details class="cpoint">');
     expect(body, 'with the word it is named by').toContain('class="word">compaction<');
@@ -100,24 +120,31 @@ describe('the compaction point a boundary leaves in the conversation', () => {
   });
 
   /**
-   * A rename inside the metadata keeps one fact and loses the other, and the
-   * two clauses of the body are independent - the count's own drift is the one
+   * A rename inside the metadata keeps some facts and loses the rest, and the
+   * body's clauses are independent - the pre-cut count's own drift is the one
    * the primitives test calls plausible, and it leaves the trigger behind.
    */
-  it('draws a boundary that kept one of its two facts', () => {
-    const triggerOnly = draw('auto', null);
+  it('draws a boundary that kept some of its facts', () => {
+    const triggerOnly = draw('auto', null, null);
     expect(triggerOnly, 'a handle, because there is a body to open').toContain('#i-chev');
     expect(triggerOnly, 'and no count it was not given').not.toContain('class="n"');
     expect(words(triggerOnly), 'with the trigger alone on the body').toContain('trigger auto');
     expect(words(triggerOnly), 'and no clause about a count it lacks').not.toContain('tokens read');
 
-    const countOnly = draw(null, 68_031);
+    const countOnly = draw(null, 68_031, null);
     expect(countOnly, 'the count it was given').toContain('class="n">68.0k before<');
     expect(countOnly, 'a handle').toContain('#i-chev');
     expect(words(countOnly), 'the whole figure in the body').toContain(
       '68,031 tokens read before the cut',
     );
     expect(words(countOnly), 'and no trigger it does not have').not.toContain('trigger');
+
+    // And the third mixed body, which only the carried-after clause produces:
+    // the trigger and the count the cut carried, with the count before it gone.
+    const triggerAndCarried = draw('auto', null, 9_149);
+    expect(words(triggerAndCarried), 'the figure separated from the trigger it follows').toContain(
+      'trigger auto, 9,149 carried after it',
+    );
   });
 
   /**
@@ -146,6 +173,20 @@ describe('the compaction point a boundary leaves in the conversation', () => {
     expect(bare, 'the page draws the bare boundary too').not.toBe('');
     expect(bare, 'with no count it was not given').not.toContain('class="n"');
     expect(bare, 'and no handle onto a body that does not exist').not.toContain('#i-chev');
+
+    // The carried-after clause, matched against the row the code draws at the
+    // drawing's own numbers: the page and the component are two copies of one
+    // sentence, and a wording or a figure changed in one and not the other is
+    // how the drawing goes stale with every test still green.
+    for (const [trigger, before, after] of [
+      ['auto', 154_013, 4_712],
+      ['manual', 88_412, 2_703],
+    ] as const) {
+      const clause =
+        /<b>[\d,]+<\/b> carried after it/.exec(draw(trigger, before, after))?.[0] ?? '';
+      expect(clause, 'the row the code draws carries the clause').not.toBe('');
+      expect(PAGE, 'and the book draws the same one').toContain(clause);
+    }
   });
 
   /**

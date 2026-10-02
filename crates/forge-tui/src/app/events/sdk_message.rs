@@ -1006,7 +1006,7 @@ fn handle_system(app: &mut App, msg: Message) {
                 tracing::warn!(
                     target: crate::logging::targets::APP_SESSION,
                     ?data,
-                    "compact_boundary arrived untyped: counted the compaction but trigger and pre_tokens stay unset",
+                    "compact_boundary arrived untyped: counted the compaction but the trigger and both counts stay unset",
                 );
             }
         }

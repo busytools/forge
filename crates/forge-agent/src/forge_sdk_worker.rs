@@ -2258,7 +2258,7 @@ mod tests {
                 "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"turn {i}\"}}}}"
             );
             jsonl.push_str(
-                "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compactMetadata\":{\"trigger\":\"auto\",\"preTokens\":1002459}}\n",
+                "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compactMetadata\":{\"trigger\":\"auto\",\"preTokens\":1002459,\"postTokens\":31253}}\n",
             );
         }
         std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
@@ -2280,6 +2280,7 @@ mod tests {
         let forge_primitives::Message::CompactBoundary {
             trigger,
             pre_tokens,
+            post_tokens,
             session_id: stamped,
             ..
         } = &boundaries[0]
@@ -2288,9 +2289,135 @@ mod tests {
         };
         assert_eq!(trigger, "auto", "the trigger survives the disk spelling");
         assert_eq!(*pre_tokens, 1_002_459, "and the count before the cut");
+        assert_eq!(*post_tokens, 31_253, "and the one carried after it");
         assert_eq!(
             stamped, session_id,
             "stamped with the session the reader is in, as every frame this reassembles is",
+        );
+    }
+
+    /// **The property this change turns on**: a boundary the CLI sends live and
+    /// the same boundary read back from a transcript reach a client as one
+    /// frame, carrying the same three facts.
+    ///
+    /// The two paths share no code - the live one decodes the wire's nested
+    /// `compact_metadata`, the resumed one normalises the transcript's flat
+    /// `compactMetadata` into it - so a fact either path drops is a row that
+    /// draws differently depending on how the reader arrived.
+    #[test]
+    fn a_live_boundary_and_a_resumed_one_reach_the_client_as_the_same_frame() {
+        // A uuid, because the scan refuses a session id that is not one.
+        let session_id = "550e8400-e29b-41d4-a716-446655440000";
+        let live: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "session_id": session_id,
+            "uuid": "cb-uuid",
+            "compact_metadata": {
+                "trigger": "manual",
+                "pre_tokens": 68_031,
+                "post_tokens": 9_149,
+                "cumulative_dropped_tokens": 58_882,
+                "duration_ms": 48_928,
+                "preserved_segment": {"head_uuid": "h", "anchor_uuid": "a", "tail_uuid": "t"},
+                "preserved_messages": {"anchor_uuid": "a", "uuids": ["h"], "all_uuids": ["h", "t"]},
+            },
+            "logical_parent_uuid": "lp-uuid",
+        }))
+        .expect("the live frame decodes");
+
+        // The same boundary as the CLI persists it: flat and camelCase, as
+        // every boundary row in a transcript is.
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = config_dir.path().join("projects").join("any-project-key");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let mut jsonl = String::new();
+        jsonl.push_str(
+            &serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": "before the cut"},
+                "uuid": "u-before",
+            })
+            .to_string(),
+        );
+        jsonl.push('\n');
+        jsonl.push_str(
+            &serde_json::json!({
+                "parentUuid": null,
+                "isSidechain": false,
+                "type": "system",
+                "subtype": "compact_boundary",
+                "content": "Conversation compacted",
+                "level": "info",
+                "compactMetadata": {
+                    "trigger": "manual",
+                    "preTokens": 68_031,
+                    "postTokens": 9_149,
+                    "cumulativeDroppedTokens": 58_882,
+                },
+                "uuid": "cb-uuid",
+            })
+            .to_string(),
+        );
+        jsonl.push('\n');
+        // And one that kept two facts and lost the third, which nothing in the
+        // corpus does: an older transcript, or a rename inside the metadata.
+        // The frame the scan writes carries a null the required field rejects,
+        // so the row arrives untyped - drawn with the facts it kept rather than
+        // dropped, and the scan warns on the yield so that is not silent.
+        jsonl.push_str(
+            &serde_json::json!({
+                "parentUuid": null,
+                "isSidechain": false,
+                "type": "system",
+                "subtype": "compact_boundary",
+                "content": "Conversation compacted",
+                "level": "info",
+                "compactMetadata": {"trigger": "manual", "preTokens": 68_031},
+                "uuid": "cb-lost-the-post-count",
+            })
+            .to_string(),
+        );
+        jsonl.push('\n');
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write");
+
+        // Empty cwd -> the scan searches every project dir for the file, so
+        // the test does not depend on the cwd-to-project-key hash.
+        let resumed = super::load_history_messages(config_dir.path(), session_id, "", session_id);
+        let from_disk = resumed
+            .messages
+            .iter()
+            .find(|message| matches!(message, forge_primitives::Message::CompactBoundary { .. }))
+            .expect("the boundary rides the resumed history");
+
+        let live_frame = serde_json::to_value(&live).expect("the live frame encodes");
+        let disk_frame = serde_json::to_value(from_disk).expect("the disk frame encodes");
+        assert_eq!(
+            disk_frame, live_frame,
+            "a boundary read back from disk must reach the client as the live one does",
+        );
+        assert_eq!(
+            live_frame["compact_metadata"]["post_tokens"], 9_149,
+            "with the count carried after the cut, which is the fact both paths dropped",
+        );
+
+        let lost = resumed
+            .messages
+            .iter()
+            .find(|message| {
+                matches!(
+                    message,
+                    forge_primitives::Message::System { subtype, .. }
+                        if subtype == "compact_boundary"
+                )
+            })
+            .expect("a boundary that lost the third fact still rides the history");
+        let forge_primitives::Message::System { data, .. } = lost else {
+            unreachable!("filtered to the generic bucket");
+        };
+        assert_eq!(
+            data["compact_metadata"]["trigger"], "manual",
+            "and keeps the facts it has, which is what the client draws the row with",
         );
     }
 

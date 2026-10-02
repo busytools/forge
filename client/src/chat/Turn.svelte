@@ -170,7 +170,11 @@
         {:else if unit.kind === 'hooks'}
           <Hooks actions={unit.actions} infos={unit.infos} errors={unit.errors} />
         {:else if unit.kind === 'compaction'}
-          <CompactionPoint trigger={unit.trigger} preTokens={unit.preTokens} />
+          <CompactionPoint
+            trigger={unit.trigger}
+            preTokens={unit.preTokens}
+            postTokens={unit.postTokens}
+          />
         {:else if unit.kind === 'report'}
           <Report info={unit.info} />
         {/if}

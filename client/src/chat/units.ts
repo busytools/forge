@@ -209,11 +209,15 @@ export type Unit =
    * The wire carries it as a `system` frame of its own subtype, and the fold
    * had no arm for it - so the frame that records the boundary drew nothing,
    * which is a frame dropped rather than a shape chosen. Its metadata carries
-   * the trigger and the count before the cut; the CLI also sends the count
-   * after it, which the decode drops before this view ever sees the frame, so
-   * the row says only what survives to it.
+   * the trigger and the counts either side of the cut.
    */
-  | { kind: 'compaction'; key: string; trigger: string | null; preTokens: number | null }
+  | {
+      kind: 'compaction';
+      key: string;
+      trigger: string | null;
+      preTokens: number | null;
+      postTokens: number | null;
+    }
   /** What a settled turn did, under the work it did it with. */
   | { kind: 'report'; key: string; info: TurnInfo };
 
@@ -1082,15 +1086,19 @@ export function fold(
       }
       if (frame.subtype === 'compact_boundary') {
         const metadata = obj(frame.compact_metadata);
-        const before = metadata['pre_tokens'];
+        // The server's serialization, not the CLI's disk spelling
+        // (`preTokens`): this fold has no link to the type it reads, so a
+        // rename would stop matching in silence.
+        const count = (key: string): number | null => {
+          const held = metadata[key];
+          return typeof held === 'number' ? held : null;
+        };
         push({
           kind: 'compaction',
           key: keyOf(at, frame, 'compaction'),
           trigger: str(metadata, 'trigger'),
-          // The server's serialization, not the CLI's disk spelling
-          // (`preTokens`): this fold has no link to the type it reads, so a
-          // rename would stop matching in silence.
-          preTokens: typeof before === 'number' ? before : null,
+          preTokens: count('pre_tokens'),
+          postTokens: count('post_tokens'),
         });
         continue;
       }

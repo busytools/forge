@@ -4101,6 +4101,7 @@ provider = "anthropic"
             forge_primitives::Message::CompactBoundary {
                 trigger: "auto".to_owned(),
                 pre_tokens: 1,
+                post_tokens: 1,
                 uuid: "c1".to_owned(),
                 session_id: session_key.display(),
             },
