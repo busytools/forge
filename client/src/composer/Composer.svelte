@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
 
   import Icon from '../components/Icon.svelte';
+  import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
   import Dictation from './Dictation.svelte';
   import DictationPanel from './DictationPanel.svelte';
@@ -37,64 +38,45 @@
   let { record, slot, connection, seat, dictation, device = null }: ComposerProps = $props();
 
   /**
-   * The reader's own words, held HERE rather than in the field.
-   *
-   * The box morphs into the dock, so the field is unmounted while a prompt is
-   * up - and a draft the field owned would go with it, which is the input-loss
-   * defect this component's tests exist for. The dock takes the slot and the
-   * draft waits here until the box comes back.
+   * Every box this composer has opened, held for as long as it lives: leaving a
+   * seat keeps its box and coming back hands the same one over.
    */
-  let draft = $state('');
-  /** The slash command the reader sent and the turn is still working on. */
-  let sent = $state<string | null>(null);
-  /** The prompt this composer answered, while the core still lists it as waiting. */
-  let answered = $state<string | null>(null);
-  /** Why the core refused that answer, when it did. */
-  let refusal = $state<string | null>(null);
+  const boxes = new Boxes();
+
   /**
-   * The words a send is waiting on, while the core has not yet taken them.
+   * The box for the seat showing now.
    *
-   * A send is fire-and-forget and the box is cleared for the next thing, so
-   * without this the words are gone before a refusal can arrive - and a prompt
-   * the core refused would take the reader's typed message with it.
-   */
-  let sending = $state<string | null>(null);
-  /** Why the core refused a send, which the box draws until the reader types. */
-  let bounced = $state<string | null>(null);
-  /**
-   * The words a landed take has already put in the draft, so they land once.
+   * The state is the SEAT's rather than this component's, because the page
+   * hands this composer one seat's record after another and keeps it mounted
+   * across the move. The reader's own words are held HERE rather than in the
+   * field: the box morphs into the dock, so the field is unmounted while a
+   * prompt is up, and a draft the field owned would go with it - the
+   * input-loss defect this component's tests exist for.
    *
-   * Deliberately not `$state`: nothing draws from it, and a reactive copy would
-   * make the effect below depend on what it writes.
-   */
-  let landed: string | null = null;
-  /**
-   * Whether this composer has seen the seat hold a take, ever.
+   * **A pointer this component moves, rather than a value derived from
+   * `slot`**, for two reasons:
    *
-   * A landed notice is per-seat server state that outlives its take, so a
-   * client that attaches - or reloads - finds one whose words it never saw
-   * land. Only a take this composer saw may put words in the box, and the
-   * trade is that dictation landing unwatched, and never sent, is not handed
-   * back.
+   * - `Boxes` mints a seat's box on first use, and a derivation that resolved
+   *   one would mint from inside a derivation - a write Svelte refuses with
+   *   `state_unsafe_mutation` rather than drawing the box at all.
+   * - The swap has to land before the effects that write to the box: the seat
+   *   change and the record that belongs to it arrive in one flush, and a
+   *   landing that record carries belongs to the seat being moved TO. That is
+   *   an order rather than a position, which is why the move is in
+   *   `$effect.pre` - a plain effect would be early only while it stayed
+   *   declared above them.
    */
-  let sawTake = false;
-  /** The line the reader's own typing has dismissed, which the next take clears. */
-  let dismissed = $state<string | null>(null);
-  /**
-   * When a landed take's words settled into the box, and nothing else: the
-   * whole of the beat's state.
-   *
-   * The window below is read against it rather than remembered as a flag a
-   * timer clears, so the close cannot be lost with its timer. The terminal
-   * keeps its afterglow the same way, from a start instant.
-   */
-  let beatAt = $state<number | null>(null);
+  // The seat being mounted on is the right initial value: the effect below
+  // takes it from there, and this is the one read that is not a re-render.
+  // svelte-ignore state_referenced_locally
+  let box = $state.raw<Box>(boxes.of(boxKey(slot)));
+  $effect.pre(() => {
+    const next = boxes.of(boxKey(slot));
+    if (untrack(() => box) !== next) box = next;
+  });
+
   /** The clock the beat's window is read against, which the close below moves. */
   let clock = $state(Date.now());
-  /** The draft the reader closed the list at, which typing clears. */
-  let closed = $state<string | null>(null);
-  /** Which row a key would take, which is the first until one moves it. */
-  let marked = $state(0);
   /** The field, so focus can go back to it when the box returns. */
   let field = $state<HTMLElement | null>(null);
   /** Whether the dictation panel is showing, which the mic opens. */
@@ -107,7 +89,7 @@
   const composer = $derived(composerState(record));
   const ask = $derived(pendingAsk(record));
   /** Whether the landed beat's window is still open. */
-  const beat = $derived(beatAt !== null && clock - beatAt < BEAT_MS);
+  const beat = $derived(box.beatAt !== null && clock - box.beatAt < BEAT_MS);
 
   /**
    * What the ring is doing: one state rather than three that can overlap.
@@ -139,7 +121,8 @@
    * a refusal brings it back with the reason.
    */
   const dockAsk = $derived(
-    ask !== null && !(ask.kind === 'slack_draft' && answered === ask.request.id && refusal === null)
+    ask !== null &&
+      !(ask.kind === 'slack_draft' && box.answered === ask.request.id && box.refusal === null)
       ? ask
       : null,
   );
@@ -160,10 +143,10 @@
     dockPresent: dockOpen,
   } satisfies Where);
 
-  const blocker = $derived(blocked(seat, composer, sent));
-  const filled = $derived(draft.trim() !== '');
-  const notice = $derived(noticeLine(composer.notice, sawTake));
-  const line = $derived(notice !== null && dismissed === notice.text ? null : notice);
+  const blocker = $derived(blocked(seat, composer, box.sent));
+  const filled = $derived(box.draft.trim() !== '');
+  const notice = $derived(noticeLine(composer.notice, box.sawTake));
+  const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
 
   /**
    * The lists a draft is matched against, pulled when a list is opened rather
@@ -182,13 +165,13 @@
       agents: agentTypesFrom(record.subagents),
     };
   }
-  const held = $derived(offer(draft, sources));
-  const list = $derived(closed === draft ? null : held);
+  const held = $derived(offer(box.draft, sources));
+  const list = $derived(box.closed === box.draft ? null : held);
 
   // A new query is a new list, so a key starts at its first row again.
   $effect(() => {
-    void draft;
-    marked = 0;
+    void box.draft;
+    box.marked = 0;
   });
 
   // The reader's eye is in that slot: a prompt takes the box and the keyboard
@@ -200,7 +183,7 @@
 
   // Holding the seat's take is having seen it, and the flag never clears.
   $effect(() => {
-    if (composer.take !== null) sawTake = true;
+    if (composer.take !== null) box.sawTake = true;
   });
 
   /** What the dock's own box belongs to, which is what its words go with. */
@@ -231,12 +214,12 @@
   $effect(() => {
     const held = composer.notice;
     if (held === null) {
-      landed = null;
-      dismissed = null;
+      box.landed = null;
+      box.dismissed = null;
       return;
     }
-    if (held.kind !== 'landed' || !sawTake || landed === held.text) return;
-    landed = held.text;
+    if (held.kind !== 'landed' || !box.sawTake || box.landed === held.text) return;
+    box.landed = held.text;
     // Where the words go is the table's answer rather than this component's:
     // while a prompt has the slot the reader's box is the dock's, and this one
     // is not drawn at all.
@@ -247,12 +230,12 @@
       );
       dockLanded = held.text;
     } else {
-      draft = joined(
-        untrack(() => draft),
+      box.draft = joined(
+        untrack(() => box.draft),
         held.text,
       );
     }
-    beatAt = Date.now();
+    box.beatAt = Date.now();
     // The words come with the keyboard, so an immediate Enter sends what just
     // landed. The guards above already make this the landing rather than every
     // frame. When the words went to the dock this handle still holds the element
@@ -269,7 +252,7 @@
    * early fire still closes the window.
    */
   $effect(() => {
-    const at = beatAt;
+    const at = box.beatAt;
     if (at === null) return;
     const left = at + BEAT_MS - Date.now();
     const timer = setTimeout(() => {
@@ -281,13 +264,13 @@
   // A turn that has settled is no longer working on anything, so the line that
   // names what the reader sent goes with it.
   $effect(() => {
-    if (!record.header.turn_in_flight) sent = null;
+    if (!record.header.turn_in_flight) box.sent = null;
   });
 
   // A turn in flight is the send landing: the words are the core's now, so the
   // box owes the reader nothing back.
   $effect(() => {
-    if (record.header.turn_in_flight) sending = null;
+    if (record.header.turn_in_flight) box.sending = null;
   });
 
   /**
@@ -299,10 +282,10 @@
    */
   $effect(() => {
     const current = ask;
-    if (answered === null) return;
-    if (current !== null && askToolId(current) === answered) return;
-    answered = null;
-    refusal = null;
+    if (box.answered === null) return;
+    if (current !== null && askToolId(current) === box.answered) return;
+    box.answered = null;
+    box.refusal = null;
   });
 
   /**
@@ -317,16 +300,16 @@
   $effect(() => {
     return connection.onMessage((message) => {
       if (message.kind !== 'error' || message.what !== 'dispatch') return;
-      if (answered !== null) {
-        refusal = message.why;
+      if (box.answered !== null) {
+        box.refusal = message.why;
         return;
       }
-      if (sending === null) return;
+      if (box.sending === null) return;
       // The words come back with the reason: a send the core refused took the
       // box's text with it, and losing it is the defect this guards.
-      draft = sending;
-      sending = null;
-      bounced = message.why;
+      box.draft = box.sending;
+      box.sending = null;
+      box.bounced = message.why;
     });
   });
 
@@ -335,7 +318,7 @@
     // Trimmed at the ends like the terminal's own submit: picking a row off the
     // list leaves a trailing space for the next word, and an answer that goes
     // out as `/compact ` is one nothing asked for.
-    const text = draft.trim();
+    const text = box.draft.trim();
     if (text === '') return;
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
@@ -348,10 +331,10 @@
       return;
     }
     const [first = ''] = text.split(/\s+/);
-    if (first.startsWith('/')) sent = first;
-    sending = text;
-    bounced = null;
-    draft = '';
+    if (first.startsWith('/')) box.sent = first;
+    box.sending = text;
+    box.bounced = null;
+    box.draft = '';
   }
 
   /**
@@ -362,22 +345,22 @@
     if (list !== null && list.rows.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault();
-        marked = (marked + 1) % list.rows.length;
+        box.marked = (box.marked + 1) % list.rows.length;
         return;
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault();
-        marked = (marked - 1 + list.rows.length) % list.rows.length;
+        box.marked = (box.marked - 1 + list.rows.length) % list.rows.length;
         return;
       }
       if (event.key === 'Escape') {
         event.preventDefault();
-        closed = draft;
+        box.closed = box.draft;
         return;
       }
       if (event.key === 'Enter') {
         event.preventDefault();
-        pick(marked);
+        pick(box.marked);
         return;
       }
     }
@@ -390,8 +373,8 @@
   function pick(at: number): void {
     const row = list?.rows[at];
     if (list === null || row === undefined) return;
-    draft = `${draft.slice(0, list.from)}${row.insert} `;
-    closed = null;
+    box.draft = `${box.draft.slice(0, list.from)}${row.insert} `;
+    box.closed = null;
     // The click landed on the row, so the field takes the keyboard back with
     // the words - the reader is typing again rather than having chosen a button.
     field?.focus();
@@ -399,8 +382,8 @@
 
   /** The reader's own typing is what dismisses a notice row. */
   function oninput(): void {
-    dismissed = notice?.text ?? null;
-    bounced = null;
+    box.dismissed = notice?.text ?? null;
+    box.bounced = null;
   }
 
   /** What the bound key asks for, which is the terminal's own three. */
@@ -493,8 +476,8 @@
    * one.
    */
   function remember(toolId: string | null): void {
-    answered = toolId;
-    refusal = null;
+    box.answered = toolId;
+    box.refusal = null;
   }
 
   /**
@@ -559,7 +542,7 @@
         {slot}
         {connection}
         depth={seat.pendingDepth}
-        notice={refusal}
+        notice={box.refusal}
         take={composer.take}
         bind:notes={dockDraft}
         bind:ownOpen={dockOpen}
@@ -586,13 +569,13 @@
     >
       {#if composer.take !== null}
         <Dictation take={composer.take} {slot} {connection} />
-      {:else if bounced !== null}
-        <div class="notice bad">{bounced}</div>
+      {:else if box.bounced !== null}
+        <div class="notice bad">{box.bounced}</div>
       {:else if line !== null}
         <div class="notice {line.tone}">{line.text}</div>
       {/if}
       {#if list !== null}
-        <Autocomplete offer={list} {marked} onpick={pick} />
+        <Autocomplete offer={list} marked={box.marked} onpick={pick} />
       {/if}
       <div class="line">
         <!-- The list belongs to the field rather than being a surface the reader
@@ -608,9 +591,9 @@
           aria={{
             autocomplete: 'list',
             controls: list === null ? undefined : LIST_ID,
-            activeDescendant: list === null ? undefined : rowId(list, marked),
+            activeDescendant: list === null ? undefined : rowId(list, box.marked),
           }}
-          bind:value={draft}
+          bind:value={box.draft}
           {oninput}
           onkeydown={onkey}
           field={(el: HTMLElement | null) => {
