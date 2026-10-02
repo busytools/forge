@@ -183,6 +183,13 @@
   const markedRow = $derived(rows[marked]);
   const notesOpen = $derived(markedRow !== undefined && markedRow.own);
 
+  // The dock takes the keyboard the moment it arrives: its rows are the only
+  // thing to answer, and a prompt nobody has clicked answers no keys at all -
+  // which is what made Escape look broken on a prompt that had just appeared.
+  $effect(() => {
+    if (listbox !== null) listbox.focus({ preventScroll: true });
+  });
+
   // The composer decides where a take's words land, and this dock is only a
   // destination while its box is open - so it has to say whether it is.
   //
@@ -459,10 +466,9 @@
 
 <div class="dock">
   {#if depth > 1}
-    <div class="queue">
-      <Icon name="chev" class="more" />
-      {depth - 1} more pending after this
-    </div>
+    <!-- The words say it; a marker in front of them was one more thing to
+         decode on a row that is already a count. -->
+    <div class="queue">{depth - 1} more pending after this</div>
   {/if}
   {#if notice !== null}
     <div class="notice bad">{notice}</div>

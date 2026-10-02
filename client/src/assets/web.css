@@ -505,10 +505,13 @@ details.gfold[open] > summary .arw { color: var(--accent); }
 /* A worker's mark is a step down from its project's: the size is what makes
    the indent read as nesting rather than as another project. */
 .wk .dot { width: 8px; height: 8px; flex: 0 0 8px; }
-/* The reason a row is in this group, on every row that has one. */
-.why { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+/* The reason a row is in this group, on every row that has one. Scoped to the
+   rail's own rows: bare, this rule reached the dock's option descriptions too,
+   where `display: flex` and the 34px inset stacked every description under its
+   option and indented it. */
+.pj .why { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   padding: 0 10px 6px 34px; display: flex; align-items: center; gap: 7px; }
-.why.bad { color: var(--bad); }
+.pj .why.bad { color: var(--bad); }
 .rail .nm a { color: inherit; text-decoration: none; }
 .rail .nm a:hover { text-decoration: underline; }
 /* A project's sleeping workers, behind one row that carries the count. The
@@ -1170,7 +1173,7 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 .keys { display: flex; gap: 14px; font-family: var(--mono);
   font-size: var(--fs-label); color: var(--dim); }
 .ac .keys { padding: 7px 13px; border-top: 1px solid var(--line); }
-.dock .keys { padding-left: 31px; }
+.dock .keys { display: flex; justify-content: center; gap: 16px; }
 
 /* A key is drawn as the key it is, in the chip the mockups draw: `<kbd>` and
    not a span borrowing `k`, which is the sheet's keyword token for code. */
@@ -1358,10 +1361,6 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   display: flex; flex-direction: column; gap: 10px; }
 .dock .queue { display: flex; align-items: center; gap: 6px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
-/* The marker the mockup draws, as the sheet's own chevron turned to face the
-   way the rest of the queue waits - the same glyph a disclosure uses open,
-   which is what `▼` was standing in for. */
-.dock .queue .more { transform: rotate(90deg); }
 .dock .head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
 .dock .head .qm { color: var(--accent); font-weight: 700; flex: none; }
 .dock .head .t { font-weight: 650; color: var(--text); }
@@ -1376,6 +1375,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border-radius: 0 10px 10px 0; padding: 9px 13px;
   background: linear-gradient(90deg, rgba(244,118,0,.07), transparent); }
 .dock .opts { display: flex; flex-direction: column; gap: 1px; }
+/* The listbox takes the keyboard when the dock arrives, and its own marked row
+   is what shows where the keyboard is - so the page's accent focus ring, which
+   drew an orange rectangle around every option at once, is not drawn here. */
+.dock .opts:focus, .dock .opts:focus-visible { outline: none; }
 /* Aligned to the option's own LINE rather than to the row's full height: an
    option whose description wraps under it would otherwise centre its mark
    between the two, so the mark sat against the description instead of the
@@ -1389,10 +1392,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt .tx { flex: 1; min-width: 0; }
 .opt .lbl { color: var(--dim); background: none; border: 0; padding: 0;
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
-/* What choosing an option means, flowing from the label: it starts where the
-   label's own run ends, and a wrap lands at the column's edge rather than
-   under an indent - the words are one sentence, not a caption hanging off it. */
-.opt .why { color: var(--dim); font-size: var(--fs-label); }
+/* What choosing an option means: its own line, starting in the same column the
+   option's own words start in - no indent of its own, so it reads as the
+   option's sentence continuing rather than as a caption hanging off it. */
+.opt .why { display: block; color: var(--dim); font-size: var(--fs-label);
+  padding: 0; margin: 0; }
 /* The marked option is marked by its own words: brighter and heavier, and
    nothing painted behind them - a tint read as a state of the row rather than
    as the thing being chosen, and one carrying padding dragged the label out
@@ -1407,9 +1411,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
 /* The marked option's own prose: markdown on the wire, rendered as markdown
-   rather than shown as its source. The renderer's own `.prose` rules set the
-   type inside; the panel only carries the edge and the inset. */
-.dock .preview { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
+   rather than shown as its source. Flush with the dock's own left edge - it is
+   a panel belonging to the prompt, not a caption hanging off the option - and
+   the renderer's own `.prose` rules set the type inside. */
+.dock .preview { border: 1px solid var(--line); border-radius: 9px;
   padding: 7px 11px; font-size: var(--fs-data); color: var(--muted); }
 /* The escape hatch is the row's own box, so the field carries no chrome of
    its own: no border, no second panel, no indent - the caret sits in the row
