@@ -1000,12 +1000,20 @@ export class Chat {
       }
       const taken = new Set(held.turns.map((turn) => turn.key));
       const key = nameIn({ key: liveName(message, held.turns.length), messages: [message] }, taken);
+      // **A row opened for the core's own line is not a turn being written.**
+      // The line is a command's answer, so there is no turn in flight and the
+      // core's own header says so; a live row would draw the running strip and
+      // its clock for it, which nothing would clear but a later page. It is
+      // also what the page's next account replaces a live row with - so a row
+      // marked live here would be consumed by a turn settling that has nothing
+      // to do with it.
+      const live = !isForgeNotice(message);
       // Every turn above it is the object it was: only the row that grew is
       // rebuilt, so growing one turn does not re-render the conversation.
       return this.answered({
         ...held,
         following: follow,
-        turns: [...held.turns, { key, messages: [message], live: true }],
+        turns: [...held.turns, { key, messages: [message], live }],
       });
     });
   }

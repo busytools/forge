@@ -248,10 +248,29 @@ describe('the conversation the chat draws', () => {
 
     server.update({ notice: { key: LEAD, severity: 'error', text: 'Usage: /mode <id>' } });
 
-    expect(
-      JSON.stringify(get(chat.value).turns),
-      'the line is drawn rather than dropped',
-    ).toContain('Usage: /mode <id>');
+    const [row] = get(chat.value).turns;
+    expect(JSON.stringify(row), 'the line is drawn rather than dropped').toContain(
+      'Usage: /mode <id>',
+    );
+    // **Not a turn being written.** A live row draws the running strip and its
+    // clock, and the core's own header says no turn is in flight for a command
+    // that ran none; nothing would clear the strip but a later page.
+    expect(row?.live ?? false, 'the line is not a running turn').toBe(false);
+  });
+
+  /**
+   * The other half of the same narrowing: with a turn to join, the line joins
+   * it rather than opening a row of its own.
+   */
+  it('joins a turn the seat already has rather than opening a row', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ notice: { key: LEAD, severity: 'error', text: 'Usage: /mode <id>' } });
+
+    expect(get(chat.value).turns, 'the row it joined is the one that was there').toHaveLength(1);
   });
 
   it('draws a mode or a model the CLI refused, which answers through no frame of its own', () => {

@@ -612,6 +612,12 @@ mod tests {
     /// so a line from it is the moment this view re-reads the documents its
     /// own spawns are built from. A snapshot taken at boot would otherwise
     /// launch the next session on the level before the change.
+    ///
+    /// **Two of the three documents, deliberately.** A home override bypasses
+    /// the workspace bridge, and the user settings document has no path
+    /// without one, so what this reaches is the preferences document and the
+    /// project-local one. The settings half runs the same code on the same
+    /// read and is the arm the bridge route covers.
     #[tokio::test(flavor = "current_thread")]
     async fn a_core_notice_re_reads_the_documents_a_launch_uses() {
         tokio::task::LocalSet::new()
@@ -622,8 +628,18 @@ mod tests {
                     br#"{ "respectGitignore": false }"#,
                 )
                 .expect("seed the preferences document");
+                let root = dir.path().join("project");
+                std::fs::create_dir_all(root.join(".claude")).expect("mkdir the project");
+                std::fs::write(
+                    root.join(".claude").join("settings.local.json"),
+                    br#"{ "outputStyle": "Learning" }"#,
+                )
+                .expect("seed the project-local document");
                 let mut app = App::test_default();
                 app.settings_home_override = Some(dir.path().to_path_buf());
+                // The focused seat's cwd is what the project-local document is
+                // read against, and the test App seeds one of its own.
+                app.set_cwd_raw(root.to_string_lossy().into_owned());
                 assert!(
                     app.config.committed_preferences_document.get("respectGitignore").is_none(),
                     "precondition: the held snapshot has not read it",
@@ -649,6 +665,11 @@ mod tests {
                     app.config.committed_preferences_document.get("respectGitignore"),
                     Some(&json!(false)),
                     "the launch documents are re-read when the core answers",
+                );
+                assert_eq!(
+                    app.config.committed_local_settings_document.get("outputStyle"),
+                    Some(&json!("Learning")),
+                    "and so is the project-local one",
                 );
             })
             .await;
