@@ -227,7 +227,7 @@ pub fn discard_worker_worktree(
 /// What git refuses to create a worker's worktree for at `path`, when there
 /// is something: the `worktree-<label>` branch already checked out in
 /// another worktree, a path taken by something that is not this worktree,
-/// or a registration whose directory is gone.
+/// or a registration git will not reuse.
 ///
 /// The worktree is claude's to create - it is handed `--worktree <label>` -
 /// and a creation that does nothing still leaves the session started, so a
@@ -278,26 +278,58 @@ pub fn worktree_creation_obstacle(repo: &Path, label: &str, path: &Path) -> Opti
         return None;
     }
 
-    // One block per worktree: a `worktree <path>` header, then the
-    // `branch` and `prunable` lines when that entry carries them.
     let listing = String::from_utf8_lossy(&output.stdout);
-    let mut entries: Vec<(String, Option<String>, bool)> = Vec::new();
+    obstacle_from_listing(&listed_worktrees(&listing), repo, &branch, path)
+}
+
+/// One `git worktree list --porcelain` entry.
+struct ListedWorktree {
+    /// The path git printed, already canonical while it exists.
+    at: String,
+    /// The ref this worktree holds, when it holds a branch.
+    branch: Option<String>,
+    /// git reports the entry as one `prune` would remove. A missing
+    /// directory is reported this way from git 2.36 on; before that the
+    /// line is absent and only the path is missing.
+    prunable: bool,
+}
+
+/// The entries of a porcelain listing: one block each, a `worktree <path>`
+/// header followed by the `branch` and `prunable` lines when the entry
+/// carries them.
+fn listed_worktrees(listing: &str) -> Vec<ListedWorktree> {
+    let mut entries: Vec<ListedWorktree> = Vec::new();
     for line in listing.lines() {
         if let Some(at) = line.strip_prefix("worktree ") {
-            entries.push((at.to_owned(), None, false));
+            entries.push(ListedWorktree { at: at.to_owned(), branch: None, prunable: false });
         } else if let Some(found) = line.strip_prefix("branch ") {
             if let Some(entry) = entries.last_mut() {
-                entry.1 = Some(found.to_owned());
+                entry.branch = Some(found.to_owned());
             }
         } else if line.starts_with("prunable")
             && let Some(entry) = entries.last_mut()
         {
-            entry.2 = true;
+            entry.prunable = true;
         }
     }
+    entries
+}
 
+/// The obstacle the listing describes: the branch held at another path, or
+/// what git has registered at `path` and will not reuse.
+///
+/// The second decision reads the STATE and not git's `prunable` line alone:
+/// an entry at `path` whose directory is gone is unreusable whether or not
+/// the git in use reports it as prunable, and requiring that line would let
+/// the stranded registration through on git older than 2.36.
+fn obstacle_from_listing(
+    entries: &[ListedWorktree],
+    repo: &Path,
+    branch: &str,
+    path: &Path,
+) -> Option<String> {
     let wanted = format!("refs/heads/{branch}");
-    if let Some((at, _, _)) = entries.iter().find(|(_, held, _)| held.as_deref() == Some(&wanted))
+    if let Some(at) = entries.iter().find(|e| e.branch.as_deref() == Some(&wanted)).map(|e| &e.at)
         && !same_path(at, path)
     {
         return Some(format!(
@@ -306,15 +338,15 @@ pub fn worktree_creation_obstacle(repo: &Path, label: &str, path: &Path) -> Opti
              different label"
         ));
     }
-    match entries.iter().find(|(at, _, _)| same_path(at, path)) {
-        // Registered where the worker runs: the worktree is there to reuse.
-        Some((_, _, false)) if path.exists() => None,
-        Some((_, _, prunable)) => Some(format!(
-            "the worktree at {} is a {}registration whose directory is gone, so this worker's \
-             worktree cannot be created there; run `git worktree unlock {}` and then `git \
-             worktree prune` in {} and spawn again",
+    match entries.iter().find(|e| same_path(&e.at, path)) {
+        // There, and usable: the worktree is reused as it stands. A locked
+        // one included - claude locks every worktree it creates.
+        Some(entry) if path.exists() && !entry.prunable => None,
+        Some(_) => Some(format!(
+            "the worktree registration at {} cannot be used - its directory, or the gitdir it \
+             points at, is gone - so this worker's worktree cannot be created there; run `git \
+             worktree unlock {}` and then `git worktree prune` in {} and spawn again",
             path.display(),
-            if *prunable { "stale " } else { "" },
             path.display(),
             repo.display(),
         )),
@@ -341,17 +373,13 @@ fn path_is_taken(path: &Path) -> bool {
 }
 
 /// Whether a path git printed and a path forge composed name the same
-/// directory. Both sides canonicalize, so a symlinked spelling of a repo
-/// root (a macOS tempdir under `/private`, a linked checkout) cannot read
-/// as a different worktree - and for a path that is gone, which a stranded
-/// registration is, the parent canonicalizes and the name is re-attached.
+/// directory. Each side canonicalizes through its parent with the name
+/// re-attached, so a symlinked spelling of a repo root (a macOS tempdir
+/// under `/private`, a linked checkout) cannot read as a different worktree
+/// - which matters most on the path that is GONE, where a stranded
+/// registration lives and nothing exists to canonicalize.
 fn same_path(listed: &str, composed: &Path) -> bool {
     let listed = Path::new(listed);
-    if let (Ok(listed), Ok(composed)) =
-        (std::fs::canonicalize(listed), std::fs::canonicalize(composed))
-    {
-        return listed == composed;
-    }
     match (spelled_from_parent(listed), spelled_from_parent(composed)) {
         (Some(listed), Some(composed)) => listed == composed,
         _ => listed == composed,
@@ -1577,6 +1605,10 @@ mod tests {
             obstacle.contains("worktree-lbl") && obstacle.contains("already checked out"),
             "the obstacle names the branch and what holds it: {obstacle}"
         );
+        assert!(
+            obstacle.contains("worktree"),
+            "and keeps the word the spawn's failure classifier keys on: {obstacle}"
+        );
     }
 
     /// The worker's own worktree is where a fresh re-spawn lands, and the
@@ -1658,6 +1690,36 @@ mod tests {
             obstacle.contains("is not an empty directory"),
             "the obstacle names what is in the way: {obstacle}"
         );
+        assert!(
+            obstacle.contains("worktree"),
+            "and keeps the word the spawn's failure classifier keys on: {obstacle}"
+        );
+    }
+
+    /// The route a git older than 2.36 takes: a missing directory with NO
+    /// `prunable` line. Written against the listing rather than against
+    /// git, because this machine's git always prints the line and the
+    /// state that matters - an entry at the worker's path it cannot reuse
+    /// - would otherwise go unrefused, which is #1303 returning there.
+    #[test]
+    fn obstacle_refuses_a_stranded_registration_git_does_not_mark_prunable() {
+        let repo = Path::new("/repo");
+        let path = Path::new("/repo/.claude/worktrees/lbl");
+        let listing = "worktree /repo\nbranch refs/heads/main\n\n\
+                       worktree /repo/.claude/worktrees/lbl\nbranch refs/heads/worktree-lbl\n";
+        let entries = listed_worktrees(listing);
+        assert!(
+            !entries.iter().any(|entry| entry.prunable),
+            "fixture precondition: the listing carries no prunable line, as older git leaves it",
+        );
+
+        let obstacle = obstacle_from_listing(&entries, repo, "worktree-lbl", path)
+            .expect("a stranded registration is an obstacle");
+
+        assert!(
+            obstacle.contains("registration at"),
+            "the obstacle names the registration that cannot be reused: {obstacle}"
+        );
     }
 
     /// A directory deleted out from under its registration leaves git
@@ -1673,8 +1735,12 @@ mod tests {
         let obstacle = worktree_creation_obstacle(dir.path(), "lbl", &wt).expect("an obstacle");
 
         assert!(
-            obstacle.contains("registration whose directory is gone"),
-            "the obstacle names the stale registration: {obstacle}"
+            obstacle.contains("registration at") && obstacle.contains("cannot be used"),
+            "the obstacle names the registration git will not reuse: {obstacle}"
+        );
+        assert!(
+            obstacle.contains("worktree"),
+            "and keeps the word the spawn's failure classifier keys on: {obstacle}"
         );
     }
 
