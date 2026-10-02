@@ -704,6 +704,89 @@ async fn a_compaction_settling_inside_the_interval_still_asks() {
     );
 }
 
+/// A sink for every record a site emits, with a guard that has to be HELD for
+/// as long as a test means to catch them.
+///
+/// **A guard rather than the crate's `test_support::logged`, which runs a
+/// closure to completion on the caller's thread.** The record this exists for is
+/// emitted from the fold task `serve` spawns, and every test here is a
+/// current-thread `#[tokio::test]` - so that task is polled on this test's own
+/// thread, and the thread-local subscriber applies for as long as the guard is
+/// alive across the awaits.
+fn catch_records() -> (Arc<Mutex<Vec<u8>>>, tracing::subscriber::DefaultGuard) {
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("the sink is not poisoned").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let written = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let sink = Arc::clone(&written);
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || Sink(Arc::clone(&sink)))
+        .with_ansi(false)
+        .finish();
+    (written, tracing::subscriber::set_default(subscriber))
+}
+
+/// Everything caught so far, one JSON record per line.
+fn caught(written: &Arc<Mutex<Vec<u8>>>) -> String {
+    String::from_utf8(written.lock().expect("the sink is not poisoned").clone())
+        .expect("the sink holds utf-8")
+}
+
+/// A seat with no agent has the ask ISSUED and its refusal recorded, which is
+/// what the socket page says happens: the socket issues the ask whether or not
+/// an agent is behind the seat, and where there is none it is refused.
+///
+/// The record is the only product of that refusal - the fold holds no
+/// connection, so nothing can be drawn for it - and it is emitted from the fold
+/// task rather than from anything the test drives. That is why the capture is
+/// installed across the awaits rather than around a call.
+#[tokio::test]
+async fn a_seat_with_no_agent_has_the_refused_ask_recorded() {
+    let (url, fleet) = a_server().await;
+    // A reading, so the ask is admitted and the refusal is the missing agent
+    // rather than one of the bounds.
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts { context: Some(a_small_reading()), ..ViewFacts::default() },
+    );
+    let (written, _guard) = catch_records();
+    let _socket = a_page_on(&url, Subject::Session(lead_seat())).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+
+    // The record lands a scheduling hop after the frame, so the read is repeated
+    // and bounded rather than taken once.
+    for _ in 0..200 {
+        if caught(&written).contains("context_usage_request_failed") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let records = caught(&written);
+    let Some(refusal) = records.lines().find(|line| line.contains("context_usage_request_failed"))
+    else {
+        panic!("the ask is issued for a seat with no agent and the refusal is recorded: {records}")
+    };
+    assert!(
+        refusal.contains("TestOrg/proj/lead"),
+        "and the refusal names the seat it was for: {refusal}",
+    );
+}
+
 /// What bounds that trigger, and the half of the seat-opened rule it must not
 /// undo: refreshing on the frame must not become one probe per frame.
 ///

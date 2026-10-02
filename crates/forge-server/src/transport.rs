@@ -118,6 +118,12 @@ enum Ask {
 /// and a reading past the token gate unable to be lowered, which is the state
 /// this bypass exists to close; the field is on the settle in both pinned
 /// captures and a fresh one is where a change to that would show.
+///
+/// The null half is traded for that, and both directions are disclosed: a result
+/// present but null would be read as no settle, and the reading would stand
+/// until the next compaction. No captured frame carries it - the corpus has
+/// exactly three status shapes, a `compacting` string twice and one settle with
+/// a string result - and the null is admitted nowhere else in this predicate.
 fn settles_a_compaction(update: &SessionUpdate) -> bool {
     let SessionUpdate::ChatAppended { msg: Message::System { subtype, data, .. }, .. } = update
     else {
@@ -152,13 +158,16 @@ fn context_ask(update: &SessionUpdate) -> Option<(&SessionSlot, Ask)> {
 /// post-compaction ask, which may not be refused by the reading it exists to
 /// replace.
 ///
-/// Both records below are `debug` lines and nothing else, and **neither is
-/// asserted anywhere** - the read path's own ask in `transport::wire` has the
-/// same hole. The refusal a seat with no agent leaves behind is emitted from the
-/// spawned fold rather than from anything a test drives, so the capture helper's
-/// thread-local subscriber does not reach it, and what the fold leaves on the
-/// wire for it is a silence the fold's shape guarantees rather than one a test
-/// observes.
+/// Both records below are `debug` lines and nothing else. The refusal is the one
+/// asserted, and it is emitted from the spawned fold rather than from anything a
+/// test drives - so the test that reads it back holds a subscriber across its
+/// awaits rather than calling the crate's `test_support::logged`, which runs a
+/// closure to completion on the caller's thread and cannot span the fold. The
+/// read path's own ask in `transport::wire` has the same record and no test.
+///
+/// That refusal is not only the no-agent case: the same arm carries a seat with
+/// no stamped session id and one whose session has closed, which is what
+/// `refresh_context_usage` refuses.
 fn request_context_usage(
     state: &TransportState,
     probes: &mut probe::ContextProbe,
