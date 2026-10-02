@@ -451,6 +451,28 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the event a clamp fires is not a reader arriving at the end').toEqual([]);
   });
 
+  it('keeps following when a clamp moves the reader with the content', async () => {
+    // The mirror of the case above: a row corrected SHORTER leaves a following
+    // reader above the foot, and a scroll event that reads as them scrolling
+    // away is a column that stops following mid-stream and stays stopped.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    const shorter = TOTAL - 200;
+    setElement(shorter, VIEWPORT);
+    list()?.scrolledTo(shorter - VIEWPORT, shorter, VIEWPORT);
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the column is still following, and pins the foot again').not.toEqual([]);
+  });
+
   it('re-arms when a size change leaves the reader at the very end', async () => {
     const server = stub();
     await draw(server);

@@ -524,11 +524,20 @@
     // content had at the last event is what tells the two apart: an event whose
     // height has moved is the layout, and only an event at the height the
     // reader last saw can be them arriving at the end of it.
+    // **Only a SHRINK can be a clamp.** Content arriving grows the column and
+    // leaves the reader exactly where they are, so an event after one is the
+    // reader's own; content corrected shorter takes the room out from under
+    // them, and the event that follows is the browser moving them rather than
+    // them moving. The one test covers the disarm below as well as the arming,
+    // because a clamp that put the follow back on and a clamp that took it off
+    // are the same mistake pointing two ways.
     const height = viewport?.scrollHeight ?? 0;
-    const moved = height !== shaped;
+    const shrank = height < shaped;
     shaped = height;
-    if (atFoot() && !moved) working?.following(true);
-    else if (placed !== null && offset < placed) working?.following(false);
+    if (!shrank) {
+      if (atFoot()) working?.following(true);
+      else if (placed !== null && offset < placed) working?.following(false);
+    }
     if (offset < REACH) loadOlder();
   }
 
