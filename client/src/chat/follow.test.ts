@@ -427,6 +427,30 @@ describe('whether the column follows the newest end', () => {
     ).toEqual([]);
   });
 
+  it('leaves a scrolled-up reader alone when a clamp fires the scroll event', async () => {
+    // **The same size change, through the other channel.** A row corrected to
+    // its drawn height takes height out of the column, and the browser clamps
+    // the reader down with the content AND fires a scroll event landing at the
+    // foot - so a resize that no longer re-arms through the observer can still
+    // re-arm here, and the reader is carried back by whatever arrived.
+    const server = stub();
+    await draw(server);
+    readerAt(620);
+    await settle();
+    clear();
+
+    const shorter = TOTAL - 200;
+    setElement(shorter, VIEWPORT);
+    list()?.scrolledTo(shorter - VIEWPORT, shorter, VIEWPORT);
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the event a clamp fires is not a reader arriving at the end').toEqual([]);
+  });
+
   it('re-arms when a size change leaves the reader at the very end', async () => {
     const server = stub();
     await draw(server);

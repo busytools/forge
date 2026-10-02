@@ -88,6 +88,22 @@ describe('what a call body draws', () => {
 
     // The text is what a body has where there is no diff to draw: the terminal's
     // own rule is the diff for a mutation, the result's words for everything else.
+    // A Write is a file the CLI reports as created, with no patch at all: the
+    // body falls back to the call's own content, which is the ADDED side and
+    // nothing removed. Read the other way round the counts invert.
+    const wrote = leafOf(
+      't3',
+      'Write',
+      { file_path: '/x/a.rs', content: 'one\ntwo\n' },
+      answered('File created successfully at /x/a.rs'),
+      { type: 'create', structuredPatch: [] },
+    );
+    expect(wrote.mutation, 'a create adds, and removes nothing').toMatchObject({
+      hunks: 1,
+      added: 3,
+      removed: 0,
+    });
+
     const bash = leafOf('t2', 'Bash', { command: 'ls' }, answered('a.rs\nb.rs'));
     expect(
       bash.body.map((part) => part.kind),

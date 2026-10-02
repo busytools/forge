@@ -199,6 +199,8 @@
   let settling = $state(false);
   /** The prepend count this component has already accounted for. */
   let accounted = 0;
+  /** The content height at the last scroll event, which tells a reader moving from a layout moving. */
+  let shaped = 0;
   /** The tick a settling compensation waits on, held so a later one can replace it. */
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -512,7 +514,20 @@
     // scroll event of its own, and the foot can settle past the height one
     // asked for: both read as the reader back above the foot with nothing
     // moving them, and disarming there is a column stuck where it opened.
-    if (atFoot()) working?.following(true);
+    //
+    // **And a size change is not a reader moving either, which is the harder
+    // half.** A row corrected to its drawn height takes height out of the
+    // column, the browser clamps the reader down with the content, and THAT
+    // fires a scroll event landing at the foot - so a resize that re-armed the
+    // follow through the observer re-armed it here as well, and a reader who
+    // scrolled away was carried back by whatever arrived. The height the
+    // content had at the last event is what tells the two apart: an event whose
+    // height has moved is the layout, and only an event at the height the
+    // reader last saw can be them arriving at the end of it.
+    const height = viewport?.scrollHeight ?? 0;
+    const moved = height !== shaped;
+    shaped = height;
+    if (atFoot() && !moved) working?.following(true);
     else if (placed !== null && offset < placed) working?.following(false);
     if (offset < REACH) loadOlder();
   }
