@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
   import type { Connection } from '../socket';
@@ -550,11 +551,6 @@
                 <Icon name="check" />
               {/if}
             </span>
-          {:else}
-            <!-- One answer is one row, so there is no box: a box promises a set,
-                 and this question takes a single one. The marked row carries
-                 the pointer the terminal draws instead. -->
-            <span class="cur">{at === marked ? '\u{25b8}' : ''}</span>
           {/if}
           <span class="tx">
             {#if row.own && notesOpen}
@@ -589,7 +585,11 @@
     </div>
 
     {#if markedRow?.preview != null}
-      <div class="preview">{markedRow.preview}</div>
+      <!-- The preview is the option's own prose, carried as markdown on the
+           wire, so it is rendered as markdown rather than shown as its own
+           source - the same renderer the conversation's prose uses, which
+           escapes what it is handed. -->
+      <div class="preview"><Prose text={markedRow.preview} /></div>
     {/if}
 
     {#if answered}

@@ -1567,9 +1567,13 @@ describe('the dock', () => {
       'a question that takes one row drew the boxes a set takes',
     ).toHaveLength(0);
     expect(
-      [...document.querySelectorAll('.dock .opt .cur')].map((slot) => slot.textContent),
-      'the marked row is what says which one is to be taken',
-    ).toEqual(['\u{25b8}', '', '']);
+      document.querySelectorAll('.dock .opt .cur'),
+      'and no mark stands in the slot the boxes hold',
+    ).toHaveLength(0);
+    expect(
+      document.querySelectorAll('.dock .opt.sel'),
+      'the marked row itself is what says which one is to be taken',
+    ).toHaveLength(1);
   });
 
   it('stands down once its answer is on its way, and says so', () => {
