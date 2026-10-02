@@ -104,9 +104,10 @@
       if (last !== undefined && !last.mine) last.units.push(unit);
       else out.push({ mine: false, nth: 0, units: [unit], footer: 0, trailing: false });
     }
-    // Where the turn's footer begins: the hooks chip and the report row, which
-    // the compaction line sits ABOVE - the order the terminal settled, and the
-    // one the book's page and the approved mockup both draw.
+    // Where the turn's footer begins: the hooks chip, the report row and a
+    // hook's own run, which the compaction line sits ABOVE - the order the
+    // terminal settled, and the one the book's page and the approved mockup
+    // both draw.
     return out.map((block, nth) => {
       if (block.mine) return block;
       const footer = footerOf(block.units);
@@ -121,10 +122,17 @@
    * The index the turn's trailing furniture starts at: the hooks chip, the
    * report row, and a hook's own run.
    *
-   * **A hook run belongs here because it is the chip's own family and lands in
-   * the same place.** A Stop hook's frames arrive after the result that settled
-   * the turn, so leaving the kind out would make where the compaction line
-   * draws depend on whether a hook happened to fire.
+   * **A hook run belongs here because it is the chip's own family, and the
+   * state where that decides anything is captured.** In `compact.jsonl` a
+   * `SessionStart:compact` run's frames land between the `status: compacting`
+   * frame and the one that clears it, so a run arriving while a compaction is
+   * in flight is a shape the corpus holds - and that is the state where this
+   * set decides where the line draws. Left out, the line's place would depend
+   * on whether a hook happened to fire.
+   *
+   * **Whether a Stop hook's frames also arrive after the result that settled
+   * the turn is open**, and none of the above rests on it: no capture holds
+   * one.
    */
   function footerOf(units: readonly Unit[]): number {
     let at = units.length;
