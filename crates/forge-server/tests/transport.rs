@@ -304,6 +304,48 @@ async fn next_agent_command(
     tokio::time::timeout(std::time::Duration::from_millis(ms), commands.recv()).await.ok().flatten()
 }
 
+/// The frame the CLI sends when a turn ends, which is what the socket reads a
+/// finished turn off.
+fn a_finished_turn() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "result",
+        "subtype": "success",
+        "duration_ms": 1,
+        "duration_api_ms": 1,
+        "is_error": false,
+        "num_turns": 1,
+        "session_id": "s",
+    }))
+    .expect("parse a result message")
+}
+
+/// The lead seat with an agent behind it, reporting a reading small enough to
+/// pay a probe for, and the receiver that stub records what it is asked.
+///
+/// The reading is the state the tests below have in common: a number the seat
+/// already holds, which a turn makes stale.
+fn a_reporting_seat(fleet: &Fleet) -> mpsc::UnboundedReceiver<AgentCommand> {
+    let asked = fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts {
+            session_id: Some(SessionId::new("reporting")),
+            context: Some(ContextUsage { percent: Some(12), max_tokens: Some(200_000) }),
+            ..ViewFacts::default()
+        },
+    );
+    asked
+}
+
+/// A connected client showing `what`, with the snapshot it was answered read
+/// and handed back beside it.
+async fn a_page_on(url: &str, what: Subject) -> (Client, serde_json::Value) {
+    let mut socket = connect(url).await;
+    send(&mut socket, ClientMessage::Subscribe { what, answering: true }).await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    (socket, data)
+}
+
 /// A seat a client opens with no usage to report asks the core for one, so the
 /// header draws a bar rather than the dash an unasked seat carries for its
 /// whole life.
@@ -369,6 +411,108 @@ async fn a_seat_that_already_reports_usage_is_not_asked_again() {
     // waiting, and a probe wrongly fired lands a scheduling hop after the ask.
     let command = next_agent_command(&mut asked, 250).await;
     assert!(command.is_none(), "a seat that reports a reading is not probed again: {command:?}");
+}
+
+/// A turn finishing on a seat a page is holding is the moment its reading
+/// stops being true: the transcript grew by the turn, and the number the seat
+/// holds was taken before it.
+///
+/// The other half of the pair above: that one keeps an open page from costing a
+/// probe per read, and this one keeps a reading from standing for the life of
+/// its occupant.
+#[tokio::test]
+async fn a_turn_finishing_on_a_seat_a_page_holds_asks_the_core_for_a_reading() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet);
+    let (_socket, data) = a_page_on(&url, Subject::Session(lead_seat())).await;
+    assert_eq!(
+        data["header"]["context"]["percent"], 12,
+        "precondition: the seat reports a reading, so there is nothing wrong yet: {data}",
+    );
+    // The read that opened the seat asks for nothing, so the ask below can only
+    // be the frame's - a probe wrongly fired by the read would answer this test
+    // in the frame's place.
+    assert!(
+        next_agent_command(&mut asked, 250).await.is_none(),
+        "precondition: opening a seat that already reports asks for nothing",
+    );
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+
+    let command = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(command, Some(AgentCommand::GetContextUsage { .. })),
+        "the turn that just finished grew the transcript, so the reading is asked for again: \
+         {command:?}",
+    );
+}
+
+/// The other half of that trigger: a seat no page is holding is asked for
+/// nothing, because the probe is answered inline over the CLI's whole
+/// transcript and a fleet finishing turns with nobody watching would spend that
+/// computation for nobody.
+///
+/// The seat here reports the reading the test above seeds, so being unwatched
+/// is the only thing that can hold the ask back.
+#[tokio::test]
+async fn a_turn_finishing_on_a_seat_no_page_holds_asks_for_nothing() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet);
+    // The home is every row and no seat's page, so nothing here is holding the
+    // lead's seat.
+    let _socket = a_page_on(&url, Subject::Home).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+
+    // The window is the assertion: a probe that wrongly fired lands a
+    // scheduling hop after the frame.
+    let command = next_agent_command(&mut asked, 250).await;
+    assert!(
+        command.is_none(),
+        "a turn on a seat with no page open on it costs no probe: {command:?}",
+    );
+}
+
+/// What bounds that trigger, and the half of the seat-opened rule it must not
+/// undo: refreshing on the frame must not become one probe per frame.
+///
+/// A turn is not the only thing that ends in a burst - a resumed session and a
+/// run of quick turns both produce several at once - and the terminal asks a
+/// seat at most once a minute. The seat here reports the reading the tests
+/// above seed, so the reads that opened its page are not what is being counted.
+#[tokio::test]
+async fn a_burst_of_finished_turns_on_a_reporting_seat_costs_one_probe() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet);
+    let _socket = a_page_on(&url, Subject::Session(lead_seat())).await;
+
+    for _ in 0..8 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: lead_seat(),
+            msg: a_finished_turn(),
+            origin: None,
+        });
+    }
+
+    let first = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(first, Some(AgentCommand::GetContextUsage { .. })),
+        "the first turn of the burst is worth a probe: {first:?}",
+    );
+    let second = next_agent_command(&mut asked, 250).await;
+    assert!(
+        second.is_none(),
+        "the rest of the burst is inside the minimum interval between asks, so eight frames \
+         cost one probe: {second:?}",
+    );
 }
 
 /// The role is decided by the client's first SUBSCRIBE, not by its first

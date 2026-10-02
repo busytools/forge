@@ -5,12 +5,14 @@
 //! first and the server sends only what a client asked for.
 
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use axum::Router;
 use axum::routing::get;
-use forge_primitives::WebConfig;
+use forge_primitives::{Message, WebConfig};
 use tokio::net::TcpListener;
 
+use crate::SessionUpdate;
 use crate::live::Live;
 use crate::surface::ViewSurface;
 use crate::work::WorkCache;
@@ -18,6 +20,7 @@ use crate::work::WorkCache;
 mod connection;
 pub mod conversation;
 pub mod envelope;
+mod probe;
 pub mod wire;
 
 /// The protocol this server speaks.
@@ -81,8 +84,53 @@ pub async fn serve(state: Arc<TransportState>, listener: TcpListener) -> anyhow:
 /// frames that follow it have one producer.
 async fn fold_the_stream(state: Arc<TransportState>) {
     let mut updates = state.surface.subscribe_mirror();
+    let mut probes = probe::ContextProbe::default();
     while let Some(update) = updates.recv().await {
         crate::live::Live::lock(&state.live).apply(&update);
         state.conversations.apply(&update);
+        request_context_usage_if_a_turn_ended(&state, &mut probes, &update);
+    }
+}
+
+/// Ask the core for a fresh context reading when a turn ends on a seat a page
+/// is holding.
+///
+/// A turn finishing is when a reading stops being true: the transcript grew by
+/// the turn, and the number the seat holds was taken before it. The terminal
+/// refreshes on the same frame, for the seat it is addressing, and a client
+/// reading a seat is that same act - the answer lands as a
+/// [`SessionUpdate::ContextUsageSnapshot`] on the stream that page is already
+/// reading.
+///
+/// Only a seat a page holds, because the reading exists for the reader and the
+/// probe costs the CLI a walk over its whole transcript. Bounded by
+/// [`probe`], the same two limits the terminal applies to its own ask.
+fn request_context_usage_if_a_turn_ended(
+    state: &TransportState,
+    probes: &mut probe::ContextProbe,
+    update: &SessionUpdate,
+) {
+    let SessionUpdate::ChatAppended { key, msg: Message::Result { .. }, .. } = update else {
+        return;
+    };
+    if !Live::lock(&state.live).is_attached(key) {
+        return;
+    }
+    if let Err(declined) = probes.admit(key, &state.surface.header(key).context, Instant::now()) {
+        tracing::debug!(
+            event_name = "context_usage_refresh_skipped",
+            ?declined,
+            slot = %key.display(),
+            "a turn ended on a seat a client reads and its context reading was not asked for",
+        );
+        return;
+    }
+    if let Err(error) = state.surface.refresh_context_usage(key) {
+        tracing::debug!(
+            event_name = "context_usage_request_failed",
+            %error,
+            slot = %key.display(),
+            "a turn ended on a seat a client reads and its context probe was not requested",
+        );
     }
 }
