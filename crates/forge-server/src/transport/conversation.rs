@@ -632,6 +632,7 @@ mod tests {
             msg: Message::CompactBoundary {
                 trigger: "auto".to_owned(),
                 pre_tokens: 100_000,
+                post_tokens: 21_000,
                 uuid: "b1c2d3e4-0000-4000-8000-000000000001".to_owned(),
                 session_id: "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45".to_owned(),
             },

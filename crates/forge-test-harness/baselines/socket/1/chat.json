@@ -89,6 +89,7 @@
     "name"
   ],
   "/compact_metadata": [
+    "post_tokens",
     "pre_tokens",
     "trigger"
   ],

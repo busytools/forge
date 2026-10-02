@@ -178,7 +178,7 @@ describe('one turn folded into the units a view draws', () => {
       subtype: 'compact_boundary',
       uuid: 'cb-1',
       session_id: 's1',
-      compact_metadata: { trigger: 'auto', pre_tokens: 68_031 },
+      compact_metadata: { trigger: 'auto', pre_tokens: 68_031, post_tokens: 9_149 },
     };
 
     const units = fold([boundary]);
@@ -190,6 +190,10 @@ describe('one turn folded into the units a view draws', () => {
       row?.kind === 'compaction' ? row.preTokens : null,
       'with the count read before the cut',
     ).toBe(68_031);
+    expect(
+      row?.kind === 'compaction' ? row.postTokens : null,
+      'and the one carried after it, which is the third fact the wire carries',
+    ).toBe(9_149);
   });
 
   it('draws a boundary that carries no metadata, saying only that it happened', () => {
@@ -202,6 +206,7 @@ describe('one turn folded into the units a view draws', () => {
     expect(row?.kind, 'the boundary still draws').toBe('compaction');
     expect(row?.kind === 'compaction' ? row.trigger : 'x').toBeNull();
     expect(row?.kind === 'compaction' ? row.preTokens : 0).toBeNull();
+    expect(row?.kind === 'compaction' ? row.postTokens : 0).toBeNull();
   });
 
   it('keeps a run whole across a thinking row', () => {
