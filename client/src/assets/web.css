@@ -438,7 +438,7 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
    fit a descender under a line of monospace. Scoped here rather than on `body`
    so the rails, the home and the composer keep the leading they were drawn
    with. */
-.conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable;
+.conv { overflow-y: auto; flex: 1; padding: 2px 8px 0 0; scrollbar-gutter: stable;
   line-height: 1.35; }
 /* The refusal above a conversation already drawn: the server's words for the
    ask that failed, at the column's own padding, with the rows left alone. */
@@ -1002,8 +1002,10 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    animate. */
 
 /* The composer's own slot at the foot of the chat column. Its padding is
-   the only thing keeping the box off the column's bottom edge. */
-.composer { padding: 4px 0 2px; }
+   the only thing keeping the box off the column's bottom edge, and its margin
+   cancels the app grid's row gap for this row: `gap` cannot drop one row's
+   share without the column gap the rails sit in going with it. */
+.composer { padding: 4px 0 2px; margin-top: calc(-1 * var(--ins)); }
 .comp { position: relative; display: flex; flex-direction: column; gap: 2px; }
 .hint { font-size: var(--fs-base); padding-left: 4px; }
 .hint.login { color: var(--warn); }
