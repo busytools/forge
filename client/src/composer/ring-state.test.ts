@@ -4,10 +4,16 @@
  * take's whole life, with the frames the live page hands the component.
  *
  * A state machine is not visible in a screenshot and not in a markup
- * assertion, because it is a sequence - so this file drives the sequence and
- * records what the class list is at each step. The landed beat is a one-shot
- * (the book states 450ms), so the two states the ring must never show are
- * `done` after that window and `done` over a live take.
+ * assertion, because it is a sequence - so this file drives the sequence,
+ * records what the class list is at each step, and asserts on the step's own
+ * record rather than on where the walk happened to end. The landed beat is a
+ * one-shot (the book states 450ms), so the two states the ring must never show
+ * are `done` after that window and `done` over a live take.
+ *
+ * The two walks differ in one thing: whether a frame arrives inside the beat's
+ * window. Read as a pair, they pin that the window closes on the clock rather
+ * than on a frame - a beat a later hand-over happens to clear would pass the
+ * walk that ends after one.
  */
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -64,17 +70,38 @@ function held(composer: Record<string, unknown>): ComposerRecord {
 
 const LANDED = { kind: 'landed', text: 'the words', truncated: false };
 
+/** One step of a walk: what it is, and what the ring and the row were at it. */
+interface Leg {
+  step: string;
+  ring: string;
+  row: string;
+}
+
+/** The leg a step recorded, or a failure naming the step that is missing. */
+function at(trace: Leg[], step: string): Leg {
+  const leg = trace.find((walked) => walked.step === step);
+  if (leg === undefined) throw new Error(`the walk recorded no "${step}" step`);
+  return leg;
+}
+
+/** The walk as the run's own output, which is what a reader reads the sequence off. */
+function printed(trace: Leg[]): string {
+  return trace
+    .map(
+      (leg) => `${leg.step.padEnd(34)} | ring: ${(leg.ring || '-').padEnd(14)} | row: ${leg.row}`,
+    )
+    .join('\n');
+}
+
 /**
  * Walk a take from idle to landed and then hand over one more frame, which is
  * what the live page does: every frame re-creates the record the composer
  * reads, so the landed notice arrives as a NEW object on each hand-over.
  */
-function takeLifecycle(page: Page, extraFrame: boolean): string[] {
-  const trace: string[] = [];
+function takeLifecycle(page: Page, extraFrame: boolean): Leg[] {
+  const trace: Leg[] = [];
   const note = (step: string): void => {
-    trace.push(
-      `${step.padEnd(34)} | ring: ${(ringClasses() || '-').padEnd(14)} | row: ${rowState()}`,
-    );
+    trace.push({ step, ring: ringClasses(), row: rowState() });
   };
 
   note('idle');
@@ -107,14 +134,17 @@ function takeLifecycle(page: Page, extraFrame: boolean): string[] {
   return trace;
 }
 
-it('the control: without the extra frame the landed beat expires on its own', () => {
+it('the control: with no frame inside the window, the landed beat expires on its own', () => {
   vi.useFakeTimers();
   const page = open();
   const trace = takeLifecycle(page, false);
-  console.log(`\n#1523 control (no extra frame)\n${trace.join('\n')}`);
+  console.log(`\n#1523 control (no extra frame)\n${printed(trace)}`);
 
-  expect(ringClasses(), 'after the window the landed beat is gone').not.toContain('done');
-  expect(ringClasses(), 'and the next take is recording').toContain('rec');
+  expect(at(trace, 'landed').ring, 'the landing opens the beat').toContain('done');
+  expect(at(trace, 'beat window past').ring, 'the window closes on the clock alone').not.toContain(
+    'done',
+  );
+  expect(at(trace, 'recording · next take').ring, 'the next take is a recording').toContain('rec');
 });
 
 it('a live take owns the ring, not a landed beat still inside its window', () => {
@@ -138,12 +168,17 @@ it('records the ring across a take whose landed notice keeps being re-handed', (
   vi.useFakeTimers();
   const page = open();
   const trace = takeLifecycle(page, true);
-  console.log(`\n#1523 instrument (one extra frame inside the window)\n${trace.join('\n')}`);
+  console.log(`\n#1523 instrument (one extra frame inside the window)\n${printed(trace)}`);
 
-  const atLanding = trace.find((line) => line.startsWith('landed '));
-  expect(atLanding, 'the landed beat is drawn when the take lands').toContain('done');
-
-  expect(ringClasses(), 'after the window the landed beat is gone').not.toContain('done');
-  expect(ringClasses(), 'and the next take is a recording, not a landed one').not.toContain('done');
-  expect(ringClasses(), 'and the next take is a recording').toContain('rec');
+  expect(at(trace, 'landed').ring, 'the landing opens the beat').toContain('done');
+  expect(
+    at(trace, 'beat window past').ring,
+    'and the window closes even though a frame re-handed the notice inside it',
+  ).not.toContain('done');
+  expect(at(trace, 'recording · next take').ring, 'and the next take is a recording').toContain(
+    'rec',
+  );
+  expect(at(trace, 'recording · next take').ring, 'a recording, not a landed one').not.toContain(
+    'done',
+  );
 });
