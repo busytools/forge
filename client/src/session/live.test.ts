@@ -40,6 +40,14 @@ import { REPLACES } from './apply';
 import { POLL_MS, watchSession, type SessionRead } from './live';
 import Session from './Session.svelte';
 
+// This is the one page mounted over a REAL connection, so it drives the
+// column's store and status branches too - and its record is frozen where the
+// class publishes it, like every other file that mounts the column.
+vi.mock('../chat/conversation', async (importOriginal) => {
+  const { frozenConversation } = await import('../chat/testing/frozen');
+  return frozenConversation(await importOriginal<typeof import('../chat/conversation')>());
+});
+
 /**
  * The page over a REAL socket, which is the only arrangement the unit tests
  * cannot reach.

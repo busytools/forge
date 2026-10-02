@@ -19,6 +19,13 @@ vi.mock('virtua/svelte', async () => {
   return { VList: List };
 });
 
+// The column's record is frozen where it is handed out, so a write into any
+// part of it - the prepend path's composed turns included - throws here too.
+vi.mock('./conversation', async (importOriginal) => {
+  const { frozenConversation } = await import('./testing/frozen');
+  return frozenConversation(await importOriginal<typeof import('./conversation')>());
+});
+
 const { clear, firstGrowth, last, list } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
 const { installResizeObserver } = await import('./testing/viewport');

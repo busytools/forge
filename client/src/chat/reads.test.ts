@@ -17,6 +17,13 @@ vi.mock('virtua/svelte', async () => {
   return { VList: List };
 });
 
+// The column's record is frozen where the class publishes it, so a write into
+// any part of it - a page re-read included - throws here too.
+vi.mock('./conversation', async (importOriginal) => {
+  const { frozenConversation } = await import('./testing/frozen');
+  return frozenConversation(await importOriginal<typeof import('./conversation')>());
+});
+
 const { default: Churned } = await import('./testing/Churned.svelte');
 const { installResizeObserver } = await import('./testing/viewport');
 

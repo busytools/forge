@@ -22,6 +22,13 @@ vi.mock('virtua/svelte', async () => {
   return { VList: List };
 });
 
+// The column's record is frozen where it is handed out, so a write into any
+// part of it - the scroll and resize paths included - throws here too.
+vi.mock('./conversation', async (importOriginal) => {
+  const { frozenConversation } = await import('./testing/frozen');
+  return frozenConversation(await importOriginal<typeof import('./conversation')>());
+});
+
 const { clear, list, pinned, setElement, setMeasured } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
