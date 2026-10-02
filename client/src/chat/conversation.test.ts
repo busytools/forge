@@ -349,7 +349,7 @@ describe('the conversation the chat draws', () => {
     expect(after[1]?.live, 'and it is a live turn').toBe(true);
   });
 
-  it('opens a row for the reader own words while a turn is live', () => {
+  it('carries the reader own words into the turn the frames are writing', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
@@ -357,17 +357,14 @@ describe('the conversation the chat draws', () => {
 
     // A frame that draws something opens the turn in flight when none is live.
     server.update({ chat_appended: { key: LEAD, msg: said('working') } });
-    // Then the reader says something. It starts a turn of its own even though
-    // one is being written, because the words belong after the answer rather
-    // than inside it.
+    // Then the reader says something. The turn it interrupts is the one it
+    // belongs to, so the words draw inside it rather than beside it.
     server.update({ chat_appended: { key: LEAD, msg: typed('now do this') } });
 
     const after = get(chat.value).turns;
-    expect(after.length, 'the turn in flight and the reader own turn').toBe(3);
-    expect(after[1]?.messages, 'the answer holds no part of what was typed').toEqual([
+    expect(after.length, 'the settled turn above, and the one being written').toBe(2);
+    expect(after[1]?.messages, 'the turn kept the words rather than losing them to a row').toEqual([
       said('working'),
-    ]);
-    expect(after[2]?.messages, 'and the words opened a row of their own').toEqual([
       typed('now do this'),
     ]);
   });

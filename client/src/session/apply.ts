@@ -388,18 +388,26 @@ function settled(held: SessionRecord): SessionRecord {
 /**
  * One frame into the turn it belongs to.
  *
- * The boundary is `client/src/chat/conversation.ts`'s `append`, which is the
- * chat's own copy of the server's rule: what a person said opens a turn and
- * everything else joins the one already open, and a frame the fold draws
- * nothing out of is never a boundary whatever its type.
+ * Where it goes is `client/src/chat/conversation.ts`'s `append`, read there:
+ * its predicate is the authority, and this block does not restate it. What
+ * follows is where the two differ.
  *
- * Two arms differ, and both are the record's shape rather than a second rule.
- * A frame arriving with NO turn at all opens one here, where the chat can hold
- * it nowhere - its turns are refilled by a page, and this record's are not.
- * And the chat separates a turn a page wrote from one the frames are still
- * writing, a distinction these turns carry no flag for. Each difference is
- * only where a turn breaks, and nothing draws these turns whole: the inspector
- * reads them flattened.
+ * **The arms that differ are where a turn BREAKS rather than a second rule.**
+ *
+ * - With no turn held, EVERY frame opens a row here, where the chat opens one
+ *   only for a frame that draws and is not a `system` frame. The chat asks for
+ *   a page; this record asks for none.
+ * - A drawing frame that is not a `system` frame and not a `user` frame, over
+ *   a row with no live turn and no running flag, opens one in the chat where
+ *   this record joins it: these turns carry no flag at all.
+ * - **A prompt arriving mid-turn opens a turn here, where the chat draws it
+ *   inside the row it interrupted: one being written, with no end of its own
+ *   in it.** On this arm it is the RECORD that follows the server's fold,
+ *   which opens a turn on a queued prompt; the chat refuses that cut and joins
+ *   the row to the turn above it.
+ *
+ * Nothing draws these turns whole: the inspector reads them flattened, so a
+ * difference here is a row count rather than a picture.
  */
 function appendFrame(conversation: Conversation, message: unknown): Conversation {
   const last = conversation.turns[conversation.turns.length - 1];
