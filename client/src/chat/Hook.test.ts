@@ -137,6 +137,43 @@ describe('the hook run row', () => {
     expect(bareRules(SHEET, 'hooks'), 'where the name it must not take is taken').not.toEqual([]);
   });
 
+  /**
+   * The pin the disclosure rests on, and the one rule 25 is about: the row
+   * collapses the output behind its own open rather than shortening it, so a
+   * clamp anywhere on the body would turn this row back into the drop it was
+   * built to stop. Both classes are shared with other rows, which is how a rule
+   * written for one of them reaches this one.
+   */
+  it('hides nothing of what the body carries', () => {
+    for (const [what, sheet] of sheets()) {
+      const reaching = bodyRules(sheet);
+      // The denominator: a scan that reaches no rule reports every sheet clean,
+      // and this predicate is a walk over selectors rather than a file read.
+      expect(reaching.length, `${what} spells rules reaching the row's body`).toBeGreaterThan(0);
+      expect(
+        reaching.flatMap((rule) =>
+          rule.declarations
+            .filter(clamps)
+            .map((declaration) => `${rule.selector} { ${declaration} }`),
+        ),
+        `${what} leaves the row's body unclamped`,
+      ).toEqual([]);
+    }
+  });
+
+  /**
+   * The drawing is the surface's visual truth, so a rule edited in one sheet
+   * alone is one surface described two ways. Normalised, because the sheets'
+   * comments and indentation are each their own.
+   */
+  it("mirrors the row's rules in both sheets, rule for rule", () => {
+    const app = hookrunRules(SHEET);
+    // The same denominator one level up: a block the scan failed to read
+    // compares equal to an empty one.
+    expect(app.length, 'the app spells the row').toBeGreaterThan(0);
+    expect(hookrunRules(BOOK), 'and the drawing mirrors every one of them').toEqual(app);
+  });
+
   it('draws the row in the book, open and closed', () => {
     // The page is the visual truth for both states, and a closed-only drawing is
     // how a surface ends up described in one of them.
@@ -159,6 +196,61 @@ function sheets(): Array<[string, string]> {
     ['web.css', SHEET],
     ['the book drawing', BOOK],
   ];
+}
+
+/**
+ * The classes the row draws its body with. Both are shared with other rows, so
+ * a rule written for one of them reaches this one.
+ */
+const BODY_CLASSES = ['body', 'term'];
+
+/** Whether one declaration would hide or shorten the text a body draws. */
+function clamps(declaration: string): boolean {
+  const [property = '', value = ''] = declaration.split(':').map((part) => part.trim());
+  // A maximum height is the shape a clamp arrives as even without `overflow`
+  // beside it, and every `text-overflow` value is a clip, so both are read as
+  // one rather than weighed.
+  if (property === 'max-height' || property === '-webkit-line-clamp') return true;
+  if (property === 'text-overflow') return true;
+  if (property === 'display') return value === 'none';
+  if (property.startsWith('overflow'))
+    return value.startsWith('hidden') || value.startsWith('clip');
+  return false;
+}
+
+/** Every rule whose selector reaches one of the classes the body draws with. */
+function bodyRules(sheet: string): Array<{ selector: string; declarations: string[] }> {
+  const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
+  const found: Array<{ selector: string; declarations: string[] }> = [];
+  for (const [, selectors = '', body = ''] of code.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    // Class compounds only: a bare `body` in a selector is the page element,
+    // not this row's box.
+    const classes = selectors
+      .split(',')
+      .flatMap((member) => member.split(/[\s>+~]+/))
+      .filter((compound) => compound.startsWith('.'))
+      .map((compound) => compound.replace(/^\./, '').replace(/::?[\w-]*(\([^)]*\))?$/, ''));
+    if (!classes.some((name) => BODY_CLASSES.includes(name))) continue;
+    found.push({
+      selector: selectors.trim(),
+      declarations: body
+        .split(';')
+        .map((declaration) => declaration.trim())
+        .filter((declaration) => declaration !== ''),
+    });
+  }
+  return found;
+}
+
+/** The row's own rules, comments off and whitespace normalised, in each sheet. */
+function hookrunRules(sheet: string): string[] {
+  const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
+  const found: string[] = [];
+  for (const [, selectors = '', body = ''] of code.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!selectors.includes('.hookrun')) continue;
+    found.push(`${selectors.trim().replace(/\s+/g, ' ')} { ${body.trim().replace(/\s+/g, ' ')} }`);
+  }
+  return found;
 }
 
 /**
