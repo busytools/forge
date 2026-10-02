@@ -6,6 +6,7 @@
   import type { SessionSlot } from '../wire/types';
   import Compacting from './Compacting.svelte';
   import { Chat, NOTHING, type Conversation, type Turn as HeldTurn } from './conversation';
+  import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
 
   /**
@@ -359,8 +360,20 @@
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">
-        <Turn {turn} {cwd} {slot} compacting={compacting && turn.key === newest} />
+        <Turn
+          {turn}
+          {cwd}
+          {slot}
+          compacting={compacting && turn.key === newest}
+          pinned={turn.key === newest}
+        />
       </div>
     {/snippet}
   </VList>
+  <!-- Outside the list rather than in it, which is what makes the row pinned:
+       the turns scroll under it, and the answer to whether the turn is still
+       being written stops depending on where the reader is looking. It is a
+       sibling of the scroller rather than a row of the grid, so the composer
+       and the dock - both drawn under this column - never have to know it. -->
+  <Pinned turn={held.turns[held.turns.length - 1] ?? null} {cwd} {slot} />
 {/if}

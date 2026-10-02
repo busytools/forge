@@ -30,13 +30,40 @@
     cwd,
     slot = null,
     compacting = false,
-  }: { turn: HeldTurn; cwd: string | null; slot?: Self | null; compacting?: boolean } = $props();
+    pinned = false,
+  }: {
+    turn: HeldTurn;
+    cwd: string | null;
+    slot?: Self | null;
+    compacting?: boolean;
+    /**
+     * Whether this turn's running row is drawn pinned above the box.
+     *
+     * Set for the newest turn, which is the only one a running row is ever
+     * folded for: the row moves out of the turn and sits above the composer
+     * while the turn is written, and comes back here when it settles. Two
+     * strips on one turn is the defect this prop exists to prevent.
+     */
+    pinned?: boolean;
+  } = $props();
 
   // Whether the turn is still being written, which the fold cannot read off the
   // frames: a page carries no result frame for a turn that has not ended.
   // `live` is a turn the frames built and `running` is the seat's own answer,
   // which the turn's end or a later page can take back.
-  const units = $derived(fold(turn.messages, cwd, slot, turn.live || turn.running === true));
+  const folded = $derived(fold(turn.messages, cwd, slot, turn.live || turn.running === true));
+
+  /**
+   * The fold's units, less the running row where the pin is carrying it.
+   *
+   * The running row moves out of the turn and above the composer while this is
+   * the turn being written, so it is not drawn here as well - two strips on one
+   * turn. Nothing is lost by it: the same row is on the page, in the pin, and
+   * the settled row comes back here the moment the turn ends.
+   */
+  const units = $derived(
+    pinned ? folded.filter((unit) => !(unit.kind === 'report' && unit.info.running)) : folded,
+  );
 
   /** A reader's own words on their own, or a run of everything else in one block. */
   type Block =

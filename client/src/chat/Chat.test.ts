@@ -482,6 +482,44 @@ describe('the chat column as it draws', () => {
     expect(html, 'and labelled by its sender').toContain('forge/steward');
   });
 
+  it('pins the running row above the box, and out of the turn it belongs to', () => {
+    // **The wiring, which is one prop and one mount.** The row moves out of the
+    // newest turn while it is being written, so a column that keeps drawing it
+    // in the turn draws it twice - and a column that keeps it only in the turn
+    // loses the pin. Both halves are asserted here because either one alone
+    // reads as a working page.
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    server.send({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'assistant',
+            uuid: 'a-run',
+            timestamp: '2026-10-01T06:00:00Z',
+            message: {
+              id: 'm-run',
+              role: 'assistant',
+              model: 'claude-opus-5',
+              content: [{ type: 'text', text: 'working' }],
+              usage: { input_tokens: 100, output_tokens: 20 },
+            },
+          },
+        },
+      },
+    });
+
+    expect(document.querySelectorAll('.strip'), 'one pinned row').toHaveLength(1);
+    expect(document.querySelectorAll('.strip .ring'), 'carrying the running mark').toHaveLength(1);
+    expect(
+      document.querySelectorAll('details.turninfo'),
+      'and the turn draws no second copy of it',
+    ).toHaveLength(0);
+  });
+
   it('keeps a row the reader opened mounted when a thinking row lands above it', () => {
     // A thinking unit lands ABOVE the run it interrupted, so every unit below
     // it shifts position - and a list keyed by position remounts that whole

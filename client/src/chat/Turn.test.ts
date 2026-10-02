@@ -177,6 +177,35 @@ describe('one turn, as the page draws it', () => {
     );
   });
 
+  it('draws no running row for a turn whose row is pinned above the box', () => {
+    // While this turn is the one being written its running row is drawn in the
+    // strip above the composer, outside the scroll - so the turn does not draw
+    // a second copy of it: one strip, never two. The settled row is untouched,
+    // which is the half that makes this a move rather than a loss.
+    const at = (turn: HeldTurn): string =>
+      render(Turn, { props: { turn, cwd: null, pinned: true } }).body;
+
+    expect(
+      at({ key: 't1', messages: [working], live: true }),
+      'a running turn the frames built',
+    ).not.toContain('turninfo');
+    expect(
+      at({ key: 't1', messages: [working], live: false, running: true }),
+      'and one whose turn the seat says is running',
+    ).not.toContain('turninfo');
+    expect(
+      at({
+        key: 't1',
+        live: false,
+        messages: [
+          working,
+          { type: 'result', uuid: 'r1', duration_ms: 1000, duration_api_ms: 500, usage: {} },
+        ],
+      }),
+      'while the settled row still draws where it always did',
+    ).toContain('turninfo');
+  });
+
   it('draws the running row for a turn the seat says is running', () => {
     // The other carrier of the same fact, and it is a different one: a turn the
     // client reached mid-flight has its row from a page, so `running` is what
