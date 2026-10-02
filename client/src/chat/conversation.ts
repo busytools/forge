@@ -341,6 +341,9 @@ function variantOf(update: SessionUpdate): string | null {
   return name ?? null;
 }
 
+/** How long a refused page waits before it is asked again, while the column is live. */
+const RETRY_MS = 2_000;
+
 /**
  * One conversation, over one connection.
  *
@@ -370,6 +373,17 @@ export class Chat {
   private abandoned = 0;
   /** What `start` has to undo, and `null` while the chat is stopped. */
   private running: (() => void) | null = null;
+  /**
+   * The timer a refused page re-asks on, or `null`.
+   *
+   * A refusal is the server declining a page for a conversation it has not
+   * attached yet, and it says so - asking again may find it. A refusal that
+   * nothing asks again is that same dead end by another route: its words stand
+   * over a conversation whose frames are landing, and everything said before
+   * the client attached stays unreachable, because the page that would set the
+   * walk's cursor never came.
+   */
+  private retry: ReturnType<typeof setTimeout> | null = null;
   /** This seat's subject key, which is how a snapshot is known to be its own. */
   private readonly key: string;
   /**
@@ -476,12 +490,14 @@ export class Chat {
         this.inFlight = null;
         this.abandoned = 0;
       } else {
+        this.clearRetry();
         this.ask(null);
       }
     });
     this.running = () => {
       stopMessages();
       stopStatus();
+      this.clearRetry();
       this.running = null;
     };
     this.ask(null);
@@ -539,6 +555,33 @@ export class Chat {
     return false;
   }
 
+  /**
+   * Ask a refused page again, once a beat, while the column is live.
+   *
+   * **The refusal's own words are the instruction** ("asking again may find
+   * it"), and the condition it refuses on - the core has not attached this
+   * conversation yet - clears on its own once the seat's session is up. What
+   * must not clear it is nothing: a reader who stays on the column never asks
+   * again otherwise, and the history before the refusal stays unreachable.
+   */
+  private retryAsk(): void {
+    if (this.retry !== null || this.running === null) return;
+    this.retry = setTimeout(() => {
+      this.retry = null;
+      if (this.running === null) return;
+      if (this.read().refused === null) return;
+      this.ask(null);
+    }, RETRY_MS);
+  }
+
+  /** A page landed, or the occupant changed: nothing is owed a re-ask. */
+  private clearRetry(): void {
+    if (this.retry !== null) {
+      clearTimeout(this.retry);
+      this.retry = null;
+    }
+  }
+
   private receive(message: ServerMessage): void {
     switch (message.kind) {
       case 'page':
@@ -558,6 +601,7 @@ export class Chat {
         this.inFlight = null;
         this.abandoned = 0;
         this.inner.update((held) => ({ ...held, refused: message.why, loaded: true }));
+        this.retryAsk();
         return;
       case 'snapshot':
         // The seat's own record, which is where the core's answer for a turn in
@@ -592,6 +636,9 @@ export class Chat {
       return;
     }
     this.inFlight = null;
+    // A landed page is the refusal's ask answered: the timer that would ask
+    // again is owed nothing, and the page's cursor is what the walk uses.
+    this.clearRetry();
     this.inner.update((held) => {
       const known = new Map(held.turns.map((turn) => [turn.key, turn]));
       // A turn a page has settled is also known by the page's own name for it,
@@ -804,6 +851,7 @@ export class Chat {
     // one is known until its own record or frames say.
     this.turnRunning = false;
     this.inner.set(NOTHING);
+    this.clearRetry();
     this.ask(null);
   }
 

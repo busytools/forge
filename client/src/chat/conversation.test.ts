@@ -1,5 +1,5 @@
 import { get } from 'svelte/store';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MORE_TURNS } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
@@ -16,6 +16,12 @@ vi.mock('./conversation', async (importOriginal) => {
 import { fold } from './units';
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
+
+// A test that fails part-way through a fake-timer case would otherwise leave
+// every later case in this file on fake time.
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /**
  * One turn as a page carries it.
@@ -594,6 +600,52 @@ describe('the conversation the chat draws', () => {
       after.turns.map((row) => row.key),
       'with the page it waited for',
     ).toEqual(['t0', 't1']);
+  });
+
+  it('asks a refused page again while the column is live, and stops once one lands', () => {
+    vi.useFakeTimers();
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    expect(server.more(), 'the first ask').toHaveLength(1);
+
+    // The core has not attached this conversation yet, and it refuses rather
+    // than answering an empty page - an empty page reads as "nothing above"
+    // and would make the history unreachable rather than late - and its own
+    // words say asking again may find it.
+    server.refuse('more', 'the conversation is not held yet; asking again may find it');
+    expect(get(chat.value).refused, 'the refusal did not reach the column').not.toBeNull();
+
+    // A beat later the column asks again by itself: a reader who stays put has
+    // nothing else that would, and without this the words stand over a
+    // conversation whose frames are landing while everything before the
+    // refusal stays invisible.
+    vi.advanceTimersByTime(2_000);
+    expect(server.more(), 'the refused page was never asked again').toHaveLength(2);
+
+    // This time the conversation is there, and the page answers the refusal.
+    server.send(page([turn('t1', 'first')], '1'));
+    expect(get(chat.value).refused, 'a landed page did not answer the refusal').toBeNull();
+
+    // And a landed page ends the asking rather than being asked over.
+    vi.advanceTimersByTime(10_000);
+    expect(server.more(), 'a landed page kept being asked for').toHaveLength(2);
+    stop();
+  });
+
+  it('stops asking a refused page once the column is stopped', () => {
+    vi.useFakeTimers();
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    server.refuse('more', 'the conversation is not held yet; asking again may find it');
+    stop();
+
+    // Nothing draws the refusal any more, so nothing is owed an ask: a timer
+    // left running here would poll a seat no page is showing.
+    vi.advanceTimersByTime(30_000);
+    expect(server.more(), 'a stopped column kept asking').toHaveLength(1);
   });
 
   it('drops the drawn conversation when the seat changes occupant', () => {
