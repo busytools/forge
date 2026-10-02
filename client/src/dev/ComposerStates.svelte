@@ -150,6 +150,27 @@
     },
   };
 
+  const slackDraft = {
+    kind: 'slack_draft',
+    request: {
+      id: 'draft-1',
+      workspace: 'Trust Machines',
+      conversation_label: '#granite-staging-alerts',
+      thread_ts: null,
+      text: 'The staging deploy is green. Rolling to production once the 14:30 window closes.',
+    },
+  };
+
+  const slackReply = {
+    kind: 'slack_draft',
+    request: {
+      ...slackDraft.request,
+      id: 'draft-2',
+      thread_ts: '1790956000.969469',
+      text: 'Confirmed - the replica caught the bad statement, so production is clear to take the same set.',
+    },
+  };
+
   const questionSingle = {
     kind: 'question',
     request: {
@@ -382,6 +403,8 @@
       label: "dock · with the CLI's own reason",
       props: { record: { ...blank(), pending_ask: readOutside } },
     },
+    { label: 'dock · slack draft', props: { record: { ...blank(), pending_ask: slackDraft } } },
+    { label: 'dock · slack reply', props: { record: { ...blank(), pending_ask: slackReply } } },
     {
       label: 'dock · question · one answer',
       props: { record: { ...blank(), pending_ask: questionSingle } },
