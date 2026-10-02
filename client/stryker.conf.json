@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "./node_modules/.bin/vitest related src/wire/home.ts src/wire/limits.ts src/wire/types.ts src/stores.ts src/chat/units.ts src/chat/conversation.ts src/chat/report.ts src/composer/view.ts src/composer/wire.ts src/composer/meter.ts src/session/view.ts src/session/apply.ts"
+  },
+  "ignorePatterns": ["node_modules", "dist", "src-tauri", "reports", ".stryker-tmp"],
+  "mutate": [
+    "src/wire/home.ts",
+    "src/wire/limits.ts",
+    "src/wire/types.ts",
+    "src/stores.ts",
+    "src/chat/units.ts",
+    "src/chat/conversation.ts",
+    "src/chat/report.ts",
+    "src/composer/view.ts",
+    "src/composer/wire.ts",
+    "src/composer/meter.ts",
+    "src/session/view.ts",
+    "src/session/apply.ts"
+  ],
+  "reporters": ["clear-text", "progress", "html", "json"],
+  "htmlReporter": { "fileName": "reports/mutation/index.html" },
+  "jsonReporter": { "fileName": "reports/mutation/mutation.json" },
+  "timeoutMS": 60000
+}

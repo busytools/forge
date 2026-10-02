@@ -8,6 +8,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
+    "mutate": "stryker run",
     "typecheck": "tsc --noEmit",
     "typecheck:markup": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
@@ -16,6 +17,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@stryker-mutator/core": "^10.0.0",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tauri-apps/cli": "^2.12.0",
     "@types/jsdom": "^30.0.0",
