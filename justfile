@@ -64,6 +64,11 @@ test-all:
 # dev-profile build it needs is warm; `RUSTFLAGS=-D warnings` mirrors CI's
 # workflow-level env (#257).
 #
+# No `RUSTDOCFLAGS`, and not by omission: rustdoc compiles the doctest and
+# `RUSTFLAGS` does not reach it, while `RUSTDOCFLAGS` does and still does
+# not fail the compile on a lint - a doctest carrying a `non_snake_case`
+# function passes under it, where the same code under rustc does not.
+#
 # Compile the workspace's doctests (`no_run` fences compile without running).
 doctest:
     RUSTFLAGS="-D warnings" cargo test --doc --workspace --all-features

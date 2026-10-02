@@ -71,7 +71,8 @@ set (with and without `--all-features`),
 `cargo doc --workspace --no-deps --all-features`. The clippy, test,
 doctest and doc steps each set `RUSTFLAGS=-D warnings` so a warning CI
 would reject fails locally too; CI sets it once at workflow level
-instead.
+instead. It covers the build each step drives, and rustdoc compiles a
+doctest on its own, so it does not deny warnings inside one.
 
 Run it before opening a pull request. It is CI's set minus two jobs: CI
 also runs `cargo check --release` and `just check-feature-configs`, both
