@@ -535,6 +535,10 @@
   details.leaf > summary .st.bulb { width: 13px; height: 13px; flex: 0 0 13px;
     transform: translateY(-1px); }
 
+  /* A skill row's mark says what the row is, not how it ended, so it takes the
+     lane's dim rather than the ok tone a check wears. */
+  details.leaf > summary .st.sk { color: var(--dim); }
+
   /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
   details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
   details.leaf > summary .k { color: var(--text); font-weight: 700; }
@@ -585,6 +589,9 @@
   details.cpoint[open] > summary .arw { color: var(--accent); }
   .cpoint .cpbody { margin: 6px 0 2px; color: var(--muted); }
   .cpoint .cpbody b { color: var(--text); font-weight: 500; }
+  /* The continuation summary under the facts, as prose rather than the body's
+     own line. */
+  .cpoint .cpbody .sum { margin-top: 10px; }
   /* Stacked: a flex here draws the hook rows beside the summary, not under it. */
   .hooks { margin: 4px 0;
     font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
@@ -1225,9 +1232,18 @@ Set `service_key` per environment in the bot's own config.</pre>
 
           <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-skill"/></svg><span class="nm">skill</span></div>
+            <!-- A Skill call's own result is the CLI's launching line; the row
+                 opens onto the skill itself, which is what anyone opening it
+                 wants to read. -->
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">pr-review-loop &#183; PR #1204</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term">4 reviewers on disjoint axes &#183; 3 rounds max</div></div>
+              <div class="body"><div class="prose">
+                <h2>pr-review-loop</h2>
+                <p>Run parallel reviewers over the diff, each on its own axis, and drive every finding to resolution.</p>
+                <ul>
+                  <li>three rounds at most, then the loop escalates</li>
+                </ul>
+              </div></div>
             </details>
           </div>
 
@@ -1478,6 +1494,24 @@ docs: Render the message body into rows.</div>
           </div>
         </div>
 
+        <!-- A skill whose body no call in the turn claimed, which the CLI
+             injects as the reader's own user frame: the row names the skill
+             and holds the whole body as markdown, so the text wears no
+             attribution nobody earned. -->
+        <details class="leaf">
+          <summary><svg class="ic st sk"><use href="#i-skill"/></svg><span class="tn">skill /unslop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body"><div class="prose">
+            <h2>unslop</h2>
+            <p>Edit text to remove AI patterns.</p>
+            <h2>Process</h2>
+            <ol>
+              <li>Scan for the patterns below.</li>
+              <li>Rewrite. Preserve meaning, match intended tone.</li>
+              <li>Self-audit: "What makes this obviously AI generated?" Fix remaining tells.</li>
+            </ol>
+          </div></div>
+        </details>
+
         <div class="card">
           <div class="q"><svg class="ic qm"><use href="#i-question"/></svg>How should an answered question survive the dock clearing?</div>
           <div class="a"><span class="am">&#8594;</span><span class="picked">Clean answered-card</span></div>
@@ -1643,7 +1677,17 @@ docs: Render the message body into rows.</div>
           <svg class="ic arw"><use href="#i-chev"/></svg>
           <span class="rule"></span>
         </summary>
-        <div class="cpbody">trigger <b>manual</b> &#183; <b>88,412</b> tokens read before the cut, <b>2,703</b> carried after it</div>
+        <div class="cpbody">trigger <b>manual</b> &#183; <b>88,412</b> tokens read before the cut, <b>2,703</b> carried after it
+          <!-- The continuation prompt the CLI sends after a cut opens under the
+               facts: the summary is what the model was handed, and the one
+               account of what was dropped. -->
+          <div class="sum"><div class="prose">
+            <p>This session is being continued from a previous conversation that ran out of context.</p>
+            <h2>What happened</h2>
+            <ul>
+              <li>the lanes rework landed</li>
+            </ul>
+          </div></div></div>
       </details>
 
       <!-- And the third state: a boundary whose frame carried no metadata at
