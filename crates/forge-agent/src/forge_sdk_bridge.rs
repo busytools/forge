@@ -129,10 +129,10 @@ pub(crate) struct BridgeInner {
     /// and removed when its answer, error or timeout lands.
     ///
     /// A probe is answered inline over the CLI's whole transcript, and the
-    /// askers repeat - the socket asks on every read of a seat that reports no
-    /// usage, the terminal on every switch - so without this one unanswered
-    /// seat parks a probe per ask. A probe that times out emits nothing, so a
-    /// caller that coalesced only on its own side would repeat forever.
+    /// socket asks on every read of a seat that reports no usage, so without
+    /// this one unanswered seat parks a probe per read. A probe that times out
+    /// emits nothing, so a caller that coalesced only on its own side would
+    /// repeat forever.
     context_probes_in_flight: Mutex<HashSet<String>>,
 }
 
