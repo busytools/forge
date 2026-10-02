@@ -77,9 +77,22 @@ interface Leg {
   row: string;
 }
 
-/** The leg a step recorded, or a failure naming the step that is missing. */
-function at(trace: Leg[], step: string): Leg {
-  const leg = trace.find((walked) => walked.step === step);
+/**
+ * The walk indexed by step, or a failure naming a step recorded twice - a
+ * `find` would read the first match and say nothing about the second.
+ */
+function steps(trace: Leg[]): Map<string, Leg> {
+  const held = new Map<string, Leg>();
+  for (const leg of trace) {
+    if (held.has(leg.step)) throw new Error(`the walk recorded "${leg.step}" twice`);
+    held.set(leg.step, leg);
+  }
+  return held;
+}
+
+/** The leg one step recorded, or a failure naming the step that is missing. */
+function at(walk: Map<string, Leg>, step: string): Leg {
+  const leg = walk.get(step);
   if (leg === undefined) throw new Error(`the walk recorded no "${step}" step`);
   return leg;
 }
@@ -140,11 +153,12 @@ it('the control: with no frame inside the window, the landed beat expires on its
   const trace = takeLifecycle(page, false);
   console.log(`\n#1523 control (no extra frame)\n${printed(trace)}`);
 
-  expect(at(trace, 'landed').ring, 'the landing opens the beat').toContain('done');
-  expect(at(trace, 'beat window past').ring, 'the window closes on the clock alone').not.toContain(
+  const walk = steps(trace);
+  expect(at(walk, 'landed').ring, 'the landing opens the beat').toContain('done');
+  expect(at(walk, 'beat window past').ring, 'the window closes on the clock alone').not.toContain(
     'done',
   );
-  expect(at(trace, 'recording · next take').ring, 'the next take is a recording').toContain('rec');
+  expect(at(walk, 'recording · next take').ring, 'the next take is a recording').toContain('rec');
 });
 
 it('a live take owns the ring, not a landed beat still inside its window', () => {
@@ -170,15 +184,20 @@ it('records the ring across a take whose landed notice keeps being re-handed', (
   const trace = takeLifecycle(page, true);
   console.log(`\n#1523 instrument (one extra frame inside the window)\n${printed(trace)}`);
 
-  expect(at(trace, 'landed').ring, 'the landing opens the beat').toContain('done');
+  const walk = steps(trace);
+  expect(at(walk, 'landed').ring, 'the landing opens the beat').toContain('done');
   expect(
-    at(trace, 'beat window past').ring,
+    at(walk, 'landed + one more frame').ring,
+    'and a re-handed notice inside the window does not cut the beat short',
+  ).toContain('done');
+  expect(
+    at(walk, 'beat window past').ring,
     'and the window closes even though a frame re-handed the notice inside it',
   ).not.toContain('done');
-  expect(at(trace, 'recording · next take').ring, 'and the next take is a recording').toContain(
+  expect(at(walk, 'recording · next take').ring, 'and the next take is a recording').toContain(
     'rec',
   );
-  expect(at(trace, 'recording · next take').ring, 'a recording, not a landed one').not.toContain(
+  expect(at(walk, 'recording · next take').ring, 'a recording, not a landed one').not.toContain(
     'done',
   );
 });
