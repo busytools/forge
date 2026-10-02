@@ -1363,17 +1363,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .dock .head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
 .dock .head .qm { color: var(--accent); font-weight: 700; flex: none; }
-.dock .head .t { font-weight: 650; color: var(--text); }
+.dock .head .t { font-weight: 650; color: var(--text); white-space: nowrap; }
 .dock .head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }
-/* The message a held Slack post would send, set apart because it is the thing
-   being approved. */
-.dock .sent { font-size: var(--fs-base); color: var(--text); white-space: pre-wrap;
-  font-family: var(--mono); border: 1px solid var(--line); border-left: 2px solid var(--accent);
-  border-radius: 0 10px 10px 0; padding: 9px 13px;
-  background: linear-gradient(90deg, rgba(244,118,0,.07), transparent); }
 .dock .opts { display: flex; flex-direction: column; gap: 1px; }
 /* The listbox takes the keyboard when the dock arrives, and its own marked row
    is what shows where the keyboard is - so the page's accent focus ring, which

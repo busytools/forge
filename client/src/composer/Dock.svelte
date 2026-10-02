@@ -508,7 +508,11 @@
     </div>
     <!-- The body verbatim: this is what would go out, so the reader approves
          the text itself rather than a summary of it. -->
-    <div class="sent">{ask.request.text}</div>
+    <!-- The draft reads as an option's preview does, through the same
+         markdown renderer and the same panel: Slack text IS markdown, the
+         question kinds are already in hand, and one kind of block for both
+         keeps the dock one system rather than two. -->
+    <div class="preview"><Prose text={ask.request.text} /></div>
   {/if}
 
   {#if rows.length > 0}
