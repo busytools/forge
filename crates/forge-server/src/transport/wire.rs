@@ -834,12 +834,40 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
                 anyhow::bail!("forge holds no session for {slot:?}");
             };
             walk_processes_if_stale(surface, slot, roster.claude_pid(slot)).await;
+            request_context_usage_if_unreported(surface, slot);
             Ok(serde_json::to_value(session(state, surface, slot, &cwd).await?)?)
         }
         // The pool's own report, scanned here rather than carried in another
         // snapshot: it belongs to no seat, and a home snapshot that scanned
         // the pool would pay for the walk on every subscribe.
         Subject::Usage => Ok(serde_json::to_value(surface.usage().await?)?),
+    }
+}
+
+/// Ask the core for a context reading on `slot` when the seat reports none.
+///
+/// The reading exists only once the CLI has computed it, and the terminal asks
+/// for the seat it is addressing. A client subscribing to a seat is that same
+/// act, so the ask belongs on the read that encodes the subject: a seat only a
+/// client watches would otherwise report nothing for the life of its session,
+/// and the header would draw the dash an unasked seat draws rather than a bar.
+///
+/// Guarded on the reading rather than on the ask having happened, so a seat
+/// that already reports one is not probed again by every subscribe, reconnect
+/// and second tab. The answer arrives as
+/// [`SessionUpdate::ContextUsageSnapshot`](crate::SessionUpdate::ContextUsageSnapshot)
+/// on the stream the subscriber is already reading.
+fn request_context_usage_if_unreported(surface: &ViewSurface, slot: &SessionSlot) {
+    if surface.header(slot).context.percent.is_some() {
+        return;
+    }
+    if let Err(error) = surface.refresh_context_usage(slot) {
+        tracing::debug!(
+            event_name = "context_usage_request_failed",
+            %error,
+            slot = %slot.display(),
+            "a seat a client reads reports no context usage and its probe was not requested",
+        );
     }
 }
 

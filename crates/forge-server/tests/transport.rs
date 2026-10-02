@@ -7,16 +7,18 @@
 
 use std::sync::{Arc, Mutex};
 
-use forge_primitives::SessionSlot;
+use forge_primitives::{AgentCommand, SessionId, SessionSlot};
 use forge_server::Command;
 use forge_server::live::Live;
 use forge_server::surface::SessionUpdate;
-use forge_server::testing::Fleet;
+use forge_server::surface::inspector::ContextUsage;
+use forge_server::testing::{Fleet, ViewFacts};
 use forge_server::transport::TransportState;
 use forge_server::transport::envelope::{ClientMessage, ServerMessage, Subject};
 use forge_server::transport::serve;
 use forge_server::work::WorkCache;
 use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 /// The client end of a socket, named so the helpers below read as one.
@@ -287,6 +289,86 @@ async fn a_running_take_is_on_the_seat_a_client_attaches_to() {
         held,
         "the take a client never saw announced is on the record, with the silence floor its own meter measures against",
     );
+}
+
+/// One command the core handed a seat's stub, or `None` if it said nothing
+/// inside `ms`.
+///
+/// The ask rides the socket's own task, so this reads a channel rather than a
+/// socket and is bounded by a wait: a test that read once would claim an
+/// ordering the scheduling does not give.
+async fn next_agent_command(
+    commands: &mut mpsc::UnboundedReceiver<AgentCommand>,
+    ms: u64,
+) -> Option<AgentCommand> {
+    tokio::time::timeout(std::time::Duration::from_millis(ms), commands.recv()).await.ok().flatten()
+}
+
+/// A seat a client opens with no usage to report asks the core for one, so the
+/// header draws a bar rather than the dash an unasked seat carries for its
+/// whole life.
+///
+/// The terminal asks for the seat it is addressing; a client subscribing to a
+/// seat is that same act, and the socket takes the ask on the read that encodes
+/// the subject.
+#[tokio::test]
+async fn a_seat_a_client_opens_with_no_usage_asks_the_core_for_one() {
+    let (url, fleet) = a_server().await;
+    let mut asked = fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts { session_id: Some(SessionId::new("no-usage-yet")), ..ViewFacts::default() },
+    );
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert!(
+        data["header"]["context"]["percent"].is_null(),
+        "precondition: the seat reports no usage, which is the state that draws a dash: {data}",
+    );
+
+    let command = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(command, Some(AgentCommand::GetContextUsage { .. })),
+        "a seat a client opened reports no usage, so the core is asked for one: {command:?}",
+    );
+}
+
+/// The other half of the same rule: a seat that already reports a reading is
+/// not asked again, so a page open, a reconnect or a second tab costs no probe
+/// over the CLI's whole transcript.
+#[tokio::test]
+async fn a_seat_that_already_reports_usage_is_not_asked_again() {
+    let (url, fleet) = a_server().await;
+    let mut asked = fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts {
+            session_id: Some(SessionId::new("already-reporting")),
+            context: Some(ContextUsage { percent: Some(41), max_tokens: Some(200_000) }),
+            ..ViewFacts::default()
+        },
+    );
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        data["header"]["context"]["percent"], 41,
+        "precondition: the seat reports a reading, so there is nothing to ask for: {data}",
+    );
+
+    // The window is the assertion: nothing being sent can only be observed by
+    // waiting, and a probe wrongly fired lands a scheduling hop after the ask.
+    let command = next_agent_command(&mut asked, 250).await;
+    assert!(command.is_none(), "a seat that reports a reading is not probed again: {command:?}");
 }
 
 /// The role is decided by the client's first SUBSCRIBE, not by its first

@@ -117,12 +117,33 @@ impl ViewSurface {
 
     /// Store a walk's answer, which is the write half of [`Self::processes`].
     ///
-    /// One store for both walkers: the terminal walks the seat it is showing
+    /// One store for both walkers: the terminal walks the seat it is addressing
     /// and the socket walks the seat a client reads. A second store would let
     /// the two answers drift, and two writers through one store of one shape
     /// is the whole of the sharing.
     pub fn store_process_snapshot(&self, slot: &SessionSlot, snapshot: Option<ProcessSnapshot>) {
         self.workspace.store_process_snapshot(slot, snapshot);
+    }
+
+    /// Ask the core for a fresh context reading on `slot`, which its bridge
+    /// answers with [`SessionUpdate::ContextUsageSnapshot`](crate::SessionUpdate::ContextUsageSnapshot).
+    ///
+    /// The ask rather than the read, because the reading only exists once the
+    /// CLI has computed it: the terminal asks for the seat it is addressing,
+    /// and the socket asks for the seat a client reads, so both reach the one
+    /// probe rather than each holding a way to reach the CLI.
+    ///
+    /// # Errors
+    ///
+    /// [`DispatchError::UnknownSession`](forge_workspace::DispatchError::UnknownSession)
+    /// when the seat has no agent to ask or has not stamped a session id yet,
+    /// and [`DispatchError::SessionClosed`](forge_workspace::DispatchError::SessionClosed)
+    /// when the ask could not be handed to that agent.
+    pub fn refresh_context_usage(
+        &self,
+        slot: &SessionSlot,
+    ) -> Result<(), forge_workspace::DispatchError> {
+        self.workspace.refresh_context_usage(slot)
     }
 
     /// The monitors the session has running, and the ones that settled
