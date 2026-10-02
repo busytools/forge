@@ -850,8 +850,9 @@ describe('one turn folded into the units a view draws', () => {
 
     // An empty word is no word, so a frame answering `''` reports the state it
     // is in rather than a state that trails off. No capture can carry this: the
-    // wire type makes `outcome` required, and the 91 responses the committed
-    // baselines hold all send `success`. So this is the read the comment
+    // wire type makes `outcome` required, and every hook response the tree
+    // carries - 91 under baselines/sdk/ and 56 in the claude-cli-upgrade
+    // reference captures - sends `success`. So this is the read the comment
     // promises rather than a shape anyone observed.
     const blank = fold([
       { ...(frames[0] as Record<string, unknown>), outcome: '', exit_code: undefined },

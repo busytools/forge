@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 
+import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
@@ -120,9 +121,14 @@ describe('the hook run row', () => {
    * **A bare class name reaches further than the row it was written for.**
    * Drawn as `.kind`, the thinking row inherited the family-tree disclosure's
    * 3px margins - the trap the sheet's `.knd` and `.tkind` were both split out
-   * of. So every class this row wears must have no bare rule of that name
-   * anywhere either sheet reads, and the name of the row itself is one letter
-   * from the chip's `.hooks`, which is why `.hook` is not it.
+   * of. So every class this row wears must have no BARE rule of that name, and
+   * the row's own box is one letter from the chip's `.hooks`, which is why
+   * `.hook` is not it.
+   *
+   * **Bare is what this reads**: a rule for the same name under another
+   * component's ancestor (`details.kind > summary .nm`) is a different rule and
+   * is not this check's, which is why the rendered check is the one that says
+   * what actually lands.
    */
   it('wears names neither sheet already reaches', () => {
     const body = draw();
@@ -163,6 +169,12 @@ describe('the hook run row', () => {
    * div` is the body without naming it, so the scope is the row and everything
    * that reaches it. A rule touching both scopes takes the body's tighter list.
    *
+   * **What neither list can reach is a rule that answers to none of the row's
+   * classes** - `details > div` clamps this body and every other disclosure's.
+   * That half is `gives the body nothing the row does not`, which asks the
+   * rendered body rather than the selector, because a selector's reach cannot
+   * be read off its text.
+   *
    * It governs WHICH properties may be declared, not their values: a
    * `color: transparent` is writable here, and that is the boundary.
    */
@@ -197,6 +209,35 @@ describe('the hook run row', () => {
         ),
         `${what} declares nothing on the row but what it draws with`,
       ).toEqual([]);
+    }
+  });
+
+  /**
+   * What the body is actually given, with a sheet applied.
+   *
+   * **Decidable rather than textual.** Three rounds of this check were each
+   * closed by narrowing a matcher - the property list, the class matcher, the
+   * rule selection - and each narrowing exposed the next spelling, because a
+   * selector's reach is not readable off its text. So this one renders the row
+   * and asks the body what it got, against a control sheet holding every rule
+   * EXCEPT the ones that reach the row without answering to one of its classes.
+   *
+   * Anything the body is given that the control does not give it is a rule that
+   * reached it sideways, which is the whole of what the lists above cannot see.
+   * jsdom computes the cascade without layout, which is enough for every
+   * property that can hide or shorten text.
+   */
+  it('gives the body nothing the row does not', () => {
+    for (const [what, sheet] of sheets()) {
+      const real = bodyStyle(sheet);
+      // The denominator: a body the render never reached compares equal to
+      // anything, and a sheet that gave it nothing is the same empty answer.
+      expect(Object.keys(real).length, `${what} gives the body something to read`).toBeGreaterThan(
+        0,
+      );
+      expect(real, `${what} gives the body only what the row answers for`).toEqual(
+        bodyStyle(controlOf(sheet)),
+      );
     }
   });
 
@@ -279,9 +320,11 @@ describe('the hook run row', () => {
 
   it('reads a selector that spells a class away from its compound', () => {
     // The control the matcher needs, and the one this check has been caught
-    // without twice: `div.body` and `.body.clamped` reach the same box as a
-    // bare `.body`, and a matcher reading only the first class of each compound
-    // lets both past the guard and the mirror alike.
+    // without twice: `div.body` and `.body.clamped` NAME the body's class
+    // wherever the class sits in the compound, and a matcher reading only the
+    // first class let both past the guard and the mirror alike. What this says
+    // is what the matcher reads, not what the cascade applies - `.body.clamped`
+    // needs an element wearing both classes, which today's markup has not got.
     const spellings: Array<[string, string]> = [
       ['div.body', 'body'],
       ['.body.clamped', 'body'],
@@ -382,11 +425,17 @@ const ROW_PROPERTIES = [
  * Every class token a selector names, wherever inside the selector it sits.
  *
  * **Not the leading compound's name.** `div.body`, `.body.clamped` and
- * `:is(.body)` all reach the same box as a bare `.body`, and a matcher that
- * read only the first class of each compound let every one of them past both
- * the property guard and the mirror - a clamp written as `div.body` needed no
- * markup change to hide the output this row exists to carry. The selector is
- * where a check like this is attacked, so the matcher reads every token.
+ * `:is(.body)` all name the body's class, and a matcher that read only the
+ * first class of each compound let every one of them past both the property
+ * guard and the mirror - a clamp written as `div.body` needed no markup change
+ * to hide the output this row exists to carry. The selector is where a check
+ * like this is attacked, so the matcher reads every token.
+ *
+ * **Bounded by that regex, and the bound is the point of the rendered check.**
+ * A class spelled as an attribute (`[class~="body"]`) or with an escape names
+ * the same class and matches no `.`-token, so this reads nothing there; the
+ * cascade does not care how the sheet spells it, which is why
+ * `gives the body nothing the row does not` is the one that settles it.
  */
 function classesIn(selector: string): string[] {
   return [...selector.matchAll(/\.([\w-]+)/g)].map(([, name = '']) => name);
@@ -427,6 +476,83 @@ function allowedIn(rule: PlainRule, declaration: string): boolean {
   return scope.includes(propertyOf(declaration));
 }
 
+/**
+ * The elements this test itself puts around the row, and the root the sheets'
+ * own tokens hang off. Rules for these are kept in the control because they
+ * enclose the body rather than reaching into it, so taking them out would
+ * change what it inherits and make the comparison fail on a good sheet.
+ */
+const SURROUNDINGS = ['conv', 'work', ':root', 'html', 'body'];
+
+/**
+ * Whether a rule is written for the row, or for what this test wraps it in.
+ *
+ * **The subject alone, never whether the rule reaches the row.** A rule that
+ * reaches it secretly - `details > div` clamps this body and no class matcher
+ * can say so - is exactly what the control exists to expose, and a filter that
+ * asked the same matcher the guard asks would keep it and hide it.
+ */
+function answersFor(selector: string): boolean {
+  const subject = (member: string): string =>
+    (
+      member
+        .trim()
+        .split(/[\s>+~]+/)
+        .pop() ?? ''
+    ).replace(/::?[\w-]*(\([^)]*\))?$/, '');
+  return selector.split(',').every((member) => {
+    const own = subject(member);
+    return (
+      classesIn(own).some((name) => [ROW_CLASS, ...BODY_CLASSES, ...SURROUNDINGS].includes(name)) ||
+      SURROUNDINGS.includes(own)
+    );
+  });
+}
+
+/**
+ * The sheet without the rules that answer for neither the row nor what wraps
+ * it: what the row's own rules give the body, and nothing else.
+ */
+function controlOf(sheet: string): string {
+  const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
+  const spans = rulesIn(sheet)
+    .filter((rule) => !answersFor(rule.selector))
+    .map((rule) => [rule.from, rule.to] as const)
+    .sort(([one], [other]) => other - one);
+  let out = code;
+  for (const [from, to] of spans) out = `${out.slice(0, from)}${out.slice(to)}`;
+  return out;
+}
+
+/** The row as the page wraps it, which is what a sheet's ancestors match against. */
+const ROW_MARKUP = `<div class="conv"><div class="work">${
+  render(Hook, { props: { run: run() } }).body
+}</div></div>`;
+
+/**
+ * Every property the cascade actually sets on the row's body, and its value.
+ *
+ * Read off the render rather than reasoned about, which is the point: it is the
+ * only one of the checks here that cannot be argued with by spelling a selector
+ * another way.
+ */
+function bodyStyle(sheet: string): Record<string, string> {
+  const dom = new JSDOM(
+    `<!doctype html><html><head><style>${sheet}</style></head><body>${ROW_MARKUP}</body></html>`,
+    { pretendToBeVisual: true },
+  );
+  const win = dom.window;
+  const body = win.document.querySelector('.hookrun .body');
+  if (body === null) throw new Error('the row drew no body for the sheet to reach');
+  const computed = win.getComputedStyle(body);
+  const out: Record<string, string> = {};
+  for (let at = 0; at < computed.length; at += 1) {
+    const name = computed.item(at);
+    out[name] = computed.getPropertyValue(name);
+  }
+  return out;
+}
+
 /** The distinct properties a set of rules declares, sorted. */
 function declaredProperties(rules: PlainRule[]): string[] {
   return [...new Set(rules.flatMap((rule) => rule.declarations.map(propertyOf)))].sort();
@@ -456,6 +582,9 @@ interface PlainRule {
   prelude: string;
   selector: string;
   declarations: string[];
+  /** Where the rule's own text sits in the sheet, so it can be taken out again. */
+  from: number;
+  to: number;
 }
 
 /**
@@ -472,6 +601,7 @@ function rulesIn(sheet: string): PlainRule[] {
   const out: PlainRule[] = [];
   const open: string[] = [];
   let held = '';
+  let began = 0;
   let at = 0;
   while (at < code.length) {
     const ch = code[at] ?? '';
@@ -481,10 +611,12 @@ function rulesIn(sheet: string): PlainRule[] {
       // read as something it is not.
       held = '';
       at += 1;
+      began = at;
       continue;
     }
     if (ch === '{') {
       const prelude = held.trim();
+      const opened = began;
       held = '';
       at += 1;
       if (prelude.startsWith('@')) {
@@ -506,13 +638,17 @@ function rulesIn(sheet: string): PlainRule[] {
           .split(';')
           .map((declaration) => declaration.trim())
           .filter((declaration) => declaration !== ''),
+        from: opened,
+        to: at,
       });
+      began = at;
       continue;
     }
     if (ch === '}') {
       open.pop();
       held = '';
       at += 1;
+      began = at;
       continue;
     }
     held += ch;
