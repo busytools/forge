@@ -9,6 +9,7 @@ import load from '../dev/fixtures/session-load.json';
 import type { ServerMessage, Subject } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
+import { POLL_MS } from './live';
 
 /**
  * Every builder the inspector reaches through is wrapped, so what one arriving
@@ -132,6 +133,11 @@ function seat(turns: unknown[] = load.turns, fields: Record<string, unknown> = {
     more: () => false,
     onMessage: (fn: (message: ServerMessage) => void) => {
       listeners.add(fn);
+      // **The subscription's own answer**, which the socket sends once the
+      // subscribe is taken. Without it the seat's whole-record ask is never
+      // spent and every poll tick returns before it asks, so nothing in this
+      // file can see a read.
+      emit({ kind: 'snapshot', subject: SUBJECT, data: held });
       return () => listeners.delete(fn);
     },
     onStatus: () => () => undefined,
@@ -171,7 +177,10 @@ function block(text = 'hello'): Record<string, unknown> {
   };
 }
 
-/** A frame the inspector's dispatch scan reads: a sub-agent call. */
+/**
+ * A dispatch as it arrives: the frame this page is sent when a seat makes one,
+ * and not the record's own answer, which the section draws from.
+ */
 function dispatched(): Record<string, unknown> {
   return {
     type: 'assistant',
@@ -182,6 +191,21 @@ function dispatched(): Record<string, unknown> {
     },
     session_id: 's',
     parent_tool_use_id: null,
+  };
+}
+
+/** A Monitor the record carries: no frame feeds it, so only a read can move it. */
+function monitor(): Record<string, unknown> {
+  return {
+    tool_use_id: 'm1',
+    task_id: null,
+    description: 'ci-watch',
+    command: 'gh run watch',
+    persistent: false,
+    timeout_ms: 0,
+    status: 'running',
+    output_file: null,
+    ended_at: null,
   };
 }
 
@@ -241,7 +265,9 @@ function openSection(name: string): void {
 
 beforeEach(() => {
   counts.clear();
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  // The seat's read poll is an INTERVAL, so it has to be faked with the two
+  // timeouts: a file that fakes only those cannot advance a poll at all.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
 });
 
 afterEach(async () => {
@@ -379,8 +405,9 @@ describe('what one arriving frame costs the inspector', () => {
     const before = drawn().map((section) => section.key);
 
     // A dispatch arrives as a frame. What the section draws from is the
-    // record's answer, which this seat's read has already given - and the
-    // reducer does not re-derive it, so the next read is what moves it.
+    // record's answer, which this seat's read has already given - the reducer
+    // does not re-derive it, so a later READ is what moves it, and a poll's
+    // read is a merge.
     arrive(() => server.update(dispatched()));
 
     const after = drawn().map((section) => section.key);
@@ -389,6 +416,52 @@ describe('what one arriving frame costs the inspector', () => {
       'sec-subagents',
     );
     expect(after, `a frame turned the section on: ${measured}`).not.toContain('sec-subagents');
+  });
+
+  /**
+   * **A poll's answer is a MERGE, and it takes only the slices no frame
+   * carries** - so a poll has to be shown moving one, or the case below cannot
+   * tell "the poll never ran" from "the field is not taken from the poll".
+   */
+  it('takes a field no frame feeds from what the poll answered with', () => {
+    const fields: Record<string, unknown> = { monitors: [] };
+    const server = open([], fields);
+    expect(drawn().map((section) => section.key)).not.toContain('sec-monitors');
+
+    fields['monitors'] = [monitor()];
+    vi.advanceTimersByTime(POLL_MS + 1);
+    flushSync();
+
+    const keys = drawn().map((section) => section.key);
+    expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
+    expect(keys, `a poll's answer did not reach the record: ${JSON.stringify(keys)}`).toContain(
+      'sec-monitors',
+    );
+  });
+
+  /**
+   * **A dispatch made while this page is open reaches the section through a
+   * read and nothing else.** The server folds the answer on append and no frame
+   * carries it, so the poll is the only path that moves it - and a merge that
+   * dropped it would leave the section absent for a seat that dispatched with
+   * the page in front of the reader, which is the mistake the section exists to
+   * avoid. The case above is this one's control: it shows a poll that ran.
+   */
+  it("takes the record's own dispatch answer from what the poll answered with", () => {
+    const fields: Record<string, unknown> = { has_dispatches: false };
+    const server = open([], fields);
+    expect(drawn().map((section) => section.key)).not.toContain('sec-subagents');
+
+    // The seat dispatches; the server's own fold records it on append.
+    fields['has_dispatches'] = true;
+    vi.advanceTimersByTime(POLL_MS + 1);
+    flushSync();
+
+    const keys = drawn().map((section) => section.key);
+    expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
+    expect(keys, `a poll's answer did not reach the section: ${JSON.stringify(keys)}`).toContain(
+      'sec-subagents',
+    );
   });
 });
 
