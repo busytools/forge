@@ -230,7 +230,7 @@
     viewport = node;
     const content = node.firstElementChild;
     const watcher = new ResizeObserver(() => {
-      if (atFoot()) working?.following(true);
+      if (holdsEverything()) working?.following(true);
       if (held.following) land();
     });
     watcher.observe(node);
@@ -251,6 +251,23 @@
    */
   function atFoot(): boolean {
     return viewport !== null && viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight;
+  }
+
+  /**
+   * Whether the whole conversation fits, which is the only size change that
+   * re-arms the follow.
+   *
+   * **A size change is not the reader moving**, and the column's height is not
+   * only the conversation's: the composer below it changes shape - a dictation
+   * row appearing, its panel closing - and a reader a little way up measures as
+   * being at the very end once the column has taken the room, because they are
+   * at the end of what now fits. That arithmetic is right and the conclusion is
+   * wrong: the end is not where they put themselves. What is left is the case
+   * this arm exists for, where nothing is left to scroll and being at the end
+   * is not a position anyone chose.
+   */
+  function holdsEverything(): boolean {
+    return viewport !== null && viewport.scrollHeight <= viewport.clientHeight;
   }
 
   $effect(() => {

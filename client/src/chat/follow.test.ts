@@ -63,6 +63,8 @@ const FOOT = ASKED - VIEWPORT;
 
 /** The pin a column at the foot makes, which both of its passes are. */
 const PIN = { asked: ASKED, landed: FOOT };
+/** The pin a column whose whole history fits makes: it asks for the end and the clamp puts it at the start. */
+const FITS = { asked: VIEWPORT, landed: 0 };
 
 function stub() {
   const listeners = new Set<(message: ServerMessage) => void>();
@@ -143,8 +145,8 @@ function readerAt(offset: number): void {
 }
 
 /** A clamp with no scroll event, which is what a resize can do to the reader. */
-function clamped(at: number): void {
-  list()?.settled(at, TOTAL, VIEWPORT);
+function clamped(at: number, total = TOTAL, height = VIEWPORT): void {
+  list()?.settled(at, total, height);
 }
 
 /**
@@ -394,17 +396,24 @@ describe('whether the column follows the newest end', () => {
     ).toEqual([]);
   });
 
-  it('re-arms when a size change leaves the reader at the very end', async () => {
+  it('leaves a scrolled-up reader alone when the column grows under them', async () => {
+    // The column's own height is not only the conversation's: the composer
+    // below it changes shape - a dictation row appearing, a panel closing, the
+    // box getting taller - and the reader's offset does not move with it. A
+    // reader a little way up then measures as being at the very end, because
+    // they are at the end of what now fits. The arithmetic is right and the
+    // conclusion is wrong: they did not move, and the end is not where they
+    // put themselves.
     const server = stub();
     await draw(server);
-    readerAt(0);
+    readerAt(620);
     await settle();
+    // The landing's own pin has been and gone, and the reader's scroll up has
+    // left nothing following.
     clear();
+    expect(pinned(), 'the reader is scrolled up, so nothing is pinned').toEqual([]);
 
-    // A window grown until the history fits: the browser clamps the scroll to
-    // the end of it and fires no scroll event, so the size change is the only
-    // thing that can say the reader is now at the very end.
-    clamped(FOOT);
+    setElement(TOTAL, 400);
     resized();
     await settle();
     clear();
@@ -412,6 +421,33 @@ describe('whether the column follows the newest end', () => {
     server.frame();
     await settle();
 
-    expect(pinned(), 'the end they are sitting at is followed again').toEqual([PIN, PIN]);
+    expect(
+      pinned(),
+      'following is the reader own decision, and only their own moving changes it',
+    ).toEqual([]);
+  });
+
+  it('re-arms when a size change leaves the reader at the very end', async () => {
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    // A window grown until the history fits: the whole of it is on screen at
+    // once, so the browser leaves the reader at the end of it and fires no
+    // scroll event to say so. Nothing is left to scroll, so being at the end is
+    // not a position anybody chose - which is the one size change that may put
+    // the follow back on.
+    setElement(VIEWPORT, VIEWPORT);
+    clamped(0, VIEWPORT, VIEWPORT);
+    resized();
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the end they are sitting at is followed again').toEqual([FITS, FITS]);
   });
 });
