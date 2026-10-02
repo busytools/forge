@@ -154,10 +154,10 @@ function fitColumn(target) {
   const advance = glyph(PROSE_CHARS, Number.parseFloat(computed('.prose p', 'font-size')), 400)
     .width / PROSE_CHARS.length;
   // The column is counted in the browser's own `ch`, not in the canvas
-  // advance: canvas reports the advance rounded to four decimals, and when a
-  // `max-width` in `ch` lands exactly on the target that rounding is enough to
-  // read the column one character short. `100ch` is the same unit the sheet
-  // caps in, so the two divide exactly.
+  // advance: canvas reports the advance rounded to four decimals, and a width
+  // that lands exactly on a whole character can then read one character short.
+  // `100ch` is measured off a real element, so the unit is the layout's own
+  // and the two divide exactly.
   const unit = (() => {
     const probe = document.createElement('div');
     probe.style.cssText = 'position:absolute;visibility:hidden;width:100ch';
@@ -168,8 +168,8 @@ function fitColumn(target) {
   })();
   const whole = (px) => Math.floor((px + unit * 1e-6) / unit);
   // `null` leaves the column wherever the window put it, which is the reading
-  // the issue's "the measure is unbounded" hypothesis needs: whatever the
-  // sheet caps it at, this is the number the window alone would give.
+  // the issue's "the measure is unbounded" hypothesis needs: this is the
+  // number the window alone would give.
   if (target === null) {
     const content = document.querySelector('.prose').getBoundingClientRect().width;
     return {
