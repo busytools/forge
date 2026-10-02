@@ -199,7 +199,7 @@
             label: 'Production',
             description:
               'live traffic, and the migration set runs against the replica first so a bad statement is caught before it reaches a customer',
-            preview: null,
+            preview: 'Rolling deploy · **five minutes of 1% traffic** before the rest.',
           },
           {
             option_id: 'dev',
@@ -242,7 +242,7 @@
             label: 'Production',
             description:
               'live traffic, and the migration set runs against the replica first so a bad statement is caught before it reaches a customer',
-            preview: null,
+            preview: 'Rolling deploy · **five minutes of 1% traffic** before the rest.',
           },
           {
             option_id: 'dev',
