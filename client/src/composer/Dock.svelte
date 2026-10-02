@@ -560,8 +560,15 @@
           {#if row.icon !== null}
             <Icon name={row.icon} class={row.tone} />
           {:else if multi}
-            <span class="box2" class:on={row.optionId !== null && toggled.includes(row.optionId)}>
-              {#if row.optionId !== null && toggled.includes(row.optionId)}
+            <!-- The escape row's box reads checked once there are words in it:
+                 display only, because the typed words ride the answer's
+                 annotation rather than the selection set - the terminal's own
+                 rule, where the box confirms the typed content will go with
+                 the answer. -->
+            <span class="box2" class:on={row.own
+              ? notes.trim() !== ''
+              : row.optionId !== null && toggled.includes(row.optionId)}>
+              {#if row.own ? notes.trim() !== '' : row.optionId !== null && toggled.includes(row.optionId)}
                 <Icon name="check" />
               {/if}
             </span>

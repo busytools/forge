@@ -1557,6 +1557,32 @@ describe('the dock', () => {
   const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
     harness.sent.map((entry) => entry.command);
 
+  it('fills the escape row\u{2019}s box once there are words typed into it', () => {
+    // The terminal's own rule: the box confirms the typed words will go with
+    // the answer, and it is display-only - the selection set never sees them.
+    open({ record: record({ pending_ask: questionAsk() }) });
+
+    // Onto the own-words row, whose field takes the keyboard.
+    press('ArrowUp');
+    const field = document.querySelector<HTMLTextAreaElement>('.dock textarea.notes');
+    if (field === null) throw new Error('the own-words row drew no field');
+
+    const boxes = (): boolean[] =>
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on'));
+
+    expect(boxes(), 'nothing typed, nothing checked').toEqual([false, false, false]);
+
+    field.value = 'a teal, not listed';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    expect(boxes(), "the typed words fill the escape row's box, and only it").toEqual([
+      false,
+      false,
+      true,
+    ]);
+  });
+
   it('draws a single-answer question as one pick, not a set of boxes', () => {
     // The regression this pins: every question drawn with the checkbox a SET
     // takes, so a question that accepts one row read as one that accepts many.
