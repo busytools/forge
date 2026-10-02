@@ -4080,7 +4080,9 @@ impl Workspace {
             // and a subprocess cannot enter a directory that is not
             // there: the spawn fails on every boot and the row never
             // clears. A FRESH re-spawn runs in the project root and
-            // takes `--worktree`, so only a resume is stranded.
+            // takes `--worktree`, so it is the resume this skip is for:
+            // a fresh one that cannot get a worktree is refused by the
+            // spawn itself, which leaves its row failed with the reason.
             if let Some(root) = project.as_ref().map(|p| p.path.as_path())
                 && !crate::mcp::workers::types::worker_row_can_start(
                     root,
