@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { fold, type Unit } from './units';
+import { fold, type HookRun, type Unit } from './units';
 
 /** An assistant frame carrying `content`. */
 const said = (content: unknown[], extra: Record<string, unknown> = {}): unknown => ({
@@ -47,9 +47,8 @@ const call = (family: string, n = 0): unknown =>
 /** The kinds a fold produced, in order. */
 const kinds = (units: Unit[]): string[] => units.map((unit) => unit.kind);
 
-/** What the one notice a fold drew said, or an empty line when it drew none. */
-const noticeText = (units: Unit[]): string =>
-  units[0]?.kind === 'notice' ? units[0].notice.text : '';
+/** The hook run a fold drew, or null when it drew none. */
+const hookOf = (units: Unit[]): HookRun | null => (units[0]?.kind === 'hook' ? units[0].run : null);
 
 /**
  * One hook's run, as the CLI's own capture sends it
@@ -61,7 +60,7 @@ const noticeText = (units: Unit[]): string =>
  * `Message`'s Rust fields - the fold reads JSON with no type link to the
  * crate, so a serde rename stops matching with nothing to compile against.
  */
-const hookRun = (): unknown[] => [
+const hookFrames = (): unknown[] => [
   {
     type: 'system',
     subtype: 'hook_started',
@@ -821,57 +820,57 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it("draws a hook's own row, carrying what the frames that reported it sent", () => {
-    const units = fold(hookRun());
+    const units = fold(hookFrames());
 
-    expect(kinds(units), 'one row for the run, rather than one for each frame').toEqual(['notice']);
-    const said = noticeText(units);
-    expect(said, 'the hook the CLI matched, under its own name').toContain('SessionStart:startup');
-    expect(said, 'what the response reported of the outcome').toContain('success');
-    expect(said, 'and the code it exited on').toContain('exit 0');
-    expect(said, 'with the output it settled on').toContain('<redacted-hook-body>');
+    expect(kinds(units), 'one row for the run, rather than one for each frame').toEqual(['hook']);
+    const run = hookOf(units);
+    expect(run?.name, 'the hook the CLI matched, under its own name').toBe('SessionStart:startup');
+    expect(run?.state, 'the outcome and the code the response reported').toBe(
+      'success \u{b7} exit 0',
+    );
+    expect(run?.body, 'with the output it settled on').toBe('<redacted-hook-body>');
     // The response SUPERSEDES what the progress frames had printed rather than
     // being appended to it: the frames' output is cumulative, so a fold that
     // joined them would draw the same lines twice.
-    expect(said, 'and not the interim output the response repeats').not.toContain('capture-line-2');
-    expect(said, 'and the event said once, not twice').not.toContain('(SessionStart)');
+    expect(run?.body, 'and not the interim output the response repeats').not.toContain(
+      'capture-line-2',
+    );
+    expect(run?.event, 'and the event said once, not twice').toBeNull();
   });
 
   it('draws a hook that has not settled as running, and settles that same row', () => {
-    const run = hookRun();
-    const running = fold(run.slice(0, 3));
+    const frames = hookFrames();
+    const running = fold(frames.slice(0, 3));
 
-    expect(kinds(running), 'the row is drawn while the hook still runs').toEqual(['notice']);
-    const said = noticeText(running);
-    expect(said, 'the state it is in').toContain('running');
-    expect(said, 'with the output it has printed so far').toContain('capture-line-2');
-    expect(said, 'and no outcome it has not reported').not.toContain('success');
+    expect(kinds(running), 'the row is drawn while the hook still runs').toEqual(['hook']);
+    expect(hookOf(running)?.state, 'the state it is in').toBe('running');
+    expect(hookOf(running)?.body, 'with the output it has printed so far').toContain(
+      'capture-line-2',
+    );
 
-    expect(fold(run), 'the response settles that row rather than opening a second').toHaveLength(1);
+    expect(fold(frames), 'the response settles that row rather than opening a second').toHaveLength(
+      1,
+    );
   });
 
   it('marks a hook that exited non-zero', () => {
-    const [started, , , response] = hookRun();
+    const [started, , , response] = hookFrames();
     const failed = fold([
       started,
       { ...(response as Record<string, unknown>), exit_code: 2, outcome: 'error' },
     ]);
 
-    const [row] = failed;
-    expect(
-      row?.kind === 'notice' ? row.notice.severity : null,
-      'the tone a failure the CLI reported draws in',
-    ).toBe('error');
-    expect(noticeText(failed), "the code, which is the frame's own word for it").toContain(
+    expect(hookOf(failed)?.failed, 'the mark a failure the CLI reported draws').toBe(true);
+    expect(hookOf(failed)?.state, "the code, which is the frame's own word for it").toContain(
       'exit 2',
     );
     // The control the mark needs: the same frames without the failure draw a
     // line, so a fold that marked every hook would not read as one that marks
     // the failed ones.
-    const clean = fold(hookRun());
     expect(
-      clean[0]?.kind === 'notice' ? clean[0].notice.severity : null,
+      hookOf(fold(hookFrames()))?.failed,
       'and a hook that exited clean stays a line rather than a failure',
-    ).toBe('info');
+    ).toBe(false);
   });
 
   it('says which event a hook ran for when its name does not already say it', () => {
@@ -879,11 +878,11 @@ describe('one turn folded into the units a view draws', () => {
     // the line inside the name. This is the guard for a name that carries none:
     // a row that could not say what kind of hook ran would be drawing less than
     // the frame sent.
-    const [started] = hookRun();
+    const [started] = hookFrames();
     const renamed = fold([{ ...(started as Record<string, unknown>), hook_name: 'notify.sh' }]);
 
-    expect(noticeText(renamed), 'the name the frame sent').toContain("hook 'notify.sh'");
-    expect(noticeText(renamed), 'and the event beside it').toContain('(SessionStart)');
+    expect(hookOf(renamed)?.name, 'the name the frame sent').toBe('notify.sh');
+    expect(hookOf(renamed)?.event, 'and the event beside it').toBe('SessionStart');
   });
 
   it('settles each call with the result that answers it, and rolls the run up', () => {

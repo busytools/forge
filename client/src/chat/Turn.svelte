@@ -5,6 +5,7 @@
   import CompactionPoint from './CompactionPoint.svelte';
   import { beingWritten, type Turn as HeldTurn } from './conversation';
   import Group from './Group.svelte';
+  import Hook from './Hook.svelte';
   import Hooks from './Hooks.svelte';
   import Messages from './Messages.svelte';
   import Notice from './Notice.svelte';
@@ -171,6 +172,8 @@
           <Hooks actions={unit.actions} infos={unit.infos} errors={unit.errors} />
         {:else if unit.kind === 'compaction'}
           <CompactionPoint trigger={unit.trigger} preTokens={unit.preTokens} />
+        {:else if unit.kind === 'hook'}
+          <Hook run={unit.run} />
         {:else if unit.kind === 'report'}
           <Report info={unit.info} />
         {/if}

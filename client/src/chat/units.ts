@@ -127,6 +127,31 @@ export interface HookInfo {
 }
 
 /**
+ * One hook's own run, as the frames that reported it fold together.
+ *
+ * The three subtypes are one run rather than three events: a start names the
+ * hook, a progress carries what it has printed so far, and a response settles
+ * it with the outcome and the code it exited on.
+ *
+ * `body` is held apart from the head because a hook's output is long and
+ * secondary - a session-start hook prints the boilerplate it injects into the
+ * session - so the row collapses it rather than drawing it. It is the whole of
+ * what the run printed, never a clip of it.
+ */
+export interface HookRun {
+  /** The hook the CLI matched, e.g. `SessionStart:startup`. */
+  name: string;
+  /** The event that fired it, and only where the name does not already say it. */
+  event: string | null;
+  /** Where the run got to: `running`, or its outcome and the code it exited on. */
+  state: string;
+  /** Whether it failed, which is the code the response reports it exited on. */
+  failed: boolean;
+  /** The whole of what it printed, or null where it printed nothing. */
+  body: string | null;
+}
+
+/**
  * What a settled turn did: its clock, its API time, and the tokens and cost
  * the CLI reported. Every field is what the frame carried, and an absent one
  * draws as a dash rather than as a zero.
@@ -217,6 +242,8 @@ export type Unit =
    * the row says only what survives to it.
    */
   | { kind: 'compaction'; key: string; trigger: string | null; preTokens: number | null }
+  /** One hook's own run, drawn collapsed on the hook and the state it reached. */
+  | { kind: 'hook'; key: string; run: HookRun }
   /** What a settled turn did, under the work it did it with. */
   | { kind: 'report'; key: string; info: TurnInfo };
 
@@ -813,42 +840,38 @@ function hookFailed(frame: Frame): boolean {
 }
 
 /**
- * The line a hook's own lifecycle draws.
+ * The run a hook's own lifecycle frame reports, as the row's parts.
  *
- * **The three subtypes are one run rather than three events**: a start names
- * the hook, a progress carries what it has printed so far, and a response
- * settles it with the outcome and the code it exited on. All three fields are
- * the same run's, which is why they read as one line - the last frame the run
- * sent holding the whole of what it printed.
- *
- * **That the response repeats its progress rather than extending it is
- * inferred, not measured.** The progress frames' output is cumulative across
- * every captured run and the field is documented as the combined output the
- * session saw, but the capture redactor stubs every hook body value-blind, so
- * no fixture can show the response half.
+ * **That a response repeats its progress rather than extending it is inferred,
+ * not measured.** The progress frames' output is cumulative across every
+ * captured run and the field is documented as the combined output the session
+ * saw, but the capture redactor stubs every hook body value-blind, so no
+ * fixture can show the response half. The body is therefore drawn whole from
+ * whichever frame the run sent last.
  *
  * The event rides beside the name only where the name does not already carry
  * it, the rule the frames' own sentences are read by (`beside`).
  */
-function hookLine(frame: Frame): string {
+function hookRun(frame: Frame): HookRun {
   const name = str(frame, 'hook_name') ?? '';
-  const event = str(frame, 'hook_event') ?? '';
-  const eventBeside = event !== '' && !name.includes(event) ? ` (${event})` : '';
-  const named = name === '' ? event : `'${name}'${eventBeside}`;
+  const fired = str(frame, 'hook_event') ?? '';
   const outcome = str(frame, 'outcome');
   const exit = typeof frame.exit_code === 'number' ? frame.exit_code : null;
-  // A run that has not answered yet has neither an outcome nor a code: it says
-  // the state it is in rather than leaving the half of the line it would fill
-  // looking like a hole.
-  const state =
-    outcome === null && exit === null
-      ? 'running'
-      : [outcome, exit === null ? null : `exit ${exit}`]
-          .filter((part): part is string => part !== null && part !== '')
-          .join(' \u{b7} ');
-  const head = `hook ${named} \u{b7} ${state}`;
-  const body = hookOutput(frame);
-  return body === null ? head : `${head}\n${body}`;
+  return {
+    name,
+    event: fired !== '' && !name.includes(fired) ? fired : null,
+    // A run that has not answered yet has neither an outcome nor a code, so it
+    // says the state it is in rather than leaving the half of a line it would
+    // fill looking like a hole.
+    state:
+      outcome === null && exit === null
+        ? 'running'
+        : [outcome, exit === null ? null : `exit ${exit}`]
+            .filter((part): part is string => part !== null && part !== '')
+            .join(' \u{b7} '),
+    failed: hookFailed(frame),
+    body: hookOutput(frame),
+  };
 }
 
 /**
@@ -1201,9 +1224,9 @@ export function fold(
         // rather than being folded onto a run it may not belong to.
         const opened = run === null ? undefined : hookRows.get(run);
         const row: Unit = {
-          kind: 'notice',
+          kind: 'hook',
           key: run === null ? keyOf(at, frame, 'hook') : `hook-${run}`,
-          notice: { severity: hookFailed(frame) ? 'error' : 'info', text: hookLine(frame) },
+          run: hookRun(frame),
         };
         if (opened === undefined) {
           push(row);
