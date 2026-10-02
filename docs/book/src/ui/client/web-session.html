@@ -528,6 +528,13 @@
     border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; margin-right: 6px; }
   /* The figures the marks follow, which are the line's own words rather than a
      mark. Bare for the same reason `.patchmark` is. */
+  /* The line under a mutation's diff: the change's own figures as a caption
+     rather than as output. It carries no rule - a left rule is what marks a
+     command's output, and a caption wearing one read as a block belonging to
+     something else - and it sits at the label size, the one the marks beside it
+     already take. */
+  .patchline { display: flex; align-items: center; padding: 4px 0 0;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .patchsize { margin-right: 8px; }
   .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
   /* The number each side holds the line at, which is what makes two hunks in one
@@ -1301,7 +1308,7 @@ Consecutive tool calls between two user messages fold into one group.</div>
                   <div class="ln a"><span class="on"></span><span class="nn">74</span><span class="n">+</span><span class="l">  .row .what a:focus-visible { outline: 2px solid var(--accent); }</span></div>
                   <div class="ln ctx"><span class="on">73</span><span class="nn">75</span><span class="n"></span><span class="l">  }</span></div>
                 </div>
-                <div class="term"><span class="patchsize">2 hunks &#183; +4 &#8722;1</span><span class="patchmark">every match</span></div>
+                <div class="patchline"><span class="patchsize">2 hunks &#183; +4 &#8722;1</span><span class="patchmark">every match</span></div>
               </div>
             </details>
             <details class="leaf" open>
@@ -1317,7 +1324,7 @@ Consecutive tool calls between two user messages fold into one group.</div>
                   <div class="ln a"><span class="on"></span><span class="nn">201</span><span class="n">+</span><span class="l">                         " \u{b7} claude " (installed)</span></div>
                   <div class="ln ctx"><span class="on">197</span><span class="nn">202</span><span class="n"></span><span class="l">                 }</span></div>
                 </div>
-                <div class="term"><span class="patchsize">1 hunk &#183; +4 &#8722;1</span><span class="patchmark">changed outside this edit</span></div>
+                <div class="patchline"><span class="patchsize">1 hunk &#183; +4 &#8722;1</span><span class="patchmark">changed outside this edit</span></div>
               </div>
             </details>
             <details class="leaf" open>
@@ -1331,7 +1338,7 @@ Consecutive tool calls between two user messages fold into one group.</div>
                   <div class="ln a"><span class="on"></span><span class="nn">77</span><span class="n">+</span><span class="l">    }</span></div>
                   <div class="ln ctx"><span class="on">75</span><span class="nn">78</span><span class="n"></span><span class="l">    }</span></div>
                 </div>
-                <div class="term"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
+                <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
               </div>
             </details>
             <!-- A file the call created carries no patch on the wire at all, so
@@ -1347,7 +1354,7 @@ Consecutive tool calls between two user messages fold into one group.</div>
                   <div class="ln a"><span class="on"></span><span class="nn">2</span><span class="n">+</span><span class="l">export const HAIRLINE = '1px solid var(--line)';</span></div>
                   <div class="ln a"><span class="on"></span><span class="nn">3</span><span class="n">+</span><span class="l">export const MONO = 'ui-monospace, "Fira Code", monospace';</span></div>
                 </div>
-                <div class="term"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
+                <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
               </div>
             </details>
 

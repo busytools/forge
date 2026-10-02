@@ -849,6 +849,13 @@ details.leaf.running > summary { color: var(--text); }
    class reaches every row that draws one, and this belongs to one kind of row. */
 .patchmark { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; margin-right: 6px; }
+/* The line under a mutation's diff: the change's own figures as a caption
+   rather than as output. It carries no rule - a left rule is what marks a
+   command's output, and a caption wearing one read as a block belonging to
+   something else - and it sits at the label size, the one the marks beside it
+   already take. */
+.patchline { display: flex; align-items: center; padding: 4px 0 0;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 /* The figures the marks follow, which are the line's own words rather than a
    mark. Bare for the same reason `.patchmark` is. */
 .patchsize { margin-right: 8px; }

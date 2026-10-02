@@ -212,7 +212,7 @@
                On ONE line, because the box is `white-space: pre-wrap`: a
                newline in this template is a newline on screen. -->
           <!-- prettier-ignore -->
-          <div class="term"><span class="patchsize">{size}</span>{#if call.mutation?.all}<span class="patchmark">every match</span>{/if}{#if call.mutation?.outside}<span class="patchmark">changed outside this edit</span>{/if}</div>
+          <div class="patchline"><span class="patchsize">{size}</span>{#if call.mutation?.all}<span class="patchmark">every match</span>{/if}{#if call.mutation?.outside}<span class="patchmark">changed outside this edit</span>{/if}</div>
         {/if}
       {/if}
     </div>

@@ -36,21 +36,17 @@ afterEach(() => {
 });
 
 describe("the lines a call's row draws", () => {
-  it('keeps the mutation size line on one line, in the renderer that runs', () => {
-    // **Mounted rather than rendered to a string**, because the two paths
-    // disagree about whitespace and the client's is the one on screen: this box
-    // keeps every newline it is given (`white-space: pre-wrap`, which exists so
-    // a command's output keeps its own breaks), so a template line break inside
-    // it stacks the figures - and the server renderer collapses the same break,
-    // which is how a broken line reads as fixed.
+  it('draws the mutation size line under its diff, figures and marks as one run', () => {
+    // **Mounted rather than rendered to a string**: the marks and the figures
+    // are what the row's own state decides, and the line sits in the same row
+    // as them rather than in a box of its own.
     app = mount(Call, { target: document.body, props: { call: edited() } });
     flushSync();
 
-    const boxes = document.querySelectorAll('.term');
-    const line = boxes[boxes.length - 1]?.textContent ?? '';
-    expect(line, 'the figures, the size and both marks read as one run').toContain(
+    const line = document.querySelector('.patchline');
+    expect(line, 'the row drew no size line').not.toBeNull();
+    expect(line?.textContent ?? '', 'the figures and both marks read as one run').toContain(
       '1 hunk \u{b7} +1 \u{2212}1',
     );
-    expect(line, 'and none of it carries a break').not.toContain('\n');
   });
 });
