@@ -21,20 +21,20 @@
      are the session page's, and so is the seat's id cell (.sid) that took
      the slot the account chip left.
      New here, and the shape the pages after this should take:
-     .rail + .pane-tog (a collapsible pane and its handle), details.kind
-     (a tool family with its calls as leaves), details.leaf (one call that
-     opens on its own), .mine (a user turn - the orange rule is the
-     attribution, so it carries no label - whose words are markdown, like the
-     work's, because the terminal folds a prompt as a document too),
-     .attrow (what a turn attached), details.think (the model's own reasoning,
-     collapsed on its first words - drawn from the live frames, gone when the
-     next page lands, which strips thinking),
+     .rail + .pane-tog (a collapsible pane and its handle), .leaves + .lane
+     (a stretch of work: a lane per tool family, per kind of peer traffic and
+     for the thinking, with every call, message or thought a row that opens on
+     its own), .mine (a user turn - the orange rule is the attribution, so it
+     carries no label - whose words are markdown, like the work's, because the
+     terminal folds a prompt as a document too),
+     .attrow (what a turn attached),
      .code, .dif, .notice, .card (an answered question), .mon,
      details.cpoint (the compaction point: the settled form of the in-flight
      line, a hairline carrying the word and the count read before the cut).
-     A run of peer messages is a tool run: it takes details.kind, .knd and
-     details.leaf with .mk, .k and .org for the counterparty, so traffic and
-     work read as one system rather than two. */
+     A run of peer messages is a tool run, and a thought is one too: each takes
+     a .lane and details.leaf rows - .mk, .k and .org for a counterparty, the
+     bulb for the thinking - so traffic, reasoning and work read as one system
+     rather than three. */
   :root {
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
     --sel:#20140a; --line:#222a3c; --ctl:#516590;
@@ -348,28 +348,6 @@
   .attrow .gl { color: var(--dim); }
   .attrow .n { color: var(--dim); }
   .work { padding: 4px 0; }
-  /* What the model thought. Collapsed, carrying the first of its own words: the
-     terminal's vocabulary for a block nothing else shows, where its own arm for
-     this block only sets a running status and counts the characters. */
-  details.think { margin: 3px 0; }
-  details.think > summary { list-style: none; display: flex; align-items: center; gap: 9px;
-    padding: 4px 10px; border-radius: 9px; cursor: pointer; color: var(--dim);
-    font-size: var(--fs-base); }
-  details.think > summary::-webkit-details-marker { display: none; }
-  details.think > summary:hover { background: rgba(27,33,48,.45); }
-  details.think > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* The row's kind, ahead of its words: the mark is the size of the small mono
-     labels a row carries rather than the 15px a tool row's glyph takes. */
-  /* `tkind`, not `kind`: that name belongs to the family-tree disclosure
-     below, whose 3px margins would come with it. */
-  details.think > summary .tkind { display: flex; align-items: center; gap: 7px;
-    flex: none; color: var(--dim); }
-  details.think > summary .tkind .ic { width: 12px; height: 12px; flex: 0 0 12px; }
-  details.think > summary .tkind .word { color: var(--muted); }
-  details.think > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
-  details.think > summary:hover .arw { color: var(--muted); }
-  details.think[open] > summary { color: var(--muted); }
-  details.think[open] > summary .arw { color: var(--accent); }
   /* Prose draws in both blocks - the work a turn did, and what the reader typed,
      which the terminal folds as a document too - so these read `.prose` alone. */
   /* One blank line between blocks, which is the terminal's whole spacing policy:
@@ -432,20 +410,10 @@
     border-bottom: 1px solid var(--line); }
   .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
 
-  /* ---------- the family tree is the DEFAULT view ---------- */
-  .kind { margin: 3px 0; }
-  .kind > summary { list-style: none; display: flex; align-items: center; gap: 9px;
-    padding: 6px 10px; border-radius: 9px; cursor: pointer;
-    font-family: var(--mono); font-size: var(--fs-group); }
-  .kind > summary::-webkit-details-marker { display: none; }
-  .kind > summary:hover { background: rgba(27,33,48,.45); }
-  /* The aggregate: enough to know the run has a failure in it, never a
-     substitute for the per-call status that says which one. */
-  .kind > summary .st { color: var(--ok); }
-  .kind > summary .st.err { color: var(--bad); }
-  .kind > summary .nm { font-weight: 700; white-space: nowrap; }
-  .kind > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-label); }
-  .kind[open] > summary .arw { color: var(--accent); }
+  /* ---------- a stretch of work: one lane per kind ---------- */
+  /* No disclosure around the group - no count, no roll-up: a stretch of work
+     is not a thing to hide, the lane rows say what ran, and every row still
+     opens on its own. */
   .leaves { padding: 0 0 6px 4px; }
   /* One family inside a group: a label, and its calls indented behind a
      rail so what is a group and what is a call never reads alike. */
@@ -466,6 +434,9 @@
   details.leaf > summary .st { color: var(--ok); }
   details.leaf > summary .st.err { color: var(--bad); }
   details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* A row's inline marks - a thought row renders emphasis and code - take the
+     prose tone rather than the row's own muting, so a mark reads as a mark. */
+  details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
   details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
   details.leaf:hover > summary .arw { color: var(--muted); }
   details.leaf[open] > summary { color: var(--text); }
@@ -558,6 +529,16 @@
   .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
   .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
 
+  /* The bulb's ink nearly fills its box, so at the marks' 15px its base sat
+     below the text's baseline and the row read low; 13 with a 1px lift sits it
+     with the words. */
+  details.leaf > summary .st.bulb { width: 13px; height: 13px; flex: 0 0 13px;
+    transform: translateY(-1px); }
+
+  /* A skill row's mark says what the row is, not how it ended, so it takes the
+     lane's dim rather than the ok tone a check wears. */
+  details.leaf > summary .st.sk { color: var(--dim); }
+
   /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
   details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
   details.leaf > summary .k { color: var(--text); font-weight: 700; }
@@ -608,6 +589,9 @@
   details.cpoint[open] > summary .arw { color: var(--accent); }
   .cpoint .cpbody { margin: 6px 0 2px; color: var(--muted); }
   .cpoint .cpbody b { color: var(--text); font-weight: 500; }
+  /* The continuation summary under the facts, as prose rather than the body's
+     own line. */
+  .cpoint .cpbody .sum { margin-top: 10px; }
   /* Stacked: a flex here draws the hook rows beside the summary, not under it. */
   .hooks { margin: 4px 0;
     font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
@@ -989,7 +973,6 @@
   <symbol id="i-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4v9a3 3 0 0 1-3 3H6"/><path d="m9 12-3 4 3 4"/></symbol>
   <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M12 8V4H8"/><path d="M9 14h.01M15 14h.01"/></symbol>
   <symbol id="i-away" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/><path d="M12 12h9"/><path d="m18 9 3 3-3 3"/></symbol>
-  <symbol id="i-think" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
   <symbol id="i-brain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></symbol>
   <symbol id="i-lightbulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
@@ -1193,28 +1176,8 @@
       </div>
 
       <div class="work">
-        <!-- The model's own reasoning, which the wire carries and the terminal
-             does not draw: collapsed, carrying the first of its own words.
-             Drawn from the live frames: the transcript read strips thinking
-             blocks, so the row stays through settle and goes at the next page
-             read - a reload, a reconnect, an occupant change, an errored turn.
-             A completed turn asks for no page, which is why the row outlives
-             it. -->
-        <details class="think">
-          <summary>
-            <span class="tkind"><svg class="ic"><use href="#i-think"/></svg><span class="word">thinking</span></span>
-            <span class="tn">Both of them landed while I was in the tree, so this is what the reader gets instead of the wall</span>
-            <svg class="ic arw"><use href="#i-chev"/></svg>
-          </summary>
-          <div class="body">
-            <div class="pbody">
-              <p>Both of them landed while I was in the tree, so this is what the reader gets instead of the wall. The alternative is a run of rows with no shape to it.</p>
-            </div>
-          </div>
-        </details>
-
         <div class="prose">
-          <p>One family per block, its calls under it, and a call opens on its own. Edits are the exception: their diff is already there.</p>
+          <p>One lane per family, its calls on their own rows, and a call opens on its own. Edits are the exception: their diff is already there.</p>
         </div>
 
         <!-- The units a message's markdown can carry, drawn: a heading, a
@@ -1246,19 +1209,45 @@ Set `service_key` per environment in the bot's own config.</pre>
           </table>
         </div>
 
-        <details class="kind" open>
-          <summary>
-            <svg class="ic st err"><use href="#i-x"/></svg>
-            <span class="nm">23 tool calls</span>
-            <svg class="ic arw"><use href="#i-chev"/></svg>
-          </summary>
-          <div class="leaves">
+        <!-- A stretch of work is one group of lanes: a lane per family, a lane
+             per kind of peer traffic, and the thinking as one of them. The
+             model's own reasoning is on the wire and the terminal does not draw
+             it: the row is its text joined into one line - block marks off,
+             inline marks rendered - and the body is the whole text as markdown.
+             It is drawn from the live frames, so it goes at the next page read,
+             which strips thinking blocks. -->
+        <div class="leaves">
+          <div class="lane">
+            <div class="knd"><svg class="ic gl"><use href="#i-brain"/></svg><span class="nm">thinking</span></div>
+            <details class="leaf">
+              <summary><svg class="ic st bulb"><use href="#i-lightbulb"/></svg>
+                <span class="tn">one group Both of them landed while I was in the tree, so the reader gets one <strong>group</strong> instead of the wall. The alternative is a run of <code>read</code>/<code>search</code> rows with no shape to it.</span>
+                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="prose">
+                <h2>one group</h2>
+                <p>Both of them landed while I was in the tree, so the reader gets one <strong>group</strong> instead of the wall. The alternative is a run of <code>read</code>/<code>search</code> rows with no shape to it.</p>
+              </div></div>
+            </details>
+          </div>
+
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-skill"/></svg><span class="nm">skill</span></div>
+            <!-- A Skill call's own result is the CLI's launching line; the row
+                 opens onto the skill itself, which is what anyone opening it
+                 wants to read. -->
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">pr-review-loop &#183; PR #1204</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term">4 reviewers on disjoint axes &#183; 3 rounds max</div></div>
+              <div class="body"><div class="prose">
+                <h2>pr-review-loop</h2>
+                <p>Run parallel reviewers over the diff, each on its own axis, and drive every finding to resolution.</p>
+                <ul>
+                  <li>three rounds at most, then the loop escalates</li>
+                </ul>
+              </div></div>
             </details>
+          </div>
 
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-read"/></svg><span class="nm">read</span></div>
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1303,7 +1292,9 @@ Set `service_key` per environment in the bot's own config.</pre>
 Consecutive tool calls between two user messages fold into one group.</div>
               </div>
             </details>
+          </div>
 
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-search"/></svg><span class="nm">search</span></div>
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">"render_group_summary" &#183; 3 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1321,7 +1312,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
 <span class="k">pub struct</span> <span class="hit">KindLine</span> {</div>
               </div>
             </details>
+          </div>
 
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-edit"/></svg><span class="nm">edit</span></div>
             <details class="leaf" open>
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1388,7 +1381,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
                 <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
               </div>
             </details>
+          </div>
 
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-bash"/></svg><span class="nm">bash</span></div>
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">run the full workspace gate, then the feature-config build</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1426,7 +1421,9 @@ Command running in background with ID: a69098eff5f5d405a.
 <span class="fail">Run slow counting loop &middot; stopped</span></div>
               </div>
             </details>
+          </div>
 
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-web"/></svg><span class="nm">web</span></div>
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">docs.rs/ratatui/latest/ratatui/widgets/struct.List.html</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1435,7 +1432,9 @@ Command running in background with ID: a69098eff5f5d405a.
 A widget that renders a scrollable list of items.</div>
               </div>
             </details>
+          </div>
 
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-lsp"/></svg><span class="nm">lsp</span></div>
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">hover &#183; crates/forge-tui/src/ui/message.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1444,7 +1443,9 @@ A widget that renders a scrollable list of items.</div>
 docs: Render the message body into rows.</div>
               </div>
             </details>
+          </div>
 
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-mcp"/></svg><span class="nm">playwright</span></div>
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">browser_navigate</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1454,7 +1455,9 @@ docs: Render the message body into rows.</div>
               <summary><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">browser_click &#183; label[for="diff"]</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term"><span class="err">Timeout 5000ms exceeded waiting for the element to be stable</span></div></div>
             </details>
+          </div>
 
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-mcp"/></svg><span class="nm">forge</span></div>
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">agents__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1472,19 +1475,41 @@ docs: Render the message body into rows.</div>
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">tasks__update</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">cli-version &#183; in_progress</div></div>
             </details>
+          </div>
 
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-toolsearch"/></svg><span class="nm">toolsearch</span></div>
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">select:TaskStop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">Found KillShell, BashOutput</div></div>
             </details>
+          </div>
 
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-tool"/></svg><span class="nm">tool</span></div>
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">mcp__forge__cron__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">[] &#183; no crons registered</div></div>
             </details>
           </div>
+        </div>
+
+        <!-- A skill whose body no call in the turn claimed, which the CLI
+             injects as the reader's own user frame: the row names the skill
+             and holds the whole body as markdown, so the text wears no
+             attribution nobody earned. -->
+        <details class="leaf">
+          <summary><svg class="ic st sk"><use href="#i-skill"/></svg><span class="tn">skill /unslop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body"><div class="prose">
+            <h2>unslop</h2>
+            <p>Edit text to remove AI patterns.</p>
+            <h2>Process</h2>
+            <ol>
+              <li>Scan for the patterns below.</li>
+              <li>Rewrite. Preserve meaning, match intended tone.</li>
+              <li>Self-audit: "What makes this obviously AI generated?" Fix remaining tells.</li>
+            </ol>
+          </div></div>
         </details>
 
         <div class="card">
@@ -1494,11 +1519,8 @@ docs: Render the message body into rows.</div>
             <span class="typed">"and keep the multiSelect case too"</span></div>
         </div>
 
-        <details class="kind" open>
-          <summary><svg class="ic st"><use href="#i-check"/></svg>
-            <span class="nm">1 message</span>
-            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="leaves">
+        <div class="leaves">
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-in"/></svg><span class="nm">message</span></div>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-bot"/></svg>
@@ -1507,15 +1529,6 @@ docs: Render the message body into rows.</div>
               <div class="body"><div class="pbody">
                 <p>is the cron issue filed? the wake dies on the 2nd.</p></div></div>
             </details>
-          </div>
-        </details>
-
-        <details class="kind" open>
-          <summary><svg class="ic st"><use href="#i-check"/></svg>
-            <span class="nm">3 messages</span>
-            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="leaves">
-            <div class="knd"><svg class="ic gl"><use href="#i-in"/></svg><span class="nm">message</span></div>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-bot"/></svg>
                 <span class="tn"><span class="k">forge/steward</span> &#183; IT IMPORTED. The window is lost</span>
@@ -1531,6 +1544,8 @@ docs: Render the message body into rows.</div>
               <div class="body"><div class="pbody">
                 <p>picking up the migration now. Nothing blocked on your side.</p></div></div>
             </details>
+          </div>
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-in"/></svg><span class="nm">reply</span></div>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-bot"/></svg>
@@ -1540,7 +1555,7 @@ docs: Render the message body into rows.</div>
                 <p>take the render half, I&#39;ll take the partition.</p></div></div>
             </details>
           </div>
-        </details>
+        </div>
 
         <div class="notice info"><span class="sev">Info</span>Mode changed: default &#8594; acceptEdits</div>
         <div class="notice warn"><span class="sev">Warning</span>Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</div>
@@ -1662,7 +1677,17 @@ docs: Render the message body into rows.</div>
           <svg class="ic arw"><use href="#i-chev"/></svg>
           <span class="rule"></span>
         </summary>
-        <div class="cpbody">trigger <b>manual</b> &#183; <b>88,412</b> tokens read before the cut, <b>2,703</b> carried after it</div>
+        <div class="cpbody">trigger <b>manual</b> &#183; <b>88,412</b> tokens read before the cut, <b>2,703</b> carried after it
+          <!-- The continuation prompt the CLI sends after a cut opens under the
+               facts: the summary is what the model was handed, and the one
+               account of what was dropped. -->
+          <div class="sum"><div class="prose">
+            <p>This session is being continued from a previous conversation that ran out of context.</p>
+            <h2>What happened</h2>
+            <ul>
+              <li>the lanes rework landed</li>
+            </ul>
+          </div></div></div>
       </details>
 
       <!-- And the third state: a boundary whose frame carried no metadata at
@@ -1803,14 +1828,9 @@ branch main, nothing to commit</div>
         </div>
 
         <div class="beat" data-beat="2">
-          <details class="kind" open>
-            <summary>
-              <span class="st" id="lv-gst"><span class="ring"></span></span>
-              <span class="nm" id="lv-gcount">1 tool call</span>
-              <svg class="ic arw"><use href="#i-chev"/></svg>
-            </summary>
-            <div class="leaves">
-              <div class="beat" data-beat="2">
+          <div class="leaves">
+            <div class="beat" data-beat="2">
+              <div class="lane">
                 <div class="knd"><svg class="ic gl"><use href="#i-read"/></svg><span class="nm">read</span></div>
                 <details class="leaf" id="lv-a">
                   <summary><span class="st" id="lv-a-st"><span class="ring"></span></span>
@@ -1820,8 +1840,10 @@ branch main, nothing to commit</div>
                     <pre><span class="k">pub enum</span> <span class="f">ToolFamily</span> { <span class="f">Read</span>, <span class="f">Search</span>, <span class="f">Bash</span>, <span class="f">Web</span>, <span class="f">Lsp</span> }</pre></div></div>
                 </details>
               </div>
+            </div>
 
-              <div class="beat" data-beat="3">
+            <div class="beat" data-beat="3">
+              <div class="lane">
                 <div class="knd"><svg class="ic gl"><use href="#i-search"/></svg><span class="nm">search</span></div>
                 <details class="leaf" id="lv-b">
                   <summary><span class="st" id="lv-b-st"><span class="ring"></span></span>
@@ -1831,8 +1853,10 @@ branch main, nothing to commit</div>
                     <span class="fl">crates/forge-server/src/grouping.rs</span></div></div>
                 </details>
               </div>
+            </div>
 
-              <div class="beat" data-beat="4">
+            <div class="beat" data-beat="4">
+              <div class="lane">
                 <div class="knd"><svg class="ic gl"><use href="#i-bash"/></svg><span class="nm">bash</span></div>
                 <details class="leaf" id="lv-c">
                   <summary><span class="st" id="lv-c-st"><span class="ring"></span></span>
@@ -1843,7 +1867,7 @@ branch main, nothing to commit</div>
                 </details>
               </div>
             </div>
-          </details>
+          </div>
         </div>
 
         <div class="beat" data-beat="5">
@@ -2300,8 +2324,6 @@ branch main, nothing to commit</div>
     ['lv-t1', 'lv-t2'].forEach((id) => { $(id).textContent = ''; });
     ['lv-c1', 'lv-c2'].forEach((id) => { $(id).style.display = ''; });
     ['lv-a-st', 'lv-b-st', 'lv-c-st'].forEach((id) => { $(id).innerHTML = TICK; });
-    $('lv-gst').innerHTML = TICK;
-    $('lv-gcount').textContent = '1 tool call';
     $('lv-mark').innerHTML = TICK;
     $('lv-time').textContent = '0.4s';
     $('lv-think').style.display = '';
@@ -2316,9 +2338,9 @@ branch main, nothing to commit</div>
         $('lv-time').textContent = elapsed((performance.now() - t0) / 1000);
       }, 100);
     });
-    at(2700, () => { $('lv-a-st').innerHTML = OK; reveal(3); $('lv-gcount').textContent = '2 tool calls'; });
-    at(3900, () => { $('lv-b-st').innerHTML = OK; reveal(4); $('lv-gcount').textContent = '3 tool calls'; });
-    at(5300, () => { $('lv-c-st').innerHTML = OK; $('lv-gst').innerHTML = OK; });
+    at(2700, () => { $('lv-a-st').innerHTML = OK; reveal(3); });
+    at(3900, () => { $('lv-b-st').innerHTML = OK; reveal(4); });
+    at(5300, () => { $('lv-c-st').innerHTML = OK; });
     at(5600, () => { reveal(5); });
     at(6900, () => { reveal(6); stream($('lv-t2'), $('lv-c2'), T2, 1100); });
     at(8000, () => { reveal(7); });
