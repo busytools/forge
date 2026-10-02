@@ -1402,12 +1402,13 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt.sel .lbl { color: var(--text); font-weight: 600; }
 .opt.sel .why { color: var(--muted); }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
-  margin-top: 2px; border: 1.5px solid var(--ctl); display: grid; place-items: center; }
+  margin-top: 2px; border: 1px solid var(--ctl); display: grid; place-items: center; }
 /* A question's row that is on: the outline in the ok tone and the check inside
-   it, with the check sized to sit IN the box - at the icon's own 15px it ran
-   edge to edge and read as a smudge rather than as a mark. */
+   it. The box draws a thinner edge than the other marks, and the check runs
+   longer and thicker within it - the tick is the weight, the square is only
+   the frame. */
 .opt .box2.on { border-color: var(--ok); color: var(--ok); }
-.opt .box2 .ic { width: 10px; height: 10px; }
+.opt .box2 .ic { width: 12px; height: 12px; }
 /* The single-answer counterpart of the box, in the same slot: a circle that
    fills on the row being taken, in the tone the box's check takes. */
 .opt .radio { width: 15px; height: 15px; flex: 0 0 15px; margin-top: 2px;
