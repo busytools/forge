@@ -237,7 +237,7 @@ mod tests {
         // number below is wrong in a way nothing else here would catch.
         let whole =
             Paragraph::new(Text::from(lines.clone())).wrap(Wrap { trim: false }).line_count(width);
-        assert_eq!(drawn_total, whole, "per-row drawn heights must sum to the whole-block height",);
+        assert_eq!(drawn_total, whole, "per-row drawn heights must sum to the whole-block height");
 
         let mut bands = Vec::new();
         let mut gap = 0usize;

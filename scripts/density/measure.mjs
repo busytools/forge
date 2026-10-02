@@ -37,8 +37,25 @@ const REPO = path.resolve(HERE, '..', '..');
 const CLIENT = path.join(REPO, 'client');
 const WORK = path.join('/tmp', 'forge-density');
 
-/** The terminal renders at this many columns; the client is fitted to match. */
-const COLUMNS = Number(process.env.DENSITY_COLUMNS ?? 100);
+/**
+ * The terminal renders at this many columns; the client is fitted to match.
+ *
+ * 80 is the measure the sheet itself caps the conversation at, so the fitted
+ * column and the cap coincide and the comparison is taken at what ships. It is
+ * also a fixed point across a before/after pair: measured at a wider column
+ * the cap would bind in the after run and not in the before, and the two would
+ * not be the same comparison.
+ */
+const COLUMNS = Number(process.env.DENSITY_COLUMNS ?? 80);
+
+/**
+ * The sheet to measure, when it is not the working tree's.
+ *
+ * This is what makes a before/after pair one command each against the same
+ * instrument: write the base revision's sheet somewhere and point this at it,
+ * rather than measuring one revision and remembering the other.
+ */
+const SHEET = process.env.DENSITY_CSS ?? path.join(CLIENT, 'src', 'assets', 'web.css');
 
 /** A wide window, for the reading that shows whether the measure is capped. */
 const WIDE = Number(process.env.DENSITY_WIDE ?? 1600);
@@ -346,7 +363,7 @@ function table(client, terminal) {
 
 async function main() {
   mkdirSync(path.join(WORK, 'fonts'), { recursive: true });
-  copyFileSync(path.join(CLIENT, 'src', 'assets', 'web.css'), path.join(WORK, 'web.css'));
+  copyFileSync(SHEET, path.join(WORK, 'web.css'));
   for (const font of ['FiraCode-Regular.woff2', 'FiraCode-Medium.woff2']) {
     copyFileSync(path.join(CLIENT, 'public', 'fonts', font), path.join(WORK, 'fonts', font));
   }
@@ -452,7 +469,7 @@ async function main() {
     `client column      ${client.column.contentWidth} px (fits ${client.column.fits} chars, `
       + `settled=${client.column.settled})`,
     `measure @ ${WIDE}px   prose fits ${wide.column.fits} chars in a ${wide.column.contentWidth} px `
-      + `column (no cap in the sheet)`,
+      + `column at a ${WIDE}px window`,
     `face (computed)    ${client.face.family}`,
     `face (canonical)   ${client.face.canon}`,
     `advance            ${client.face.advance} px at ${client.face.proseSize}px `

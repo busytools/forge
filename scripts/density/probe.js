@@ -153,15 +153,29 @@ function fitColumn(target) {
   const root = document.documentElement;
   const advance = glyph(PROSE_CHARS, Number.parseFloat(computed('.prose p', 'font-size')), 400)
     .width / PROSE_CHARS.length;
+  // The column is counted in the browser's own `ch`, not in the canvas
+  // advance: canvas reports the advance rounded to four decimals, and when a
+  // `max-width` in `ch` lands exactly on the target that rounding is enough to
+  // read the column one character short. `100ch` is the same unit the sheet
+  // caps in, so the two divide exactly.
+  const unit = (() => {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;visibility:hidden;width:100ch';
+    document.querySelector('.prose').append(probe);
+    const width = probe.getBoundingClientRect().width / 100;
+    probe.remove();
+    return width;
+  })();
+  const whole = (px) => Math.floor((px + unit * 1e-6) / unit);
   // `null` leaves the column wherever the window put it, which is the reading
-  // the issue's "the measure is unbounded" hypothesis needs: nothing in the
-  // sheet caps it, so at a wide window this number just keeps climbing.
+  // the issue's "the measure is unbounded" hypothesis needs: whatever the
+  // sheet caps it at, this is the number the window alone would give.
   if (target === null) {
     const content = document.querySelector('.prose').getBoundingClientRect().width;
     return {
       width: root.getBoundingClientRect().width,
       content,
-      fits: Math.floor(content / advance),
+      fits: whole(content),
       advance,
       settled: true,
     };
@@ -174,11 +188,11 @@ function fitColumn(target) {
     // a scrollbar gutter, and the column the text actually wraps in is what
     // the character count has to be taken from.
     content = document.querySelector('.prose').getBoundingClientRect().width;
-    const fits = Math.floor(content / advance);
+    const fits = whole(content);
     if (fits === target) return { width, content, fits, advance, settled: true };
     width += Math.round((target - fits) * advance);
   }
-  return { width, content, fits: Math.floor(content / advance), advance, settled: false };
+  return { width, content, fits: whole(content), advance, settled: false };
 }
 
 /** The whole reading, as one object. */
