@@ -474,6 +474,12 @@ pub(super) fn handle_core_notice(
     severity: NoticeSeverity,
     msg: &str,
 ) {
+    // A line from the core is the only notice this process gets that
+    // something outside it may have written the documents a launch reads:
+    // `/effort` is the core's now, and it lands in `settings.json`. Ahead of
+    // the seat split, because the seat a client typed `/effort` on is often
+    // not the one on screen.
+    crate::app::config::reload_launch_documents(app);
     let role = match severity {
         NoticeSeverity::Info => MessageRole::System(Some(super::super::SystemSeverity::Info)),
         NoticeSeverity::Error => MessageRole::System(None),
@@ -519,10 +525,6 @@ pub(super) fn handle_core_notice(
         viewport.engage_auto_scroll();
     }
     clear_pending_command(app);
-    // A line from the core is the only notice this process gets that
-    // something outside it may have written the documents a launch reads:
-    // `/effort` is the core's now, and it lands in `settings.json`.
-    crate::app::config::reload_launch_documents(app);
 }
 
 /// Foreground arm: the replaced session is the one on screen, so the

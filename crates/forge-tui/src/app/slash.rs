@@ -586,16 +586,69 @@ mod tests {
                     },
                 );
 
-                let landed = app
-                    .sessions
-                    .get(&elsewhere)
-                    .map(|bucket| bucket.messages.len())
-                    .unwrap_or_default();
-                assert!(landed > 0, "the line is held for the seat it was addressed to");
+                let held = app.sessions.get(&elsewhere).expect("the bucket is held");
+                assert!(
+                    !held.messages.is_empty(),
+                    "the line is held for the seat it was addressed to"
+                );
+                assert!(
+                    matches!(
+                        held.messages.last().map(|message| &message.role),
+                        Some(MessageRole::System(None)),
+                    ),
+                    "an error reads as one rather than as an informational line, got {:?}",
+                    held.messages.last().map(|message| &message.role),
+                );
                 assert_eq!(
                     app.messages().map(<[_]>::len).unwrap_or_default(),
                     shown_before,
                     "and the seat on screen is not drawn into",
+                );
+            })
+            .await;
+    }
+
+    /// The core writes `settings.json` itself - `/effort` is its command now -
+    /// so a line from it is the moment this view re-reads the documents its
+    /// own spawns are built from. A snapshot taken at boot would otherwise
+    /// launch the next session on the level before the change.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_core_notice_re_reads_the_documents_a_launch_uses() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let dir = tempfile::tempdir().expect("tempdir");
+                std::fs::write(
+                    dir.path().join(".claude.json"),
+                    br#"{ "respectGitignore": false }"#,
+                )
+                .expect("seed the preferences document");
+                let mut app = App::test_default();
+                app.settings_home_override = Some(dir.path().to_path_buf());
+                assert!(
+                    app.config.committed_preferences_document.get("respectGitignore").is_none(),
+                    "precondition: the held snapshot has not read it",
+                );
+
+                // A seat the terminal is NOT showing, which is where a client's
+                // `/effort` lands: the re-read must not be behind the arm that
+                // only the seat on screen reaches.
+                let elsewhere = forge_workspace::SessionSlot::from_str_for_test("other-seat");
+                app.sessions.entry(elsewhere.clone()).or_insert_with(|| {
+                    crate::app::session::UiSession::new(elsewhere.clone(), "other")
+                });
+                crate::app::events::apply_session_update(
+                    &mut app,
+                    forge_workspace::SessionUpdate::Notice {
+                        key: elsewhere,
+                        severity: forge_workspace::NoticeSeverity::Info,
+                        text: "Effort: High (takes effect next session)".into(),
+                    },
+                );
+
+                assert_eq!(
+                    app.config.committed_preferences_document.get("respectGitignore"),
+                    Some(&json!(false)),
+                    "the launch documents are re-read when the core answers",
                 );
             })
             .await;

@@ -77,11 +77,11 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-function open(withLead: boolean) {
+function open(withLead: boolean, slot: SessionSlot = LEAD) {
   const { connection, sent } = recording();
   app = mount(SpawnHarness, {
     target: document.body,
-    props: { slot: LEAD, connection, home: home(withLead) },
+    props: { slot, connection, home: home(withLead) },
   });
   flushSync();
   return { sent, page: () => (app as unknown as { page: { home: HomeWire } }).page };
@@ -109,6 +109,17 @@ describe("starting a project's lead from its own page", () => {
     const { sent } = open(true);
 
     expect(sent, 'a seat the roster names is a project already started').toEqual([]);
+  });
+
+  /**
+   * A project's lead is the one seat the core can start by name: a worker is
+   * spawned by the lead that owns it, so a worker seat with nothing behind it
+   * asks for nothing rather than for a spawn the core cannot place.
+   */
+  it('asks for nothing when the seat is a worker', () => {
+    const { sent } = open(false, { ...LEAD, label: 'implementer' });
+
+    expect(sent, 'only a lead is a spawn the core can place').toEqual([]);
   });
 
   /**

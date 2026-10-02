@@ -334,7 +334,6 @@ function isSystem(message: unknown): boolean {
   return (message as { type?: unknown } | null)?.type === 'system';
 }
 
-/** The update's variant name, for the ones the chat acts on. */
 /** What a refused mode or model carries, as the wire names the fields. */
 interface FailedLine {
   mode?: unknown;
@@ -342,6 +341,13 @@ interface FailedLine {
   message?: unknown;
 }
 
+/** Whether a frame is the core's own line, which stands alone where it must. */
+function isForgeNotice(message: unknown): boolean {
+  const frame = message as { type?: unknown; subtype?: unknown } | null;
+  return frame?.type === 'system' && frame.subtype === 'forge_notice';
+}
+
+/** The update's variant name, for the ones the chat acts on. */
 function variantOf(update: SessionUpdate): string | null {
   if (typeof update === 'string') return update;
   const [name] = Object.keys(update);
@@ -978,7 +984,12 @@ export class Chat {
         draws &&
         !isSystem(message) &&
         (last === undefined || (!writing && (opensATurn(message) || !beingWritten(last))));
-      if (!opens) {
+      // **The core's own line is the one `system` frame that opens a row**, and
+      // only where there is no turn to join. Its only copy is this frame - the
+      // CLI wrote none - so on a seat with no turn yet, which is every fresh
+      // one, holding it back drops it rather than placing it, and the reader's
+      // own words draw with no answer under them.
+      if (!opens && !(last === undefined && draws && isForgeNotice(message))) {
         if (last === undefined) return held;
         const grown: Turn = { ...last, messages: [...last.messages, message] };
         return this.answered({
