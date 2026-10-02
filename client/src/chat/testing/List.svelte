@@ -123,16 +123,19 @@
   // cannot reach; the module is the seam instead.
   const mine = { scrolledTo, settled };
 
-  // **And the handle lives exactly as long as the effect does.** A real list
-  // removes its scroll listener when it is destroyed, in the same flush that
-  // removes the node, so nothing may drive a column through a list that is
-  // gone - a seam left registered would let a test call a callback the browser
-  // cannot deliver. Registering inside the effect pairs it with that teardown:
-  // a list unmounted before its first flush never registers at all. Cleared
-  // only while the seam still holds THIS list. A swap does not need that: its
-  // clear lands before the replacement registers, under `{#if}` and `{#key}`
-  // alike. Two lists under one parent do, because the departing one's teardown
-  // lands after the survivor registered and nothing registers again after it.
+  // **And the handle never outlives the effect.** A real list removes its
+  // scroll listener when it is destroyed, in the same flush that removes the
+  // node, so nothing may drive a column through a list that is gone - a seam
+  // left registered would let a test call a callback the browser cannot
+  // deliver. Registering inside the effect pairs it with that teardown: a list
+  // unmounted before its first flush never registers at all. Cleared only
+  // while the seam still holds THIS list, which covers one ordering and not
+  // its mirror. Measured on svelte 5.57.1: `{#if}` and `{#key}` run the
+  // departing teardown before the replacement registers, so each list clears
+  // only its own handle and the guard is never reached. What reaches it is a
+  // list departing while a DIFFERENT list holds the seam; the mirror - the
+  // holder departing while a neighbour stays - still empties the seam with a
+  // list on screen, and nothing in the app draws two lists at once.
   $effect(() => {
     register(mine);
     return () => {
