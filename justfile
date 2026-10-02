@@ -222,9 +222,10 @@ client-tauri-check:
     npm --prefix client run tauri -- build --no-bundle --ci -- --locked
 
 # Build the shell's bundles: `forge.app` and the dmg, under
-# client/src-tauri/target/release/bundle. It is the only thing that covers the
-# bundle itself, which `client-tauri-check` does not, so run it deliberately -
-# before a release, or when `bundle.icon` or the window config changes.
+# client/src-tauri/target/release/bundle. `client-tauri-check` covers no
+# bundle at all and `client-release` covers the app alone, so this is the one
+# that covers the dmg - run it deliberately when the icon or the dmg's own
+# layout changes.
 #
 # The dmg step mounts the image and runs AppleScript to lay the mounted volume
 # out, so it opens a Finder window and takes focus for a few seconds.
@@ -232,6 +233,93 @@ client-tauri-check:
 # **A window on every run is why this is not the routine gate.**
 client-tauri-bundle:
     npm --prefix client run tauri -- build --ci -- --locked
+
+# Bundle the client as an app and install it over /Applications/forge.app.
+# This is `release`'s last step and does not bump anything, so it can be
+# re-run after a failed build - while no source has changed since the tag,
+# which is what records the tree being shipped.
+#
+# `--bundles app` overrides the config's `bundle.targets`, so the dmg target -
+# the one that mounts the image and opens a Finder window - is never invoked.
+#
+# A client already running from that bundle is refused rather than replaced:
+# overwriting the bundle a live process is executing out of is the one way
+# this fails quietly. The check is on the bundle's own executable, so a client
+# running from a checkout's target dir does not block a release - it goes on
+# executing the image it started from, which this neither disturbs nor updates.
+#
+# The version is read back off the built app rather than assumed, because a
+# stale bundle from an earlier build installs exactly as quietly as a fresh one.
+#
+# Install the client: app-only bundle, refused while in use, swapped in.
+client-release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    app=/Applications/forge.app
+    built=client/src-tauri/target/release/bundle/macos/forge.app
+
+    refuse_if_in_use() {
+        # Fails closed: without lsof the check cannot answer, and proceeding
+        # is the failure it exists to prevent.
+        command -v lsof >/dev/null 2>&1 || {
+            echo "[ERROR] lsof not found - cannot tell whether the client is running" >&2
+            exit 1
+        }
+        # No bundle, nothing in use - and lsof prints its banner and usage for
+        # a path it cannot find.
+        [ -e "$app/Contents/MacOS/forge-client" ] || return 0
+        if pids=$(lsof -t "$app/Contents/MacOS/forge-client"); then
+            echo "[ERROR] $app is in use (pid $pids) - quit the client before releasing" >&2
+            echo "        then run: just client-release {{version}}" >&2
+            exit 1
+        fi
+    }
+
+    # Before the build as well as before the swap: the build is minutes, and a
+    # client started inside that window would be replaced just as quietly.
+    refuse_if_in_use
+
+    npm --prefix client run tauri -- build --bundles app --ci -- --locked
+
+    if [ ! -e "$built" ]; then
+        echo "[ERROR] the build produced no app bundle at $built" >&2
+        exit 1
+    fi
+
+    got=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$built/Contents/Info.plist")
+    if [ "$got" != "{{version}}" ]; then
+        echo "[ERROR] the built client is version $got, expected {{version}}" >&2
+        exit 1
+    fi
+
+    # Staged beside the target, and the old bundle moved aside rather than
+    # deleted, so a failed copy leaves the installed client untouched and the
+    # old bundle stays recoverable until the new one is in place. Between the
+    # two renames nothing sits at $app for an instant; closing that would mean
+    # leaving shell (a rename cannot replace a non-empty directory), and a
+    # launch landing in it fails loudly rather than quietly, so it stays named.
+    rm -rf "$app.new"
+    # A run killed between the renames leaves the only install at $app.old;
+    # deleting it here would destroy the client before the new copy exists.
+    if [ ! -e "$app" ] && [ -e "$app.old" ]; then
+        echo "[WARN] no client at $app; a previous swap left one at $app.old" >&2
+    fi
+    ditto "$built" "$app.new"
+
+    # Again here, after the copy, so what follows the check is the two renames
+    # and not the copy.
+    refuse_if_in_use
+
+    if [ -e "$app" ]; then
+        mv "$app" "$app.old"
+    fi
+    if ! mv "$app.new" "$app"; then
+        echo "[ERROR] the swap failed; the previous client is at $app.old" >&2
+        exit 1
+    fi
+    rm -rf "$app.old"
+    echo "[OK] installed the client: $app is version $got"
 
 # Run the app: the debug webview over the Vite dev server, with a frontend edit
 # reloading into the open window. Nothing is installed and no disk image is
@@ -508,7 +596,11 @@ remove-cert:
 # install build leaves off.
 # Usage: `just release 0.17.0`
 #
-# Cut a release: bump the workspace version, commit, tag.
+# One number names both halves: this bumps the workspace and the client's
+# own manifest to `version`, commits and tags them together, and only then
+# builds and installs the client, through `client-release`.
+#
+# Cut a release: bump the workspace and client versions, commit, tag, install the client.
 release version: check-release check-feature-configs
     @if ! cargo set-version --help >/dev/null 2>&1; then \
         echo "[ERROR] cargo set-version not available - run: cargo install cargo-edit" >&2; \
@@ -527,13 +619,15 @@ release version: check-release check-feature-configs
         exit 1; \
     fi
     cargo set-version --workspace {{version}}
+    cargo set-version --manifest-path client/src-tauri/Cargo.toml {{version}}
     cargo update --workspace
-    git add Cargo.toml Cargo.lock crates/*/Cargo.toml
+    git add Cargo.toml Cargo.lock crates/*/Cargo.toml client/src-tauri/Cargo.toml client/src-tauri/Cargo.lock
     git commit -m "release v{{version}}"
     # Annotated (`-m`) so it works under `tag.gpgSign = true`, which
     # forces a signed tag - a bare `git tag <name>` errors with
     # "no tag message?" when signing is on.
     git tag -m "v{{version}}" "v{{version}}"
+    "{{just_executable()}}" --justfile "{{justfile()}}" client-release {{version}}
     @echo
-    @echo "[OK] tagged v{{version}} locally. To publish:"
-    @echo "     git push --follow-tags origin main"
+    @echo "[OK] released v{{version}}: tagged locally, client installed at /Applications/forge.app"
+    @echo "     To publish: git push --follow-tags origin main"

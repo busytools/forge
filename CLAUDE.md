@@ -993,14 +993,19 @@ them:
 
 ## Releases
 
-`just release <version>` bumps the workspace version, commits and tags
-locally. It deliberately stops there: pushing a tag and cutting a
-release are the maintainer's call, and `just check-release` and
-`just check-feature-configs` gate the recipe because `cargo install`
-builds in release mode and would otherwise find the error after the tag
-exists. The second is the one that compiles the configuration
-`install.sh` builds; `check-release`'s `--all-features` enables the
-test-only features that build leaves off.
+`just release <version>` bumps the workspace version and the client's own
+manifest to the same number, commits and tags them together, then builds
+the client and installs it over `/Applications/forge.app`. One number and
+one tag name both halves. The client bundle is the app alone
+(`--bundles app`), so no disk image is mounted and no Finder window
+opens, and a client running from the installed bundle is a refusal rather
+than a replace: replacing a live bundle underneath itself is the one way
+this fails quietly. Pushing a tag and cutting a release stay the
+maintainer's call, and `just check-release` and `just check-feature-configs`
+gate the recipe because `cargo install` builds in release mode and would
+otherwise find the error after the tag exists. The second is the one that
+compiles the configuration `install.sh` builds; `check-release`'s
+`--all-features` enables the test-only features that build leaves off.
 
 ## Workflows in skills
 

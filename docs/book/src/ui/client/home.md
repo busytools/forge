@@ -28,8 +28,8 @@ a row can also carry an artifact anchor and an anchor inside an anchor is not
 HTML.
 
 **The header draws the forge build, not this app's own version.** The header
-states which forge is serving, and the client is a different program, so its
-own `package.json` version would name the wrong thing.
+states which forge is serving, and the client is a different program, so the
+version in the shell crate's own manifest would name the wrong thing.
 
 **The row's `where` and `what` cells are its two variable columns.** `where`
 carries the branch the tree is on and how much has changed in it, from the
