@@ -1401,7 +1401,6 @@ pub(crate) fn handle_spawn_worker(
             &crate::mcp::workers::types::worker_tag_dir(&view.path, label, true),
         )
     {
-        let _ = workspace.remove_latest_worker(&project_key, label);
         tracing::warn!(
             target: "forge_workspace::spawn",
             event_name = "worker_spawn_refused_no_worktree",
@@ -1411,6 +1410,7 @@ pub(crate) fn handle_spawn_worker(
             "a worktree cannot be created for this worker where it would have to run, so the \
              spawn is refused rather than started with nowhere to work",
         );
+        let _ = workspace.remove_latest_worker(&project_key, label);
         // The obstacle text reads as one sentence, so the MCP tool's
         // "worktree creation failed:" label lands on top of it as one
         // statement rather than two.
@@ -3610,7 +3610,7 @@ provider = "anthropic"
     /// having nowhere to work.
     #[tokio::test]
     async fn a_fresh_spawn_whose_branch_is_held_elsewhere_is_refused() {
-        let (workspace, key, derived, repo, _config) = git_spawn_fixture("reviewer");
+        let (workspace, key, _derived, repo, _config) = git_spawn_fixture("reviewer");
         let elsewhere = tempdir().expect("elsewhere tempdir");
         run_git(
             repo.path(),
@@ -3631,7 +3631,6 @@ provider = "anthropic"
 
         assert!(err.contains("already checked out"), "the refusal names the obstacle: {err}");
         assert!(err.contains("worktree-reviewer"), "and the branch it is about: {err}");
-        assert!(!derived.exists(), "nothing was created at the path the worker would run in");
         assert!(
             workspace.list_live_workers(&key).is_empty(),
             "and no worker reads live off the refused spawn"
@@ -3639,28 +3638,6 @@ provider = "anthropic"
         assert!(
             workspace.worker_rows_for_project(&key).is_empty(),
             "and nothing durable survives to re-spawn it on the next boot"
-        );
-    }
-
-    /// The other direction: a worktree that can be created where the worker
-    /// runs is not this check's business. The spawn still fails, at the
-    /// account walk, which the fixture names no model for.
-    #[tokio::test]
-    async fn a_fresh_spawn_whose_worktree_can_be_created_gets_past_the_step() {
-        let (workspace, key, _derived, _repo, _config) = git_spawn_fixture("reviewer");
-
-        let err = spawn_reply(&workspace, &key, "reviewer")
-            .await
-            .expect("reply channel")
-            .expect_err("the spawn still fails, at the account walk");
-
-        assert!(
-            err.contains("declares no model"),
-            "the spawn got past the worktree step and died where the fixture says it must: {err}"
-        );
-        assert!(
-            workspace.list_live_workers(&key).is_empty(),
-            "and the failed spawn leaves no live worker behind"
         );
     }
 

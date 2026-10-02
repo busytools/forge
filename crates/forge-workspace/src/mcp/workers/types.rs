@@ -45,7 +45,9 @@ pub fn worker_tag_dir(project_root: &Path, label: &str, is_git_repo_at_spawn: bo
 /// Under `--new` the wave passes `resuming` false for every row and
 /// re-spawns them all fresh, which is why the flag is a parameter rather
 /// than read off the row here: the two sites can differ on that one axis,
-/// and the launchpad offers the row because a fresh spawn does start.
+/// and the launchpad offers the row because a fresh spawn starts - unless
+/// the worktree cannot be created where it would run, which refuses that
+/// spawn and leaves the row failed with the reason.
 ///
 /// `is_git_repo` is `None` on a row written before the field existed. That
 /// answers "yes, it can start": the spawn probes and records the flag, and
