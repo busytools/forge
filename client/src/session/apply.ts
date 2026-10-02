@@ -178,14 +178,18 @@ export const HANDLERS: Record<string, Apply> = {
    * The whole set a `/dictate` edit left behind, which the core echoes after
    * every set and reset.
    *
-   * **A handler rather than a `UNFED` entry, unlike the dispatch field next
-   * door**: the core emits this update, and a poll's merge read is for the
-   * slices no frame carries.
+   * **A handler rather than a `UNFED` entry**: the core emits this update, and
+   * a poll's merge read is for the slices no frame carries. A payload naming
+   * no set therefore leaves the held one standing, rather than reading the
+   * axes off a name nothing sent and reporting the crate defaults as the
+   * session's own.
    */
-  dictate_overrides: (held, payload) => ({
-    ...held,
-    dictate_overrides: overridesFrom(payload['overrides']),
-  }),
+  dictate_overrides: (held, payload) => {
+    const overrides = payload['overrides'];
+    return overrides === undefined
+      ? held
+      : { ...held, dictate_overrides: overridesFrom(overrides) };
+  },
 
   dictate_ended: (held, payload) => {
     const take = heldTake(held.composer);

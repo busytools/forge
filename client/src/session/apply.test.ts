@@ -588,6 +588,19 @@ describe('applyUpdate', () => {
         { styling: 'formal', structure: 'lists', context: null },
       );
     });
+
+    it('leaves a held set standing for a payload that carries none', () => {
+      const held = applyUpdate(empty(), {
+        dictate_overrides: {
+          key: SLOT,
+          overrides: { styling: 'formal', structure: null, context: null },
+        },
+      });
+
+      const next = applyUpdate(held, { dictate_overrides: { key: SLOT } });
+
+      expect(next, 'a payload naming no set wrote the crate defaults over the held one').toBe(held);
+    });
   });
 
   describe('what it does not handle', () => {
