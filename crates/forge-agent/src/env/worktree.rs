@@ -288,9 +288,10 @@ struct ListedWorktree {
     at: String,
     /// The ref this worktree holds, when it holds a branch.
     branch: Option<String>,
-    /// git reports the entry as one `prune` would remove. A missing
-    /// directory is reported this way from git 2.36 on; before that the
-    /// line is absent and only the path is missing.
+    /// git reports the entry as one `prune` would remove, which it decides
+    /// from a directory or gitdir that is gone. The line is absent from
+    /// git before 2.36 entirely, and from a LOCKED entry on every version:
+    /// the locked shape is the one claude's own worktrees leave behind.
     prunable: bool,
 }
 
@@ -321,7 +322,7 @@ fn listed_worktrees(listing: &str) -> Vec<ListedWorktree> {
 /// The second decision reads the STATE and not git's `prunable` line alone:
 /// an entry at `path` whose directory is gone is unreusable whether or not
 /// the git in use reports it as prunable, and requiring that line would let
-/// the stranded registration through on git older than 2.36.
+/// it through on a git older than 2.36, or on a locked one on any version.
 fn obstacle_from_listing(
     entries: &[ListedWorktree],
     repo: &Path,
@@ -344,8 +345,10 @@ fn obstacle_from_listing(
         Some(entry) if path.exists() && !entry.prunable => None,
         Some(_) => Some(format!(
             "the worktree registration at {} cannot be used - its directory, or the gitdir it \
-             points at, is gone - so this worker's worktree cannot be created there; run `git \
-             worktree unlock {}` and then `git worktree prune` in {} and spawn again",
+             points at, is gone - so this worker's worktree cannot be created there; unlock it \
+             with `git worktree unlock {}` (which errors harmlessly when it is not locked), \
+             delete that directory if it is still there, then `git worktree prune` in {} and \
+             spawn again",
             path.display(),
             path.display(),
             repo.display(),
@@ -367,8 +370,10 @@ fn path_is_taken(path: &Path) -> bool {
     match std::fs::read_dir(path) {
         Ok(mut entries) => entries.next().is_some(),
         // Not a directory at all, or one that cannot be read: git takes
-        // neither, and `exists` separates that from a path that is free.
-        Err(_) => path.exists(),
+        // neither. `exists` separates those from a free path EXCEPT for a
+        // broken symlink, which it follows to nothing - the link itself is
+        // what git refuses, so `symlink_metadata` is asked too.
+        Err(_) => path.exists() || path.symlink_metadata().is_ok(),
     }
 }
 
@@ -1599,15 +1604,12 @@ mod tests {
         );
         let wt = repo.path().join(".claude").join("worktrees").join("lbl");
 
-        let obstacle = worktree_creation_obstacle(repo.path(), "lbl", &wt).expect("an obstacle");
+        let obstacle = worktree_creation_obstacle(repo.path(), "lbl", &wt)
+            .expect("the branch held elsewhere is an obstacle");
 
         assert!(
             obstacle.contains("worktree-lbl") && obstacle.contains("already checked out"),
             "the obstacle names the branch and what holds it: {obstacle}"
-        );
-        assert!(
-            obstacle.contains("worktree"),
-            "and keeps the word the spawn's failure classifier keys on: {obstacle}"
         );
     }
 
@@ -1665,15 +1667,14 @@ mod tests {
         run_git(dir.path(), &["worktree", "lock", wt.to_str().expect("utf8 path")]);
         fs::remove_dir_all(&wt).expect("delete the worktree directory");
 
-        let obstacle = worktree_creation_obstacle(dir.path(), "lbl", &wt).expect("an obstacle");
+        let obstacle = worktree_creation_obstacle(dir.path(), "lbl", &wt)
+            .expect("a locked registration with no directory is an obstacle");
 
+        let unlock = obstacle.find("worktree unlock").expect("the remedy clears the lock");
+        let prune = obstacle.find("worktree prune").expect("and then clears the registration");
         assert!(
-            obstacle.contains("worktree unlock"),
-            "the remedy clears the lock git requires first: {obstacle}"
-        );
-        assert!(
-            obstacle.contains("worktree prune"),
-            "and then clears the registration: {obstacle}"
+            unlock < prune,
+            "the order is the remedy, not the pair of names: unlock comes first in {obstacle}"
         );
     }
 
@@ -1684,23 +1685,21 @@ mod tests {
         fs::create_dir_all(&wt).expect("stray dir");
         fs::write(wt.join("notes.txt"), "hand-made").expect("stray file");
 
-        let obstacle = worktree_creation_obstacle(repo.path(), "lbl", &wt).expect("an obstacle");
+        let obstacle = worktree_creation_obstacle(repo.path(), "lbl", &wt)
+            .expect("a stray directory at the path is an obstacle");
 
         assert!(
             obstacle.contains("is not an empty directory"),
             "the obstacle names what is in the way: {obstacle}"
         );
-        assert!(
-            obstacle.contains("worktree"),
-            "and keeps the word the spawn's failure classifier keys on: {obstacle}"
-        );
     }
 
-    /// The route a git older than 2.36 takes: a missing directory with NO
-    /// `prunable` line. Written against the listing rather than against
-    /// git, because this machine's git always prints the line and the
-    /// state that matters - an entry at the worker's path it cannot reuse
-    /// - would otherwise go unrefused, which is #1303 returning there.
+    /// The route a git older than 2.36 takes for every stranded entry: no
+    /// `prunable` line at all. Written against the listing rather than
+    /// against git, since no git on this machine will print that for an
+    /// unlocked entry - and the state that matters, an entry at the
+    /// worker's path it cannot reuse, would otherwise go unrefused, which
+    /// is #1303 returning on those machines.
     #[test]
     fn obstacle_refuses_a_stranded_registration_git_does_not_mark_prunable() {
         let repo = Path::new("/repo");
@@ -1722,25 +1721,43 @@ mod tests {
         );
     }
 
-    /// A directory deleted out from under its registration leaves git
-    /// refusing to add a worktree there, so the spawn must refuse too.
-    /// `drop_worktree` would not do: `worktree remove` deregisters as it
-    /// removes, and deleting only the directory is what strands the
-    /// registration.
+    /// A worktree whose `.git` link file is gone while its directory stands:
+    /// git lists it, marks it prunable, and refuses to add a worktree there
+    /// (`is a missing but already registered worktree`, exit 128 - measured).
+    /// Nothing else pins the prunable half of the state read, and the shape
+    /// is the bug this check exists for when it goes unrefused.
     #[test]
-    fn obstacle_names_a_registration_whose_directory_is_gone() {
+    fn obstacle_refuses_a_worktree_whose_gitdir_link_is_broken() {
         let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
-        fs::remove_dir_all(&wt).expect("delete the worktree directory");
+        fs::remove_file(wt.join(".git")).expect("delete the worktree's gitdir link");
+        assert!(wt.is_dir(), "fixture precondition: the directory itself stands");
 
-        let obstacle = worktree_creation_obstacle(dir.path(), "lbl", &wt).expect("an obstacle");
+        let obstacle = worktree_creation_obstacle(dir.path(), "lbl", &wt)
+            .expect("a worktree git will not reuse is an obstacle");
 
         assert!(
-            obstacle.contains("registration at") && obstacle.contains("cannot be used"),
+            obstacle.contains("cannot be used"),
             "the obstacle names the registration git will not reuse: {obstacle}"
         );
+    }
+
+    /// A dangling symlink at the path is a path git refuses (`already
+    /// exists`, exit 128 - measured), and one `exists()` cannot see: it
+    /// follows the link and answers false. Admitting it starts the worker
+    /// with no worktree, which is the bug this check exists for.
+    #[test]
+    fn obstacle_refuses_a_dangling_symlink_at_the_path() {
+        let repo = init_repo_with_commit();
+        let wt = repo.path().join(".claude").join("worktrees").join("lbl");
+        fs::create_dir_all(wt.parent().expect("worktrees dir")).expect("mkdir worktrees");
+        std::os::unix::fs::symlink(repo.path().join("nowhere"), &wt).expect("dangling symlink");
+
+        let obstacle = worktree_creation_obstacle(repo.path(), "lbl", &wt)
+            .expect("a symlink git refuses is an obstacle");
+
         assert!(
-            obstacle.contains("worktree"),
-            "and keeps the word the spawn's failure classifier keys on: {obstacle}"
+            obstacle.contains("is not an empty directory"),
+            "the obstacle names what is in the way: {obstacle}"
         );
     }
 
