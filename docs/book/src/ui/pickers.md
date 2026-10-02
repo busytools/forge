@@ -46,7 +46,7 @@
 
 ## Model picker (`/model`)
 
-`/model` (no arg) opens the overlay when the session advertises models - otherwise the info line stays - and `/model <id>` switches directly. Rows are the session's org's declared models, authored in forge.toml; the pseudo `default` row is hidden. Opens with the highlight on the running model beside a `●` marker.
+`/model` (no arg) opens the overlay when the session advertises models; with no rows to offer it asks the core, which answers with the command's usage line. `/model <id>` is the core's own command, the same one a client sends, so it switches from wherever it is typed. Rows are the session's org's declared models, authored in forge.toml; the pseudo `default` row is hidden. Opens with the highlight on the running model beside a `●` marker.
 
 <div class="term">
 
@@ -73,7 +73,7 @@
 <details>
 <summary>Model picker details</summary>
 
-- <kbd>Enter</kbd> takes the same path as `/model <id>`: an optimistic footer-chip update, then the dispatch - the CLI confirms the live model on its next frame. The rows snapshot carries the session they came from; if the active session changed between open and commit, the commit is refused with a visible notice instead of dispatching. The pseudo-`default` row filter is the same one the `/model` argument autocomplete applies, and long descriptions clip at the overlay edge.
+- <kbd>Enter</kbd> switches the session: an optimistic footer-chip update, then the dispatch - the CLI confirms the live model on its next frame. The typed `/model <id>` is the core's, so it dispatches without the local apply and the chip moves when the CLI confirms. The rows snapshot carries the session they came from; if the active session changed between open and commit, the commit is refused with a visible notice instead of dispatching. The pseudo-`default` row filter is the same one the `/model` argument autocomplete applies, and long descriptions clip at the overlay edge.
 - The overlay is modal, and clicks behind it are ignored - the guard is shared by every picker overlay, so a pane click cannot switch the active session under an open modal. Fully transient: rows snapshot at open, nothing persists. Keyboard-only; mouse-click selection is a possible follow-up. Opened from the chat input only (the launchpad has no input to type `/model` into). The highlight seeds to the running model - matched by requested id, then resolved id, case-insensitively - falling back to row 0 when it is not among the rows.
 - Colors: border, selection marker and the current-model dot rust orange; the highlighted name rust orange bold; unselected descriptions and hints dim.
 
