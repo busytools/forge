@@ -5,6 +5,7 @@
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
+  import Prose from './Prose.svelte';
   import { searchHits } from './text';
 
   /**
@@ -118,7 +119,13 @@
     <Chevron />
   </summary>
 
-  {#if call.body.length > 0}
+  {#if call.skill !== null}
+    <!-- A `Skill` call's own result is the CLI's launching line; the row opens
+         onto the skill itself, which is what anyone opening it wants to read. -->
+    <div class="body">
+      <Prose text={call.skill} />
+    </div>
+  {:else if call.body.length > 0}
     <div class="body">
       {#if hits !== null}
         {#each hits as hit, at (at)}

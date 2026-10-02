@@ -480,6 +480,16 @@ function skillBody(text: string): { name: string; body: string } | null {
 }
 
 /**
+ * Whether a `Skill` call's own input names the skill a body's path ended in.
+ *
+ * The two spellings differ for a plugin skill: the call says
+ * `ui-ux-pro-max:ui-ux-pro-max` where the path ends `ui-ux-pro-max`.
+ */
+function namesSkill(want: string, name: string): boolean {
+  return want === name || want.endsWith(`:${name}`) || want.startsWith(`${name}:`);
+}
+
+/**
  * The continuation prompt a compaction leaves behind, which nobody typed.
  *
  * It arrives as a user frame right after the boundary frame, so the fold hands
@@ -1027,6 +1037,12 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
   const tasks = new Map<string, BackgroundTask>();
   /** The call a task belongs to, which the frames that carry one name. */
   const owners = new Map<string, string>();
+  /**
+   * The skill bodies the wire carries as user frames, pre-scanned so the
+   * `Skill` call that loaded one can claim it: a body follows its call, and
+   * the call's own row is the row that should open onto it.
+   */
+  const skills: Array<{ block: Block; name: string; body: string; claimed: boolean }> = [];
   for (const [at, frame] of frames.entries()) {
     // A dispatched agent's frames are not the conversation, and its verdict is
     // not the session's: a sub-agent's failed result says nothing about the
@@ -1112,6 +1128,10 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         if (frame.tool_use_result !== undefined) {
           records.set(block.tool_use_id, frame.tool_use_result);
         }
+      }
+      if (block.type === 'text' && typeof block.text === 'string') {
+        const held = skillBody(block.text);
+        if (held !== null) skills.push({ block, ...held, claimed: false });
       }
     }
   }
@@ -1496,6 +1516,11 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           // prompt. Each gets its own row above rather than the reader's.
           const skill = skillBody(stripped);
           if (skill !== null) {
+            // A body the `Skill` call claimed rides that call's own row, so
+            // nothing draws here; one no call claimed still gets a row of its
+            // own rather than being dropped.
+            const held = skills.find((held) => held.block === block);
+            if (held !== undefined && held.claimed) continue;
             push({
               kind: 'skill',
               key: keyOf(at, frame, blockAt),
@@ -1598,20 +1623,34 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           if (card !== null) push(card);
           continue;
         }
+        const leaf = leafOf(
+          id,
+          name,
+          block.input,
+          results.get(id),
+          records.get(id),
+          tasks.get(id),
+          abandoned,
+        );
+        if (name.toLowerCase() === 'skill') {
+          // A skill's body follows its call as a user frame; attaching it here
+          // is what makes the call's own row the one that opens onto the skill.
+          const want = str(obj(block.input), 'skill');
+          const held =
+            want === null
+              ? undefined
+              : skills.find((held) => !held.claimed && namesSkill(want, held.name));
+          if (held !== undefined) {
+            held.claimed = true;
+            leaf.skill = held.body;
+          }
+        }
         pending.push({
           tag: 'call',
           row: rowOf(name),
           label: labelOf(name),
           key: id !== '' ? `c-${id}` : keyOf(at, frame, blockAt),
-          leaf: leafOf(
-            id,
-            name,
-            block.input,
-            results.get(id),
-            records.get(id),
-            tasks.get(id),
-            abandoned,
-          ),
+          leaf,
         });
         continue;
       }

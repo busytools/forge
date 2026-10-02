@@ -109,6 +109,16 @@ export interface ToolLeaf {
    * of both is nothing to say.
    */
   mutation: MutationMarks | null;
+  /**
+   * The skill's own markdown, for a `Skill` call, or null for every other
+   * call.
+   *
+   * The CLI injects a skill's body as a user frame after the call that loaded
+   * it, and the fold attaches it here so the row that names the skill is the
+   * row that opens onto it - the launch result ("Launching skill: ...") is the
+   * CLI talking to itself, and the body is what the skill is.
+   */
+  skill: string | null;
 }
 
 /** Whether a call's body is drawn without being asked for. */
@@ -432,6 +442,7 @@ export function leafOf(
     note: task?.backgrounded === true ? task.note : null,
     body: drawnBody(name, body, result),
     mutation: marksOf(name, input, body, record),
+    skill: null,
   };
 }
 

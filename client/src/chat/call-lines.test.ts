@@ -25,6 +25,7 @@ const edited = (): ToolLeaf => ({
     },
   ],
   mutation: { hunks: 1, added: 1, removed: 1, all: true, outside: true },
+  skill: null,
 });
 
 let app: Record<string, unknown> | null = null;

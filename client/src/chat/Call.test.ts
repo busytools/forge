@@ -15,6 +15,7 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
   note,
   body: [{ kind: 'text', text: 'Command running in background with ID: bj5g0t2kq.' }],
   mutation: null,
+  skill: null,
 });
 
 /** The body's term boxes, as the reader sees them. */
@@ -22,6 +23,31 @@ const boxes = (body: string): string[] =>
   [...body.matchAll(/<div class="term">([\s\S]*?)<\/div>/g)].map((box) => box[1] ?? '');
 
 describe('the row one call draws', () => {
+  it("opens onto the skill a Skill call loaded, which is the row's right data", () => {
+    // The call's own result is the CLI's "Launching skill: ..." line, which
+    // says nothing; the fold hangs the skill's body on the call, and the row
+    // opens onto that instead.
+    const drawn = render(Call, {
+      props: {
+        call: {
+          id: 'toolu_skill',
+          row: { kind: 'family', family: 'skill' },
+          name: 'Skill',
+          title: 'unslop',
+          command: null,
+          status: 'completed',
+          note: null,
+          body: [{ kind: 'text', text: 'Launching skill: unslop' }],
+          mutation: null,
+          skill: '# Unslop\n\nEdit text to remove AI patterns.',
+        } as ToolLeaf,
+      },
+    }).body;
+
+    expect(drawn, 'the skill is drawn as markdown').toContain('<h1>');
+    expect(drawn, 'and the launch line draws nowhere').not.toContain('Launching skill');
+  });
+
   it('draws a backgrounded call notice in the box its own result drew', () => {
     const drawn = boxes(
       render(Call, {

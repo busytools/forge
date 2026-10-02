@@ -267,7 +267,37 @@ describe('one turn folded into the units a view draws', () => {
     ).toBe(9_149);
   });
 
-  it('draws a loaded skill as its own row rather than as the reader own turn', () => {
+  it("hangs a skill's body on the call that loaded it, not on a row of its own", () => {
+    // The skill lane already draws the call that loaded it; the body follows
+    // as a user frame, and attaching it there is what makes that row open onto
+    // the skill - a second row beside it says the same thing twice.
+    const load = (skill: string): unknown => said([use(`toolu_${skill}`, 'Skill', { skill })]);
+    const body = heard([
+      text(
+        'Base directory for this skill: /Users/ved/.claude/skills/unslop\n\n# Unslop\n\nEdit text.',
+      ),
+    ]);
+    const cached = heard([
+      text(
+        'Base directory for this skill: /Users/ved/.claude/plugins/cache/ui-ux-pro-max-skill/ui-ux-pro-max/2.13.0\n\n# Ux\n\nDo it.',
+      ),
+    ]);
+
+    const units = fold([load('unslop'), body]);
+    expect(kinds(units), 'the call group alone, no second row').toEqual(['group']);
+    const [group] = units;
+    const held = families(group).flatMap((family) => family.calls);
+    expect(held, 'one call drew').toHaveLength(1);
+    expect(held[0]?.skill, "carrying the skill's own words").toBe('# Unslop\n\nEdit text.');
+
+    const [plugin] = fold([load('ui-ux-pro-max:ui-ux-pro-max'), cached]);
+    expect(
+      plugin?.kind === 'group' ? families(plugin)[0]?.calls[0]?.skill : null,
+      'and a plugin skill matches though the two spellings differ',
+    ).toBe('# Ux\n\nDo it.');
+  });
+
+  it('draws an unclaimed skill body as its own row rather than as the reader own turn', () => {
     // The CLI injects a skill's body as a user frame and nobody typed it; the
     // row is built from the frame's own first line, which is the only marker
     // the wire carries, and that line is dropped from the body.
