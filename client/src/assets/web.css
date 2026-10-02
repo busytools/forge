@@ -1403,9 +1403,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt.sel .why { color: var(--muted); }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
   margin-top: 2px; border: 1.5px solid var(--ctl); display: grid; place-items: center; }
-/* A question's row that is on, which the answer carries with it. The box is
-   the only mark of it, so it is drawn rather than implied by the pointer. */
-.opt .box2.on { border-color: var(--ok); color: var(--ok); }
+/* A question's row that is on. Filled rather than outlined: a green outline
+   with a green check inside is two greens and no box, so the taken state is
+   the square itself in the ok tone with the check knocked out of it - the
+   shape a checkbox reads as everywhere else on the web. */
+.opt .box2.on { border-color: var(--ok); background: var(--ok); color: #0d111a; }
 /* The single-answer counterpart of the box, in the same slot: a circle that
    fills on the row being taken, in the tone the box's check takes. */
 .opt .radio { width: 15px; height: 15px; flex: 0 0 15px; margin-top: 2px;
