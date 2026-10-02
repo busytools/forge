@@ -848,6 +848,16 @@ describe('one turn folded into the units a view draws', () => {
       'capture-line-2',
     );
 
+    // An empty word is no word, so a frame answering `''` reports the state it
+    // is in rather than a state that trails off. No capture can carry this -
+    // the wire type makes `outcome` required and every one of the 147 sends
+    // `success` - so it is the read the comment promises rather than a shape
+    // anyone observed.
+    const blank = fold([
+      { ...(frames[0] as Record<string, unknown>), outcome: '', exit_code: undefined },
+    ]);
+    expect(hookOf(blank)?.state, 'and an empty word draws no state at all').toBe('running');
+
     expect(fold(frames), 'the response settles that row rather than opening a second').toHaveLength(
       1,
     );

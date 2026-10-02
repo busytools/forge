@@ -7,12 +7,16 @@
    * One hook's own run: the start that named it, what it printed as it went,
    * and the response that settled it.
    *
-   * **Collapsed, carrying the hook and the state it reached**, for the reason a
-   * thinking row is. A hook's output is long and secondary - a session-start
-   * hook prints the boilerplate it injects into the session - so the whole of
-   * it sits behind the row's own open rather than being drawn under every turn.
-   * It is never clipped: a summary standing in for the output would be the drop
-   * rule 25 forbids, which is why the row collapses it instead.
+   * **The terminal draws nothing for this**, which is why the shape is the
+   * client's to choose rather than a parity port: its arm for the three frames
+   * is a no-op. So the row takes the vocabulary the column already has for a
+   * block nothing else shows - collapsed on what it is, with the whole of it
+   * behind the row's own open - which is the shape `Thinking.svelte` uses for
+   * the same reason.
+   *
+   * It is never clipped: a hook's output is long and secondary, so it is
+   * collapsed rather than shortened, and a summary standing in for it would be
+   * the drop rule 25 forbids.
    */
   let { run }: { run: HookRun } = $props();
 </script>

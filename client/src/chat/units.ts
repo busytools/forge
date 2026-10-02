@@ -26,8 +26,9 @@
  *   the count is the terminal's marker, the cut is unmarked there, and this
  *   fold's `push` ends a run of calls at it.
  * - a hook's own lifecycle draws as one row per run, where the terminal's arm
- *   for those three frames is a no-op. Its summary chip is matched rather than
- *   dropped, and no capture holds the chip and a run's own frames together.
+ *   for those three frames is a no-op. Its summary chip - the one other hook
+ *   surface it has - is matched here rather than dropped, and no capture holds
+ *   that chip and a run's own frames together.
  *
  * **And a dispatched agent's frames are not the conversation either.** A
  * sub-agent's prose and calls belong to the SUBAGENTS surface, and drawn here
@@ -135,8 +136,7 @@ export interface HookInfo {
  *
  * `body` is held apart from the head because a hook's output is long and
  * secondary - a session-start hook prints the boilerplate it injects into the
- * session - so the row collapses it rather than drawing it. It is the whole of
- * what the run printed, never a clip of it.
+ * session - so the row collapses it rather than drawing it.
  */
 export interface HookRun {
   /** The hook the CLI matched, e.g. `SessionStart:startup`. */
@@ -147,7 +147,11 @@ export interface HookRun {
   state: string;
   /** Whether it failed, which is the code the response reports it exited on. */
   failed: boolean;
-  /** The whole of what it printed, or null where it printed nothing. */
+  /**
+   * What the run printed, whole rather than clipped, and null where it printed
+   * nothing - as whole as `hookRun` can make it, which is not as much as it
+   * sounds: see the inference that doc records.
+   */
   body: string | null;
 }
 
@@ -855,7 +859,10 @@ function hookFailed(frame: Frame): boolean {
 function hookRun(frame: Frame): HookRun {
   const name = str(frame, 'hook_name') ?? '';
   const fired = str(frame, 'hook_event') ?? '';
-  const outcome = str(frame, 'outcome');
+  // An empty word is no word, the way the frames' own sentences are read: a
+  // frame answering `''` has said nothing about how it ended, and joining it
+  // would draw a row whose state trails off.
+  const outcome = str(frame, 'outcome') || null;
   const exit = typeof frame.exit_code === 'number' ? frame.exit_code : null;
   return {
     name,
