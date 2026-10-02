@@ -28,7 +28,7 @@ import type { ServerMessage, SessionUpdate } from '../protocol';
 import { inFlightOf } from '../session/apply';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { fold } from './units';
+import { fold, queuedWords } from './units';
 
 /** One turn as a page carries it: the fold's name, and the CLI's messages. */
 export interface PageTurn {
@@ -76,6 +76,19 @@ function carriesResult(messages: unknown[]): boolean {
     const type = (message as { type?: unknown } | null)?.type;
     return type === 'result' || type === 'error';
   });
+}
+
+/**
+ * Whether a page row opens on a mid-turn prompt: the `queued_command` block
+ * the scan hoists the transcript's `attachment` row into.
+ *
+ * The CLI queues a prompt only while a turn is running, so a row opening on
+ * one is the turn above it carrying on rather than a turn of its own. The
+ * harness's own background-completion notice rides the same block and opens no
+ * turn at all, so it is not one of these.
+ */
+function queuedPrompt(row: PageTurn): boolean {
+  return queuedWords(messagesOf(row)[0]) !== null;
 }
 
 /** Whether a seat's own record says a turn is in flight. */
@@ -221,11 +234,19 @@ function uuidOf(message: unknown): string | null {
   return typeof id === 'string' && id !== '' ? id : null;
 }
 
+/** Whether a row already says a frame's words, whatever carrier they arrived in. */
+function saysWords(messages: unknown[], message: unknown): boolean {
+  const words = wordsOf(message);
+  return words.length > 0 && messages.some((held) => sameWords(words, wordsOf(held)));
+}
+
 /**
  * What one frame says, when it is a person's own words.
  *
  * A delivery row is a display-only user turn with no id at all, and its words
- * are the only thing its two copies agree on.
+ * are the only thing its two copies agree on. A mid-turn prompt says the same
+ * words under a second carrier - the `queued_command` block a page holds it in
+ * - so the words are read from both.
  */
 function wordsOf(message: unknown): string[] {
   const words: string[] = [];
@@ -236,6 +257,8 @@ function wordsOf(message: unknown): string[] {
     const text = (block as { text?: unknown } | null)?.text;
     if (typeof text === 'string' && text !== '') words.push(text);
   }
+  const queued = queuedWords(message);
+  if (queued !== null) words.push(queued);
   return words;
 }
 
@@ -588,6 +611,25 @@ export class Chat {
           copies.push(settled.messages);
           continue;
         }
+        // **A row the fold cut at a mid-turn prompt is not a row of its own.**
+        // The CLI queues a prompt only while a turn is running, and it writes
+        // the transcript's row where it queued it - inside that turn - so the
+        // row above it is the turn it interrupted, and the page's cut joins
+        // back where the live path draws the words: inside the running row.
+        const above = named[named.length - 1];
+        if (above !== undefined && queuedPrompt(row)) {
+          const messages = [...(copies[copies.length - 1] ?? [])];
+          for (const message of messagesOf(row)) {
+            // The prompt the row already grew with is the SAME words under the
+            // carrier a page holds them in, and the two carriers mint different
+            // ids - so a copy already said is not added beside the one held.
+            if (!carries(messages, message) && !saysWords(messages, message))
+              messages.push(message);
+          }
+          named[named.length - 1] = { ...above, messages };
+          copies[copies.length - 1] = messages;
+          continue;
+        }
         const key = nameIn(row, taken);
         taken.add(key);
         const fresh: Turn = { key, messages: messagesOf(row), live: false };
@@ -754,22 +796,21 @@ export class Chat {
   /**
    * One arriving message, into the turn it belongs to.
    *
-   * It joins the live turn being written when there is one. With none open it
-   * opens a turn of its own - unless the message is what a person said, which
-   * always starts one, because that is the boundary the server pages on and a
-   * prompt appended to the turn above it would draw the reader's own words
-   * inside the answer to their last one.
+   * It joins the turn being written when there is one. With none open it opens
+   * a turn of its own.
+   *
+   * **What a person said joins a turn being written like anything else.** The
+   * CLI fuses a mid-turn prompt into the turn it interrupted rather than
+   * opening one, and the terminal draws that shape: the running row keeps its
+   * clock and the words draw inside it. A row of its own leaves one turn as
+   * two rows, both counting - which is the whole of what this rule decides.
    *
    * **A frame the fold draws nothing out of never opens a row: it joins the
    * turn it arrived in, settled or not, and is held nowhere when there is
    * none.** Such a row holds a row's space while drawing nothing, and a row
    * the reader never scrolls to keeps the list's estimate rather than its own
    * height - a blank row per tool call on a running seat, and thousands a
-   * minute from the CLI's thinking-token counter. That is the server's
-   * boundary too: a turn opens for a person's own words and for nothing else -
-   * a prompt the CLI queued mid-turn included, though that one reaches a page
-   * through the transcript rather than through here - and everything else
-   * draws inside the turn already open.
+   * minute from the CLI's thinking-token counter.
    *
    * Holding a frame that belongs to no turn loses nothing informative: a page
    * carries a turn's messages from its first, so the opening rows ride the
@@ -794,18 +835,21 @@ export class Chat {
       // something to arrive, so a column left where they had scrolled to would
       // hide the very answer they are waiting on.
       const follow = held.following || units.some((unit) => unit.kind === 'user');
-      // A turn opens where a person's own words do, while a turn is live: the
-      // server's own rule, so everything else joins the turn it arrived in,
-      // settled or not. A frame arriving with no turn at all is held nowhere,
-      // which loses nothing - a page carries a turn's messages from its first.
+      // A frame that draws opens a row of its own only where no turn is being
+      // written. A row the core says is running is one of those too, whichever
+      // way the client learned it: a seat reached mid-turn has its row from a
+      // page, and a frame that opened a second row beside it would be one turn
+      // in two.
       //
-      // A row the core says is running is that turn too, whichever way the
-      // client learned it: a seat reached mid-turn has its row from a page, and
-      // a frame that opened a second row beside it would be one turn in two.
+      // **Being written is asked of the fold's own rule rather than of `live`**
+      // - a turn the frames built stays live for good (#1486), so a row that
+      // carries the frame it ended on is over whatever the flags say, and a
+      // prompt arriving after it must still open the next turn's row.
+      const writing = last !== undefined && beingWritten(last) && !carriesResult(last.messages);
       const opens =
         draws &&
         !isSystem(message) &&
-        (last === undefined || opensATurn(message) || !(last.live || last.running === true));
+        (last === undefined || (!writing && (opensATurn(message) || !beingWritten(last))));
       if (!opens) {
         if (last === undefined) return held;
         const grown: Turn = { ...last, messages: [...last.messages, message] };

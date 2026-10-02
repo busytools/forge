@@ -373,6 +373,25 @@ function isCompletion(block: Block, words: string): boolean {
   );
 }
 
+/**
+ * What a frame says when it is a mid-turn prompt's carrier: the words the CLI
+ * queued, or `null` when it carries no prompt - or carries the harness's own
+ * completion notice, which nobody typed.
+ *
+ * Exported because the conversation reads the same prompt in two carriers: the
+ * frame forge echoes while the turn runs, and the `queued_command` block the
+ * scan hoists the transcript's row into, which is what a page carries.
+ */
+export function queuedWords(message: unknown): string | null {
+  const content = (message as { message?: { content?: unknown } } | null)?.message?.content;
+  for (const block of blocksOf(content)) {
+    if (block.type !== 'queued_command') continue;
+    const words = queuedText(block.prompt);
+    if (!isCompletion(block, words)) return words;
+  }
+  return null;
+}
+
 /** The text between two markers, and what follows the second. */
 function between(text: string, open: string, close: string): [string, string] | null {
   const from = after(text, open);
