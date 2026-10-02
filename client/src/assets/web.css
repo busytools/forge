@@ -973,9 +973,10 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 
 /* ---------- the strip pinned above the box ---------- */
 
-/* The running turn's metadata row, pinned above the composer for exactly as
-   long as the turn is incomplete. It shares the box's edges and sits outside
-   its ring, so the row's height is the only thing it ever costs the column.
+/* The running turn's metadata row, pinned above the composer for as long as
+   the turn is incomplete and through the beat that follows it. It shares the
+   box's edges and sits outside its ring, so the row's height is the only thing
+   it ever costs the column.
    Its fields are the settled row's own, under `.turninfo`, and its element is
    the flex row the fields wrap in - the strip renders no box of its own.
    No margin of its own: the composer cancels the grid's row gap for its own
