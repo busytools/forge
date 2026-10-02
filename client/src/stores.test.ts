@@ -94,6 +94,11 @@ describe('the stores one connection holds', () => {
       // frames - and the swap lands with nobody reading, which is the case.
       store.set({ header: { turn_in_flight: true } });
       store.push(opening());
+      // A tail long enough to overflow the store's ceiling, so the store is
+      // holding a dropped count when the replacement lands. The clear has to
+      // reset it: a reader suppresses its replay while that count is nonzero,
+      // and the new occupant's own frames are then never read.
+      for (let at = 0; at < 520; at += 1) store.push('catalog_loaded');
 
       store.push(occupantAs(name));
 
@@ -107,6 +112,7 @@ describe('the stores one connection holds', () => {
       expect(store.state(), `${name}: the seat's store was not put back to loading`).toEqual({
         kind: 'loading',
       });
+      expect(store.dropped(), `${name}: the cleared store kept the old tail's count`).toBe(0);
 
       // And the seat's store is empty rather than dead: the next occupant's
       // own frames land in it.
