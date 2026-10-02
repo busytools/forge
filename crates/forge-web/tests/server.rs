@@ -1098,6 +1098,10 @@ const MOCK_HOME: &str = include_str!("../../../docs/book/src/ui/client/web-home.
 /// page, so its faces are read as closely as its states.
 const MOCK_COMPOSER: &str = include_str!("../../../docs/book/src/ui/client/web-composer.html");
 
+/// The connect screen's mockup, the third current-state drawing that
+/// declares the scale rather than only drawing with it.
+const MOCK_CONNECT: &str = include_str!("../../../docs/book/src/ui/client/web-connect.html");
+
 /// Every symbol the page's two mockups define, by id. Both mocks draw some
 /// of the same marks, so the session mockup keeps the ids it already won -
 /// it is the mockup the page was built from, and a shared mark must not
@@ -1190,7 +1194,7 @@ async fn the_sprite_is_the_mocks_sprite() {
     }
 }
 
-/// The sheet's type scale is the mockup's, token for token: the scale is
+/// The sheet's type scale is the mockups', token for token: the scale is
 /// what a page's text says a thing is, and the mockup is where it was
 /// settled.
 #[tokio::test]
@@ -1204,8 +1208,33 @@ async fn the_type_scale_is_the_mocks() {
     let got = scale_tokens(&sheet);
 
     assert!(!want.is_empty(), "the mockup declares the scale this pins the sheet against");
+    // The session mockup is the one the page was built from, so the sheet
+    // declares its scale and nothing else: a token dropped from either side
+    // leaves a step the two no longer share, which the value loop below
+    // cannot see.
+    assert_eq!(
+        got.keys().collect::<Vec<_>>(),
+        want.keys().collect::<Vec<_>>(),
+        "the sheet's scale is the session mockup's, token for token"
+    );
     for (token, value) in &want {
         assert_eq!(got.get(token).map(String::as_str), Some(value.as_str()), "the sheet's {token}");
+    }
+
+    // The other current-state mockups carry the steps they draw rather than
+    // the whole scale, so each is read by value and not by set.
+    for (mockup, drawn) in
+        [("web-connect.html", MOCK_CONNECT), ("web-composer.html", MOCK_COMPOSER)]
+    {
+        let declared = scale_tokens(drawn);
+        assert!(!declared.is_empty(), "{mockup} declares the steps it draws");
+        for (token, value) in &declared {
+            assert_eq!(
+                got.get(token).map(String::as_str),
+                Some(value.as_str()),
+                "{mockup}'s {token}"
+            );
+        }
     }
 }
 
