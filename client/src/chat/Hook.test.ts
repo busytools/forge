@@ -7,13 +7,18 @@ import Hook from './Hook.svelte';
 import type { HookRun } from './units';
 
 /**
- * The hook run row, as markup.
+ * The hook run row, as markup and as rules.
  *
  * **What this can answer and what it cannot.** The row is a disclosure, so its
  * accessible name is its summary and the thing to assert is text: a reader who
  * cannot see it has only those words to know a hook ran and how it ended. The
  * open body is what the fold sent, which is a fact about the markup. Where the
  * mark and the chevron land on the row is layout, which jsdom does not perform.
+ *
+ * **The rules are read where the sheets are, and each scan says what it read.**
+ * Every one of them is a walk over a sheet rather than a file read, so each
+ * asserts the denominator it claims: a predicate that reaches no rule reports a
+ * clean sheet, which is the answer that looks most like success.
  */
 
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
@@ -120,13 +125,17 @@ describe('the hook run row', () => {
    * from the chip's `.hooks`, which is why `.hook` is not it.
    */
   it('wears names neither sheet already reaches', () => {
-    expect(draw(), "the row wears the box class the sheet's rules are written for").toContain(
+    const body = draw();
+    expect(body, "the row wears the box class the sheet's rules are written for").toContain(
       '<details class="hookrun"',
     );
     for (const [what, sheet] of sheets()) {
       // Every class the row wears, not only the ones it leads with: `.ev` and
       // `.nm` are the kind of short name a later rule picks up by accident.
-      for (const name of ['hk', 'nm', 'ev', 'hook']) {
+      for (const name of WORN) {
+        // The markup is where the list is held to the row: a name misspelled
+        // here would have no bare rule and no wearer, and would read as clean.
+        expect(body, `the row wears .${name}`).toContain(`class="${name}"`);
         expect(bareRules(sheet, name), `${what} has no bare .${name} rule`).toEqual([]);
       }
       expect(
@@ -141,22 +150,37 @@ describe('the hook run row', () => {
    * The pin the disclosure rests on, and the one rule 25 is about: the row
    * collapses the output behind its own open rather than shortening it, so a
    * clamp anywhere on the body would turn this row back into the drop it was
-   * built to stop. Both classes are shared with other rows, which is how a rule
-   * written for one of them reaches this one.
+   * built to stop.
+   *
+   * **An allowlist, not a denylist.** A denylist answers only the forms someone
+   * thought of: `clip-path`, `content-visibility`, `line-height: 0`, `height`
+   * and a case variant of a listed name all pass one. Naming what may be
+   * declared makes an unknown property the failure instead.
+   *
+   * It governs WHICH properties the body may be given, not their values - a
+   * `color: transparent` is still writable here, and that is the boundary.
    */
-  it('hides nothing of what the body carries', () => {
+  it('declares nothing on the body but what it draws with', () => {
     for (const [what, sheet] of sheets()) {
       const reaching = bodyRules(sheet);
       // The denominator: a scan that reaches no rule reports every sheet clean,
       // and this predicate is a walk over selectors rather than a file read.
       expect(reaching.length, `${what} spells rules reaching the row's body`).toBeGreaterThan(0);
+      // Each class, not the set: a list that lost `.term` still finds the
+      // `.body` rules and would leave every `.term`-only clamp unseen.
+      for (const name of BODY_CLASSES) {
+        expect(
+          reaching.filter((rule) => rule.reaches.includes(name)).length,
+          `${what} spells a rule reaching .${name}`,
+        ).toBeGreaterThan(0);
+      }
       expect(
         reaching.flatMap((rule) =>
           rule.declarations
-            .filter(clamps)
-            .map((declaration) => `${rule.selector} { ${declaration} }`),
+            .filter((declaration) => !BODY_PROPERTIES.includes(propertyOf(declaration)))
+            .map((declaration) => `${under(rule)} { ${declaration} }`),
         ),
-        `${what} leaves the row's body unclamped`,
+        `${what} declares nothing on the row's body but what it draws with`,
       ).toEqual([]);
     }
   });
@@ -165,13 +189,36 @@ describe('the hook run row', () => {
    * The drawing is the surface's visual truth, so a rule edited in one sheet
    * alone is one surface described two ways. Normalised, because the sheets'
    * comments and indentation are each their own.
+   *
+   * **The set is the row's own rules AND the rules its body draws through**,
+   * which are `.body` and `.term`, both shared with other rows: the output
+   * wraps by `.term`'s `white-space`, so a divergence there is the drawing
+   * showing a reader different output. An at-rule's own prelude is part of the
+   * comparison, so a rule stepped into a media query in one sheet alone is not
+   * the same rule as a top-level one.
    */
   it("mirrors the row's rules in both sheets, rule for rule", () => {
-    const app = hookrunRules(SHEET);
+    const app = rowRules(SHEET);
     // The same denominator one level up: a block the scan failed to read
     // compares equal to an empty one.
     expect(app.length, 'the app spells the row').toBeGreaterThan(0);
-    expect(hookrunRules(BOOK), 'and the drawing mirrors every one of them').toEqual(app);
+    expect(rowRules(BOOK), 'and the drawing mirrors every one of them').toEqual(app);
+  });
+
+  it('reads a rule stepped into an at-rule as a different rule', () => {
+    // The control the comparison above needs. Without the prelude in the string
+    // it compares, the same rule at the top level in one sheet and inside a
+    // media query in the other compares EQUAL, and a responsive tweak to this
+    // row made in one sheet alone leaves the pin green - which is the shape of
+    // instrument the rest of this file exists to refuse.
+    const flat = '.hookrun { margin: 3px 0; }';
+    const stepped = '@media (min-width: 900px) { .hookrun { margin: 3px 0; } }';
+
+    expect(rowRules(flat), 'a sheet of one plain rule').toEqual(['.hookrun { margin: 3px 0 }']);
+    expect(rowRules(stepped), 'and the same rule inside a query').toEqual([
+      '@media (min-width: 900px) .hookrun { margin: 3px 0 }',
+    ]);
+    expect(rowRules(flat), 'which are not the same rule').not.toEqual(rowRules(stepped));
   });
 
   it('draws the row in the book, open and closed', () => {
@@ -199,58 +246,144 @@ function sheets(): Array<[string, string]> {
 }
 
 /**
- * The classes the row draws its body with. Both are shared with other rows, so
+ * Every class the row draws with, which is what a bare rule would reach. `hook`
+ * is not among them: it is the name the row must NOT take, one letter from the
+ * chip's `.hooks`, and is checked as the collision rather than as a wearer.
+ */
+const WORN = ['hk', 'nm', 'ev'];
+
+/**
+ * The classes the row's body draws through. Both are shared with other rows, so
  * a rule written for one of them reaches this one.
  */
 const BODY_CLASSES = ['body', 'term'];
 
-/** Whether one declaration would hide or shorten the text a body draws. */
-function clamps(declaration: string): boolean {
-  const [property = '', value = ''] = declaration.split(':').map((part) => part.trim());
-  // A maximum height is the shape a clamp arrives as even without `overflow`
-  // beside it, and every `text-overflow` value is a clip, so both are read as
-  // one rather than weighed.
-  if (property === 'max-height' || property === '-webkit-line-clamp') return true;
-  if (property === 'text-overflow') return true;
-  if (property === 'display') return value === 'none';
-  if (property.startsWith('overflow'))
-    return value.startsWith('hidden') || value.startsWith('clip');
-  return false;
+/**
+ * The properties a rule reaching the row's body may declare, which is what it
+ * draws with today: eight, none of which can hide or shorten a line.
+ */
+const BODY_PROPERTIES = [
+  'border-left',
+  'color',
+  'font-family',
+  'font-size',
+  'margin',
+  'overflow-wrap',
+  'padding',
+  'white-space',
+];
+
+/** One declaration's property, lowercased - CSS property names are not case-sensitive. */
+function propertyOf(declaration: string): string {
+  return (declaration.split(':')[0] ?? '').trim().toLowerCase();
+}
+
+/** A rule as something a reader can be shown, with the at-rule it sits in. */
+function under(rule: PlainRule): string {
+  return `${rule.prelude === '' ? '' : `${rule.prelude} `}${rule.selector}`;
+}
+
+/** One rule as a sheet spells it, before anything asks what it reaches. */
+interface PlainRule {
+  /** The `@media`-style prelude it sits inside, or an empty string at the top level. */
+  prelude: string;
+  selector: string;
+  declarations: string[];
+}
+
+/** One rule, with those of the classes asked for that its selector reaches. */
+interface Rule extends PlainRule {
+  reaches: string[];
+}
+
+/**
+ * Every `selector { declarations }` rule in a sheet, with the prelude of any
+ * at-rule it sits inside.
+ *
+ * **A rule is not always at the top level.** The session page's grid is stepped
+ * inside media queries, so a row's rules can be too - and a rule stepped into a
+ * query in one sheet is not the same rule as a top-level one in the other, which
+ * the prelude is what tells apart.
+ */
+function rulesIn(sheet: string): PlainRule[] {
+  const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
+  const out: PlainRule[] = [];
+  const open: string[] = [];
+  let held = '';
+  let at = 0;
+  while (at < code.length) {
+    const ch = code[at] ?? '';
+    if (ch === '{') {
+      const prelude = held.trim();
+      held = '';
+      at += 1;
+      if (prelude.startsWith('@')) {
+        open.push(prelude);
+        continue;
+      }
+      let depth = 1;
+      const from = at;
+      while (at < code.length && depth > 0) {
+        if (code[at] === '{') depth += 1;
+        else if (code[at] === '}') depth -= 1;
+        at += 1;
+      }
+      out.push({
+        prelude: open.join(' '),
+        selector: prelude,
+        declarations: code
+          .slice(from, at - 1)
+          .split(';')
+          .map((declaration) => declaration.trim())
+          .filter((declaration) => declaration !== ''),
+      });
+      continue;
+    }
+    if (ch === '}') {
+      open.pop();
+      held = '';
+      at += 1;
+      continue;
+    }
+    held += ch;
+    at += 1;
+  }
+  return out;
+}
+
+/**
+ * The classes a selector reaches: class compounds only, since a bare `body` in
+ * a selector is the page element rather than this row's box.
+ */
+function classesReached(selector: string): string[] {
+  return selector
+    .split(',')
+    .flatMap((member) => member.split(/[\s>+~]+/))
+    .filter((compound) => compound.startsWith('.'))
+    .map((compound) => compound.replace(/^\./, '').replace(/::?[\w-]*(\([^)]*\))?$/, ''));
 }
 
 /** Every rule whose selector reaches one of the classes the body draws with. */
-function bodyRules(sheet: string): Array<{ selector: string; declarations: string[] }> {
-  const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
-  const found: Array<{ selector: string; declarations: string[] }> = [];
-  for (const [, selectors = '', body = ''] of code.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    // Class compounds only: a bare `body` in a selector is the page element,
-    // not this row's box.
-    const classes = selectors
-      .split(',')
-      .flatMap((member) => member.split(/[\s>+~]+/))
-      .filter((compound) => compound.startsWith('.'))
-      .map((compound) => compound.replace(/^\./, '').replace(/::?[\w-]*(\([^)]*\))?$/, ''));
-    if (!classes.some((name) => BODY_CLASSES.includes(name))) continue;
-    found.push({
-      selector: selectors.trim(),
-      declarations: body
-        .split(';')
-        .map((declaration) => declaration.trim())
-        .filter((declaration) => declaration !== ''),
-    });
-  }
-  return found;
+function bodyRules(sheet: string): Rule[] {
+  return rulesIn(sheet).flatMap((rule) => {
+    const reaches = classesReached(rule.selector).filter((name) => BODY_CLASSES.includes(name));
+    return reaches.length === 0 ? [] : [{ ...rule, reaches }];
+  });
 }
 
-/** The row's own rules, comments off and whitespace normalised, in each sheet. */
-function hookrunRules(sheet: string): string[] {
-  const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
-  const found: string[] = [];
-  for (const [, selectors = '', body = ''] of code.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    if (!selectors.includes('.hookrun')) continue;
-    found.push(`${selectors.trim().replace(/\s+/g, ' ')} { ${body.trim().replace(/\s+/g, ' ')} }`);
-  }
-  return found;
+/**
+ * The row's own rules, and the rules its body draws through, as normalised
+ * strings: which sheet a rule lives in is the only thing the caller compares.
+ */
+function rowRules(sheet: string): string[] {
+  return rulesIn(sheet)
+    .filter(
+      (rule) =>
+        rule.selector.includes('.hookrun') ||
+        classesReached(rule.selector).some((name) => BODY_CLASSES.includes(name)),
+    )
+    .map((rule) => `${under(rule)} { ${rule.declarations.join('; ').replace(/\s+/g, ' ')} }`)
+    .map((rule) => rule.replace(/\s+/g, ' '));
 }
 
 /**
@@ -263,10 +396,9 @@ function hookrunRules(sheet: string): string[] {
  * name-only scan walks past.
  */
 function bareRules(sheet: string, name: string): string[] {
-  const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
   const found: string[] = [];
-  for (const rule of code.matchAll(/([^{}]+)\{/g)) {
-    for (const member of (rule[1] ?? '').split(',')) {
+  for (const rule of rulesIn(sheet)) {
+    for (const member of rule.selector.split(',')) {
       const first = member.trim().split(/[\s>+~]+/)[0] ?? '';
       if (first === `.${name}`) found.push(member.trim());
     }
