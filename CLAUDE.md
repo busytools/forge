@@ -183,7 +183,9 @@ the conversation it appears in. What the migration has
 not reached is the five refreshes that ask the core for a new snapshot:
 they are still direct
 `Workspace` calls, so `forge-tui` keeps its `forge-workspace` dependency
-and the arrow above is not yet one-way. A read a second view would want
+and the arrow above is not yet one-way. The surface carries one of them for
+the socket - `refresh_context_usage`, asked on a seat's read - while the
+TUI's own call sites are the ones still direct. A read a second view would want
 goes on that surface; a read only the TUI makes stays a plain method.
 Routing the remaining direct calls through the surface is its own piece
 of work, not a prerequisite for adding to the crates.

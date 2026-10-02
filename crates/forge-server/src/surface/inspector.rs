@@ -136,7 +136,9 @@ impl ViewSurface {
     /// # Errors
     ///
     /// [`DispatchError::UnknownSession`](forge_workspace::DispatchError::UnknownSession)
-    /// when the seat has no agent to ask or has not stamped a session id yet.
+    /// when the seat has no agent to ask or has not stamped a session id yet,
+    /// and [`DispatchError::SessionClosed`](forge_workspace::DispatchError::SessionClosed)
+    /// when the ask could not be handed to that agent.
     pub fn refresh_context_usage(
         &self,
         slot: &SessionSlot,
