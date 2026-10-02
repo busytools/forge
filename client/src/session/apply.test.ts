@@ -601,6 +601,27 @@ describe('applyUpdate', () => {
 
       expect(next, 'a payload naming no set wrote the crate defaults over the held one').toBe(held);
     });
+
+    it('clears the axes for the reset echo, which carries the set as nulls', () => {
+      const held = applyUpdate(empty(), {
+        dictate_overrides: {
+          key: SLOT,
+          overrides: { styling: 'formal', structure: 'lists', context: 'email' },
+        },
+      });
+
+      const next = applyUpdate(held, {
+        dictate_overrides: {
+          key: SLOT,
+          overrides: { styling: null, structure: null, context: null },
+        },
+      });
+
+      expect(
+        next.dictate_overrides,
+        'the reset echo did not clear the axes the session had set',
+      ).toEqual({ styling: null, structure: null, context: null });
+    });
   });
 
   describe('what it does not handle', () => {
