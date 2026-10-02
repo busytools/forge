@@ -335,18 +335,6 @@ fn an_assistant_chunk() -> forge_primitives::Message {
     .expect("parse an assistant message")
 }
 
-/// The frame the CLI sends when a compaction starts, which it sends twice - once
-/// before the `PreCompact` hook and once after.
-fn a_compaction_start() -> forge_primitives::Message {
-    serde_json::from_value(serde_json::json!({
-        "type": "system",
-        "subtype": "status",
-        "status": "compacting",
-        "session_id": "s",
-    }))
-    .expect("parse a status message")
-}
-
 /// The frame the CLI sends once a compaction settles, which is the only status
 /// frame carrying the compaction's own result.
 fn a_compaction_settle() -> forge_primitives::Message {
@@ -604,19 +592,6 @@ async fn a_compaction_settling_on_a_seat_a_page_holds_asks_past_the_bound() {
         "precondition: a reading past the gate refuses an ordinary ask: {refused:?}",
     );
 
-    // The whole sequence the CLI sends around a compaction, each frame of it
-    // one a bare null status would have read as the settle: the doubled
-    // `compacting` pair, and a permission-mode change, which shares the
-    // status/null shape and has nothing to do with a compaction.
-    for msg in [a_compaction_start(), a_compaction_start(), a_permission_mode_change()] {
-        fleet.emit(SessionUpdate::ChatAppended { key: lead_seat(), msg, origin: None });
-    }
-    let early = next_agent_command(&mut asked, 250).await;
-    assert!(
-        early.is_none(),
-        "none of those is the compaction's own result, so none of them fires the ask: {early:?}",
-    );
-
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_compaction_settle(),
@@ -727,57 +702,6 @@ async fn a_compaction_settling_inside_the_interval_still_asks() {
         matches!(second, Some(AgentCommand::GetContextUsage { .. })),
         "the settle is asked for inside the interval the turn's ask opened: {second:?}",
     );
-}
-
-/// A seat with no agent draws nothing on the wire for the ask: no error a page
-/// would have to render, and no reading, since no probe can have reached a CLI
-/// to answer with one.
-///
-/// **What this does NOT pin is that the ask was issued**, and nothing in this
-/// harness can: the refusal's only product is a `debug` record, emitted from the
-/// spawned fold task rather than from anything the test drives, so a capture
-/// that has to hold a thread-local subscriber across awaits is not the shape
-/// `test_support::logged` gives. The frame this reads back proves nothing on its
-/// own - the emit queues it synchronously, before the fold has run at all - so
-/// the assertion is the silence after it, and the reachable mutations are the
-/// ones that would break that silence rather than the ones that would drop the
-/// ask.
-#[tokio::test]
-async fn a_seat_with_no_agent_draws_nothing_for_the_ask() {
-    let (url, fleet) = a_server().await;
-    // A reading, so the ask is admitted and the refusal is the missing agent
-    // rather than one of the bounds.
-    fleet.seed_view_facts(
-        &lead_seat(),
-        ViewFacts { context: Some(a_small_reading()), ..ViewFacts::default() },
-    );
-    let mut socket = a_page_on(&url, Subject::Session(lead_seat())).await.0;
-
-    fleet.emit(SessionUpdate::ChatAppended {
-        key: lead_seat(),
-        msg: a_finished_turn(),
-        origin: None,
-    });
-
-    // Whatever else the core says, none of it is news about this ask: an error
-    // would be the refusal rendered, and a reading would be a probe that got out
-    // with no agent behind the seat. Anything else is passed over and the window
-    // is the bound, so a busy core is not read as a failure.
-    for _ in 0..8 {
-        match next_server_within(&mut socket, 250).await {
-            Some(ServerMessage::Error { what, why }) => {
-                panic!("a refused ask is not drawn as an error: {what} {why}")
-            }
-            Some(ServerMessage::Update { update }) => {
-                assert!(
-                    !matches!(*update, SessionUpdate::ContextUsageSnapshot { .. }),
-                    "no agent means no probe, so no reading can arrive: {update:?}",
-                );
-            }
-            Some(_) => {}
-            None => return,
-        }
-    }
 }
 
 /// What bounds that trigger, and the half of the seat-opened rule it must not

@@ -152,12 +152,13 @@ fn context_ask(update: &SessionUpdate) -> Option<(&SessionSlot, Ask)> {
 /// post-compaction ask, which may not be refused by the reading it exists to
 /// replace.
 ///
-/// Both records below are `debug` lines and nothing else. The refusal is what a
-/// seat with no agent leaves behind, and no test reads it back: it is emitted
-/// from the spawned fold rather than from anything a test drives, so the capture
-/// helper's thread-local subscriber does not reach it. What a test can see is
-/// that the refusal draws nothing on the wire, which the transport's tests
-/// assert; the read path's own ask in `transport::wire` has the same hole.
+/// Both records below are `debug` lines and nothing else, and **neither is
+/// asserted anywhere** - the read path's own ask in `transport::wire` has the
+/// same hole. The refusal a seat with no agent leaves behind is emitted from the
+/// spawned fold rather than from anything a test drives, so the capture helper's
+/// thread-local subscriber does not reach it, and what the fold leaves on the
+/// wire for it is a silence the fold's shape guarantees rather than one a test
+/// observes.
 fn request_context_usage(
     state: &TransportState,
     probes: &mut probe::ContextProbe,
