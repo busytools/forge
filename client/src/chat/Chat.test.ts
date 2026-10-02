@@ -589,7 +589,7 @@ describe('the chat column as it draws', () => {
     }
   });
 
-  it('takes the pin back for the next turn, and beats that turn’s own finish', () => {
+  it('takes the pin back for the next turn, and beats its own finish', () => {
     // A beat left armed by the turn before shows up here: it fires mid-flight,
     // clears the turn the pin is carrying, and the next turn's own finish then
     // never beats.
@@ -623,10 +623,9 @@ describe('the chat column as it draws', () => {
       server.send(ended());
       server.answer([{ key: 'turn-a-two', messages: [frame('a-two', 700), settledFrame()] }]);
 
-      expect(
-        document.querySelector('.strip')?.textContent,
-        'and its own finish beats',
-      ).toContain('cumulative');
+      expect(document.querySelector('.strip')?.textContent, 'and its own finish beats').toContain(
+        'cumulative',
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -638,12 +637,13 @@ describe('the chat column as it draws', () => {
     server.answer([{ key: 'turn-done', messages: [frame('a-done', 100), settledFrame()] }]);
 
     expect(document.querySelectorAll('.strip'), 'no row is pinned').toHaveLength(0);
-    expect(document.querySelectorAll('details.turninfo'), 'and the turn draws its own').toHaveLength(
-      1,
-    );
+    expect(
+      document.querySelectorAll('details.turninfo'),
+      'and the turn draws its own',
+    ).toHaveLength(1);
   });
 
-  it('pins the newest turn’s row, not the first one the column holds', () => {
+  it('pins the row of the newest turn, not of the first one the column holds', () => {
     const server = stub();
     draw({}, server);
     server.answer([

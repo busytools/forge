@@ -51,7 +51,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-describe('the clock a running row’s body draws', () => {
+describe('the clock a running row draws in its body', () => {
   it('moves on the tick, so the body does not freeze on a call that waits', () => {
     // The fold's span only grows when a frame lands, and a turn can sit minutes
     // on one call: a body that read the clock once would hold one number for

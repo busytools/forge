@@ -60,9 +60,7 @@
    * by that: the same row is on the page, in the pin, and the turn takes it
    * back the moment the pin lets go.
    */
-  const units = $derived(
-    pinned ? folded.filter((unit) => unit.kind !== 'report') : folded,
-  );
+  const units = $derived(pinned ? folded.filter((unit) => unit.kind !== 'report') : folded);
 
   /** A reader's own words on their own, or a run of everything else in one block. */
   type Block =
