@@ -1348,10 +1348,14 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 
 /* ---------- the dock: the box morphed into a prompt ---------- */
 
-.dock { border: 1.5px solid rgba(244,118,0,.75); border-radius: 16px;
-  background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86));
-  box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 15px 17px;
-  display: flex; flex-direction: column; gap: 11px; }
+/* The dock is a panel, not a warning: a neutral edge and the page's own
+   surface, with the accent left to the row being marked and the question's
+   own mark. The warm border and the orange-tinted gradient read as a state
+   rather than as a surface. */
+.dock { border: 1px solid var(--line); border-radius: 14px;
+  background: linear-gradient(180deg, rgba(20,25,38,.85), rgba(13,17,26,.92));
+  box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 13px 15px;
+  display: flex; flex-direction: column; gap: 10px; }
 .dock .queue { display: flex; align-items: center; gap: 6px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 /* The marker the mockup draws, as the sheet's own chevron turned to face the
@@ -1381,10 +1385,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt .tx { flex: 1; min-width: 0; }
 .opt .lbl { color: var(--dim); background: none; border: 0; padding: 0;
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
-/* What choosing an option means, on its own line under the name and in the
-   name's own column, which is where the terminal draws it. */
-.opt .why { display: block; color: var(--dim); font-size: var(--fs-label);
-  margin-top: 1px; }
+/* What choosing an option means, in the label's own line: a second indented
+   line under every row reads as a warning about the row rather than as part
+   of it, and the reader is choosing, not being told off. */
+.opt .why { color: var(--dim); font-size: var(--fs-label); margin-left: 7px; }
 .opt.sel { background: var(--sel); }
 .opt.sel .lbl { color: var(--text); font-weight: 600; }
 .opt.sel .why { color: var(--muted); }
@@ -1393,14 +1397,20 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 /* A question's row that is on, which the answer carries with it. The box is
    the only mark of it, so it is drawn rather than implied by the pointer. */
 .opt .box2.on { border-color: var(--ok); color: var(--ok); }
+/* A single-answer question takes one row, so it draws no box: the marked row
+   carries the pointer the terminal draws, in the slot the boxes hold. */
+.opt .cur { width: 15px; flex: 0 0 15px; color: var(--accent); }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
 .dock .preview { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
   padding: 7px 11px; font-family: var(--mono); font-size: var(--fs-data);
   color: var(--muted); white-space: pre-wrap; }
-.dock .notes { margin-left: 31px; border: 1px solid var(--ctl); border-radius: 9px;
-  padding: 7px 11px; font-family: inherit; font-size: var(--fs-base); color: var(--text);
-  background: rgba(13,17,26,.6); resize: none; }
+/* The escape hatch is the row's own box, so the field carries no chrome of
+   its own: no border, no second panel, no indent - the caret sits in the row
+   under its own words, and what is typed there is the answer. */
+.dock .notes { width: 100%; margin: 0; border: 0; background: none; padding: 0;
+  font-family: inherit; font-size: inherit; color: var(--text); resize: none; outline: none; }
+.dock .notes::placeholder { color: var(--dim); }
 /* A take that is still running behind the dock: the whole indicator on this
    surface, so a prompt cannot swallow a recording that is still going. */
 .dock .blip { display: flex; align-items: center; gap: 8px; padding-left: 31px;

@@ -713,7 +713,7 @@ function address(fields: Record<string, unknown>): string | null {
 }
 
 /** The card a question call draws, with whatever the person answered. */
-function questionCard(input: unknown, answer: unknown, key: string): Unit {
+function questionCard(input: unknown, answer: unknown, key: string): Unit | null {
   const questions = obj(input)['questions'];
   const answers = obj(obj(answer)['answers']);
   const annotations = obj(obj(answer)['annotations']);
@@ -733,12 +733,23 @@ function questionCard(input: unknown, answer: unknown, key: string): Unit {
         ? [recorded]
         : [];
     const picked = values.filter((value) => value !== '' && labels.includes(value));
+    // The annotation first: it is the field the CLI fills with what was TYPED,
+    // and a selected value that is not one of the question's own labels is the
+    // escape row's label - so reading values first drew "you typed: Tell the
+    // agent something else" where the reader's own words should be.
     const typed =
-      values.find((value) => value !== '' && !labels.includes(value)) ??
       str(obj(annotations[text]), 'notes') ??
+      values.find((value) => value !== '' && !labels.includes(value)) ??
       null;
 
     asked.push({ question: text, picked_labels: picked, typed_note: typed === '' ? null : typed });
+  }
+  // A question still waiting is not drawn here at all: the dock is its row
+  // while it waits, and the card that carried both the question and its answer
+  // read as a second copy of the prompt rather than as the record of one. It
+  // appears the moment an answer lands.
+  if (!asked.some((entry) => entry.picked_labels.length > 0 || entry.typed_note !== null)) {
+    return null;
   }
   return { kind: 'question', key, asked };
 }
@@ -1435,13 +1446,12 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           continue;
         }
         if (isQuestion(name)) {
-          push(
-            questionCard(
-              block.input,
-              records.get(id),
-              id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
-            ),
+          const card = questionCard(
+            block.input,
+            records.get(id),
+            id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
           );
+          if (card !== null) push(card);
           continue;
         }
         flushPeers();

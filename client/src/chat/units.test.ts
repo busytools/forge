@@ -136,13 +136,25 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it('splits the run on the calls the mockup draws alone', () => {
-    const question = said([use('toolu_q', 'AskUserQuestion', { questions: [] })]);
-    const peer = said([
-      use('toolu_p', 'mcp__forge__agents__tell', { project: 'x', message: 'hi' }),
-    ]);
+    // An answered question is one of the cutters: while it waits it draws
+    // nothing here - the dock is its row - and the card that splits the run is
+    // the record of the answer.
+    const question = [
+      said([
+        use('toolu_q', 'AskUserQuestion', {
+          questions: [{ question: 'Which one?', options: [{ label: 'a' }] }],
+        }),
+      ]),
+      heard([result('toolu_q', 'answered')], {
+        tool_use_result: { answers: { 'Which one?': 'a' } },
+      }),
+    ];
+    const peer = [
+      said([use('toolu_p', 'mcp__forge__agents__tell', { project: 'x', message: 'hi' })]),
+    ];
 
     for (const breaker of [question, peer]) {
-      const units = fold([call('read', 0), breaker, call('read', 1)]);
+      const units = fold([call('read', 0), ...breaker, call('read', 1)]);
       expect(units, 'the run splits around a call drawn on its own').toHaveLength(3);
       expect(kinds(units)[1], 'and that call is the unit in the middle').toMatch(
         /question|messages/,
@@ -737,17 +749,43 @@ describe('one turn folded into the units a view draws', () => {
     expect(pairs[0]?.picked_labels).toEqual(['Blue']);
   });
 
-  it('keeps the question card even when nobody answered it', () => {
+  it('answers with what was typed, not the escape row it was typed through', () => {
+    // The bug this pins: the annotation holds the reader's own words, and a
+    // selected value that is not one of the question's own labels is the escape
+    // row's label - so reading values first drew "you typed: Tell the agent
+    // something else" where the words should have been.
+    const asked = said([
+      use('toolu_q', 'AskUserQuestion', {
+        questions: [{ question: 'Which colour?', options: [{ label: 'Red' }, { label: 'Blue' }] }],
+      }),
+    ]);
+    const answered = heard([result('toolu_q', 'answered')], {
+      tool_use_result: {
+        answers: { 'Which colour?': ['Tell the agent something else'] },
+        annotations: { 'Which colour?': { notes: 'a teal, not listed' } },
+      },
+    });
+
+    const units = fold([asked, answered]);
+    const [card] = units;
+    const pairs = card?.kind === 'question' ? card.asked : [];
+    expect(pairs[0]?.typed_note, 'the escape row landed where the words go').toBe(
+      'a teal, not listed',
+    );
+    expect(pairs[0]?.picked_labels, 'and nothing was picked').toEqual([]);
+  });
+
+  it('draws no question card until somebody answered it', () => {
+    // The dock is the question's row while it waits, so a card carrying it too
+    // drew the same prompt twice. It appears the moment an answer lands, which
+    // the answer's own frame brings.
     const asked = said([
       use('toolu_q', 'AskUserQuestion', {
         questions: [{ question: 'Which colour?', options: [{ label: 'Red' }] }],
       }),
     ]);
 
-    const units = fold([asked]);
-    const [card] = units;
-    expect(card?.kind === 'question' ? card.asked[0]?.question : null).toBe('Which colour?');
-    expect(card?.kind === 'question' ? card.asked[0]?.picked_labels : null).toEqual([]);
+    expect(fold([asked]), 'a waiting question drew a card').toEqual([]);
   });
 
   it('draws the turn hooks after the run they followed, and nothing when none fired', () => {

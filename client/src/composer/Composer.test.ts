@@ -1557,6 +1557,21 @@ describe('the dock', () => {
   const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
     harness.sent.map((entry) => entry.command);
 
+  it('draws a single-answer question as one pick, not a set of boxes', () => {
+    // The regression this pins: every question drawn with the checkbox a SET
+    // takes, so a question that accepts one row read as one that accepts many.
+    open({ record: record({ pending_ask: questionAsk('tu-q', { multi_select: false }) }) });
+
+    expect(
+      document.querySelectorAll('.dock .box2'),
+      'a question that takes one row drew the boxes a set takes',
+    ).toHaveLength(0);
+    expect(
+      [...document.querySelectorAll('.dock .opt .cur')].map((slot) => slot.textContent),
+      'the marked row is what says which one is to be taken',
+    ).toEqual(['\u{25b8}', '', '']);
+  });
+
   it('stands down once its answer is on its way, and says so', () => {
     // The terminal pops its prompt at submit; this dock stands instead, with
     // the mark the reader's own words carry while they are out - so a second

@@ -544,17 +544,44 @@
         >
           {#if row.icon !== null}
             <Icon name={row.icon} class={row.tone} />
-          {:else}
+          {:else if multi}
             <span class="box2" class:on={row.optionId !== null && toggled.includes(row.optionId)}>
               {#if row.optionId !== null && toggled.includes(row.optionId)}
                 <Icon name="check" />
               {/if}
             </span>
+          {:else}
+            <!-- One answer is one row, so there is no box: a box promises a set,
+                 and this question takes a single one. The marked row carries
+                 the pointer the terminal draws instead. -->
+            <span class="cur">{at === marked ? '\u{25b8}' : ''}</span>
           {/if}
           <span class="tx">
-            <span class="lbl">{row.label}</span>
-            {#if row.detail !== null}
-              <span class="why">{row.detail}</span>
+            {#if row.own && notesOpen}
+              <!-- **The escape hatch IS the box.** Moving onto the row puts the
+                   caret in it, so the answer is typed or dictated where the row
+                   already says it will be, rather than into a second box
+                   opening under the list. The keys below the listbox are the
+                   row's own while the caret is in it. -->
+              <Field
+                editor="dock"
+                class="notes"
+                bind:value={notes}
+                rows={1}
+                placeholder={row.label}
+                onkeydown={(event: KeyboardEvent) => {
+                  event.stopPropagation();
+                  onkey(event);
+                }}
+                field={(el: HTMLElement | null) => {
+                  field = el;
+                }}
+              />
+            {:else}
+              <span class="lbl">{row.label}</span>
+              {#if row.detail !== null}
+                <span class="why">{row.detail}</span>
+              {/if}
             {/if}
           </span>
         </div>
@@ -563,22 +590,6 @@
 
     {#if markedRow?.preview != null}
       <div class="preview">{markedRow.preview}</div>
-    {/if}
-
-    {#if notesOpen}
-      <!-- The reader's own words, which the answer carries as its annotation
-           rather than as an option id. -->
-      <Field
-        editor="dock"
-        class="notes"
-        bind:value={notes}
-        rows={1}
-        placeholder="answer with your own words"
-        onkeydown={onkey}
-        field={(el: HTMLElement | null) => {
-          field = el;
-        }}
-      />
     {/if}
 
     {#if answered}

@@ -64,10 +64,11 @@ const use = (id: string, name: string, input: unknown): unknown => ({
   input,
 });
 
-const result = (id: string, value: string): unknown => ({
+const result = (id: string, value: string, record?: unknown): unknown => ({
   type: 'user',
   message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: value }] },
   uuid: `r-${id}`,
+  ...(record === undefined ? {} : { tool_use_result: record }),
 });
 
 /** The frame a turn ends on, which is the only carrier of a session cost. */
@@ -311,10 +312,10 @@ describe('one turn, as the page draws it', () => {
   });
 
   it('draws the runs the fold cut, rather than regrouping what it holds', () => {
-    // A question splits a run, so this turn holds TWO groups with a card
-    // between them. A component that grouped its own rows instead of drawing
-    // the fold's would merge them into one - and every other test here passes
-    // either way, which is what makes this the one that pins it.
+    // An ANSWERED question splits a run, so this turn holds TWO groups with a
+    // card between them. A component that grouped its own rows instead of
+    // drawing the fold's would merge them into one - and every other test here
+    // passes either way, which is what makes this the one that pins it.
     const body = draw(
       said([
         use('c1', 'Read', { file_path: 'a.rs' }),
@@ -323,6 +324,7 @@ describe('one turn, as the page draws it', () => {
         }),
         use('c2', 'Read', { file_path: 'b.rs' }),
       ]),
+      result('q1', 'answered', { answers: { 'Which one?': 'a' } }),
     );
 
     const groups = body.match(/<details class="kind"/g) ?? [];

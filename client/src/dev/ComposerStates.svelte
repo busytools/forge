@@ -150,6 +150,43 @@
     },
   };
 
+  const questionSingle = {
+    kind: 'question',
+    request: {
+      tool_call: {
+        tool_call_id: 'tu-q1',
+        title: 'AskUserQuestion',
+        kind: 'other',
+        status: 'pending',
+        content: [],
+        locations: [],
+        raw_input: {},
+      },
+      prompt: {
+        header: 'Environments',
+        question: 'Pick the environment to deploy to.',
+        multi_select: false,
+        options: [
+          {
+            option_id: 'staging',
+            label: 'Staging',
+            description: 'the pre-production cluster',
+            preview: '**staging** · deploys run the full migration set against the replica first.',
+          },
+          { option_id: 'prod', label: 'Production', description: 'live traffic', preview: null },
+          {
+            option_id: 'dev',
+            label: 'Development',
+            description: null,
+            preview: '```sh\ndeploy --env dev --skip-migrations\n```',
+          },
+        ],
+      },
+      question_index: 1,
+      total_questions: 3,
+    },
+  };
+
   const question = {
     kind: 'question',
     request: {
@@ -167,9 +204,19 @@
         question: 'Pick the environments to deploy to.',
         multi_select: true,
         options: [
-          { option_id: 'staging', label: 'Staging', description: null, preview: null },
-          { option_id: 'prod', label: 'Production', description: null, preview: null },
-          { option_id: 'dev', label: 'Development', description: null, preview: null },
+          {
+            option_id: 'staging',
+            label: 'Staging',
+            description: 'the pre-production cluster',
+            preview: '**staging** · deploys run the full migration set against the replica first.',
+          },
+          { option_id: 'prod', label: 'Production', description: 'live traffic', preview: null },
+          {
+            option_id: 'dev',
+            label: 'Development',
+            description: null,
+            preview: '```sh\ndeploy --env dev --skip-migrations\n```',
+          },
         ],
       },
       question_index: 1,
@@ -323,7 +370,14 @@
       label: "dock · with the CLI's own reason",
       props: { record: { ...blank(), pending_ask: readOutside } },
     },
-    { label: 'dock · question', props: { record: { ...blank(), pending_ask: question } } },
+    {
+      label: 'dock · question · one answer',
+      props: { record: { ...blank(), pending_ask: questionSingle } },
+    },
+    {
+      label: 'dock · question · several answers',
+      props: { record: { ...blank(), pending_ask: question } },
+    },
     {
       label: 'dock · queued behind another',
       props: { seat: seat({ pendingDepth: 3 }), record: { ...blank(), pending_ask: permission } },
