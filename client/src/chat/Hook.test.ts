@@ -149,39 +149,75 @@ describe('the hook run row', () => {
   /**
    * The pin the disclosure rests on, and the one rule 25 is about: the row
    * collapses the output behind its own open rather than shortening it, so a
-   * clamp anywhere on the body would turn this row back into the drop it was
-   * built to stop.
+   * clamp anywhere on it would turn this row back into the drop it was built to
+   * stop.
    *
    * **An allowlist, not a denylist.** A denylist answers only the forms someone
    * thought of: `clip-path`, `content-visibility`, `line-height: 0`, `height`
    * and a case variant of a listed name all pass one. Naming what may be
    * declared makes an unknown property the failure instead.
    *
-   * It governs WHICH properties the body may be given, not their values - a
-   * `color: transparent` is still writable here, and that is the boundary.
+   * **It guards every rule that can reach the row, not only the rules that name
+   * the body's classes.** A clamp scoped to the row is the likelier mistake of
+   * the two - scoping a tweak to this row is the point - and `details.hookrun >
+   * div` is the body without naming it, so the scope is the row and everything
+   * that reaches it. A rule touching both scopes takes the body's tighter list.
+   *
+   * It governs WHICH properties may be declared, not their values: a
+   * `color: transparent` is writable here, and that is the boundary.
    */
-  it('declares nothing on the body but what it draws with', () => {
+  it('declares nothing on the row but what it and its body draw with', () => {
     for (const [what, sheet] of sheets()) {
-      const reaching = bodyRules(sheet);
+      const reaching = rowRules(sheet);
       // The denominator: a scan that reaches no rule reports every sheet clean,
       // and this predicate is a walk over selectors rather than a file read.
-      expect(reaching.length, `${what} spells rules reaching the row's body`).toBeGreaterThan(0);
-      // Each class, not the set: a list that lost `.term` still finds the
-      // `.body` rules and would leave every `.term`-only clamp unseen.
+      expect(reaching.length, `${what} spells rules reaching the row`).toBeGreaterThan(0);
+      // Each arm of the set, and each body class, rather than the set as a
+      // whole: a matcher that lost the body's classes still finds the row's own
+      // rules, and one that lost `.term` still finds `.body`.
+      expect(
+        reaching.filter((rule) => reachesBody(rule.selector).length > 0).length,
+        `${what} spells a rule reaching the body's own classes`,
+      ).toBeGreaterThan(0);
+      expect(
+        reaching.filter((rule) => rule.selector.includes('.hookrun')).length,
+        `${what} spells the row's own rules`,
+      ).toBeGreaterThan(0);
       for (const name of BODY_CLASSES) {
         expect(
-          reaching.filter((rule) => rule.reaches.includes(name)).length,
+          reaching.filter((rule) => reachesBody(rule.selector).includes(name)).length,
           `${what} spells a rule reaching .${name}`,
         ).toBeGreaterThan(0);
       }
       expect(
         reaching.flatMap((rule) =>
           rule.declarations
-            .filter((declaration) => !BODY_PROPERTIES.includes(propertyOf(declaration)))
+            .filter((declaration) => !allowedIn(rule, declaration))
             .map((declaration) => `${under(rule)} { ${declaration} }`),
         ),
-        `${what} declares nothing on the row's body but what it draws with`,
+        `${what} declares nothing on the row but what it draws with`,
       ).toEqual([]);
+    }
+  });
+
+  /**
+   * The allowlists held to the sheets that justify them.
+   *
+   * **Widening one is otherwise silent**: adding a property to the list and the
+   * declaration that needs it leaves every other check green, and the list is
+   * the guard. Read both ways, an entry with nothing behind it fails and a
+   * declaration with no entry fails, so the list can only move with the sheet.
+   */
+  it('holds each allowlist to what its own sheet declares', () => {
+    for (const [what, sheet] of sheets()) {
+      expect(
+        declaredProperties(bodyRules(sheet)),
+        `${what} declares exactly the properties of the body's classes`,
+      ).toEqual([...BODY_PROPERTIES].sort());
+      expect(
+        declaredProperties(bodylessRules(sheet)),
+        `${what} declares exactly the properties of the row's own rules`,
+      ).toEqual([...ROW_PROPERTIES].sort());
     }
   });
 
@@ -199,10 +235,22 @@ describe('the hook run row', () => {
    */
   it("mirrors the row's rules in both sheets, rule for rule", () => {
     const app = rowRules(SHEET);
-    // The same denominator one level up: a block the scan failed to read
-    // compares equal to an empty one.
+    // The same denominator one level up, and again per arm: a block the scan
+    // failed to read compares equal to an empty one, and a set that had lost
+    // the rules the body draws through would compare equal while those rules
+    // diverged between the sheets.
     expect(app.length, 'the app spells the row').toBeGreaterThan(0);
-    expect(rowRules(BOOK), 'and the drawing mirrors every one of them').toEqual(app);
+    expect(
+      app.filter((rule) => reachesBody(rule.selector).length > 0).length,
+      'the app spells the rules the body draws through, so their silence means something',
+    ).toBeGreaterThan(0);
+    expect(
+      app.filter((rule) => classesIn(rule.selector).includes(ROW_CLASS)).length,
+      "and the row's own rules",
+    ).toBeGreaterThan(0);
+    expect(rowRules(BOOK).map(ruleText), 'and the drawing mirrors every one of them').toEqual(
+      app.map(ruleText),
+    );
   });
 
   it('reads a rule stepped into an at-rule as a different rule', () => {
@@ -213,12 +261,46 @@ describe('the hook run row', () => {
     // instrument the rest of this file exists to refuse.
     const flat = '.hookrun { margin: 3px 0; }';
     const stepped = '@media (min-width: 900px) { .hookrun { margin: 3px 0; } }';
+    // And the other shape an at-rule has: one that ends at its semicolon owns no
+    // block, and left in the walker's buffer it becomes the next rule's prelude.
+    const stated = '@import url("x.css");\n.hookrun { margin: 3px 0; }';
 
-    expect(rowRules(flat), 'a sheet of one plain rule').toEqual(['.hookrun { margin: 3px 0 }']);
-    expect(rowRules(stepped), 'and the same rule inside a query').toEqual([
+    expect(rowRules(flat).map(ruleText), 'a sheet of one plain rule').toEqual([
+      '.hookrun { margin: 3px 0 }',
+    ]);
+    expect(rowRules(stepped).map(ruleText), 'and the same rule inside a query').toEqual([
       '@media (min-width: 900px) .hookrun { margin: 3px 0 }',
     ]);
+    expect(rowRules(stated).map(ruleText), 'and one after a statement at-rule').toEqual([
+      '.hookrun { margin: 3px 0 }',
+    ]);
     expect(rowRules(flat), 'which are not the same rule').not.toEqual(rowRules(stepped));
+  });
+
+  it('reads a selector that spells a class away from its compound', () => {
+    // The control the matcher needs, and the one this check has been caught
+    // without twice: `div.body` and `.body.clamped` reach the same box as a
+    // bare `.body`, and a matcher reading only the first class of each compound
+    // lets both past the guard and the mirror alike.
+    const spellings: Array<[string, string]> = [
+      ['div.body', 'body'],
+      ['.body.clamped', 'body'],
+      [':is(.body)', 'body'],
+      ['.term.fail', 'term'],
+    ];
+
+    for (const [spelling, name] of spellings) {
+      expect(classesIn(spelling), `the classes ${spelling} names`).toContain(name);
+      expect(
+        bodyRules(`${spelling} { color: var(--dim); }`).length,
+        `${spelling} reaches the body's classes`,
+      ).toBeGreaterThan(0);
+    }
+    expect(reachesRow('details.hookrun > div'), 'a row-scoped rule reaches the row').toBe(true);
+    expect(
+      reachesBody('details.hookrun > div'),
+      "and names none of the body's classes, which is why the scope has to be the row",
+    ).toEqual([]);
   });
 
   it('draws the row in the book, open and closed', () => {
@@ -253,14 +335,21 @@ function sheets(): Array<[string, string]> {
 const WORN = ['hk', 'nm', 'ev'];
 
 /**
- * The classes the row's body draws through. Both are shared with other rows, so
- * a rule written for one of them reaches this one.
+ * The class the row's own box wears, and the classes its body draws through.
+ * The two body classes are shared with other rows, so a rule written for one of
+ * them reaches this one.
  */
+const ROW_CLASS = 'hookrun';
 const BODY_CLASSES = ['body', 'term'];
 
 /**
- * The properties a rule reaching the row's body may declare, which is what it
- * draws with today: eight, none of which can hide or shorten a line.
+ * The properties a rule may declare, by the scope it is written for: what the
+ * body's own classes carry, which is what the output is drawn with, and what
+ * the row's block carries, which is what the row is.
+ *
+ * Both are the whole of what the sheets declare for that scope today, and
+ * `holds each allowlist to what its own sheet declares` is what keeps them
+ * there.
  */
 const BODY_PROPERTIES = [
   'border-left',
@@ -273,14 +362,92 @@ const BODY_PROPERTIES = [
   'white-space',
 ];
 
+const ROW_PROPERTIES = [
+  'align-items',
+  'color',
+  'cursor',
+  'display',
+  'flex',
+  'font-family',
+  'font-size',
+  'font-weight',
+  'gap',
+  'list-style',
+  'margin',
+  'margin-left',
+  'white-space',
+];
+
+/**
+ * Every class token a selector names, wherever inside the selector it sits.
+ *
+ * **Not the leading compound's name.** `div.body`, `.body.clamped` and
+ * `:is(.body)` all reach the same box as a bare `.body`, and a matcher that
+ * read only the first class of each compound let every one of them past both
+ * the property guard and the mirror - a clamp written as `div.body` needed no
+ * markup change to hide the output this row exists to carry. The selector is
+ * where a check like this is attacked, so the matcher reads every token.
+ */
+function classesIn(selector: string): string[] {
+  return [...selector.matchAll(/\.([\w-]+)/g)].map(([, name = '']) => name);
+}
+
+/** The classes of the body's own that a selector names, if any. */
+function reachesBody(selector: string): string[] {
+  return classesIn(selector).filter((name) => BODY_CLASSES.includes(name));
+}
+
+/** Whether a selector can reach what the row draws, by its own class or the body's. */
+function reachesRow(selector: string): boolean {
+  const classes = classesIn(selector);
+  return classes.includes(ROW_CLASS) || classes.some((name) => BODY_CLASSES.includes(name));
+}
+
+/** Every rule whose selector reaches the classes the body draws with. */
+function bodyRules(sheet: string): PlainRule[] {
+  return rulesIn(sheet).filter((rule) => reachesBody(rule.selector).length > 0);
+}
+
+/** Every rule that can reach what the row draws, by either route. */
+function rowRules(sheet: string): PlainRule[] {
+  return rulesIn(sheet).filter((rule) => reachesRow(rule.selector));
+}
+
+/** The row's own rules: the ones that reach it without the body's classes. */
+function bodylessRules(sheet: string): PlainRule[] {
+  return rowRules(sheet).filter((rule) => reachesBody(rule.selector).length === 0);
+}
+
+/**
+ * Whether a declaration is one the rule's own scope may make. A rule touching
+ * both scopes takes the body's tighter list, which is the safe direction.
+ */
+function allowedIn(rule: PlainRule, declaration: string): boolean {
+  const scope = reachesBody(rule.selector).length > 0 ? BODY_PROPERTIES : ROW_PROPERTIES;
+  return scope.includes(propertyOf(declaration));
+}
+
+/** The distinct properties a set of rules declares, sorted. */
+function declaredProperties(rules: PlainRule[]): string[] {
+  return [...new Set(rules.flatMap((rule) => rule.declarations.map(propertyOf)))].sort();
+}
+
 /** One declaration's property, lowercased - CSS property names are not case-sensitive. */
 function propertyOf(declaration: string): string {
   return (declaration.split(':')[0] ?? '').trim().toLowerCase();
 }
 
-/** A rule as something a reader can be shown, with the at-rule it sits in. */
+/** A rule's own name, with the at-rule it sits in. */
 function under(rule: PlainRule): string {
   return `${rule.prelude === '' ? '' : `${rule.prelude} `}${rule.selector}`;
+}
+
+/** A whole rule as one normalised line: which sheet it lives in is all that differs. */
+function ruleText(rule: PlainRule): string {
+  return `${under(rule)} { ${rule.declarations.join('; ').replace(/\s+/g, ' ')} }`.replace(
+    /\s+/g,
+    ' ',
+  );
 }
 
 /** One rule as a sheet spells it, before anything asks what it reaches. */
@@ -289,11 +456,6 @@ interface PlainRule {
   prelude: string;
   selector: string;
   declarations: string[];
-}
-
-/** One rule, with those of the classes asked for that its selector reaches. */
-interface Rule extends PlainRule {
-  reaches: string[];
 }
 
 /**
@@ -313,6 +475,14 @@ function rulesIn(sheet: string): PlainRule[] {
   let at = 0;
   while (at < code.length) {
     const ch = code[at] ?? '';
+    if (ch === ';' && held.trim().startsWith('@')) {
+      // A statement at-rule ends at its semicolon and owns no block. Left in
+      // the buffer it would become the next rule's prelude, which is a rule
+      // read as something it is not.
+      held = '';
+      at += 1;
+      continue;
+    }
     if (ch === '{') {
       const prelude = held.trim();
       held = '';
@@ -349,41 +519,6 @@ function rulesIn(sheet: string): PlainRule[] {
     at += 1;
   }
   return out;
-}
-
-/**
- * The classes a selector reaches: class compounds only, since a bare `body` in
- * a selector is the page element rather than this row's box.
- */
-function classesReached(selector: string): string[] {
-  return selector
-    .split(',')
-    .flatMap((member) => member.split(/[\s>+~]+/))
-    .filter((compound) => compound.startsWith('.'))
-    .map((compound) => compound.replace(/^\./, '').replace(/::?[\w-]*(\([^)]*\))?$/, ''));
-}
-
-/** Every rule whose selector reaches one of the classes the body draws with. */
-function bodyRules(sheet: string): Rule[] {
-  return rulesIn(sheet).flatMap((rule) => {
-    const reaches = classesReached(rule.selector).filter((name) => BODY_CLASSES.includes(name));
-    return reaches.length === 0 ? [] : [{ ...rule, reaches }];
-  });
-}
-
-/**
- * The row's own rules, and the rules its body draws through, as normalised
- * strings: which sheet a rule lives in is the only thing the caller compares.
- */
-function rowRules(sheet: string): string[] {
-  return rulesIn(sheet)
-    .filter(
-      (rule) =>
-        rule.selector.includes('.hookrun') ||
-        classesReached(rule.selector).some((name) => BODY_CLASSES.includes(name)),
-    )
-    .map((rule) => `${under(rule)} { ${rule.declarations.join('; ').replace(/\s+/g, ' ')} }`)
-    .map((rule) => rule.replace(/\s+/g, ' '));
 }
 
 /**
