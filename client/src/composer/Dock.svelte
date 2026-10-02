@@ -561,11 +561,15 @@
                 <Icon name="check" />
               {/if}
             </span>
-          {:else if !row.own}
+          {:else if row.own}
+            <!-- The escape row keeps the slot its options mark in - an empty
+                 one - so its words start in the same column theirs do. -->
+            <span class="slot"></span>
+          {:else}
             <!-- A single-answer question marks its rows in the same slot the
                  set draws its boxes in - a circle that fills on the row being
                  taken - so its options are not bare against every other kind
-                 of row on the page. The escape row keeps the slot empty. -->
+                 of row on the page. -->
             <span class="radio" class:on={at === marked}></span>
           {/if}
           <span class="tx">

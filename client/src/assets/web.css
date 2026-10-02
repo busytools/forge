@@ -1411,6 +1411,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt .radio.on { border-color: var(--ok); }
 .opt .radio.on::after { content: ''; width: 7px; height: 7px; border-radius: 50%;
   background: var(--ok); }
+/* The escape row's slot, held empty so its words line up with every option's. */
+.opt .slot { width: 15px; flex: 0 0 15px; }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
 /* The marked option's own prose: markdown on the wire, rendered as markdown
