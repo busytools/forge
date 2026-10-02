@@ -921,12 +921,7 @@ function noticeFields(words: string): {
  * means "read from disk". A turn still being written draws a running report
  * from what its frames already carry.
  */
-export function fold(
-  messages: readonly unknown[],
-  cwd: string | null = null,
-  self: Self | null = null,
-  live = false,
-): Unit[] {
+export function fold(messages: readonly unknown[], self: Self | null = null, live = false): Unit[] {
   const frames = messages as Frame[];
   /** Every result the turn holds, by the call it answers. */
   const results = new Map<string, ReturnType<typeof blocksOf>[number]>();
@@ -1453,7 +1448,7 @@ export function fold(
           row: rowOf(name),
           label: labelOf(name),
           key: id !== '' ? `c-${id}` : keyOf(at, frame, blockAt),
-          leaf: leafOf(id, name, block.input, results.get(id), cwd, tasks.get(id), abandoned),
+          leaf: leafOf(id, name, block.input, results.get(id), tasks.get(id), abandoned),
         });
         continue;
       }

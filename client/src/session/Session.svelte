@@ -125,7 +125,6 @@
   });
 
   const conversationProps = $derived<ConversationProps>({
-    cwd: record?.state.scan_cwd ?? '',
     waking: seat.waking,
     reason: seat.reason,
     compacting: record?.composer.compacting ?? false,

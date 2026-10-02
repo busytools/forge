@@ -23,9 +23,7 @@ describe('the words a frame carries', () => {
     // rest of the turn.
     expect(
       ownWords(
-        frame('user', [
-          { type: 'queued_command', commandMode: 'prompt', prompt: 'run the gate' },
-        ]),
+        frame('user', [{ type: 'queued_command', commandMode: 'prompt', prompt: 'run the gate' }]),
       ),
     ).toEqual(['run the gate']);
 

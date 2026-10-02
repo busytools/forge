@@ -38,15 +38,12 @@
   let {
     slot,
     connection,
-    cwd,
     waking = false,
     reason = null,
     compacting = false,
   }: {
     slot: SessionSlot;
     connection: Connection;
-    /** The session's working tree, which a call's target is named against. */
-    cwd: string | null;
     /** The roster holds no session for this seat, which is its own state. */
     waking?: boolean;
     /** Why, when it does. */
@@ -372,7 +369,7 @@
   const newestRow = $derived.by((): { key: string; info: TurnInfo } | null => {
     const turn = newestTurn;
     if (turn === null) return null;
-    const units = fold(turn.messages, cwd, slot, beingWritten(turn));
+    const units = fold(turn.messages, slot, beingWritten(turn));
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit !== undefined && unit.kind === 'report') return { key: unit.key, info: unit.info };
@@ -612,7 +609,6 @@
       <div class="turn">
         <Turn
           {turn}
-          {cwd}
           {slot}
           compacting={compacting && turn.key === newest}
           carried={turn.key === newest ? (pinned?.key ?? null) : null}

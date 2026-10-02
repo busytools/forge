@@ -9,24 +9,22 @@ import { fold } from './units';
 
 /** A turn holding `messages`, drawn as the page draws it. */
 const draw = (...messages: unknown[]): string =>
-  render(Turn, { props: { turn: { key: 't1', messages, live: false } as HeldTurn, cwd: null } })
-    .body;
+  render(Turn, { props: { turn: { key: 't1', messages, live: false } as HeldTurn } }).body;
 
 /** The same turn while its frames are still arriving. */
 const live = (...messages: unknown[]): string =>
-  render(Turn, { props: { turn: { key: 't1', messages, live: true } as HeldTurn, cwd: null } })
-    .body;
+  render(Turn, { props: { turn: { key: 't1', messages, live: true } as HeldTurn } }).body;
 
 /** The same turn, while a compaction is in flight. */
 const compacting = (...messages: unknown[]): string =>
   render(Turn, {
-    props: { turn: { key: 't1', messages, live: false } as HeldTurn, cwd: null, compacting: true },
+    props: { turn: { key: 't1', messages, live: false } as HeldTurn, compacting: true },
   }).body;
 
 /** The same turn as a page carried it, while the seat says a turn is running. */
 const seatRunning = (...messages: unknown[]): string =>
   render(Turn, {
-    props: { turn: { key: 't1', messages, live: false, running: true } as HeldTurn, cwd: null },
+    props: { turn: { key: 't1', messages, live: false, running: true } as HeldTurn },
   }).body;
 
 /** One assistant message carrying prose and the counters of its own call. */
@@ -89,7 +87,7 @@ const ended = (uuid: string, total: number): unknown => ({
  * - a fixture naming one would be asserting the name rather than the row.
  */
 const reportKeys = (turn: HeldTurn): string[] =>
-  fold(turn.messages, null, null, beingWritten(turn))
+  fold(turn.messages, null, beingWritten(turn))
     .filter((unit) => unit.kind === 'report')
     .map((unit) => unit.key);
 
@@ -248,7 +246,7 @@ describe('one turn, as the page draws it', () => {
     // comes back here the moment the pin lets go, which is the half that makes
     // this a move rather than a loss.
     const at = (turn: HeldTurn, carried: string | null): string =>
-      render(Turn, { props: { turn, cwd: null, carried } }).body;
+      render(Turn, { props: { turn, carried } }).body;
     const settled: HeldTurn = {
       key: 't1',
       live: false,
@@ -282,7 +280,7 @@ describe('one turn, as the page draws it', () => {
     // a filter that dropped every report row would lose the row the pin never
     // took, for as long as the pin holds the one it did.
     const at = (turn: HeldTurn, carried: string | null): string =>
-      render(Turn, { props: { turn, cwd: null, carried } }).body;
+      render(Turn, { props: { turn, carried } }).body;
     const rows = (body: string): number => (body.match(/details class="turninfo"/g) ?? []).length;
     const twice: HeldTurn = {
       key: 't1',
@@ -572,7 +570,6 @@ describe('one turn, as the page draws it', () => {
     const seated = render(Turn, {
       props: {
         turn: { key: 't1', messages: [envelope('gateway-backend')], live: false } as HeldTurn,
-        cwd: null,
         slot: seat,
       },
     }).body;

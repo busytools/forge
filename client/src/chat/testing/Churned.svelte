@@ -27,7 +27,6 @@
   const handed = $derived({
     slot,
     connection,
-    cwd: null,
     waking: false,
     reason: null,
     read: $reads,

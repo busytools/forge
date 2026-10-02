@@ -29,13 +29,11 @@
    */
   let {
     turn,
-    cwd,
     slot = null,
     compacting = false,
     carried = null,
   }: {
     turn: HeldTurn;
-    cwd: string | null;
     slot?: Self | null;
     compacting?: boolean;
     /**
@@ -51,7 +49,7 @@
     carried?: string | null;
   } = $props();
 
-  const folded = $derived(fold(turn.messages, cwd, slot, beingWritten(turn)));
+  const folded = $derived(fold(turn.messages, slot, beingWritten(turn)));
 
   /**
    * The fold's units, less the one row the pin is carrying.

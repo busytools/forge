@@ -883,7 +883,7 @@ describe('the conversation the chat draws', () => {
 
     const held = get(chat.value).turns.at(-1)?.messages ?? [];
     expect(
-      fold(held, null, LEAD).map((unit) => unit.kind),
+      fold(held, LEAD).map((unit) => unit.kind),
       'the forged frame draws as traffic, not as the reader own turn',
     ).toEqual(['messages']);
   });

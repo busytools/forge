@@ -14,13 +14,19 @@ const NOTE =
 
 describe('what a call body draws', () => {
   it('draws a mutation as its diff, without the note the CLI writes to the model', () => {
+    const path = '/Users/x/project/a.rs';
     const leaf = leafOf(
       't1',
       'Edit',
-      { file_path: 'a.rs', old_string: 'one', new_string: 'two' },
+      { file_path: path, old_string: 'one', new_string: 'two' },
       answered(NOTE),
-      null,
     );
+
+    // The row names the file the wire named, whole: the same path is on the
+    // diff under it, and a row that shortened one of them would be naming two
+    // files. The signature is the enforcement - `leafOf` is handed no working
+    // tree to cut against - and this is what a reader sees of it.
+    expect(leaf.title, 'the title is the path the call carried').toBe(path);
 
     expect(
       leaf.body.map((part) => part.kind),
@@ -33,7 +39,7 @@ describe('what a call body draws', () => {
 
     // The text is what a body has where there is no diff to draw: the terminal's
     // own rule is the diff for a mutation, the result's words for everything else.
-    const bash = leafOf('t2', 'Bash', { command: 'ls' }, answered('a.rs\nb.rs'), null);
+    const bash = leafOf('t2', 'Bash', { command: 'ls' }, answered('a.rs\nb.rs'));
     expect(
       bash.body.map((part) => part.kind),
       'a call with no diff still says what it said',

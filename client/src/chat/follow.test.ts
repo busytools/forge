@@ -164,7 +164,7 @@ async function draw(server: ReturnType<typeof stub>): Promise<void> {
   setMeasured(TOTAL, VIEWPORT);
   app = mount(Chat, {
     target: document.body,
-    props: { slot: LEAD, connection: server.connection, cwd: null },
+    props: { slot: LEAD, connection: server.connection },
   });
   // The column listens on the effect that mounts it, so the page has to go out
   // after that has run.

@@ -12,12 +12,12 @@
 
 import { languageOf } from './code';
 import { isEdit, type CallStatus, type KindRow, rowOf } from './families';
-import { headline, shortPath, stripEscapes, toolName } from './text';
+import { headline, stripEscapes, toolName } from './text';
 
 /** What a call's row opens on. */
 export type CallBody =
   | { kind: 'text'; text: string }
-  | { kind: 'diff'; path: string; old: string; new: string }
+  | { kind: 'diff'; old: string; new: string }
   | { kind: 'image'; mime: string | null; uri: string | null };
 
 /**
@@ -171,28 +171,45 @@ export function diffsOf(name: string, input: unknown): CallBody[] {
   const path = field(input, 'file_path') ?? field(input, 'notebook_path');
   if (path === null) return [];
 
-  if (name === 'Write') return hunk(path, '', field(input, 'content') ?? '');
-  if (name === 'NotebookEdit') return hunk(path, '', field(input, 'new_source') ?? '');
+  if (name === 'Write') return hunk('', field(input, 'content') ?? '');
+  if (name === 'NotebookEdit') return hunk('', field(input, 'new_source') ?? '');
   if (name === 'MultiEdit') {
     const edits = (input as { edits?: unknown } | null)?.edits;
     if (!Array.isArray(edits)) return [];
     return edits.flatMap((edit) =>
-      hunk(path, field(edit, 'old_string') ?? '', field(edit, 'new_string') ?? ''),
+      hunk(field(edit, 'old_string') ?? '', field(edit, 'new_string') ?? ''),
     );
   }
-  return hunk(path, field(input, 'old_string') ?? '', field(input, 'new_string') ?? '');
+  return hunk(field(input, 'old_string') ?? '', field(input, 'new_string') ?? '');
 }
 
-/** One hunk, or none when it says nothing: an empty old side and an empty new one is no change. */
-function hunk(path: string, old: string, added: string): CallBody[] {
+/**
+ * One hunk, or none when it says nothing: an empty old side and an empty new
+ * one is no change.
+ *
+ * **The path is checked above and not carried here.** The row's own title is
+ * the file, whole, so a hunk naming it again drew the same path twice on one
+ * row; what is left of the check is that a mutation with no path in its input
+ * draws nothing at all.
+ */
+function hunk(old: string, added: string): CallBody[] {
   if (old.trim() === '' && added.trim() === '') return [];
-  return [{ kind: 'diff', path, old, new: added }];
+  return [{ kind: 'diff', old, new: added }];
 }
 
-/** What names a call on its row: its input where that says something, its tool otherwise. */
-export function titleOf(name: string, input: unknown, cwd: string | null): string {
+/**
+ * What names a call on its row: its input where that says something, its tool otherwise.
+ *
+ * **The path as the wire gave it rather than cut against the working tree.** A
+ * mutation's row draws the same file twice - its title, and the header of the
+ * diff under it - so shortening one of them is the row disagreeing with itself
+ * about which file it is. The terminal puts the whole of it on the row (its
+ * `create_tool_call` builds `Edit /Users/.../home.css`), which is the reference
+ * this follows.
+ */
+export function titleOf(name: string, input: unknown): string {
   const said = headline(name, input);
-  return said === name ? toolName(name) : shortPath(said, cwd);
+  return said === name ? toolName(name) : said;
 }
 
 /**
@@ -219,7 +236,6 @@ export function leafOf(
   name: string,
   input: unknown,
   result: Block | undefined,
-  cwd: string | null,
   task: BackgroundTask | undefined = undefined,
   abandoned = false,
 ): ToolLeaf {
@@ -232,7 +248,7 @@ export function leafOf(
     id,
     row: rowOf(name),
     name,
-    title: titleOf(name, input, cwd),
+    title: titleOf(name, input),
     command: field(input, 'command')?.trim() || null,
     status: settled,
     note: task?.backgrounded === true ? task.note : null,

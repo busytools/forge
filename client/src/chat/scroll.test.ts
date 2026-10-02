@@ -107,7 +107,7 @@ function draw(server: ReturnType<typeof stub>): void {
   clear();
   app = mount(Chat, {
     target: document.body,
-    props: { slot: LEAD, connection: server.connection, cwd: null },
+    props: { slot: LEAD, connection: server.connection },
   });
   flushSync();
 }

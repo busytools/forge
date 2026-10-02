@@ -85,7 +85,7 @@ let app: Record<string, unknown> | null = null;
 function draw(props: Record<string, unknown>, server: ReturnType<typeof stub>): void {
   app = mount(Chat, {
     target: document.body,
-    props: { slot: LEAD, connection: server.connection, cwd: null, ...props },
+    props: { slot: LEAD, connection: server.connection, ...props },
   });
   flushSync();
 }

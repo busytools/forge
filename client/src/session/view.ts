@@ -186,7 +186,6 @@ export interface McpView {
  */
 export interface ConversationProps {
   /** The directory the seat's calls are named against. */
-  cwd: string;
   /** Whether a seat is behind this page at all. */
   waking: boolean;
   /** Why it is not running, when the roster says. */

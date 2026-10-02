@@ -342,7 +342,7 @@ describe('one turn folded into the units a view draws', () => {
     const counter = { type: 'system', subtype: 'thinking_tokens', estimated_tokens_delta: 40 };
     const frames = [spoke(1), counter, spoke(2)];
 
-    const running = fold(frames, null, null, true);
+    const running = fold(frames, null, true);
     const reports = running.filter((unit) => unit.kind === 'report');
     expect(reports, 'one row, and it is the running one').toHaveLength(1);
     const info = reports[0]?.kind === 'report' ? reports[0].info : null;
@@ -356,7 +356,7 @@ describe('one turn folded into the units a view draws', () => {
 
     // The control: read as a page, the same frames carry no row at all.
     expect(
-      fold(frames, null, null).filter((unit) => unit.kind === 'report'),
+      fold(frames, null).filter((unit) => unit.kind === 'report'),
       'a page draws no running row',
     ).toHaveLength(0);
 
@@ -369,7 +369,7 @@ describe('one turn folded into the units a view draws', () => {
       duration_ms: 1000,
       usage: { input_tokens: 1, output_tokens: 2 },
     };
-    const settled = fold([spoke(1), result], null, null, true);
+    const settled = fold([spoke(1), result], null, true);
     const settledReports = settled.filter((unit) => unit.kind === 'report');
     expect(settledReports, 'the settled row, not a running one beside it').toHaveLength(1);
     expect(settledReports[0]?.kind === 'report' ? settledReports[0].info.running : true).toBe(
@@ -409,7 +409,7 @@ describe('one turn folded into the units a view draws', () => {
       block('m1', 2, 100),
       block('m2', 0, 200),
     ];
-    const running = fold(frames, null, null, true).filter((unit) => unit.kind === 'report');
+    const running = fold(frames, null, true).filter((unit) => unit.kind === 'report');
     const info = running[0]?.kind === 'report' ? running[0].info : null;
 
     expect(info?.input_tokens, 'the two calls, not the four frames that drew them').toBe(300);
@@ -621,7 +621,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
     const self = { org: 'Busytools', project: 'forge', label: 'chat-kinds' };
 
-    const [group] = fold([here, other, away], null, self);
+    const [group] = fold([here, other, away], self);
     const cards = group?.kind === 'messages' ? (group.lanes[0]?.cards ?? []) : [];
 
     expect(

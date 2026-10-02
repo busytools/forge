@@ -648,6 +648,21 @@ details.sec[open] > summary .arw { color: var(--accent); }
    draws a lane inside the conversation at (`.pbody`); the accent colour is
    what keeps it a mark rather than structure. */
 .mine { margin: 15px 0; padding: 10px 15px; border-left: 1px solid var(--accent); }
+/* The echo: the reader's words from submit until the core has them. The word
+   carries the state rather than the rule, because the accent line means "these
+   words are yours" and a mark that also meant "in flight" would be two
+   meanings on one thing. A refusal keeps the words here and names the reason:
+   the box is never refilled, since words typed since would land over them. */
+.mine.bad { border-left-color: var(--bad); }
+.mine .st { display: flex; align-items: center; gap: 8px; margin-top: 9px;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.mine .why { display: flex; align-items: center; gap: 9px; margin-top: 9px;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--bad); }
+.mine .why .ic { width: 12px; height: 12px; flex: 0 0 12px; color: var(--bad); }
+.mine .retry { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+  padding: 1px 7px; cursor: pointer; }
+.mine .retry:hover { color: var(--muted); }
 .work { padding: 4px 0 8px; }
 /* Prose draws in both blocks - the work a turn did, and what the reader typed,
    which the terminal folds as a document too - so these read `.prose` alone. */
@@ -763,7 +778,7 @@ details.leaf[open] > summary .arw { color: var(--accent); }
 details.leaf.running > summary { color: var(--text); }
 
 .body { margin: 3px 0 6px 27px; }
-.term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+.term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
   border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
   white-space: pre-wrap; overflow-wrap: anywhere; }
 .term .pfx { color: var(--dim); }
@@ -785,7 +800,7 @@ details.leaf.running > summary { color: var(--text); }
    Six pixels of padding rather than eight, and the conversation's leading: the
    panel is a line and a hairline of air, where it was a line and a third, at
    1.89x the one row the terminal draws for the same fence. */
-.code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 6px 10px;
+.code pre { font-family: var(--mono); font-size: var(--fs-prose); padding: 6px 10px;
   white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
 /* A search result, one row per hit: where it is, then what matched. */
 .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
@@ -802,8 +817,7 @@ details.leaf.running > summary { color: var(--text); }
    nothing overflows and no tint can fall short of one. */
 .dif { display: grid; grid-template-columns: 22px 1fr;
   border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
-  font-family: var(--mono); font-size: var(--fs-data); }
-.dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2); padding: 4px 12px; }
+  font-family: var(--mono); font-size: var(--fs-prose); }
 .dif .ln { display: contents; }
 .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
 .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }

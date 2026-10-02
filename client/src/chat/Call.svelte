@@ -92,8 +92,9 @@
       {:else}
         {#each call.body as piece, at (at)}
           {#if piece.kind === 'diff'}
+            <!-- No header naming the file: the row's own title is the path, and
+                 it is the same path, so a line here would print it twice. -->
             <div class="dif">
-              <div class="h">{piece.path}</div>
               {#each piece.old.split('\n') as line, n (`old-${n}`)}
                 {#if piece.old !== ''}
                   <div class="ln d">
