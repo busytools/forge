@@ -919,6 +919,10 @@ describe('a sent message', () => {
     seesTake(harness);
     harness.page.record = withNotice(LANDED);
     flushSync();
+    // The premise, without which a landing that settles nothing leaves this
+    // case green: the take is in the box, and the words that come back are the
+    // ones the reader sent out of it.
+    expect(field().value, 'the take lands in the box').toBe(LANDED.text);
     sendBox();
     expect(field().value, 'the reader sent the words, so the box is empty').toBe('');
 
@@ -991,12 +995,23 @@ describe('the seat the box belongs to', () => {
     const harness = open({}, shared);
     type('push it once CI is green');
     sendBox();
+    // The premise, without which a refusal that never reaches any box leaves
+    // this case green: this seat's own box really is holding the send, so a
+    // refusal here gives the words back.
+    shared.say({ kind: 'error', what: 'dispatch', why: 'the seat is busy' });
+    flushSync();
+    expect(field().value, 'the send is outstanding on this box, so a refusal returns it').toBe(
+      'push it once CI is green',
+    );
 
+    // Sent again, and the reader moves on before the core answers.
+    sendBox();
+    expect(harness.sent, 'the second send went out too').toHaveLength(2);
     harness.page.slot = ELSEWHERE;
     flushSync();
 
-    // The core refuses that dispatch, and the connection says so to every page
-    // on it - the error names the operation, never the seat.
+    // The core refuses that one, and the connection says so to every page on it
+    // - the error names the operation, never the seat.
     shared.say({ kind: 'error', what: 'dispatch', why: 'that seat is gone' });
     flushSync();
 
